@@ -1,12 +1,12 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Phone v2.dc.html",
   "sha256": "c894360f2ea65280fb00bc18e88dd2e6a1a3b363d56150322c7da5bfe4c4dca8",
-  "derivedOn": "2026-09-23",
+  "derivedOn": "2026-10-02",
   "sources": [
     "apps/mobile/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
   ],
-  "note": "Frames in five sections plus the read-only terminal (04, 04e to 04g), pairing success (09b), notifications not yet (09c), images per model (13b, 14b) and the lock-screen study (20a to 20c). Frame names, section eyebrows, step captions, the A/B comparisons and the FOR THE OWNER block are annotations; the fictional session is sample. Re-derived 2026-09-23 from the handoff vendored that day: frame 04 is now the read-only terminal (J38), the receipt names the checkpoint by id, 01 and 09b carry the gates-only-while-open line (J28), 13b and 14b lock images per model (J42), 20a to 20c replace frame 20 (J30). The design's OPEN_QUESTIONS and NEW_STRINGS live in its data and are not held here.",
+  "note": "Frames in five sections plus the read-only terminal (04, 04e to 04g), pairing success (09b), notifications not yet (09c), images per model (13b, 14b) and the lock-screen study (20a to 20c). Frame names, section eyebrows, step captions, the A/B comparisons and the FOR THE OWNER block are annotations; the fictional session is sample. Re-derived 2026-09-23 from the handoff vendored that day: frame 04 is now the read-only terminal (J38), the receipt names the checkpoint by id, 01 and 09b carry the gates-only-while-open line (J28), 13b and 14b lock images per model (J42), 20a to 20c replace frame 20 (J30). Re-read 2026-10-02 against the same digest and the code: the read-only terminal methods (terminal.list, terminal.watch, terminal.unwatch) and runtime.models with per-model image input are on the phone allow-list, so the elements that waited on them are missing rather than blocked; PLAN.md has rendered as a document since 2026-09-20; the phone has drawn the grant list before it pairs since pairing by code. The design's OPEN_QUESTIONS and NEW_STRINGS live in its data and are not held here.",
   "sample": [
     "Migrate billing webhooks",
     "pnpm -w prisma migrate deploy",
@@ -231,7 +231,7 @@
     {
       "id": "sessions.list",
       "name": "Sessions, needs-you first",
-      "where": "frame 01: NEEDS YOU first and never collapsed, then RUNNING and QUIET; header count N need you",
+      "where": "frame 01: NEEDS YOU first and never collapsed, then RUNNING and UNREACHABLE; header count N need you",
       "copy": [
         "2 need you"
       ],
@@ -284,14 +284,14 @@
       "evidence": [
         "Waiting on you</Text>",
         "Always allow this",
-        "Nothing has run yet"
+        "Nothing has run yet."
       ],
       "presence": [
         "Always allow this"
       ],
       "partial": {
         "since": "2026-09-23",
-        "reason": "the gate screen decides; its title reads Approval, not the design's Waiting on you. The earlier evidence for that line matched the protocol's follow pill text, not the phone"
+        "reason": "the gate screen decides; its title reads Approval, not the design's Waiting on you, and it does not say that nothing has run. The earlier evidence for the title matched the protocol's follow pill text, and the evidence for Nothing has run yet matched the empty-thread line in session.tsx, neither of them the gate (re-read 2026-10-02)"
       }
     },
     {
@@ -312,7 +312,8 @@
         "RECORDED AS",
         "Watch the rest of the turn",
         "Reverting happens on a desktop",
-        "was taken first, then it ran in"
+        "was taken first, then it ran in",
+        "Renaming the device later does not rewrite the record."
       ],
       "presence": [
         "Allowed once",
@@ -322,7 +323,7 @@
       ],
       "partial": {
         "since": "2026-09-23",
-        "reason": "the 2026-09-23 design names the checkpoint by id before the duration; the screen still says it finished with a checkpoint taken"
+        "reason": "the 2026-09-23 design names the checkpoint by id before the duration; the receipt shows the operation there instead. It also lacks the audit-row note, which the element's copy claimed without evidence (re-read 2026-10-02)"
       }
     },
     {
@@ -345,10 +346,9 @@
         "Follow output",
         "Only the claimant can type or resize"
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "the phone allow-list (phoneAndTabletRpcMethods) carries no terminal method, so a phone receives no terminal output to read; J38 and the design's open questions on buffer size and redaction point need a protocol decision first"
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "not built on the phone. The protocol no longer blocks it: terminal.list, terminal.watch and terminal.unwatch are on phoneAndTabletRpcMethods since 9266302f, the watch result carries a buffer redacted before it is kept with its start time and the claimant's device label, and apps/daemon/src/terminal-watch.test.ts serves it to a phone. The phone calls none of them"
       },
       "states": [
         "live",
@@ -370,7 +370,7 @@
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "Read the output opens the read-only terminal, which a phone cannot receive (see watching.screen)"
+        "reason": "the phone can now read a terminal (see watching.screen), but an approval request carries no reference to the failed command or terminal it follows, so the gate has nothing to name or link to (re-read 2026-10-02)"
       }
     },
     {
@@ -384,10 +384,9 @@
       "evidence": [
         "Open beside the thread"
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "same as watching.screen: no terminal method on the phone and tablet allow-list"
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "not built on the tablet; the read-only terminal methods it needs are on the phone and tablet allow-list (see watching.screen)"
       }
     },
     {
@@ -404,9 +403,12 @@
       "evidence": [
         "THIS PHONE WILL BE ABLE TO"
       ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "the phone draws no grant list before it pairs; the shared list is phoneAndTabletPromise in packages/protocol, whose unbuilt line still reads with Everything else here works (design open question 6)"
+      "presence": [
+        "{phoneAndTabletPromise.map((line) => ("
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the phone draws the shared list before it pairs (pair-scan.tsx, read from phoneAndTabletPromise), under A paired phone can rather than the design's eyebrow and without the per-line dots. The unbuilt line's wording was ruled the short form on 2026-09-23 (9266302f), which answers design open question 6; the 2026-09-23 missing entry predated that"
       }
     },
     {
@@ -425,8 +427,19 @@
         "Nothing to approve",
         "Refused by policy",
         "THE RULE IT BROKE",
+        "WHAT YOU CAN DO",
+        "There is no approve button here, because no decision of yours can permit it."
+      ],
+      "presence": [
+        "Nothing to approve",
+        "Refused by policy",
+        "THE RULE IT BROKE",
         "WHAT YOU CAN DO"
-      ]
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the refusal card says The daemon refused before the command ran. No approval can override it., not the design's line, which the element's copy claimed without evidence"
+      }
     },
     {
       "id": "launch.screen",
@@ -491,7 +504,7 @@
       "evidence": [
         "Point at the pairing code",
         "Or type the code",
-        "Paste"
+        "title=\"Paste\""
       ]
     },
     {
@@ -623,10 +636,9 @@
         "attach.image.model_no_input",
         "as its harness reports"
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "image input is one machine-wide flag (sessionImageAttachments on system.hello); nothing reports it per model, and no attach.image.model_no_input refusal exists"
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "not built on the phone. The protocol no longer blocks it: providerModelSchema carries imageInput per model since d5bdbe60, runtime.models is on the phone allow-list, the daemon refuses with image-input-unsupported, and modelImageInputRefusalCode is the client constant frame 13b draws. The phone reads the refusal (attachments.ts) but never asks runtime.models, so it cannot lock a source or name the model before send"
       }
     },
     {
@@ -653,12 +665,9 @@
         "Acceptance"
       ],
       "evidence": [
-        "PLAN.md"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "no screen renders PLAN.md as a document; AgentMarkdown renders agent replies and the plan sheet renders step rows"
-      }
+        "artifact.type === \"plan\" ? (",
+        "<PlanMarkdown source="
+      ]
     },
     {
       "id": "artifact.render",
@@ -714,7 +723,7 @@
       ],
       "evidence": [
         "expo-notifications",
-        "Open"
+        "A gate is waiting"
       ],
       "blocked": {
         "since": "2026-09-23",
@@ -800,6 +809,11 @@
       "id": "sessions.list",
       "since": "2026-09-18",
       "note": "NEEDS YOU never collapses: behaviour, not copy"
+    },
+    {
+      "id": "sessions.list",
+      "since": "2026-10-02",
+      "note": "the design's third group is UNREACHABLE, sessions on a machine that does not answer; the phone draws QUIET for idle sessions instead, because it holds one daemon's snapshot and has no sessions from a machine that is not answering. Arrangement, not copy: single-word labels are outside the script reading"
     }
   ],
   "scriptBacklog": {
