@@ -22,13 +22,13 @@ function tty() {
 describe("readSecretLine", () => {
   it("never echoes the secret, including on a redraw after backspace", async () => {
     const { input, output, written } = tty()
-    const pending = readSecretLine(input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream)
+    const pending = readSecretLine("Paste the pairing code: ", input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream)
     input.write(secret.slice(0, 20))
     input.write(backspace)
     input.write(secret.slice(19))
     input.write("\n")
     expect(await pending).toBe(secret)
-    expect(written()).toBe("Paste the client credential: \n")
+    expect(written()).toBe("Paste the pairing code: \n")
   })
 
   it("reads a pipe as is", async () => {
@@ -37,9 +37,9 @@ describe("readSecretLine", () => {
     const output = new PassThrough()
     let written = ""
     output.on("data", (chunk: Buffer) => { written += chunk.toString() })
-    const pending = readSecretLine(input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream)
-    input.end(`Client credential: ${secret}\n`)
-    expect(await pending).toBe(`Client credential: ${secret}\n`)
+    const pending = readSecretLine("Paste the pairing code: ", input as unknown as NodeJS.ReadStream, output as unknown as NodeJS.WriteStream)
+    input.end(`Pairing code: ${secret}\n`)
+    expect(await pending).toBe(`Pairing code: ${secret}\n`)
     expect(written).toBe("")
   })
 })

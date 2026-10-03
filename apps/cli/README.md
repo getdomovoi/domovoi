@@ -11,20 +11,24 @@ for which commands live where.
 ## Commands
 
 ```text
-domovoi pair   [--daemon <ws-url>] [--credential-file <path>]   reads the credential from stdin
+domovoi pair   [--daemon <ws-url>] [--credential-file <path>] [--label <device label>]   reads the pairing code from stdin
 domovoi status [--daemon <ws-url>] [--credential-file <path>]
 domovoi doctor [--daemon <ws-url>] [--credential-file <path>]
 domovoi logs   [--limit <n>] [--action <name>] [--outcome <o>] [--session <id>] [--before <id>]
 domovoi skill install <path> [--scope user|project] [--yes]
 ```
 
-- `pair` stores a client credential for one daemon. It reads the credential from stdin, so it
-  does not land in shell history or the process table, and it accepts either the credential alone
-  or a line of the form `Client credential: <credential>`. It does not accept a pairing code.
-  Known gap: no `domovoid` command prints a client credential today. `domovoid pair --client cli
-  --label <device label>` requires `--label` and prints a one-time pairing code, which
-  `domovoi pair` refuses. Until the CLI can redeem a code, a client credential comes from a
-  `device.pair` request made with the daemon's own credential.
+- `pair` redeems a pairing code and stores the client credential the daemon mints for one
+  daemon. On the machine that runs the daemon, `domovoid pair --client cli --label <device label>`
+  prints a one-time code, the same way it does for a phone: a symbol to scan and, under "Cannot
+  scan it?", a `domovoi-pair:1:` line that carries the daemon's address. Paste that line, or the
+  bare code, into `domovoi pair`. It reads stdin, so the code does not land in shell history or
+  the process table. The code is spent with `device.redeemCode` on a socket that holds no
+  credential yet, the minted credential is proven with an authenticated hello, and only then is
+  it kept. A code issued for another kind of client is refused and nothing is stored. `--label`
+  names this device in the daemon's Devices list and defaults to the hostname. The pasted line's
+  address is used unless `--daemon` is given. The daemon admits three redemptions per source per
+  minute, successful ones included, and each code works once.
 - `status` reports the paired daemon's state.
 - `doctor` checks the daemon, the stored credential and the protocol version, then reports, for
   each fleet machine, the route this daemon would choose and why the others lost. It exits 1 on

@@ -1,19 +1,19 @@
 #!/usr/bin/env node
-import { homedir } from "node:os"
+import { homedir, hostname } from "node:os"
 
 import { CredentialStoreError, nativeKeyring, openCredentialStore } from "./credentials.js"
 import { protocolVersion } from "@getdomovoi/protocol"
 
 import { diagnose, renderDoctor } from "./doctor.js"
 import { readLogs, renderLogs } from "./logs.js"
-import { pairWithDaemon, PairingError, readCredential } from "./pair.js"
+import { pairWithDaemon, PairingError, readPairingCode, redeemPairingCode } from "./pair.js"
 import { readPlainLine, readSecretLine } from "./secret-input.js"
 import { installSkill, previewSkill, renderPreview, SkillInstallError } from "./skill-install.js"
 import { connectToDaemon, DaemonUnreachableError, defaultEndpoint } from "./rpc.js"
 import { collectStatus, renderStatus } from "./status.js"
 
 const usage = `Usage:
-  domovoi pair   [--daemon <ws-url>] [--credential-file <path>]   reads the credential from stdin
+  domovoi pair   [--daemon <ws-url>] [--credential-file <path>] [--label <device label>]   reads the pairing code from stdin
   domovoi status [--daemon <ws-url>] [--credential-file <path>]
   domovoi doctor [--daemon <ws-url>] [--credential-file <path>]
   domovoi logs   [--limit <n>] [--action <name>] [--outcome <o>] [--session <id>] [--before <id>]
@@ -26,18 +26,21 @@ a paged query, so there is no --follow; page with --before.
 skill install: previews (files, digests, signature, trust, target), then installs the previewed
 digest into the chosen scope; enabling is a separate decision on the daemon.
 
-Pairing: on the machine that runs the daemon, run 'domovoid pair --client cli'. It prints one
-client credential. Paste that line (or the credential alone) into 'domovoi pair'. The
-credential is read from stdin so it never lands in shell history or the process table.
+Pairing: on the machine that runs the daemon, run 'domovoid pair --client cli --label <device
+label>'. It prints a one-time pairing code. Paste the line under "Cannot scan it?" (or the code
+alone) into 'domovoi pair'. The code is read from stdin so it never lands in shell history or
+the process table. It works once and expires, like a phone's. --label names this device in the
+daemon's Devices list; the default is this machine's hostname. The pasted line carries the
+daemon's address; --daemon overrides it.
 Credentials live in the OS keychain. Where there is none (a headless host, WSL, a container),
 pass --credential-file to keep them in a file you own; the CLI never writes one on its own.
 Default daemon: ${defaultEndpoint}
 `
 
-type Options = { positional: string[]; daemon: string; credentialFile?: string; limit: number; action?: string; outcome?: string; session?: string; before?: string; scope: "user" | "project"; yes: boolean }
+type Options = { positional: string[]; daemon: string; daemonGiven: boolean; credentialFile?: string; label?: string; limit: number; action?: string; outcome?: string; session?: string; before?: string; scope: "user" | "project"; yes: boolean }
 
 function parse(argv: string[]): Options {
-  const options: Options = { positional: [], daemon: defaultEndpoint, limit: 50, scope: "user", yes: false }
+  const options: Options = { positional: [], daemon: defaultEndpoint, daemonGiven: false, limit: 50, scope: "user", yes: false }
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!
     const value = () => {
@@ -46,8 +49,13 @@ function parse(argv: string[]): Options {
       index += 1
       return next
     }
-    if (argument === "--daemon") options.daemon = value()
+    if (argument === "--daemon") { options.daemon = value(); options.daemonGiven = true }
     else if (argument === "--credential-file") options.credentialFile = value()
+    else if (argument === "--label") {
+      const label = value().trim()
+      if (label.length === 0) throw new UsageError("--label needs a name the daemon can show")
+      options.label = label
+    }
     else if (argument === "--limit") {
       const limit = Number(value())
       if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new UsageError("--limit takes a whole number from 1 to 500")
@@ -80,7 +88,7 @@ async function main(argv: string[]): Promise<number> {
   const exactly = (count: number, shape: string) => {
     if (options.positional.length !== count) throw new UsageError(`${shape} takes no further arguments; got ${options.positional.slice(count).map((word) => JSON.stringify(word)).join(" ")}`)
   }
-  if (command === "pair" && options.positional.length > 1) throw new UsageError("pair takes the credential on stdin, not as an argument")
+  if (command === "pair" && options.positional.length > 1) throw new UsageError("pair takes the pairing code on stdin, not as an argument")
   if (command === "pair" || command === "status" || command === "doctor" || command === "logs") exactly(1, `domovoi ${command}`)
   if (command === "skill" && options.positional[1] === "install") exactly(3, "domovoi skill install <path>")
 
@@ -91,12 +99,20 @@ async function main(argv: string[]): Promise<number> {
 
   if (command === "pair") {
     const credentials = await store()
-    const credential = readCredential(await readSecretLine())
-    const paired = await pairWithDaemon({
-      endpoint: options.daemon, credential, store: credentials,
-      connect: (authToken) => connectToDaemon({ endpoint: options.daemon, authToken }),
+    const entered = readPairingCode(await readSecretLine("Paste the pairing code: "))
+    // The payload names the address the daemon issued the code for, the same
+    // way a scanned code tells a phone where to dial. An explicit --daemon
+    // wins, for a route the daemon cannot know about, such as a forwarded port.
+    const endpoint = options.daemonGiven ? options.daemon : entered.url ?? options.daemon
+    const redeemed = await redeemPairingCode({
+      endpoint, code: entered.code, label: options.label ?? hostname(),
+      open: (endpoint) => connectToDaemon({ endpoint, hello: false }),
     })
-    process.stdout.write(`Paired with ${paired.machineId} as device ${paired.deviceId}. Credential stored in the ${credentials.where}.\n`)
+    const paired = await pairWithDaemon({
+      endpoint, credential: redeemed.token, label: redeemed.device.label, store: credentials,
+      connect: (authToken) => connectToDaemon({ endpoint, authToken }),
+    })
+    process.stdout.write(`Paired with ${paired.machineId} as ${redeemed.device.label} (cli), device ${paired.deviceId}. Credential stored in the ${credentials.where}.\n`)
     process.stdout.write({
       enrolled: "Relay identity pinned; a rotated key is accepted only when signed by this daemon's identity key.\n",
       recovered: "Relay identity recovered from a signed successor and pinned again.\n",
@@ -106,30 +122,26 @@ async function main(argv: string[]): Promise<number> {
     return 0
   }
 
-  if (command === "status") {
+  const paired = async () => {
     const credentials = await store()
-    const paired = await credentials.load(options.daemon)
-    if (!paired) {
-      process.stderr.write(`Not paired with ${options.daemon}. Run 'domovoid pair --client cli' where the daemon runs, then paste its credential into 'domovoi pair --daemon ${options.daemon}${options.credentialFile === undefined ? "" : ` --credential-file ${options.credentialFile}`}'.\n`)
-      return 2
+    const record = await credentials.load(options.daemon)
+    if (!record) {
+      const pairCommand = `domovoi pair --daemon ${options.daemon}${options.credentialFile === undefined ? "" : ` --credential-file ${options.credentialFile}`}`
+      process.stderr.write(`Not paired with ${options.daemon}. Run 'domovoid pair --client cli --label <device label>' where the daemon runs, then paste its pairing code into '${pairCommand}'.\n`)
+      return undefined
     }
-    const connection = await connectToDaemon({ endpoint: options.daemon, authToken: paired.token })
+    return connectToDaemon({ endpoint: options.daemon, authToken: record.token })
+  }
+
+  if (command === "status") {
+    const connection = await paired()
+    if (!connection) return 2
     try {
       process.stdout.write(renderStatus(await collectStatus({ endpoint: options.daemon, call: connection.call })))
     } finally {
       connection.close()
     }
     return 0
-  }
-
-  const paired = async () => {
-    const credentials = await store()
-    const record = await credentials.load(options.daemon)
-    if (!record) {
-      process.stderr.write(`Not paired with ${options.daemon}. Run 'domovoid pair --client cli' where the daemon runs, then paste its credential into 'domovoi pair --daemon ${options.daemon}${options.credentialFile === undefined ? "" : ` --credential-file ${options.credentialFile}`}'.\n`)
-      return undefined
-    }
-    return connectToDaemon({ endpoint: options.daemon, authToken: record.token })
   }
 
   if (command === "doctor") {
