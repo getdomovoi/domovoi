@@ -12,3 +12,10 @@ daemon's `tailnet.status` says it listens, and says when that is not known. The
 pairing card's "Go to the tailnet setting" leads to it, and "Get it from
 Tailscale" turns it on. A login service installed while the switch is on keeps
 the tailnet listener.
+
+When the daemon still answers on the tailnet with the switch off because
+`DOMOVOI_TAILNET_*` was set by hand, the row says the switch cannot clear it
+instead of offering to turn it off again. When a change could not put the
+previous certificate and key back, the row says which directory holds them; a
+directory found when the app started is named with a softer line, since it may
+be from a change that did not finish.

@@ -19,3 +19,14 @@ certificate, is tried again after an hour, and is reported with the switch's
 state. A hand-set `DOMOVOI_HOST` beyond loopback keeps the saved settings out of
 the in-app daemon, which starts without the tailnet listener; the switch says
 why and does not turn on.
+
+Turning on again and renewing set the files in use aside in a private pending
+directory first. Any failure before the restart succeeds, a thrown error
+included, puts those files back, and the record when turning on, and starts the
+daemon as it was if the restart had begun; the pending directory is removed only once nothing in it is still needed.
+When the files cannot be put back, they stay in that directory and the switch's
+state says where, until someone moves them. A directory like that found when
+the app starts is reported apart, since it may be from a change that did not
+finish. When the in-app daemon's tailnet listener comes from
+`DOMOVOI_TAILNET_ADDRESS` set by hand in the app's environment, the switch's
+state says so, because turning the switch off cannot clear it.
