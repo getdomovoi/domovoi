@@ -25,7 +25,9 @@ export type TailnetReachFiles = {
   read(path: string): Promise<Buffer>
   // A new private directory inside parent, which is made private when missing.
   privateDirectory(parent: string): Promise<string>
-  move(from: string, to: string): Promise<void>
+  // renamed runs once the file is at to, before anything after the rename
+  // that can still fail (the flush), so the caller knows it moved.
+  move(from: string, to: string, renamed?: () => void): Promise<void>
   // Owner read and write only.
   restrict(path: string): Promise<void>
   // A file; one that is already gone is not an error.
@@ -252,47 +254,50 @@ export class TailnetReach {
   // Round 3 re-review (P2): pending is removed only when it holds nothing of
   // the files in use: nothing was set aside, the change committed, or undo put
   // everything back. undo runs at most once.
+  //
+  // Codex review round 1 (P2-1): a move renames and then flushes, and the
+  // flush can fail after the rename. Each move is counted from the rename on
+  // (the renamed callback), so a file moved by a move that then failed is
+  // still put back, or deleted, and pending is kept while it holds a previous
+  // file. Undo tries every previous file, not only those before a failure.
   #swap(pending: string, owned: readonly string[]) {
-    const kept: Array<[aside: string, path: string]> = []
+    // The previous files now in pending, and how many were ever set aside.
+    const aside: Array<[aside: string, path: string]> = []
+    let setAside = 0
     const placed: string[] = []
-    let stranded = false
     let committed = false
     let undone: Promise<string> | undefined
     const undo = async (): Promise<string> => {
       await this.#forget(placed)
-      try {
-        for (const [aside, path] of kept) {
-          await this.deps.files.move(aside, path)
-          if (path.endsWith(".key")) await this.deps.files.restrict(path)
-        }
-      } catch {
-        stranded = true
+      for (const entry of [...aside]) {
+        const [from, path] = entry
+        await this.deps.files.move(from, path, () => { aside.splice(aside.indexOf(entry), 1) }).catch(() => {})
+        if (!aside.includes(entry) && path.endsWith(".key")) await this.deps.files.restrict(path).catch(() => {})
+      }
+      if (aside.length) {
         this.#keptPending = pending
         return `The previous certificate and key could not be put back and are in ${this.deps.display(pending)}.`
       }
-      return kept.length ? "The previous certificate was put back." : ""
+      return setAside ? "The previous certificate was put back." : ""
     }
     return {
       commit: () => { committed = true },
       committed: () => committed,
-      removable: () => kept.length === 0 || committed || (undone !== undefined && !stranded),
+      removable: () => committed || aside.length === 0,
       place: async (newCert: string, newKey: string, certPath: string, keyPath: string): Promise<void> => {
-        for (const [path, aside] of [[certPath, `${pending}/previous.crt`], [keyPath, `${pending}/previous.key`]] as const) {
+        for (const [path, previous] of [[certPath, `${pending}/previous.crt`], [keyPath, `${pending}/previous.key`]] as const) {
           if (owned.includes(path) && await this.deps.files.exists(path)) {
-            await this.deps.files.move(path, aside)
-            kept.push([aside, path])
+            await this.deps.files.move(path, previous, () => { aside.push([previous, path]); setAside += 1 })
           }
         }
-        await this.deps.files.move(newCert, certPath)
-        placed.push(certPath)
-        await this.deps.files.move(newKey, keyPath)
-        placed.push(keyPath)
+        await this.deps.files.move(newCert, certPath, () => { placed.push(certPath) })
+        await this.deps.files.move(newKey, keyPath, () => { placed.push(keyPath) })
         await this.deps.files.restrict(keyPath)
       },
       // The sentence that says what became of the previous files.
       undo: (): Promise<string> => (undone ??= undo()),
-      kept: () => kept.length > 0,
-      stranded: () => stranded,
+      kept: () => setAside > 0,
+      stranded: () => undone !== undefined && aside.length > 0,
     }
   }
 

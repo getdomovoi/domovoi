@@ -1,8 +1,8 @@
 import { execFile } from "node:child_process"
 import { constants } from "node:fs"
-import { access, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { access, chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { delimiter, isAbsolute, join, sep } from "node:path"
+import { delimiter, dirname, isAbsolute, join, sep } from "node:path"
 
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import type { DaemonServiceTailnetChange } from "@getdomovoi/daemon"
@@ -121,7 +121,15 @@ export function createTailnetReach(input: {
         await chmod(parent, 0o700)
         return mkdtemp(join(parent, ".pending-"))
       },
-      move: (from, to) => publishFileDurably(from, to),
+      // Codex review round 1 (P2-1): the file's bytes are flushed before it
+      // is published under its new name, renamed reports the rename before
+      // the flush that can still fail, and the directory it left is flushed
+      // too, so a crash cannot bring the old name back.
+      move: async (from, to, renamed) => {
+        await flush(from)
+        await publishFileDurably(from, to, renamed)
+        if (dirname(from) !== dirname(to)) await flush(dirname(from), true)
+      },
       restrict: (path) => chmod(path, 0o600),
       remove: (path) => rm(path, { force: true }),
       removeDirectory: (path) => rm(path, { recursive: true, force: true }),
@@ -201,6 +209,18 @@ export function createTailnetReach(input: {
   // Renewal runs while the switch is on, from whenever this module loads.
   void reach.startRenewal()
   return reach
+}
+
+// A file's bytes, or a directory's entries, written to disk. Windows opens no
+// directory to flush; publishFileDurably makes the same exception.
+async function flush(path: string, directory = false): Promise<void> {
+  if (directory && process.platform === "win32") return
+  const handle = await open(path, directory ? constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) : "r+")
+  try {
+    await handle.sync()
+  } finally {
+    await handle.close()
+  }
 }
 
 // Review of 049b1383 (P3-c): a crash while a certificate was being issued

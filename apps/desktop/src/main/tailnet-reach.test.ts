@@ -40,6 +40,9 @@ function harness(options: {
   conflict?: string
   // A move that fails, as a rename can, leaving both paths as they were.
   failMove?: (from: string, to: string) => boolean
+  // A move that renames, then fails, as publishFileDurably does when the
+  // directory flush after the rename fails.
+  failAfterRename?: (from: string, to: string) => boolean
   // The restart throws instead of answering, as a service module that fails
   // to load does.
   restartThrows?: Error
@@ -98,12 +101,14 @@ function harness(options: {
         if (options.privateDirectoryThrows) throw options.privateDirectoryThrows
         return path
       },
-      move: async (from, to) => {
+      move: async (from, to, renamed) => {
         calls.push(`move ${from} ${to}`)
         if (options.failMove?.(from, to)) throw Object.assign(new Error(`EIO: rename ${from}`), { code: "EIO" })
         if (!files.has(from)) throw Object.assign(new Error(`ENOENT: rename ${from}`), { code: "ENOENT" })
         files.set(to, files.get(from)!)
         files.delete(from)
+        renamed?.()
+        if (options.failAfterRename?.(from, to)) throw Object.assign(new Error(`EIO: fsync ${to}`), { code: "EIO" })
       },
       restrict: async (path) => { calls.push(`restrict ${path}`) },
       remove: async (path) => { calls.push(`remove ${path}`); files.delete(path) },
@@ -308,6 +313,26 @@ describe("turning TailnetReach on", () => {
     expect(files.get(keyPath)).toBe("old key")
     expect(record()).toEqual(ours)
     expect(deps.restart).not.toHaveBeenCalled()
+  })
+
+  // Codex review round 1 (P2-1): a move that renamed and then failed has
+  // still moved the file. The swap counts it as moved from the rename on, so
+  // the working certificate set aside is put back, not deleted with pending.
+  it("puts back a certificate whose move aside renamed and then failed", async () => {
+    const { reach, files } = harness({
+      record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" },
+      failAfterRename: (from, to) => from === certPath && to.endsWith("/previous.crt"),
+    })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(files.get(certPath)).toBe("old certificate")
+    expect(files.get(keyPath)).toBe("old key")
+  })
+
+  it("deletes a new certificate whose move in renamed and then failed", async () => {
+    const { reach, files, record } = harness({ failAfterRename: (_from, to) => to === certPath })
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: false, reason: "failed", step: "store" })
+    expect([...files.keys()]).toEqual([])
+    expect(record()).toBeUndefined()
   })
 
   it("keeps the pending directory and says where the previous files are when putting them back fails", async () => {
