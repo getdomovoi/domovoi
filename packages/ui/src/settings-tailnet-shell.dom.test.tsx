@@ -37,8 +37,10 @@ function bridge(tailnetReach?: DesktopWindowBridge["tailnetReach"]): DesktopWind
   }
 }
 
-async function openSettings(windowBridge: DesktopWindowBridge) {
-  render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={{ title: "Running Domovoi inside this app", detail: "", owner: "app", inApp: true }} />)
+const inAppDaemon = { title: "Running Domovoi inside this app", detail: "", owner: "app", inApp: true } as const
+
+async function openSettings(windowBridge: DesktopWindowBridge, localDaemon: Parameters<typeof WorkspaceShell>[0]["localDaemon"] = inAppDaemon) {
+  render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={localDaemon} />)
   const socket = harness.socket(0)
   await act(async () => { completeHandshake(socket, workspaceSnapshot()) })
   await settle()
@@ -63,6 +65,19 @@ it("draws the switch as a row of the daemon card, with the daemon's own listener
   expect(pendingRequest(socket, "tailnet.status").params).toEqual({})
   await act(async () => { respond(socket, "tailnet.status", { state: "off" }) })
   expect(within(reach).getByText("Off. Only this computer can reach the daemon.")).toBeTruthy()
+})
+
+// Codex review round 2 (P3): an attached daemon's first listener may be
+// beyond this computer, and tailnet.status says nothing about it.
+it.each([
+  ["the installed service", { title: "Connected to the installed Domovoi service", detail: "", owner: "outside" }],
+  ["another app's daemon", { title: "Connected to the daemon another Domovoi Desktop started", detail: "", owner: "other-app" }],
+] as const)("does not say only this computer reaches %s with no tailnet listener", async (_label, localDaemon) => {
+  const { socket } = await openSettings(bridge(async () => off), localDaemon)
+  const reach = screen.getByRole("region", { name: "Reach this machine from my tailnet" })
+  await act(async () => { respond(socket, "tailnet.status", { state: "off" }) })
+  expect(within(reach).getByText("Off. Whether the daemon answers anywhere but this computer is not known from here.")).toBeTruthy()
+  expect(within(reach).queryByText("Off. Only this computer can reach the daemon.")).toBeNull()
 })
 
 it("has no switch when the desktop offers none", async () => {

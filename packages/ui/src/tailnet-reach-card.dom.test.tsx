@@ -82,6 +82,17 @@ it.each([
   expect(view.queryByText("Off. Only this computer can reach the daemon.")).toBeNull()
 })
 
+// Codex review round 2 (P3): tailnet.status speaks for the second listener
+// only. A daemon this app did not start may listen beyond this computer on its
+// first, and the app's environment says nothing about that one.
+it("does not say only this computer reaches a daemon this app did not start, with no tailnet listener", async () => {
+  await card({ status: off }, { inApp: false })
+  const view = within(region())
+  expect(view.getByText("Off")).toBeTruthy()
+  expect(view.getByText("Off. Whether the daemon answers anywhere but this computer is not known from here.")).toBeTruthy()
+  expect(view.queryByText("Off. Only this computer can reach the daemon.")).toBeNull()
+})
+
 it("lists what turning it on changes and what Domovoi never touches while off", async () => {
   await card({ status: off })
   const view = within(region())

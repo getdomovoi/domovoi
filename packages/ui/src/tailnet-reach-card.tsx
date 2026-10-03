@@ -229,8 +229,12 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
           // Codex review round 1 (P3-6): only this computer only when known: a
           // hand-set DOMOVOI_HOST beyond loopback listens beyond it, and a
           // tailnet listener tailnet.status did not answer for is not known.
+          // Round 2 (P3): tailnet.status speaks for the second listener only.
+          // The first is known to be loopback only for the daemon inside this
+          // app, whose DOMOVOI_HOST the desktop reads; an attached daemon's is
+          // not known from here.
           : report.state === "off" && report.ignored ? "Off. The daemon also listens where DOMOVOI_HOST says, beyond this computer."
-          : report.state === "off" && listener === undefined ? "Off. Whether the daemon answers anywhere but this computer is not known from here."
+          : report.state === "off" && (listener === undefined || !inApp) ? "Off. Whether the daemon answers anywhere but this computer is not known from here."
           : report.state === "off" ? "Off. Only this computer can reach the daemon."
             : notAnswering ? "On, but the daemon is not answering on the tailnet."
               : renewalFailed ? (expiry ? `Still on. The certificate did not renew and expires on ${day(expiry)}.` : "Still on. The certificate did not renew.")
