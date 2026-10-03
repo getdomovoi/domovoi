@@ -1,8 +1,10 @@
+import { execFile } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { constants } from "node:fs"
 import { access, cp, lstat, mkdir, mkdtemp, readdir, readlink, realpath } from "node:fs/promises"
-import { homedir, tmpdir } from "node:os"
+import { homedir, tmpdir, userInfo } from "node:os"
 import { posix, win32 } from "node:path"
+import { promisify } from "node:util"
 
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import { isLoginServiceRuntimeVersion } from "@getdomovoi/protocol"
@@ -119,6 +121,30 @@ export type RuntimeFileSystem = {
   readOnly(path: string): Promise<boolean>
   // Owner and mode of the entry itself, never through a link (POSIX only).
   permissions(path: string): Promise<{ uid: number; mode: number }>
+  // The access control entries of the entry itself, never through a link
+  // (macOS only). Throws when they cannot be read.
+  accessControl(path: string): Promise<AccessControlEntry[]>
+}
+
+// One entry of a macOS access control list, as `ls -le` lists it: the
+// principal ("user:dana", "group:staff", or a UUID ls could not name),
+// whether it was inherited, allow or deny, and its rights and inheritance
+// flags.
+export type AccessControlEntry = { principal: string; inherited: boolean; allow: boolean; rights: readonly string[] }
+
+// The entries in the output of macOS `ls -lde <path>`: the long listing
+// line, then one line per entry, " <n>: <principal>[ inherited] <allow|deny>
+// <right>,<right>...", numbered from 0. Any other line fails the whole
+// listing, a name that holds a newline included, so a reader never takes a
+// listing it does not understand for one with no entries.
+export function parseAccessControlListing(listing: string): AccessControlEntry[] {
+  const lines = listing.endsWith("\n") ? listing.slice(0, -1).split("\n") : listing.split("\n")
+  if (lines[0] === undefined || lines[0] === "") throw new Error("ls listed nothing, so the access control list could not be read.")
+  return lines.slice(1).map((line, index) => {
+    const found = /^ (\d+): (\S.*?)( inherited)? (allow|deny) ([a-z_]+(?:,[a-z_]+)*)$/u.exec(line)
+    if (found === null || Number(found[1]) !== index) throw new Error(`ls listed an access control entry that could not be read: ${line}`)
+    return { principal: found[2]!, inherited: found[3] !== undefined, allow: found[4] === "allow", rights: found[5]!.split(",") }
+  })
 }
 
 // A read-only mount, by what access(2) answers when asked for write access
@@ -138,6 +164,8 @@ export async function readOnlyMount(path: string): Promise<boolean> {
     return (error as NodeJS.ErrnoException).code === "EROFS"
   }
 }
+
+const listAccessControl = promisify(execFile)
 
 export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}): RuntimeFileSystem {
   return {
@@ -173,6 +201,10 @@ export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}
       const found = await lstat(path)
       return { uid: found.uid, mode: found.mode }
     },
+    // Node cannot read an access control list, so the system's own ls lists
+    // it, by absolute path and with no shell. With -l, ls lists a link given
+    // on the command line as the link itself.
+    accessControl: async (path) => parseAccessControlListing((await listAccessControl("/bin/ls", ["-lde", "--", path], { encoding: "utf8" })).stdout),
     ...overrides,
   }
 }
@@ -194,7 +226,14 @@ function inside(pathApi: typeof posix, root: string, path: string): boolean {
 // root, and writable by neither group nor others, except a directory owned
 // by root with the sticky bit set, as /tmp is, where only an entry's owner
 // can rename or remove it. A group-writable directory fails even when only
-// this user is in the group: membership cannot be read here. Windows: Node
+// this user is in the group: membership cannot be read here. macOS, round 3
+// (P2-2, ruled Q415 A): an access control entry can let another account
+// change a directory whatever its owner and mode say, so each directory's
+// list is read too (`ls -le`), and one that allows any principal but this
+// user's own user entry a right that changes it fails; deny entries pass,
+// as the "group:everyone deny delete" macOS gives every home folder does.
+// Linux needs no such read: a POSIX ACL's mask, which bounds every named
+// entry, shows as the group mode bits checked here. Windows: Node
 // cannot read ACLs, so only a place inside this user's own profile
 // directory passes, one with the profile directory itself, by device and
 // inode, among its ancestors (round 3, P2-4); that holds the default TEMP
@@ -207,6 +246,18 @@ type StagingAccessOptions = {
   userDirectory?: string
   // POSIX: this user's id; process.getuid() by default.
   uid?: number
+  // macOS: this user's name, as an access control entry names it;
+  // os.userInfo() by default.
+  user?: string
+}
+
+// macOS access control rights that let a principal add, remove or rename a
+// directory's entries, or change the directory's own attributes, access
+// rules or owner (Q415 A).
+const changingRights = new Set(["write", "add_file", "add_subdirectory", "append", "delete", "delete_child", "writeattr", "writeextattr", "writesecurity", "chown"])
+
+function grantsAnotherPrincipal(entries: readonly AccessControlEntry[], user: string): boolean {
+  return entries.some((entry) => entry.allow && entry.principal !== `user:${user}` && entry.rights.some((right) => changingRights.has(right)))
 }
 
 export async function unprotectedStagingDirectory(real: string, options: StagingAccessOptions): Promise<string | undefined> {
@@ -216,9 +267,11 @@ export async function unprotectedStagingDirectory(real: string, options: Staging
 // The directory that failed and why, so a refusal can say what fixes it
 // (Q413 A): "own-writable" is this user's own directory that group or others
 // can write, which `chmod go-w` fixes; "another-account" is one this user
-// does not own, which only its owner could change; "unknown" is a place
-// outside the profile on Windows, or one that could not be read.
-export type StagingAccessFailure = { path: string; access: "own-writable" | "another-account" | "unknown" }
+// does not own, which only its owner could change; "access-control" is one
+// whose macOS access control list lets another principal change it, which
+// `chmod go-w` does not fix; "unknown" is a place outside the profile on
+// Windows, or one that could not be read.
+export type StagingAccessFailure = { path: string; access: "own-writable" | "another-account" | "access-control" | "unknown" }
 
 async function stagingAccessFailure(real: string, options: StagingAccessOptions): Promise<StagingAccessFailure | undefined> {
   const fs = options.fileSystem
@@ -240,6 +293,7 @@ async function stagingAccessFailure(real: string, options: StagingAccessOptions)
     }
     const me = options.uid ?? process.getuid?.()
     if (me === undefined) return { path: real, access: "unknown" }
+    const user = options.platform === "darwin" ? options.user ?? userInfo().username : undefined
     for (let at = real; ; at = posix.dirname(at)) {
       const { uid, mode } = await fs.permissions(at)
       // A level that is no longer a directory (a link swapped in after the
@@ -251,6 +305,8 @@ async function stagingAccessFailure(real: string, options: StagingAccessOptions)
       if ((uid !== me && uid !== 0) || (othersWrite && !rootSticky)) {
         return { path: at, access: uid === me ? "own-writable" : "another-account" }
       }
+      // A list that cannot be read throws, and fails the place below.
+      if (user !== undefined && grantsAnotherPrincipal(await fs.accessControl(at), user)) return { path: at, access: "access-control" }
       if (posix.dirname(at) === at) return undefined
     }
   } catch {
@@ -633,10 +689,19 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
     // Round 2 (P2): the private staging directory is this user's and open to
     // no one else (mkdtemp makes it 0700). Windows has no POSIX mode; there
     // the place it is in was checked to be inside this user's profile.
+    // Round 3 (P2-2, Q415 A): on macOS it has no access control entry at
+    // all, since one inherited from the place could open it whatever its
+    // mode says; a list that cannot be read fails it.
     const holderPrivate = async () => {
       if (input.platform === "win32") return true
       const { uid, mode } = await fs.permissions(holder)
-      return uid === process.getuid?.() && (mode & 0o077) === 0
+      if (uid !== process.getuid?.() || (mode & 0o077) !== 0) return false
+      if (input.platform !== "darwin") return true
+      try {
+        return (await fs.accessControl(holder)).length === 0
+      } catch {
+        return false
+      }
     }
     if (await fs.entry(holder) !== "directory" || !samePath(await fs.realpath(holder), holderReal) || !await holderPrivate()) {
       throw new Error(`${holder} changed after it was made, so the runtime was not copied there.`)

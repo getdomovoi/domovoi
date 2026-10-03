@@ -286,6 +286,24 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
     }
     const me = process.getuid?.() ?? 0
 
+    // PR #712 security review round 3 (P2-2), Q415 A: on macOS a directory
+    // whose access control list lets another principal change it is refused
+    // too, named, with no chmod: chmod go-w does not remove an entry.
+    it("refuses a state directory whose macOS access control list lets a group change it, with no chmod", async () => {
+      const state = join(home, ".local", "state", "domovoi")
+      await mkdir(state, { recursive: true })
+      const real = nodeRuntimeFileSystem()
+      const runtimeFileSystem = nodeRuntimeFileSystem({
+        identity: async (path) => path === tmpdir() ? "other-volume:1" : real.identity(path),
+        accessControl: async (path) => path === state ? [{ principal: "group:staff", inherited: false, allow: true, rights: ["add_file"] }] : [],
+      })
+      const dependencies = fromSystemPlaces({ platform: "darwin", runtimeFileSystem })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(state))
+      expect(dependencies.write).not.toHaveBeenCalled()
+      expect(await readdir(state)).toEqual([])
+    })
+
     it.each([
       ["group", 0o40775],
       ["others", 0o40777],

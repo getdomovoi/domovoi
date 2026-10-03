@@ -1,9 +1,13 @@
+import { execFile } from "node:child_process"
 import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { tmpdir, userInfo } from "node:os"
 import { basename, dirname, join, sep } from "node:path"
+import { promisify } from "node:util"
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonRuntimeLayout, nodeRuntimeFileSystem, prepareDaemonRuntime, profileRuntimeDirectory, stageDaemonRuntime, unprotectedStagingDirectory, type RuntimeFileSystem } from "./runtime-stage.js"
+import { daemonRuntimeLayout, nodeRuntimeFileSystem, parseAccessControlListing, prepareDaemonRuntime, profileRuntimeDirectory, stageDaemonRuntime, unprotectedStagingDirectory, type AccessControlEntry, type RuntimeFileSystem } from "./runtime-stage.js"
+
+const run = promisify(execFile)
 
 // Moved from the desktop (apps/desktop/src/main/daemon-service.test.ts) with
 // the copy routine itself (Q408 A), unchanged.
@@ -556,6 +560,117 @@ describe("staging the shipped runtime under the profile", () => {
           expect(made.at(-1)!.startsWith(join(state, "domovoi", "runtime-staging"))).toBe(true)
           expect(await readdir(join(elsewhere, "home"))).toEqual([])
           expect(await leftStaging(join(state, "domovoi", "runtime-staging"))).toEqual([[]])
+        })
+      })
+    })
+
+    // PR #712 security review round 3 (P2-2), ruled Q415 A: on macOS an
+    // access control entry can let another account change a directory whose
+    // owner and mode pass. So each level's list is read too, and one that
+    // allows any principal but this user to change it fails the place. Deny
+    // entries pass: macOS gives every home folder "group:everyone deny
+    // delete". The private staging directory must have no entry at all.
+    describe("macOS access control entries", () => {
+      const allow = (principal: string, rights: string[], inherited = false): AccessControlEntry => ({ principal, inherited, allow: true, rights })
+      const deny = (principal: string, rights: string[]): AccessControlEntry => ({ principal, inherited: false, allow: false, rights })
+      // Entries as `ls -le` would list them for the paths named, none
+      // elsewhere; holder is what the private staging directory has.
+      const listed = (answers: Record<string, AccessControlEntry[] | Error>, holder: AccessControlEntry[] = []) => nodeRuntimeFileSystem({
+        accessControl: async (path) => {
+          const found = basename(path).startsWith(".domovoi-runtime-") ? holder : answers[path] ?? []
+          if (found instanceof Error) throw found
+          return found
+        },
+      })
+      const prepareOnMac = (resources: string, home: string, stagingParent: string, fileSystem: RuntimeFileSystem) =>
+        prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform: "darwin", stagingParent, fileSystem })
+
+      it.each([
+        ["lets a group add files", [allow("group:staff", ["add_file"])]],
+        ["lets everyone remove entries", [deny("group:everyone", ["delete"]), allow("group:everyone", ["list", "delete_child"])]],
+        ["lets another user change its access rules", [allow("user:someone", ["writesecurity"])]],
+        ["inherits a grant that lets a group make directories", [allow("group:staff", ["add_subdirectory", "file_inherit", "directory_inherit"], true)]],
+      ])("refuses a staging directory whose list %s, naming it without a chmod reason and writing nothing", async (_label, list) => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          await expect(prepareOnMac(resources, home, staging, listed({ [staging]: list })))
+            .rejects.toMatchObject({ name: "DaemonRuntimeStagingRefusedError", failed: staging, access: { path: staging, access: "access-control" } })
+          expect(await readdir(staging)).toEqual([])
+          expect(await entries(home)).toEqual([])
+        })
+      })
+
+      it("refuses a staging directory under one whose list lets another principal change it, naming that one", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          await expect(prepareOnMac(resources, home, staging, listed({ [root]: [allow("group:everyone", ["delete_child"])] })))
+            .rejects.toMatchObject({ name: "DaemonRuntimeStagingRefusedError", failed: root, access: { path: root, access: "access-control" } })
+          expect(await readdir(staging)).toEqual([])
+        })
+      })
+
+      it("refuses a staging directory whose list cannot be read", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          await expect(prepareOnMac(resources, home, staging, listed({ [root]: new Error("ls failed") })))
+            .rejects.toMatchObject({ name: "DaemonRuntimeStagingRefusedError", failed: staging, access: { path: staging, access: "unknown" } })
+          expect(await readdir(staging)).toEqual([])
+        })
+      })
+
+      it("accepts deny entries, grants that change nothing, and grants to this user", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          const fileSystem = listed({
+            [staging]: [deny("group:everyone", ["delete"]), allow("group:everyone", ["list", "search", "readattr", "readsecurity"]), allow(`user:${userInfo().username}`, ["add_file", "delete_child", "writesecurity"])],
+            [root]: [deny("group:everyone", ["delete"])],
+          })
+          const prepared = await prepareOnMac(resources, home, staging, fileSystem)
+          await prepared.publish()
+          expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
+        })
+      })
+
+      it("refuses before copying when the private staging directory has any entry, even one that changes nothing", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          const copy = vi.fn(async () => {})
+          const fileSystem = { ...listed({}, [allow("group:staff", ["list"], true)]), copy }
+          const prepared = await prepareOnMac(resources, home, staging, fileSystem)
+          await expect(prepared.publish()).rejects.toThrow(/changed after it was made, so the runtime was not copied there\.$/u)
+          expect(copy).not.toHaveBeenCalled()
+        })
+      })
+
+      it("reads the entries `ls -le` lists, and refuses a listing it cannot read", () => {
+        expect(parseAccessControlListing("drwxr-xr-x@ 83 dana  staff  2656 Oct  3 02:26 /Users/dana\n 0: group:everyone deny delete\n")).toEqual([deny("group:everyone", ["delete"])])
+        expect(parseAccessControlListing("drwx------  2 dana  staff  64 Oct  3 02:27 /tmp/x\n")).toEqual([])
+        expect(parseAccessControlListing([
+          "drwxr-xr-x@ 2 dana  staff  64 Oct  3 02:27 /tmp/x",
+          " 0: group:everyone deny delete",
+          " 1: group:staff inherited allow add_file,delete_child,file_inherit,directory_inherit",
+          "",
+        ].join("\n"))).toEqual([deny("group:everyone", ["delete"]), allow("group:staff", ["add_file", "delete_child", "file_inherit", "directory_inherit"], true)])
+        for (const listing of ["", "drwx------ 2 dana staff 64 Oct 3 02:27 /tmp/x\n 0: group:staff maybe add_file\n", "drwx------ 2 dana staff 64 Oct 3 02:27 /tmp/x\n 1: group:staff allow add_file\n", "drwx------ 2 dana staff 64 Oct 3 02:27 /tmp/x\nwith a newline in its name\n"]) {
+          expect(() => parseAccessControlListing(listing), listing).toThrow()
+        }
+      })
+
+      // The real list, on a Mac: chmod +a adds an entry to a scratch
+      // directory, and chmod -N clears it again before the scratch is removed.
+      it.runIf(process.platform === "darwin")("accepts a real directory with no entries or a deny entry, and refuses one that lets a group add files", async () => {
+        await withScratch(async ({ root }) => {
+          const staging = join(root, "staging")
+          const check = () => unprotectedStagingDirectory(staging, { platform: "darwin", fileSystem: nodeRuntimeFileSystem() })
+          try {
+            expect(await check()).toBeUndefined()
+            await run("/bin/chmod", ["+a", "group:everyone deny delete", staging])
+            expect(await check()).toBeUndefined()
+            await run("/bin/chmod", ["+a", "group:staff allow add_file", staging])
+            expect(await check()).toBe(staging)
+          } finally {
+            await run("/bin/chmod", ["-N", staging])
+          }
         })
       })
     })
