@@ -92,11 +92,12 @@
       ],
       "evidence": [
         "Worktree ready",
-        "Nothing has run yet"
+        "Nothing has run yet",
+        "OR START FROM SOMETHING IT ALREADY KNOWS"
       ],
       "partial": {
         "since": "2026-09-22",
-        "reason": "The phone draws Nothing has run yet on an empty session. Desktop and web draw no session start state, and no client draws the Worktree ready header."
+        "reason": "The phone draws Nothing has run yet on an empty session. Since 2026-10-02 desktop and web draw the Worktree ready header, the title, body, What it will do first and the placeholder (ruling Q368 A: rows from the session's mode and checkpoint policy). Still open: the starters, deferred by Q368 until a suggestion source exists; the header's off <branch>, since a session does not carry the branch its worktree was cut from; and the tablet, which draws no start state."
       },
       "presence": [
         "Nothing has run yet"
