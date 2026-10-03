@@ -141,6 +141,19 @@ describe("a message with no review", () => {
   })
 })
 
+describe("a message with an empty review", () => {
+  it("sends no comment while open ones exist, so a client can opt out of the legacy default", async () => {
+    const { provider, send, lastUserItem } = await start()
+    expect((await send("Carry on", { review: { annotationIds: [] } })).error).toBeUndefined()
+    const prompt = provider.startTurn.mock.calls[0]![0].prompt
+    expect(reviewContext(prompt)).toBeUndefined()
+    expect(prompt).not.toContain("maybe make the")
+    expect(((await lastUserItem()) as { providerPromptDelivery?: { annotations: unknown } }).providerPromptDelivery?.annotations).toEqual({
+      availableCount: 0, deliveredIds: [], omitted: { budget: 0, limit: 0 },
+    })
+  })
+})
+
 describe("a message that sends comments", () => {
   it("delivers only the comments it names, newest first, and records them", async () => {
     const { provider, send, lastUserItem } = await start()

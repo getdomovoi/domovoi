@@ -76,16 +76,15 @@ const reviewBuildBasisSchema = z.object({
 // build basis. Only these reach the agent. Until every client sends a review
 // (ruling Q402), a message without one still attaches every open comment of
 // its session and no build basis; that default goes before 0.8.0 ships.
+// `{ annotationIds: [] }` is the explicit send of nothing: no comment and no
+// build basis, whatever comments are open.
 export const sessionSendReviewSchema = z.object({
   annotationIds: z.array(reviewIdSchema).max(maximumReviewAnnotations).refine(
     (ids) => new Set(ids).size === ids.length,
     "Each comment is sent once",
   ),
   buildBasis: reviewBuildBasisSchema.optional(),
-}).strict().refine(
-  (review) => review.annotationIds.length > 0 || review.buildBasis !== undefined,
-  "A review sends at least one comment or a build basis",
-)
+}).strict()
 
 export const providerPromptAnnotationDeliverySchema = z.object({
   availableCount: nonnegativeCountSchema,

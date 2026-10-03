@@ -68,12 +68,27 @@ describe("a queued send's review", () => {
     } finally { await reader.close() }
   })
 
+  // An empty review is the explicit send of nothing; losing it on reload would
+  // turn the queued message into a legacy send of every open comment.
+  it("keeps an empty review as an empty review across a restart", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-queued-empty-review-"))
+    scratchDirectories.push(scratch)
+    const path = join(scratch, "state.sqlite")
+    const writer = new SqliteWorkspaceStore(path, demoWorkspace)
+    writer.replaceQueuedSessionSend({ ...queued("session-billing", "queue-none"), review: { annotationIds: [] } })
+    await writer.close()
+    const reader = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      expect(reader.loadQueuedSessionSends().find((send) => send.id === "queue-none")?.review).toEqual({ annotationIds: [] })
+    } finally { await reader.close() }
+  })
+
   it("refuses to store a review the wire would refuse", async () => {
     const store = new SqliteWorkspaceStore(":memory:", demoWorkspace)
     try {
       expect(() => store.replaceQueuedSessionSend({
-        ...queued("session-billing", "queue-empty-review"),
-        review: { annotationIds: [] },
+        ...queued("session-billing", "queue-repeated-review"),
+        review: { annotationIds: ["annotation-replay-copy", "annotation-replay-copy"] },
       })).toThrow()
     } finally { await store.close() }
   })

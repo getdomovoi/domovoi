@@ -29,8 +29,15 @@ describe("the review a person sends with a message", () => {
     expect(sessionSendParamsSchema.parse(send)).not.toHaveProperty("review")
   })
 
-  it("refuses a review that sends nothing, repeats a comment, or names too many", () => {
-    expect(sessionSendReviewSchema.safeParse({ annotationIds: [] }).success).toBe(false)
+  // An empty review is the explicit "send no comments": without it a client
+  // could only omit review and fall into the Q402 legacy default.
+  it("accepts an empty review as an explicit send of nothing", () => {
+    expect(sessionSendReviewSchema.parse({ annotationIds: [] })).toEqual({ annotationIds: [] })
+    expect(sessionSendParamsSchema.parse({ ...send, review: { annotationIds: [] } }).review).toEqual({ annotationIds: [] })
+    expect(sessionSendReviewSchema.safeParse({}).success).toBe(false)
+  })
+
+  it("refuses a review that repeats a comment or names too many", () => {
     expect(sessionSendReviewSchema.safeParse({ annotationIds: ["annotation-1", "annotation-1"] }).success).toBe(false)
     const ids = Array.from({ length: maximumReviewAnnotations }, (_, index) => `annotation-${index}`)
     expect(sessionSendReviewSchema.parse({ annotationIds: ids }).annotationIds).toHaveLength(maximumReviewAnnotations)

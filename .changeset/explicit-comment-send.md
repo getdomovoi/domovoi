@@ -6,7 +6,8 @@
 Preview comments can now be sent explicitly. `session.send` takes an optional `review`: the ids
 of the open comments this message sends (at most 20) and, as `buildBasis`, the preview the person
 chose for the agent to build on. A message that carries a review delivers only the comments it
-names, so a half-written comment does not steer that turn. The review is checked when the message
+names, so a half-written comment does not steer that turn. `review: { annotationIds: [] }` is
+the explicit send of nothing: no comment and no build basis. The review is checked when the message
 is sent, when it is queued and when a queued message is released: a comment that is not open on
 the session, or a build basis that is not one of its previews, refuses the whole message rather
 than sending less than the person chose. Only the named comments' crops are read. The build basis
