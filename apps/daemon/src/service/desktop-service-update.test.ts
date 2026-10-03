@@ -404,6 +404,56 @@ describe("updateDaemonService with launchd", () => {
   })
 })
 
+// TailnetReach (Q404 A): the switch saves the tailnet listener in service.json
+// through the update, so the service restarts on it with the update's own
+// readiness check and puts the previous service back on a failure.
+describe("updateDaemonService with a tailnet change", () => {
+  const set = { set: {
+    address: "100.101.102.103", name: "studio.tail4c2e.ts.net",
+    certPath: "/Users/dl/.domovoi/tls/studio.tail4c2e.ts.net.crt",
+    keyPath: "/Users/dl/.domovoi/tls/studio.tail4c2e.ts.net.key",
+  } } as const
+  const written = (effects: Fake) => parseServiceConfiguration(effects.files.get("/Users/dl/.domovoi/service.json")!)
+
+  it("saves the tailnet listener and keeps every other setting", async () => {
+    const effects = fake("darwin", "/Users/dl")
+    await updateDaemonService({ runtime, tailnet: set }, effects)
+    const { serviceRuntime: _new, ...settings } = written(effects)
+    const { serviceRuntime: _old, ...before } = saved("darwin", "/Users/dl")
+    expect(settings).toEqual({
+      ...before, allowRemoteTransport: true, tailnetHost: "studio.tail4c2e.ts.net",
+      tailnetListener: { address: "100.101.102.103", tls: { certPath: set.set.certPath, keyPath: set.set.keyPath } },
+    })
+  })
+
+  it("clears the tailnet listener and the opt-in it needed", async () => {
+    const before = { ...saved("darwin", "/Users/dl"), allowRemoteTransport: true, tailnetHost: "studio.tail4c2e.ts.net",
+      tailnetListener: { address: "100.101.102.103", tls: { certPath: set.set.certPath, keyPath: set.set.keyPath } } }
+    const effects = fake("darwin", "/Users/dl", {}, before)
+    await updateDaemonService({ runtime, tailnet: { clear: true } }, effects)
+    const { serviceRuntime: _new, ...settings } = written(effects)
+    const { serviceRuntime: _old, ...plain } = saved("darwin", "/Users/dl")
+    expect(settings).toEqual(plain)
+  })
+
+  it("changes nothing when the saved service listens beyond loopback already", async () => {
+    const wide = { ...saved("darwin", "/Users/dl"), host: "0.0.0.0", allowRemoteTransport: true, tls: { certPath: "/cert.pem", keyPath: "/key.pem" } }
+    const effects = fake("darwin", "/Users/dl", {}, wide)
+    await expect(updateDaemonService({ runtime, tailnet: set }, effects)).rejects.toThrow(nothingChanged)
+    expect(effects.write).not.toHaveBeenCalled()
+  })
+
+  it("changes nothing for a WSL guest service, which Tailscale on Windows does not reach", async () => {
+    const guest = { ...saved("linux", "/home/dl"), wsl: {
+      distribution: "Ubuntu", linuxUser: "dl", powershell: "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe",
+      wsl: "C:\\Windows\\System32\\wsl.exe", executable: oldRuntime.nodePath, args: [oldRuntime.daemonEntryPath],
+    } }
+    const effects = fake("linux", "/home/dl", {}, guest)
+    await expect(updateDaemonService({ runtime, tailnet: set }, effects)).rejects.toThrow(nothingChanged)
+    expect(effects.write).not.toHaveBeenCalled()
+  })
+})
+
 describe("updateDaemonService with systemd", () => {
   it("writes the new unit, reloads and restarts, without claiming the profile the running daemon holds", async () => {
     const effects = fake("linux", "/home/dl")

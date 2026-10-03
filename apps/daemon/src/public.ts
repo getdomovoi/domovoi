@@ -46,6 +46,7 @@ export {
   type DaemonServiceStatus,
   type DaemonServiceUpdateOptions,
   type DaemonServiceUpdateOutcome,
+  type DaemonServiceTailnetChange,
   type RuntimeFileState,
   WindowsTaskArgumentVariableError,
   WindowsTaskNotDomovoiError,

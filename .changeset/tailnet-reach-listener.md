@@ -16,3 +16,8 @@ answers `tailnet.status` with the reason. An address that is not on the machine
 yet, as when Tailscale is not up at login, is tried again every 30 seconds.
 While the listener answers, a pairing code names the host on its certificate,
 and the fleet advertises a tailnet route under `DOMOVOI_TAILNET_HOST`.
+
+`updateDaemonService` takes a `tailnet` change that sets or clears the listener
+in the saved service configuration, written and restarted by the update. It
+changes nothing for a service that already listens beyond loopback or runs in a
+WSL guest.
