@@ -401,8 +401,13 @@ export async function writeDaemonRuntimeManifest({ daemonRoot, manifestPath }) {
 }
 
 // Review P3-5: the CLI is proved the way its own usage says it runs: --help
-// prints the usage to stderr and exits 0. The program's digest is checked
-// first, as for the daemon, so nothing but the pinned build runs it.
+// prints the usage to stderr (apps/cli/src/index.ts) and exits 0, both
+// required. The program's digest is checked first, as for the daemon, so
+// nothing but the pinned build runs it.
+//
+// Review of #712 (P2): usage text is proof only from a run that exits 0. A
+// nonzero exit, a signal or the timeout is passed on as the cause, with what
+// it printed, and never read as success.
 export async function proveCliRuns({ nodeExecutable, nodeSha256, cliEntry, run = execute }) {
   const digest = await sha256Of(nodeExecutable)
   if (digest !== nodeSha256) throw new Error(`${nodeExecutable} has sha256 ${digest}; the program unpacked from the verified archive has sha256 ${nodeSha256}. Nothing was run.`)
@@ -411,7 +416,8 @@ export async function proveCliRuns({ nodeExecutable, nodeSha256, cliEntry, run =
     const { stderr } = await run(nodeExecutable, [cliEntry, "--help"], { timeout: 30_000 })
     printed = String(stderr)
   } catch (error) {
-    printed = String(error?.stderr ?? "")
+    const how = error?.killed || error?.signal ? `was stopped by ${error.signal ?? "its timeout"}` : `exited with ${error?.code ?? "an error"}`
+    throw new Error(`${cliEntry} did not run under ${nodeExecutable}: it ${how} after printing ${JSON.stringify(String(error?.stderr ?? "").trim().slice(0, 200))}`, { cause: error })
   }
   if (!printed.startsWith("Usage:")) throw new Error(`${cliEntry} did not print its usage under ${nodeExecutable}: ${JSON.stringify(printed.trim().slice(0, 200))}`)
 }

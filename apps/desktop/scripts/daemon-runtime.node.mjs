@@ -680,6 +680,31 @@ test("proves the CLI loads under the pinned program by its usage text, and refus
   }
 })
 
+// Review of #712 (P2): usage text is proof only from a run that exits 0. A
+// CLI that prints its usage and then fails, or is killed at the timeout, has
+// not run, and the failure is passed on with what it printed.
+test("refuses usage text from a CLI run that exits nonzero or times out", async () => {
+  const root = await fixture("domovoi-runtime-cli-fail-", { "failing.mjs": 'process.stderr.write("Usage:\\n  domovoi pair\\n"); process.exit(2)\n' })
+  try {
+    const program = { nodeExecutable: process.execPath, nodeSha256: await sha256Of(process.execPath) }
+    await assert.rejects(proveCliRuns({ ...program, cliEntry: join(root, "failing.mjs") }), (error) => {
+      assert.match(error.message, /did not run under/)
+      assert.match(error.message, /Usage:/)
+      assert.equal(error.cause?.code, 2)
+      return true
+    })
+    // What execFile rejects with when the timeout kills the child.
+    const timedOut = Object.assign(new Error("Command failed: node cli.mjs --help"), { killed: true, signal: "SIGTERM", code: null, stdout: "", stderr: "Usage:\n  domovoi pair\n" })
+    await assert.rejects(proveCliRuns({ ...program, cliEntry: join(root, "cli.mjs"), run: async () => { throw timedOut } }), (error) => {
+      assert.match(error.message, /did not run under/)
+      assert.equal(error.cause, timedOut)
+      return true
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("ships no launcher on Windows, where nothing is linked", async () => {
   const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-launcher-win-"))
   try {
