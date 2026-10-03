@@ -105,6 +105,7 @@ export function MachineSwitcher({
   admittedMachines = new Set<string>(),
   transferEntries,
   openRequest,
+  triggerHidden = false,
 }: {
   entries: FleetEntry[]
   currentMachineId: string
@@ -117,6 +118,10 @@ export function MachineSwitcher({
   // A counter another surface bumps to open this menu, the way the sessions
   // drawer's "Move to another machine" lands the person on the target list.
   openRequest?: number | undefined
+  // Set where nothing draws the trigger and only openRequest opens the menu:
+  // the trigger then stays out of the tab order. The caller hides it from
+  // assistive technology.
+  triggerHidden?: boolean | undefined
 }) {
   const [open, setOpen] = useState(false)
   const seenRequest = useRef(openRequest)
@@ -137,6 +142,7 @@ export function MachineSwitcher({
           variant="ghost"
           size="sm"
           className="px-1"
+          {...(triggerHidden ? { tabIndex: -1 } : {})}
           aria-label={`Machine ${current?.label ?? "unknown"}, open the device menu`}
         >
           <Badge variant="machine">{current?.label ?? "unknown"}</Badge>

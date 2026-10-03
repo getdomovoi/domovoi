@@ -1,9 +1,10 @@
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { demoWorkspace } from "@getdomovoi/protocol"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { remoteControlRefusal } from "./machine-selection.js"
+import { ThreadWithDrawerMove } from "./test-support/drawer-move"
 import { activeSessionCount, Thread } from "./workspace-shell.js"
 
 afterEach(cleanup)
@@ -20,11 +21,28 @@ const handlers = {
   onPauseSession: vi.fn(async () => {}),
 }
 
-it("opens the device menu from the composer machine chip", async () => {
+// v2 draws no machine control in the composer. The trigger the drawer's
+// "Move to another machine" opens stays mounted, so it must be out of reach
+// of Tab and of assistive technology, not a control nobody can see.
+it("keeps the hidden machine trigger out of the tab order and the accessibility tree", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  render(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected {...handlers} />)
+
+  expect(screen.queryByRole("button", { name: /open the device menu/ })).toBeNull()
+  const reached = new Set<Element | null>()
+  for (let step = 0; step < 40; step += 1) {
+    await user.tab()
+    reached.add(document.activeElement)
+  }
+  expect([...reached].some((element) => element?.getAttribute("aria-label")?.includes("open the device menu"))).toBe(false)
+})
+
+it("opens the device menu when the drawer asks to move the session", async () => {
   const user = userEvent.setup()
   const snapshot = structuredClone(demoWorkspace)
   render(
-    <Thread
+    <ThreadWithDrawerMove
       onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
@@ -49,7 +67,7 @@ it("opens the device menu from the composer machine chip", async () => {
     />,
   )
 
-  await user.click(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) }))
+  await user.click(screen.getByRole("button", { name: "Move to another machine" }))
 
   expect(screen.getByRole("menuitem", { name: new RegExp(snapshot.machine.name) }).textContent)
     .toContain("This machine")
@@ -67,11 +85,15 @@ it("counts only sessions with work in flight", () => {
   expect(activeSessionCount(snapshot)).toBe(2)
 })
 
-it("keeps naming the machine when the fleet has not loaded", () => {
+it("keeps naming the machine when the fleet has not loaded", async () => {
+  const user = userEvent.setup()
   const snapshot = structuredClone(demoWorkspace)
-  render(<Thread onQueuedChange={vi.fn()} snapshot={snapshot} connected {...handlers} />)
+  render(<ThreadWithDrawerMove onQueuedChange={vi.fn()} snapshot={snapshot} connected {...handlers} />)
 
-  expect(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) })).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Move to another machine" }))
+
+  expect(screen.getByRole("menuitem", { name: new RegExp(snapshot.machine.name) }).textContent)
+    .toContain("This machine")
 })
 
 it("keeps the programmatic machine trigger outside the composer action row", () => {
@@ -80,8 +102,9 @@ it("keeps the programmatic machine trigger outside the composer action row", () 
 
   const row = document.querySelector("[data-workspace-composer-actions]")
   if (!row) throw new Error("The composer draws no action row")
-  expect(within(row as HTMLElement).queryByRole("button", { name: new RegExp(snapshot.machine.name) })).toBeNull()
-  expect(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) })).toBeTruthy()
+  const trigger = `[aria-label="Machine ${snapshot.machine.name}, open the device menu"]`
+  expect(row.querySelector(trigger)).toBeNull()
+  expect(document.querySelector(trigger)).toBeTruthy()
 })
 
 it("pairs a machine from the composer device menu", async () => {
@@ -94,7 +117,7 @@ it("pairs a machine from the composer device menu", async () => {
     fleet: { entries: [] },
   }))
   render(
-    <Thread
+    <ThreadWithDrawerMove
       onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
@@ -104,7 +127,7 @@ it("pairs a machine from the composer device menu", async () => {
     />,
   )
 
-  await user.click(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) }))
+  await user.click(screen.getByRole("button", { name: "Move to another machine" }))
   await user.click(screen.getByRole("menuitem", { name: "+ Pair a machine" }))
   await user.type(screen.getByLabelText("Machine address"), "wss://workshop.tailnet:47831/rpc")
   await user.type(screen.getByLabelText("Pairing code"), "hearth-quiet-ember-42")
@@ -139,7 +162,7 @@ it("refuses another machine from the composer device menu and says why", async (
     self: false,
   }
   render(
-    <Thread
+    <ThreadWithDrawerMove
       onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
@@ -165,7 +188,7 @@ it("refuses another machine from the composer device menu and says why", async (
     />,
   )
 
-  await user.click(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) }))
+  await user.click(screen.getByRole("button", { name: "Move to another machine" }))
   const item = screen.getByRole("menuitem", { name: /studio/ })
   expect(item.getAttribute("aria-disabled")).toBe("true")
   expect(item.textContent).toContain(remoteControlRefusal)

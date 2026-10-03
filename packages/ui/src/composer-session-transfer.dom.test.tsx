@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { demoWorkspace, sessionTransferContractVersion, type FleetMachine, type SessionTransferResult, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { Thread } from "./workspace-shell.js"
+import { ThreadWithDrawerMove } from "./test-support/drawer-move"
 
 afterEach(cleanup)
 
@@ -63,7 +63,7 @@ async function openTransferDialog(result: SessionTransferResult) {
   const onSelectMachine = vi.fn()
   const user = userEvent.setup()
   render(
-    <Thread
+    <ThreadWithDrawerMove
       onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
@@ -89,7 +89,7 @@ async function openTransferDialog(result: SessionTransferResult) {
       {...handlers}
     />,
   )
-  await user.click(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) }))
+  await user.click(screen.getByRole("button", { name: "Move to another machine" }))
   await user.click(screen.getByRole("menuitem", { name: /move this session to studio/i }))
   return { user, snapshot, studio, onTransferSession, onSelectMachine }
 }
@@ -186,7 +186,7 @@ it("offers no move where nothing can carry it out", async () => {
   const [local, studio] = fleetFor(snapshot)
   const user = userEvent.setup()
   render(
-    <Thread
+    <ThreadWithDrawerMove
       onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
@@ -196,7 +196,7 @@ it("offers no move where nothing can carry it out", async () => {
     />,
   )
 
-  await user.click(screen.getByRole("button", { name: new RegExp(snapshot.machine.name) }))
+  await user.click(screen.getByRole("button", { name: "Move to another machine" }))
 
   expect(screen.queryByText("Move this session to")).toBeNull()
 })

@@ -1093,11 +1093,16 @@ export function Thread({
           loadLatestTurn={loadLatestTurn}
           onStop={() => void pauseSession()}
         >
+          {/* v2 draws no machine control in the composer. The sessions
+              drawer's "Move to another machine" opens this menu through
+              openRequest, so its trigger stays mounted as the menu's anchor,
+              inert and hidden from Tab and from assistive technology. */}
           {!readOnly ? (
-            <div className="sr-only">
+            <div className="sr-only" aria-hidden inert>
               <MachineSwitcher
                 entries={entries}
                 openRequest={machineMenuRequest}
+                triggerHidden
                 transferEntries={transferFleet}
                 admittedMachines={admittedMachines}
                 currentMachineId={currentMachineId ?? snapshot.machine.id}
