@@ -394,7 +394,9 @@ export async function writeDaemonRuntimeManifest({ daemonRoot, manifestPath }) {
 // every link to itself back to the runtime it ships in, so it runs the daemon
 // with the Node program beside it wherever the link sits and wherever the app
 // moves. Only domovoid: the runtime ships the daemon, not the domovoi CLI.
-// Windows links nothing, so it gets no launcher.
+// Windows links nothing, so it gets no launcher. cd -P resolves the
+// launcher's directory physically: reached through a link to that directory,
+// a logical ".." would name the link's parent instead of the runtime.
 const commandLauncher = `#!/bin/sh
 # domovoid, from the Domovoi app's daemon runtime.
 self=$0
@@ -405,7 +407,7 @@ while [ -L "$self" ]; do
     *) self=$(dirname "$self")/$link ;;
   esac
 done
-runtime=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd -P) || exit 1
+runtime=$(CDPATH= cd -P -- "$(dirname -- "$self")/.." && pwd -P) || exit 1
 exec "$runtime/node/bin/node" "$runtime/daemon/dist/index.js" "$@"
 `
 

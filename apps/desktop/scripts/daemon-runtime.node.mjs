@@ -604,6 +604,41 @@ test("ships a domovoid launcher that runs the shipped daemon through a link to i
   }
 })
 
+// Review P2-1: a launcher reached through a link to its directory must find
+// the runtime by the real path, not by the text of the link. A logical
+// "cd dir/.." would land beside the link, where a decoy node waits.
+test("runs the shipped node when the launcher is reached through a linked directory", { skip: process.platform === "win32" }, async () => {
+  const { chmod, mkdir, realpath, symlink } = await import("node:fs/promises")
+  const { execFile } = await import("node:child_process")
+  const { promisify } = await import("node:util")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-launcher-dir-"))
+  try {
+    const runtime = join(root, "app", "daemon-runtime")
+    const printer = "#!/bin/sh\nprintf '%s\\n' \"$@\"\n"
+    await mkdir(join(runtime, "node", "bin"), { recursive: true })
+    await mkdir(join(runtime, "daemon", "dist"), { recursive: true })
+    await writeFile(join(runtime, "node", "bin", "node"), printer)
+    await chmod(join(runtime, "node", "bin", "node"), 0o755)
+    await writeFile(join(runtime, "daemon", "dist", "index.js"), "")
+    await writeCommandLaunchers({ root: runtime, platform: process.platform })
+    // The decoy sits where a logical cd from the linked directory would go.
+    const home = join(root, "home")
+    await mkdir(join(home, "node", "bin"), { recursive: true })
+    await writeFile(join(home, "node", "bin", "node"), "#!/bin/sh\necho decoy\n")
+    await chmod(join(home, "node", "bin", "node"), 0o755)
+    await symlink(join(runtime, "bin"), join(home, "dbin"))
+    await mkdir(join(home, "other"))
+    await symlink(join("..", "dbin", "domovoid"), join(home, "other", "relative"))
+    const expected = [join(await realpath(runtime), "daemon", "dist", "index.js"), "status"]
+    for (const called of [join(home, "dbin", "domovoid"), join(home, "other", "relative")]) {
+      const { stdout } = await promisify(execFile)("/bin/sh", [called, "status"])
+      assert.deepEqual(stdout.trim().split("\n"), expected, called)
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("ships no launcher on Windows, where nothing is linked", async () => {
   const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-launcher-win-"))
   try {
