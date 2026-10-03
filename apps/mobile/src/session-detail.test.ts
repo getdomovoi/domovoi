@@ -106,6 +106,41 @@ describe("threadEntries", () => {
   })
 })
 
+// Ruling Q357 A: only the latest receipt in the open turn is drawn in full.
+// Receipts carry no turn id today, so a receipt belongs to the open turn when
+// the session holds one and no message of yours has started another since.
+describe("current receipt", () => {
+  function receipt(id: string, createdAt: string) {
+    return {
+      id, sessionId: "session-billing", kind: "receipt" as const, decision: "allow-once" as const,
+      operation: "pnpm test", checkpoint: "8f3c1de0000000000000000000000000deadbeef", client: "phone" as const, createdAt,
+    }
+  }
+  function you(id: string, createdAt: string) {
+    return { id, sessionId: "session-billing", kind: "user" as const, body: "next", createdAt }
+  }
+  function currents(running: boolean, thread: WorkspaceSnapshot["thread"]): boolean[] {
+    const snapshot = workspace()
+    const session = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
+    session.activeTurnId = running ? "turn-open" : undefined
+    snapshot.thread = thread
+    const detail = sessionDetail(snapshot, "session-billing")!
+    return detail.entries.flatMap((entry) => entry.kind === "receipt" ? [entry.current] : [])
+  }
+
+  it("marks the latest receipt of a running turn as current, and no other", () => {
+    expect(currents(true, [receipt("r1", "2026-08-25T21:40:00.000Z"), receipt("r2", "2026-08-25T21:50:00.000Z")])).toEqual([false, true])
+  })
+
+  it("marks nothing current once your next message has started another turn", () => {
+    expect(currents(true, [receipt("r1", "2026-08-25T21:40:00.000Z"), you("u1", "2026-08-25T21:50:00.000Z")])).toEqual([false])
+  })
+
+  it("marks nothing current while no turn is running", () => {
+    expect(currents(false, [receipt("r1", "2026-08-25T21:40:00.000Z")])).toEqual([false])
+  })
+})
+
 describe("threadEntries receipt", () => {
   // decisionDurationMs is how long the gate waited for an answer; ranForMs is
   // how long the allowed command took once answered. The design's "ran in" is
@@ -144,6 +179,8 @@ describe("threadEntries receipt", () => {
       checkpointTaken: true,
       ranFor: "12s",
       decidedAfter: "38s",
+      // The fixture's session holds no open turn.
+      current: false,
     })
   })
 

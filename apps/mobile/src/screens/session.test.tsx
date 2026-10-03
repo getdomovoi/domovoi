@@ -200,6 +200,7 @@ describe("SessionScreen decision receipt", () => {
     checkpointTaken: true,
     ranFor: "12s" as string | undefined,
     decidedAfter: "38s",
+    current: true,
   }
 
   async function drawReceipt(entry: typeof allowed) {
@@ -227,10 +228,26 @@ describe("SessionScreen decision receipt", () => {
     await drawReceipt(allowed)
 
     expect(screen.getByText("Checkpoint 8f3c1de was taken first, then it ran in 12s.")).toBeOnTheScreen()
-    for (const [key, value] of [["Decision", "allow-once"], ["Decided on", "phone"], ["Checkpoint", "8f3c1de"], ["Decided after", "38s"]]) {
+    for (const [key, value] of [["Decision", "allow-once"], ["Decided on", "phone"], ["Checkpoint", "8f3c1de"]]) {
       expect(screen.getByLabelText(`${key}, ${value}`)).toBeOnTheScreen()
     }
+    // Ruling Q357 A drops the gate's wait from the record on the phone.
+    expect(screen.queryByLabelText(/^Decided after,/)).toBeNull()
     expect(screen.getByText("The audit row names this phone's verified credential, not the label you gave it. Renaming the device later does not rewrite the record.")).toBeOnTheScreen()
+  })
+
+  // Ruling Q357 A: a receipt that is history, not the latest of the open
+  // turn, is its headline and checkpoint line, with what it decided.
+  it("draws a history receipt compact", async () => {
+    await drawReceipt({ ...allowed, current: false })
+
+    expect(screen.getByText("Allowed once")).toBeOnTheScreen()
+    expect(screen.getByText("Checkpoint 8f3c1de was taken first, then it ran in 12s.")).toBeOnTheScreen()
+    expect(screen.getByText("pnpm -w prisma migrate deploy")).toBeOnTheScreen()
+    expect(screen.queryByText("RECORDED AS")).toBeNull()
+    expect(screen.queryByRole("button", { name: "Watch the rest of the turn" })).toBeNull()
+    expect(screen.queryByText(/Reverting happens on a desktop/)).toBeNull()
+    expect(screen.queryByText(/The audit row names/)).toBeNull()
   })
 
   it("names the checkpoint alone while the command has not finished", async () => {

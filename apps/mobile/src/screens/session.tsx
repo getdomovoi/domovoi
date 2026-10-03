@@ -57,7 +57,6 @@ function Receipt({ entry, onWatch }: {
     ["Decided on", entry.client],
     ...(entry.declaredClient ? [["Declared client", entry.declaredClient] as [string, string]] : []),
     ["Checkpoint", entry.checkpoint],
-    ...(entry.decidedAfter ? [["Decided after", entry.decidedAfter] as [string, string]] : []),
   ]
   return (
     <View className="gap-3">
@@ -80,6 +79,9 @@ function Receipt({ entry, onWatch }: {
         <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>{entry.operation}</Text>
         {entry.explanation ? <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>{entry.explanation}</Text> : null}
       </View>
+      {/* Ruling Q357 A: the record, the notes and Watch belong to the latest
+          receipt of the open turn. A receipt that is history stops above. */}
+      {entry.current ? <>
       <View className="overflow-hidden rounded-2xl border border-border">
         <Text variant="label" className="border-b border-border px-[15px] py-[11px] tracking-[0.13em]">RECORDED AS</Text>
         {record.map(([key, value], index) => (
@@ -104,6 +106,7 @@ function Receipt({ entry, onWatch }: {
       ) : null}
       <Button title="Watch the rest of the turn" shape="block" onPress={onWatch} />
       <Text className="font-sans text-[12px] leading-[19px] text-faint">Reverting happens on a desktop. A phone answers what a machine proposed; it does not rewind the work.</Text>
+      </> : null}
     </View>
   )
 }

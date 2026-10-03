@@ -50,6 +50,9 @@ export type ThreadEntry =
     ranFor: string | undefined
     // How long the gate waited for this answer.
     decidedAfter: string | undefined
+    // The latest receipt of the open turn, which the phone draws in full.
+    // Every other receipt is history and is drawn compact (ruling Q357 A).
+    current: boolean
   }
   | ({ id: string, kind: "policy-refusal" } & Pick<
     PolicyRefusalThreadItem,
@@ -151,6 +154,7 @@ function entryFor(item: ThreadItem): ThreadEntry {
         checkpointTaken: allowed && item.checkpoint !== "unavailable",
         ranFor: item.ranForMs === undefined ? undefined : elapsed(item.ranForMs),
         decidedAfter: item.decisionDurationMs === undefined ? undefined : elapsed(item.decisionDurationMs),
+        current: false,
       }
     }
     case "policy-refusal":
@@ -180,7 +184,29 @@ export function threadEntries(
 ): { entries: ThreadEntry[], omitted: number } {
   const mine = snapshot.thread.filter((item) => item.sessionId === sessionId)
   const bounded = boundedClientThread(mine, sessionId)
-  return { entries: bounded.map(entryFor), omitted: mine.length - bounded.length }
+  const entries = bounded.map(entryFor)
+  const current = currentReceiptIndex(bounded, snapshot.sessions.find((session) => session.id === sessionId)?.activeTurnId)
+  if (current !== undefined) {
+    const entry = entries[current]
+    if (entry?.kind === "receipt") entries[current] = { ...entry, current: true }
+  }
+  return { entries, omitted: mine.length - bounded.length }
+}
+
+// Ruling Q357 A draws only the latest receipt of the open turn in full. The
+// daemon writes receipts without a turn id today, so a receipt belongs to the
+// open turn when the session holds one and no message of yours has started
+// another since; a receipt that does carry a turn id must name that turn.
+function currentReceiptIndex(items: readonly ThreadItem[], activeTurnId: string | undefined): number | undefined {
+  if (!activeTurnId) return undefined
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!
+    if (item.kind === "user") return undefined
+    if (item.kind === "receipt") {
+      return item.turnId === undefined || item.turnId === activeTurnId ? index : undefined
+    }
+  }
+  return undefined
 }
 
 // The daemon refuses to pause a session it considers read-only, and it stops
