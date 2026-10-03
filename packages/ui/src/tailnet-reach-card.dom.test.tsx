@@ -217,6 +217,15 @@ it.each([["off", off], ["on", on]] as const)("says where kept previous files are
   expect(within(region()).getByText("The previous certificate and key could not be put back and are in ~/.domovoi/tls/.pending-Ab3xYz.")).toBeTruthy()
 })
 
+// Round 4 review (P3-3): a directory found when the app started may be from a
+// put-back that failed or from a change cut off before it finished, so the
+// card says what it knows and no more.
+it.each([["off", off], ["on", on]] as const)("says where an earlier set-aside certificate is with the switch %s", async (_state, report) => {
+  await card({ status: { ...report, setAside: "~/.domovoi/tls/.pending-Ab3xYz" } }, { listener: listening })
+  expect(within(region()).getByText("Domovoi found an earlier certificate and key it set aside in ~/.domovoi/tls/.pending-Ab3xYz. They may be from a change that did not finish.")).toBeTruthy()
+  expect(within(region()).queryByText(/could not be put back/u)).toBeNull()
+})
+
 // Round 3 re-review (P3-2): when the listener comes from DOMOVOI_TAILNET_*
 // set by hand in this app's environment, turning off does not clear it, so
 // the card says where it comes from instead of offering that.

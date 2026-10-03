@@ -50,6 +50,8 @@ function harness(options: {
   privateDirectoryThrows?: Error
   // Reading the notes for the switch's state throws.
   notesThrow?: Error
+  // The directory the sweep at load left because it holds previous files.
+  setAside?: string
 } = {}) {
   const calls: string[] = []
   const files = new Map<string, string>(Object.entries(options.files ?? {}))
@@ -65,7 +67,8 @@ function harness(options: {
     now: () => Date.parse("2026-10-02T12:00:00.000Z"),
     ...(options.conflict ? { conflict: () => options.conflict } : {}),
     ...(options.handSet ? { handSet: () => options.handSet } : {}),
-    ...(options.notesThrow ? { keptPending: async () => { throw options.notesThrow } } : {}),
+    ...(options.notesThrow ? { setAside: async () => { throw options.notesThrow } } : {}),
+    ...(options.setAside ? { setAside: async () => options.setAside } : {}),
     recover: vi.fn(async () => { calls.push("recover") }),
     tailscale: vi.fn(async (args: readonly string[]) => {
       calls.push(`tailscale ${args.join(" ")}`)
@@ -321,6 +324,24 @@ describe("turning TailnetReach on", () => {
     expect(calls).not.toContain(`remove directory ${tls}/.pending-1`)
     // Round 3 re-review (P3-3): the switch keeps saying where they are.
     await expect(reach.status()).resolves.toMatchObject({ state: "on", kept: "~/.domovoi/tls/.pending-1" })
+    // Round 4 review (P3-3): until someone moves them.
+    files.delete(`${tls}/.pending-1/previous.crt`)
+    files.delete(`${tls}/.pending-1/previous.key`)
+    await expect(reach.status()).resolves.not.toHaveProperty("kept")
+  })
+
+  // Round 4 review (P3-3): the sweep at load cannot tell a put-back that
+  // failed from a change cut off before it finished, so a directory it found
+  // is named apart from one this session could not empty, and only while it
+  // still holds previous files.
+  it("names a directory the sweep set aside apart from one this session kept", async () => {
+    const aside = `${tls}/.pending-Ab3xYz`
+    const { reach, files } = harness({ setAside: aside, files: { [`${aside}/previous.key`]: "old key" } })
+    const report = await reach.status()
+    expect(report).toMatchObject({ state: "off", setAside: "~/.domovoi/tls/.pending-Ab3xYz" })
+    expect(report).not.toHaveProperty("kept")
+    files.delete(`${aside}/previous.key`)
+    await expect(reach.status()).resolves.not.toHaveProperty("setAside")
   })
 
   // Round 3 re-review (P2): a throw that is not a failed answer must not skip

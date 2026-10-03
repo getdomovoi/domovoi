@@ -19,6 +19,8 @@ export type TailnetReachReport =
       handSet?: string
       // A pending directory holding previous files a change could not put back.
       kept?: string
+      // One found when the app started; it may be from a change that did not finish.
+      setAside?: string
     }
 
 export const tailnetReachSteps = ["status", "certificate", "store", "restart", "delete"] as const
@@ -61,7 +63,7 @@ export function parseTailnetReachReport(value: unknown): TailnetReachReport {
   const state = (value && typeof value === "object" ? (value as Fields).state : undefined)
   if (state === "none") return { state, detail: text(fields(value, ["state", "detail"]).detail) }
   if (state !== "off" && state !== "on") throw new UnreadableAnswer()
-  const read = fields(value, ["state", "name", "address", "stored", "httpsCertificates"], ["certificateExpiresAt", "renewalFailed", "ignored", "handSet", "kept"])
+  const read = fields(value, ["state", "name", "address", "stored", "httpsCertificates"], ["certificateExpiresAt", "renewalFailed", "ignored", "handSet", "kept", "setAside"])
   if (typeof read.httpsCertificates !== "boolean") throw new UnreadableAnswer()
   const failed = read.renewalFailed === undefined ? undefined : fields(read.renewalFailed, ["at", "message"])
   return {
@@ -71,6 +73,7 @@ export function parseTailnetReachReport(value: unknown): TailnetReachReport {
     ...(read.ignored === undefined ? {} : { ignored: text(read.ignored) }),
     ...(read.handSet === undefined ? {} : { handSet: text(read.handSet) }),
     ...(read.kept === undefined ? {} : { kept: text(read.kept) }),
+    ...(read.setAside === undefined ? {} : { setAside: text(read.setAside) }),
   }
 }
 

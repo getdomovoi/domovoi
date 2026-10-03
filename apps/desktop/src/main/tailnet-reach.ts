@@ -59,9 +59,10 @@ export type TailnetReachDependencies = {
   // Why the switch cannot clear the tailnet listener of the daemon this app
   // runs (DOMOVOI_TAILNET_* set by hand in its environment), or undefined.
   handSet?(): string | undefined
-  // A pending directory, shortened for display, that the sweep at load left
-  // because it holds previous files a change could not put back.
-  keptPending?(): Promise<string | undefined>
+  // A pending directory the sweep at load left because it holds previous
+  // files: from a change that could not put them back, or from one cut off
+  // before it finished. The sweep cannot tell which.
+  setAside?(): Promise<string | undefined>
   // Renewal's timers and clock. Defaults: setTimeout, unref'd, and Date.now.
   timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void }
   now?(): number
@@ -266,7 +267,7 @@ export class TailnetReach {
         }
       } catch {
         stranded = true
-        this.#keptPending = this.deps.display(pending)
+        this.#keptPending = pending
         return `The previous certificate and key could not be put back and are in ${this.deps.display(pending)}.`
       }
       return kept.length ? "The previous certificate was put back." : ""
@@ -325,12 +326,26 @@ export class TailnetReach {
 
   // What the switch alone does not say: about the daemon inside this app, and
   // about previous files a change left in a pending directory (round 3
-  // re-review, P3-3), found by this change or by the sweep at load.
-  async #notes(): Promise<{ ignored?: string; handSet?: string; kept?: string }> {
+  // re-review, P3-3). Round 4 review (P3-3): one this session could not put
+  // back is named apart from one the sweep found at load, and each only while
+  // it still holds previous files.
+  async #notes(): Promise<{ ignored?: string; handSet?: string; kept?: string; setAside?: string }> {
     const ignored = this.deps.conflict?.()
     const handSet = this.deps.handSet?.()
-    const kept = this.#keptPending ?? await this.deps.keptPending?.()
-    return { ...(ignored ? { ignored } : {}), ...(handSet ? { handSet } : {}), ...(kept ? { kept } : {}) }
+    if (this.#keptPending !== undefined && !(await this.#holdsPrevious(this.#keptPending))) this.#keptPending = undefined
+    const kept = this.#keptPending
+    const found = await this.deps.setAside?.()
+    const setAside = found !== undefined && found !== kept && await this.#holdsPrevious(found) ? found : undefined
+    return {
+      ...(ignored ? { ignored } : {}), ...(handSet ? { handSet } : {}),
+      ...(kept ? { kept: this.deps.display(kept) } : {}), ...(setAside ? { setAside: this.deps.display(setAside) } : {}),
+    }
+  }
+
+  // The swap sets files in use aside under these two names only.
+  async #holdsPrevious(directory: string): Promise<boolean> {
+    for (const file of ["previous.crt", "previous.key"]) if (await this.deps.files.exists(`${directory}/${file}`)) return true
+    return false
   }
 
   async status(): Promise<TailnetReachReport> {

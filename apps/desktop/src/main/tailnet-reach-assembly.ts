@@ -112,10 +112,7 @@ export function createTailnetReach(input: {
     tailscale: tailscaleRunner(environment, platform, input.tailscaleLocations ?? tailscaleLocations(platform)),
     tlsDirectory,
     display,
-    keptPending: async () => {
-      const kept = await swept
-      return kept === undefined ? undefined : display(kept)
-    },
+    setAside: () => swept,
     files: {
       exists: async (path) => access(path).then(() => true, () => false),
       read: (path) => readFile(path),

@@ -12,7 +12,8 @@
 // the one in use. ignored: why the daemon inside this app does not use the
 // switch's settings (a hand-set DOMOVOI_HOST beyond loopback). handSet: the
 // daemon inside this app takes a tailnet listener from DOMOVOI_TAILNET_* set
-// by hand, which turning the switch off does not clear.
+// by hand, which turning the switch off does not clear. kept and setAside:
+// see below.
 export type TailnetReachReport =
   | { state: "none"; detail: string }
   | {
@@ -28,6 +29,10 @@ export type TailnetReachReport =
       // A pending directory holding previous files a change could not put
       // back, shortened for display. Never removed for the person.
       kept?: string
+      // A pending directory holding previous files that the sweep found when
+      // the app started. It may be from a put-back that failed or from a
+      // change cut off before it finished. Never removed for the person.
+      setAside?: string
     }
 
 // The step a change stopped at, in the order the card lists them.
