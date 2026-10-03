@@ -518,6 +518,18 @@ describe("createProductionDaemon", () => {
     expect((await refusedWith(files.environment)).tls).toEqual({ refused: `The tailnet certificate at ${files.certPath} is not a regular file, so the daemon answers on this computer only.` })
   })
 
+  // Re-review of 10dba4a2: a certificate or key is a few kilobytes. One over
+  // 64 KiB refuses the tailnet listener before it is read.
+  it.each(["certificate", "key"] as const)("refuses a tailnet %s over 64 KiB without reading it", async (what) => {
+    const files = await tailnetFiles()
+    const path = what === "certificate" ? files.certPath : files.keyPath
+    await writeFile(path, "x".repeat(64 * 1_024 + 1), { mode: 0o600 })
+    const loadTls = vi.fn(productionDaemonDependencies.loadTls)
+    const { tls } = await refusedWith(files.environment, loadTls)
+    expect(tls).toEqual({ refused: `The tailnet ${what} at ${path} is larger than 64 KiB, so the daemon answers on this computer only.` })
+    expect(loadTls).not.toHaveBeenCalled()
+  })
+
   it("gives the tailnet certificate its own short bound", async () => {
     const files = await tailnetFiles()
     const { tls, elapsed } = await refusedWith(files.environment, () => new Promise(() => {}), 100)

@@ -22,6 +22,8 @@ export type DaemonTailnetListenerOptions = {
 // directory or a stalled read refuses the tailnet listener alone instead of
 // holding the daemon's startup deadline.
 export const defaultTailnetTlsTimeoutMs = 5_000
+// A certificate chain or a key is a few kilobytes; a larger file is not read.
+const maximumTailnetTlsBytes = 64 * 1_024
 
 export async function loadTailnetTls(
   load: (paths: TlsMaterialPaths) => Promise<TlsMaterial>,
@@ -36,6 +38,7 @@ export async function loadTailnetTls(
       return { refused: `Domovoi could not read the tailnet ${what} at ${path} (${(error as NodeJS.ErrnoException).code ?? "unreadable"}), so the daemon answers on this computer only.` }
     }
     if (!entry.isFile()) return { refused: `The tailnet ${what} at ${path} is not a regular file, so the daemon answers on this computer only.` }
+    if (entry.size > maximumTailnetTlsBytes) return { refused: `The tailnet ${what} at ${path} is larger than 64 KiB, so the daemon answers on this computer only.` }
   }
   let timer: ReturnType<typeof setTimeout> | undefined
   const late = new Promise<{ refused: string }>((settle) => {
