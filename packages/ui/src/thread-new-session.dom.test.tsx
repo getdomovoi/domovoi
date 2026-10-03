@@ -1,4 +1,4 @@
-import { demoWorkspace, type PermissionMode, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumEffectiveClientThreadItems, type PermissionMode, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { cleanup, render, screen, within } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -130,6 +130,29 @@ it("draws nothing of it once the thread has a turn, or while one is running", ()
   running.sessions.find((session) => session.id === running.activeSessionId)!.activeTurnId = "turn-1"
   renderThread(running)
   expect(screen.queryByRole("heading", { name: "Nothing has run yet" })).toBeNull()
+})
+
+// The client thread is bounded to the newest rows of the active session, so
+// an old session whose retained tail is all checkpoints and system rows has
+// no message, tool call or receipt left to prove it ran. Fewer rows than the
+// bound means the whole thread is here; at the bound it may not be, and a
+// session with that many rows has run something anyway.
+it("draws nothing of it for a session whose bounded tail holds only checkpoints and system rows", () => {
+  const snapshot = freshSession()
+  const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+  snapshot.thread = Array.from({ length: maximumEffectiveClientThreadItems }, (_, index) => ({
+    id: `checkpoint-${index}`,
+    sessionId: active.id,
+    kind: "checkpoint" as const,
+    reason: "manual" as const,
+    label: `Checkpoint ${index}`,
+    commit: `${index.toString(16).padStart(7, "0")}${"0".repeat(33)}`,
+    createdAt: "2026-10-02T12:00:00.000Z",
+  }))
+  snapshot.historyTruncated = true
+  renderThread(snapshot)
+  expect(screen.queryByRole("heading", { name: "Nothing has run yet" })).toBeNull()
+  expect(screen.queryByRole("status", { name: "Worktree ready" })).toBeNull()
 })
 
 // The body says the worktree is cut. A session with no worktree has not cut

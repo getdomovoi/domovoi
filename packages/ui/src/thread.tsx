@@ -31,7 +31,7 @@ import type {
   ThreadItem,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
-import { selectableTurnSkills, threadFollowPillText, sessionTransferRefusalMessage, toolFileEntries, turnSkillSelectionFor } from "@getdomovoi/protocol"
+import { maximumEffectiveClientThreadItems, selectableTurnSkills, threadFollowPillText, sessionTransferRefusalMessage, toolFileEntries, turnSkillSelectionFor } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
   readOnlySessionNotice,
@@ -753,7 +753,15 @@ export function Thread({
   // being sent, it has a worktree to be ready, and its thread holds only what
   // session.create writes (a session-start checkpoint and system rows), no
   // message, tool call, receipt or refusal. Ruled Q368 A.
-  const nothingHasRun = !renderedThread.some((item) =>
+  //
+  // The rendered thread is bounded (boundedClientThread) to the newest rows
+  // of the active session, and the bound takes those before any other
+  // session's rows. Fewer rows than the bound means the session's whole
+  // thread is here; at the bound the older rows may be gone, and an old
+  // session whose retained tail is all checkpoints or system rows would pass
+  // for fresh. A session with that many rows has run something anyway.
+  const wholeThreadRendered = renderedThread.length < maximumEffectiveClientThreadItems
+  const nothingHasRun = wholeThreadRendered && !renderedThread.some((item) =>
     item.kind === "user" || item.kind === "assistant" || item.kind === "tool" || item.kind === "receipt" || item.kind === "policy-refusal"
   )
   const freshWorktree = nothingHasRun && !active.activeTurnId && sending === null
