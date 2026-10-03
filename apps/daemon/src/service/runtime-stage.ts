@@ -402,6 +402,12 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
     anchor = { path: at, identity }
     return true
   }
+  // PR #712 security review round 1 (P2): the staging place chosen, pinned
+  // by device, inode and real path when it was checked: here when it is
+  // there now, at publish when publish makes it.
+  type Pin = { identity: string; realpath: string }
+  const pinOf = async (path: string): Promise<Pin> => ({ identity: await fs.identity(path), realpath: await fs.realpath(path) })
+  let stagingPin: Pin | undefined
   let parent: string | undefined
   if (input.stagingParent !== undefined) {
     if (await usable(input.stagingParent)) parent = input.stagingParent
@@ -414,6 +420,7 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
     if (missing.includes(candidate) || await usable(candidate)) parent = candidate
   }
   if (parent === undefined) throw refusal(failed)
+  if (!missing.includes(parent)) stagingPin = await pinOf(parent)
   const stagingParent = parent
   const destination = pathApi.join(versionDirectory, randomUUID().replaceAll("-", "").slice(0, 12))
   const layout = (at: string): DaemonServiceRuntime => ({
@@ -448,6 +455,7 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
       const identity = await fs.identity(directory)
       if (!await usable(directory)) throw refusal(directory, made)
       above = { path: directory, identity }
+      if (directory === stagingParent) stagingPin = { identity, realpath: await fs.realpath(directory) }
     }
     await runtimeRoot(fs, pathApi, input.profileDirectory, true)
     pinned ??= await pin()
@@ -476,19 +484,49 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
       if (!intact) throw new Error(`${versionDirectory} changed while the runtime was copied, so it was not published.`)
       if (await fs.entry(destination) !== "missing") throw new Error(`${destination} appeared while the runtime was copied, so it was not published.`)
     }
+    // PR #712 security review round 1 (P2): right before the private staging
+    // directory is made, the staging place must still be the directory
+    // pinned when it was checked or made, and still pass every check it
+    // passed then (a real directory on the runtime's volume, outside every
+    // profile and repository). The private directory made there must be a
+    // real directory right under that place's real path; it is pinned, and
+    // checked again, with the copy in it, before the copy is moved out.
+    // Whatever was made is left where it is, as round 8 of #577 decided.
+    const placeIntact = stagingPin !== undefined
+      && await fs.entry(stagingParent) === "directory"
+      && await fs.identity(stagingParent) === stagingPin.identity
+      && samePath(await fs.realpath(stagingParent), stagingPin.realpath)
+      && await usable(stagingParent)
+    if (!placeIntact || stagingPin === undefined) throw new Error(`${stagingParent} changed after it was checked, so the runtime was not copied there.`)
     const holder = await fs.makePrivateDirectory(pathApi.join(stagingParent, `.domovoi-runtime-${input.version}.staging-`))
+    const holderReal = pathApi.join(stagingPin.realpath, pathApi.basename(holder))
+    if (await fs.entry(holder) !== "directory" || !samePath(await fs.realpath(holder), holderReal)) {
+      throw new Error(`${holder} changed after it was made, so the runtime was not copied there.`)
+    }
+    const holderIdentity = await fs.identity(holder)
     const staging = pathApi.join(holder, "copy")
     await fs.copy(shippedRoot, staging)
     await unchanged()
-    // Right before the rename. The instant between these checks and the
-    // rename is not covered: Node has no rename relative to an open
-    // directory, so the rename resolves <profile>/runtime/<version> by path
-    // again. A process of the same user that swaps it for a link in that
-    // instant moves this one copy of the shipped runtime, which holds no
-    // secrets, into the link's target on the same volume, under its fresh
-    // name; nothing is replaced or removed. That user can already write the
-    // profile. The same residual race round 8 of #577 accepted for the
-    // staging directory.
+    const copied = await fs.entry(holder) === "directory"
+      && await fs.identity(holder) === holderIdentity
+      && samePath(await fs.realpath(holder), holderReal)
+      && await fs.entry(staging) === "directory"
+      && samePath(await fs.realpath(staging), pathApi.join(holderReal, "copy"))
+    if (!copied) throw new Error(`${holder} changed while the runtime was copied, so it was not published.`)
+    // Right before the rename. The instants between these checks and the
+    // calls that follow them are not covered: Node has no mkdtemp, copy or
+    // rename relative to an open directory, so each resolves its path again.
+    // A process of the same user that swaps a checked directory for a link in
+    // such an instant can have: the private staging directory made in the
+    // link's target (one empty directory); the copy of the shipped runtime,
+    // which holds no secrets, written there; or that copy, or a directory of
+    // its own in place of it, moved into <profile>/runtime/<version> or, by
+    // swapping that, this copy moved into another directory on the same
+    // volume under its fresh name. Nothing is replaced or removed, and that
+    // user can already write the profile and the runtime under it. Ruled
+    // Q411 A (2026-10-03): these windows are narrowed and documented, not
+    // closed with a native helper, as round 8 of #577 accepted the same race
+    // for the staging directory.
     await versionUnchanged()
     await fs.rename(staging, destination)
     // Round 8 (P2): the staging directory, empty now, is left where it is.

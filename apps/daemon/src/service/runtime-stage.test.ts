@@ -430,6 +430,95 @@ describe("staging the shipped runtime under the profile", () => {
     })
   })
 
+  // PR #712 security review round 1 (P2): the staging place is checked when
+  // it is chosen or made, and again right before the private staging
+  // directory is made in it; that directory is checked before the copy goes
+  // in and before the copy is moved out. Nothing is written in a repository
+  // swapped in, and nothing is removed.
+  describe("when the staging place changes after it was checked", () => {
+    const tmpdirElsewhere = (overrides: Partial<RuntimeFileSystem> = {}) => {
+      const identity = nodeRuntimeFileSystem().identity
+      return nodeRuntimeFileSystem({ identity: async (path) => path === tmpdir() ? "other-volume:1" : identity(path), ...overrides })
+    }
+    async function repository(root: string): Promise<string> {
+      const at = join(root, "repository")
+      await mkdir(join(at, ".git"), { recursive: true })
+      return at
+    }
+
+    it.each([
+      ["the staging directory given", (root: string) => ({ stagingParent: join(root, "staging") }), (root: string) => join(root, "staging")],
+      ["an existing runtime-staging under the data directory", (root: string) => ({ dataDirectory: join(root, "data") }), (root: string) => join(root, "data", "runtime-staging")],
+    ] as const)("refuses, writing nothing there, when %s is swapped between preparing and publishing", async (_label, place, parent) => {
+      await withScratch(async ({ root, resources, home }) => {
+        await mkdir(join(root, "data", "runtime-staging"), { recursive: true })
+        const target = await repository(root)
+        const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, fileSystem: tmpdirElsewhere(), ...place(root) })
+        await rename(parent(root), `${parent(root)}-moved`)
+        await symlink(target, parent(root), directoryLink)
+        await expect(prepared.publish()).rejects.toThrow(`${parent(root)} changed after it was checked, so the runtime was not copied there.`)
+        expect(await readdir(target)).toEqual([".git"])
+        expect(await readdir(`${parent(root)}-moved`)).toEqual([])
+      })
+    })
+
+    it("refuses, writing nothing there, when runtime-staging is swapped after the last level made is checked", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const target = await repository(root)
+        const staging = join(root, "data", "runtime-staging")
+        const real = nodeRuntimeFileSystem()
+        // The version directory is made after every staging level is made
+        // and checked, and before the private staging directory is.
+        const makeDirectory = async (path: string) => {
+          await real.makeDirectory(path)
+          if (path === join(home, ".domovoi", "runtime", "0.9.4")) {
+            await rename(staging, `${staging}-moved`)
+            await symlink(target, staging, directoryLink)
+          }
+        }
+        const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, dataDirectory: join(root, "data"), fileSystem: tmpdirElsewhere({ makeDirectory }) })
+        await expect(prepared.publish()).rejects.toThrow(`${staging} changed after it was checked, so the runtime was not copied there.`)
+        expect(await readdir(target)).toEqual([".git"])
+      })
+    })
+
+    it("refuses before copying when the private staging directory is swapped for a link once made", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const target = await repository(root)
+        const real = nodeRuntimeFileSystem()
+        let holder: string | undefined
+        const makePrivateDirectory = async (prefix: string) => {
+          holder = await real.makePrivateDirectory(prefix)
+          await rename(holder, `${holder}-moved`)
+          await symlink(target, holder, directoryLink)
+          return holder
+        }
+        await expect(stage({ resources, home, version: "0.9.4", makePrivateDirectory }))
+          .rejects.toThrow(/changed after it was made, so the runtime was not copied there\.$/u)
+        expect(await readdir(target)).toEqual([".git"])
+        expect(await readdir(`${holder!}-moved`)).toEqual([])
+      })
+    })
+
+    it("refuses to publish when the private staging directory is swapped after the copy", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const planted = join(root, "planted")
+        await mkdir(join(planted, "copy", "daemon", "dist"), { recursive: true })
+        await writeFile(join(planted, "copy", "daemon", "dist", "index.js"), "not the shipped daemon")
+        const copy = async (from: string, to: string) => {
+          await nodeRuntimeFileSystem().copy(from, to)
+          const holder = dirname(to)
+          await rename(holder, `${holder}-moved`)
+          await symlink(planted, holder, directoryLink)
+        }
+        await expect(stage({ resources, home, version: "0.9.4", copy }))
+          .rejects.toThrow(/changed while the runtime was copied, so it was not published\.$/u)
+        expect(await readdir(join(home, ".domovoi", "runtime", "0.9.4"))).toEqual([])
+        expect(await readdir(planted)).toEqual(["copy"])
+      })
+    })
+  })
+
   // The daemon's approved words for an update (update-outcome, 2026-09-23).
   it("says the service was not updated when the shipped part is missing for an update", async () => {
     await expect(stageDaemonRuntime({
@@ -491,6 +580,7 @@ type StageInput = {
   copy?: (from: string, to: string) => Promise<void>
   rename?: (from: string, to: string) => Promise<void>
   entry?: RuntimeFileSystem["entry"]
+  makePrivateDirectory?: RuntimeFileSystem["makePrivateDirectory"]
 }
 
 function stage(input: StageInput) {
@@ -502,6 +592,7 @@ function stage(input: StageInput) {
       ...(input.copy ? { copy: input.copy } : {}),
       ...(input.rename ? { rename: input.rename } : {}),
       ...(input.entry ? { entry: input.entry } : {}),
+      ...(input.makePrivateDirectory ? { makePrivateDirectory: input.makePrivateDirectory } : {}),
     }),
   })
 }
