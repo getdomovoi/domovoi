@@ -384,15 +384,9 @@
         "THIS PHONE WILL BE ABLE TO"
       ],
       "evidence": [
-        "THIS PHONE WILL BE ABLE TO"
-      ],
-      "presence": [
+        "THIS PHONE WILL BE ABLE TO",
         "{phoneAndTabletPromise.map((line) => ("
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the phone draws the shared list before it pairs (pair-scan.tsx, read from phoneAndTabletPromise), under A paired phone can rather than the design's eyebrow and without the per-line dots. The unbuilt line's wording was ruled the short form on 2026-09-23 (9266302f), which answers design open question 6; the 2026-09-23 missing entry predated that"
-      }
+      ]
     },
     {
       "id": "policy.screen",

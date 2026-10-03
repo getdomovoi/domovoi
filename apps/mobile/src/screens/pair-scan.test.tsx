@@ -50,6 +50,18 @@ describe("pairing by camera", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
     await waitFor(() => expect(onPaired).toHaveBeenCalledWith(credential))
   }, cold)
+  // Phone v2 frame 04g: before it pairs, the phone heads the shared grant list
+  // with what this device will be able to do. A tablet says tablet.
+  it("heads the grant list with what this device will be able to do", async () => {
+    for (const [device, eyebrow] of [["phone", "THIS PHONE WILL BE ABLE TO"], ["tablet", "THIS TABLET WILL BE ABLE TO"]] as const) {
+      await render(
+        <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device={device} />,
+      )
+      expect(screen.getByText(eyebrow)).toBeTruthy()
+      expect(screen.queryByText("A paired phone can")).toBeNull()
+    }
+  }, cold)
+
   it("says what a wrong code is and keeps scanning", async () => {
     await render(
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("https://example.com")} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,

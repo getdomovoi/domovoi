@@ -180,17 +180,21 @@ export function PairScanScreen({
             {/* The phone can check the credential's shape, not its scope: a
                 daemon's own credential has the same shape and can do anything
                 on that machine. The promise is conditional and says so. */}
-            <Text variant="label">A paired phone can</Text>
+            <Text variant="label" className="tracking-[0.13em]">
+              {device === "tablet" ? "THIS TABLET WILL BE ABLE TO" : "THIS PHONE WILL BE ABLE TO"}
+            </Text>
             {/* The card's own list, including the line it does not keep yet,
                 read from the protocol so this screen and the machine's card
-                cannot come to say different things. */}
-            {phoneAndTabletPromise.map((line) => (
-              <Text
-                key={line.text}
-                variant="note"
-                className={line.tone === "unbuilt" ? "text-warning" : ""}
-              >{line.text}</Text>
-            ))}
+                cannot come to say different things. A grant wears the success
+                dot and a limit the info dot, as the machine's card draws them. */}
+            <View className="gap-1.5">
+              {phoneAndTabletPromise.map((line) => (
+                <View key={line.text} className="flex-row items-start gap-2">
+                  <View className={line.tone === "granted" ? "mt-[6px] h-1.5 w-1.5 rounded-full bg-success" : "mt-[6px] h-1.5 w-1.5 rounded-full bg-info"} />
+                  <Text className="flex-1 font-sans text-[11.5px] leading-[17px] text-strong">{line.text}</Text>
+                </View>
+              ))}
+            </View>
             <Text variant="note">
               That is the scope of a credential the machine minted with domovoid pair --client phone; the daemon refuses everything else to it. The phone cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this phone's keychain.
             </Text>
