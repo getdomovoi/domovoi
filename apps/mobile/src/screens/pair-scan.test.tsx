@@ -62,6 +62,17 @@ describe("pairing by camera", () => {
     }
   }, cold)
 
+  // The note under the grant list names the device being paired: the client
+  // kind the machine mints for and whose keychain holds the credential.
+  it("names the tablet in the note under the grant list", async () => {
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPad" onDone={jest.fn()} device="tablet" />,
+    )
+    expect(screen.getByText(/domovoid pair --client tablet/)).toBeTruthy()
+    expect(screen.getByText(/stays in this tablet's keychain/)).toBeTruthy()
+    expect(screen.queryByText(/--client phone|this phone's keychain/)).toBeNull()
+  }, cold)
+
   it("says what a wrong code is and keeps scanning", async () => {
     await render(
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("https://example.com")} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,

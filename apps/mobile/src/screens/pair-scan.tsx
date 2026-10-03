@@ -227,7 +227,7 @@ export function PairScanScreen({
               ))}
             </View>
             <Text variant="note">
-              That is the scope of a credential the machine minted with domovoid pair --client phone; the daemon refuses everything else to it. The phone cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this phone's keychain.
+              {`That is the scope of a credential the machine minted with domovoid pair --client ${device}; the daemon refuses everything else to it. The ${device} cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this ${device}'s keychain.`}
             </Text>
             <Text variant="label">Name this phone</Text>
             <TextInput
