@@ -400,7 +400,7 @@ registerDesktopIpc(ipcMain, {
   releasePage: { open: () => shell.openExternal("https://github.com/getdomovoi/domovoi/releases").then(() => true, () => false) },
   // Q336 A: loads when Settings first asks, like the login service.
   // The record of the links it made sits in userData (PR #712 review, P3).
-  commandLinks: async (action) => (await import("./command-links.js")).commandLinks(action, { home: homedir(), resourcesPath: process.resourcesPath, platform: process.platform, path: process.env.PATH, appImage: process.env.APPIMAGE, recordPath: join(app.getPath("userData"), "command-links.json") }),
+  commandLinks: async (action) => (await import("./command-links.js")).commandLinks(action, { home: homedir(), resourcesPath: process.resourcesPath, platform: process.platform, path: process.env.PATH, appImage: process.env.APPIMAGE, recordPath: join(userDataDirectory, "command-links.json") }),
   notifications: desktopNotifications,
   deepLinks,
   rendererDeepLinkSink: {
