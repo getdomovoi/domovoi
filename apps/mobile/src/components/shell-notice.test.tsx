@@ -23,6 +23,14 @@ const reaching = unreachable(shellState({
   },
 }))
 
+// First launch: a saved credential, nothing heard yet, and nothing gone wrong.
+const launching = unreachable(shellState({
+  restoringCredential: false,
+  hasCredential: true,
+  hasSnapshot: false,
+  fault: undefined,
+}))
+
 const refused = unreachable(shellState({
   restoringCredential: false,
   hasCredential: true,
@@ -63,12 +71,20 @@ describe("ShellNotice", () => {
   // Phone v2 frame 06: launch leads with the Domovoi mark while daemons
   // answer. A refused credential is not launch, and keeps its own sign.
   it("leads launch with the Domovoi mark, and not a refusal", async () => {
-    await draw()
+    await draw({ shell: launching })
     expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
     await draw({ shell: restoring })
     expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
     await draw({ shell: refused })
     expect(screen.queryByTestId("domovoi-mark", { includeHiddenElements: true })).toBeNull()
+  })
+
+  // A connection that failed and is being retried is not launch: it keeps the
+  // failure's sign, so a person does not read it as the app starting up.
+  it("keeps the failure sign while retrying a fault", async () => {
+    await draw({ shell: reaching })
+    expect(screen.queryByTestId("domovoi-mark", { includeHiddenElements: true })).toBeNull()
+    expect(screen.getByTestId("fault-sign", { includeHiddenElements: true })).toBeOnTheScreen()
   })
 
   // The heading names the screen, so the mark beside it says nothing more to
