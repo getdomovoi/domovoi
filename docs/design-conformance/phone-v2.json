@@ -473,24 +473,26 @@
     {
       "id": "machines.unpaired",
       "name": "Machines, unpaired",
-      "where": "frame 08: Pair this phone, Scan a code, Type it, WHAT STAYS UNAVAILABLE, device settings still work",
+      "where": "frame 08: Pair this phone, Scan a code, Type it, WHAT STAYS UNAVAILABLE with a reason per row (Sessions, Machines, Machine settings by ruling Q387 A), device settings still work",
       "copy": [
         "Pair this phone",
         "Pairing exchanges keys with one machine directly, over your tailnet. Nothing passes through a server, and the phone stores no code.",
         "Scan a code",
         "Type it",
         "WHAT STAYS UNAVAILABLE",
-        "Device settings still work while unpaired. Machine-scoped settings stay visible and marked unavailable rather than disappearing."
+        "Device settings still work while unpaired. Machine-scoped settings stay visible and marked unavailable rather than disappearing.",
+        "Nothing to list, and nothing hidden from you.",
+        "This is the screen that owns pairing.",
+        "No approvals are sitting somewhere unseen."
       ],
       "evidence": [
         "Pair this phone",
         "Scan a code",
         "Type it",
         "WHAT STAYS UNAVAILABLE",
-        "Nothing passes through a server"
-      ],
-      "presence": [
-        "WHAT STAYS UNAVAILABLE"
+        "Nothing passes through a server",
+        "Nothing to list, and nothing hidden from you.",
+        "This is the screen that owns pairing."
       ]
     },
     {
@@ -838,6 +840,11 @@
       "id": "pairing.camera",
       "since": "2026-10-02",
       "note": "approved difference, ruling Q331 A: the viewfinder hint says Point at the pairing code that domovoid pair prints on the machine., not the design's shown in Settings on the machine, because the camera path the phone documents is domovoid pair --client phone (apps/mobile/README.md). The evidence holds the shared opening, Point at the pairing code"
+    },
+    {
+      "id": "machines.unpaired",
+      "since": "2026-10-02",
+      "note": "approved difference, ruling Q387 A: WHAT STAYS UNAVAILABLE lists Sessions, Machines and Machine settings, each with its reason. The design's Review row, No approvals are sitting somewhere unseen., is not drawn because the phone has no Review tab. Machine settings carries a reason the design does not draw: They live on a machine, so they wait until one is paired."
     }
   ],
   "scriptBacklog": {
@@ -963,9 +970,6 @@
       "Cover the claim-expiry case too",
       "Option B. The image sources stay open and say what follows. A photo attaches, its thumb is flagged, and send locks until it goes.",
       "Option A. A model that takes no images locks both image sources with the daemon's reason. They stay listed, and the header names the model.",
-      "Nothing to list, and nothing hidden from you.",
-      "No approvals are sitting somewhere unseen.",
-      "This is the screen that owns pairing.",
       "idle · loopback",
       "idle · tailnet",
       "last seen 2d ago",
