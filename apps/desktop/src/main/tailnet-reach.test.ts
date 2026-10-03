@@ -40,6 +40,11 @@ function harness(options: {
   conflict?: string
   // A move that fails, as a rename can, leaving both paths as they were.
   failMove?: (from: string, to: string) => boolean
+  // The restart throws instead of answering, as a service module that fails
+  // to load does.
+  restartThrows?: Error
+  // tailscale cert exits 0 and writes nothing.
+  certWritesNothing?: boolean
 } = {}) {
   const calls: string[] = []
   const files = new Map<string, string>(Object.entries(options.files ?? {}))
@@ -63,6 +68,7 @@ function harness(options: {
         return typeof status === "string" ? { code: 0, stdout: status, stderr: "" } : { code: status.code, stdout: "", stderr: status.stderr }
       }
       if (options.cert) return { code: options.cert.code, stdout: "", stderr: options.cert.stderr }
+      if (options.certWritesNothing) return { code: 0, stdout: "", stderr: "" }
       files.set(args[2]!, certificate)
       files.set(args[4]!, "private key")
       return { code: 0, stdout: "", stderr: "" }
@@ -84,6 +90,7 @@ function harness(options: {
       move: async (from, to) => {
         calls.push(`move ${from} ${to}`)
         if (options.failMove?.(from, to)) throw Object.assign(new Error(`EIO: rename ${from}`), { code: "EIO" })
+        if (!files.has(from)) throw Object.assign(new Error(`ENOENT: rename ${from}`), { code: "ENOENT" })
         files.set(to, files.get(from)!)
         files.delete(from)
       },
@@ -100,7 +107,11 @@ function harness(options: {
       remove: async () => { calls.push("record remove"); record = undefined },
     },
     preflight: vi.fn(async () => { calls.push("preflight"); return options.preflight }),
-    restart: vi.fn(async (change) => { calls.push(`restart ${"set" in change ? "set" : "clear"}`); return options.restart ?? { ok: true as const } }),
+    restart: vi.fn(async (change) => {
+      calls.push(`restart ${"set" in change ? "set" : "clear"}`)
+      if (options.restartThrows) throw options.restartThrows
+      return options.restart ?? { ok: true as const }
+    }),
   }
   const pending = () => timers.filter((timer) => !timer.cleared)
   return { reach: new TailnetReach(deps), deps, calls, files, record: () => record, timers: pending }
@@ -300,6 +311,54 @@ describe("turning TailnetReach on", () => {
     })
     expect(files.get(`${tls}/.pending-1/previous.crt`)).toBe("old certificate")
     expect(calls).not.toContain(`remove directory ${tls}/.pending-1`)
+  })
+
+  // Round 3 re-review (P2): a throw that is not a failed answer must not skip
+  // the put-back, leave renew() rejecting from its timer, or delete the
+  // pending directory holding the only copy of the files in use.
+  it("puts the files back and says so when a renewal's restart throws", async () => {
+    const { reach, files, calls, deps } = harness({
+      record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" },
+      restartThrows: new Error("Cannot find module './daemon-service-assembly.js'"),
+    })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(files.get(certPath)).toBe("old certificate")
+    expect(files.get(keyPath)).toBe("old key")
+    expect(deps.recover).toHaveBeenCalled()
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: {
+      message: `The certificate for ${name} could not be renewed: Cannot find module './daemon-service-assembly.js' The previous certificate was put back.`,
+    } })
+    // Put back, so the directory holds nothing of the files in use.
+    expect(calls).toContain(`remove directory ${tls}/.pending-1`)
+  })
+
+  it("records a renewal whose tailscale cert exits 0 without writing anything", async () => {
+    const { reach, files } = harness({ record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" }, certWritesNothing: true })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(files.get(certPath)).toBe("old certificate")
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: { message: `The certificate for ${name} could not be renewed: missing` } })
+  })
+
+  it("puts the files and record back when turning on again and the restart throws", async () => {
+    const { reach, files, record, calls } = harness({
+      record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" },
+      restartThrows: new Error("Cannot find module './daemon-service-assembly.js'"),
+    })
+    await expect(reach.turnOn()).resolves.toEqual({
+      ok: false, reason: "failed", step: "restart",
+      message: "Turning it on stopped: Cannot find module './daemon-service-assembly.js' The previous certificate was put back.",
+    })
+    expect(files.get(certPath)).toBe("old certificate")
+    expect(files.get(keyPath)).toBe("old key")
+    expect(record()).toEqual(ours)
+    expect(calls).toContain("recover")
+  })
+
+  it("leaves nothing stored when a first turn-on's restart throws", async () => {
+    const { reach, files, record } = harness({ restartThrows: new Error("Cannot find module './daemon-service-assembly.js'") })
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: false, reason: "failed", step: "restart" })
+    expect(files.size).toBe(0)
+    expect(record()).toBeUndefined()
   })
 
   it("does the same when a renewal check cannot put the previous files back", async () => {
