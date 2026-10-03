@@ -196,8 +196,10 @@ function inside(pathApi: typeof posix, root: string, path: string): boolean {
 // can rename or remove it. A group-writable directory fails even when only
 // this user is in the group: membership cannot be read here. Windows: Node
 // cannot read ACLs, so only a place inside this user's own profile
-// directory passes; that holds the default TEMP (%LOCALAPPDATA%\Temp) and
-// the app's userData (%APPDATA%). A failure to read fails the place.
+// directory passes, one with the profile directory itself, by device and
+// inode, among its ancestors (round 3, P2-4); that holds the default TEMP
+// (%LOCALAPPDATA%\Temp) and the app's userData (%APPDATA%). A failure to
+// read fails the place.
 type StagingAccessOptions = {
   platform: string
   fileSystem: RuntimeFileSystem
@@ -222,8 +224,19 @@ async function stagingAccessFailure(real: string, options: StagingAccessOptions)
   const fs = options.fileSystem
   try {
     if (options.platform === "win32") {
-      const user = (await fs.realpath(options.userDirectory ?? homedir())).toLowerCase()
-      return inside(win32, user, real.toLowerCase()) ? undefined : { path: real, access: "unknown" }
+      // PR #712 security review round 3 (P2-4): a directory can have
+      // per-directory case sensitivity, so names compared case-folded can
+      // match a sibling of the profile whose name differs only in case. The
+      // case-folded comparison only rules a place out early; it passes only
+      // when one of its ancestors is the profile directory itself, by device
+      // and inode. An identity that cannot be read fails the place.
+      const user = await fs.realpath(options.userDirectory ?? homedir())
+      if (!inside(win32, user.toLowerCase(), real.toLowerCase())) return { path: real, access: "unknown" }
+      const profile = await fs.identity(user)
+      for (let at = real; ; at = win32.dirname(at)) {
+        if (await fs.identity(at) === profile) return undefined
+        if (win32.dirname(at) === at) return { path: real, access: "unknown" }
+      }
     }
     const me = options.uid ?? process.getuid?.()
     if (me === undefined) return { path: real, access: "unknown" }

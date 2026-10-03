@@ -578,19 +578,43 @@ describe("staging the shipped runtime under the profile", () => {
   // Windows: Node cannot read ACLs, so a staging place is accepted only
   // inside this user's own profile directory, where the default TEMP
   // (%LOCALAPPDATA%\Temp) and the app's userData (%APPDATA%) are.
+  //
+  // PR #712 security review round 3 (P2-4): inside the profile is decided by
+  // file system identity, an ancestor that is the profile directory itself,
+  // not by comparing names case-folded: a directory with per-directory case
+  // sensitivity can hold a sibling of the profile whose name differs only in
+  // case.
   describe("on Windows", () => {
-    const fileSystem = (directories: string[]) => nodeRuntimeFileSystem({
-      entry: async (path) => directories.includes(path) ? "directory" : "missing",
+    // Device and inode as lstat would report them. On a case-insensitive
+    // directory every spelling of a name is the same entry, so by default the
+    // identity follows the name case-folded; distinct lists entries that are
+    // not, and unreadable those whose identity cannot be read.
+    const fileSystem = (distinct: Record<string, string> = {}, unreadable: string[] = []) => nodeRuntimeFileSystem({
       realpath: async (path) => path,
+      identity: async (path) => {
+        if (unreadable.includes(path)) throw new Error("EPERM")
+        return distinct[path] ?? `7:${path.toLowerCase()}`
+      },
       permissions: async () => { throw new Error("Windows has no POSIX owner or mode to read") },
     })
+    const check = (path: string, files = fileSystem()) => unprotectedStagingDirectory(path, { platform: "win32", fileSystem: files, userDirectory: "C:\\Users\\dana" })
+
     it("accepts a place inside the user's profile and names one outside it", async () => {
-      const directories = ["C:\\Users\\dana", "C:\\Users\\dana\\AppData\\Local\\Temp", "D:\\shared\\temp"]
-      const check = (path: string) => unprotectedStagingDirectory(path, { platform: "win32", fileSystem: fileSystem(directories), userDirectory: "C:\\Users\\dana" })
       expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp")).toBeUndefined()
       expect(await check("c:\\users\\DANA\\AppData\\Roaming\\Domovoi")).toBeUndefined()
       expect(await check("D:\\shared\\temp")).toBe("D:\\shared\\temp")
       expect(await check("C:\\Windows\\Temp")).toBe("C:\\Windows\\Temp")
+    })
+
+    it("refuses a place under a case-sensitive sibling of the profile whose name differs only in case", async () => {
+      const files = fileSystem({ "C:\\Users\\Dana": "7:sibling" })
+      expect(await check("C:\\Users\\Dana\\Temp", files)).toBe("C:\\Users\\Dana\\Temp")
+      expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp", files)).toBeUndefined()
+    })
+
+    it("refuses a place whose ancestry or profile cannot be identified", async () => {
+      expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp", fileSystem({}, ["C:\\Users\\dana\\AppData"]))).toBe("C:\\Users\\dana\\AppData\\Local\\Temp")
+      expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp", fileSystem({}, ["C:\\Users\\dana"]))).toBe("C:\\Users\\dana\\AppData\\Local\\Temp")
     })
   })
 
