@@ -130,9 +130,12 @@ export function ApprovalCard({
           <div className="flex flex-wrap items-center gap-2">
             <Button variant="warning" size="sm" disabled={!connected} onClick={() => decide("allow-once")}>Allow once</Button>
             {/* Ruled 2026-09-24: the daemon refuses a standing rule on a hard gate
-                and for a request it could not resolve, so the card offers none. */}
+                and for a request it could not resolve, so the card offers none.
+                Ruled Q371 A: a rule matches this execution record, not a
+                command family, so the label names "this command" on every
+                surface rather than the design's "prisma migrate". */}
             {approval.execution.state === "resolved" && approval.risk !== "hard-gate" ? (
-              <Button variant="outline" size="sm" disabled={!connected} onClick={() => decide("always-project")}>{surface === "web" ? "Always here" : "Always in this project"}</Button>
+              <Button variant="outline" size="sm" disabled={!connected} onClick={() => decide("always-project")}>Always for this command here</Button>
             ) : null}
             <Button ref={explainTriggerRef} variant="outline" size="sm" disabled={!connected} onClick={() => setExplainOpen(true)}>Deny</Button>
             {surface === "web" ? <span className="ml-auto font-machine text-[10.5px] text-warn-dim">This tab holds the gate</span> : null}

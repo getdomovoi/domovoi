@@ -276,7 +276,9 @@ it.each(["desktop", "web"] as const)("shows the rewritten file target on the %s 
   expect(affects()).toBe("The file two/file in the session worktree.")
 
   await user.click(screen.getByRole("button", { name: "Allow once" }))
-  await user.click(screen.getByRole("button", { name: surface === "web" ? "Always here" : "Always in this project" }))
+  // Ruled Q371 A: one label on every surface. A rule matches the execution
+  // record, not a command family, so it names "this command".
+  await user.click(screen.getByRole("button", { name: "Always for this command here" }))
   await user.click(screen.getByRole("button", { name: "Deny" }))
   await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "Not that file")
   await user.click(screen.getByRole("button", { name: "Deny with explanation" }))
@@ -315,7 +317,7 @@ it("uses the signed web gate wording and names the holder", () => {
   const card = screen.getByRole("alert")
   expect(card.textContent).toContain("Approval required, hard gate")
   expect(card.textContent).toContain("This tab holds the gate")
-  expect(screen.queryByRole("button", { name: "Always in this project" })).toBeNull()
+  expect(screen.queryByRole("button", { name: /^Always/u })).toBeNull()
 })
 
 // Ruled by fetzy 2026-09-24, against the signed web design on this one point:
@@ -325,8 +327,7 @@ it.each(["desktop", "web"] as const)("offers no Always on a %s hard-gate card", 
   expect(approval.risk).toBe("hard-gate")
   expect(approval.execution.state).toBe("resolved")
   expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy()
-  expect(screen.queryByRole("button", { name: "Always here" })).toBeNull()
-  expect(screen.queryByRole("button", { name: "Always in this project" })).toBeNull()
+  expect(screen.queryByRole("button", { name: /^Always/u })).toBeNull()
 })
 
 it("keeps optional explanation behind Deny instead of a fourth peer action", async () => {
@@ -334,7 +335,7 @@ it("keeps optional explanation behind Deny instead of a fourth peer action", asy
   renderThread("desktop", "normal")
   const weight = (name: string) => screen.getByRole("button", { name }).className
   expect(weight("Allow once")).toContain("bg-warning")
-  expect(weight("Always in this project")).toContain("border-border")
+  expect(weight("Always for this command here")).toContain("border-border")
   expect(weight("Deny")).toContain("border-border")
   expect(screen.queryByRole("button", { name: "Deny and explain" })).toBeNull()
 
@@ -373,7 +374,7 @@ it("holds every decision while the daemon is disconnected, and says why", async 
   // The client knows it is disconnected, not why: an auth refusal and a lost
   // network look the same from here, so the line names no cause.
   expect(card.textContent).toContain("Cannot answer this gate while this client is disconnected from the daemon.")
-  for (const name of ["Allow once", "Always in this project", "Deny"]) {
+  for (const name of ["Allow once", "Always for this command here", "Deny"]) {
     expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true)
   }
 
@@ -463,7 +464,6 @@ it.each(["desktop", "web"] as const)("offers no Always on the %s card for a requ
   )
   expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy()
   expect(screen.getByRole("button", { name: "Deny" })).toBeTruthy()
-  expect(screen.queryByRole("button", { name: "Always in this project" })).toBeNull()
-  expect(screen.queryByRole("button", { name: "Always here" })).toBeNull()
+  expect(screen.queryByRole("button", { name: /^Always/u })).toBeNull()
 })
 

@@ -185,9 +185,12 @@
       ],
       "evidence": [
         "Approval required, hard gate",
-        "Always here",
+        "Always for this command here",
         "Allow once",
         "Deny"
+      ],
+      "notes": [
+        "2026-10-02 (ruling Q371 A): the Always button reads Always for this command here on every surface, in place of the design's Always here. A rule matches the execution record, not a command family."
       ]
     },
     {
