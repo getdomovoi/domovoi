@@ -45,7 +45,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the phone and tablet paths are built; the Web browser path is not right. It draws the same domovoi-pair QR and Copy payload as a phone, which the web connect page refuses (it parses only the word code), and a phone camera scanning that QR opens the phone's own pairing, greets as a phone and spends the web code. Q398 and Q399, picked and reported to fetzy 2026-10-02 (awaiting his confirmation), draw no QR on the Web browser tab, say to type the code there, and show webAppUrl as text when the daemon has one. Copy follows the design's own instruction for a browser (Open the address in the browser and type the code.) and hands over the code alone. That branch is built on open PR #704 (fix/v2-web), not on main. The evidence names the branch on the issued kind that #704 adds"
+        "reason": "the phone and tablet paths are built; the Web browser path is not right. It draws the same domovoi-pair QR and Copy payload as a phone, which the web connect page refuses (it parses only the word code), and a phone camera scanning that QR opens the phone's own pairing, greets as a phone and spends the web code. Q398 and Q399 (picked 2026-10-02, confirmed by fetzy the same day), draw no QR on the Web browser tab, say to type the code there, and show webAppUrl as text when the daemon has one. Copy follows the design's own instruction for a browser (Open the address in the browser and type the code.) and hands over the code alone. That branch is built on open PR #704 (fix/v2-web), not on main. The evidence names the branch on the issued kind that #704 adds"
       }
     },
     {
@@ -100,7 +100,7 @@
     {
       "id": "pairing-card.code",
       "since": "2026-10-02",
-      "note": "Q398 and Q399, picked and reported to fetzy 2026-10-02 (awaiting his confirmation), differ from the drawn browser QR: the Web browser tab draws no QR, even when the daemon has a webAppUrl, and says to type the code into the web page, showing webAppUrl as text when there is one. Separately, Copy follows the design's own browser instruction (Open the address in the browser and type the code.) and hands over the code alone. The drawn browser QR would be scanned by a phone camera, whose browser greets as a phone or tablet, so a web-kind code would always end in a kind mismatch and an extra paired device. Built on open PR #704, not on main yet."
+      "note": "Q398 and Q399 (picked 2026-10-02, confirmed by fetzy the same day), differ from the drawn browser QR: the Web browser tab draws no QR, even when the daemon has a webAppUrl, and says to type the code into the web page, showing webAppUrl as text when there is one. Separately, Copy follows the design's own browser instruction (Open the address in the browser and type the code.) and hands over the code alone. The drawn browser QR would be scanned by a phone camera, whose browser greets as a phone or tablet, so a web-kind code would always end in a kind mismatch and an extra paired device. Built on open PR #704, not on main yet."
     },
     {
       "id": "pairing-card.code",
