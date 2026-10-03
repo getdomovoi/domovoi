@@ -67,7 +67,7 @@
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "nothing tells the window that issued a code that a device redeemed it or was refused (protocol mismatch, device list full), so the paired receipt and the refusals cannot be drawn"
+        "reason": "nothing tells the window that issued a code that a device redeemed it or was refused (protocol mismatch, device list full): device.issueCode returns the code, expiry and address only, so the paired receipt and the refusals cannot be drawn. Q354 A (2026-10-02): the daemon sends a notification or an issueCode follow-up saying redeemed, or refused with a reason (protocol); inferring it from device.list could name the wrong device and is ruled out"
       }
     }
   ],
@@ -75,7 +75,22 @@
     {
       "id": "pairing-card.code",
       "since": "2026-09-23",
-      "note": "Phase titles, reach lines and outcome lines are in the component's data; read them against the component. The design's own open question: the unbuilt grant line reads \"Terminal output is not on a phone yet.\" here and \"... Everything else here works.\" in phoneAndTabletPromise."
+      "note": "Phase titles, reach lines and outcome lines are in the component's data; read them against the component."
+    },
+    {
+      "id": "pairing-card.grants",
+      "since": "2026-10-02",
+      "note": "The design's open question on the unbuilt grant line is settled: phoneAndTabletPromise now says Terminal output is not on a phone yet., the design's line, word for word."
+    },
+    {
+      "id": "pairing-card.code",
+      "since": "2026-10-02",
+      "note": "Q347 A: the locked state's mono line pair.issue refused · watch_only_client names a method and code that do not exist; it becomes device.issueCode refused · watching-only credential, a ruled difference from the drawn copy."
+    },
+    {
+      "id": "pairing-card.code",
+      "since": "2026-10-02",
+      "note": "Open gaps in the code slot. Copy for Web browser copies a domovoi-pair payload, which the web connect page refuses (it parses only the code); the design says to type the code. The card learns of a loopback-only or certificate problem only after spending a code, and its problem block has no actions (the design draws Show another, Open Machines and the tailnet actions; the tailnet ones wait on TailnetReach). The certificate problem's copy differs on purpose while TailnetReach is unbuilt. The line The same code as domovoid pair --client <kind> names a command that prints usage and fails without --label, and from a DMG install no domovoid is on PATH (Q336 A links Domovoi's own binaries into ~/.local/bin or shows the absolute bundled command)."
     }
   ],
   "scriptBacklog": {
