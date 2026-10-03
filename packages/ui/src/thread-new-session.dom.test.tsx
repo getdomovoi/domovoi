@@ -76,12 +76,26 @@ it.each(["desktop", "web"] as const)("draws Nothing has run yet on a %s session 
   expect((screen.getByLabelText("Message") as HTMLTextAreaElement).placeholder).toBe("Say what you want done in acme-api")
 })
 
+// Ask is read-only in the daemon for every provider that offers it, so it has
+// no gate to allow and no checkpoint to take. What Plan and Ask hold a
+// provider to is what the daemon configures for that provider.
 it.each([
-  ["plan", false, ["Read the repository and propose a plan. It cannot write or run anything in Plan."]],
-  ["ask", false, [
-    "Read the repository. Each write and command asks you first, one at a time.",
-    "Take a checkpoint before any command you allow, so the worktree can go back to it.",
-  ]],
+  ["claude-code", "plan", ["Read the repository and propose a plan. Claude's own plan mode makes no changes."]],
+  ["codex", "plan", ["Read the repository and propose a plan. Commands run in a read-only sandbox, so nothing is written."]],
+  ["claude-code", "ask", ["Read the repository. Edits and shell commands are refused."]],
+  ["codex", "ask", ["Read the repository. Commands run in a read-only sandbox, so nothing is written."]],
+  ["opencode", "ask", ["Read the repository. Edits and shell commands are refused."]],
+] as const)("says what %s in %s will do first, from what the daemon enforces", (provider, mode, rows) => {
+  const snapshot = freshSession(mode)
+  const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+  active.runtime = { ...active.runtime, provider }
+  renderThread(snapshot)
+
+  const list = screen.getByRole("list", { name: "What it will do first" })
+  expect(within(list).getAllByRole("listitem").map((row) => row.textContent)).toEqual([...rows])
+})
+
+it.each([
   ["build", false, [
     "Write and run inside the worktree. Gates still stop it for your decision.",
     "Take a checkpoint before any command you allow, so the worktree can go back to it.",

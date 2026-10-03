@@ -3,26 +3,34 @@ import type { PermissionMode, Runtime } from "@getdomovoi/protocol"
 // The protocol has three modes and a separate auto flag that is only legal with
 // build. The pre-v2 UI offered "Read only / Ask before writes / Auto in
 // worktree", which matched neither, and let auto survive a move out of build.
+// What each mode does depends on what the daemon enforces for the provider,
+// so the notes come from permissionModeNote rather than living here.
 export const permissionModes = [
-  {
-    id: "plan",
-    label: "Plan",
-    meaning: "handoff",
-    note: "Reads and proposes. It cannot write or run anything.",
-  },
-  {
-    id: "ask",
-    label: "Ask",
-    meaning: "waiting",
-    note: "Writes and commands ask first, one at a time.",
-  },
-  {
-    id: "build",
-    label: "Build",
-    meaning: "online",
-    note: "Writes and runs inside the worktree. Gates still apply.",
-  },
-] as const satisfies readonly { id: PermissionMode; label: string; meaning: string; note: string }[]
+  { id: "plan", label: "Plan", meaning: "handoff" },
+  { id: "ask", label: "Ask", meaning: "waiting" },
+  { id: "build", label: "Build", meaning: "online" },
+] as const satisfies readonly { id: PermissionMode; label: string; meaning: string }[]
+
+// What holds the provider in Plan and Ask, as the daemon configures it:
+// - Codex runs both in its read-only sandbox (codexPolicyFor: domovoi-read),
+//   so it can still run commands, and they cannot write.
+// - opencode and kilo deny edit and bash to the plan and domovoi-ask agents.
+// - Claude in Ask may use only Read, Glob, Grep, WebFetch and WebSearch, and
+//   the daemon refuses the rest; Plan is Claude's own plan permission mode.
+// - Any other provider: Ask is read-only where the daemon allows it at all,
+//   and Plan is the provider's own plan mode, which the daemon does not hold.
+export function readOnlyEnforcement(mode: "plan" | "ask", provider: string): string {
+  if (provider === "codex") return "Commands run in a read-only sandbox, so nothing is written."
+  if (provider === "opencode" || provider === "kilo") return "Edits and shell commands are refused."
+  if (provider === "claude-code") return mode === "plan" ? "Claude's own plan mode makes no changes." : "Edits and shell commands are refused."
+  return mode === "plan" ? "The provider's own plan mode decides what it may run." : "Anything that would write is refused."
+}
+
+export function permissionModeNote(mode: PermissionMode, provider: string): string {
+  if (mode === "plan") return `Reads and proposes a plan. ${readOnlyEnforcement("plan", provider)}`
+  if (mode === "ask") return `Reads only. ${readOnlyEnforcement("ask", provider)}`
+  return "Writes and runs inside the worktree. Gates still apply."
+}
 
 // `satisfies` proves every entry's id is a real mode. It does not prove the list
 // carries every mode, and the lookup below asserts non-null, so a fourth mode

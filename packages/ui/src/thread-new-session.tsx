@@ -1,23 +1,23 @@
 import type { Runtime } from "@getdomovoi/protocol"
 
 import { cn } from "./lib/utils"
+import { readOnlyEnforcement } from "./permission-mode"
 
 type Row = { text: string, tone: "success" | "info" }
 
 // Ruled Q368 A: the rows come only from what the session's mode and the
 // daemon's checkpoint policy decide. The design's three rows describe Ask in
 // every mode. J34: a person's allow takes a checkpoint first; a command that
-// Auto or a standing rule allows takes none. Plan writes nothing, so it gets no
-// checkpoint row. The design's starters wait on a suggestion source.
-export function whatItWillDoFirst(runtime: Pick<Runtime, "permissionMode" | "auto">): Row[] {
+// Auto or a standing rule allows takes none. Plan and Ask are read-only as the
+// daemon configures each provider (readOnlyEnforcement), so they raise no gate
+// to allow and get no checkpoint row. The design's starters wait on a
+// suggestion source.
+export function whatItWillDoFirst(runtime: Pick<Runtime, "provider" | "permissionMode" | "auto">): Row[] {
   if (runtime.permissionMode === "plan") {
-    return [{ text: "Read the repository and propose a plan. It cannot write or run anything in Plan.", tone: "success" }]
+    return [{ text: `Read the repository and propose a plan. ${readOnlyEnforcement("plan", runtime.provider)}`, tone: "success" }]
   }
   if (runtime.permissionMode === "ask") {
-    return [
-      { text: "Read the repository. Each write and command asks you first, one at a time.", tone: "success" },
-      { text: "Take a checkpoint before any command you allow, so the worktree can go back to it.", tone: "info" },
-    ]
+    return [{ text: `Read the repository. ${readOnlyEnforcement("ask", runtime.provider)}`, tone: "success" }]
   }
   if (runtime.auto) {
     return [
@@ -56,7 +56,7 @@ export function WorktreeReadyHeader({ workspacePath, baseCommit }: { workspacePa
   )
 }
 
-export function NothingHasRunYet({ runtime }: { runtime: Pick<Runtime, "permissionMode" | "auto"> }) {
+export function NothingHasRunYet({ runtime }: { runtime: Pick<Runtime, "provider" | "permissionMode" | "auto"> }) {
   const rows = whatItWillDoFirst(runtime)
   return (
     <section className="mx-auto flex w-full max-w-[620px] flex-col gap-[15px] py-6">
