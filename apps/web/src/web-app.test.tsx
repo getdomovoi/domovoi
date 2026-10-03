@@ -184,7 +184,7 @@ describe("WebApp", () => {
     await draw(storage, vi.fn(() => pairingClient("pairs")), { clientKind: "phone" })
     await submitCode("hearth-quiet-ember-42")
     expect(text()).toContain("This code is for a web browser")
-    expect(text()).toContain("This browser counts as a phone. On 127.0.0.1:47831, show a phone code under Settings, Phone and tablet. The code was used, so unpair the extra device under Machines.")
+    expect(text()).toContain("This browser counts as a phone. On 127.0.0.1:47831, show a phone code under Settings, Phone and tablet. The code was used, so in the desktop app on 127.0.0.1:47831, under Machines, revoke Phone browser 1234.")
     expect(text()).not.toContain("This browser is paired with")
     expect(storage.getItem("domovoi.daemon-session")).toBeNull()
   })

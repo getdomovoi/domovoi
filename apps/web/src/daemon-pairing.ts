@@ -121,14 +121,16 @@ export class DeviceKindMismatchError extends Error {
   }
 }
 
-function kindMismatchOutcome(cause: DeviceKindMismatchError, host: string): Omit<PairingOutcome, "action"> {
+// The daemon enrolled the device before this page saw its kind, so the card
+// names it for revoking. Only the machine's desktop app revokes a device.
+function kindMismatchOutcome(cause: DeviceKindMismatchError, host: string, label: string | undefined): Omit<PairingOutcome, "action"> {
   const expected = kindNames[cause.expected]
   return {
     tone: "danger",
     pill: "not kept",
     title: cause.bound ? `This code is for ${kindNames[cause.bound].device}` : "This code is not for a browser",
     mono: `pair.refused · kind_mismatch · code ${cause.bound ?? "none"}, browser ${cause.expected}`,
-    body: `This browser counts as ${expected.device}. On ${host}, show a ${expected.code} under Settings, Phone and tablet. The code was used, so unpair the extra device under Machines.`,
+    body: `This browser counts as ${expected.device}. On ${host}, show a ${expected.code} under Settings, Phone and tablet. The code was used, so in the desktop app on ${host}, under Machines, revoke ${label ?? "this browser's device"}.`,
   }
 }
 
@@ -151,7 +153,7 @@ function olderSide(cause: DaemonRpcError): "page" | "daemon" | undefined {
 // expired, was spent, or came from another machine, and does not guess.
 // label: the device label this page sent with the code, when it sent one.
 export function pairingOutcomeFor(cause: unknown, host: string, label?: string): Omit<PairingOutcome, "action"> {
-  if (cause instanceof DeviceKindMismatchError) return kindMismatchOutcome(cause, host)
+  if (cause instanceof DeviceKindMismatchError) return kindMismatchOutcome(cause, host, label)
   if (cause instanceof DaemonRpcError) {
     if (cause.code === protocolVersionMismatchErrorCode) {
       const data = mismatchData(cause)
