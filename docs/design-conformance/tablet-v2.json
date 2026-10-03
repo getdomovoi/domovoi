@@ -77,7 +77,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the header draws the title and project · branch · worktree; there is no clock, the files button counts the session's artifacts, not its changed files (session.changedFiles and session.evidence are on the allow-list), the button is an outline pill without the GitCompare icon, and the theme toggle draws the settings gear, not a moon or sun (those icons are not in components/ui/icon.tsx). The clock is client work: session.history (on the phone and tablet allow-list) carries each turn's startedAt and completedAt (sessionTurnSchema). Q390 A (2026-10-02) assumed no turn duration is on the wire, which the code contradicts; the ruling needs revisiting"
+        "reason": "the header draws the title and project · branch · worktree; there is no clock, the files button counts the session's artifacts, not its changed files (session.changedFiles and session.evidence are on the allow-list), the button is an outline pill without the GitCompare icon, and the theme toggle draws the settings gear, not a moon or sun (those icons are not in components/ui/icon.tsx). The clock is client work: session.history (on the phone and tablet allow-list) carries each turn's startedAt and completedAt (sessionTurnSchema). Q401 (2026-10-02): durations are client work from session.history today, and from the snapshot's derived turns once the fix/v2-protocol branch lands (a turn ended by a restart has no completedAt)"
       }
     },
     {
@@ -97,7 +97,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the thread draws turns and a static Work this turn pill with a session-wide tool count and an artifact count as files; it does not expand, every tool call renders inline as a note instead of folding into the activity list, the thread does not follow the end (TabletThread omits followEnd, so a long thread opens at the top with the gate off screen), and omitted items are not stated. The earlier evidence TabletThread was a substring of TabletThreadHeader and TabletThreadEntry, so it proved nothing. Worked for N is client work: session.history (on the allow-list) carries each turn's startedAt and completedAt; Q390 A (2026-10-02) assumed otherwise and needs revisiting. Per-tool durations need protocol: a tool item has no duration"
+        "reason": "the thread draws turns and a static Work this turn pill with a session-wide tool count and an artifact count as files; it does not expand, every tool call renders inline as a note instead of folding into the activity list, the thread does not follow the end (TabletThread omits followEnd, so a long thread opens at the top with the gate off screen), and omitted items are not stated. The earlier evidence TabletThread was a substring of TabletThreadHeader and TabletThreadEntry, so it proved nothing. Worked for N is client work: session.history (on the allow-list) carries each turn's startedAt and completedAt, and Q401 (2026-10-02) makes it client work from there today and from the snapshot's derived turns once the fix/v2-protocol branch lands. Per-tool durations need protocol: a tool item has no duration"
       }
     },
     {

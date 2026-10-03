@@ -990,7 +990,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "ThreadStartLine draws repo, branch and worktree, then started HH:MM, and carries no controls; the gap is the clock. The design draws started 14:02 · 4m 18s when done, started 14:02 · running 1m 09s while working and started 13:41 · stalled at 14:06 when the daemon is lost. The clock is client work: session.history entries carry turn (sessionTurnSchema) with startedAt and completedAt, and usage-chip.tsx already reads the latest turn through latestTurnFromHistory. Q390 A (2026-10-02) rests on the premise that no turn duration is on the wire, which the code contradicts; the ruling needs revisiting before anyone adds protocol fields"
+        "reason": "ThreadStartLine draws repo, branch and worktree, then started HH:MM, and carries no controls; the gap is the clock. The design draws started 14:02 · 4m 18s when done, started 14:02 · running 1m 09s while working and started 13:41 · stalled at 14:06 when the daemon is lost. The clock is client work: session.history entries carry turn (sessionTurnSchema) with startedAt and completedAt, and usage-chip.tsx already reads the latest turn through latestTurnFromHistory. Q401 (2026-10-02) settles it: durations are client work from session.history today, and from the snapshot's derived turns once the fix/v2-protocol branch lands (a turn ended by a restart has no completedAt, so it shows no duration)"
       }
     },
     {
@@ -1066,7 +1066,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "activity groups exist and read N tool calls[, N failed]; the design's Working, Worked for 4m 18s, show the steps and Stopped labels are not drawn, step dots show online or offline only where the design colours them by outcome, and Output is a text button where the design toggles the whole row. Worked for N is client work: session.history entries carry turn (sessionTurnSchema) with startedAt and completedAt, which usage-chip.tsx already reads through latestTurnFromHistory. Q390 A (2026-10-02) assumed no turn duration is on the wire, which the code contradicts; the ruling needs revisiting"
+        "reason": "activity groups exist and read N tool calls[, N failed]; the design's Working, Worked for 4m 18s, show the steps and Stopped labels are not drawn, step dots show online or offline only where the design colours them by outcome, and Output is a text button where the design toggles the whole row. Worked for N is client work: session.history entries carry turn (sessionTurnSchema) with startedAt and completedAt, which usage-chip.tsx already reads through latestTurnFromHistory. Q401 (2026-10-02): durations are client work from session.history today, and from the snapshot's derived turns once the fix/v2-protocol branch lands (a turn ended by a restart has no completedAt)"
       }
     },
     {
