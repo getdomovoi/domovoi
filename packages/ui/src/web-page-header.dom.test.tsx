@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it } from "vitest"
 
@@ -39,6 +39,31 @@ it("draws the mark, Domovoi, the page label and a theme toggle that keeps its ch
   expect(document.documentElement.classList.contains("light")).toBe(true)
   expect(JSON.parse(storage.getItem(workspaceUiStorageKey) ?? "{}")).toMatchObject({ theme: "light" })
   expect(screen.getByRole("button", { name: "Use dark theme" })).toBeTruthy()
+})
+
+// With the system theme, the toggle follows the system's appearance as it
+// changes, so its label names the theme it will switch to.
+it("follows a system appearance change while the theme is system", () => {
+  const listeners = new Set<() => void>()
+  const query = {
+    matches: true,
+    addEventListener: (_event: "change", listener: () => void) => { listeners.add(listener) },
+    removeEventListener: (_event: "change", listener: () => void) => { listeners.delete(listener) },
+  }
+  const original = globalThis.matchMedia
+  globalThis.matchMedia = (() => query) as unknown as typeof globalThis.matchMedia
+  try {
+    render(<WebPageHeader label="Connect this browser" storage={memoryStorage(JSON.stringify({ ...defaultWorkspaceUiState(), theme: "system" }))} />)
+    expect(screen.getByRole("button", { name: "Use light theme" })).toBeTruthy()
+    act(() => {
+      query.matches = false
+      for (const listener of listeners) listener()
+    })
+    expect(screen.getByRole("button", { name: "Use dark theme" })).toBeTruthy()
+    expect(document.documentElement.classList.contains("light")).toBe(true)
+  } finally {
+    globalThis.matchMedia = original
+  }
 })
 
 it("still toggles the theme when storage is unavailable", async () => {

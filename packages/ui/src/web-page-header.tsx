@@ -1,5 +1,5 @@
 import { MoonIcon, SunIcon } from "lucide-react"
-import { useState } from "react"
+import { useEffect, useState } from "react"
 
 import { colorSchemeQuery, resolveAppearanceTheme, useAppearanceTheme, type WorkspaceTheme } from "./appearance"
 import { Button } from "./components/ui/button"
@@ -20,7 +20,19 @@ export function WebPageHeader({ label, storage }: {
   const store = storage === null ? undefined : storage ?? browserWorkspaceUiStorage()
   const [theme, setTheme] = useState<WorkspaceTheme>(() => loadWorkspaceUiState(store).theme)
   useAppearanceTheme(theme)
-  const resolved = resolveAppearanceTheme(theme, colorSchemeQuery()?.matches ?? true)
+  // The system's appearance, kept in state so the toggle's label and icon
+  // follow it while the theme is system.
+  const [prefersDark, setPrefersDark] = useState(() => colorSchemeQuery()?.matches ?? true)
+  useEffect(() => {
+    if (theme !== "system") return
+    const query = colorSchemeQuery()
+    if (!query?.addEventListener || !query.removeEventListener) return
+    const listener = () => setPrefersDark(query.matches)
+    listener()
+    query.addEventListener("change", listener)
+    return () => query.removeEventListener?.("change", listener)
+  }, [theme])
+  const resolved = resolveAppearanceTheme(theme, prefersDark)
 
   const toggle = () => {
     const next = resolved === "dark" ? "light" : "dark"
