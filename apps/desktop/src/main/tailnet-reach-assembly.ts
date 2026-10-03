@@ -12,6 +12,7 @@ import type { DaemonModule } from "./daemon-module.js"
 import type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
 import {
   parseTailnetReachRecord,
+  readTailnetReachRecordText,
   savedTailnetReachEnvironment,
   tailnetHostConflict,
   tailnetReachRecordFile,
@@ -135,12 +136,11 @@ export function createTailnetReach(input: {
       removeDirectory: (path) => rm(path, { recursive: true, force: true }),
     },
     record: {
+      // Codex review round 1 (P2-3): read as startup reads it, never through
+      // a link, a FIFO or past 4 KiB.
       read: async () => {
-        try {
-          return parseTailnetReachRecord(await readFile(recordPath, "utf8"), tlsDirectory)
-        } catch {
-          return undefined
-        }
+        const text = readTailnetReachRecordText(recordPath)
+        return text === undefined ? undefined : parseTailnetReachRecord(text, tlsDirectory)
       },
       write: async (record: TailnetReachRecord) => {
         await mkdir(input.dataDirectory, { recursive: true })

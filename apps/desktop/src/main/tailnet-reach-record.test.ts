@@ -1,6 +1,8 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { execFile } from "node:child_process"
+import { mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { promisify } from "node:util"
 
 import { describe, expect, it } from "vitest"
 
@@ -143,6 +145,33 @@ describe("the saved TailnetReach settings at startup", () => {
   it("leaves out a record written for another profile", async () => {
     await saved((directory) => {
       expect(savedTailnetReachEnvironment(directory, { DOMOVOI_PROFILE_DIR: "/srv/domovoi" }, home)).toEqual({})
+    })
+  })
+
+  // Codex review round 1 (P2-3): startup reads the record synchronously,
+  // before the daemon starts. Only a regular file of at most 4 KiB that is not
+  // a link is read, opened without following a link or waiting on a FIFO, so
+  // nothing at that path can hold startup; anything else gives no settings.
+  it.skipIf(process.platform === "win32")("gives nothing for a record that is a link", async () => {
+    await saved(async (directory) => {
+      const elsewhere = join(directory, "elsewhere.json")
+      await rename(join(directory, tailnetReachRecordFile), elsewhere)
+      await symlink(elsewhere, join(directory, tailnetReachRecordFile))
+      expect(savedTailnetReachEnvironment(directory, {}, home)).toEqual({})
+    })
+  })
+
+  it("gives nothing for a record over 4 KiB", async () => {
+    await saved((directory) => {
+      expect(savedTailnetReachEnvironment(directory, {}, home)).toEqual({})
+    }, `${text()}${" ".repeat(4 * 1_024)}`)
+  })
+
+  it.skipIf(process.platform === "win32")("gives nothing, without waiting, for a record that is a FIFO", async () => {
+    await saved(async (directory) => {
+      await rm(join(directory, tailnetReachRecordFile))
+      await promisify(execFile)("mkfifo", [join(directory, tailnetReachRecordFile)])
+      expect(savedTailnetReachEnvironment(directory, {}, home)).toEqual({})
     })
   })
 

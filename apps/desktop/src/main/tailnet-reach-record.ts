@@ -4,7 +4,7 @@
 // tailnet settings at each start. index.ts loads this module only when such a
 // record exists or the switch is used, so it is not part of startup otherwise.
 
-import { readFileSync } from "node:fs"
+import { closeSync, constants, fstatSync, lstatSync, openSync, readSync } from "node:fs"
 import { isIPv4, isIPv6 } from "node:net"
 import { homedir } from "node:os"
 import { join, posix, win32 } from "node:path"
@@ -115,10 +115,42 @@ export function tailnetHostConflict(environment: Readonly<Record<string, string 
 export function savedTailnetReachRecord(dataDirectory: string, environment: Readonly<Record<string, string | undefined>>, home = homedir()): TailnetReachRecord | undefined {
   const tls = tailnetTlsDirectory(environment, home)
   if (tls === undefined) return undefined
+  const text = readTailnetReachRecordText(join(dataDirectory, tailnetReachRecordFile))
+  return text === undefined ? undefined : parseTailnetReachRecord(text, tls)
+}
+
+// A record is under 300 bytes.
+const recordLimit = 4 * 1_024
+
+// Codex review round 1 (P2-3): the record's text, read only when the file at
+// path is a regular file of at most 4 KiB and not a link. It is opened without
+// following a link (O_NOFOLLOW, with an lstat first where that flag does not
+// exist) and without waiting on a FIFO (O_NONBLOCK), and checked on the opened
+// file, so nothing placed at the path can hold the main process before the
+// daemon starts. Anything else, or any error, is no record: the daemon starts
+// on loopback. Synchronous, because startup builds the acquisition options so.
+export function readTailnetReachRecordText(path: string): string | undefined {
+  let descriptor: number
   try {
-    return parseTailnetReachRecord(readFileSync(join(dataDirectory, tailnetReachRecordFile), "utf8"), tls)
+    if (lstatSync(path).isSymbolicLink()) return undefined
+    descriptor = openSync(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0))
   } catch {
     return undefined
+  }
+  try {
+    const entry = fstatSync(descriptor)
+    if (!entry.isFile() || entry.size > recordLimit) return undefined
+    const buffer = Buffer.alloc(recordLimit + 1)
+    let length = 0
+    for (let read = -1; read !== 0 && length <= recordLimit;) {
+      read = readSync(descriptor, buffer, length, buffer.length - length, null)
+      length += read
+    }
+    return length > recordLimit ? undefined : buffer.toString("utf8", 0, length)
+  } catch {
+    return undefined
+  } finally {
+    closeSync(descriptor)
   }
 }
 
