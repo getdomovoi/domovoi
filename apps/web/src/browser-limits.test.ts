@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 
 import { maximumImageUploadBytes, maximumImageUploadDimension, maximumSessionAttachments, maximumTextAttachmentBytes } from "@getdomovoi/protocol"
 
@@ -86,6 +86,22 @@ describe("browserLimits", () => {
 
     const blocked = browserLimits(environment(), "ws://127.0.0.1:47831/rpc", false)
     expect(row(blocked, "Hold the credential")).toMatchObject({ state: "refused", tone: "refused", why: browserRefusalMessage["credentials-unavailable"] })
+  })
+
+  // The dimension cap is the protocol's, not a number copied into the copy:
+  // when the protocol moves it, the row follows.
+  it("reads the image dimension cap from the protocol", async () => {
+    vi.resetModules()
+    vi.doMock("@getdomovoi/protocol", async (importOriginal) => ({ ...await importOriginal<typeof import("@getdomovoi/protocol")>(), maximumImageUploadDimension: 4096 }))
+    try {
+      const { browserLimits: limits } = await import("./browser-limits")
+      const why = row(limits(environment(), "ws://127.0.0.1:47831/rpc", true), "Attach a local file").why
+      expect(why).toContain("4096 pixels on each side")
+      expect(why).not.toContain("2048")
+    } finally {
+      vi.doUnmock("@getdomovoi/protocol")
+      vi.resetModules()
+    }
   })
 
   it("names the route only when it can read it, and the install prompt when the browser offers one", () => {
