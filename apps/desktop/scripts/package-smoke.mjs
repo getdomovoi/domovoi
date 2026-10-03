@@ -99,6 +99,15 @@ if (process.platform !== "win32") {
     throw new Error(`${description} shipped domovoid launcher at ${launcher} printed ${JSON.stringify(launched.stdout.trim())} for --version, expected ${daemonManifest.version}`)
   }
   process.stdout.write(`shipped domovoid launcher runs: ${launcher} --version printed ${daemonManifest.version}\n`)
+  // Review P3-5: the CLI's launcher. domovoi --help prints its usage to
+  // stderr and exits 0.
+  const cli = join(resourcesDirectory, "daemon-runtime", "bin", "domovoi")
+  const helped = await runSmokeProcess({ command: cli, args: ["--help"], cwd: desktopRoot, env: process.env, timeoutMs: 30_000 })
+  if (helped.timedOut || helped.code !== 0 || !helped.stderr.startsWith("Usage:")) {
+    reportSmokeOutput(helped)
+    throw new Error(`${description} shipped domovoi launcher at ${cli} did not print its usage for --help`)
+  }
+  process.stdout.write(`shipped domovoi launcher runs: ${cli} --help printed its usage\n`)
 }
 
 const timeoutMs = launchSmokeTimeoutMs({ platform: process.platform, env: process.env })

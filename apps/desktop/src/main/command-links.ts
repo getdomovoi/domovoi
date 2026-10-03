@@ -2,22 +2,24 @@ import { lstat, mkdir, readlink, symlink, unlink } from "node:fs/promises"
 import { delimiter, dirname, join, resolve } from "node:path"
 
 // Q336 A (2026-10-02): one reversible desktop action links Domovoi's own
-// domovoid into ~/.local/bin, so the commands the app prints run as printed.
-// The link names the launcher the app ships in its daemon runtime
+// domovoid and domovoi into ~/.local/bin, so the commands the app prints run
+// as printed. Each link names a launcher the app ships in its runtime
 // (scripts/daemon-runtime.mjs). The rule that Domovoi never runs an installer
 // covers third-party agents, not its own binaries.
 //
 // What it may touch: the directories ~/.local and ~/.local/bin when missing
-// (only when linking), and the one entry ~/.local/bin/domovoid. It never
-// reads, writes or removes through a ~/.local or ~/.local/bin that is a link
-// to another directory, never replaces anything but a link to a Domovoi
-// launcher, and never removes anything else. The runtime ships the daemon,
-// not the domovoi CLI, so only domovoid is linked.
+// (only when linking), and the entries ~/.local/bin/domovoid and
+// ~/.local/bin/domovoi. It never reads, writes or removes through a ~/.local
+// or ~/.local/bin that is a link to another directory, never replaces anything
+// but a dangling link to a Domovoi launcher, and never removes anything else.
 
+export type CommandName = "domovoid" | "domovoi"
 export type CommandLinkState = "linked" | "absent" | "stale" | "other"
 
 export type CommandLinkReport =
-  | { available: false; reason: string }
+  // launchers: the shipped launchers by their full path, when they exist,
+  // so a printed command still runs where no link can be made.
+  | { available: false; reason: string; launchers?: { name: CommandName; launcher: string }[] }
   | {
       available: true
       directory: "~/.local/bin"
@@ -25,7 +27,7 @@ export type CommandLinkReport =
       // where the app does not, so the printed command uses the full path
       // unless this is true.
       onPath: boolean
-      commands: { name: "domovoid"; launcher: string; state: CommandLinkState }[]
+      commands: { name: CommandName; launcher: string; state: CommandLinkState }[]
     }
 
 export type CommandLinkResult = { report: CommandLinkReport; refused?: string }
@@ -39,8 +41,9 @@ export type CommandLinkEnvironment = {
   appImage?: string | undefined
 }
 
-const names = ["domovoid"] as const
-const ownLauncher = /[\\/]daemon-runtime[\\/]bin[\\/]domovoid$/u
+// domovoid first: the daemon's launcher decides whether linking is offered.
+const names: readonly CommandName[] = ["domovoid", "domovoi"]
+const ownLauncher = (name: CommandName, target: string) => new RegExp(`[\\\\/]daemon-runtime[\\\\/]bin[\\\\/]${name}$`, "u").test(target)
 
 async function entry(path: string) {
   try {
@@ -52,7 +55,7 @@ async function entry(path: string) {
 }
 
 // The state of one command and, for a link, the target it was read with.
-async function stateOf(path: string, launcher: string): Promise<{ state: CommandLinkState; target?: string }> {
+async function stateOf(name: CommandName, path: string, launcher: string): Promise<{ state: CommandLinkState; target?: string }> {
   const found = await entry(path)
   if (!found) return { state: "absent" }
   if (!found.isSymbolicLink()) return { state: "other" }
@@ -61,7 +64,7 @@ async function stateOf(path: string, launcher: string): Promise<{ state: Command
   // Review P3-1: stale only when the launcher it names is gone (the app
   // moved or was deleted). A link to another Domovoi install that still
   // exists belongs to that install and is left alone.
-  const stale = ownLauncher.test(target) && !await entry(resolve(dirname(path), target))
+  const stale = ownLauncher(name, target) && !await entry(resolve(dirname(path), target))
   return stale ? { state: "stale", target } : { state: "other" }
 }
 
@@ -120,8 +123,19 @@ async function makeDirectories(home: string): Promise<DirectoryState> {
 }
 
 type Inspected =
-  | { available: false; reason: string }
-  | { available: true; onPath: boolean; commands: { name: "domovoid"; launcher: string; state: CommandLinkState; target?: string | undefined }[] }
+  | Extract<CommandLinkReport, { available: false }>
+  | { available: true; onPath: boolean; commands: { name: CommandName; launcher: string; state: CommandLinkState; target?: string | undefined }[] }
+
+// The launchers this app ships, in name order; domovoi only where the runtime
+// carries the CLI.
+async function shippedLaunchers(resourcesPath: string): Promise<{ name: CommandName; launcher: string }[]> {
+  const found: { name: CommandName; launcher: string }[] = []
+  for (const name of names) {
+    const launcher = join(resourcesPath, "daemon-runtime", "bin", name)
+    if ((await entry(launcher).catch(() => undefined))?.isFile()) found.push({ name, launcher })
+  }
+  return found
+}
 
 // Review P3-4: a path the app will not run from next time would leave a link
 // to nothing: macOS App Translocation's temporary copy, a mounted disk image,
@@ -135,18 +149,18 @@ function unstableLocation(environment: CommandLinkEnvironment): string | undefin
 
 async function inspect(environment: CommandLinkEnvironment, directories: DirectoryState): Promise<Inspected> {
   if (environment.platform === "win32") return { available: false, reason: "Domovoi links no commands on Windows." }
+  const shipped = await shippedLaunchers(environment.resourcesPath)
+  const unavailable = (reason: string): Inspected => shipped.length > 0 ? { available: false, reason, launchers: shipped } : { available: false, reason }
   const unstable = unstableLocation(environment)
-  if (unstable) return { available: false, reason: unstable }
-  const launcher = join(environment.resourcesPath, "daemon-runtime", "bin", "domovoid")
-  const shipped = await entry(launcher)
-  if (!shipped?.isFile()) return { available: false, reason: "This build ships no domovoid launcher, so there is nothing to link." }
-  if (directories.kind === "refused") return { available: false, reason: directories.reason }
+  if (unstable) return unavailable(unstable)
+  if (shipped[0]?.name !== "domovoid") return { available: false, reason: "This build ships no domovoid launcher, so there is nothing to link." }
+  if (directories.kind === "refused") return unavailable(directories.reason)
   const directory = join(environment.home, ".local", "bin")
   const onPath = (environment.path ?? "").split(delimiter).some((part) => part.replace(/\/+$/u, "") === directory)
-  const commands = await Promise.all(names.map(async (name) => ({
+  const commands = await Promise.all(shipped.map(async ({ name, launcher }) => ({
     name,
     launcher,
-    ...(directories.kind === "missing" ? { state: "absent" as const } : await stateOf(join(directory, name), launcher)),
+    ...(directories.kind === "missing" ? { state: "absent" as const } : await stateOf(name, join(directory, name), launcher)),
   })))
   return { available: true, onPath, commands }
 }

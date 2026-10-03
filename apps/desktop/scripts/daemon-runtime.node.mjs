@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join, sep } from "node:path"
 import test from "node:test"
 
-import { assertShippedTreeContained, fetchNodeArchive, nodePins, nodeVersion, proveDaemonRuns, runtimeTarget, sha256Of, writeCommandLaunchers, writeDaemonRuntimeManifest } from "./daemon-runtime.mjs"
+import { assertShippedTreeContained, deployCli, fetchNodeArchive, proveCliRuns, nodePins, nodeVersion, proveDaemonRuns, runtimeTarget, sha256Of, writeCommandLaunchers, writeDaemonRuntimeManifest } from "./daemon-runtime.mjs"
 import { createHash } from "node:crypto"
 
 test("pins one Node build per platform and architecture the desktop ships for", () => {
@@ -589,7 +589,10 @@ test("ships a domovoid launcher that runs the shipped daemon through a link to i
     await writeFile(join(runtime, "node", "bin", "node"), "#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
     await chmod(join(runtime, "node", "bin", "node"), 0o755)
     await writeFile(join(runtime, "daemon", "dist", "index.js"), "")
-    assert.deepEqual(await writeCommandLaunchers({ root: runtime, platform: process.platform }), ["domovoid"])
+    // Review P3-5 (Q336 A): the CLI ships too, with its own launcher.
+    await mkdir(join(runtime, "cli", "dist"), { recursive: true })
+    await writeFile(join(runtime, "cli", "dist", "index.js"), "")
+    assert.deepEqual(await writeCommandLaunchers({ root: runtime, platform: process.platform }), ["domovoid", "domovoi"])
     const bin = join(root, "local bin")
     await mkdir(bin)
     await symlink(join(runtime, "bin", "domovoid"), join(bin, "domovoid"))
@@ -598,6 +601,9 @@ test("ships a domovoid launcher that runs the shipped daemon through a link to i
       const { stdout } = await promisify(execFile)(called, ["service", "status"])
       assert.deepEqual(stdout.trim().split("\n"), [join(await realpath(runtime), "daemon", "dist", "index.js"), "service", "status"])
     }
+    await symlink(join(runtime, "bin", "domovoi"), join(bin, "domovoi"))
+    const { stdout } = await promisify(execFile)(join(bin, "domovoi"), ["status"])
+    assert.deepEqual(stdout.trim().split("\n"), [join(await realpath(runtime), "cli", "dist", "index.js"), "status"])
     assert.equal(await assertShippedTreeContained(runtime), 0)
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -634,6 +640,41 @@ test("runs the shipped node when the launcher is reached through a linked direct
       const { stdout } = await promisify(execFile)("/bin/sh", [called, "status"])
       assert.deepEqual(stdout.trim().split("\n"), expected, called)
     }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Review P3-5: the CLI is deployed beside the daemon the same way, from its
+// own workspace package, and proved by its usage text under the pinned node.
+test("deploys the domovoi CLI with the same hoisted pnpm deploy as the daemon", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-cli-"))
+  try {
+    const calls = []
+    const run = async (command, args) => {
+      calls.push([command, ...args])
+      const { mkdir } = await import("node:fs/promises")
+      const destination = args.at(-1)
+      await mkdir(join(destination, "dist"), { recursive: true })
+      await mkdir(join(destination, "node_modules"), { recursive: true })
+      await writeFile(join(destination, "dist", "index.js"), "")
+    }
+    const entry = await deployCli({ repositoryRoot: root, destination: join(root, "cli"), run })
+    assert.equal(entry, join(root, "cli", "dist", "index.js"))
+    assert.deepEqual(calls, [["pnpm", "--filter", "@getdomovoi/cli", "deploy", "--legacy", "--prod", "--config.node-linker=hoisted", join(root, "cli")]])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("proves the CLI loads under the pinned program by its usage text, and refuses anything else", async () => {
+  const usage = 'if (process.argv[2] === "--help") { process.stderr.write("Usage:\\n  domovoi pair\\n"); process.exit(0) } else process.exit(2)\n'
+  const root = await fixture("domovoi-runtime-cli-prove-", { "cli.mjs": usage, "broken.mjs": "process.exit(0)\n" })
+  try {
+    const program = { nodeExecutable: process.execPath, nodeSha256: await sha256Of(process.execPath) }
+    await proveCliRuns({ ...program, cliEntry: join(root, "cli.mjs") })
+    await assert.rejects(proveCliRuns({ ...program, cliEntry: join(root, "broken.mjs") }), /did not print its usage/)
+    await assert.rejects(proveCliRuns({ ...program, nodeSha256: "0".repeat(64), cliEntry: join(root, "cli.mjs") }), /Nothing was run/)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
