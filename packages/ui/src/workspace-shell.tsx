@@ -12,6 +12,9 @@ import type {
   ClientKind,
   PermissionMode,
   ProjectSwitchConfirmation,
+  RepositoryGitFilterRefusal,
+  RpcParams,
+  Runtime,
   SkillSummary,
   SkillInventorySource,
   SessionUsage,
@@ -33,6 +36,7 @@ import {
   AlertDialogTitle,
 } from "./components/ui/alert-dialog"
 import { Button } from "./components/ui/button"
+import { closestComposed, focusedElement, focusEventElement } from "./composed-focus"
 import { WorkspaceConnectionStatus } from "./connection-status"
 import { shouldCollapseDockForWidth } from "./dock-auto-collapse"
 import {
@@ -58,6 +62,8 @@ import { type ProviderSecretStatus } from "./provider-settings"
 import type { LocalDaemonDescription } from "./settings-shell"
 import type { SkillsSurfaceTab } from "./skills-surface"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
+import type { RepositoryTrustRequestParams } from "./repository-trust-sheet"
+import { gitFilterRefusalFrom } from "./session-refusal"
 import { lazySurface, prefetchWhenIdle, SurfaceCodeReload } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
@@ -77,8 +83,7 @@ import { notificationPreferenceFor, type NotificationPreferences } from "./notif
 import {
   DesktopFirstRunDialog,
   desktopFirstRunAvailable,
-  firstRunFailureForProvider,
-  providerFirstRunRecovery,
+  firstRunDefaultProvider,
 } from "./desktop-first-run"
 import {
   browserDesktopFirstRunStorage,
@@ -166,11 +171,15 @@ const settingsSurface = lazySurface("Settings", async () => (await import("./set
 const skillsSurface = lazySurface("Skills", async () => (await import("./skills-surface")).SkillsSurface)
 const machinesSurface = lazySurface("Machines", async () => (await import("./fleet-view")).FleetView)
 const auditSurface = lazySurface("Audit log", async () => (await import("./audit-log-view")).AuditLogView)
-const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface]
+// A refused start is rare, and its card carries the trust sheet, so it loads
+// like a surface rather than with the shell.
+const refusalSurface = lazySurface("the refusal", async () => (await import("./session-refusal-card")).SessionRefusalCard)
+const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface, refusalSurface]
 const SettingsShell = settingsSurface.Surface
 const SkillsSurface = skillsSurface.Surface
 const FleetView = machinesSurface.Surface
 const AuditLogView = auditSurface.Surface
+const SessionRefusalCard = refusalSurface.Surface
 
 export type WorkspaceShellProps = {
   clientKind?: ClientKind
@@ -230,6 +239,22 @@ function serviceOutcomeMovesDaemon(action: "install" | "remove" | "update", outc
   if (outcome.reason !== "failed") return false
   if (outcome.daemon === "restarted" || outcome.daemon === "attached") return true
   return outcome.service !== null && serviceChangedBy(action, outcome.service)
+}
+
+// A request that starts a new session, kept so a refused one can be made again.
+type SessionStartAttempt =
+  | { kind: "create"; title: string; runtime: Runtime }
+  | { kind: "fork"; input: Omit<RpcParams<"session.fork">, "client"> }
+
+// Where a start was made: the generation of the shell's thread scope
+// (machine, project and active session), which advances on every change, and
+// the names the refusal card shows for it, and the control that opened it.
+type StartScope = {
+  generation: number
+  machineId: string
+  machine: string
+  repository: string
+  focusFrom: { trigger: Element | null; within: Element | null }
 }
 
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
@@ -326,7 +351,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     access ? { state: "client", admission: access,
       resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline }),
     } : { state: "disabled" }, relayPinStorage)
-  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, revokeDevice, rotateDevice, renameDevice } = home
+  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, tailnetStatus, revokeDevice, rotateDevice, renameDevice } = home
   const homeSkillInventory = home.getSkillInventory
   const homeVersion = home.snapshot?.machine.version
   const openReleasePage = windowBridge?.openReleasePage
@@ -580,15 +605,87 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // the first, and the pane has no other way to tell them apart.
   // The history row forks at the session's current runtime. Choosing a
   // different provider or model is the thread dialog's job, not a row's.
+  // A new session the daemon refused over a repository git filter is drawn in
+  // the thread as a refusal card, with the request that was refused so the
+  // person can make it again after trust. Starting it again is always theirs
+  // to press (ruling Q202 A). Every other failure goes back to its caller.
+  //
+  // The card belongs to the thread it was drawn in: another session, project
+  // or machine replaces it. Each start keeps the scope generation it was made
+  // in, and a result that arrives after any scope change is dropped, so a late
+  // refusal never takes another workspace's names or offers its review
+  // (ruling Q323), and coming back to the same scope does not revive it
+  // (ruling Q325).
+  const refusalScope = `${attached?.machineId ?? snapshot?.machine.id ?? ""}\u0000${snapshot?.project?.id ?? ""}\u0000${snapshot?.activeSessionId ?? ""}`
+  const [startRefusal, setStartRefusal] = useState<{
+    id: number
+    refusal: RepositoryGitFilterRefusal
+    attempt: SessionStartAttempt
+    scope: StartScope
+  } | null>(null)
+  const startRefusals = useRef(0)
+  // Advances on every scope change and never goes back. The effect that
+  // advances it also retires the card, so a result that lands before it runs
+  // is cleared with the card.
+  const startGeneration = useRef(0)
+  useEffect(() => {
+    startGeneration.current += 1
+    setStartRefusal(null)
+  }, [refusalScope])
+  // The last control focused outside any dialog: the one that opened the
+  // launcher or fork dialog a start came from, which that dialog restores
+  // focus to when it closes. A refusal card may take focus from it when it is
+  // the control Domovoi registered as a start's opener, and from nothing else the
+  // person moved to (rulings Q400, Q410). A focus inside an open shadow root
+  // reaches this listener retargeted to its host, so the element recorded is
+  // the first in the event's composed path. A control slotted into a dialog
+  // drawn in a shadow root is inside that dialog.
+  const focusOutsideDialogs = useRef<Element | null>(null)
+  useEffect(() => {
+    const track = (event: FocusEvent) => {
+      const target = focusEventElement(event)
+      if (target && !closestComposed(target, "[role='dialog'], [role='alertdialog']")) focusOutsideDialogs.current = target
+    }
+    document.addEventListener("focusin", track)
+    return () => document.removeEventListener("focusin", track)
+  }, [])
+  const startSession = async (attempt: SessionStartAttempt) => {
+    const scope: StartScope = {
+      generation: startGeneration.current,
+      machineId: attached?.machineId ?? snapshot?.machine.id ?? "",
+      machine: snapshot?.machine.name ?? "this machine",
+      repository: snapshot?.project?.name ?? "this repository",
+      focusFrom: { trigger: focusOutsideDialogs.current, within: focusedElement() },
+    }
+    try {
+      if (attempt.kind === "create") await createSession(attempt.title, attempt.runtime)
+      else await forkSession(attempt.input)
+      if (startGeneration.current === scope.generation) setStartRefusal(null)
+    } catch (cause) {
+      const refusal = gitFilterRefusalFrom(cause)
+      if (!refusal) throw cause
+      if (startGeneration.current !== scope.generation) return
+      startRefusals.current += 1
+      setStartRefusal({ id: startRefusals.current, refusal, attempt, scope })
+    }
+  }
+  // A fork's request id names one attempt, so the retry carries a new one. A
+  // retry is made only in the scope generation the refused start was made in.
+  const startAgain = async (attempt: SessionStartAttempt, scope: StartScope) => {
+    if (startGeneration.current !== scope.generation) return
+    await startSession(attempt.kind === "fork"
+      ? { kind: "fork", input: { ...attempt.input, requestId: `fork-${globalThis.crypto.randomUUID()}` } }
+      : attempt)
+  }
   const forkFromCheckpoint = (checkpointId: string) => {
     const active = snapshot ? activeSession(snapshot) : undefined
     if (!active) return
-    void forkSession({
+    void startSession({ kind: "fork", input: {
       sessionId: active.id,
       checkpointId,
       runtime: active.runtime,
       requestId: `fork-${globalThis.crypto.randomUUID()}`,
-    })
+    } })
   }
   // The v2 sheet gives checkpoints a tab of their own, so the affordances that
   // name Checkpoints open that tab. History keeps its category focus for the
@@ -752,13 +849,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }
   const completeFirstRun = () => {
     if (!firstRunEnabled || !connected || !snapshot) return
-    const provider = snapshot.machine.providers.find(
-      (candidate) => candidate.id === desktopFirstRun.selectedProviderId,
+    // Review P2-3: the default is a ready agent, preferring the chosen one,
+    // then Codex.
+    const provider = firstRunDefaultProvider(
+      snapshot.machine.providers,
+      snapshot.sessions,
+      desktopFirstRun.selectedProviderId,
     )
-    if (!provider || !providerFirstRunRecovery(
-      provider,
-      firstRunFailureForProvider(provider.id, snapshot.sessions),
-    ).canComplete) {
+    if (!provider) {
       setDesktopFirstRun((current) => ({
         ...current,
         error: "Choose a provider whose diagnostics are ready before finishing setup.",
@@ -1178,11 +1276,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (!firstRunEnabled || !snapshot) return
     const providers = snapshot.machine.providers
     setDesktopFirstRun((current) => {
-      if (providers.some((provider) => provider.id === current.selectedProviderId)) return current
       const persistedProviderId = current.persisted.status === "complete"
         ? current.persisted.providerId
         : undefined
-      const provider = providers.find((candidate) => candidate.id === persistedProviderId)
+      // Review P2-3: a ready agent first, so the selection never rests on
+      // one whose diagnostics are not ready while another is.
+      const ready = firstRunDefaultProvider(providers, snapshot.sessions, current.selectedProviderId || persistedProviderId)
+      if (!ready && providers.some((provider) => provider.id === current.selectedProviderId)) return current
+      const provider = ready
+        ?? providers.find((candidate) => candidate.id === persistedProviderId)
         ?? preferredSessionProvider(providers)
         ?? providers[0]
       const selectedProviderId = provider?.id ?? ""
@@ -1524,6 +1626,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 onCopy: (text: string) => platform ? platform.clipboard.writeText(text) : Promise.reject(new Error("This client has no clipboard")),
                 onListDevices: listDevices,
                 inAppDaemon: localDaemon?.inApp ?? false,
+                // TailnetReach (Q404 A): the desktop's switch and the daemon's listener.
+                ...(windowBridge?.tailnetReach ? { tailnet: { act: windowBridge.tailnetReach, listener: tailnetStatus, inApp: localDaemon?.inApp ?? false } } : {}),
               },
             })}
             approvalRules={snapshot.approvalRules}
@@ -1572,7 +1676,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               // Trust is granted from desktop or web only (ruling Q67), and a
               // watching client changes nothing; the daemon checks both again.
               onTrust: !watching && (clientKind === "desktop" || clientKind === "web")
-                ? (params: { projectId: string; configDigest: string }) => trustRepository({ ...params, client: clientKind })
+                ? (params: RepositoryTrustRequestParams) => trustRepository({ ...params, client: clientKind })
                 : undefined,
             }}
             skills={{
@@ -1662,7 +1766,31 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 }))
               }}
             >
-              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34"><Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={forkSession} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntime} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} /></ResizablePanel>
+              <ResizablePanel id="thread" defaultSize={dockCollapsed ? "100" : "48"} minSize="34">{startRefusal ? (
+                <main className="flex h-full min-w-0 flex-col overflow-y-auto bg-background">
+                  <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 pt-6 pb-14">
+                    <SessionRefusalCard
+                      key={startRefusal.id}
+                      refusal={startRefusal.refusal}
+                      repository={startRefusal.scope.repository}
+                      machine={startRefusal.scope.machine}
+                      machineId={startRefusal.scope.machineId}
+                      focusFrom={startRefusal.scope.focusFrom}
+                      loadInventory={(signal) => getToolInventory({ signal })}
+                      // As on the Tools tab: desktop or web, never watching (ruling Q67).
+                      onTrust={!watching && (clientKind === "desktop" || clientKind === "web")
+                        ? (params: RepositoryTrustRequestParams) => trustRepository({ ...params, client: clientKind })
+                        : undefined}
+                      onOpenTools={() => {
+                        setSkillsTab("tools")
+                        setSurface("skills")
+                      }}
+                      onStartAgain={() => startAgain(startRefusal.attempt, startRefusal.scope)}
+                      onClose={() => setStartRefusal(null)}
+                    />
+                  </div>
+                </main>
+              ) : <Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntime} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} />}</ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces(<Button ref={dockUnpinButtonRef} variant="ghost" size="icon-sm" className="size-7 flex-none rounded-full bg-accent text-primary" aria-pressed aria-label="Unpin" onClick={() => setDockPinned(false)}><PinIcon className="size-[15px]" /></Button>, true)}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
@@ -1720,7 +1848,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             : "build"}
           onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
           onOpenProject={openProjectSafely}
-          onCreateSession={createSession}
+          onCreateSession={(title, runtime) => startSession({ kind: "create", title, runtime })}
           onListModels={listModels}
           recentSessions={snapshot.sessions}
           onResumeSession={(sessionId) => {

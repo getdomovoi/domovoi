@@ -152,12 +152,23 @@ export async function unpackNode({ archive, target, destination, run = execute }
 // installed claude. electron-builder excludes the same packages from the app.
 const excludedDependency = /^@anthropic-ai\+claude-agent-sdk-[^@]+@|^claude-agent-sdk-/
 
-export async function deployDaemon({ repositoryRoot, destination, run = execute }) {
+export function deployDaemon({ repositoryRoot, destination, run = execute }) {
+  return deployWorkspacePackage({ name: "@getdomovoi/daemon", repositoryRoot, destination, run })
+}
+
+// Review P3-5 (Q336 A): the domovoi CLI ships beside the daemon so the app can
+// link it into ~/.local/bin. It is deployed the same way, into its own
+// directory with its own node_modules.
+export function deployCli({ repositoryRoot, destination, run = execute }) {
+  return deployWorkspacePackage({ name: "@getdomovoi/cli", repositoryRoot, destination, run })
+}
+
+async function deployWorkspacePackage({ name, repositoryRoot, destination, run }) {
   await rm(destination, { recursive: true, force: true })
   // Hoisted: a flat node_modules with real directories and no store links, so
   // the copy under the profile and the packaged copy are the same files with
   // nothing to resolve back into the repository or the app bundle.
-  await run("pnpm", ["--filter", "@getdomovoi/daemon", "deploy", "--legacy", "--prod", "--config.node-linker=hoisted", destination], { cwd: repositoryRoot, maxBuffer: 16 * 1024 * 1024 })
+  await run("pnpm", ["--filter", name, "deploy", "--legacy", "--prod", "--config.node-linker=hoisted", destination], { cwd: repositoryRoot, maxBuffer: 16 * 1024 * 1024 })
   const store = join(destination, "node_modules", ".pnpm")
   for (const entry of await readdir(store).catch(() => [])) {
     if (excludedDependency.test(entry)) await rm(join(store, entry), { recursive: true, force: true })
@@ -389,6 +400,72 @@ export async function writeDaemonRuntimeManifest({ daemonRoot, manifestPath }) {
   return digests
 }
 
+// Review P3-5: the CLI is proved the way its own usage says it runs: --help
+// prints the usage to stderr (apps/cli/src/index.ts) and exits 0, both
+// required. The program's digest is checked first, as for the daemon, so
+// nothing but the pinned build runs it.
+//
+// Review of #712 (P2): usage text is proof only from a run that exits 0. A
+// nonzero exit, a signal or the timeout is passed on as the cause, with what
+// it printed, and never read as success.
+export async function proveCliRuns({ nodeExecutable, nodeSha256, cliEntry, run = execute }) {
+  const digest = await sha256Of(nodeExecutable)
+  if (digest !== nodeSha256) throw new Error(`${nodeExecutable} has sha256 ${digest}; the program unpacked from the verified archive has sha256 ${nodeSha256}. Nothing was run.`)
+  let printed = ""
+  try {
+    const { stderr } = await run(nodeExecutable, [cliEntry, "--help"], { timeout: 30_000 })
+    printed = String(stderr)
+  } catch (error) {
+    const how = error?.killed || error?.signal ? `was stopped by ${error.signal ?? "its timeout"}` : `exited with ${error?.code ?? "an error"}`
+    throw new Error(`${cliEntry} did not run under ${nodeExecutable}: it ${how} after printing ${JSON.stringify(String(error?.stderr ?? "").trim().slice(0, 200))}`, { cause: error })
+  }
+  if (!printed.startsWith("Usage:")) throw new Error(`${cliEntry} did not print its usage under ${nodeExecutable}: ${JSON.stringify(printed.trim().slice(0, 200))}`)
+}
+
+// Q336 A (2026-10-02): the desktop links domovoid and domovoi into
+// ~/.local/bin (src/main/command-links.ts), and each link names one of these
+// launchers. A launcher follows every link to itself back to the runtime it
+// ships in, so it runs the entry with the Node program beside it wherever the
+// link sits and wherever the app moves. Windows links nothing, so it gets no
+// launcher. cd -P resolves the launcher's directory physically: reached
+// through a link to that directory, a logical ".." would name the link's
+// parent instead of the runtime.
+function commandLauncher(name, entry) {
+  return `#!/bin/sh
+# ${name}, from the Domovoi app's runtime.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+runtime=$(CDPATH= cd -P -- "$(dirname -- "$self")/.." && pwd -P) || exit 1
+exec "$runtime/node/bin/node" "$runtime/${entry}" "$@"
+`
+}
+
+const launchers = [
+  { name: "domovoid", entry: "daemon/dist/index.js" },
+  // Only where the runtime carries the CLI, so no launcher names nothing.
+  { name: "domovoi", entry: "cli/dist/index.js" },
+]
+
+export async function writeCommandLaunchers({ root, platform }) {
+  if (platform === "win32") return []
+  await mkdir(join(root, "bin"), { recursive: true })
+  const written = []
+  for (const { name, entry } of launchers) {
+    if (name !== "domovoid" && !(await exists(join(root, entry)))) continue
+    const launcher = join(root, "bin", name)
+    await writeFile(launcher, commandLauncher(name, entry), { mode: 0o755 })
+    await chmod(launcher, 0o755)
+    written.push(name)
+  }
+  return written
+}
+
 // Bytes on disk, links counted once as links: pnpm's store is reached through
 // symlinks, and following them would count every package several times.
 export async function directoryBytes(path) {
@@ -414,6 +491,11 @@ export async function prepareDaemonRuntime({
   const daemonEntry = await deployDaemon({ repositoryRoot, destination: join(output, "daemon"), run })
   const pruned = await pruneDaemonRuntime(join(output, "daemon"), { platform, arch })
   log(`pruned ${pruned.files} entries, ${(pruned.bytes / 1048576).toFixed(1)} MB, the runtime never loads on ${target.key}`)
+  const cliEntry = await deployCli({ repositoryRoot, destination: join(output, "cli"), run })
+  const prunedCli = await pruneDaemonRuntime(join(output, "cli"), { platform, arch })
+  log(`pruned ${prunedCli.files} entries, ${(prunedCli.bytes / 1048576).toFixed(1)} MB, from the CLI the runtime never loads on ${target.key}`)
+  const launchers = await writeCommandLaunchers({ root: output, platform })
+  if (launchers.length > 0) log(`wrote the ${launchers.join(", ")} launcher in daemon-runtime/${target.key}/bin`)
   // After the last change to the tree: this, not the cleanup above, decides.
   const links = await assertShippedTreeContained(output)
   log(`${links} link${links === 1 ? "" : "s"} in daemon-runtime/${target.key}, every one relative and inside it`)
@@ -422,6 +504,8 @@ export async function prepareDaemonRuntime({
   if (host) {
     await proveDaemonRuns({ nodeExecutable, nodeSha256, daemonEntry, expectedVersion: manifest.version, run })
     log(`${nodeExecutable} is the program from the verified archive (sha256 ${nodeSha256}); ${daemonEntry} loaded under it and --version printed ${manifest.version}`)
+    await proveCliRuns({ nodeExecutable, nodeSha256, cliEntry, run })
+    log(`${cliEntry} loaded under the same program and printed its usage`)
   } else {
     log(`${target.key} is not this host, so ${daemonEntry} was not run; the packaging job on that platform proves it`)
   }
@@ -430,6 +514,7 @@ export async function prepareDaemonRuntime({
   log(`recorded the digests of ${Object.keys(digests).length} files in daemon-runtime/${target.key}/daemon/dist in ${manifestPath}`)
   const nodeBytes = await directoryBytes(join(output, "node"))
   const daemonBytes = await directoryBytes(join(output, "daemon"))
-  log(`daemon-runtime/${target.key}: node ${(nodeBytes / 1048576).toFixed(1)} MB, daemon ${(daemonBytes / 1048576).toFixed(1)} MB`)
-  return { output, nodeExecutable, daemonEntry, nodeBytes, daemonBytes }
+  const cliBytes = await directoryBytes(join(output, "cli"))
+  log(`daemon-runtime/${target.key}: node ${(nodeBytes / 1048576).toFixed(1)} MB, daemon ${(daemonBytes / 1048576).toFixed(1)} MB, CLI ${(cliBytes / 1048576).toFixed(1)} MB`)
+  return { output, nodeExecutable, daemonEntry, cliEntry, nodeBytes, daemonBytes, cliBytes }
 }

@@ -39,6 +39,7 @@ import { Input } from "./components/ui/input"
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "./components/ui/field"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { cn } from "./lib/utils"
+import { startOpenerRef } from "./start-handoff"
 import {
   preferredSessionProvider,
   providerCanStartSession,
@@ -471,7 +472,9 @@ export function LauncherDialog({
           ) : null}
           <DialogFooter>
             <Button type="button" variant="ghost" disabled={pending} onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={!value.trim() || pending || (!isProject && !runtimeReady)}>
+            {/* startOpenerRef registers a control that opens a session
+                start (ruling Q410). */}
+            <Button ref={startOpenerRef} type="submit" disabled={!value.trim() || pending || (!isProject && !runtimeReady)}>
               {isProject ? <FolderOpenIcon data-icon="inline-start" /> : <BotIcon data-icon="inline-start" />}
               {pending ? "Working" : isProject ? "Open project" : "Create session"}
             </Button>

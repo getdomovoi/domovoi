@@ -18,6 +18,7 @@ import {
   workspaceSnapshotSchema,
   type QueuedSessionSend,
   type SessionAttachment,
+  type SessionSendReview,
   type StateRecovery,
   type TurnSkillSelection,
   type WorkspaceSnapshot,
@@ -83,6 +84,7 @@ export type StoredQueuedSessionSend = Omit<QueuedSessionSend, "state"> & {
   prompt: string
   skillSelection?: TurnSkillSelection
   uploads?: SessionAttachment[]
+  review?: SessionSendReview
   credentialDeviceId?: string
 }
 
@@ -235,6 +237,7 @@ function parseStoredQueuedSessionSend(row: StoredQueuedSessionSendRow): StoredQu
     client: metadata.origin.client,
     ...(payload.skillSelection === undefined ? {} : { skillSelection: payload.skillSelection }),
     ...(payload.uploads === undefined ? {} : { attachments: payload.uploads }),
+    ...(payload.review === undefined ? {} : { review: payload.review }),
     delivery: "next-turn-replace",
   })
   const credentialDeviceId = typeof payload.credentialDeviceId === "string"
@@ -246,6 +249,7 @@ function parseStoredQueuedSessionSend(row: StoredQueuedSessionSendRow): StoredQu
     prompt: send.prompt,
     ...(send.skillSelection ? { skillSelection: send.skillSelection } : {}),
     ...(send.attachments ? { uploads: send.attachments } : {}),
+    ...(send.review ? { review: send.review } : {}),
     ...(credentialDeviceId ? { credentialDeviceId } : {}),
   }
 }
@@ -1341,6 +1345,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       client: queued.origin.client,
       ...(queued.skillSelection ? { skillSelection: queued.skillSelection } : {}),
       ...(queued.uploads ? { attachments: queued.uploads } : {}),
+      ...(queued.review ? { review: queued.review } : {}),
       delivery: "next-turn-replace",
     })
     // The upsert below overwrites the session's row. If this build cannot read
@@ -1381,6 +1386,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
         prompt: queued.prompt,
         ...(queued.skillSelection ? { skillSelection: queued.skillSelection } : {}),
         ...(queued.uploads ? { uploads: queued.uploads } : {}),
+        ...(queued.review ? { review: queued.review } : {}),
         ...(queued.credentialDeviceId ? { credentialDeviceId: queued.credentialDeviceId } : {}),
         ...(reason ? { reason } : {}),
       }),

@@ -32,6 +32,7 @@ import {
   skillInstallErrorCode,
   workspaceSnapshotSchema,
   workspaceDeltaSchema,
+  type Artifact,
   type ProviderModel,
   type RpcMethod,
   type RpcResult,
@@ -4230,6 +4231,83 @@ describe("DomovoiDaemon", () => {
     expect(annotations[0]!.artifactId).toBe("plan-session-a")
   })
 
+  it("keeps watched plan files out of the plan delta merge", () => {
+    const watched = {
+      id: "plan-session-a-0123456789abcdef",
+      sessionId: "session-a",
+      title: "Plan",
+      type: "plan" as const,
+      revision: 3,
+      path: "PLAN.md",
+      mimeType: "text/markdown",
+      content: "# Agent plan\n",
+    }
+    const artifacts = [
+      { ...watched },
+      {
+        id: "plan-session-a-provider-turn-1",
+        sessionId: "session-a",
+        title: "Working plan",
+        type: "plan" as const,
+        revision: 1,
+        mimeType: "text/markdown",
+        content: "1. Inspect.\n",
+      },
+    ]
+    const annotations = [{
+      id: "annotation-file",
+      sessionId: "session-a",
+      artifactId: watched.id,
+      anchor: { textQuote: "Agent plan" },
+      body: "Comment on the file.",
+      status: "open" as const,
+      origin: "desktop" as const,
+      thread: [],
+      createdAt: "2026-08-26T20:00:00.000Z",
+      updatedAt: "2026-08-26T20:00:00.000Z",
+    }]
+
+    expect(appendPlanDelta(artifacts, annotations, "session-a", "2. Verify.")).toMatchObject({
+      id: "plan-session-a",
+      revision: 2,
+      content: "1. Inspect.\n2. Verify.",
+    })
+    expect(artifacts.map(({ id }) => id).sort()).toEqual([
+      "plan-session-a",
+      "plan-session-a-0123456789abcdef",
+    ])
+    expect(artifacts.find(({ id }) => id === watched.id)).toEqual(watched)
+    expect(annotations[0]!.artifactId).toBe(watched.id)
+  })
+
+  // Before the watched-file fix, a plan delta could rename a watched plan
+  // file to plan-<sessionId> and keep its path and variant.
+  it("appends to a saved working plan that kept a watched file's path", () => {
+    const artifacts: Artifact[] = [{
+      id: "plan-session-a",
+      sessionId: "session-a",
+      title: "Plan",
+      type: "plan",
+      revision: 2,
+      path: "PLAN.md",
+      variant: { id: "variant-a", groupId: "plans", label: "A", order: 0 },
+      mimeType: "text/markdown",
+      content: "1. Inspect.\n",
+    }]
+
+    const artifact = appendPlanDelta(artifacts, [], "session-a", "2. Verify.")
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifact).toBe(artifacts[0])
+    expect(artifact).toMatchObject({
+      id: "plan-session-a",
+      revision: 3,
+      content: "1. Inspect.\n2. Verify.",
+    })
+    expect(artifact).not.toHaveProperty("path")
+    expect(artifact).not.toHaveProperty("variant")
+  })
+
   it("scopes artifact access to id, bridge channel, parent origin, and expiry", () => {
     const scope = { sessionId: "session-1", artifactId: "preview-1", revision: 2, purpose: "preview" as const, bridgeChannel: "preview_channel_123456", parentOrigin: "https://app.domovoi.sh", expiresAt: 1_800_000_000 }
     const signature = signArtifactAccess("artifact-secret", scope)
@@ -7985,6 +8063,9 @@ describe("DomovoiDaemon", () => {
         sessionId: "session-billing",
         prompt: "Revise the migration plan.",
         client: "desktop",
+        // With a review, only the comments it names reach the agent (ruling
+        // Q348 A); naming the resolved one would refuse the message.
+        review: { annotationIds: ["annotation-migration-machine"] },
       },
     }))
 
@@ -8077,7 +8158,18 @@ describe("DomovoiDaemon", () => {
         jsonrpc: "2.0",
         id,
         method: "session.send",
-        params: { sessionId: session.id, prompt, client: "desktop" },
+        params: {
+          sessionId: session.id,
+          prompt,
+          client: "desktop",
+          // An explicit review of every open comment (ruling Q348 A), so the
+          // order holds on the review path as well as the Q402 default.
+          review: {
+            annotationIds: snapshot.annotations
+              .filter((annotation) => annotation.sessionId === session.id && annotation.status === "open")
+              .map((annotation) => annotation.id),
+          },
+        },
       }))
     })
 

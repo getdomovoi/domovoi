@@ -607,6 +607,14 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Add print/share-safe plan rendering without weakening the preview sandbox
 </li>
+<li>[ ] Remove the legacy comment default before protocol 0.8.0 ships (ruling Q402)
+<ul>
+<li><code>session.send</code> carries <code>review</code>, the comments and build basis a message sends (rulings Q348 A and Q342 A). Until every client sends it, a message without one still attaches every open comment of its session: <code>legacyOpenCommentReview</code> in <code>apps/daemon/src/annotation-context.ts</code>.
+</li>
+<li>Remove that function, so a message without a review sends no comment, once desktop, web, phone, tablet and the command line send <code>review</code>. Protocol 0.8.0 does not ship before then.
+</li>
+</ul>
+</li>
 </ul>
 <h4 id="skills">Skills</h4>
 <ul>

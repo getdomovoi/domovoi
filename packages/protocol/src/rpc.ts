@@ -17,6 +17,7 @@ import {
   updateStatusParamsSchema,
   updateStatusResultSchema,
 } from "./update.js"
+import { tailnetStatusParamsSchema, tailnetStatusResultSchema } from "./tailnet.js"
 
 import {
   sessionTransferParamsSchema,
@@ -74,6 +75,7 @@ import {
 import {
   clientAccessSchema,
   deviceClaimParamsSchema,
+  deviceCodeOutcomeNotificationSchema,
   deviceCurrentResultSchema,
   deviceClaimResultSchema,
   deviceConfirmClaimParamsSchema,
@@ -111,7 +113,7 @@ import {
   toolStatusSchema,
 } from "./identifiers.js"
 import { previewBridgeChannelSchema, previewParentOriginSchema } from "./preview-bridge.js"
-import { maximumProviderPromptCodeUnits } from "./prompt-delivery.js"
+import { maximumProviderPromptCodeUnits, sessionSendReviewSchema } from "./prompt-delivery.js"
 import {
   repositoryRevokeTrustParamsSchema,
   repositoryRevokeTrustResultSchema,
@@ -1321,6 +1323,10 @@ export const sessionSendParamsSchema = z.object({
   skillSelection: turnSkillSelectionSchema.optional(),
   attachments: z.array(sessionAttachmentSchema).max(maximumSessionAttachments).optional(),
   delivery: z.literal("next-turn-replace").optional(),
+  // The preview comments and build basis this message sends; with it, only
+  // those reach the agent. Absent, every open comment of the session still
+  // attaches, a legacy default removed before 0.8.0 ships (ruling Q402).
+  review: sessionSendReviewSchema.optional(),
 }).strict()
 
 export const sessionCancelQueuedSendParamsSchema = z.object({
@@ -1700,6 +1706,7 @@ export const rpcMethods = {
     result: runtimeDiscoverResultSchema,
   },
   "update.status": { params: updateStatusParamsSchema, result: updateStatusResultSchema },
+  "tailnet.status": { params: tailnetStatusParamsSchema, result: tailnetStatusResultSchema },
   "update.check": { params: updateCheckParamsSchema, result: updateCheckResultSchema },
   "update.activate": { params: updateActivateParamsSchema, result: updateActivateResultSchema },
   "provider.refresh": {
@@ -1785,6 +1792,8 @@ export const notificationMethods = {
   "terminal.ownership": terminalOwnershipNotificationSchema,
   "fleet.changed": fleetChangedNotificationSchema,
   "system.emergencyStopped": systemEmergencyStoppedNotificationSchema,
+  // Sent only to the connection that issued the code it names.
+  "device.codeOutcome": deviceCodeOutcomeNotificationSchema,
 } as const
 
 export type NotificationMethod = keyof typeof notificationMethods
@@ -1853,6 +1862,7 @@ export const rpcMethodAuthorizations = {
   "runtime.models": "observe",
   "runtime.discover": "observe",
   "update.status": "observe",
+  "tailnet.status": "observe",
   "update.check": "control",
   "update.activate": "control",
   "provider.refresh": "control",
@@ -1927,6 +1937,7 @@ export const rpcMethodMutations = {
   "runtime.models": "read-only",
   "runtime.discover": "read-only",
   "update.status": "read-only",
+  "tailnet.status": "read-only",
   "provider.secret.list": "read-only",
   "update.check": "mutating",
   "update.activate": "mutating",

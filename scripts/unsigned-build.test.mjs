@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { evaluateUnsignedBuild, unsignedBuildLine, workflowTriggers } from "./unsigned-build.mjs"
+import { evaluateUnsignedBuild, unsignedBuildLine, unsignedOnboardingLine, workflowTriggers } from "./unsigned-build.mjs"
 
 const dispatchOnly = ["name: desktop-signing", "on:", "  workflow_dispatch:", "    inputs: {}", "jobs:", "  build:", "    env:", "      DOMOVOI_DESKTOP_REQUIRE_SIGNING: 'true'"].join("\n")
 const onRelease = dispatchOnly.replace("  workflow_dispatch:", "  release:\n    types: [published]\n  workflow_dispatch:")
@@ -32,6 +32,18 @@ test("fails once a signing build runs on an automatic trigger while Settings sti
   assert.equal(failures.length, 1)
   assert.match(failures[0], /requires signing on release/)
   assert.match(failures[0], /still says/)
+})
+
+// Desktop first-run setup draws the same fact under its install step
+// (Onboarding build line, 2026-10-02), so the two lines move together.
+test("holds the first-run build line to the Settings one", () => {
+  const workflow = [{ path: ".github/workflows/desktop-signing.yml", content: dispatchOnly }]
+  assert.deepEqual(evaluateUnsignedBuild(workflow, settings, `<span>${unsignedOnboardingLine}</span>`), [])
+  const missing = evaluateUnsignedBuild(workflow, settings, "<span>Signed.</span>")
+  assert.equal(missing.length, 1)
+  assert.match(missing[0], /desktop-first-run\.tsx no longer says the build is not signed, but packages\/ui\/src\/settings-shell\.tsx does/)
+  const signed = evaluateUnsignedBuild([{ path: ".github/workflows/desktop-signing.yml", content: onRelease }], settings, `<span>${unsignedOnboardingLine}</span>`)
+  assert.ok(signed.some((failure) => /desktop-first-run\.tsx still says/.test(failure)))
 })
 
 test("fails the other way round: the line gone while no automatic signing build exists", () => {

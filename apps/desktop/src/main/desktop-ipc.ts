@@ -61,9 +61,15 @@ export type DesktopIpcDependencies = {
     remove(): Promise<unknown>
     update(): Promise<unknown>
   }
+  // TailnetReach (Q404 A): "status", "on" (or renew) or "off". The lazily
+  // loaded module refuses any other action, so this bundle stays small.
+  tailnetReach(action: unknown): Promise<unknown>
   releasePage: {
     open(): Promise<boolean>
   }
+  // Q336 A: ~/.local/bin links for domovoid and domovoi (command-links.ts),
+  // which checks the action itself.
+  commandLinks(action: unknown): Promise<unknown>
   notifications: {
     notify(input: unknown, activate: (sessionId: string) => void): boolean
   }
@@ -210,9 +216,18 @@ export function registerDesktopIpc(ipcMain: DesktopIpcMain, deps: DesktopIpcDepe
     if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
     return deps.daemonService.update()
   })
+  ipcMain.handle("domovoi:tailnet-reach", (event, action: unknown) => {
+    if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
+    return deps.tailnetReach(action)
+  })
   ipcMain.handle("domovoi:open-release-page", (event) => {
     if (!deps.authorized(event)) throw new Error("Desktop request is not authorized")
     return deps.releasePage.open()
+  })
+
+  ipcMain.handle("domovoi:command-links", (event, action) => {
+    daemonRequest(event)
+    return deps.commandLinks(action)
   })
 
   ipcMain.on("domovoi:deep-link-ready", (event) => {

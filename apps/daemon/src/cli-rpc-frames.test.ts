@@ -52,6 +52,7 @@ it("does not repeat a refusal whose message is not text", async () => {
 it("refuses a result that is not its method's shape, in the refusal's own words", () => {
   const schema = rpcMethods["device.issueCode"].result
   const issued = {
+    pairingId: `pairing-${"c".repeat(32)}`,
     code: "hearth-quiet-ember-42",
     expiresAt: "2026-08-31T12:03:00.000Z",
     pairingAddress: { url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", label: "djs-macbook-pro-1", loopback: false },

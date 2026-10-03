@@ -1,15 +1,21 @@
 import { useState } from "react"
 import { Modal, Pressable, TextInput, View } from "react-native"
 
+import type { PhoneRefusal } from "../session-refusal"
 import { useTheme } from "../theme/theme-provider"
+import { RefusalCard } from "./refusal-card"
 import { Button } from "./ui/button"
 import { Text } from "./ui/text"
 
-export function FreshSessionSheet({ open, project, starting, problem, onStart, onClose }: {
+// A start the daemon refused over a repository git filter shows as its
+// refusal card in place of the problem line.
+export function FreshSessionSheet({ open, project, starting, problem, refusal, onSeeHeldBack, onStart, onClose }: {
   open: boolean
   project: string
   starting: boolean
   problem: string
+  refusal?: PhoneRefusal | undefined
+  onSeeHeldBack?: (() => void) | undefined
   onStart: (prompt: string) => void
   onClose: () => void
 }) {
@@ -25,7 +31,9 @@ export function FreshSessionSheet({ open, project, starting, problem, onStart, o
           <Button title="Cancel" variant="ghost" onPress={onClose} className="px-2" disabled={starting} />
         </View>
         <Text variant="note">Starts in the open project “{project}” using the machine provider's default runtime.</Text>
-        {problem ? <Text className="text-[11.5px] text-destructive">{problem}</Text> : null}
+        {refusal && onSeeHeldBack
+          ? <RefusalCard refusal={refusal} onSeeHeldBack={onSeeHeldBack} />
+          : problem ? <Text className="text-[11.5px] text-destructive">{problem}</Text> : null}
         <TextInput
           multiline
           autoFocus

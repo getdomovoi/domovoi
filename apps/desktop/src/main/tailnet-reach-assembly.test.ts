@@ -1,0 +1,414 @@
+import { execFile } from "node:child_process"
+import { X509Certificate } from "node:crypto"
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { promisify } from "node:util"
+
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest"
+
+import type { TailnetListenerStatus } from "@getdomovoi/protocol"
+
+import { createTailnetReach } from "./tailnet-reach-assembly.js"
+import { savedTailnetReachEnvironment } from "./tailnet-reach-record.js"
+
+// TailnetReach against the real file system and a fake `tailscale` on PATH,
+// under a temporary HOME. The real Tailscale is never run: the only place
+// Domovoi looks is the fake's directory.
+
+const name = "studio.tail4c2e.ts.net"
+// Codex review round 1 (P2-5): the switch uses only a certificate that is
+// valid now, names this machine and matches its key, so the fake hands back
+// such a pair, made with openssl once for this file: valid 30 days.
+let material = ""
+let certificate = ""
+let notAfter = ""
+
+beforeAll(async () => {
+  material = await mkdtemp(join(tmpdir(), "domovoi-tailnet-material-"))
+  await writeFile(join(material, "names.cnf"), `[req]\ndistinguished_name=dn\nx509_extensions=names\n[dn]\n[names]\nsubjectAltName=DNS:${name}\n`)
+  await promisify(execFile)("openssl", [
+    "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+    "-keyout", join(material, "key.pem"), "-out", join(material, "certificate.pem"), "-days", "30", "-subj", `/CN=${name}`,
+    "-config", join(material, "names.cnf"),
+  ], { timeout: 20_000 })
+  certificate = await readFile(join(material, "certificate.pem"), "utf8")
+  notAfter = new Date(new X509Certificate(certificate).validTo).toISOString()
+}, 30_000)
+
+afterAll(async () => {
+  await rm(material, { recursive: true, force: true })
+})
+
+let root = ""
+let home = ""
+let bin = ""
+let data = ""
+
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), "domovoi-tailnet-reach-"))
+  home = join(root, "home")
+  bin = join(root, "bin")
+  data = join(root, "data")
+  await Promise.all([mkdir(home), mkdir(bin), mkdir(data)])
+  await writeFile(join(root, "status.json"), JSON.stringify({
+    BackendState: "Running", Self: { DNSName: `${name}.`, TailscaleIPs: ["100.101.102.103"] }, CertDomains: [name],
+  }))
+  await writeFile(join(root, "certificate.pem"), certificate)
+  // Answers status from a file and writes the certificate where --cert-file
+  // and --key-file say, as tailscale does. Each call is logged. PATH holds
+  // only the fake, so the tools it uses are named by their own paths.
+  await writeFile(join(bin, "tailscale"), [
+    "#!/bin/sh",
+    `echo "$@" >> "${join(root, "calls.log")}"`,
+    `if [ "$1" = status ]; then /bin/cat "${join(root, "status.json")}"; exit 0; fi`,
+    "while [ $# -gt 1 ]; do",
+    `  case "$1" in --cert-file) /bin/cp "${join(root, "certificate.pem")}" "$2"; shift 2;; --key-file) /bin/cp "${join(material, "key.pem")}" "$2"; shift 2;; *) shift;; esac`,
+    "done",
+  ].join("\n"))
+  await chmod(join(bin, "tailscale"), 0o755)
+})
+
+afterEach(async () => {
+  await rm(root, { recursive: true, force: true })
+})
+
+// listener: what the restarted daemon answers to tailnet.status. Default:
+// listening with the issued certificate.
+function assemble(owned = true, environment: Record<string, string> = {}, listener?: () => TailnetListenerStatus) {
+  // The settings index.ts hands the in-app daemon at its next acquisition,
+  // and what they were when the daemon was restarted.
+  const settings: Record<string, string>[] = []
+  const restartedWith: Record<string, string>[] = []
+  const endHandoff = vi.fn()
+  const stopOwned = vi.fn(async () => {})
+  const restart = vi.fn(async () => {
+    restartedWith.push(settings.at(-1) ?? {})
+    return { kind: "owned" as const, url: "ws://127.0.0.1:47831/rpc", token: "t" }
+  })
+  const release = vi.fn()
+  const update = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "plist", configurationPath: "service.json", daemonRunning: true as const }))
+  const reach = createTailnetReach({
+    desktopDaemon: {
+      current: () => owned ? { kind: "owned", url: "ws://127.0.0.1:47831/rpc", token: "t" } : { kind: "attached", owner: "daemon", url: "ws://127.0.0.1:47831/rpc", token: "t" },
+      stopOwned, restart, endHandoff,
+    },
+    daemon: {
+      readLocalServiceHandoffRefusal: async () => undefined,
+      holdServiceHandoffFence: async () => ({ release }),
+      readLocalTailnetStatus: async () => listener?.() ?? { state: "listening", address: "100.101.102.103", port: 47831, certificateExpiresAt: notAfter },
+    },
+    service: async () => ({ update, status: async () => ({ installed: true, running: true, detail: "running" }) }),
+    dataDirectory: data,
+    home,
+    environment: { PATH: bin, ...environment },
+    platform: "darwin",
+    tailscaleLocations: [],
+    applySettings: (next) => { settings.push(next) },
+  })
+  return { reach, stopOwned, restart, endHandoff, release, update, settings, restartedWith }
+}
+
+describe.skipIf(process.platform === "win32")("TailnetReach on this machine's files", () => {
+  it("reads the tailnet from tailscale status and changes nothing while off", async () => {
+    const { reach } = assemble()
+    await expect(reach.status()).resolves.toEqual({
+      state: "off", name, address: "100.101.102.103", stored: `~/.domovoi/tls/${name}.crt, .key`, httpsCertificates: true,
+    })
+    expect(await readFile(join(root, "calls.log"), "utf8")).toBe("status --json\n")
+    await expect(stat(join(home, ".domovoi"))).rejects.toMatchObject({ code: "ENOENT" })
+  })
+
+  it("says there is no tailnet when no tailscale command is where Domovoi looks", async () => {
+    const reach = createTailnetReach({
+      desktopDaemon: { current: () => undefined, stopOwned: async () => {}, restart: async () => ({ kind: "refused", reason: "port-in-use", message: "x" }), endHandoff: () => {} },
+      daemon: { readLocalServiceHandoffRefusal: async () => undefined, holdServiceHandoffFence: async () => ({ refusal: "x" }), readLocalTailnetStatus: async () => ({ state: "off" }) },
+      service: async () => { throw new Error("unused") },
+      dataDirectory: data, home, environment: { PATH: join(root, "empty") }, platform: "darwin", tailscaleLocations: [],
+    })
+    await expect(reach.status()).resolves.toEqual({ state: "none", detail: "Domovoi found no tailscale command on this computer." })
+  })
+
+  // Review of 049b1383 (P3-c): a crash while a certificate was being issued
+  // leaves a pending directory holding a private key. Loading the module
+  // removes the ones Domovoi made, by their name inside <profile>/tls only,
+  // and never follows a link.
+  it("sweeps pending directories a crash left behind, and nothing else", async () => {
+    const tls = join(home, ".domovoi", "tls")
+    const outside = join(root, "outside")
+    await mkdir(join(tls, ".pending-Ab3xYz"), { recursive: true })
+    await writeFile(join(tls, ".pending-Ab3xYz", `${name}.key`), "private key")
+    // Codex review round 1 (P2-4): marked as made by the switch.
+    await writeFile(join(tls, ".pending-Ab3xYz", ".domovoi-tailnet-staging"), "")
+    await mkdir(outside)
+    await writeFile(join(outside, "keep.txt"), "kept")
+    await symlink(outside, join(tls, ".pending-Lnk123"))
+    await writeFile(join(tls, ".pending-File12"), "a file")
+    await mkdir(join(tls, ".pending-toolongname"))
+    await writeFile(join(tls, `${name}.crt`), "kept")
+    assemble()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect((await readdir(tls)).sort()).toEqual([".pending-File12", ".pending-Lnk123", ".pending-toolongname", `${name}.crt`].sort())
+    expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("kept")
+  })
+
+  // Codex review round 1 (P2-4): a name is no proof the switch made a
+  // directory. The sweep removes only a directory the switch marked when it
+  // made it, holding nothing but what the switch writes there; anything else
+  // stays whole.
+  it("sweeps no pending directory it cannot show it made, or that holds anything else", async () => {
+    const tls = join(home, ".domovoi", "tls")
+    await mkdir(join(tls, ".pending-Unmrkd"), { recursive: true })
+    await writeFile(join(tls, ".pending-Unmrkd", `${name}.key`), "someone's key")
+    await mkdir(join(tls, ".pending-Others"))
+    await writeFile(join(tls, ".pending-Others", ".domovoi-tailnet-staging"), "")
+    await writeFile(join(tls, ".pending-Others", "notes.txt"), "someone's notes")
+    assemble()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    await expect(readdir(join(tls, ".pending-Unmrkd"))).resolves.toEqual([`${name}.key`])
+    await expect(readdir(join(tls, ".pending-Others"))).resolves.toEqual([".domovoi-tailnet-staging", "notes.txt"])
+  })
+
+  it("deletes nothing a forged record names when turned off", async () => {
+    const tls = join(home, ".domovoi", "tls")
+    await mkdir(tls, { recursive: true })
+    await writeFile(join(tls, `${name}.crt`), "someone's certificate")
+    await writeFile(join(tls, `${name}.key`), "someone's key")
+    await writeFile(join(data, "tailnet-reach.json"), JSON.stringify({
+      version: 1, name, address: "100.101.102.103", certPath: join(tls, `${name}.crt`), keyPath: join(tls, `${name}.key`),
+      certIdentity: "1:2:946684800000", keyIdentity: "1:3:946684800000",
+    }))
+    const { reach, restart } = assemble()
+    await expect(reach.turnOff()).resolves.toMatchObject({ ok: false, reason: "refused", step: "delete" })
+    await expect(readdir(tls)).resolves.toEqual([`${name}.crt`, `${name}.key`])
+    expect(restart).not.toHaveBeenCalled()
+  })
+
+  // Re-review of 10dba4a2 (P3-1): a change that could not put the previous
+  // files back keeps them in its pending directory and says so; the sweep
+  // leaves that one for the person to recover.
+  it("leaves a pending directory holding previous files that could not be put back", async () => {
+    const tls = join(home, ".domovoi", "tls")
+    await mkdir(join(tls, ".pending-Kept12"), { recursive: true })
+    await writeFile(join(tls, ".pending-Kept12", "previous.key"), "the only copy")
+    await writeFile(join(tls, ".pending-Kept12", ".domovoi-tailnet-staging"), "")
+    const { reach } = assemble()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(await readFile(join(tls, ".pending-Kept12", "previous.key"), "utf8")).toBe("the only copy")
+    // Round 3 re-review (P3-3): and the switch says where it is. Round 4
+    // review (P3-3): as a directory found at load, while it holds them.
+    const report = await reach.status()
+    expect(report).toMatchObject({ state: "off", setAside: "~/.domovoi/tls/.pending-Kept12" })
+    expect(report).not.toHaveProperty("kept")
+    await rm(join(tls, ".pending-Kept12", "previous.key"))
+    await expect(reach.status()).resolves.not.toHaveProperty("setAside")
+  })
+
+  // index.ts loads the module at startup only when the switch is on, and the
+  // module starts its own renewal checks, so main carries none of that.
+  it("starts its renewal checks when created with the switch on, and none when off", async () => {
+    const scheduled: number[] = []
+    const timers = { set: (_run: () => void, ms: number) => { scheduled.push(ms); return ms }, clear: () => {} }
+    const create = () => createTailnetReach({
+      desktopDaemon: { current: () => undefined, stopOwned: async () => {}, restart: async () => ({ kind: "refused", reason: "port-in-use", message: "x" }), endHandoff: () => {} },
+      daemon: { readLocalServiceHandoffRefusal: async () => undefined, holdServiceHandoffFence: async () => ({ refusal: "x" }), readLocalTailnetStatus: async () => ({ state: "off" }) },
+      service: async () => { throw new Error("unused") },
+      dataDirectory: data, home, environment: { PATH: bin }, platform: "darwin", tailscaleLocations: [], timers,
+    })
+    create()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(scheduled).toEqual([])
+    await writeFile(join(data, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(home, ".domovoi", "tls", `${name}.crt`), keyPath: join(home, ".domovoi", "tls", `${name}.key`), certIdentity: "1:2:946684800000", keyIdentity: "1:3:946684800000" }))
+    create()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(scheduled).toEqual([60_000])
+  })
+
+  it("stores a private certificate and key in the profile, records them for the in-app daemon, and restarts it", async () => {
+    const { reach, stopOwned, restart, endHandoff, release, restartedWith } = assemble()
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true, report: { state: "on", name, certificateExpiresAt: notAfter } })
+    const tls = join(home, ".domovoi", "tls")
+    expect(((await stat(tls)).mode & 0o777).toString(8)).toBe("700")
+    expect(((await stat(join(tls, `${name}.key`))).mode & 0o777).toString(8)).toBe("600")
+    expect(await readFile(join(tls, `${name}.crt`), "utf8")).toBe(certificate)
+    const expected = {
+      DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+      DOMOVOI_TAILNET_ADDRESS: "100.101.102.103",
+      DOMOVOI_TAILNET_TLS_CERT_PATH: join(tls, `${name}.crt`),
+      DOMOVOI_TAILNET_TLS_KEY_PATH: join(tls, `${name}.key`),
+      DOMOVOI_TAILNET_HOST: name,
+    }
+    expect(savedTailnetReachEnvironment(data, {}, home)).toEqual(expected)
+    // The restarted daemon starts with them.
+    expect(restartedWith).toEqual([expected])
+    expect(stopOwned).toHaveBeenCalledOnce()
+    expect(restart).toHaveBeenCalledOnce()
+    expect(endHandoff).toHaveBeenCalled()
+    expect(release).toHaveBeenCalledOnce()
+    expect((await readFile(join(root, "calls.log"), "utf8")).split("\n")[1]).toMatch(new RegExp(`^cert --cert-file ${tls}/\\.pending-[^ ]+/${name}\\.crt --key-file ${tls}/\\.pending-[^ ]+/${name}\\.key ${name}$`))
+  })
+
+  it("deletes only what it wrote when turned off, and forgets the settings", async () => {
+    const { reach, restartedWith } = assemble()
+    await reach.turnOn()
+    const tls = join(home, ".domovoi", "tls")
+    await writeFile(join(tls, "kept.crt"), "not Domovoi's")
+    await expect(reach.turnOff()).resolves.toMatchObject({ ok: true, report: { state: "off" } })
+    await expect(readdir(tls)).resolves.toEqual(["kept.crt"])
+    expect(savedTailnetReachEnvironment(data, {}, home)).toEqual({})
+    expect(restartedWith.at(-1)).toEqual({})
+  })
+
+  it("renews over its own files with --min-validity and restarts once when the certificate changed", async () => {
+    const { reach, restart } = assemble()
+    await reach.turnOn()
+    const tls = join(home, ".domovoi", "tls")
+    await expect(reach.renew()).resolves.toBe("unchanged")
+    expect(restart).toHaveBeenCalledOnce()
+    // Tailscale hands back another certificate. (Writing over the switch's
+    // own file instead would make it someone else's: Codex review round 1,
+    // P2-4.)
+    await writeFile(join(root, "certificate.pem"), `${certificate}\n`)
+    await expect(reach.renew()).resolves.toBe("renewed")
+    expect(restart).toHaveBeenCalledTimes(2)
+    expect(await readFile(join(tls, `${name}.crt`), "utf8")).toBe(`${certificate}\n`)
+    expect(((await stat(join(tls, `${name}.key`))).mode & 0o777).toString(8)).toBe("600")
+    await expect(readdir(tls)).resolves.toEqual([`${name}.crt`, `${name}.key`])
+    expect((await readFile(join(root, "calls.log"), "utf8")).trim().split("\n").at(-1)).toMatch(new RegExp(`^cert --cert-file \\S+ --key-file \\S+ --min-validity 720h ${name}$`))
+    reach.stopRenewal()
+  })
+
+  // Q404 follow-up: a hand-set DOMOVOI_HOST beyond loopback keeps the saved
+  // settings out of the in-app daemon, which starts without them.
+  it("refuses to turn on beside a hand-set DOMOVOI_HOST, and says why in the switch state", async () => {
+    const { reach } = assemble(true, { DOMOVOI_HOST: "0.0.0.0" })
+    const why = "DOMOVOI_HOST is set to 0.0.0.0 in this app's environment, so the daemon inside this app listens there and starts without the tailnet listener."
+    await expect(reach.status()).resolves.toMatchObject({ state: "off", ignored: why })
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: false, reason: "refused", message: `${why} Nothing was changed.` })
+  })
+
+  it("does not apply the in-app daemon's DOMOVOI_HOST to the login service", async () => {
+    const { reach, update } = assemble(false, { DOMOVOI_HOST: "0.0.0.0" })
+    await expect(reach.status()).resolves.not.toHaveProperty("ignored")
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true })
+    expect(update).toHaveBeenCalledOnce()
+  })
+
+  // Round 3 re-review (P3-2): a tailnet listener set by hand in this app's
+  // environment is the in-app daemon's whatever the switch says.
+  it("says when the in-app daemon's tailnet listener is set by hand", async () => {
+    const handSet = "The tailnet listener comes from DOMOVOI_TAILNET_ADDRESS set by hand in this app's environment, and the switch cannot clear it."
+    await expect(assemble(true, { DOMOVOI_TAILNET_ADDRESS: "100.101.102.103" }).reach.status()).resolves.toMatchObject({ state: "off", handSet })
+    await expect(assemble(false, { DOMOVOI_TAILNET_ADDRESS: "100.101.102.103" }).reach.status()).resolves.not.toHaveProperty("handSet")
+    await expect(assemble(true).reach.status()).resolves.not.toHaveProperty("handSet")
+  })
+
+  // Codex review round 1 (P2-2): <profile>/tls is a directory of the
+  // profile's own. When it is a link, nothing is made, changed, read, swept or
+  // deleted through it; neither is a certificate or key that is a link.
+  describe("with the tls directory a link", () => {
+    async function linkedTls(): Promise<{ tls: string; elsewhere: string }> {
+      const tls = join(home, ".domovoi", "tls")
+      const elsewhere = join(root, "elsewhere")
+      await mkdir(elsewhere, { mode: 0o755 })
+      await chmod(elsewhere, 0o755)
+      await mkdir(join(home, ".domovoi"))
+      await symlink(elsewhere, tls)
+      return { tls, elsewhere }
+    }
+
+    it("turns nothing on through it", async () => {
+      const { elsewhere } = await linkedTls()
+      const { reach, restart } = assemble()
+      await expect(reach.turnOn()).resolves.toMatchObject({
+        ok: false, reason: "failed", step: "store",
+        message: "The certificate could not be stored in ~/.domovoi/tls. Nothing was stored and nothing restarted.",
+        detail: "~/.domovoi/tls is a link. Domovoi keeps the tailnet certificate and key only in a directory of its own in the profile, never through a link.",
+      })
+      await expect(readdir(elsewhere)).resolves.toEqual([])
+      expect(((await stat(elsewhere)).mode & 0o777).toString(8)).toBe("755")
+      expect(restart).not.toHaveBeenCalled()
+    })
+
+    it("sweeps nothing through it", async () => {
+      const { elsewhere } = await linkedTls()
+      await mkdir(join(elsewhere, ".pending-Ab3xYz"))
+      await writeFile(join(elsewhere, ".pending-Ab3xYz", "notes.txt"), "someone's")
+      assemble()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await expect(readdir(elsewhere)).resolves.toEqual([".pending-Ab3xYz"])
+    })
+
+    it("deletes nothing through it when turned off", async () => {
+      const { tls, elsewhere } = await linkedTls()
+      await writeFile(join(elsewhere, `${name}.crt`), "someone's certificate")
+      await writeFile(join(elsewhere, `${name}.key`), "someone's key")
+      await writeFile(join(data, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(tls, `${name}.crt`), keyPath: join(tls, `${name}.key`), certIdentity: "1:2:946684800000", keyIdentity: "1:3:946684800000" }))
+      const { reach } = assemble()
+      await expect(reach.turnOff()).resolves.toMatchObject({ ok: false, reason: "failed", step: "delete" })
+      await expect(readdir(elsewhere)).resolves.toEqual([`${name}.crt`, `${name}.key`])
+    })
+  })
+
+  // Codex review round 1 (P2-5): the checks and the daemon's answer, with a
+  // real certificate and key, on this machine's files.
+  it("stores nothing when Tailscale hands back an expired certificate", async () => {
+    await writeFile(join(root, "certificate.pem"), [
+      "-----BEGIN CERTIFICATE-----",
+      "MIIBaDCCAQ+gAwIBAgIUb1E7VPfk5A/cEdedmwPUr2wbFbowCgYIKoZIzj0EAwIw",
+      "ITEfMB0GA1UEAwwWc3R1ZGlvLnRhaWw0YzJlLnRzLm5ldDAeFw0yNTAxMDEwMDAw",
+      "MDBaFw0yNTAxMDIwMDAwMDBaMCExHzAdBgNVBAMMFnN0dWRpby50YWlsNGMyZS50",
+      "cy5uZXQwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAATtu/OtBFdZfsoqrzwVyR6+",
+      "Kw6di2N0m49ICmgVOyWw2mM98b5/dpL/aMcjKjV28mJyFhULKZzbkwwR2ux0jKDU",
+      "oyUwIzAhBgNVHREEGjAYghZzdHVkaW8udGFpbDRjMmUudHMubmV0MAoGCCqGSM49",
+      "BAMCA0cAMEQCIHBJbyVY310jQC8iDsLg0sa47JNbC7MgrCe+FFjhZBBeAiBVSgGo",
+      "m0csbcFZN38Diwdag5/o/56dxngzn9HR6/RuwQ==",
+      "-----END CERTIFICATE-----",
+      "",
+    ].join("\n"))
+    const { reach, restart } = assemble()
+    await expect(reach.turnOn()).resolves.toMatchObject({
+      ok: false, reason: "failed", step: "certificate",
+      message: `Tailscale's certificate for ${name} was not used: it expired on 2025-01-02. Nothing was stored and nothing restarted.`,
+    })
+    await expect(readdir(join(home, ".domovoi", "tls"))).resolves.toEqual([])
+    expect(restart).not.toHaveBeenCalled()
+  })
+
+  it("keeps the previous pair when the restarted daemon refuses the new one on the tailnet", async () => {
+    let answer: TailnetListenerStatus = { state: "listening", address: "100.101.102.103", port: 47831, certificateExpiresAt: notAfter }
+    const { reach, restart } = assemble(true, {}, () => answer)
+    await reach.turnOn()
+    const tls = join(home, ".domovoi", "tls")
+    const before = await readFile(join(tls, `${name}.crt`), "utf8")
+    await writeFile(join(root, "certificate.pem"), `${certificate}\n`)
+    answer = { state: "refused", address: "100.101.102.103", retrying: false, reason: "The tailnet certificate and key do not belong together, so the daemon answers on this computer only." }
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(await readFile(join(tls, `${name}.crt`), "utf8")).toBe(before)
+    expect(restart).toHaveBeenCalledTimes(3)
+    await expect(readdir(tls)).resolves.toEqual([`${name}.crt`, `${name}.key`])
+    reach.stopRenewal()
+  })
+
+  it("renews nothing over a certificate that is a link", async () => {
+    const { reach, restart } = assemble()
+    await reach.turnOn()
+    const tls = join(home, ".domovoi", "tls")
+    const outside = join(root, "outside.crt")
+    await writeFile(outside, certificate)
+    await rm(join(tls, `${name}.crt`))
+    await symlink(outside, join(tls, `${name}.crt`))
+    await expect(reach.renew()).resolves.toBe("failed")
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: { message: expect.stringContaining(`~/.domovoi/tls/${name}.crt is a link`) } })
+    expect(restart).toHaveBeenCalledOnce()
+    reach.stopRenewal()
+  })
+
+  it("applies the change through the service update when the app runs on the login service", async () => {
+    const { reach, update, stopOwned } = assemble(false)
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true })
+    const tls = join(home, ".domovoi", "tls")
+    expect(update).toHaveBeenCalledWith({ set: { address: "100.101.102.103", name, certPath: join(tls, `${name}.crt`), keyPath: join(tls, `${name}.key`) } })
+    expect(stopOwned).not.toHaveBeenCalled()
+  })
+})

@@ -15,7 +15,13 @@ assert.deepEqual(Object.keys(publicApi).sort(), [
   "SystemdPathCharacterError",
   "WindowsTaskArgumentVariableError", "WindowsTaskNotDomovoiError", "WindowsTaskPathError", "WindowsTaskPercentSignError",
   "acquireLocalDaemon", "adoptRelayProfileSuccessor", "captureInheritedCredentials", "createProductionDaemon", "holdServiceHandoffFence",
-  "installDaemonService", "prepareRelayProfileSuccessor", "readDaemonServiceRuntimeCopy", "readDaemonServiceRuntimeVersion", "readDaemonServiceStatus", "readLocalServiceHandoffRefusal",
+  // Q408 A: nodeRuntimeFileSystem and prepareDaemonRuntime make the runtime
+  // copy under the profile, which the desktop makes through the daemon it
+  // loads (apps/desktop/src/main/daemon-module.ts).
+  // readLocalTailnetStatus lets the desktop confirm the daemon took a renewed
+  // tailnet certificate before it commits the renewal (#713).
+  "installDaemonService", "nodeRuntimeFileSystem", "prepareDaemonRuntime", "prepareRelayProfileSuccessor", "readDaemonServiceRuntimeCopy", "readDaemonServiceRuntimeVersion", "readDaemonServiceStatus", "readLocalServiceHandoffRefusal",
+  "readLocalTailnetStatus",
   "removeDaemonService", "removeUnusedDaemonRuntimes", "serviceProfileMismatch", "updateDaemonService", "verifyLocalFleetClientRoute",
   "verifyRelayProfileSuccessor",
 ])

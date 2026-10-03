@@ -667,6 +667,12 @@ export function useWorkspace(
     return client.updateStatus()
   }, [])
 
+  const tailnetStatus = useCallback(async () => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.tailnetStatus()
+  }, [])
+
   const issueDeviceCode = useCallback(async (targetClient: ClientKind) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
@@ -902,6 +908,7 @@ export function useWorkspace(
     listFleet,
     listDevices,
     updateStatus,
+    tailnetStatus,
     issueDeviceCode,
     listModels,
     discoverRuntime,

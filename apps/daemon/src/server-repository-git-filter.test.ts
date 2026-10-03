@@ -156,6 +156,10 @@ describe("repository.trust and the git filter acknowledgement", () => {
     ["the client said nothing", undefined, listed, false],
     ["an entry was past the cap", shown, { ...listed, omittedEntries: 1 }, false],
     ["the config was unreadable", shown, { files: [], entries: [], omittedEntries: 0, reviewDigest: digest("b"), unreadable: { reason: "too-large" as const } }, false],
+    // A command not shown exactly as Git runs it: a cut (ruling Q323), or a
+    // rewrite with no marker, such as an escaped pattern (ruling Q325).
+    ["a filter command was hidden", shown, { ...listed, entries: [{ ...listed.entries[0]!, command: "[REDACTED]", commandInexact: true as const }] }, false],
+    ["a filter command was rewritten", shown, { ...listed, entries: [{ ...listed.entries[0]!, command: "sops --decrypt \\*.enc", commandInexact: true as const }] }, false],
   ])("records a reviewed grant only when %s", async (_label, gitFilters, inventory, reviewed) => {
     const { config, repositoryTrust, rpc } = await fixture()
     config.gitFilters = inventory

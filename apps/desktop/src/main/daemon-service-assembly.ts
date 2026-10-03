@@ -2,8 +2,9 @@ import { homedir } from "node:os"
 import { posix, win32 } from "node:path"
 
 import type { DaemonModule } from "./daemon-module.js"
-import { DesktopDaemonService, nodeRuntimeFileSystem, prepareDaemonRuntime } from "./daemon-service.js"
+import { DesktopDaemonService } from "./daemon-service.js"
 import type { DesktopDaemon } from "./desktop-daemon.js"
+import { savedTailnetReachRecord, tailnetReachEnvironment } from "./tailnet-reach-record.js"
 
 // J24: the login service, assembled on first use. index.ts loads this module
 // with import() only when Settings first asks about the service, so none of
@@ -30,16 +31,24 @@ export function createDesktopDaemonService(
   // looked for (#635).
   const copies = profileDirectory ?? (process.platform === "win32" ? win32 : posix).join(home, ".domovoi")
   return new DesktopDaemonService({
-    stageRuntime: (operation) => prepareDaemonRuntime({
+    // Q408 A: the daemon's own copy routine, the one `domovoid service
+    // install` uses when run from the app's runtime.
+    stageRuntime: (operation) => daemon.prepareDaemonRuntime({
       operation,
       resourcesPath: app.resourcesPath,
       profileDirectory: copies,
       version: app.version,
       ...(app.dataDirectory === undefined ? {} : { dataDirectory: app.dataDirectory }),
       platform: process.platform,
-      fileSystem: nodeRuntimeFileSystem(),
+      fileSystem: daemon.nodeRuntimeFileSystem(),
     }),
-    install: (options) => daemon.installDaemonService({ ...options, environment: profile }),
+    // Review of 049b1383 (P2-3): with the tailnet switch on, the service keeps
+    // the tailnet listener the in-app daemon had. Read at install, as saved;
+    // a hand-set DOMOVOI_HOST is this app's own and does not go with it.
+    install: (options) => daemon.installDaemonService({ ...options, environment: {
+      ...profile,
+      ...(app.dataDirectory === undefined ? {} : tailnetReachEnvironment(savedTailnetReachRecord(app.dataDirectory, environment, home))),
+    } }),
     status: () => daemon.readDaemonServiceStatus(),
     // The profile this app's daemon runs, read as its acquisition reads it,
     // against the one the saved service configuration names.
