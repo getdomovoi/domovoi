@@ -210,13 +210,13 @@ describe("WebApp", () => {
     expect(text()).toContain("Pair this browser")
   })
 
-  // A version refusal is cured by a reload, not by another code, so that is
-  // the action it offers. The code was not spent.
-  it("offers a reload when the daemon refuses this page's protocol version", async () => {
+  // A daemon ahead of this page is cured by a reload, not by another code, so
+  // that is the action it offers. The code was not spent.
+  it("offers a reload when the daemon is ahead of this page", async () => {
     const { DaemonRpcError } = await import("@/client")
     const { protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
     const reloadPage = vi.fn()
-    const client = { ...pairingClient("pairs"), request: vi.fn(async () => { throw new DaemonRpcError(protocolVersionMismatchErrorCode, "Protocol version mismatch", { daemonProtocolVersion: "9.0.0", clientProtocolVersion: "0.8.0" }) }) }
+    const client = { ...pairingClient("pairs"), request: vi.fn(async () => { throw new DaemonRpcError(protocolVersionMismatchErrorCode, "Protocol version mismatch", { daemonProtocolVersion: "9.0.0", clientProtocolVersion: "0.8.0", compatibility: "machine-ahead" }) }) }
     await act(async () => {
       root.render(
         <WebApp
@@ -237,13 +237,65 @@ describe("WebApp", () => {
     expect(reloadPage).toHaveBeenCalledOnce()
   })
 
-  it("offers no action for a version refusal where the page cannot be reloaded", async () => {
+  it("offers no action when the daemon is ahead and the page cannot be reloaded", async () => {
     const { DaemonRpcError } = await import("@/client")
     const { protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
-    const client = { ...pairingClient("pairs"), request: vi.fn(async () => { throw new DaemonRpcError(protocolVersionMismatchErrorCode, "Protocol version mismatch") }) }
+    const client = { ...pairingClient("pairs"), request: vi.fn(async () => { throw new DaemonRpcError(protocolVersionMismatchErrorCode, "Protocol version mismatch", { compatibility: "machine-ahead" }) }) }
     await draw(memoryStorage(), vi.fn(() => client))
     await submitCode("hearth-quiet-ember-42")
     expect(text()).toContain("Reload the page to update it.")
+    expect(() => button("Type a new code")).toThrow()
+    expect(() => button("Reload this page")).toThrow()
+  })
+
+  // An older daemon is not cured by a reload. It checks the version before it
+  // spends the code, so the code still works once the daemon is updated.
+  it("says the daemon is older and offers the code again when the daemon is behind", async () => {
+    const { DaemonRpcError } = await import("@/client")
+    const { protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
+    const reloadPage = vi.fn()
+    const client = { ...pairingClient("pairs"), request: vi.fn(async () => { throw new DaemonRpcError(protocolVersionMismatchErrorCode, "Protocol version mismatch", { daemonProtocolVersion: "0.7.0", clientProtocolVersion: "0.8.0", compatibility: "machine-behind" }) }) }
+    await act(async () => {
+      root.render(
+        <WebApp
+          rpcUrl={rpcUrl}
+          clientKind="web"
+          environment={{ ...environment, reloadPage }}
+          storage={memoryStorage()}
+          createClient={vi.fn(() => client)}
+          labelSuffix={() => "1234"}
+          workspace={() => <main />}
+        />,
+      )
+    })
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("The daemon on 127.0.0.1:47831 is older than this page")
+    expect(text()).not.toContain("This page is older")
+    expect(() => button("Reload this page")).toThrow()
+    await act(async () => { button("Type a new code").click() })
+    expect(text()).toContain("Pair this browser")
+    expect(reloadPage).not.toHaveBeenCalled()
+  })
+
+  it("offers no action when the daemon does not say which side is older", async () => {
+    const { DaemonRpcError } = await import("@/client")
+    const { protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
+    const client = { ...pairingClient("pairs"), request: vi.fn(async () => { throw new DaemonRpcError(protocolVersionMismatchErrorCode, "Protocol version mismatch") }) }
+    await act(async () => {
+      root.render(
+        <WebApp
+          rpcUrl={rpcUrl}
+          clientKind="web"
+          environment={{ ...environment, reloadPage: vi.fn() }}
+          storage={memoryStorage()}
+          createClient={vi.fn(() => client)}
+          labelSuffix={() => "1234"}
+          workspace={() => <main />}
+        />,
+      )
+    })
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("speak different protocol versions")
     expect(() => button("Type a new code")).toThrow()
     expect(() => button("Reload this page")).toThrow()
   })

@@ -1,4 +1,4 @@
-import { daemonAuthenticationErrorCode, devicePairingLimitErrorCode, devicePairResultSchema, pairingCodeSchema, protocolVersion, protocolVersionMismatchErrorCode, type ClientKind } from "@getdomovoi/protocol"
+import { daemonAuthenticationErrorCode, devicePairingLimitErrorCode, devicePairResultSchema, pairingCodeSchema, protocolCompatibilitySchema, protocolVersion, protocolVersionMismatchErrorCode, type ClientKind } from "@getdomovoi/protocol"
 import type { PairingOutcome } from "@getdomovoi/ui"
 
 import { DaemonRpcError } from "@/client"
@@ -117,6 +117,20 @@ function kindMismatchOutcome(cause: DeviceKindMismatchError, host: string): Omit
   }
 }
 
+function mismatchData(cause: DaemonRpcError): { daemonProtocolVersion?: unknown; clientProtocolVersion?: unknown; compatibility?: unknown } {
+  return typeof cause.data === "object" && cause.data !== null ? cause.data : {}
+}
+
+// The daemon names the older side in data.compatibility, from the machine's
+// point of view (protocolCompatibility). Anything else says nothing.
+function olderSide(cause: DaemonRpcError): "page" | "daemon" | undefined {
+  const compatibility = protocolCompatibilitySchema.safeParse(mismatchData(cause).compatibility)
+  if (!compatibility.success) return undefined
+  if (compatibility.data === "machine-ahead") return "page"
+  if (compatibility.data === "machine-behind") return "daemon"
+  return undefined
+}
+
 // What the daemon said, as the page draws it. Every bad code gets one uniform
 // refusal from the daemon on purpose, so the page cannot say whether a code
 // expired, was spent, or came from another machine, and does not guess.
@@ -124,10 +138,18 @@ export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOut
   if (cause instanceof DeviceKindMismatchError) return kindMismatchOutcome(cause, host)
   if (cause instanceof DaemonRpcError) {
     if (cause.code === protocolVersionMismatchErrorCode) {
-      const data = (typeof cause.data === "object" && cause.data !== null ? cause.data : {}) as { daemonProtocolVersion?: unknown; clientProtocolVersion?: unknown }
+      const data = mismatchData(cause)
       const page = typeof data.clientProtocolVersion === "string" ? data.clientProtocolVersion : protocolVersion
       const daemon = typeof data.daemonProtocolVersion === "string" ? data.daemonProtocolVersion : "unknown"
-      return { tone: "danger", pill: "refused", title: `This page is older than the daemon on ${host}`, mono: `pair.refused · protocol_mismatch · page ${page}, daemon ${daemon}`, body: "The daemon was updated while this tab was open. Reload the page to update it. The daemon needs nothing. The code was not used." }
+      const mono = `pair.refused · protocol_mismatch · page ${page}, daemon ${daemon}`
+      const older = olderSide(cause)
+      if (older === "page") {
+        return { tone: "danger", pill: "refused", title: `This page is older than the daemon on ${host}`, mono, body: "The daemon was updated while this tab was open. Reload the page to update it. The daemon needs nothing. The code was not used." }
+      }
+      if (older === "daemon") {
+        return { tone: "danger", pill: "refused", title: `The daemon on ${host} is older than this page`, mono, body: `Update Domovoi on ${host}, then type the code again. The daemon checked the version first, so the code was not used and works until it expires.` }
+      }
+      return { tone: "danger", pill: "refused", title: `This page and the daemon on ${host} speak different protocol versions`, mono, body: "The daemon did not say which one is older, so this page cannot say which to update." }
     }
     if (cause.code === devicePairingLimitErrorCode) {
       return { tone: "danger", pill: "refused", title: `${host} has no room for another device`, mono: "pair.refused · device_limit", body: "Unpair a device on the machine, under Machines, then show another code." }
@@ -143,10 +165,15 @@ export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOut
   return { tone: "plain", pill: "unconfirmed", title: `${host} did not answer, so pairing is unconfirmed`, mono: `pair · no reply · ${host}`, body: "The daemon may have stopped or left the tailnet. If the machine lists this browser under Phone and tablet, it paired." }
 }
 
-// What cures a refusal. A page older than the daemon needs a reload, and its
-// code was not used; every other outcome is answered with another code.
-export function pairingNextStep(cause: unknown): "reload" | "new-code" {
-  return cause instanceof DaemonRpcError && cause.code === protocolVersionMismatchErrorCode ? "reload" : "new-code"
+// What cures a refusal. A page older than the daemon needs a reload. A daemon
+// older than the page needs updating on its machine, and it checks the version
+// before spending a code, so the code can be typed again. A mismatch that does
+// not say which side is older leaves this page nothing to offer. Every other
+// outcome is answered with another code.
+export function pairingNextStep(cause: unknown): "reload" | "new-code" | "none" {
+  if (!(cause instanceof DaemonRpcError) || cause.code !== protocolVersionMismatchErrorCode) return "new-code"
+  const older = olderSide(cause)
+  return older === "page" ? "reload" : older === "daemon" ? "new-code" : "none"
 }
 
 export const daemonCredentialShapeMessage =

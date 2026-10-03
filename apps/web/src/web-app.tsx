@@ -129,11 +129,12 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
         }).catch((cause: unknown) => {
           const refusal = pairingOutcomeFor(cause, host)
           const reloadPage = environment.reloadPage
+          const next = pairingNextStep(cause)
           // A host with no page to reload gets no button: another code
           // would meet the same refusal, and the card says to reload.
-          const action = pairingNextStep(cause) === "new-code"
+          const action = next === "new-code"
             ? { label: "Type a new code", run: () => setOutcome(undefined) }
-            : reloadPage ? { label: "Reload this page", run: () => reloadPage() } : undefined
+            : next === "reload" && reloadPage ? { label: "Reload this page", run: () => reloadPage() } : undefined
           setOutcome({ ...refusal, action })
         }).finally(() => {
           setPairing(false)

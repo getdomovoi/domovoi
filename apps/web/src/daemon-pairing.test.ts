@@ -117,7 +117,7 @@ describe("redeeming a web code", () => {
     const { daemonAuthenticationErrorCode, devicePairingLimitErrorCode, protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
     const host = "mac-mini-m4.tail4c2e.ts.net"
     expect(pairingOutcomeFor(new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused"), host)).toMatchObject({ pill: "refused", title: "That code was refused", body: "It may have expired or been used already. Show another on mac-mini-m4.tail4c2e.ts.net, under Settings, Phone and tablet." })
-    expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x", { kind: "protocol-mismatch", daemonProtocolVersion: "0.9.0", clientProtocolVersion: "0.8.0", compatibility: "client-too-old" }), host)).toMatchObject({ pill: "refused", title: "This page is older than the daemon on mac-mini-m4.tail4c2e.ts.net", mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.9.0" })
+    expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x", { kind: "protocol-mismatch", daemonProtocolVersion: "0.9.0", clientProtocolVersion: "0.8.0", compatibility: "machine-ahead" }), host)).toMatchObject({ pill: "refused", title: "This page is older than the daemon on mac-mini-m4.tail4c2e.ts.net", mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.9.0" })
     expect(pairingOutcomeFor(new DaemonRpcError(devicePairingLimitErrorCode, "The paired device limit is reached"), host)).toMatchObject({ pill: "refused", title: "mac-mini-m4.tail4c2e.ts.net has no room for another device" })
     expect(pairingOutcomeFor(new Error("socket closed"), host)).toMatchObject({ pill: "unconfirmed", title: "mac-mini-m4.tail4c2e.ts.net did not answer, so pairing is unconfirmed" })
   })
@@ -204,6 +204,40 @@ describe("redeeming a web code", () => {
     const { protocolVersion, protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
     expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x"), "host").mono).toBe(`pair.refused · protocol_mismatch · page ${protocolVersion}, daemon unknown`)
     expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x", { daemonProtocolVersion: 9 }), "host").mono).toBe(`pair.refused · protocol_mismatch · page ${protocolVersion}, daemon unknown`)
+  })
+
+  // The daemon says which side is older (data.compatibility), and checks the
+  // version before it spends the code. Only an older page is cured by a
+  // reload; an older daemon needs updating, and the code still works.
+  it("names the older side of a protocol mismatch and what cures it", async () => {
+    const { pairingNextStep, pairingOutcomeFor } = await import("./daemon-pairing")
+    const { DaemonRpcError } = await import("@/client")
+    const { protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
+    const mismatch = (compatibility?: string) => new DaemonRpcError(protocolVersionMismatchErrorCode, "Client and daemon protocol versions are incompatible", {
+      kind: "protocol-mismatch", daemonProtocolVersion: "0.7.0", clientProtocolVersion: "0.8.0", ...(compatibility ? { compatibility } : {}),
+    })
+
+    expect(pairingOutcomeFor(mismatch("machine-ahead"), "host")).toEqual({
+      tone: "danger", pill: "refused", title: "This page is older than the daemon on host",
+      mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.7.0",
+      body: "The daemon was updated while this tab was open. Reload the page to update it. The daemon needs nothing. The code was not used.",
+    })
+    expect(pairingNextStep(mismatch("machine-ahead"))).toBe("reload")
+
+    expect(pairingOutcomeFor(mismatch("machine-behind"), "host")).toEqual({
+      tone: "danger", pill: "refused", title: "The daemon on host is older than this page",
+      mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.7.0",
+      body: "Update Domovoi on host, then type the code again. The daemon checked the version first, so the code was not used and works until it expires.",
+    })
+    expect(pairingNextStep(mismatch("machine-behind"))).toBe("new-code")
+
+    expect(pairingOutcomeFor(mismatch(), "host")).toEqual({
+      tone: "danger", pill: "refused", title: "This page and the daemon on host speak different protocol versions",
+      mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.7.0",
+      body: "The daemon did not say which one is older, so this page cannot say which to update.",
+    })
+    expect(pairingNextStep(mismatch())).toBe("none")
+    expect(pairingNextStep(mismatch("compatible"))).toBe("none")
   })
 
   it("says a malformed code was never sent", async () => {
