@@ -28,7 +28,7 @@ const kinds: Record<Kind, { label: string; noun: string; client: ClientKind; Ico
   browser: { label: "Web browser", noun: "a browser", client: "web", Icon: GlobeIcon, how: "Open the address in the browser and type the code." },
 }
 
-type Problem = { title: string; mono: string; still: string; next: string; action?: { label: string; primary: boolean; run: () => void } }
+type Problem = { title: string; mono: string; still: string; next: string; refusal?: string; action?: { label: string; primary: boolean; run: () => void } }
 
 // The daemon's problem text is shared with `domovoid pair`, which ends it with
 // "then run this again"; the card has its own next step, so the tail goes.
@@ -50,6 +50,8 @@ function problemFor(report: PairingAddressReport, kind: Kind, tailnet: TailnetRe
       ...(tailnet
         ? { next: "Ask Tailscale for one. The key stays on this machine.", action: { label: "Get it from Tailscale", primary: true, run: () => void tailnet.turnOn() } }
         : { next: "Give the daemon a certificate for its tailnet name, then show a code." }),
+      // Review of 049b1383 (P3-d): why the last request did not get one.
+      ...(tailnet?.failure?.direction === "on" ? { refusal: tailnet.failure.outcome.message } : {}),
     }
   }
   if (report.loopback) {
@@ -251,6 +253,7 @@ export function PairingCard({
               <span className="font-machine text-[10.5px] text-faint">{problem ? problem.mono : `${issued.code} · 180s`}</span>
               <span className="text-muted-foreground">{problem ? problem.still : "No device paired with it."}</span>
               <span className="text-muted-foreground">{problem ? problem.next : "Show another code to try again."}</span>
+              {problem?.refusal ? <span role="alert" className="text-destructive">{problem.refusal}</span> : null}
               {problem?.action ? (
                 <Button type="button" size="sm" variant={problem.action.primary ? "default" : "outline"} className="mt-1 self-start" onClick={problem.action.run}>{problem.action.label}</Button>
               ) : null}

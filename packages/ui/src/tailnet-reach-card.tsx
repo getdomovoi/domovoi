@@ -233,7 +233,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
 
   const facts = isOn && named && !running ? [
     { label: "Tailnet name", value: named.name },
-    ...(expiry ? [{ label: "Certificate", value: `expires ${day(expiry)}`, note: renewalFailed ? "Renewal failed. Retrying on its own." : "Renews on its own.", bad: Boolean(renewalFailed) }] : []),
+    ...(expiry ? [{ label: "Certificate", value: `expires ${day(expiry)}`, note: renewalFailed ? "Renewal failed. Retrying on its own while this app is open." : "Renews on its own while this app is open.", bad: Boolean(renewalFailed) }] : []),
     { label: "Stored in", value: named.stored },
     { label: "Answers on", value: listening ? `127.0.0.1 · ${named.name}` : unconfirmed ? "127.0.0.1 · the tailnet not confirmed" : "127.0.0.1 only" },
   ] : []
@@ -333,7 +333,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
           body={expiry ? `Until ${day(expiry)} paired devices keep connecting and new ones can pair. After that the daemon answers on this computer only until a renewal succeeds.` : "Paired devices keep connecting until the certificate expires. After that the daemon answers on this computer only until a renewal succeeds."}
           mono={`${moment(renewalFailed.at)} · ${renewalFailed.message}`}
           action="Renew now" onAction={() => void controller.turnOn()}
-          after="Domovoi also tries again on its own."
+          after="Domovoi also tries again on its own while this app is open."
         />
       ) : null}
       {!running && refusedListener ? (

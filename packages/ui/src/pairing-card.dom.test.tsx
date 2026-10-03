@@ -186,6 +186,17 @@ it("asks Tailscale for a certificate when a phone would not trust the daemon", a
   expect(tailnet.turnOn).toHaveBeenCalledOnce()
 })
 
+// Review of 049b1383 (P3-d): a refused or failed request says why where it
+// was asked for, not only in the Settings card.
+it("shows why asking Tailscale was refused", async () => {
+  const message = "DOMOVOI_HOST is set to 0.0.0.0 in this app's environment, so the daemon inside this app listens there and starts without the tailnet listener. Nothing was changed."
+  const { onIssueCode, user } = card({ tailnet: controller({ failure: { direction: "on", outcome: { ok: false, reason: "refused", step: "status", message } } }) })
+  onIssueCode.mockResolvedValueOnce(issued({ pairingAddress: { problem: "No certificate." } }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  expect(await screen.findByText(message)).toBeTruthy()
+  expect(screen.getByRole("button", { name: "Get it from Tailscale" })).toBeTruthy()
+})
+
 it("says what runs while Tailscale is asked, and keeps the code button until it ends", async () => {
   const onIssueCode = vi.fn(async () => issued({ pairingAddress: { problem: "No certificate." } }))
   const props = { connected: true, onIssueCode, onCopy: vi.fn(async () => {}) }

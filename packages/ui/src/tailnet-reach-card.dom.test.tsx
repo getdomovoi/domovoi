@@ -132,7 +132,8 @@ it("lists the steps while it turns on, then draws the name, the expiry and where
   expect(toggle().getAttribute("aria-checked")).toBe("true")
   expect(view.getByText("Tailnet name")).toBeTruthy()
   expect(view.getByText("expires 20 Dec 2026")).toBeTruthy()
-  expect(view.getByText("Renews on its own.")).toBeTruthy()
+  // Review of 049b1383 (P3-a): the desktop renews, so only while it is open.
+  expect(view.getByText("Renews on its own while this app is open.")).toBeTruthy()
   expect(view.getByText("Stored in")).toBeTruthy()
   expect(view.getByText(`127.0.0.1 · ${name}`)).toBeTruthy()
 })
@@ -179,8 +180,8 @@ it("draws a failed renewal with its expiry, and renews on request", async () => 
   expect(alert.getByText("Until 20 Dec 2026 paired devices keep connecting and new ones can pair. After that the daemon answers on this computer only until a renewal succeeds.")).toBeTruthy()
   // When it failed, in this computer's time, then the desktop's words.
   expect(alert.getByText(new RegExp(`^2 Oct \\d{2}:\\d{2} · Tailscale did not renew the certificate for ${name.replaceAll(".", "\\.")}: tailscaled did not answer\\.$`, "u"))).toBeTruthy()
-  expect(alert.getByText("Domovoi also tries again on its own.")).toBeTruthy()
-  expect(view.getByText("Renewal failed. Retrying on its own.")).toBeTruthy()
+  expect(alert.getByText("Domovoi also tries again on its own while this app is open.")).toBeTruthy()
+  expect(view.getByText("Renewal failed. Retrying on its own while this app is open.")).toBeTruthy()
   await user.click(alert.getByRole("button", { name: "Renew now" }))
   expect(ask).toHaveBeenLastCalledWith("on")
   expect(view.getByText("Renewing")).toBeTruthy()
