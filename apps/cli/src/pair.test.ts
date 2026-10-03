@@ -5,7 +5,7 @@ import { createPrivateKey, createPublicKey } from "node:crypto"
 
 import { encodePairingPayload, protocolVersion } from "@getdomovoi/protocol"
 
-import { pairWithDaemon, PairingError, readPairingCode, redeemPairingCode } from "./pair.js"
+import { pairWithDaemon, PairingError, readPairingCode, redeemPairingCode, renderPaired } from "./pair.js"
 import { DaemonRefusedError, DaemonUnreachableError } from "./rpc.js"
 
 const token = "t".repeat(43)
@@ -244,6 +244,15 @@ describe("pair", () => {
     expect(result.relayPin).toBe("unavailable")
     expect(store.saved).toHaveLength(1)
     expect(store.saved[0]?.relayPin).toBeUndefined()
+  })
+
+  it("names the endpoint the credential is keyed by, and how later commands reach it when it is not the default", () => {
+    const paired = { machineId, deviceId, label: "my shell", where: "keyring" as const, defaultEndpoint: "ws://127.0.0.1:47831/rpc" }
+    expect(renderPaired({ ...paired, endpoint: "ws://127.0.0.1:47831/rpc" }))
+      .toBe(`Paired with ${machineId} at ws://127.0.0.1:47831/rpc as my shell (cli), device ${deviceId}. Credential stored in the keyring.\n`)
+    expect(renderPaired({ ...paired, endpoint: "wss://mini.tail1234.ts.net:47831/rpc" }))
+      .toBe(`Paired with ${machineId} at wss://mini.tail1234.ts.net:47831/rpc as my shell (cli), device ${deviceId}. Credential stored in the keyring.\n`
+        + "The default daemon is ws://127.0.0.1:47831/rpc, so later commands need --daemon wss://mini.tail1234.ts.net:47831/rpc.\n")
   })
 
   it.each([

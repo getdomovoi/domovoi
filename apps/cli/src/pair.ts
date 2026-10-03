@@ -145,3 +145,13 @@ export async function pairWithDaemon(input: {
     connection.close()
   }
 }
+
+// The success line names the endpoint the record is keyed by, because a
+// pasted payload chose it and nothing else shows it. Later commands dial the
+// default unless told otherwise, so an endpoint that is not the default comes
+// with the flag they need.
+export function renderPaired(input: { machineId: string; endpoint: string; label: string; deviceId: string; where: CredentialStore["where"]; defaultEndpoint: string }): string {
+  const lines = [`Paired with ${input.machineId} at ${input.endpoint} as ${input.label} (cli), device ${input.deviceId}. Credential stored in the ${input.where}.`]
+  if (input.endpoint !== input.defaultEndpoint) lines.push(`The default daemon is ${input.defaultEndpoint}, so later commands need --daemon ${input.endpoint}.`)
+  return `${lines.join("\n")}\n`
+}

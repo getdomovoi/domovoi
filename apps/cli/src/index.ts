@@ -7,7 +7,7 @@ import { protocolVersion } from "@getdomovoi/protocol"
 import { diagnose, renderDoctor } from "./doctor.js"
 import { exitCode, renderExitCodes } from "./exit-codes.js"
 import { readLogs, renderLogs } from "./logs.js"
-import { pairWithDaemon, PairingError, readPairingCode, redeemPairingCode } from "./pair.js"
+import { pairWithDaemon, PairingError, readPairingCode, redeemPairingCode, renderPaired } from "./pair.js"
 import { readPlainLine, readSecretLine } from "./secret-input.js"
 import { installSkill, previewSkill, renderPreview, SkillInstallError } from "./skill-install.js"
 import { connectToDaemon, DaemonUnreachableError, defaultEndpoint } from "./rpc.js"
@@ -117,7 +117,7 @@ async function main(argv: string[]): Promise<number> {
       endpoint, credential: redeemed.token, label: redeemed.device.label, store: credentials,
       connect: (authToken) => connectToDaemon({ endpoint, authToken }),
     })
-    process.stdout.write(`Paired with ${paired.machineId} as ${redeemed.device.label} (cli), device ${paired.deviceId}. Credential stored in the ${credentials.where}.\n`)
+    process.stdout.write(renderPaired({ machineId: paired.machineId, endpoint, label: redeemed.device.label, deviceId: paired.deviceId, where: credentials.where, defaultEndpoint }))
     process.stdout.write({
       enrolled: "Relay identity pinned; a rotated key is accepted only when signed by this daemon's identity key.\n",
       recovered: "Relay identity recovered from a signed successor and pinned again.\n",

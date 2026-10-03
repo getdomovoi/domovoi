@@ -30,7 +30,9 @@ domovoi skill install <path> [--scope user|project] [--yes]
   hello is refused or the credential cannot be stored, the message names that device so it can
   be revoked before another code is shown. `--label`
   names this device in the daemon's Devices list and defaults to the hostname. The pasted line's
-  address is used unless `--daemon` is given. The daemon admits three redemptions per source per
+  address is used unless `--daemon` is given; the credential is keyed by that address, the
+  success line prints it, and when it is not the default it says that later commands need
+  `--daemon` with it. The daemon admits three redemptions per source per
   minute, successful ones included, and each code works once.
 - `status` reports the paired daemon's state.
 - `doctor` checks the daemon, the stored credential and the protocol version, then reports, for

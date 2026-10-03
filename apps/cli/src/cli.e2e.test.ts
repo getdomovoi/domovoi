@@ -117,7 +117,11 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
     const paired = await runCli(["pair", "--credential-file", credentialFile, "--label", "e2e cli"], `Cannot scan it? Paste this on the device:\n${issued.payload}\n`)
     expect(paired.stderr).toMatch(/not in an OS keychain/)
     expect(paired).toMatchObject({ code: 0 })
-    expect(paired.stdout).toMatch(/^Paired with machine-[0-9a-f]{32} as e2e cli \(cli\), device device-[0-9a-f]{32}\. Credential stored in the file\.$/m)
+    expect(paired.stdout).toMatch(/^Paired with machine-[0-9a-f]{32} at ws:\/\/\S+\/rpc as e2e cli \(cli\), device device-[0-9a-f]{32}\. Credential stored in the file\.$/m)
+    // The payload's address is the record's key; it is not the default, so
+    // the line says what later commands need (the fixture binds a free port).
+    expect(paired.stdout).toContain(` at ${url} as `)
+    expect(paired.stdout).toMatch(/^The default daemon is ws:\/\/127\.0\.0\.1:47831\/rpc, so later commands need --daemon ws:\/\/\S+\/rpc\.$/m)
     expect(paired.stdout + paired.stderr).not.toContain(issued.code)
 
     const status = await runCli(["status", "--daemon", url, "--credential-file", credentialFile])
