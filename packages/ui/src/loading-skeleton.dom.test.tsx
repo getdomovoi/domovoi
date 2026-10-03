@@ -31,3 +31,15 @@ it("does not pulse, which would claim it wants a decision", () => {
 
   expect(container.innerHTML).not.toContain("pulse")
 })
+
+// Ruled Q344 A: once the first attempt has failed, nothing is being read, and
+// a shimmer and a "reading" line would claim a read that is not happening. The
+// skeleton stops and says what is still true: nothing has been read yet.
+it("stops and says nothing has been read once the first attempt failed", () => {
+  const { container } = render(<ThreadSkeleton reading="reading ws://127.0.0.1:47831/rpc" notConnectedTo="127.0.0.1:47831" />)
+
+  expect(screen.getByRole("status").textContent).toBe("Not connected. Nothing has been read from 127.0.0.1:47831 yet.")
+  const bars = container.querySelectorAll("span[aria-hidden]")
+  expect(bars.length).toBeGreaterThan(0)
+  for (const bar of bars) expect(bar.className).not.toContain("skeleton-bar")
+})
