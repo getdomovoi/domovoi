@@ -48,11 +48,13 @@ function problemFor(report: PairingAddressReport, kind: Kind): Problem | undefin
 // which needs a web address, so when the daemon's owner set the web app
 // address the QR is that address with ?code= filled in; the connect page
 // reads it and strips it from the bar. Without one the card has no page
-// address to give, and the QR stays the payload.
+// address to give, so a browser gets no QR at all (Q398 A): a QR a camera
+// cannot open is not drawn.
 export function pairingQrText(kind: PairingCardKind, issued: IssuedPairingCode): string | undefined {
   const address = pairingAddressOf(issued)
   if ("problem" in address) return undefined
-  if (kind === "browser" && issued.webAppUrl) {
+  if (kind === "browser") {
+    if (!issued.webAppUrl) return undefined
     const page = new URL(issued.webAppUrl)
     page.searchParams.set("code", issued.code)
     return page.toString()
@@ -166,6 +168,8 @@ export function PairingCard({
         <div className="flex size-[165px] shrink-0 items-center justify-center rounded-[calc(var(--radius)-3px)] border border-dashed text-faint">
           {codeShown && qrText ? (
             <QrSymbol text={qrText} label={`Pairing code for ${qrAddressLabel(issuedKind, issued)}`} />
+          ) : codeShown ? (
+            <p className="m-0 px-3 text-center text-[11px] leading-relaxed text-muted-foreground">No web app address is set for this daemon, so type the code into the web page.</p>
           ) : (
             <div className="flex flex-col items-center gap-2 text-[11px]">
               {readOnly ? <LockIcon className="size-6" /> : <QrCodeIcon className="size-6" />}
@@ -226,10 +230,12 @@ export function PairingCard({
                 </Button>
                 {replaced ? <span className="text-[11px] text-muted-foreground">The previous code no longer works.</span> : null}
               </div>
-              <div className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
-                <span>The QR holds this address and the code, never a credential:</span>
-                <span className="font-machine text-foreground">{qrAddressLabel(issuedKind, issued)}</span>
-              </div>
+              {qrText ? (
+                <div className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
+                  <span>The QR holds this address and the code, never a credential:</span>
+                  <span className="font-machine text-foreground">{qrAddressLabel(issuedKind, issued)}</span>
+                </div>
+              ) : null}
               {kind === "browser" ? (
                 <span className="text-[11px] text-muted-foreground">A certificate warning means the address is not this machine's full tailnet name, or its certificate lapsed. Do not click through.</span>
               ) : null}
