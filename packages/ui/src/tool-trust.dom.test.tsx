@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { cleanup, getDefaultNormalizer, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -23,6 +23,10 @@ const changedDigest = `sha256:${"c".repeat(64)}`
 const reviewDigest = `sha256:${"b".repeat(64)}`
 // It promises nothing about moving a setting to another file: the review
 // digest names a file by its shown, redacted label (ruling Q325).
+// A filter driver's line is drawn in parts, each operation apart from its
+// command (ruling Q328), so it is read whole, by its text content.
+const commandLine = (text: string) => (_: string, element: Element | null) =>
+  element?.getAttribute("data-slot") === "filter-commands" && element.textContent === text
 const gitConfigPinnedText = "In the Git config only the filter settings listed here are pinned, not the whole file: changing one of them holds them back again. Other Git settings in that file are not pinned."
 const grant = { trustedDigest: digest, trustedAt: "2026-09-12T10:41:00.000Z", trustedBy: { client: "desktop" as const } }
 const readAt = new Date("2026-09-29T14:02:31")
@@ -457,14 +461,14 @@ describe("git filters in the review", () => {
     expect(within(local).getByText("1 filter driver")).toBeTruthy()
     expect(within(local).getByText("Filter driver")).toBeTruthy()
     expect(within(local).getByText("sops")).toBeTruthy()
-    expect(within(local).getByText("smudge sops -d · clean sops -e")).toBeTruthy()
+    expect(within(local).getByText(commandLine("smudge sops -d · clean sops -e"))).toBeTruthy()
     // A trusted filter runs whatever its command names (ruling Q205 A).
     expect(within(local).getByText("A filter driver runs its command whenever Git checks out or stages a file. If the command runs a file in this repository, it runs whatever that file holds, an agent's edit included.")).toBeTruthy()
 
     const worktree = within(sheet).getByRole("group", { name: ".git/worktrees/w1/config.worktree" })
     expect(within(worktree).getByText("worktree git config")).toBeTruthy()
     expect(within(worktree).getByText("crypt")).toBeTruthy()
-    expect(within(worktree).getByText("process ./bin/crypt --token [REDACTED]")).toBeTruthy()
+    expect(within(worktree).getByText(commandLine("process ./bin/crypt --token [REDACTED]"))).toBeTruthy()
     expect(within(worktree).getByText("Cut at a credential. Domovoi shows no secret.")).toBeTruthy()
 
     // Provider files are pinned whole; the Git config only by its filter settings.
@@ -494,6 +498,48 @@ describe("git filters in the review", () => {
       ["required is not set: if the filter fails, Git stores or checks out the file unfiltered."],
       ["required is false: if the filter fails, Git stores or checks out the file unfiltered."],
     ])
+  })
+
+  // A reviewable command is shown byte for byte (ruling Q325), and a browser
+  // collapses runs of spaces in ordinary text: two spaces inside quotes are
+  // one shell argument that one space would change (ruling Q328). The command
+  // is its own element, apart from its operation, and keeps its whitespace.
+  // jsdom lays nothing out, so this checks the contract: the exact text in an
+  // element styled to keep it.
+  it("shows a filter command's whitespace as configured, apart from its operation", async () => {
+    const command = "review-label 'two  spaces'   x"
+    const onTrust = vi.fn<Trust>().mockResolvedValue(trustResult({
+      outcome: "trusted",
+      repository: { projectId: "project-acme", configDigest: digest, trust: { state: "trusted", ...grant } },
+    }))
+    show(withGitFilters(inventory(), {
+      ...sopsFilters,
+      entries: sopsFilters.entries.map((entry) => entry.operation === "smudge" ? { ...entry, command } : entry),
+    }), { onTrust })
+    const { user, sheet } = await openSheet()
+
+    const shown = within(sheet).getByText(command, { normalizer: getDefaultNormalizer({ trim: false, collapseWhitespace: false }) })
+    expect(shown.textContent).toBe(command)
+    expect(shown.className).toContain("whitespace-break-spaces")
+    expect(within(sheet).getByText("smudge")).not.toBe(shown)
+    // Shown exactly, so it can be reviewed.
+    await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
+    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest, gitFilters: { reviewed: true, reviewDigest } })
+  })
+
+  // The same holds for a hook's or tool server's command the review lists.
+  it("shows a provider command's whitespace as configured, in the review and the Tools tab", async () => {
+    const command = "./scripts/sync.sh 'two  spaces'"
+    show(inventory(notTrusted, [claude({ entries: [
+      { kind: "hook", file: ".claude/settings.json", event: "SessionStart", command, startsAtSessionStart: true, heldBack: true },
+    ] })]), { onTrust: vi.fn() })
+    const exact = { normalizer: getDefaultNormalizer({ trim: false, collapseWhitespace: false }) }
+
+    for (const element of screen.getAllByText(command, exact)) expect(element.className).toContain("whitespace-break-spaces")
+    const { sheet } = await openSheet()
+    const reviewed = within(sheet).getByText(command, exact)
+    expect(reviewed.textContent).toBe(command)
+    expect(reviewed.className).toContain("whitespace-break-spaces")
   })
 
   it("offers no trust while the repository's Git config could not be read", async () => {
@@ -583,7 +629,7 @@ describe("git filters in the review", () => {
 
     const open = screen.getByRole("dialog")
     expect(within(open).getByText("The files changed while this was open")).toBeTruthy()
-    expect(within(open).getByText("smudge sops -d --keep · clean sops -e")).toBeTruthy()
+    expect(within(open).getByText(commandLine("smudge sops -d --keep · clean sops -e"))).toBeTruthy()
     await user.click(within(open).getByRole("button", { name: "Trust for this machine" }))
     expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest, gitFilters: { reviewed: true, reviewDigest: newDigest } })
   })

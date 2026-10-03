@@ -40,7 +40,7 @@ import {
   unreadableFiles,
   type ToolRow,
 } from "./tool-inventory-model"
-import { eyebrow, GrantedWhere, kindIcon, mono, omittedText, TrustRefusals } from "./tool-inventory-parts"
+import { commandWhitespace, eyebrow, GrantedWhere, kindIcon, mono, omittedText, TrustRefusals } from "./tool-inventory-parts"
 
 export type ToolInventoryLoad =
   | { state: "loading" }
@@ -269,7 +269,7 @@ function RepositoryRunsPanel({ inventory, meta }: { inventory: ToolInventory; me
               <Icon className="size-4 shrink-0 text-info-dim" aria-hidden />
               <span className="w-[84px] shrink-0 text-[11.5px]">{toolKindLabel[row.kind]}</span>
               <span className={cn(mono, "w-40 shrink-0 text-[11px] break-all")}>{row.name}</span>
-              <span className={cn(mono, "min-w-0 flex-1 basis-64 text-[10.5px] break-all text-info-dim")}>{row.detail}</span>
+              <span className={cn(mono, commandWhitespace, "min-w-0 flex-1 basis-64 text-[10.5px] break-all text-info-dim")}>{row.detail}</span>
               <span className={cn(mono, "text-[10.5px] text-info-dim")}>{row.file.path}</span>
             </li>
           )
@@ -302,7 +302,7 @@ function EntryRow({ row, showSource, trust }: { row: ToolRow; showSource: boolea
           <span className={cn(mono, "text-[11.5px] break-all text-strong")}>{row.name}</span>
           <StartChip start={row.start} trust={trust} />
         </div>
-        {row.detail ? <span className={cn(mono, "text-[10.5px] leading-normal break-all text-faint")}>{row.detail}</span> : null}
+        {row.detail ? <span className={cn(mono, commandWhitespace, "text-[10.5px] leading-normal break-all text-faint")}>{row.detail}</span> : null}
       </div>
       {showSource ? (
         <div className="ml-auto flex flex-col items-end gap-1 text-right">

@@ -312,6 +312,9 @@ export type GitFilterDriverRow = {
   // Each operation the file sets for the driver, with its redacted command:
   // "smudge sops -d · clean sops -e".
   detail: string
+  // The same, one operation and command at a time, so a review can draw each
+  // command as its own text and keep its whitespace (ruling Q328).
+  commands: Array<{ operation: ToolInventoryGitFilterEntry["operation"]; command: string }>
   // The driver's required state, once per distinct value its commands carry.
   // Git reads one effective value per driver, so this is one state; a Git LFS
   // setting carries none.
@@ -352,6 +355,7 @@ export function gitFilterGroups(inventory: ToolInventory): GitFilterGroup[] {
         key: `${scope}\u0000${path}\u0000${driver}`,
         driver,
         detail: entries.map((entry) => `${entry.operation} ${entry.command}`).join(" · "),
+        commands: entries.map(({ operation, command }) => ({ operation, command })),
         required: entries.flatMap((entry) => entry.required === undefined ? [] : [entry.required])
           .filter((state, index, all) => all.indexOf(state) === index),
       })),

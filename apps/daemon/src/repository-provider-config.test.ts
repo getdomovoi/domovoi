@@ -2019,6 +2019,27 @@ describe("readRepositoryProviderConfig: git filters", () => {
     expect(read.gitFilters!.omittedEntries).toBe(0)
   })
 
+  // Spaces inside quotes are kept byte for byte, so a client can draw them
+  // (ruling Q328). A tab is a control character the protocol refuses in any
+  // inventory text, so redaction cuts the command there and it is marked
+  // inexact: its block offers no review, and no tab is ever drawn collapsed.
+  it("keeps repeated spaces in a filter command, and marks one with a tab inexact", async () => {
+    const root = await repository()
+    git(root, "config", "filter.spaced.smudge", "review-label 'two  spaces'")
+    expect((await readRepositoryProviderConfig(root, { heldBack: true })).gitFilters).toMatchObject({
+      entries: [{ driver: "spaced", command: "review-label 'two  spaces'" }],
+      omittedEntries: 0,
+    })
+    expect((await readRepositoryProviderConfig(root, { heldBack: true })).gitFilters!.entries[0]).not.toHaveProperty("commandInexact")
+
+    git(root, "config", "filter.tabbed.clean", "review-label 'a\tb'")
+    const tabbed = await readRepositoryProviderConfig(root, { heldBack: true })
+    const tab = tabbed.gitFilters!.entries.find(({ driver }) => driver === "tabbed")!
+    expect(tab.commandInexact).toBe(true)
+    expect(tab.command).not.toContain("\t")
+    expect(tab.command).toContain("[REDACTED]")
+  })
+
   it("pins and lists a Git LFS setting that starts a program, and not the exact install lines", async () => {
     const root = await repository()
     git(root, "config", "filter.lfs.process", "git-lfs filter-process")

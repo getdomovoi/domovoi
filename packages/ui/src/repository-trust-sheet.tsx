@@ -1,4 +1,4 @@
-import { useState } from "react"
+import { Fragment, useState } from "react"
 import { BotIcon, FileTextIcon, FilterIcon } from "lucide-react"
 
 import type { RepositoryTrust, RepositoryTrustParams, RepositoryTrustResult, RepositoryTrustState } from "@getdomovoi/protocol"
@@ -27,7 +27,7 @@ import {
   type GitFilterGroup,
   type RepositoryFileGroup,
 } from "./tool-inventory-model"
-import { eyebrow, GrantedWhere, kindIcon, mono, omittedText, TrustRefusals } from "./tool-inventory-parts"
+import { commandWhitespace, eyebrow, GrantedWhere, kindIcon, mono, omittedText, TrustRefusals } from "./tool-inventory-parts"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
 
 // gitFilters is present only when the sheet showed every git filter the
@@ -286,7 +286,17 @@ function GitFilterFileGroup({ group }: { group: GitFilterGroup }) {
             <span className="w-[84px] shrink-0 text-[11.5px] text-muted-foreground">Filter driver</span>
             <div className="flex min-w-0 flex-1 basis-64 flex-col gap-1">
               <span className={cn(mono, "text-[11.5px] break-all text-strong")}>{driver.driver}</span>
-              <span className={cn(mono, "text-[10.5px] break-all text-faint")}>{driver.detail}</span>
+              {/* Each command is its own text, apart from its operation, and
+                  keeps its whitespace: it is reviewed byte for byte (ruling Q328). */}
+              <span data-slot="filter-commands" className={cn(mono, "text-[10.5px] break-all text-faint")}>
+                {driver.commands.map(({ operation, command }, index) => (
+                  <Fragment key={index}>
+                    {index > 0 ? " · " : null}
+                    <span>{operation}</span>{" "}
+                    <span className={commandWhitespace}>{command}</span>
+                  </Fragment>
+                ))}
+              </span>
               {driver.required.map((state) => <span key={state} className="text-[11px] text-faint">{gitFilterRequiredText[state]}</span>)}
               {driver.detail.includes("[REDACTED]") || driver.driver.includes("[REDACTED]")
                 ? <span className="text-[11px] text-faint">Cut at a credential. Domovoi shows no secret.</span>
@@ -335,7 +345,7 @@ function FileGroup({ group }: { group: RepositoryFileGroup }) {
                   <span className={cn(mono, "text-[11.5px] break-all text-strong")}>{row.name}</span>
                   {row.kind === "env-key"
                     ? <span className="text-[11px] text-faint">Key names only. Values are not shown.</span>
-                    : row.detail ? <span className={cn(mono, "text-[10.5px] break-all text-faint")}>{row.detail}</span> : null}
+                    : row.detail ? <span className={cn(mono, commandWhitespace, "text-[10.5px] break-all text-faint")}>{row.detail}</span> : null}
                   {cutAtCredential(row) ? <span className="text-[11px] text-faint">Cut at a credential. Domovoi shows no secret.</span> : null}
                 </div>
               </li>
