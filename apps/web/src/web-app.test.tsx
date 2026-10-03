@@ -382,6 +382,29 @@ describe("WebApp", () => {
     expect(text()).not.toContain("The certificate is the one the browser checked")
   })
 
+  // Q366 A: no answer offers Try again, which sends the same code again. If
+  // the daemon spent it the first time, its uniform refusal follows.
+  it("offers Try again when the daemon did not answer, and resends the same code", async () => {
+    const { DaemonRpcError } = await import("@/client")
+    const { daemonAuthenticationErrorCode } = await import("@getdomovoi/protocol")
+    const request = vi.fn()
+      .mockRejectedValueOnce(new Error("socket closed"))
+      .mockRejectedValueOnce(new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused"))
+    const client = { ...pairingClient("pairs"), request }
+    await draw(memoryStorage(), vi.fn(() => client))
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("did not answer, so pairing is unconfirmed")
+    expect(() => button("Type a new code")).toThrow()
+    await act(async () => {
+      button("Try again").click()
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(request).toHaveBeenCalledTimes(2)
+    expect(request.mock.calls[1]).toEqual(["device.redeemCode", expect.objectContaining({ code: "hearth-quiet-ember-42" })])
+    expect(text()).toContain("That code was refused")
+    expect(() => button("Type a new code")).not.toThrow()
+  })
+
   it("names the address as given when it is not a URL", async () => {
     await draw(memoryStorage(), vi.fn(), { rpcUrl: "not a url" })
     expect(text()).toContain("This tab talks only to the daemon at not a url.")

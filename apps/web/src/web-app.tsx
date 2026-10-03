@@ -80,6 +80,45 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
     setSession(next)
   }
 
+  function redeem(code: string) {
+    setPairing(true)
+    setOutcome(undefined)
+    void redeemBrowserCode({
+      url: rpcUrl,
+      client: clientKind,
+      code,
+      label: browserDeviceLabel(clientKind, labelSuffix()),
+      createClient,
+      onConnected: () => setReached(true),
+    }).then((next) => {
+      // Kept in the tab at once, so a closed page after this point did
+      // pair; the card only says so and offers the way on.
+      keep(next)
+      setSession(undefined)
+      setOutcome({
+        tone: "ok",
+        pill: "accepted",
+        title: `This browser is paired with ${host}`,
+        mono: `credential ${next.deviceId.slice(-8)} · this tab only`,
+        body: "Close the tab and the credential goes with it. You pair again with a new code.",
+        action: { label: "Open sessions", run: () => setSession(next) },
+      })
+    }).catch((cause: unknown) => {
+      const refusal = pairingOutcomeFor(cause, host)
+      const reloadPage = environment.reloadPage
+      const next = pairingNextStep(cause)
+      // A host with no page to reload gets no button: another code would
+      // meet the same refusal, and the card says to reload. No answer sends
+      // the same code again.
+      const action = next === "new-code" ? { label: "Type a new code", run: () => setOutcome(undefined) }
+        : next === "retry" ? { label: "Try again", run: () => redeem(code) }
+          : next === "reload" && reloadPage ? { label: "Reload this page", run: () => reloadPage() } : undefined
+      setOutcome({ ...refusal, action })
+    }).finally(() => {
+      setPairing(false)
+    })
+  }
+
   if (!session) {
     if (path === "credential") {
       return <DaemonCredentialPrompt
@@ -111,43 +150,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
       {...(codeFromUrl ? { initialCode: codeFromUrl, fromUrl: true } : {})}
       pending={pairing}
       outcome={outcome}
-      onPair={(code) => {
-        setPairing(true)
-        setOutcome(undefined)
-        void redeemBrowserCode({
-          url: rpcUrl,
-          client: clientKind,
-          code,
-          label: browserDeviceLabel(clientKind, labelSuffix()),
-          createClient,
-          onConnected: () => setReached(true),
-        }).then((next) => {
-          // Kept in the tab at once, so a closed page after this point did
-          // pair; the card only says so and offers the way on.
-          keep(next)
-          setSession(undefined)
-          setOutcome({
-            tone: "ok",
-            pill: "accepted",
-            title: `This browser is paired with ${host}`,
-            mono: `credential ${next.deviceId.slice(-8)} · this tab only`,
-            body: "Close the tab and the credential goes with it. You pair again with a new code.",
-            action: { label: "Open sessions", run: () => setSession(next) },
-          })
-        }).catch((cause: unknown) => {
-          const refusal = pairingOutcomeFor(cause, host)
-          const reloadPage = environment.reloadPage
-          const next = pairingNextStep(cause)
-          // A host with no page to reload gets no button: another code
-          // would meet the same refusal, and the card says to reload.
-          const action = next === "new-code"
-            ? { label: "Type a new code", run: () => setOutcome(undefined) }
-            : next === "reload" && reloadPage ? { label: "Reload this page", run: () => reloadPage() } : undefined
-          setOutcome({ ...refusal, action })
-        }).finally(() => {
-          setPairing(false)
-        })
-      }}
+      onPair={redeem}
       onOpenLimits={(opener) => {
         limitsOpener.current = opener
         setLimitsOpen(true)

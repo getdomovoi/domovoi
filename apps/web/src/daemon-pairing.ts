@@ -168,10 +168,15 @@ export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOut
 // What cures a refusal. A page older than the daemon needs a reload. A daemon
 // older than the page needs updating on its machine, and it checks the version
 // before spending a code, so the code can be typed again. A mismatch that does
-// not say which side is older leaves this page nothing to offer. Every other
-// outcome is answered with another code.
-export function pairingNextStep(cause: unknown): "reload" | "new-code" | "none" {
-  if (!(cause instanceof DaemonRpcError) || cause.code !== protocolVersionMismatchErrorCode) return "new-code"
+// not say which side is older leaves this page nothing to offer. When the
+// daemon did not answer, the same code is sent again (Q366 A): a code it did
+// spend meets the uniform refusal. Every other outcome is answered with
+// another code.
+export function pairingNextStep(cause: unknown): "reload" | "new-code" | "retry" | "none" {
+  if (!(cause instanceof DaemonRpcError)) {
+    return cause instanceof DeviceKindMismatchError || cause instanceof CodeShapeError ? "new-code" : "retry"
+  }
+  if (cause.code !== protocolVersionMismatchErrorCode) return "new-code"
   const older = olderSide(cause)
   return older === "page" ? "reload" : older === "daemon" ? "new-code" : "none"
 }

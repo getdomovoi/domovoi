@@ -240,6 +240,18 @@ describe("redeeming a web code", () => {
     expect(pairingNextStep(mismatch("compatible"))).toBe("none")
   })
 
+  // Q366 A: only an unanswered request is retried with the same code.
+  it("retries only when the daemon did not answer", async () => {
+    const { pairingNextStep, CodeShapeError, DeviceKindMismatchError } = await import("./daemon-pairing")
+    const { DaemonRpcError } = await import("@/client")
+    const { daemonAuthenticationErrorCode } = await import("@getdomovoi/protocol")
+    expect(pairingNextStep(new Error("socket closed"))).toBe("retry")
+    expect(pairingNextStep("socket closed")).toBe("retry")
+    expect(pairingNextStep(new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused"))).toBe("new-code")
+    expect(pairingNextStep(new CodeShapeError("web"))).toBe("new-code")
+    expect(pairingNextStep(new DeviceKindMismatchError("web", "phone"))).toBe("new-code")
+  })
+
   it("says a malformed code was never sent", async () => {
     const { pairingOutcomeFor, CodeShapeError, codeShapeMessage } = await import("./daemon-pairing")
     expect(pairingOutcomeFor(new CodeShapeError("web"), "host")).toMatchObject({ pill: "not sent", title: "That is not a web code", body: codeShapeMessage("web") })
