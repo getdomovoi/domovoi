@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
-import { PairingCard, type IssuedPairingCode } from "./pairing-card"
+import { PairingCard, pairingQrText, type IssuedPairingCode } from "./pairing-card"
 
 beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }) })
 afterEach(() => { cleanup(); vi.useRealTimers() })
@@ -81,6 +81,28 @@ it("copies the bare code for a web browser, the one thing its connect page takes
   await screen.findByText("hearth-quiet-ember-42")
   await user.click(screen.getByRole("button", { name: "Copy" }))
   expect(onCopy).toHaveBeenCalledWith("hearth-quiet-ember-42")
+})
+
+// A phone camera opens a web address, not a domovoi-pair payload. When the
+// daemon's owner set the web app address, the browser QR is that address
+// with ?code= filled in, which the web connect page reads and strips.
+it("draws the web app address with the code for a browser when the daemon has one", async () => {
+  const webAppUrl = "https://domovoi.example/app/"
+  const { onIssueCode, user } = card()
+  onIssueCode.mockResolvedValueOnce(issued({ webAppUrl }))
+  await user.click(screen.getByRole("button", { name: "Web browser" }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await screen.findByText("hearth-quiet-ember-42")
+  expect(screen.getByRole("img", { name: `Pairing code for ${webAppUrl}` })).toBeTruthy()
+  expect(screen.getByText(webAppUrl)).toBeTruthy()
+  expect(pairingQrText("browser", issued({ webAppUrl }))).toBe("https://domovoi.example/app/?code=hearth-quiet-ember-42")
+  expect(pairingQrText("browser", issued({ webAppUrl: "https://domovoi.example/app?theme=dark" }))).toBe("https://domovoi.example/app?theme=dark&code=hearth-quiet-ember-42")
+})
+
+it("keeps the payload in the QR for a phone or tablet even when the daemon has a web app address", () => {
+  const payload = encodePairingPayload({ v: 1, url: address.url, code: "hearth-quiet-ember-42", label: address.label })
+  expect(pairingQrText("phone", issued({ webAppUrl: "https://domovoi.example/app/" }))).toBe(payload)
+  expect(pairingQrText("tablet", issued({ webAppUrl: "https://domovoi.example/app/" }))).toBe(payload)
 })
 
 // The tablet app, like the phone app, takes the payload: address and code.

@@ -17,7 +17,8 @@ export type { IssuedPairingCode, PairingAddressReport } from "./pairing-address.
 // window that issued a code that a device redeemed or was refused it, so the
 // paired receipt and the refusals stay in the design.
 
-type Kind = "phone" | "tablet" | "browser"
+export type PairingCardKind = "phone" | "tablet" | "browser"
+type Kind = PairingCardKind
 
 const kinds: Record<Kind, { label: string; noun: string; client: ClientKind; Icon: typeof SmartphoneIcon; how: string }> = {
   phone: { label: "Phone", noun: "a phone", client: "phone", Icon: SmartphoneIcon, how: "Scan it with the Domovoi app, or paste the code." },
@@ -40,6 +41,31 @@ function problemFor(report: PairingAddressReport, kind: Kind): Problem | undefin
     return { title: `No code: ${kind === "browser" ? "a browser on another device" : noun} cannot reach this daemon`, mono: "listening on 127.0.0.1 only", still: "Sessions and this window are unaffected.", next: "Let the daemon answer on your tailnet, then show a code." }
   }
   return undefined
+}
+
+// What the QR carries. A phone or tablet app scans the domovoi-pair payload:
+// the address it dials and the code. A browser is opened by a phone camera,
+// which needs a web address, so when the daemon's owner set the web app
+// address the QR is that address with ?code= filled in; the connect page
+// reads it and strips it from the bar. Without one the card has no page
+// address to give, and the QR stays the payload.
+export function pairingQrText(kind: PairingCardKind, issued: IssuedPairingCode): string | undefined {
+  const address = pairingAddressOf(issued)
+  if ("problem" in address) return undefined
+  if (kind === "browser" && issued.webAppUrl) {
+    const page = new URL(issued.webAppUrl)
+    page.searchParams.set("code", issued.code)
+    return page.toString()
+  }
+  return encodePairingPayload({ v: 1, url: address.url, code: issued.code, ...(address.label ? { label: address.label } : {}) })
+}
+
+// The address the card names beside the QR: the page for a browser QR link,
+// otherwise the address the device dials.
+function qrAddressLabel(kind: PairingCardKind, issued: IssuedPairingCode): string {
+  const address = pairingAddressOf(issued)
+  if (kind === "browser" && issued.webAppUrl) return issued.webAppUrl
+  return "problem" in address ? "" : address.label ?? address.url
 }
 
 function QrSymbol({ text, label }: { text: string; label: string }) {
@@ -119,6 +145,7 @@ export function PairingCard({
   const problem = address ? problemFor(address, issuedKind) : undefined
   const expired = issued !== null && left === 0
   const codeShown = issued !== null && !expired && !problem && address !== undefined && !("problem" in address)
+  const qrText = issued ? pairingQrText(issuedKind, issued) : undefined
   const grants = phoneAndTabletPromise.map((line) => ({ text: line.text, tone: line.tone === "granted" ? "bg-success" : "bg-info" }))
 
   const copy = async () => {
@@ -137,8 +164,8 @@ export function PairingCard({
     <div className="flex flex-col gap-4 rounded-lg border bg-card p-4">
       <div className="flex flex-wrap items-start gap-4">
         <div className="flex size-[165px] shrink-0 items-center justify-center rounded-[calc(var(--radius)-3px)] border border-dashed text-faint">
-          {codeShown && address && !("problem" in address) ? (
-            <QrSymbol text={encodePairingPayload({ v: 1, url: address.url, code: issued.code, ...(address.label ? { label: address.label } : {}) })} label={`Pairing code for ${address.label ?? address.url}`} />
+          {codeShown && qrText ? (
+            <QrSymbol text={qrText} label={`Pairing code for ${qrAddressLabel(issuedKind, issued)}`} />
           ) : (
             <div className="flex flex-col items-center gap-2 text-[11px]">
               {readOnly ? <LockIcon className="size-6" /> : <QrCodeIcon className="size-6" />}
@@ -201,7 +228,7 @@ export function PairingCard({
               </div>
               <div className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
                 <span>The QR holds this address and the code, never a credential:</span>
-                <span className="font-machine text-foreground">{address && !("problem" in address) ? address.label ?? address.url : ""}</span>
+                <span className="font-machine text-foreground">{qrAddressLabel(issuedKind, issued)}</span>
               </div>
               {kind === "browser" ? (
                 <span className="text-[11px] text-muted-foreground">A certificate warning means the address is not this machine's full tailnet name, or its certificate lapsed. Do not click through.</span>
