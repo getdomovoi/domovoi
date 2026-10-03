@@ -42,6 +42,13 @@ describe("UnpairedScreen", () => {
     expect(screen.queryByText("Review")).toBeNull()
   })
 
+  // Phone v2 frame 07 ends at the pairing action, and ruling Q332 A removed
+  // the line the first handoff drew under it.
+  it("ends the Sessions empty state at the pairing action", async () => {
+    await draw({ tab: "sessions" })
+    expect(screen.queryByText("The phone is a client. It never runs an agent itself.")).toBeNull()
+  })
+
   it("keeps pairing on Machines instead of duplicating it on Sessions", async () => {
     await draw({ tab: "sessions" })
     expect(screen.getByRole("button", { name: "Pair with a machine" })).toBeOnTheScreen()

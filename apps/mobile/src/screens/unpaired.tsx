@@ -11,7 +11,6 @@ type Unpaired = {
   icon: IconName
   headline: string
   body: string
-  footer: string
 }
 
 const sessions: Unpaired = {
@@ -19,7 +18,6 @@ const sessions: Unpaired = {
   icon: "message-square-dashed",
   headline: "No machine is paired",
   body: "Sessions live on the machine that runs them. Until this phone is paired with one there is nothing to list, and nothing is being hidden from you.",
-  footer: "The phone is a client. It never runs an agent itself.",
 }
 
 export function UnpairedScreen({
@@ -82,7 +80,6 @@ export function UnpairedScreen({
         </Text>
         <Text variant="meta" className="text-center leading-[19px]">{sessions.body}</Text>
         <Button title="Pair with a machine" variant="primary" onPress={onPair} className="mt-0.5 px-4 py-3" />
-        <Text variant="note" className="text-center text-faint">{sessions.footer}</Text>
       </PageScroller>
     </View>
   )
