@@ -1210,6 +1210,7 @@ export function sessionHistoryEntries(
         client: item.client,
         ...(item.connectionId ? { connectionId: item.connectionId } : {}),
         ...(item.clientId ? { clientId: item.clientId } : {}),
+        ...(item.device ? { device: item.device } : {}),
         ...(item.explanation ? { explanation: item.explanation } : {}),
         ...(item.decisionDurationMs === undefined ? {} : { decisionDurationMs: item.decisionDurationMs }),
         ...(item.ranForMs === undefined ? {} : { ranForMs: item.ranForMs }),
@@ -3920,14 +3921,23 @@ export class DomovoiDaemon {
     }
   }
 
+  // The paired device the daemon verified on a connection, as a receipt or a
+  // terminal owner names it (ruling Q424 A): the id and label of the device
+  // record the credential was checked against, read when the connection
+  // acts. A connection on the daemon credential has no paired device and
+  // names none. Nothing the request said of itself is used.
+  #decidingDevice(socket: RpcOutboundSocket): Pick<TerminalOwner, "device"> {
+    const device = this.#deviceCredentials.get(socket)?.verified.device
+    return device ? { device: { id: device.id, label: device.label } } : {}
+  }
+
   // The claimant as the receipt names a decider: what the connection said of
   // itself, and the paired device the daemon verified on it, when there is one.
   #terminalOwner(socket: RpcOutboundSocket, params: { client: TerminalOwner["client"], clientId: string }): TerminalOwner {
-    const device = this.#deviceCredentials.get(socket)?.verified.device
     return {
       client: params.client,
       clientId: params.clientId,
-      ...(device ? { device: { id: device.id, label: device.label } } : {}),
+      ...this.#decidingDevice(socket),
     }
   }
 
@@ -6543,7 +6553,7 @@ export class DomovoiDaemon {
         const params = paramsResult.data as RpcParams<"system.emergencyStop">
         const actor = this.#authenticatedActors.get(socket)
         const client = actor?.kind === "client" ? actor.client : params.client
-        const result = await this.#enqueueEmergencyStop(client)
+        const result = await this.#enqueueEmergencyStop(client, this.#decidingDevice(socket).device)
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -8458,7 +8468,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, sessionReadOnlyMessage(session)!)
           return
         }
-        await this.#archiveSession(session.id, params.client)
+        await this.#archiveSession(session.id, params.client, undefined, this.#decidingDevice(socket).device)
         changed = true
       }
 
@@ -8990,6 +9000,7 @@ export class DomovoiDaemon {
           checkpoint: approvedCheckpoint?.commit ?? (allows ? "unavailable" : approval.checkpoint),
           client: actor.client,
           connectionId,
+          ...this.#decidingDevice(socket),
           decisionDurationMs: approvalDecisionDurationMs(approval.requestedAt, decidedAt),
           ...(params.explanation
             ? { explanation: redactDurableText(params.explanation).value }
@@ -10714,6 +10725,7 @@ export class DomovoiDaemon {
           checkpoint: reverted.recoveryCommit,
           client: actor.client,
           connectionId,
+          ...this.#decidingDevice(socket),
           explanation: reverted.outcome === "removed"
             ? "Removed a file the worktree was not tracking"
             : `Restored the file from ${reverted.baseCommit.slice(0, 8)}`,
@@ -11733,20 +11745,22 @@ export class DomovoiDaemon {
     }
   }
 
-  #enqueueEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
+  // `device` is the paired device verified on the stopping connection, named
+  // on every receipt the stop writes; absent on the daemon credential.
+  #enqueueEmergencyStop(client: ClientKind, device?: TerminalOwner["device"]): Promise<SystemEmergencyStopResult> {
     const run = this.#emergencyStopTail.then(
-      () => this.#performEmergencyStop(client),
-      () => this.#performEmergencyStop(client),
+      () => this.#performEmergencyStop(client, device),
+      () => this.#performEmergencyStop(client, device),
     )
     this.#emergencyStopTail = run.then(() => undefined, () => undefined)
     return run
   }
 
-  async #performEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
+  async #performEmergencyStop(client: ClientKind, device?: TerminalOwner["device"]): Promise<SystemEmergencyStopResult> {
     this.#emergencyStopGeneration += 1
     this.#emergencyStopInProgress = true
     try {
-      return await this.#runEmergencyStop(client)
+      return await this.#runEmergencyStop(client, device)
     } finally {
       this.#emergencyStopInProgress = false
       // A stop that failed before its notification still releases what it held.
@@ -11754,7 +11768,7 @@ export class DomovoiDaemon {
     }
   }
 
-  async #runEmergencyStop(client: ClientKind): Promise<SystemEmergencyStopResult> {
+  async #runEmergencyStop(client: ClientKind, device?: TerminalOwner["device"]): Promise<SystemEmergencyStopResult> {
     const requestedAt = new Date().toISOString()
     for (const sessionId of this.#queuedSessionSends.keys()) {
       this.#holdQueuedSessionSend(sessionId, "Emergency stop held the queued send.")
@@ -11856,6 +11870,7 @@ export class DomovoiDaemon {
           decision: "deny",
           checkpoint: approval.checkpoint,
           client,
+          ...(device ? { device } : {}),
           explanation: "Emergency stop",
           decisionDurationMs: approvalDecisionDurationMs(approval.requestedAt, requestedAt),
           createdAt: requestedAt,
@@ -12610,11 +12625,14 @@ export class DomovoiDaemon {
   // `storedApprovalIds` names cards read from storage when startup resumes an
   // archive. They are removed like any other card, but the provider is not
   // told: the process that raised them is gone, and the fresh provider could
-  // hold a live request under the same id.
+  // hold a live request under the same id. `device` is the paired device
+  // verified on the archiving connection, named on the receipts the archive
+  // denies; a resumed archive has no connection and names none.
   async #archiveSession(
     sessionId: string,
     client?: ClientKind,
     storedApprovalIds?: ReadonlySet<string>,
+    device?: TerminalOwner["device"],
   ): Promise<void> {
     const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
     if (!session || session.state === "archived") return
@@ -12670,6 +12688,7 @@ export class DomovoiDaemon {
         operation: approval.operation,
         checkpoint: approval.checkpoint,
         client: client ?? "cli",
+        ...(device ? { device } : {}),
         explanation: "Session archived",
         decisionDurationMs: approvalDecisionDurationMs(approval.requestedAt, deniedAt),
         createdAt: deniedAt,
@@ -12735,6 +12754,7 @@ export class DomovoiDaemon {
           operation: approval.operation,
           checkpoint: approval.checkpoint,
           client: client ?? "cli",
+          ...(device ? { device } : {}),
           explanation: "Session archived after provider cleanup",
           decisionDurationMs: approvalDecisionDurationMs(approval.requestedAt, deniedAt),
           createdAt: deniedAt,
