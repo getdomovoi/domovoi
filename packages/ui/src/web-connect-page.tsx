@@ -4,7 +4,6 @@ import { useEffect, useState } from "react"
 
 import { Button } from "./components/ui/button"
 import { Input } from "./components/ui/input"
-import { DomovoiMark } from "./domovoi-mark"
 
 // The first screen of a browser tab, from Domovoi Web v2 (2026-09-23, J26).
 // A tab holds no daemon, so it pairs with one by typing the code the machine
@@ -82,13 +81,12 @@ export function WebConnectPage({
   const codeLabel = codeName.charAt(0).toUpperCase() + codeName.slice(1)
 
   return (
-    <main className="flex min-h-dvh items-start justify-center bg-background p-6 text-foreground">
+    // Full height comes from the page around it, which draws the Web v2 bar
+    // above (Q382 A); the mark is in that bar, not beside the title.
+    <main className="flex min-h-0 flex-1 items-start justify-center bg-background p-6 text-foreground">
       <div className="flex w-full max-w-[520px] flex-col gap-5 pt-8">
         <div className="flex flex-col gap-1.5">
-          <div className="flex items-center gap-2.5">
-            <DomovoiMark reduced className="size-5 text-primary" />
-            <h1 className="m-0 text-[20px] font-semibold tracking-[-0.015em]">{reopened ? "Pair this browser again with" : "Connect this browser to"}</h1>
-          </div>
+          <h1 className="m-0 text-[20px] font-semibold tracking-[-0.015em]">{reopened ? "Pair this browser again with" : "Connect this browser to"}</h1>
           <span className="font-machine text-[13px] text-strong">{host}</span>
           <p className="m-0 text-[13px] leading-[1.6] text-muted-foreground">
             {filledFromUrl ? "Opened from the QR on the machine. Check the machine name above, then pair." : `Type the ${codeName} shown on the machine, in Settings under Phone and tablet.`}

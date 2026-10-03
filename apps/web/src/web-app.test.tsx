@@ -143,6 +143,25 @@ describe("WebApp", () => {
     expect(text()).toContain("Connect to this daemon")
   })
 
+  // Q382 A: every page before the session carries the Web v2 bar, with the
+  // theme toggle; the workspace keeps the desktop bar.
+  it("draws the Web v2 bar with a theme toggle on the connect, limits and credential pages", async () => {
+    const banner = () => container.querySelector("header")
+    await draw(memoryStorage(), vi.fn(() => pairingClient("pairs")))
+    expect(banner()?.textContent).toContain("Domovoi")
+    expect(banner()?.textContent).toContain("Connect this browser")
+    expect([...banner()!.querySelectorAll("button")].some((b) => /Use (light|dark) theme/.test(b.getAttribute("aria-label") ?? ""))).toBe(true)
+
+    await act(async () => { button("What a browser tab can and cannot do").click() })
+    const limitsBar = [...container.querySelectorAll("header")].find((header) => header.offsetParent !== null || !header.closest("[hidden]"))
+    expect(limitsBar?.textContent).toContain("What a tab can do")
+    await act(async () => { button("Back to pairing").click() })
+
+    await useCredentialPath()
+    expect(banner()?.textContent).toContain("Connect this browser")
+    expect(text()).toContain("Connect to this daemon")
+  })
+
   it("redeems a typed code with no bearer, says it paired, and opens the session on request", async () => {
     const storage = memoryStorage()
     const client = pairingClient("pairs")

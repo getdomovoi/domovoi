@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react"
 
 import type { ClientKind } from "@getdomovoi/protocol"
-import { BrowserLimitsPanel, DaemonCredentialPrompt, WebConnectPage, type PairingOutcome } from "@getdomovoi/ui"
+import { BrowserLimitsPanel, DaemonCredentialPrompt, WebConnectPage, WebPageHeader, type PairingOutcome } from "@getdomovoi/ui"
 
 import { browserLimits } from "./browser-limits"
 import { browserLimitsSeen, markBrowserLimitsSeen } from "./browser-limits-seen"
@@ -29,6 +29,20 @@ export type WebAppProps = {
 }
 
 const pairedBeforeKey = "domovoi.paired-before"
+
+// The design's app label for the limits page.
+const limitsLabel = "What a tab can do"
+
+// The pages before a session draw the Web v2 bar, with its theme toggle
+// (Q382 A). Inside the session the workspace keeps the desktop bar.
+function PreSessionPage({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex min-h-dvh flex-col bg-background text-foreground">
+      <WebPageHeader label={label} />
+      {children}
+    </div>
+  )
+}
 
 function readPairedBefore(memory: WebAppProps["memory"]): boolean {
   try { return memory?.getItem(pairedBeforeKey) === "1" } catch { return false }
@@ -121,7 +135,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
 
   if (!session) {
     if (path === "credential") {
-      return <DaemonCredentialPrompt
+      return <PreSessionPage label="Connect this browser"><DaemonCredentialPrompt
         pending={pairing}
         error={pairingError}
         onSubmit={(bearer) => {
@@ -139,7 +153,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
             setPairing(false)
           })
         }}
-      />
+      /></PreSessionPage>
     }
     const connect = <WebConnectPage
       host={host}
@@ -159,8 +173,9 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
       onUseCredential={() => setPath("credential")}
     />
     // The connect page stays mounted under the limits, so a typed code and a
-    // drawn outcome are still there on the way back.
-    return <>
+    // drawn outcome are still there on the way back. One bar serves both, so
+    // a theme chosen on either page is the one the other shows.
+    return <PreSessionPage label={limitsOpen ? limitsLabel : "Connect this browser"}>
       {limitsOpen ? <BrowserLimitsPanel
         rows={browserLimits(environment, rpcUrl, markBrowserLimitsSeen(storage))}
         // From the accepted card this tab is already paired, so the way back
@@ -168,15 +183,15 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
         continueLabel={outcome?.tone === "ok" ? "Back" : "Back to pairing"}
         onContinue={() => setLimitsOpen(false)}
       /> : null}
-      <div hidden={limitsOpen}>{connect}</div>
-    </>
+      <div hidden={limitsOpen} className="flex min-h-0 flex-1 flex-col">{connect}</div>
+    </PreSessionPage>
   }
 
   if (!limitsSeen) {
-    return <BrowserLimitsPanel
+    return <PreSessionPage label={limitsLabel}><BrowserLimitsPanel
       rows={browserLimits(environment, rpcUrl, markBrowserLimitsSeen(storage))}
       onContinue={() => setLimitsSeen(true)}
-    />
+    /></PreSessionPage>
   }
   return workspace({
     token: session.token,
