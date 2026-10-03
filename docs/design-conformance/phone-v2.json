@@ -430,8 +430,21 @@
         "THE RULE IT BROKE",
         "WHAT YOU CAN DO",
         "There is no approve button here, because no decision of yours can permit it.",
+        "title=\"Tell the agent\"",
+        "refusal.alternatives"
+      ],
+      "presence": [
+        "Nothing to approve",
+        "Refused by policy",
+        "THE RULE IT BROKE",
+        "WHAT YOU CAN DO",
+        "There is no approve button here, because no decision of yours can permit it.",
         "title=\"Tell the agent\""
-      ]
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "ruling Q356 A: Tell the agent sends the refusal's one remedy to the agent as a steer, from the refusal itself, and the structured alternatives come later. Frame 05 draws WHAT YOU CAN DO as several alternatives, each with a green or amber dot; the policy-refusal item carries a single remedy string with no list, tones or per-alternative steer, so the phone draws one paragraph. The evidence names the field a protocol change would add"
+      }
     },
     {
       "id": "launch.screen",
@@ -850,11 +863,6 @@
       "id": "machines.unpaired",
       "since": "2026-10-02",
       "note": "approved difference, ruling Q387 A: WHAT STAYS UNAVAILABLE lists Sessions, Machines and Machine settings, each with its reason. The design's Review row, No approvals are sitting somewhere unseen., is not drawn because the phone has no Review tab. Machine settings carries a reason the design does not draw: They live on a machine, so they wait until one is paired."
-    },
-    {
-      "id": "policy.screen",
-      "since": "2026-10-02",
-      "note": "ruling Q356 A: Tell the agent sends the refusal's one remedy to the agent as a steer, from the refusal itself. Still open, and waiting on a protocol change the ruling defers: frame 05 draws WHAT YOU CAN DO as several alternatives, each with a green or amber dot, and the policy-refusal item carries a single remedy string with no list, tones or per-alternative steer"
     },
     {
       "id": "launch.screen",
