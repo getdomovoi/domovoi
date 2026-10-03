@@ -672,6 +672,7 @@
       ],
       "evidence": [
         "Providers and tokens",
+        "Authenticate there",
         {
           "absent": ">SUBSCRIPTION CLIS</h2>",
           "in": "packages/ui/src/provider-settings.tsx"
