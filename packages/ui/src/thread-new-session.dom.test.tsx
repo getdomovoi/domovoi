@@ -86,7 +86,7 @@ it.each([
   ["codex", "plan", ["Read the repository and propose a plan. Commands run in a read-only sandbox, so nothing is written."]],
   ["claude-code", "ask", ["Read the repository. Edits are refused; only read-only shell commands inside the worktree run."]],
   ["codex", "ask", [
-    "Read the repository. Commands run in a read-only sandbox. A command that needs more asks you first.",
+    "Read the repository. Commands run in a read-only sandbox. A command that needs more asks you first. One a standing rule allows runs without asking.",
     "Take a checkpoint before any command you allow at a gate, so the worktree can go back to it.",
   ]],
   ["opencode", "ask", ["Read the repository. Edits and shell commands are refused."]],

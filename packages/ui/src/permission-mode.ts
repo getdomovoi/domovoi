@@ -16,7 +16,10 @@ export const permissionModes = [
 //   so it can still run commands, and they cannot write. Plan never asks
 //   (approvalPolicy never). Ask is approvalPolicy on-request, and every
 //   commandExecution approval request becomes a Domovoi gate, so a command
-//   that needs more than the sandbox gives asks first.
+//   that needs more than the sandbox gives asks first. An Allow there runs
+//   it outside the sandbox, and a standing rule whose digest matches answers
+//   the gate without a prompt in any mode (server.ts matchingRule), so Codex
+//   Ask is read-only by default rather than reads only.
 // - opencode and kilo deny edit and bash to the plan and domovoi-ask agents.
 // - Claude in Ask: Claude Code approves its own read-only Bash and file reads
 //   inside the working directory before Domovoi's callback runs
@@ -29,7 +32,7 @@ export function readOnlyEnforcement(mode: "plan" | "ask", provider: string): str
   if (provider === "codex") {
     return mode === "plan"
       ? "Commands run in a read-only sandbox, so nothing is written."
-      : "Commands run in a read-only sandbox. A command that needs more asks you first."
+      : "Commands run in a read-only sandbox. A command that needs more asks you first. One a standing rule allows runs without asking."
   }
   if (provider === "opencode" || provider === "kilo") return "Edits and shell commands are refused."
   if (provider === "claude-code") return mode === "plan" ? "Claude's own plan mode makes no changes." : "Edits are refused; only read-only shell commands inside the worktree run."
@@ -42,9 +45,12 @@ export function askRaisesGates(provider: string): boolean {
   return provider === "codex"
 }
 
+// Ask opens "Reads only" where the provider refuses everything else, and
+// "Reads by default" where it asks instead, since a gate or a standing rule
+// can then let a command write.
 export function permissionModeNote(mode: PermissionMode, provider: string): string {
   if (mode === "plan") return `Reads and proposes a plan. ${readOnlyEnforcement("plan", provider)}`
-  if (mode === "ask") return `Reads only. ${readOnlyEnforcement("ask", provider)}`
+  if (mode === "ask") return `${askRaisesGates(provider) ? "Reads by default." : "Reads only."} ${readOnlyEnforcement("ask", provider)}`
   return "Writes and runs inside the worktree. Gates still apply."
 }
 

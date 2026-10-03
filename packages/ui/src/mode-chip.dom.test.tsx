@@ -30,13 +30,15 @@ it("names the mode on the chip and offers the three modes with their notes", asy
 })
 
 // What Plan and Ask enforce depends on the provider, as the daemon configures
-// it: Ask refuses writes everywhere (Claude refuses edits and runs only its
-// read-only shell commands, opencode and kilo deny edit and bash, Codex runs
-// in a read-only sandbox), and Codex Plan still runs commands in that sandbox.
+// it: Claude refuses edits in Ask and runs only its read-only shell commands,
+// opencode and kilo deny edit and bash, and Codex runs in a read-only sandbox
+// that a gate or a standing rule can let a command out of. Codex Plan still
+// runs commands in that sandbox.
 it.each([
   // Codex Ask is approvalPolicy on-request in the read-only sandbox, and its
-  // approval requests become Domovoi gates; Codex Plan never asks.
-  ["codex", "Reads and proposes a plan. Commands run in a read-only sandbox, so nothing is written.", "Reads only. Commands run in a read-only sandbox. A command that needs more asks you first."],
+  // approval requests become Domovoi gates, which a standing rule answers
+  // without a prompt; so Ask there is not reads only. Codex Plan never asks.
+  ["codex", "Reads and proposes a plan. Commands run in a read-only sandbox, so nothing is written.", "Reads by default. Commands run in a read-only sandbox. A command that needs more asks you first. One a standing rule allows runs without asking."],
   // Claude Code approves its own read-only Bash inside the working directory
   // before Domovoi is asked (claude-read-scope.ts), so cat, ls and read-only
   // git run in Ask.
