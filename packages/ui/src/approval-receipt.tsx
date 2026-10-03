@@ -53,11 +53,16 @@ function shortReference(reference: string): string {
 export function ApprovalReceipt({ receipt, className }: { receipt: Receipt, className?: string }) {
   const denied = receipt.decision === "deny" || receipt.decision === "deny-explain"
   const { verdict, rule } = decisionSummary(receipt)
+  // Ruling Q424 A: the paired device's label the daemon wrote on the receipt
+  // names who decided, before the client kind, as the design's receipt line
+  // reads. A receipt without one (the daemon credential, or a row written
+  // before the field) names the client alone.
+  const decider = receipt.device ? `${receipt.device.label} · ${receipt.client}` : receipt.client
   const decidedFrom = receipt.connectionId
-    ? `${receipt.client}, connection ${receipt.connectionId}`
+    ? `${decider}, connection ${receipt.connectionId}`
     : receipt.clientId
-      ? `${receipt.client}, declared client ${receipt.clientId}`
-      : receipt.client
+      ? `${decider}, declared client ${receipt.clientId}`
+      : decider
 
   return (
     <section
