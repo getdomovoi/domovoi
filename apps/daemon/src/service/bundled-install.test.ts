@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
@@ -170,7 +170,8 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
       delete dependencies.runtimeStagingParent
       return dependencies
     }
-    const refusal = (state: string) => `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${state} must be on the same volume as the profile directory ${join(home, ".domovoi")}, and outside every profile and repository, and neither is. Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. Nothing was changed.\n`
+    // Names the directory that failed, and every directory made before it.
+    const refusal = (failed: string, made: string[] = []) => `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${failed} must each be a directory, not a link, on the same volume as the profile directory ${join(home, ".domovoi")} and outside every profile and repository, and neither is. Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. ${made.length === 0 ? "Nothing was changed." : `It made ${made.join(", ")}, which hold no files, and changed nothing else.`}\n`
 
     it("stages under ~/.local/state/domovoi, making only the directories it needs", async () => {
       const dependencies = fromSystemPlaces({ runtimeFileSystem: offVolume() })
@@ -209,7 +210,8 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
       await mkdir(join(home, ".local", "state"), { recursive: true })
       const dependencies = fromSystemPlaces({ runtimeFileSystem: offVolume(join(home, ".local")) })
       expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
-      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(join(home, ".local", "state", "domovoi")))
+      // ~/.local/state is the directory there that is on the other volume.
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(join(home, ".local", "state")))
       expect(vi.mocked(dependencies.stderr).mock.calls.join("")).not.toContain("this app's")
       expect(dependencies.write).not.toHaveBeenCalled()
       expect(dependencies.claimServiceOperation).not.toHaveBeenCalled()
@@ -221,7 +223,8 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
     // or a repository, even one that is not there yet.
     it.each([
       // A home kept as a repository, as some dotfiles setups do.
-      ["inside a repository", async () => { await mkdir(join(home, ".git")) }, () => ({}), () => join(home, ".local", "state", "domovoi"), [".git"]],
+      // The home directory is the one that fails: it is the repository.
+      ["inside a repository", async () => { await mkdir(join(home, ".git")) }, () => ({}), () => home, [".git"]],
       // ~/.domovoi is not there yet, so this is about the path alone.
       ["inside a profile", async () => {}, () => ({ XDG_STATE_HOME: join(home, ".domovoi", "state") }), () => join(home, ".domovoi", "state", "domovoi"), []],
     ] as const)("refuses a state directory %s, writing nothing", async (_label, arrange, environment, state, left) => {
@@ -231,6 +234,71 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
       expect(dependencies.stderr).toHaveBeenCalledWith(refusal(state()))
       expect(dependencies.write).not.toHaveBeenCalled()
       expect(await readdir(home)).toEqual(left)
+    })
+
+    it("names runtime-staging, not the state directory, when that is what cannot be used", async () => {
+      const state = join(home, ".local", "state", "domovoi")
+      await mkdir(state, { recursive: true })
+      await writeFile(join(state, "runtime-staging"), "not a directory")
+      const dependencies = fromSystemPlaces({ runtimeFileSystem: offVolume() })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(join(state, "runtime-staging")))
+      expect(dependencies.write).not.toHaveBeenCalled()
+      expect(await readdir(home)).toEqual([".local"])
+    })
+
+    // A directory made at publish that turns out to be unusable: what was
+    // made stays, and the refusal says so instead of "Nothing was changed".
+    it("lists the directories it made when a level it made cannot be used", async () => {
+      const staging = join(home, ".local", "state", "domovoi", "runtime-staging")
+      const dependencies = fromSystemPlaces({ runtimeFileSystem: offVolume(staging) })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(staging, [
+        join(home, ".local"), join(home, ".local", "state"), join(home, ".local", "state", "domovoi"), staging,
+      ]))
+      expect(dependencies.write).not.toHaveBeenCalled()
+      expect(await readdir(staging)).toEqual([])
+      expect(await readdir(home)).toEqual([".local"])
+    })
+
+    // A level made at publish swapped for a link before the next level is
+    // made: the next mkdir would land inside the link's target, here a
+    // repository. The level is checked to still be the directory made, so
+    // nothing is made there. The instant between that check and the mkdir is
+    // the residual race round 8 of #577 accepted for the staging directory.
+    it("makes nothing inside a link swapped in for a level it made", async () => {
+      const repository = join(root, "repository")
+      await mkdir(join(repository, ".git"), { recursive: true })
+      const local = join(home, ".local")
+      const real = offVolume()
+      let made = false
+      let swapped = false
+      const fileSystem: RuntimeFileSystem = {
+        ...real,
+        makeDirectory: async (path) => {
+          await real.makeDirectory(path)
+          if (path === local) made = true
+        },
+        // Once usable() has passed ~/.local: the last thing it reads is the
+        // file-system root's profile-lease.sqlite, at the top of its walk
+        // up from ~/.local for repository and profile markers.
+        entry: async (path) => {
+          const found = await real.entry(path)
+          if (made && !swapped && path === join("/", "profile-lease.sqlite")) {
+            swapped = true
+            await rename(local, join(root, "moved-local"))
+            await symlink(repository, local)
+          }
+          return found
+        },
+      }
+      const dependencies = fromSystemPlaces({ runtimeFileSystem: fileSystem })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+      expect(swapped).toBe(true)
+      expect(await readdir(repository)).toEqual([".git"])
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(local, [local]))
+      expect(await readdir(join(root, "moved-local"))).toEqual([])
+      expect(dependencies.write).not.toHaveBeenCalled()
     })
   })
 })

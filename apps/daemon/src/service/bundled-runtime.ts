@@ -80,11 +80,18 @@ function commandStateDirectory(environment: DaemonEnvironment, home: string, pla
   return posix.join(state, "domovoi")
 }
 
-function commandStagingRefusal(profileDirectory: string, dataDirectory: string | undefined, platform: string): string {
-  const fix = "and run this again. Nothing was changed."
-  return dataDirectory === undefined
-    ? `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, must be on the same volume as the profile directory ${profileDirectory}, and outside every profile and repository, and it is not. Set ${platform === "win32" ? "TEMP" : "TMPDIR"} to a directory that is, ${fix}`
-    : `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${dataDirectory} must be on the same volume as the profile directory ${profileDirectory}, and outside every profile and repository, and neither is. Set TMPDIR or XDG_STATE_HOME to a directory that is, ${fix}`
+// Names the directory under the state directory that failed (an ancestor,
+// the state directory itself or its runtime-staging), and says "Nothing was
+// changed" only when no directory was made before the refusal.
+function commandStagingRefusal(refused: DaemonRuntimeStagingRefusedError, dataDirectory: string | undefined, platform: string): string {
+  const outcome = refused.made.length === 0
+    ? "Nothing was changed."
+    : `It made ${refused.made.join(", ")}, which hold no files, and changed nothing else.`
+  const where = `on the same volume as the profile directory ${refused.profileDirectory} and outside every profile and repository`
+  const failed = refused.failed ?? dataDirectory
+  return failed === undefined
+    ? `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, must be a directory, not a link, ${where}, and it is not. Set ${platform === "win32" ? "TEMP" : "TMPDIR"} to a directory that is, and run this again. ${outcome}`
+    : `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${failed} must each be a directory, not a link, ${where}, and neither is. Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. ${outcome}`
 }
 
 // The copy to install from when execPath is an app's runtime, or undefined.
@@ -112,7 +119,7 @@ export async function bundledServiceRuntime(input: {
   const paths = input.platform === "win32" ? win32 : posix
   const dataDirectory = commandStateDirectory(input.environment, input.home, input.platform)
   const worded = (error: unknown) => error instanceof DaemonRuntimeStagingRefusedError
-    ? new Error(commandStagingRefusal(error.profileDirectory, dataDirectory, input.platform))
+    ? new Error(commandStagingRefusal(error, dataDirectory, input.platform))
     : error
   const prepared = await prepareDaemonRuntime({
     resourcesPath: resources,
