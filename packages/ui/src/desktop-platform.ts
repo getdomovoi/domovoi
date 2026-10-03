@@ -95,6 +95,9 @@ export type DesktopWindowBridge = {
   // One fixed address, the release page, opened in the person's browser. The
   // renderer names no URL, so this cannot become a way to open any address.
   openReleasePage?(): Promise<boolean>
+  // Q336 A: the ~/.local/bin links for domovoid and domovoi. The answer is
+  // read by parseCommandLinkResult (printed-command.ts), not trusted as typed.
+  commandLinks?(action: "status" | "link" | "unlink"): Promise<unknown>
   onDeepLink(listener: (sessionId: string) => void): () => void
   getWindowDecoration(): Promise<WorkspaceWindowDecoration>
   setWindowDecoration(decoration: WorkspaceWindowDecoration): Promise<boolean>

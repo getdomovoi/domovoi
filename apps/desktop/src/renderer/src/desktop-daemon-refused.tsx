@@ -1,15 +1,18 @@
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
 import { Button } from "@/components/ui/button"
 import { DomovoiMark } from "@/domovoi-mark"
+import { printedCommand, type CommandLinkView } from "@/printed-command"
 
 import type { DaemonRefusalReason } from "../../shared/daemon-acquisition.js"
 import { daemonRefusalCopy } from "./desktop-daemon-copy.js"
 
-export function DesktopDaemonRefused({ reason, message, retrying, onRetry }: {
+export function DesktopDaemonRefused({ reason, message, retrying, onRetry, links }: {
   reason: DaemonRefusalReason
   message: string
   retrying: boolean
   onRetry: () => void
+  // Q336 A: the ~/.local/bin links, so the printed command runs as printed.
+  links?: CommandLinkView | undefined
 }) {
   const copy = daemonRefusalCopy({ reason, message })
   return (
@@ -25,7 +28,7 @@ export function DesktopDaemonRefused({ reason, message, retrying, onRetry }: {
             be checked for running work, so no update button; the command is
             shown to copy instead. */}
         {reason === "owner-incompatible" ? (
-          <code className="block select-all rounded-md bg-code px-3 py-2 font-machine text-[12px] text-strong">domovoid service install</code>
+          <code className="block select-all rounded-md bg-code px-3 py-2 font-machine text-[12px] text-strong">{printedCommand("domovoid service install", links)}</code>
         ) : null}
         <Button variant="outline" size="sm" disabled={retrying} onClick={onRetry}>
           {retrying ? "Trying again" : "Try again"}

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join, sep } from "node:path"
 import test from "node:test"
 
-import { fetchNodeArchive, nodePins, nodeVersion, proveDaemonRuns, runtimeTarget, sha256Of, writeDaemonRuntimeManifest } from "./daemon-runtime.mjs"
+import { assertShippedTreeContained, deployCli, fetchNodeArchive, proveCliRuns, nodePins, nodeVersion, proveDaemonRuns, runtimeTarget, sha256Of, writeCommandLaunchers, writeDaemonRuntimeManifest } from "./daemon-runtime.mjs"
 import { createHash } from "node:crypto"
 
 test("pins one Node build per platform and architecture the desktop ships for", () => {
@@ -263,7 +263,7 @@ test("keeps the conpty files a Windows package needs", async () => {
 })
 
 // The copy the app makes of the shipped tree (nodeRuntimeFileSystem in
-// src/main/daemon-service.ts) is fs.cp with verbatimSymlinks under Electron's
+// apps/daemon/src/service/runtime-stage.ts) is fs.cp with verbatimSymlinks under Electron's
 // Node 24.21.0, which gives each link the type of what the source link names.
 // Node 22's fs.cp, which this suite also runs under, gives no type. Node on
 // Windows then picks one from the copy, where the directory a link names may
@@ -568,6 +568,148 @@ test("records the digest of every file in the daemon's dist, and refuses anythin
     await rm(join(daemonRoot, "dist", "nested"), { recursive: true })
     await symlink(join(daemonRoot, "dist", "public.js"), join(daemonRoot, "dist", "linked.js"))
     await assert.rejects(writeDaemonRuntimeManifest({ daemonRoot, manifestPath }), /linked\.js is not a regular file/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Q336 A: the app links domovoid into ~/.local/bin. The link names a launcher
+// inside the runtime, which runs the daemon with the Node program shipped
+// beside it, found through any chain of links to the launcher.
+test("ships a domovoid launcher that runs the shipped daemon through a link to it", { skip: process.platform === "win32" }, async () => {
+  const { chmod, mkdir, realpath, symlink } = await import("node:fs/promises")
+  const { execFile } = await import("node:child_process")
+  const { promisify } = await import("node:util")
+  const root = await mkdtemp(join(tmpdir(), "domovoi runtime launcher-"))
+  try {
+    const runtime = join(root, "daemon-runtime")
+    await mkdir(join(runtime, "node", "bin"), { recursive: true })
+    await mkdir(join(runtime, "daemon", "dist"), { recursive: true })
+    // A stand-in for the pinned program: it prints the arguments it was given.
+    await writeFile(join(runtime, "node", "bin", "node"), "#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+    await chmod(join(runtime, "node", "bin", "node"), 0o755)
+    await writeFile(join(runtime, "daemon", "dist", "index.js"), "")
+    // Review P3-5 (Q336 A): the CLI ships too, with its own launcher.
+    await mkdir(join(runtime, "cli", "dist"), { recursive: true })
+    await writeFile(join(runtime, "cli", "dist", "index.js"), "")
+    assert.deepEqual(await writeCommandLaunchers({ root: runtime, platform: process.platform }), ["domovoid", "domovoi"])
+    const bin = join(root, "local bin")
+    await mkdir(bin)
+    await symlink(join(runtime, "bin", "domovoid"), join(bin, "domovoid"))
+    await symlink(join(bin, "domovoid"), join(root, "second link"))
+    for (const called of [join(runtime, "bin", "domovoid"), join(bin, "domovoid"), join(root, "second link")]) {
+      const { stdout } = await promisify(execFile)(called, ["service", "status"])
+      assert.deepEqual(stdout.trim().split("\n"), [join(await realpath(runtime), "daemon", "dist", "index.js"), "service", "status"])
+    }
+    await symlink(join(runtime, "bin", "domovoi"), join(bin, "domovoi"))
+    const { stdout } = await promisify(execFile)(join(bin, "domovoi"), ["status"])
+    assert.deepEqual(stdout.trim().split("\n"), [join(await realpath(runtime), "cli", "dist", "index.js"), "status"])
+    assert.equal(await assertShippedTreeContained(runtime), 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Review P2-1: a launcher reached through a link to its directory must find
+// the runtime by the real path, not by the text of the link. A logical
+// "cd dir/.." would land beside the link, where a decoy node waits.
+test("runs the shipped node when the launcher is reached through a linked directory", { skip: process.platform === "win32" }, async () => {
+  const { chmod, mkdir, realpath, symlink } = await import("node:fs/promises")
+  const { execFile } = await import("node:child_process")
+  const { promisify } = await import("node:util")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-launcher-dir-"))
+  try {
+    const runtime = join(root, "app", "daemon-runtime")
+    const printer = "#!/bin/sh\nprintf '%s\\n' \"$@\"\n"
+    await mkdir(join(runtime, "node", "bin"), { recursive: true })
+    await mkdir(join(runtime, "daemon", "dist"), { recursive: true })
+    await writeFile(join(runtime, "node", "bin", "node"), printer)
+    await chmod(join(runtime, "node", "bin", "node"), 0o755)
+    await writeFile(join(runtime, "daemon", "dist", "index.js"), "")
+    await writeCommandLaunchers({ root: runtime, platform: process.platform })
+    // The decoy sits where a logical cd from the linked directory would go.
+    const home = join(root, "home")
+    await mkdir(join(home, "node", "bin"), { recursive: true })
+    await writeFile(join(home, "node", "bin", "node"), "#!/bin/sh\necho decoy\n")
+    await chmod(join(home, "node", "bin", "node"), 0o755)
+    await symlink(join(runtime, "bin"), join(home, "dbin"))
+    await mkdir(join(home, "other"))
+    await symlink(join("..", "dbin", "domovoid"), join(home, "other", "relative"))
+    const expected = [join(await realpath(runtime), "daemon", "dist", "index.js"), "status"]
+    for (const called of [join(home, "dbin", "domovoid"), join(home, "other", "relative")]) {
+      const { stdout } = await promisify(execFile)("/bin/sh", [called, "status"])
+      assert.deepEqual(stdout.trim().split("\n"), expected, called)
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Review P3-5: the CLI is deployed beside the daemon the same way, from its
+// own workspace package, and proved by its usage text under the pinned node.
+test("deploys the domovoi CLI with the same hoisted pnpm deploy as the daemon", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-cli-"))
+  try {
+    const calls = []
+    const run = async (command, args) => {
+      calls.push([command, ...args])
+      const { mkdir } = await import("node:fs/promises")
+      const destination = args.at(-1)
+      await mkdir(join(destination, "dist"), { recursive: true })
+      await mkdir(join(destination, "node_modules"), { recursive: true })
+      await writeFile(join(destination, "dist", "index.js"), "")
+    }
+    const entry = await deployCli({ repositoryRoot: root, destination: join(root, "cli"), run })
+    assert.equal(entry, join(root, "cli", "dist", "index.js"))
+    assert.deepEqual(calls, [["pnpm", "--filter", "@getdomovoi/cli", "deploy", "--legacy", "--prod", "--config.node-linker=hoisted", join(root, "cli")]])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("proves the CLI loads under the pinned program by its usage text, and refuses anything else", async () => {
+  const usage = 'if (process.argv[2] === "--help") { process.stderr.write("Usage:\\n  domovoi pair\\n"); process.exit(0) } else process.exit(2)\n'
+  const root = await fixture("domovoi-runtime-cli-prove-", { "cli.mjs": usage, "broken.mjs": "process.exit(0)\n" })
+  try {
+    const program = { nodeExecutable: process.execPath, nodeSha256: await sha256Of(process.execPath) }
+    await proveCliRuns({ ...program, cliEntry: join(root, "cli.mjs") })
+    await assert.rejects(proveCliRuns({ ...program, cliEntry: join(root, "broken.mjs") }), /did not print its usage/)
+    await assert.rejects(proveCliRuns({ ...program, nodeSha256: "0".repeat(64), cliEntry: join(root, "cli.mjs") }), /Nothing was run/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Review of #712 (P2): usage text is proof only from a run that exits 0. A
+// CLI that prints its usage and then fails, or is killed at the timeout, has
+// not run, and the failure is passed on with what it printed.
+test("refuses usage text from a CLI run that exits nonzero or times out", async () => {
+  const root = await fixture("domovoi-runtime-cli-fail-", { "failing.mjs": 'process.stderr.write("Usage:\\n  domovoi pair\\n"); process.exit(2)\n' })
+  try {
+    const program = { nodeExecutable: process.execPath, nodeSha256: await sha256Of(process.execPath) }
+    await assert.rejects(proveCliRuns({ ...program, cliEntry: join(root, "failing.mjs") }), (error) => {
+      assert.match(error.message, /did not run under/)
+      assert.match(error.message, /Usage:/)
+      assert.equal(error.cause?.code, 2)
+      return true
+    })
+    // What execFile rejects with when the timeout kills the child.
+    const timedOut = Object.assign(new Error("Command failed: node cli.mjs --help"), { killed: true, signal: "SIGTERM", code: null, stdout: "", stderr: "Usage:\n  domovoi pair\n" })
+    await assert.rejects(proveCliRuns({ ...program, cliEntry: join(root, "cli.mjs"), run: async () => { throw timedOut } }), (error) => {
+      assert.match(error.message, /did not run under/)
+      assert.equal(error.cause, timedOut)
+      return true
+    })
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("ships no launcher on Windows, where nothing is linked", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-launcher-win-"))
+  try {
+    assert.deepEqual(await writeCommandLaunchers({ root, platform: "win32" }), [])
+    await assert.rejects(readFile(join(root, "bin", "domovoid")))
   } finally {
     await rm(root, { recursive: true, force: true })
   }

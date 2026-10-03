@@ -2,7 +2,7 @@ import { homedir } from "node:os"
 import { posix, win32 } from "node:path"
 
 import type { DaemonModule } from "./daemon-module.js"
-import { DesktopDaemonService, nodeRuntimeFileSystem, prepareDaemonRuntime } from "./daemon-service.js"
+import { DesktopDaemonService } from "./daemon-service.js"
 import type { DesktopDaemon } from "./desktop-daemon.js"
 
 // J24: the login service, assembled on first use. index.ts loads this module
@@ -30,14 +30,16 @@ export function createDesktopDaemonService(
   // looked for (#635).
   const copies = profileDirectory ?? (process.platform === "win32" ? win32 : posix).join(home, ".domovoi")
   return new DesktopDaemonService({
-    stageRuntime: (operation) => prepareDaemonRuntime({
+    // Q408 A: the daemon's own copy routine, the one `domovoid service
+    // install` uses when run from the app's runtime.
+    stageRuntime: (operation) => daemon.prepareDaemonRuntime({
       operation,
       resourcesPath: app.resourcesPath,
       profileDirectory: copies,
       version: app.version,
       ...(app.dataDirectory === undefined ? {} : { dataDirectory: app.dataDirectory }),
       platform: process.platform,
-      fileSystem: nodeRuntimeFileSystem(),
+      fileSystem: daemon.nodeRuntimeFileSystem(),
     }),
     install: (options) => daemon.installDaemonService({ ...options, environment: profile }),
     status: () => daemon.readDaemonServiceStatus(),

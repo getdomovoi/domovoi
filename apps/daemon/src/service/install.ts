@@ -22,7 +22,10 @@ import { readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWin
 import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, within, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
-import { profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
+import { profileDirectory, profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
+import { bundledServiceRuntime } from "./bundled-runtime.js"
+import type { RuntimeFileSystem } from "./runtime-stage.js"
+import type { DaemonServiceRuntimeReader } from "./desktop-service.js"
 import { disableLinger, enableLinger, lingerAfterRestore, lingerInstallLine, lingerRecord, lingerRemovalLine, type LingerInstallOutcome, type LingerRemovalOutcome } from "./linger.js"
 
 const serviceName = "domovoid"
@@ -1393,6 +1396,15 @@ export type ServiceCommandDependencies = ServiceEffects & {
   user?: string
   environment?: DaemonEnvironment
   workingDirectory?: string
+  // This daemon's version, which names the runtime copy an install from an
+  // app's runtime makes (bundled-runtime.ts). Tests also pass where that copy
+  // is staged and the file system it is made with.
+  version?: string
+  runtimeStagingParent?: string
+  runtimeFileSystem?: RuntimeFileSystem
+  // What reads the service definition for the removal of unused copies; by
+  // default the app's reader (desktop-service.ts).
+  runtimeReader?: DaemonServiceRuntimeReader
   stdout: (text: string) => void
   stderr: (text: string) => void
 }
@@ -1425,16 +1437,54 @@ export async function runServiceCommand(
       && dependencies.readConfiguration?.(assertHome(dependencies.home), "linux")?.wsl !== undefined
     const installingFromWsl = verb === "install" && (dependencies.environment?.WSL_DISTRO_NAME !== undefined
       || dependencies.environment?.WSL_INTEROP !== undefined)
-    if (dependencies.platform === "linux" && (savedWsl || installingFromWsl)) {
-      return await serviceOperation(dependencies, (deadline) => runWslServiceCommand(verb, dependencies, deadline))
-    }
-    if (verb === "install") {
-      const configuration = createServiceConfiguration(dependencies.environment ?? {}, {
+    const configuration = verb === "install"
+      ? createServiceConfiguration(dependencies.environment ?? {}, {
         platform: dependencies.platform,
         homeDirectory: assertHome(dependencies.home),
         workingDirectory: dependencies.workingDirectory ?? process.cwd(),
       })
-      const plan = await installService({ ...target, configuration }, dependencies)
+      : undefined
+    // Q408 A: from an app's runtime, the service runs a copy under the
+    // profile, published under the service-operation lease. Inside WSL too:
+    // the Windows task starts the guest runtime, and the app's path goes away
+    // once an AppImage unmounts or the app moves.
+    const bundled = configuration === undefined ? undefined : await bundledServiceRuntime({
+      execPath: dependencies.execPath,
+      platform: dependencies.platform,
+      environment: dependencies.environment ?? {},
+      profileDirectory: configuration.profileDirectory ?? profileDirectory(configuration.homeDirectory, dependencies.platform),
+      version: dependencies.version,
+      home: configuration.homeDirectory,
+      ...(dependencies.runtimeFileSystem === undefined ? {} : { fileSystem: dependencies.runtimeFileSystem }),
+      ...(dependencies.runtimeStagingParent === undefined ? {} : { stagingParent: dependencies.runtimeStagingParent }),
+      claimServiceOperation: dependencies.claimServiceOperation,
+      ...(dependencies.runtimeReader === undefined ? {} : { reader: dependencies.runtimeReader }),
+    })
+    if (dependencies.platform === "linux" && (savedWsl || installingFromWsl)) {
+      const guest = bundled === undefined
+        ? dependencies
+        : { ...dependencies, execPath: bundled.runtime.daemonEntryPath, runtime: bundled.runtime.nodePath }
+      const publish = bundled === undefined ? undefined : async () => {
+        await bundled.publish()
+        dependencies.stdout(`Copied the daemon runtime out of the app to ${bundled.copy}, so the service does not run from inside the app.\n`)
+      }
+      return await serviceOperation(dependencies, (deadline) => runWslServiceCommand(verb, guest, deadline, publish))
+    }
+    if (configuration !== undefined) {
+      const plan = bundled === undefined
+        ? await installService({ ...target, configuration }, dependencies)
+        : await installService({ ...target, execPath: bundled.runtime.daemonEntryPath, runtime: bundled.runtime.nodePath, configuration }, dependencies, { beforeChanges: bundled.publish })
+      if (bundled !== undefined) {
+        dependencies.stdout(`Copied the daemon runtime out of the app to ${bundled.copy}, so the service does not run from inside the app.\n`)
+        // #635: the app's Install removes unused copies once it has reached
+        // the running service. The command does not attach to it; it runs
+        // the cleanup once the service manager has accepted every command
+        // that registers and starts the service, and the cleanup itself
+        // reads the definition again and keeps the copy it names. A WSL
+        // guest service has no definition this can read, so its copies are
+        // kept (runtime-cleanup.ts).
+        await bundled.removeUnused()
+      }
       dependencies.stdout(
         plan.kind === "file"
           ? `Installed the Domovoi daemon service at ${plan.path}\n`

@@ -2,10 +2,11 @@ import { DatabaseSync } from "node:sqlite"
 
 import { describe, expect, it } from "vitest"
 
-import { SqliteDeviceRegistry } from "./device-registry.js"
+import { DeviceLimitReachedError, SqliteDeviceRegistry, maximumPairedDevices } from "./device-registry.js"
 import {
   PairingCodeError,
   PairingCodeService,
+  PairingDeviceLimitError,
   maximumPairingAttempts,
   pairingCodeTtlMs,
 } from "./pairing-codes.js"
@@ -127,6 +128,89 @@ describe("PairingCodeService", () => {
     const codes = new Set(Array.from({ length: 20 }, (_unused, index) => pairing.issue(start + index).code))
 
     expect(codes.size).toBeGreaterThan(1)
+  })
+
+  it("names each code, and says which open code a new one replaced", () => {
+    const { pairing, start } = service()
+    const first = pairing.issue(start, "phone")
+    expect(first.pairingId).toMatch(/^pairing-[0-9a-f]{32}$/)
+    expect(first).not.toHaveProperty("replacedPairingId")
+
+    const second = pairing.issue(start + 1, "phone")
+    expect(second.pairingId).not.toBe(first.pairingId)
+    expect(second.replacedPairingId).toBe(first.pairingId)
+
+    // A code that already ran out its time was not open, so nothing was replaced.
+    const third = pairing.issue(start + 2 + pairingCodeTtlMs, "phone")
+    expect(third).not.toHaveProperty("replacedPairingId")
+  })
+
+  it("says which open code a presented code matches, without spending it or counting a guess", () => {
+    const { pairing, start } = service()
+    const issued = pairing.issue(start, "phone")
+
+    for (let attempt = 0; attempt < maximumPairingAttempts + 1; attempt += 1) {
+      expect(pairing.matchingPairing("wrong-wrong-wrong-11", start)).toBeUndefined()
+    }
+    expect(pairing.matchingPairing(issued.code, start)).toBe(issued.pairingId)
+    expect(pairing.matchingPairing(issued.code, start + pairingCodeTtlMs)).toBeUndefined()
+    // Neither the matches nor the misses spent the code or used up its attempts.
+    expect(pairing.redeem(issued.code, { label: "phone" }, start).pairingId).toBe(issued.pairingId)
+    expect(pairing.matchingPairing(issued.code, start)).toBeUndefined()
+  })
+
+  it("names the code a refusal closed, and why", () => {
+    const refusal = (spend: () => unknown) => {
+      try {
+        spend()
+      } catch (error) {
+        if (error instanceof PairingCodeError) return { refusal: error.refusal, closedPairingId: error.closedPairingId }
+        throw error
+      }
+      throw new Error("expected a refusal")
+    }
+    const { pairing, start } = service()
+
+    const guessed = pairing.issue(start, "phone")
+    for (let attempt = 1; attempt < maximumPairingAttempts; attempt += 1) {
+      expect(refusal(() => pairing.redeem("wrong-wrong-wrong-11", { label: "guess" }, start)))
+        .toEqual({ refusal: "invalid", closedPairingId: undefined })
+    }
+    expect(refusal(() => pairing.redeem("wrong-wrong-wrong-11", { label: "guess" }, start)))
+      .toEqual({ refusal: "attempts-exhausted", closedPairingId: guessed.pairingId })
+    expect(refusal(() => pairing.redeem(guessed.code, { label: "late" }, start)))
+      .toEqual({ refusal: "invalid", closedPairingId: undefined })
+
+    const phoneCode = pairing.issue(start, "phone")
+    expect(refusal(() => pairing.claim(phoneCode.code, claimant, start)))
+      .toEqual({ refusal: "wrong-kind", closedPairingId: phoneCode.pairingId })
+
+    const machineCode = pairing.issue(start)
+    expect(refusal(() => pairing.redeem(machineCode.code, { label: "phone" }, start)))
+      .toEqual({ refusal: "wrong-kind", closedPairingId: machineCode.pairingId })
+
+    const expired = pairing.issue(start, "phone")
+    expect(refusal(() => pairing.redeem(expired.code, { label: "phone" }, start + pairingCodeTtlMs)))
+      .toEqual({ refusal: "expired", closedPairingId: expired.pairingId })
+  })
+
+  it("names the spent code when the paired device list is full", () => {
+    const { pairing, devices, start } = service()
+    for (let index = 0; index < maximumPairedDevices; index += 1) {
+      devices.pair({ label: `device ${index}`, binding: { kind: "client", client: "web", clientAccess: "full" } })
+    }
+    const issued = pairing.issue(start, "phone")
+    let failure: unknown
+    try {
+      pairing.redeem(issued.code, { label: "one too many" }, start)
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(DeviceLimitReachedError)
+    expect(failure).toBeInstanceOf(PairingDeviceLimitError)
+    expect((failure as PairingDeviceLimitError).pairingId).toBe(issued.pairingId)
+    // The code was spent on the way to the full list.
+    expect(pairing.pairingOpen(start)).toBe(false)
   })
 
   it("never puts the code in the error it reports", () => {

@@ -99,6 +99,7 @@ import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
 import { ThreadComposer } from "./thread-composer"
 import { attachmentName, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
+import { startOpenerRef } from "./start-handoff"
 
 // The states name a meaning rather than a colour now, so the palette lives in
 // StatusDot alone instead of being restated per surface.
@@ -675,7 +676,10 @@ export function Thread({
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <Button disabled={watching} onClick={onNewSession}>
+            {/* startOpenerRef registers a control that opens a session
+                start: a refusal of that start may take focus from it (ruling
+                Q410). */}
+            <Button ref={startOpenerRef} disabled={watching} onClick={onNewSession}>
               {hasProject ? <BotIcon data-icon="inline-start" /> : <FolderOpenIcon data-icon="inline-start" />}
               {hasProject ? "New session" : "Open project"}
             </Button>

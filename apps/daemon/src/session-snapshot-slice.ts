@@ -22,6 +22,9 @@ export const sessionSnapshotTransferPolicy = {
   skillEnablements: "preserve",
   queuedSends: "preserve",
   historyTruncated: "preserve",
+  // Derived for client snapshots from the usage ledger and never stored, so a
+  // transfer has none to move; the ledger records travel with the usage.
+  turns: "preserve",
 } as const satisfies Record<keyof WorkspaceSnapshot, SnapshotTransferPolicy>
 
 function mergeKeyedSessionRecords<T>(

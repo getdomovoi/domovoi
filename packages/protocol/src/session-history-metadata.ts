@@ -12,6 +12,9 @@ export const checkpointReasonSchema = z.enum([
   "before-provider-handoff",
   "before-provider-recovery",
   "before-archive",
+  // Taken when a person allows a gated command, before the agent hears the
+  // decision (J34).
+  "before-approved-command",
 ])
 export type CheckpointReason = z.infer<typeof checkpointReasonSchema>
 

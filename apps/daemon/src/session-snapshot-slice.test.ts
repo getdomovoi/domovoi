@@ -18,6 +18,7 @@ describe("session snapshot slice", () => {
       projectCap: 1,
       queuedSends: [],
       historyTruncated: true,
+      turns: [],
     })
 
     expect(Object.keys(sessionSnapshotTransferPolicy).sort()).toEqual(
@@ -40,6 +41,7 @@ describe("session snapshot slice", () => {
       skillEnablements: "preserve",
       queuedSends: "preserve",
       historyTruncated: "preserve",
+      turns: "preserve",
     })
   })
 

@@ -137,6 +137,8 @@ export class RepositoryGitConfigUnreadableError extends Error {
 
 export const maximumRepositoryGitConfigOutputBytes = 4 * 1024 * 1024
 
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true })
+
 // One filter or lfs setting as Git read it, from any scope.
 export type GitFilterSetting = { scope: string; key: string; value: string; origin: string | undefined }
 
@@ -184,15 +186,15 @@ export async function readGitFilterSettings(
   signal?: AbortSignal,
   timeoutMs: number = repositoryGitConfigReadTimeoutMs,
 ): Promise<GitFilterSetting[]> {
-  let output: string
+  let bytes: Buffer
   try {
     const env = gitEnvironment()
     // No Git found reads as a Git that failed: git-failed below.
-    output = (await execute(gitCommand(env), [
+    bytes = (await execute(gitCommand(env), [
       "-C", directory, ...inertRepositoryConfig,
       "config", "--show-scope", "--show-origin", "-z", "--get-regexp", filterKeyPattern,
     ], {
-      env, encoding: "utf8", maxBuffer: maximumRepositoryGitConfigOutputBytes,
+      env, encoding: "buffer", maxBuffer: maximumRepositoryGitConfigOutputBytes,
       timeout: timeoutMs, killSignal: "SIGKILL", ...(signal ? { signal } : {}),
     })).stdout
   } catch (error) {
@@ -202,8 +204,19 @@ export async function readGitFilterSettings(
     if (code === 1) return []
     // No repository here, so no repository config: Git refuses every
     // command in this folder, and no filter runs.
-    if (code === 128 && typeof stderr === "string" && /not a git repository/iu.test(stderr)) return []
+    if (code === 128 && stderr !== undefined && /not a git repository/iu.test(String(stderr))) return []
     throw new RepositoryGitConfigUnreadableError(code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" ? "too-large" : "git-failed", { cause: error })
+  }
+  // Decoded strictly, as the isolated directory decodes the same config
+  // (isolated-checkout.ts, ruling Q320): a scope, file name, key or value that
+  // is not valid UTF-8 refuses the read rather than reaching the inventory
+  // with replacement characters a review could approve (ruling Q325). NUL is
+  // ASCII, so decoding the whole output decodes every field strictly.
+  let output: string
+  try {
+    output = strictUtf8.decode(bytes)
+  } catch {
+    throw new RepositoryGitConfigUnreadableError("git-failed", { detail: "a filter setting in Git config is not valid UTF-8, which Domovoi does not read" })
   }
   const fields = output.split("\0")
   const settings: GitFilterSetting[] = []

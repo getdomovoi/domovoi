@@ -21,14 +21,16 @@ export const desktopPackages = [
   "@getdomovoi/desktop",
   "@getdomovoi/ui",
   "@getdomovoi/daemon",
+  "@getdomovoi/cli",
   "@getdomovoi/credential-store",
   "@getdomovoi/protocol",
 ]
 // The desktop app does not depend on the daemon package: it ships the daemon as
 // the runtime beside the archive (extraResources in apps/desktop/electron-builder.yml,
 // prepared by apps/desktop/scripts/prepare-daemon-runtime.mjs), so a walk of
-// the desktop manifest starts there too.
-export const desktopRuntimeWorkspacePackages = ["@getdomovoi/daemon"]
+// the desktop manifest starts there too. The domovoi CLI ships in the same
+// runtime since Q336 A (2026-10-02), so the app can link it into ~/.local/bin.
+export const desktopRuntimeWorkspacePackages = ["@getdomovoi/daemon", "@getdomovoi/cli"]
 export const auditedPackages = [...new Set([...publishablePackages, ...desktopPackages])]
 
 // Electron is a development dependency of apps/desktop because electron-builder

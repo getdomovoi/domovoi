@@ -28,6 +28,10 @@ export const kindIcon: Record<ToolRowKind, ComponentType<{ className?: string; "
 
 export const eyebrow = "text-[10.5px] font-medium tracking-[0.13em] text-faint"
 export const mono = "font-machine"
+// A command shown for review keeps its whitespace: a browser collapses runs
+// of spaces in ordinary text, and two spaces inside quotes are another shell
+// argument than one (ruling Q328). Long lines still wrap.
+export const commandWhitespace = "whitespace-break-spaces"
 
 export function TrustRefusals({ trust, name }: { trust: RepositoryTrustState; name: string }) {
   const titleId = useId()
