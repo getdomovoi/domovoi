@@ -150,11 +150,24 @@
         "online",
         "offline (danger border and background)"
       ],
-      "evidence": [
+      "presence": [
         "Machines: ",
         "Disconnected from",
         "!connected && \"border-danger-border bg-danger-background"
       ],
+      "evidence": [
+        "Machines: ",
+        "Disconnected from",
+        "!connected && \"border-danger-border bg-danger-background",
+        {
+          "absent": "attached ? \"remote\" : \"local\"",
+          "in": "packages/ui/src/workspace-shell.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the chip, its dot and the offline danger state are drawn; the transport word is not the drawn route. The design names the route (loopback, tailnet, domovoi cloud); workspace-shell passes local, remote or unreachable, so a desktop on its own daemon reads local where the design says loopback and a tailnet route reads remote. The fleet entry's connection and transports already name the route. The domovoi cloud state is the relay (M2)"
+      },
       "notes": [
         "2026-10-01 (S3.10 slice 1): offline now turns the chip itself to danger border and background (machineChipStyle), not only its dot."
       ]
@@ -254,9 +267,20 @@
         "quiet",
         "active"
       ],
-      "evidence": [
+      "presence": [
         "aria-label={`Actions for"
-      ]
+      ],
+      "evidence": [
+        "aria-label={`Actions for",
+        {
+          "absent": "note: \"running\"",
+          "in": "packages/ui/src/session-groups.ts"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "rows draw a dot, the title and a note, with the row menu; the design's meta is not drawn. Notes are bare words (running, waiting on you, failed, idle) with no duration or count where the design draws running 12m, review 7 files, failed 1h ago and idle 2d; the meta is sans 11.5px muted with the dot inline before it, where the design has the dot as a left column and the meta in mono faint; quiet rows are at .70 opacity, not .55. Q364 A (2026-10-02) keeps the drawer to this machine for M1 with the machine name in the meta"
+      }
     },
     {
       "id": "drawer.row-menu",
