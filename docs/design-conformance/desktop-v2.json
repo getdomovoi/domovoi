@@ -769,11 +769,17 @@
       ],
       "evidence": [
         "Lost the daemon on",
-        "Retry now"
+        "Retry now",
+        "last heard"
       ],
       "presence": [
-        "Lost the daemon on"
-      ]
+        "Lost the daemon on",
+        "Retry now"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "connection-status draws one sentence (Lost the daemon on X. The worktree and this thread are intact on the machine. Nothing was rolled back.) where the design draws Lost the daemon on <machine>, last heard 41s ago, then the mono danger-dim line; there is no last heard (client-side, from the last socket message), Retry now is a filled destructive button where the design draws an outline, and the banner spans the window under the titlebar where the design puts it at the top of the thread column"
+      }
     },
     {
       "id": "thread.session-notice",
@@ -783,10 +789,19 @@
         "paused",
         "archived"
       ],
-      "evidence": [
+      "presence": [
         "SessionReadOnlyNotice",
         "The worktree was removed"
       ],
+      "evidence": [
+        "SessionReadOnlyNotice",
+        "The worktree was removed",
+        "Paused. The daemon is holding the session"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the archived half is built; the paused half (Paused. The daemon is holding the session ... until you resume, meta paused <time> from this client, Resume) is drawn nowhere and cannot be drawn honestly: sessionStateSchema has no paused state and session.pause only interrupts the running turn. Q361 A (2026-10-02) draws a Stopped notice after a client stop, saying the turn ended and the next send starts the next one, and asks Claude Design to edit the paused copy; until that edit is vendored this evidence holds the drawn paused line"
+      },
       "copy": [
         "Archived and read-only. The worktree was removed. Branch",
         "and its final checkpoint are kept."
@@ -808,7 +823,7 @@
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "session history carries no subagent identity or subagent thread"
+        "reason": "ruled out of scope on 2026-09-23 (design rulings that day: the subagent concept stays out of scope); the protocol also carries no subagent identity or subagent thread, and only the OpenCode adapter tracks subagents, internally"
       }
     },
     {
@@ -832,7 +847,7 @@
       ],
       "partial": {
         "since": "2026-09-18",
-        "reason": "a Start a session dialog with a goal field; the design's in-thread launcher, its copy and chips are not drawn"
+        "reason": "a Start a session modal with a goal field and provider and model dropdowns; the design's in-thread launcher (heading, the runs-on and fresh-worktree line, a multiline prompt card, machine, model, mode and worktree chips, Start the session) is not drawn. Q370 A (2026-10-02) builds the in-thread launcher as drawn; Open a project stays a dialog"
       }
     },
     {
@@ -871,7 +886,7 @@
       ],
       "partial": {
         "since": "2026-09-23",
-        "reason": "the launcher has provider and model dropdowns (launcher-dialog); the design's one MODEL ON <machine> menu grouped per agent, its image-input tags and its per-model lock reasons are not drawn"
+        "reason": "the launcher has provider and model dropdowns (launcher-dialog); the design's one MODEL ON <machine> menu grouped per agent, its image-input tags and its per-model lock reasons are not drawn. The image tags are client-buildable now (runtime.models reports ProviderModel.imageInput per model); the key lock reasons stay with api-keys, which is blocked"
       }
     },
     {
@@ -881,10 +896,19 @@
       "copy": [
         "PICK UP WHERE YOU LEFT OFF"
       ],
-      "evidence": [
+      "presence": [
         "PICK UP WHERE YOU LEFT OFF",
         "recentSessions"
-      ]
+      ],
+      "evidence": [
+        "PICK UP WHERE YOU LEFT OFF",
+        "recentSessions",
+        "files to review"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the modal lists recent sessions as bordered card rows showing the raw state word (waiting, idle) with no dot; the list includes the session already open and keeps snapshot order, not recency. The design draws a dot, the title and mono meta such as 7 files to review, failed 1h ago or running on <machine> in top-bordered rows; changedFiles, state and updatedAt give that meta. Q370 A (2026-10-02) moves the launcher into the thread"
+      }
     },
     {
       "id": "launcher.adopt",
@@ -945,14 +969,15 @@
       "name": "Thread header line",
       "where": "top of the conversation: repo · branch · worktree, then the clock (started, running or stalled)",
       "evidence": [
-        "thread-header"
+        "function ThreadStartLine(",
+        "re:\\bstalled at"
       ],
       "presence": [
-        "ThreadStartLine"
+        "function ThreadStartLine("
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "the header carries session controls the design puts elsewhere; not measured against the design's line"
+        "since": "2026-10-02",
+        "reason": "ThreadStartLine draws repo, branch and worktree, then started HH:MM, and carries no controls; the gap is the clock. The design draws started 14:02 · 4m 18s when done, started 14:02 · running 1m 09s while working and started 13:41 · stalled at 14:06 when the daemon is lost. Q390 A (2026-10-02) puts turn start and end on the protocol (0.8.0) and shows no duration until then, so the elapsed and running parts wait on that change"
       }
     },
     {
@@ -978,9 +1003,20 @@
         "working: caret",
         "done"
       ],
-      "evidence": [
+      "presence": [
         "<MarkdownQuickView source={stripPlanTags(item.body)} />"
-      ]
+      ],
+      "evidence": [
+        "<MarkdownQuickView source={stripPlanTags(item.body)} />",
+        {
+          "absent": "<DomovoiMark reduced className=\"size-4\" /></span><MarkdownQuickView",
+          "in": "packages/ui/src/thread.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the prose renders as markdown (the earlier evidence matched only that call); it is not the drawn prose. thread.tsx puts a 24px DomovoiMark avatar box before it, which the design does not draw; there is no working caret (the design draws a 1.5px primary blinking caret after the last prose while working); the type is 13px/1.625 against 13.5px/1.65"
+      }
     },
     {
       "id": "conversation.plan-link",
@@ -1016,8 +1052,8 @@
         "turn-activity"
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "activity groups exist with their own labels"
+        "since": "2026-10-02",
+        "reason": "activity groups exist and read N tool calls[, N failed]; the design's Working, Worked for 4m 18s, show the steps and Stopped labels are not drawn, step dots show online or offline only where the design colours them by outcome, and Output is a text button where the design toggles the whole row. Q390 A (2026-10-02): no turn duration is on the wire; turn start and end go on the protocol and no duration shows until then"
       }
     },
     {
@@ -1057,7 +1093,7 @@
       ],
       "partial": {
         "since": "2026-09-18",
-        "reason": "the card decides; its header, the facts disclosure and the from-you note are not the design's"
+        "reason": "the card decides; it is not the drawn card. Its header reads Approval required (with a Hard gate badge) where the design says Waiting on your decision with a pulsing dot and step n of N meta; the facts are always open in two columns where the design folds them behind What does this touch?; the command is 11px; a watching client sees no buttons. Rulings 2026-10-02: Q339 A, Deny decides at once with a quiet Deny with a note secondary whose copy does not promise the agent hears it; Q371 A, the Always button reads Always for this command here (no Always on hard gates or unresolved requests, ruled 2026-09-24); Q372 A, a watching client sees the buttons locked with Locked, this client is watching only. The from-you origin and the OUTSIDE PROJECT fact need protocol fields; step n of N needs the plan step whose blocker names this approval"
       }
     },
     {
@@ -1071,10 +1107,9 @@
       "evidence": [
         "Could not take a checkpoint"
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "the daemon takes no checkpoint before an approved write (checkpointReasonSchema has no such reason), so there is no failure to report; J34 was drawn as an owner decision"
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "no longer blocked: since 5ee18251 (J34) the daemon takes a checkpoint before every human allow and, when it cannot, refuses the resolve with Domovoi could not take a checkpoint, so the command did not run; decide again. The client shows that refusal as a generic Agent request failed alert above the composer, not in the gate card. Showing it in the card is client-only; naming the cause (the held lock path) needs the daemon to answer with a typed refusal code and the cause instead of internalError"
       }
     },
     {
@@ -1120,7 +1155,7 @@
       ],
       "partial": {
         "since": "2026-09-23",
-        "reason": "the receipt exists; its Move this session to another machine action is not on the receipt (the string matched the transfer dialog's title)"
+        "reason": "the receipt exists; its Move this session to another machine action is not on the receipt (the string matched the transfer dialog's title). Allowed is info-toned and denied neutral where the design tones them ok and danger; there is no ckpt and duration meta and none of the follow-up actions (Review the changed files, Move this session, See the checkpoints). Both facts are on the wire since 5ee18251: receipt.ranForMs, and for an allow receipt.checkpoint is the approved checkpoint; the comments in approval-receipt.tsx that say otherwise are stale. The rule receipt's Whether later runs under the rule each get a checkpoint is not decided is decided (J34, checkpoints on human allows only): Later runs under the rule do not take a checkpoint"
       }
     },
     {
