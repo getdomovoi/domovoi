@@ -165,13 +165,18 @@ export function updateWorkingPlanFromProvider(
 // plan-<sessionId>-<provider turn id, or "current"> and never had a path.
 // The artifact watcher names plan files found in the worktree
 // plan-<sessionId>-<hash> and always records their path, so the id alone
-// cannot tell the two apart: an artifact with a path is never a working plan.
+// cannot tell the two apart: a prefixed artifact with a path is a file.
+// The watcher never makes the exact id plan-<sessionId>. Older daemons could
+// rename a watched file to it and keep the path, so that id is the working
+// plan whatever its path, and taking it over drops the path.
 export function isWorkingPlanArtifact(artifact: Artifact, sessionId: string): boolean {
   const artifactId = `plan-${sessionId}`
   return artifact.sessionId === sessionId
     && artifact.type === "plan"
-    && artifact.path === undefined
-    && (artifact.id === artifactId || artifact.id.startsWith(`${artifactId}-`))
+    && (
+      artifact.id === artifactId
+      || (artifact.path === undefined && artifact.id.startsWith(`${artifactId}-`))
+    )
 }
 
 export function syncWorkingPlanArtifact(
@@ -208,6 +213,7 @@ export function syncWorkingPlanArtifact(
   artifact.revision = matching.reduce((total, candidate) => total + candidate.revision, 0) + 1
   artifact.mimeType = "text/markdown"
   artifact.content = content
+  delete artifact.path
   delete artifact.variant
 
   for (let index = artifacts.length - 1; index >= 0; index -= 1) {

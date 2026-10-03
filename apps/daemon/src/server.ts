@@ -785,6 +785,8 @@ function writePlanArtifact(
     ? `${matching.map((candidate) => candidate.content ?? "").join("")}${content}`
     : content
   artifact.revision = matching.reduce((total, candidate) => total + candidate.revision, 0) + 1
+  delete artifact.path
+  delete artifact.variant
 
   for (let index = artifacts.length - 1; index >= 0; index -= 1) {
     if (matching.includes(artifacts[index]!) && artifacts[index] !== artifact) artifacts.splice(index, 1)

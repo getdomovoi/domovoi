@@ -324,6 +324,32 @@ describe("working-plan artifacts", () => {
     expect(artifacts.find(({ id }) => id === watched.id)).toEqual(watched)
     expect(artifacts).toHaveLength(2)
   })
+
+  // Before the watched-file fix, a plan delta could rename a watched plan
+  // file to plan-<sessionId> and keep its path. A saved profile can still
+  // hold that artifact; it is the working plan, not a second one.
+  it("takes over a saved working plan that kept a watched file's path", () => {
+    const artifacts: Artifact[] = [{
+      id: "plan-session-a",
+      sessionId: "session-a",
+      title: "Working plan",
+      type: "plan",
+      revision: 2,
+      path: "PLAN.md",
+      variant: { id: "variant-a", groupId: "plans", label: "A", order: 0 },
+      mimeType: "text/markdown",
+      content: "# Agent plan\n",
+    }]
+
+    const result = syncWorkingPlanArtifact(artifacts, [], plan(), true)
+
+    expect(artifacts.filter(({ id }) => id === "plan-session-a")).toHaveLength(1)
+    expect(artifacts).toHaveLength(1)
+    expect(result.artifact).toBe(artifacts[0])
+    expect(result.artifact).toMatchObject({ id: "plan-session-a", revision: 3 })
+    expect(result.artifact).not.toHaveProperty("path")
+    expect(result.artifact).not.toHaveProperty("variant")
+  })
 })
 
 describe("working-plan provider delivery", () => {

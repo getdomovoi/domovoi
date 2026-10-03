@@ -32,6 +32,7 @@ import {
   skillInstallErrorCode,
   workspaceSnapshotSchema,
   workspaceDeltaSchema,
+  type Artifact,
   type ProviderModel,
   type RpcMethod,
   type RpcResult,
@@ -4277,6 +4278,34 @@ describe("DomovoiDaemon", () => {
     ])
     expect(artifacts.find(({ id }) => id === watched.id)).toEqual(watched)
     expect(annotations[0]!.artifactId).toBe(watched.id)
+  })
+
+  // Before the watched-file fix, a plan delta could rename a watched plan
+  // file to plan-<sessionId> and keep its path and variant.
+  it("appends to a saved working plan that kept a watched file's path", () => {
+    const artifacts: Artifact[] = [{
+      id: "plan-session-a",
+      sessionId: "session-a",
+      title: "Plan",
+      type: "plan",
+      revision: 2,
+      path: "PLAN.md",
+      variant: { id: "variant-a", groupId: "plans", label: "A", order: 0 },
+      mimeType: "text/markdown",
+      content: "1. Inspect.\n",
+    }]
+
+    const artifact = appendPlanDelta(artifacts, [], "session-a", "2. Verify.")
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifact).toBe(artifacts[0])
+    expect(artifact).toMatchObject({
+      id: "plan-session-a",
+      revision: 3,
+      content: "1. Inspect.\n2. Verify.",
+    })
+    expect(artifact).not.toHaveProperty("path")
+    expect(artifact).not.toHaveProperty("variant")
   })
 
   it("scopes artifact access to id, bridge channel, parent origin, and expiry", () => {
