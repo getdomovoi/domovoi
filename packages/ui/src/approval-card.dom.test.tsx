@@ -314,6 +314,29 @@ function renderThread(surface: "desktop" | "web" = "desktop", risk?: "normal" | 
   return snapshot.approvals[0]!
 }
 
+// A tab with no daemon connection holds nothing, so it does not say it does.
+it("does not claim the tab holds the gate while disconnected", () => {
+  render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={structuredClone(demoWorkspace)}
+      connected={false}
+      surface="web"
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />,
+  )
+  expect(screen.getByRole("alert").textContent).toContain("Cannot answer this gate, the daemon is not answering.")
+  expect(screen.queryByText("This tab holds the gate")).toBeNull()
+})
+
 it("uses the signed web gate wording and names the holder", () => {
   renderThread("web")
   const card = screen.getByRole("alert")
