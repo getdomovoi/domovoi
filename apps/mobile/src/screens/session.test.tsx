@@ -396,6 +396,16 @@ describe("SessionScreen policy and queue states", () => {
       expect(screen.getByText("Sent. It will reach the agent when this turn ends.")).toBeOnTheScreen()
     })
 
+    it("says a held remedy is held", async () => {
+      const { props } = await draw({ onTellAgent: jest.fn<(text: string) => Promise<"next-turn" | "direct" | "held" | undefined>>(async () => "held") })
+      await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, policyRefusal: refusal, approvalId: undefined, activeTurn: true, sending: { can: true, hint: undefined } }} /></SafeAreaProvider>)
+
+      await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))
+
+      expect(screen.getByText("Held. It will not reach the agent on its own.")).toBeOnTheScreen()
+      expect(screen.queryByText(/^Sent/)).toBeNull()
+    })
+
     it("says nothing was sent when the send fails", async () => {
       const { props } = await draw({ onTellAgent: jest.fn<(text: string) => Promise<"next-turn" | "direct" | undefined>>(async () => undefined) })
       await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, policyRefusal: refusal, approvalId: undefined, activeTurn: true, sending: { can: true, hint: undefined } }} /></SafeAreaProvider>)

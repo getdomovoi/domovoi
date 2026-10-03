@@ -247,6 +247,52 @@ describe("App", () => {
     expect(sent[0]?.params).toMatchObject({ sessionId: audit.id, prompt: "Run it against acme_dev instead.", client: "phone" })
   })
 
+  // The turn can end between the phone's snapshot and the send. The daemon
+  // then holds the queued remedy with its reason (no boundary can release
+  // it), so the refusal must not promise it reaches the agent at turn end.
+  it("says a remedy the daemon held is held, not on its way", async () => {
+    const snapshot = workspace()
+    const session = snapshot.sessions.find((candidate) => candidate.id === audit.id)!
+    session.workspacePath = "/worktrees/repo-audit"
+    session.providerThreadId = "provider-thread-audit"
+    session.activeTurnId = "provider-turn-audit"
+    snapshot.thread.push({
+      id: "refusal-audit",
+      sessionId: audit.id,
+      kind: "policy-refusal",
+      operation: "Apply a production database migration",
+      command: "prisma migrate deploy --url $PROD_DATABASE_URL",
+      rule: "no writes to a production database",
+      setBy: "dana@acme.dev",
+      scope: "every machine on this account",
+      remedy: "Run it against acme_dev instead.",
+      createdAt: "2026-08-25T23:00:00.000Z",
+    })
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))
+    expect(socket.requests("session.send")[0]?.params).toMatchObject({ delivery: "next-turn-replace" })
+
+    const reason = "No provider turn is active, so no successful boundary can release this send."
+    const reply = structuredClone(snapshot)
+    reply.sessions.find((candidate) => candidate.id === audit.id)!.activeTurnId = undefined
+    reply.queuedSends = [{
+      id: "queue-audit",
+      sessionId: audit.id,
+      state: "held",
+      reason,
+      createdAt: "2026-08-25T23:01:00.000Z",
+      origin: { client: "phone", connectionId: "3f1c2b8e-1d2a-4c5b-9e6f-7a8b9c0d1e2f" },
+      skillIds: [],
+      attachments: [],
+    }]
+    await act(async () => { socket.answer("session.send", reply) })
+    await settle()
+
+    expect(screen.getByText("Held. It will not reach the agent on its own.")).toBeOnTheScreen()
+    expect(screen.queryByText("Sent. It will reach the agent when this turn ends.")).toBeNull()
+  })
+
   // A send's failure belongs to the session it was for. One that lands after
   // the person has moved to another session must not show there.
   it("keeps a late send failure on the session it was for", async () => {

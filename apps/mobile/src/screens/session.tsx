@@ -156,9 +156,10 @@ const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWa
 // where the remedy went after the tap.
 const replaceable: ReadonlySet<QueuedSessionSend["state"]> = new Set(["waiting", "held", "unconfirmed"])
 
-// How a remedy went: as the next turn's message (next-turn-replace), or
-// straight to the session.
-export type TellDelivery = "next-turn" | "direct"
+// How a remedy went: as the next turn's message (next-turn-replace), straight
+// to the session, or queued and then held by the daemon because the turn had
+// already ended, in which case no boundary will release it on its own.
+export type TellDelivery = "next-turn" | "direct" | "held"
 
 function PolicyRefusal({ refusal, onTellAgent, sending, problem, activeTurn, queuedSend, canCancel, onCancelQueuedSend }: {
   refusal: Extract<ThreadEntry, { kind: "policy-refusal" }>
@@ -194,7 +195,10 @@ function PolicyRefusal({ refusal, onTellAgent, sending, problem, activeTurn, que
           />
           {sent ? (
             <Text accessibilityRole="alert" variant="note" className="px-1">
-              {sent === "next-turn" ? "Sent. It will reach the agent when this turn ends." : "Sent to the agent."}
+              {/* Held: the queued card below carries the daemon's reason. */}
+              {sent === "held"
+                ? "Held. It will not reach the agent on its own."
+                : sent === "next-turn" ? "Sent. It will reach the agent when this turn ends." : "Sent to the agent."}
             </Text>
           ) : null}
           {problem ? <Text accessibilityRole="alert" variant="note" className="px-1 text-destructive">{problem}</Text> : null}

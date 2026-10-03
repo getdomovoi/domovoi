@@ -667,13 +667,21 @@ export function App() {
     try {
       const session = snapshot?.sessions.find((candidate) => candidate.id === sessionId)
       const delivery = session ? sendDelivery(session) : {}
-      await mutate("session.send", {
+      // The daemon answers with the workspace it now holds.
+      const reply = workspaceSnapshotSchema.safeParse(await mutate("session.send", {
         sessionId,
         prompt: text,
         client,
         ...delivery,
-      })
-      return delivery.delivery === "next-turn-replace" ? "next-turn" : "direct"
+      }))
+      if (delivery.delivery !== "next-turn-replace") return "direct"
+      // The turn can end between the phone's snapshot and the send. The
+      // daemon then holds the queued message, because no boundary can release
+      // it (server.ts, session.send), and it will not reach the agent.
+      const queued = reply.success
+        ? reply.data.queuedSends?.find((candidate) => candidate.sessionId === sessionId)
+        : undefined
+      return queued?.state === "held" ? "held" : "next-turn"
     } catch (cause) {
       setSendProblem(cause instanceof Error ? cause.message : "The message was not sent", sessionId)
       return undefined
