@@ -56,6 +56,9 @@ export type TailnetReachDependencies = {
   // Why the daemon this app runs would not use the switch's settings (a
   // hand-set DOMOVOI_HOST beyond loopback), or undefined.
   conflict?(): string | undefined
+  // Why the switch cannot clear the tailnet listener of the daemon this app
+  // runs (DOMOVOI_TAILNET_* set by hand in its environment), or undefined.
+  handSet?(): string | undefined
   // Renewal's timers and clock. Defaults: setTimeout, unref'd, and Date.now.
   timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void }
   now?(): number
@@ -297,13 +300,19 @@ export class TailnetReach {
 
   async #onReport(record: TailnetReachRecord): Promise<TailnetReachReport> {
     const expiresAt = await this.#expiry(record.certPath)
-    const ignored = this.deps.conflict?.()
     return {
       state: "on", name: record.name, address: record.address, stored: this.#stored(record.name), httpsCertificates: true,
       ...(expiresAt ? { certificateExpiresAt: expiresAt } : {}),
       ...(this.#renewalFailure ? { renewalFailed: { ...this.#renewalFailure } } : {}),
-      ...(ignored ? { ignored } : {}),
+      ...this.#notes(),
     }
+  }
+
+  // What the switch alone does not say about the daemon inside this app.
+  #notes(): { ignored?: string; handSet?: string } {
+    const ignored = this.deps.conflict?.()
+    const handSet = this.deps.handSet?.()
+    return { ...(ignored ? { ignored } : {}), ...(handSet ? { handSet } : {}) }
   }
 
   async status(): Promise<TailnetReachReport> {
@@ -312,10 +321,9 @@ export class TailnetReach {
     if (record) return this.#onReport(record)
     const tailnet = readTailnet(await this.deps.tailscale(["status", "--json"], statusTimeoutMs))
     if ("none" in tailnet) return { state: "none", detail: tailnet.none }
-    const ignored = this.deps.conflict?.()
     return {
       state: "off", name: tailnet.name, address: tailnet.address, stored: this.#stored(tailnet.name), httpsCertificates: tailnet.httpsCertificates,
-      ...(ignored ? { ignored } : {}),
+      ...this.#notes(),
     }
   }
 

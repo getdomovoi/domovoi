@@ -45,6 +45,7 @@ function harness(options: {
   restartThrows?: Error
   // tailscale cert exits 0 and writes nothing.
   certWritesNothing?: boolean
+  handSet?: string
 } = {}) {
   const calls: string[] = []
   const files = new Map<string, string>(Object.entries(options.files ?? {}))
@@ -59,6 +60,7 @@ function harness(options: {
     },
     now: () => Date.parse("2026-10-02T12:00:00.000Z"),
     ...(options.conflict ? { conflict: () => options.conflict } : {}),
+    ...(options.handSet ? { handSet: () => options.handSet } : {}),
     recover: vi.fn(async () => { calls.push("recover") }),
     tailscale: vi.fn(async (args: readonly string[]) => {
       calls.push(`tailscale ${args.join(" ")}`)
@@ -450,6 +452,12 @@ describe("TailnetReach beside a hand-set DOMOVOI_HOST", () => {
   it("reports the switch off with the same reason", async () => {
     const { reach } = harness({ conflict })
     await expect(reach.status()).resolves.toMatchObject({ state: "off", ignored: conflict })
+  })
+
+  it("carries a hand-set listener's line with the switch off or on", async () => {
+    const handSet = "The tailnet listener comes from DOMOVOI_TAILNET_ADDRESS set by hand in this app's environment, and the switch cannot clear it."
+    await expect(harness({ handSet }).reach.status()).resolves.toMatchObject({ state: "off", handSet })
+    await expect(harness({ handSet, record: ours, files: { [certPath]: certificate, [keyPath]: "key" } }).reach.status()).resolves.toMatchObject({ state: "on", handSet })
   })
 
   it("does not turn on, and asks Tailscale for nothing", async () => {

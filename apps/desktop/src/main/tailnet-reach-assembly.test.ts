@@ -231,6 +231,15 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     expect(update).toHaveBeenCalledOnce()
   })
 
+  // Round 3 re-review (P3-2): a tailnet listener set by hand in this app's
+  // environment is the in-app daemon's whatever the switch says.
+  it("says when the in-app daemon's tailnet listener is set by hand", async () => {
+    const handSet = "The tailnet listener comes from DOMOVOI_TAILNET_ADDRESS set by hand in this app's environment, and the switch cannot clear it."
+    await expect(assemble(true, { DOMOVOI_TAILNET_ADDRESS: "100.101.102.103" }).reach.status()).resolves.toMatchObject({ state: "off", handSet })
+    await expect(assemble(false, { DOMOVOI_TAILNET_ADDRESS: "100.101.102.103" }).reach.status()).resolves.not.toHaveProperty("handSet")
+    await expect(assemble(true).reach.status()).resolves.not.toHaveProperty("handSet")
+  })
+
   it("applies the change through the service update when the app runs on the login service", async () => {
     const { reach, update, stopOwned } = assemble(false)
     await expect(reach.turnOn()).resolves.toMatchObject({ ok: true })

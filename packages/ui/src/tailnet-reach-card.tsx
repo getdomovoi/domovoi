@@ -277,8 +277,13 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
 
       {stillAnswering && !running ? (
         <div className="flex flex-wrap items-center gap-2.5 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">
-          <span className="min-w-0 flex-1">Turning it off again clears the setting from the daemon and restarts it on 127.0.0.1 only.</span>
-          <Button type="button" variant="outline" size="sm" onClick={() => void controller.turnOff()}>Turn it off again</Button>
+          {/* Round 3 re-review (P3-2): offered only when turning off clears it. */}
+          {named?.handSet ? <span className="min-w-0 flex-1">{named.handSet}</span> : (
+            <>
+              <span className="min-w-0 flex-1">Turning it off again clears the setting from the daemon and restarts it on 127.0.0.1 only.</span>
+              <Button type="button" variant="outline" size="sm" onClick={() => void controller.turnOff()}>Turn it off again</Button>
+            </>
+          )}
         </div>
       ) : null}
 

@@ -210,6 +210,19 @@ it("says the daemon still answers on the tailnet while the switch is off, and tu
   expect(view.getByText("Turning off")).toBeTruthy()
 })
 
+// Round 3 re-review (P3-2): when the listener comes from DOMOVOI_TAILNET_*
+// set by hand in this app's environment, turning off does not clear it, so
+// the card says where it comes from instead of offering that.
+it("says a hand-set listener is not the switch's to clear", async () => {
+  const handSet = "The tailnet listener comes from DOMOVOI_TAILNET_ADDRESS set by hand in this app's environment, and the switch cannot clear it."
+  await card({ status: { ...off, handSet } }, { listenerWhileOff: listening })
+  const view = within(region())
+  expect(view.getByText("The switch is off, but the daemon still answers on the tailnet.")).toBeTruthy()
+  expect(view.getByText(handSet)).toBeTruthy()
+  expect(view.queryByText("Turning it off again clears the setting from the daemon and restarts it on 127.0.0.1 only.")).toBeNull()
+  expect(view.queryByRole("button", { name: "Turn it off again" })).toBeNull()
+})
+
 // Review of 049b1383 (P2-3): the switch on is not the daemon listening. A
 // hand-set DOMOVOI_HOST, a service installed without the setting or a daemon
 // this window did not reach all leave the record on and the listener off.

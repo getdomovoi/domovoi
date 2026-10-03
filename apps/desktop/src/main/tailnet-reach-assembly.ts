@@ -146,6 +146,10 @@ export function createTailnetReach(input: {
     // Only the daemon inside this app reads this app's environment; a login
     // service runs the settings it saved.
     conflict: () => input.desktopDaemon.current()?.kind === "attached" ? undefined : tailnetHostConflict(environment),
+    // Round 3 re-review (P3-2): with the switch off the in-app daemon starts
+    // with these as set, so turning off cannot clear them.
+    handSet: () => input.desktopDaemon.current()?.kind === "attached" || environment.DOMOVOI_TAILNET_ADDRESS === undefined ? undefined
+      : "The tailnet listener comes from DOMOVOI_TAILNET_ADDRESS set by hand in this app's environment, and the switch cannot clear it.",
     preflight: async () => {
       const daemon = await reached()
       if ("refusal" in daemon) return daemon.refusal

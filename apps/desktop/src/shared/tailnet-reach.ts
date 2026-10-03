@@ -10,7 +10,9 @@
 // certificate and key are kept, shortened for display. renewalFailed: the
 // last renewal check failed, when and why; the stored certificate is still
 // the one in use. ignored: why the daemon inside this app does not use the
-// switch's settings (a hand-set DOMOVOI_HOST beyond loopback).
+// switch's settings (a hand-set DOMOVOI_HOST beyond loopback). handSet: the
+// daemon inside this app takes a tailnet listener from DOMOVOI_TAILNET_* set
+// by hand, which turning the switch off does not clear.
 export type TailnetReachReport =
   | { state: "none"; detail: string }
   | {
@@ -22,6 +24,7 @@ export type TailnetReachReport =
       certificateExpiresAt?: string
       renewalFailed?: { at: string; message: string }
       ignored?: string
+      handSet?: string
     }
 
 // The step a change stopped at, in the order the card lists them.
