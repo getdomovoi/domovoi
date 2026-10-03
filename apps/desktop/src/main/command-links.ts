@@ -2,6 +2,8 @@ import { constants, type Stats } from "node:fs"
 import { access, lstat, mkdir, readlink, symlink, unlink } from "node:fs/promises"
 import { delimiter, dirname, join, resolve } from "node:path"
 
+import { readPrivateFile, writePrivateFile } from "@getdomovoi/credential-store"
+
 // Q336 A (2026-10-02): one reversible desktop action links Domovoi's own
 // domovoid and domovoi into ~/.local/bin, so the commands the app prints run
 // as printed. Each link names a launcher the app ships in its runtime
@@ -10,9 +12,10 @@ import { delimiter, dirname, join, resolve } from "node:path"
 //
 // What it may touch: the directories ~/.local and ~/.local/bin when missing
 // (only when linking), and the entries ~/.local/bin/domovoid and
-// ~/.local/bin/domovoi. It never reads, writes or removes through a ~/.local
-// or ~/.local/bin that is a link to another directory, never replaces anything
-// but a dangling link to a Domovoi launcher, and never removes anything else.
+// ~/.local/bin/domovoi, and its record of the links it made, in the app's
+// userData. It never reads, writes or removes through a ~/.local or
+// ~/.local/bin that is a link to another directory, never removes or replaces
+// a link it did not record making, and never removes anything else.
 
 export type CommandName = "domovoid" | "domovoi"
 export type CommandLinkState = "linked" | "absent" | "stale" | "other"
@@ -41,6 +44,8 @@ export type CommandLinkEnvironment = {
   path: string | undefined
   // APPIMAGE as the AppImage runtime sets it, when the app runs as one.
   appImage?: string | undefined
+  // The record of the links this app made, a private file in its userData.
+  recordPath: string
 }
 
 // domovoid first: the daemon's launcher decides whether linking is offered.
@@ -59,14 +64,47 @@ async function entry(path: string) {
 // Device and inode of an entry as lstat read it, never through a link.
 const identityOf = (found: Stats) => `${found.dev}:${found.ino}`
 
+// PR #712 security review round 1 (P3): a target shaped like a launcher is
+// no proof this app made a link; a person's own link into a checkout has one
+// too. The app records each link it makes, by path, target and device and
+// inode, in a private file in its userData, and a link is its own, linked or
+// stale, only while all four still match. Anything else is "other": never
+// replaced or removed. A record that cannot be read owns nothing.
+type LinkRecord = { name: CommandName; path: string; target: string; identity: string }
+const recordLimit = 16 * 1024
+
+function isLinkRecord(value: unknown): value is LinkRecord {
+  if (typeof value !== "object" || value === null) return false
+  const { name, path, target, identity } = value as Record<string, unknown>
+  return names.includes(name as CommandName) && typeof path === "string" && typeof target === "string" && typeof identity === "string"
+}
+
+async function readRecords(recordPath: string): Promise<LinkRecord[]> {
+  try {
+    const text = await readPrivateFile(recordPath, { maximumBytes: recordLimit })
+    if (text === undefined) return []
+    const parsed: unknown = JSON.parse(text)
+    if (typeof parsed !== "object" || parsed === null) return []
+    const { version, links } = parsed as Record<string, unknown>
+    return version === 1 && Array.isArray(links) && links.every(isLinkRecord) ? links : []
+  } catch {
+    return []
+  }
+}
+
+async function writeRecords(recordPath: string, links: readonly LinkRecord[]): Promise<void> {
+  await writePrivateFile(recordPath, `${JSON.stringify({ version: 1, links })}\n`, { maximumBytes: recordLimit })
+}
+
 // The state of one command and, for a link, the target and identity it was
 // read with.
-async function stateOf(name: CommandName, path: string, launcher: string): Promise<{ state: CommandLinkState; target?: string; identity?: string }> {
+async function stateOf(name: CommandName, path: string, launcher: string, records: readonly LinkRecord[]): Promise<{ state: CommandLinkState; target?: string; identity?: string }> {
   const found = await entry(path)
   if (!found) return { state: "absent" }
   if (!found.isSymbolicLink()) return { state: "other" }
   const identity = identityOf(found)
   const target = await readlink(path)
+  if (!records.some((record) => record.name === name && record.path === path && record.target === target && record.identity === identity)) return { state: "other" }
   if (target === launcher) return { state: "linked", target, identity }
   // Review P3-1: stale only when the launcher it names is gone (the app
   // moved or was deleted). A link to another Domovoi install that still
@@ -213,10 +251,11 @@ async function inspect(environment: CommandLinkEnvironment, directories: Directo
   if (directories.kind === "refused") return unavailable(directories.reason)
   const directory = join(environment.home, ".local", "bin")
   const onPath = (environment.path ?? "").split(delimiter).some((part) => part.replace(/\/+$/u, "") === directory)
+  const records = directories.kind === "missing" ? [] : await readRecords(environment.recordPath)
   const commands = await Promise.all(shipped.map(async ({ name, launcher }) => ({
     name,
     launcher,
-    ...(directories.kind === "missing" ? { state: "absent" as const } : await stateOf(name, join(directory, name), launcher)),
+    ...(directories.kind === "missing" ? { state: "absent" as const } : await stateOf(name, join(directory, name), launcher, records)),
   })))
   return { available: true, onPath, commands }
 }
@@ -253,6 +292,7 @@ export async function commandLinks(action: unknown, environment: CommandLinkEnvi
   }
   const directory = join(environment.home, ".local", "bin")
   let refused: string | undefined
+  let records = await readRecords(environment.recordPath)
   // Ruled Q411 A (2026-10-03), as round 8 of #577 did for the runtime
   // copy: each check below is made right before the unlink or symlink it
   // guards, and the instant between them is not covered. Node has no unlink
@@ -279,6 +319,8 @@ export async function commandLinks(action: unknown, environment: CommandLinkEnvi
         continue
       }
       await unlink(path)
+      records = records.filter((record) => record.name !== command.name)
+      await writeRecords(environment.recordPath, records)
       if (action === "unlink") continue
     }
     // Review P3-2: the directories are read again right before the write.
@@ -294,6 +336,11 @@ export async function commandLinks(action: unknown, environment: CommandLinkEnvi
       continue
     }
     await symlink(command.launcher, path)
+    // Recorded as made: this path, the target written, and the new link's
+    // device and inode, read back without following it.
+    const made = await lstat(path)
+    records = [...records.filter((record) => record.name !== command.name), { name: command.name, path, target: command.launcher, identity: identityOf(made) }]
+    await writeRecords(environment.recordPath, records)
   }
   return { report: await report(environment, await directoryState(environment.home)), ...(refused ? { refused } : {}) }
 }

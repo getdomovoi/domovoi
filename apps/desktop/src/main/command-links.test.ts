@@ -47,7 +47,7 @@ let resources: string
 let launcher: string
 
 function environment(overrides: Partial<CommandLinkEnvironment> = {}): CommandLinkEnvironment {
-  return { home, resourcesPath: resources, platform: "darwin", path: "/usr/bin:/bin", ...overrides }
+  return { home, resourcesPath: resources, platform: "darwin", path: "/usr/bin:/bin", recordPath: join(root, "userData", "command-links.json"), ...overrides }
 }
 
 beforeEach(async () => {
@@ -175,11 +175,44 @@ describe("command links", () => {
   })
 
   it("replaces its own link to a launcher the app no longer ships from", async () => {
+    // Linked by this app, which then moved.
+    await commandLinks("link", environment())
+    const moved = join(root, "New Place", "Domovoi.app", "Contents", "Resources")
+    await mkdir(dirname(moved), { recursive: true })
+    await rename(resources, moved)
+    const now = environment({ resourcesPath: moved })
+    expect((await commandLinks("status", now)).report).toMatchObject({ commands: [{ state: "stale" }] })
+    expect((await commandLinks("link", now)).report).toMatchObject({ commands: [{ state: "linked" }] })
+    expect(await readlink(join(bin(), "domovoid"))).toBe(join(moved, "daemon-runtime", "bin", "domovoid"))
+  })
+
+  // PR #712 security review round 1 (P3): a target shaped like a launcher is
+  // no proof Domovoi made the link. Only a link it recorded making, at that
+  // path with that inode and target, is its own; anything else is left as
+  // it is, dangling or not.
+  it("leaves a person's own dangling link into a checkout alone", async () => {
     await mkdir(bin(), { recursive: true })
-    const moved = join(root, "Old Place", "Domovoi.app", "Contents", "Resources", "daemon-runtime", "bin", "domovoid")
-    await symlink(moved, join(bin(), "domovoid"))
-    expect((await commandLinks("status", environment())).report).toMatchObject({ commands: [{ state: "stale" }] })
-    expect((await commandLinks("link", environment())).report).toMatchObject({ commands: [{ state: "linked" }] })
+    const checkout = join(root, "src", "domovoi", "apps", "desktop", "release", "Domovoi.app", "Contents", "Resources", "daemon-runtime", "bin", "domovoid")
+    await symlink(checkout, join(bin(), "domovoid"))
+    expect((await commandLinks("status", environment())).report).toMatchObject({ commands: [{ state: "other" }] })
+    expect((await commandLinks("link", environment())).refused).toBe("~/.local/bin/domovoid is not a link Domovoi made, so it was left as it is.")
+    expect((await commandLinks("unlink", environment())).refused).toBe("~/.local/bin/domovoid is not a link Domovoi made, so it was left as it is.")
+    expect(await readlink(join(bin(), "domovoid"))).toBe(checkout)
+  })
+
+  it("treats a link to its launcher that it did not record making as not its own", async () => {
+    await mkdir(bin(), { recursive: true })
+    await symlink(launcher, join(bin(), "domovoid"))
+    expect((await commandLinks("status", environment())).report).toMatchObject({ commands: [{ state: "other" }] })
+    expect((await commandLinks("unlink", environment())).refused).toBe("~/.local/bin/domovoid is not a link Domovoi made, so it was left as it is.")
+    expect(await readlink(join(bin(), "domovoid"))).toBe(launcher)
+  })
+
+  it("forgets a link it made once that link is replaced, even by one with the same target", async () => {
+    await commandLinks("link", environment())
+    await rm(join(bin(), "domovoid"))
+    await symlink(launcher, join(bin(), "domovoid"))
+    expect((await commandLinks("status", environment())).report).toMatchObject({ commands: [{ state: "other" }] })
     expect(await readlink(join(bin(), "domovoid"))).toBe(launcher)
   })
 
