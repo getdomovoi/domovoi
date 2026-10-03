@@ -112,7 +112,9 @@ export type PasteOutcome =
 // most attachments or the text is past the attachment limit, it stays in the
 // message and the note says why, and says too when the message is then past
 // the prompt limit and cannot be sent.
-export function pasteOutcome(text: string, draft: readonly SessionAttachment[]): PasteOutcome {
+// keptLength is how much of the typed message the paste leaves in place: the
+// prompt limit counts the whole message, not the paste alone.
+export function pasteOutcome(text: string, draft: readonly SessionAttachment[], keptLength = 0): PasteOutcome {
   if (!pasteBecomesFile(text)) return { kind: "inline" }
   if (draft.length >= desktopAttachmentLimit) {
     return { kind: "inline", note: `Attach up to ${desktopAttachmentLimit} items per message. The pasted text stayed in the message.` }
@@ -120,7 +122,7 @@ export function pasteOutcome(text: string, draft: readonly SessionAttachment[]):
   try {
     return { kind: "file", attachment: pastedTextAttachment(text, draft) }
   } catch {
-    const unsendable = text.length > maximumSessionPromptCharacters
+    const unsendable = keptLength + text.length > maximumSessionPromptCharacters
       ? ` A message over ${maximumSessionPromptCharacters.toLocaleString("en-US")} characters cannot be sent.`
       : ""
     return { kind: "inline", note: `Pasted text exceeds the ${maximumTextAttachmentBytes / 1024} KB attachment limit, so it stayed in the message.${unsendable}` }

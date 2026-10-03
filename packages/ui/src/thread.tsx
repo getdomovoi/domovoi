@@ -1246,7 +1246,12 @@ export function Thread({
             onPaste={(event) => {
               // The same draft as the composer, so the same conversion. The
               // file is drawn in the composer; the editor says where it went.
-              const outcome = pasteOutcome(event.clipboardData.getData("text/plain"), attachments)
+              const field = event.currentTarget
+              const outcome = pasteOutcome(
+                event.clipboardData.getData("text/plain"),
+                attachments,
+                field.value.length - (field.selectionEnd - field.selectionStart),
+              )
               if (outcome.kind === "inline") {
                 setEditorPasteNote(outcome.note ?? "")
                 return

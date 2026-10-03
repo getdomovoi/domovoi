@@ -1,5 +1,5 @@
 import { demoWorkspace } from "@getdomovoi/protocol"
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
@@ -106,6 +106,31 @@ it("leaves a paste past the attachment limit in the message and says why", async
   // The prompt is capped at 262,144 code units too, so a paste this long left
   // in the message cannot be sent either, and the note says so.
   expect(screen.getByRole("alert").textContent).toBe("Pasted text exceeds the 256 KB attachment limit, so it stayed in the message. A message over 262,144 characters cannot be sent.")
+})
+
+// The prompt cap counts the whole message, so the note weighs what is already
+// typed with the paste. Three-byte characters put the paste past the 256 KB
+// attachment limit while it stays under the cap on its own.
+it("says the message cannot be sent when the draft and the paste pass the cap together", async () => {
+  const user = userEvent.setup()
+  renderThread()
+  const paste = Array.from({ length: 41 }, () => "€".repeat(2_200)).join("\n")
+  expect(paste.length).toBeLessThan(262_144)
+  fireEvent.change(field(), { target: { value: "x".repeat(200_000) } })
+  await user.click(field())
+  await user.paste(paste)
+
+  expect(screen.getByRole("alert").textContent).toBe("Pasted text exceeds the 256 KB attachment limit, so it stayed in the message. A message over 262,144 characters cannot be sent.")
+})
+
+it("does not say a message under the cap cannot be sent", async () => {
+  const user = userEvent.setup()
+  renderThread()
+  const paste = Array.from({ length: 41 }, () => "€".repeat(2_200)).join("\n")
+  await user.click(field())
+  await user.paste(paste)
+
+  expect(screen.getByRole("alert").textContent).toBe("Pasted text exceeds the 256 KB attachment limit, so it stayed in the message.")
 })
 
 // A message needs words: the daemon refuses an empty prompt, so a file with

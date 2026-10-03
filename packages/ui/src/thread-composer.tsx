@@ -176,7 +176,12 @@ export function ThreadComposer({
   // the text is past the attachment limit, it stays in the field as before
   // and the composer says why.
   const pasteAsFile = (event: ClipboardEvent<HTMLTextAreaElement>) => {
-    const outcome = pasteOutcome(event.clipboardData.getData("text/plain"), attachments)
+    const field = event.currentTarget
+    const outcome = pasteOutcome(
+      event.clipboardData.getData("text/plain"),
+      attachments,
+      field.value.length - (field.selectionEnd - field.selectionStart),
+    )
     if (outcome.kind === "inline") {
       if (outcome.note) setAttachmentError(outcome.note)
       return
