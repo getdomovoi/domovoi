@@ -164,6 +164,25 @@ describe("threadEntries receipt", () => {
     })
   })
 
+  // Past an hour, seconds stop helping and minutes count up from the hour,
+  // so 65 minutes reads 1h 5m rather than 65m 0s.
+  it("says hours for a command that ran past one", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "pnpm test",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "phone",
+      ranForMs: 65 * 60_000 + 20_000,
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }]
+
+    expect(threadEntries(snapshot, "session-billing").entries[0]).toMatchObject({ ranFor: "1h 5m" })
+  })
+
   // Only an allow takes a checkpoint before the command, and only when the
   // daemon could take one. A deny records the session's reference instead.
   it("does not claim a checkpoint was taken for a deny or when none could be", () => {

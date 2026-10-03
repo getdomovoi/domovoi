@@ -88,12 +88,18 @@ function shortReference(reference: string): string {
   return /^[0-9a-f]{40}$/.test(reference) ? reference.slice(0, 7) : reference
 }
 
-// Seconds, and minutes past one, rounded to the second the daemon measured in.
+// Seconds, then minutes and seconds, then hours and minutes, rounded to the
+// second the daemon measured in. Past an hour the seconds stop helping.
 function elapsed(ms: number): string {
   const seconds = Math.round(ms / 1_000)
   if (seconds < 60) return `${seconds}s`
-  const rest = seconds % 60
-  return rest === 0 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 60)}m ${rest}s`
+  if (seconds < 3_600) {
+    const rest = seconds % 60
+    return rest === 0 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 60)}m ${rest}s`
+  }
+  const minutes = Math.floor((seconds % 3_600) / 60)
+  const hours = Math.floor(seconds / 3_600)
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
 }
 
 function credentialReference(clientId: string): string {
