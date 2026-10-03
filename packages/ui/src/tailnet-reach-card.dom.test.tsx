@@ -387,4 +387,96 @@ describe("reading again while Settings stays open", () => {
     turning.resolve({ ok: true, report: off })
     await settle()
   })
+
+  // Codex review round 5 (P3): each status read off runs tailscale status, so
+  // reads that come in while one waits do not start more. One read at a time;
+  // what came in meanwhile is one more read once it ends, answered or not.
+  function waiting() {
+    const reads: { resolve(value: unknown): void; reject(cause: Error): void }[] = []
+    const ask = vi.fn((action: "status" | "on" | "off"): Promise<unknown> => {
+      if (action !== "status") return Promise.resolve({ ok: true, report: off })
+      return new Promise((resolve, reject) => { reads.push({ resolve, reject }) })
+    })
+    render(<Harness source={{ act: ask, listener: async () => ({ state: "off" as const }), inApp: true }} />)
+    return { reads, ask }
+  }
+  const all = () => {
+    window.dispatchEvent(new Event("focus"))
+    document.dispatchEvent(new Event("visibilitychange"))
+    vi.advanceTimersByTime(60_000)
+    window.dispatchEvent(new Event("focus"))
+  }
+  const hidden = (value: boolean) => {
+    if (value) Object.defineProperty(document, "visibilityState", { configurable: true, get: () => "hidden" })
+    else Reflect.deleteProperty(document, "visibilityState")
+  }
+  afterEach(() => { hidden(false) })
+
+  it("one at a time, and one more for what came in meanwhile", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+    const { reads } = waiting()
+    await settle()
+    expect(reads).toHaveLength(1)
+    await act(async () => { all() })
+    await settle()
+    expect(reads).toHaveLength(1)
+    reads[0]!.resolve(on)
+    await settle()
+    expect(reads).toHaveLength(2)
+    reads[1]!.resolve(on)
+    await settle()
+    expect(reads).toHaveLength(2)
+  })
+
+  it("one more after a read that failed, and the next once that ends", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+    const { reads } = waiting()
+    await settle()
+    await act(async () => { all() })
+    reads[0]!.reject(new Error("The desktop did not answer."))
+    await settle()
+    expect(reads).toHaveLength(2)
+    reads[1]!.reject(new Error("The desktop did not answer."))
+    await settle()
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    await settle()
+    expect(reads).toHaveLength(3)
+  })
+
+  it("none while the window is hidden, not even one that came in before", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+    const { reads } = waiting()
+    await settle()
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    hidden(true)
+    reads[0]!.resolve(on)
+    await settle()
+    await act(async () => { all() })
+    await settle()
+    expect(reads).toHaveLength(1)
+    hidden(false)
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")) })
+    await settle()
+    expect(reads).toHaveLength(2)
+  })
+
+  it("keeps what a change read over a read that started before it", async () => {
+    const { reads, ask } = waiting()
+    await settle()
+    reads[0]!.resolve(on)
+    await settle()
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    await settle()
+    expect(reads).toHaveLength(2)
+    await userEvent.setup().click(toggle())
+    await settle()
+    expect(ask).toHaveBeenCalledWith("off")
+    expect(reads).toHaveLength(3)
+    reads[2]!.resolve(off)
+    await settle()
+    reads[1]!.resolve(on)
+    await settle()
+    expect(within(region()).getByText("Off")).toBeTruthy()
+    expect(toggle().getAttribute("aria-checked")).toBe("false")
+  })
 })

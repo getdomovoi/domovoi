@@ -63,34 +63,60 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
   const [revealed, setRevealed] = useState(0)
   const reading = useRef(0)
 
-  const read = useCallback(async () => {
+  // listened settles once tailnet.status has answered or failed; the
+  // desktop's answer is in when read itself settles.
+  const read = useCallback(async (): Promise<{ listened: Promise<void> }> => {
     const current = sourceRef.current
-    if (!current) return
+    if (!current) return { listened: Promise.resolve() }
     const request = ++reading.current
     // Each answer is drawn as it arrives: a daemon slow to answer
     // tailnet.status does not hold back the desktop's switch.
     // A restarted daemon answers it once its client reconnects.
-    void current.listener?.().then((value) => { if (request === reading.current) setListener(value) }, () => { if (request === reading.current) setListener(undefined) })
+    const listened = current.listener?.().then((value) => { if (request === reading.current) setListener(value) }, () => { if (request === reading.current) setListener(undefined) }) ?? Promise.resolve()
     try {
       const answer = parseTailnetReachReport(await current.act("status"))
       if (request === reading.current) { setReport(answer); setReadError(undefined) }
     } catch (cause) {
       if (request === reading.current) setReadError(cause instanceof Error ? cause.message : "The desktop did not answer.")
     }
+    return { listened }
   }, [])
-
-  const present = source !== undefined
-  useEffect(() => { if (present) void read() }, [present, read])
 
   // Review of PR #713 (P2): the switch and the listener also change on their
   // own, with Settings open: a renewal fails, or the daemon refuses the
   // tailnet listener at the certificate's expiry. Both are read again when the
   // window is focused or shown again, and every minute while it is shown, but
   // not while a change runs, which reads them once it ends.
+  //
+  // Codex review round 5 (P3): off, each desktop read runs tailscale status.
+  // These reads, and the first, run one at a time until both answers are in or
+  // failed; what comes in meanwhile is one more read after it, if the window
+  // is still shown and no change runs by then.
   const changing = useRef(false)
+  const automatic = useRef({ running: false, again: false })
+  const readOnItsOwn = useCallback((first = false): void => {
+    if (!first && (document.visibilityState !== "visible" || changing.current)) return
+    const state = automatic.current
+    if (state.running) {
+      state.again = true
+      return
+    }
+    state.running = true
+    const done = () => {
+      state.running = false
+      if (!state.again) return
+      state.again = false
+      readOnItsOwn()
+    }
+    read().then(({ listened }) => listened).then(done, done)
+  }, [read])
+
+  const present = source !== undefined
+  useEffect(() => { if (present) readOnItsOwn(true) }, [present, readOnItsOwn])
+
   useEffect(() => {
     if (!present || typeof document === "undefined") return
-    const again = () => { if (document.visibilityState === "visible" && !changing.current) void read() }
+    const again = () => readOnItsOwn()
     window.addEventListener("focus", again)
     document.addEventListener("visibilitychange", again)
     const timer = setInterval(again, tailnetReachRereadMs)
@@ -99,7 +125,7 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
       document.removeEventListener("visibilitychange", again)
       clearInterval(timer)
     }
-  }, [present, read])
+  }, [present, readOnItsOwn])
 
   const change = useCallback(async (direction: Direction): Promise<TailnetReachOutcome | undefined> => {
     const current = sourceRef.current
