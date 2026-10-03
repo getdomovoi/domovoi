@@ -33,6 +33,16 @@ export class DaemonServiceRuntimeMissingError extends Error {
   }
 }
 
+// No staging place could be used (prepareDaemonRuntime). The message is the
+// app's; `domovoid service install` words it for the command
+// (bundled-runtime.ts).
+export class DaemonRuntimeStagingRefusedError extends Error {
+  constructor(readonly profileDirectory: string) {
+    super(`The profile directory ${profileDirectory} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
+    this.name = "DaemonRuntimeStagingRefusedError"
+  }
+}
+
 const runtimeDirectory = "daemon-runtime"
 
 export function daemonRuntimeLayout(resourcesPath: string, platform: string): DaemonServiceRuntime {
@@ -231,7 +241,9 @@ async function resolvedAhead(fs: RuntimeFileSystem, pathApi: typeof posix, path:
 // directory holding .git, as the repository finder reads it). The system
 // temporary directory is tried first,
 // then <app data>/runtime-staging; otherwise nothing is written. Copy approved
-// by fetzy on 2026-09-26.
+// by fetzy on 2026-09-26. `domovoid service install` passes
+// ${XDG_STATE_HOME:-~/.local/state}/domovoi as its data directory, for a
+// system temporary directory on a tmpfs.
 //
 // The runtime directory is pinned by its device, inode and real path when it
 // is checked, and must still be that directory right before the rename.
@@ -265,7 +277,8 @@ export type DaemonRuntimeStageInput = {
   // The only staging place to try; tests pass their own.
   stagingParent?: string
   // The app's own data directory, the staging place when the system
-  // temporary directory cannot be used.
+  // temporary directory cannot be used. It may be missing; publish makes it
+  // then, with any missing directories above it.
   dataDirectory?: string
 }
 
@@ -319,19 +332,39 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
     const real = await fs.realpath(path)
     return !inside(pathApi, profile, real) && !await insideRepositoryOrProfile(real)
   }
-  const refusal = () => new Error(`The profile directory ${input.profileDirectory} is on a different volume from this app's temporary and data directories, so the runtime could not be copied without writing inside a profile. Nothing was changed.`)
+  const refusal = () => new DaemonRuntimeStagingRefusedError(input.profileDirectory)
+  // The data directories this staging needs that are not there yet, outermost
+  // first: made one at a time, each checked again with usable, at publish.
+  // The app's data directory is always there; the one `domovoid service
+  // install` passes (bundled-runtime.ts) may not be. A missing one is usable
+  // when its nearest existing directory is and the whole path, resolved
+  // through that directory, is outside every profile and repository, so a
+  // refusal makes nothing.
+  const missing: string[] = []
+  const usableAhead = async (path: string) => {
+    if (!pathApi.isAbsolute(path)) return false
+    if (await fs.entry(path) !== "missing") return usable(path)
+    // Each name above a missing path is made as written, so it must be
+    // written plainly: no "..", ".", or doubled separator.
+    if (pathApi.resolve(path) !== path) return false
+    let at = path
+    while (await fs.entry(at) === "missing" && pathApi.dirname(at) !== at) {
+      missing.unshift(at)
+      at = pathApi.dirname(at)
+    }
+    if (!await usable(at)) return false
+    const real = pathApi.join(await fs.realpath(at), pathApi.relative(at, path))
+    return !inside(pathApi, profile, real) && !await insideRepositoryOrProfile(real)
+  }
   let parent: string | undefined
-  // A staging place under the app's data directory that is not there yet:
-  // made, and checked again, at publish.
-  let makeParent = false
   if (input.stagingParent !== undefined) {
     if (await usable(input.stagingParent)) parent = input.stagingParent
   } else if (await usable(tmpdir())) {
     parent = tmpdir()
-  } else if (input.dataDirectory !== undefined && await usable(input.dataDirectory)) {
+  } else if (input.dataDirectory !== undefined && await usableAhead(input.dataDirectory)) {
     const candidate = pathApi.join(input.dataDirectory, "runtime-staging")
-    makeParent = await fs.entry(candidate) === "missing"
-    if (makeParent || await usable(candidate)) parent = candidate
+    if (await fs.entry(candidate) === "missing") missing.push(candidate)
+    if (missing.includes(candidate) || await usable(candidate)) parent = candidate
   }
   if (parent === undefined) throw refusal()
   const stagingParent = parent
@@ -344,9 +377,9 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
   const publish = async () => {
     if (published) throw new Error("This staged runtime was already published.")
     published = true
-    if (makeParent) {
-      await fs.makeDirectory(stagingParent)
-      if (!await usable(stagingParent)) throw refusal()
+    for (const directory of missing) {
+      await fs.makeDirectory(directory)
+      if (!await usable(directory)) throw refusal()
     }
     await runtimeRoot(fs, pathApi, input.profileDirectory, true)
     pinned ??= await pin()

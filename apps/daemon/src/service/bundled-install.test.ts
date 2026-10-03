@@ -5,7 +5,7 @@ import { dirname, join } from "node:path"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { runServiceCommand, type ServiceCommandDependencies, type ServiceEffects } from "./install.js"
-import { daemonRuntimeLayout } from "./runtime-stage.js"
+import { daemonRuntimeLayout, nodeRuntimeFileSystem, type RuntimeFileSystem } from "./runtime-stage.js"
 import { systemdUnitProgram } from "./units.js"
 
 // Q408 A (2026-10-02): `domovoid service install` run from the runtime the
@@ -152,5 +152,85 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
     expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
     expect(dependencies.stderr).toHaveBeenCalledWith("Another service change is in progress.\n")
     expect(await readdir(home)).toEqual([])
+  })
+
+  // Where /tmp is a tmpfs (Fedora, Arch, Debian 13) and TMPDIR is unset, the
+  // system temporary directory is on another volume from the profile, so the
+  // copy could not be moved in by one rename. The command then stages under
+  // ${XDG_STATE_HOME:-~/.local/state}/domovoi/runtime-staging, as the app's
+  // Install stages under its data directory, with the same checks.
+  describe("when the system temporary directory is on another volume", () => {
+    const identity = nodeRuntimeFileSystem().identity
+    const offVolume = (...under: string[]): RuntimeFileSystem => nodeRuntimeFileSystem({
+      identity: async (path) => path === tmpdir() || under.some((at) => path === at || path.startsWith(`${at}/`)) ? "other-volume:1" : identity(path),
+    })
+    // The real staging places, not the scratch one the other tests pass.
+    function fromSystemPlaces(overrides: Partial<ServiceCommandDependencies>): ServiceCommandDependencies {
+      const dependencies = command(overrides)
+      delete dependencies.runtimeStagingParent
+      return dependencies
+    }
+    const refusal = (state: string) => `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${state} must be on the same volume as the profile directory ${join(home, ".domovoi")}, and outside every profile and repository, and neither is. Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. Nothing was changed.\n`
+
+    it("stages under ~/.local/state/domovoi, making only the directories it needs", async () => {
+      const dependencies = fromSystemPlaces({ runtimeFileSystem: offVolume() })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
+      expect(dependencies.stderr).not.toHaveBeenCalled()
+      const versions = join(home, ".domovoi", "runtime", "0.9.4")
+      const [copy] = await readdir(versions)
+      expect(await readFile(join(versions, copy!, "daemon", "dist", "index.js"), "utf8")).toBe("daemon")
+      expect(JSON.parse(written(dependencies, "service.json")!)).toMatchObject({ serviceRuntime: { entry: join(versions, copy!, "daemon", "dist", "index.js") } })
+      expect((await readdir(home)).sort()).toEqual([".domovoi", ".local"])
+      expect(await readdir(join(home, ".local"))).toEqual(["state"])
+      expect(await readdir(join(home, ".local", "state"))).toEqual(["domovoi"])
+      expect(await readdir(join(home, ".local", "state", "domovoi"))).toEqual(["runtime-staging"])
+      // The private staging directory stays, empty, by design.
+      const [holder, ...more] = await readdir(join(home, ".local", "state", "domovoi", "runtime-staging"))
+      expect(more).toEqual([])
+      expect(holder!.startsWith(".domovoi-runtime-0.9.4.staging-")).toBe(true)
+      expect(await readdir(join(home, ".local", "state", "domovoi", "runtime-staging", holder!))).toEqual([])
+    })
+
+    it("stages under an absolute XDG_STATE_HOME and ignores a relative one", async () => {
+      const state = join(root, "state")
+      await mkdir(state)
+      const absolute = fromSystemPlaces({ runtimeFileSystem: offVolume(), environment: { XDG_STATE_HOME: state } })
+      expect(await runServiceCommand(["service", "install"], absolute)).toBe(0)
+      expect(await readdir(join(state, "domovoi", "runtime-staging"))).toHaveLength(1)
+      expect(await readdir(home)).toEqual([".domovoi"])
+
+      const relative = fromSystemPlaces({ runtimeFileSystem: offVolume(), environment: { XDG_STATE_HOME: "relative-state" } })
+      expect(await runServiceCommand(["service", "install"], relative)).toBe(0)
+      expect(await readdir(join(home, ".local", "state", "domovoi", "runtime-staging"))).toHaveLength(1)
+      expect(await readdir(join(state, "domovoi", "runtime-staging"))).toHaveLength(1)
+    })
+
+    it("refuses with the command's words, writing nothing, when the state directory is on another volume too", async () => {
+      await mkdir(join(home, ".local", "state"), { recursive: true })
+      const dependencies = fromSystemPlaces({ runtimeFileSystem: offVolume(join(home, ".local")) })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(join(home, ".local", "state", "domovoi")))
+      expect(vi.mocked(dependencies.stderr).mock.calls.join("")).not.toContain("this app's")
+      expect(dependencies.write).not.toHaveBeenCalled()
+      expect(dependencies.claimServiceOperation).not.toHaveBeenCalled()
+      expect(await readdir(home)).toEqual([".local"])
+      expect(await readdir(join(home, ".local", "state"))).toEqual([])
+    })
+
+    // The same checks as the app's data directory: never inside a profile
+    // or a repository, even one that is not there yet.
+    it.each([
+      // A home kept as a repository, as some dotfiles setups do.
+      ["inside a repository", async () => { await mkdir(join(home, ".git")) }, () => ({}), () => join(home, ".local", "state", "domovoi"), [".git"]],
+      // ~/.domovoi is not there yet, so this is about the path alone.
+      ["inside a profile", async () => {}, () => ({ XDG_STATE_HOME: join(home, ".domovoi", "state") }), () => join(home, ".domovoi", "state", "domovoi"), []],
+    ] as const)("refuses a state directory %s, writing nothing", async (_label, arrange, environment, state, left) => {
+      await arrange()
+      const dependencies = fromSystemPlaces({ runtimeFileSystem: offVolume(), environment: environment() })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(state()))
+      expect(dependencies.write).not.toHaveBeenCalled()
+      expect(await readdir(home)).toEqual(left)
+    })
   })
 })

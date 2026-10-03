@@ -1450,6 +1450,7 @@ export async function runServiceCommand(
         environment: dependencies.environment ?? {},
         profileDirectory: configuration.profileDirectory ?? profileDirectory(configuration.homeDirectory, dependencies.platform),
         version: dependencies.version,
+        home: configuration.homeDirectory,
         ...(dependencies.runtimeFileSystem === undefined ? {} : { fileSystem: dependencies.runtimeFileSystem }),
         ...(dependencies.runtimeStagingParent === undefined ? {} : { stagingParent: dependencies.runtimeStagingParent }),
       })
