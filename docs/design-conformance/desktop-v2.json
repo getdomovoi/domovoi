@@ -392,11 +392,17 @@
         "Move a session here"
       ],
       "evidence": [
-        "Move a session here"
+        "Move a session here",
+        "LAST HEARD",
+        "See what stalled"
       ],
       "presence": [
         "Move a session here"
-      ]
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "a card per machine exists with Move a session here; it is not the drawn card. The design draws a dot, mono name and status pill, four fact rows (TRANSPORT, AGENTS, SESSIONS, LAST HEARD), one primary action (Open its N sessions, or See what stalled when unreachable) and a danger border when unreachable. fleet-view draws a sans name with a Badge, Use, Move, Terminal and Forget buttons, a platform, arch and version line, capability badges and a transports list, and dims an unreachable card with no border. LAST HEARD is buildable from heartbeat.lastSeenAt; other machines' agents and session counts need a protocol change (FleetMachine carries capabilities, not providers); the domovoi cloud transport is M2"
+      }
     },
     {
       "id": "fleet.agents",
@@ -406,10 +412,19 @@
         "Agents and providers",
         "Installed per machine. Tokens live in that machine's OS keychain."
       ],
-      "evidence": [
+      "presence": [
         "Agents and providers",
         "Tokens live in that machine&apos;s OS keychain"
-      ]
+      ],
+      "evidence": [
+        "Agents and providers",
+        "Tokens live in that machine&apos;s OS keychain",
+        "Authenticate there"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the heading and keychain note are drawn inside this machine's own card and list only this machine's providers; the design draws a panel below the cards with one row per machine and agent, a state, and an action only where one is needed (Authenticate there). Other machines' agents need a protocol change: FleetMachine carries capabilities, not providers"
+      }
     },
     {
       "id": "audit.header",
@@ -434,19 +449,36 @@
         "Every actor",
         "[\"client\", \"Clients\"]",
         "[\"daemon\", \"Daemon\"]",
-        "[\"provider\", \"Providers\"]"
+        "[\"provider\", \"Providers\"]",
+        "last 24 hours"
       ],
       "presence": [
-        "Audit entries"
-      ]
+        "Audit entries",
+        "Every actor"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the actor chips and the query field exist, with an Outcome row and an Action field the design does not draw; the per-actor counts (1,204, 412, ...) and the time window (last 24 hours) are not drawn, and both need a protocol change: auditQueryParamsSchema has no since or after, and the page carries no counts"
+      }
     },
     {
       "id": "audit.rows",
       "name": "Audit rows",
       "where": "audit surface: when, what, actor, detail, who, outcome",
+      "presence": [
+        "function AuditEntryRow("
+      ],
       "evidence": [
-        "AuditEntryRow"
-      ]
+        "function AuditEntryRow(",
+        {
+          "absent": "<pre className=\"max-h-40",
+          "in": "packages/ui/src/audit-log-view.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "rows exist (the earlier evidence was only the component name); they are not the drawn row. The design draws an outcome dot, a 62px time, the action with an actor pill, a detail line, then 190px who and 150px outcome columns. AuditEntryRow draws the action with an outcome Badge, a locale timestamp on the right, an actor line and the detail in a pre block. Every field the design names is in auditEntrySchema, so this is client-only"
+      }
     },
     {
       "id": "audit.export",
@@ -455,9 +487,17 @@
       "copy": [
         "Export this query"
       ],
-      "evidence": [
+      "presence": [
         "Export this query"
-      ]
+      ],
+      "evidence": [
+        "Export this query",
+        "rows match"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "export exists; the line under it says N rows loaded where the design says 1,204 rows match, because the query page carries no total (protocol). It also says writes a file on this machine in every client, while a web tab downloads to the browser's device; Q346 A (2026-10-02) makes that copy depend on the client kind (saves to this device in a browser)"
+      }
     },
     {
       "id": "audit.facts",
@@ -466,9 +506,17 @@
       "copy": [
         "WHAT THIS LOG IS, AND IS NOT"
       ],
-      "evidence": [
+      "presence": [
         "WHAT THIS LOG IS, AND IS NOT"
-      ]
+      ],
+      "evidence": [
+        "WHAT THIS LOG IS, AND IS NOT",
+        "Retention is by count: 10,000 activity and 1,000 pre-authentication entries."
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the facts block exists; two of its four lines differ. The design's retention line is true (10,000 activity and 1,000 pre-authentication entries are the daemon's fixed defaults in apps/daemon/src/audit-log.ts) while the code says Retention is bounded by the daemon's local audit policy; Q377 A (2026-10-02) takes the design's exact numbers and keeps redacted in the export line as a dated deviation. The dots are ShieldCheck icons, all success-coloured"
+      }
     },
     {
       "id": "settings.header",
@@ -513,8 +561,8 @@
         "It owns every session here."
       ],
       "partial": {
-        "since": "2026-09-23",
-        "reason": "the section draws the real ownership state (inside this app, installed service, another window) and the per-platform WHAT TURNING IT ON WRITES facts; Install and Remove are locked with the by-hand command because the app ships no daemon runtime a service could point at (ND9, ruled: bundle a runtime, daemon lane exports the installer first); the supervisor gave-up state, pid and uptime need a status the window cannot read"
+        "since": "2026-10-02",
+        "reason": "the section draws the real ownership state and the per-platform facts, and Install and Remove now run through windowBridge.daemonService (the earlier ND9 lock is gone). Left: the supervisor gave-up banner with Start it again, pid and uptime, and the Check again and Start it status actions, which need the supervisor state over the desktop bridge (DaemonServiceStatusReport carries installed, running and detail only, while the supervisor record has exhausted with restart-limit; it exhausts at 4 crashes, so the copy must take the real count, not the drawn 5); the drawn card arrangement (header row, service sub-card, WHAT IT WROTE rows, footer); and the TailnetReach row, blocked in tailnet-reach-v2.json"
       }
     },
     {
@@ -530,12 +578,16 @@
         "After this, quitting Domovoi stops the daemon and every session on it.",
         "Remove the service"
       ],
+      "presence": [
+        "removeLabel: \"Unload and delete the LaunchAgent\"",
+        "run(\"remove\")"
+      ],
       "evidence": [
         "Remove the login service?"
       ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J24; no client removes the login service"
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the desktop removes the login service (Settings runs windowBridge.daemonService.remove), but at once from a button labelled with the platform's removal text (Unload and delete the LaunchAgent on macOS), with no confirmation. The drawn dialog (Remove the login service?, REMOVED and KEPT, the consequence line, Remove the service and Keep it) is not built; Q349 A (2026-10-02) labels the button Remove and opens that dialog"
       }
     },
     {
@@ -584,11 +636,22 @@
         "Devices paired with mac-mini-m4",
         "Each daemon keeps its own list. Pair a new one from Settings."
       ],
-      "evidence": [
+      "presence": [
         "Devices paired with",
         "Copy once",
         "Each daemon keeps its own list"
-      ]
+      ],
+      "evidence": [
+        "Devices paired with",
+        "Copy once",
+        "Each daemon keeps its own list",
+        "Sign this device out",
+        "Shown once. Domovoi keeps a digest, not the secret."
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "rows rename, rotate and revoke; they are not the drawn rows. Every row says Revoke where the design says Unpair, and Sign this device out on a web tab's own row (Q378 A, 2026-10-02: Unpair for client rows, Sign this device out for a tab's own row through device.revokeCurrent, Revoke kept for machine bindings); the per-row notes are tooltips only, there is no self-row highlight, the layout is a five-column table where the design has card rows, and the rotated secret panel is accent, not info-tinted, without the Shown once line"
+      }
     },
     {
       "id": "settings.providers",
@@ -599,11 +662,20 @@
         "Stored in each machine's OS keychain. Never in a Domovoi account."
       ],
       "evidence": [
-        "Providers and tokens"
+        "Providers and tokens",
+        "Authenticate there",
+        {
+          "absent": "data-provider-account-action=\"\"\n                    aria-describedby={`provider-account-${provider.id}`}\n                    disabled",
+          "in": "packages/ui/src/provider-settings.tsx"
+        }
       ],
       "presence": [
         "Providers and tokens"
-      ]
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the section lists this machine's providers under SUBSCRIPTION CLIS and DIRECT API KEYS; the design draws one row per provider and machine across the fleet with a dot, state and an action only when one is needed (Authenticate there). Every row carries a permanently disabled Manage, Re-authenticate or Install button; the header adds a sentence; with no providers the card is empty with no empty state. Other machines' providers need a protocol change (FleetMachine carries capabilities, not providers); harness marks stay text-only while the marks are not vendored (the reason Q388 A gives for Skills and Tools)"
+      }
     },
     {
       "id": "api-keys",
@@ -646,8 +718,8 @@
         "<NotificationSettings"
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "a notification settings panel exists with different rows"
+        "since": "2026-10-02",
+        "reason": "a notification settings panel exists with three switchable rows; the design draws five rows under This desktop only, with the gate row locked on. Approvals can be switched off today; Q363 A (2026-10-02) locks A gate is waiting on you on, desktop only. A run failed or a machine went unreachable and Changes are waiting for review can come from the snapshot and fleet health; Every tool call needs the tool events the thread already receives"
       }
     },
     {
