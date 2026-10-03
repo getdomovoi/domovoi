@@ -239,8 +239,19 @@
         "NEEDS YOU",
         "need you",
         "label=\"UNREACHABLE\"",
+        "<UnreachableMachines fleet={fleet} now={now} />",
+        "re:<Badge[^\\n]*need you"
+      ],
+      "presence": [
+        "NEEDS YOU",
+        "need you",
+        "label=\"UNREACHABLE\"",
         "<UnreachableMachines fleet={fleet} now={now} />"
-      ]
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "ruling Q358 A settles the third group: QUIET for idle sessions, plus the UNREACHABLE line for fleet machines that do not answer. Not ruled and not built: the header's need-you count is a meta line, not frame 01's warning pill; group counts are plain, not tinted pills; NEEDS YOU cards sit on the card colour, not warn-bg with warn-border; the gate shows as runtime and mode badges with an uppercase approval label, not a gate pill. The evidence for the pill is the count drawn as a Badge"
+      }
     },
     {
       "id": "sessions.gates-while-open",
@@ -536,8 +547,19 @@
         "Everything is idle",
         "Start a session",
         "{idleSentence(snapshot.machine.name, fleet, ",
+        "<IdleFleet fleet={fleet} now={now}",
+        "neither has work in flight"
+      ],
+      "presence": [
+        "Everything is idle",
+        "Start a session",
+        "{idleSentence(snapshot.machine.name, fleet, ",
         "<IdleFleet fleet={fleet} now={now}"
-      ]
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the card, its fleet rows and Start a session are drawn; the sentence is derived per the 2026-10-02 cross-check fix, with no ruling. The design's sentence says two machines answer and neither has work in flight. The phone counts answering machines from the fleet's health and vouches for no work in flight only on the machine whose snapshot it holds, because fleet.list carries no other machine's sessions, so it never draws the design's claim about the others"
+      }
     },
     {
       "id": "thread.screen",
@@ -803,16 +825,6 @@
       "id": "sessions.list",
       "since": "2026-09-18",
       "note": "NEEDS YOU never collapses: behaviour, not copy"
-    },
-    {
-      "id": "sessions.list",
-      "since": "2026-10-02",
-      "note": "ruling Q358 A: idle sessions stay under QUIET, and fleet machines that do not answer get an UNREACHABLE line naming the machine and when it was last seen, because the phone holds no sessions from them. Still open, arrangement rather than copy: the need-you count is a meta line, not a warning pill; group counts are plain, not tinted pills; NEEDS YOU cards sit on the card colour, not warn-bg; the gate shows as runtime and mode badges with an uppercase approval label, not a gate pill"
-    },
-    {
-      "id": "sessions.idle",
-      "since": "2026-10-02",
-      "note": "difference accepted in the 2026-10-02 review: the design's sentence says two machines answer and neither has work in flight. The phone counts the answering machines from the fleet's health and vouches for no work in flight only on the machine whose snapshot it holds, because fleet.list carries no other machine's sessions. The card shows when that machine holds no sessions; idle sessions are listed under QUIET by ruling Q358 A"
     },
     {
       "id": "shell.tab-bar",
