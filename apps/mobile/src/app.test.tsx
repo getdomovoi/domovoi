@@ -225,7 +225,37 @@ describe("App", () => {
 
     const sent = socket.requests("session.send")
     expect(sent).toHaveLength(1)
-    expect(sent[0]?.params).toMatchObject({ sessionId: audit.id, prompt: "Check the lockfile too", client: "phone" })
+    // A session with no open comment sends an explicit empty review.
+    expect(sent[0]?.params).toEqual({ sessionId: audit.id, prompt: "Check the lockfile too", client: "phone", review: { annotationIds: [] } })
+  })
+
+  // Rulings Q348 A and Q402: the daemon attaches only the comments a message
+  // names. A comment the phone sent to the agent is an open comment of the
+  // session, so a send names every open comment of that session, newest
+  // first, and nothing resolved or from another session.
+  it("names the session's open comments in the review it sends", async () => {
+    const snapshot = workspace()
+    snapshot.approvals = []
+    const session = snapshot.sessions.find((candidate) => candidate.id === billing.id)!
+    session.workspacePath = "/worktrees/billing"
+    session.providerThreadId = "provider-thread-billing"
+    const open = snapshot.annotations.filter((annotation) => annotation.sessionId === billing.id && annotation.status === "open")
+    expect(open.map((annotation) => annotation.id)).toEqual(["annotation-migration-machine", "annotation-replay-copy"])
+    snapshot.annotations.push({ ...structuredClone(open[1]!), id: "annotation-resolved", status: "resolved" })
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    await fireEvent.changeText(screen.getByLabelText("Reply to this session"), "Address the comments")
+    await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+    await settle()
+
+    expect(socket.requests("session.send").map((frame) => frame.params)).toEqual([
+      expect.objectContaining({
+        sessionId: billing.id,
+        prompt: "Address the comments",
+        client: "phone",
+        review: { annotationIds: ["annotation-migration-machine", "annotation-replay-copy"] },
+      }),
+    ])
   })
 
   // Ruling Q211: the phone Tools screen reads tool.inventory for the machine
