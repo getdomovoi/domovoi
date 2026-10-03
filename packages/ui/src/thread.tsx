@@ -599,6 +599,8 @@ export function Thread({
   // `arrivedAt` is the pending gates (ids and revisions) when the refusal
   // arrived. It is cleared by the first change to them that keeps the gate.
   const [approvalRefusal, setApprovalRefusal] = useState<{ approvalId: string, message: string, arrivedAt?: string }>()
+  const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(null)
+  const resolvingApproval = useRef<string | null>(null)
   // The gates pending in the latest snapshot, read when a refusal arrives to
   // place it: a refusal can come back after the snapshot has moved on.
   const pendingApprovalIds = useRef(new Set<string>())
@@ -1009,10 +1011,18 @@ export function Thread({
     decision: ApprovalDecision,
     explanation?: string,
   ) => {
-    if (watching) return
+    // One decision in flight at a time: until it is answered, no press reaches
+    // this gate again or the next one drawn in its place. The ref holds it
+    // between two clicks that land before a render.
+    if (watching || resolvingApproval.current) return
+    resolvingApproval.current = approval.id
+    setResolvingApprovalId(approval.id)
     setSendError("")
     setApprovalRefusal(undefined)
-    void onResolve(approval.id, decision, explanation, approval.revision).catch((cause: unknown) => {
+    void onResolve(approval.id, decision, explanation, approval.revision).finally(() => {
+      resolvingApproval.current = null
+      setResolvingApprovalId(null)
+    }).catch((cause: unknown) => {
       // The daemon answered and refused, a checkpoint it could not take
       // among the reasons: the gate card shows its words. Anything else,
       // such as a dropped connection, did not reach an answer and stays
@@ -1143,7 +1153,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} connected={connected} refusal={cardShowsRefusal ? approvalRefusal?.message : undefined} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard key={approval.id} deciding={resolvingApprovalId !== null} surface={surface} approval={approval} watching={watching} connected={connected} refusal={cardShowsRefusal ? approvalRefusal?.message : undefined} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (

@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { demoWorkspace } from "@getdomovoi/protocol"
 import type { ComponentProps } from "react"
@@ -204,6 +204,53 @@ it("shows a refusal for a gate that has gone with the composer's alerts", async 
 
   expect(screen.getByText(refusal)).toBeTruthy()
   expect(screen.getByText("Agent request failed")).toBeTruthy()
+})
+
+// Deny decides on the first press. A second press, or a double click, must
+// not send a second decision, and must never land on the next gate when it
+// takes the same place on screen before the first answer is back.
+it("sends one decision per gate, and none to the next gate while one is in flight", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const first = snapshot.approvals[0]!
+  first.risk = "normal"
+  const second = { ...structuredClone(first), id: "approval-second", command: "rm -rf build", operation: "Remove the build directory" }
+  let settle: () => void = () => {}
+  const onResolve = vi.fn(() => new Promise<void>((done) => { settle = done }))
+  const thread = (current: typeof snapshot) => (
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={current}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />
+  )
+  const { rerender } = render(thread(snapshot))
+
+  await user.dblClick(screen.getByRole("button", { name: "Deny" }))
+  expect(onResolve).toHaveBeenCalledTimes(1)
+  expect(onResolve).toHaveBeenCalledWith(first.id, "deny", undefined, first.revision)
+
+  // The next gate arrives before the first answer is back.
+  const next = structuredClone(snapshot)
+  next.approvals = [second]
+  rerender(thread(next))
+  expect(screen.getByText("rm -rf build")).toBeTruthy()
+  const deny = screen.getByRole("button", { name: "Deny" }) as HTMLButtonElement
+  expect(deny.disabled).toBe(true)
+  fireEvent.click(deny)
+  expect(onResolve).toHaveBeenCalledTimes(1)
+
+  await act(async () => { settle() })
+  expect((screen.getByRole("button", { name: "Deny" }) as HTMLButtonElement).disabled).toBe(false)
 })
 
 it("sends the selected approval-card decision", async () => {
