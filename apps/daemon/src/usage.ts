@@ -321,7 +321,12 @@ export class UsageLedger {
     this.#upsert({ ...row, accounting }, null)
   }
 
-  interruptPending(active: readonly UsageIdentity[] = []): void {
+  // Ends every pending turn that is not active. completedAt is now: while the
+  // daemon runs, that is when it saw the turn stop. At startup
+  // (daemonRestart), the turn ran into the daemon's own stop and its end is
+  // unknown, so the record says completedAt is the restart time
+  // (completedAtSource), and the snapshot gives the turn no end (ruling Q401).
+  interruptPending(active: readonly UsageIdentity[] = [], options: { daemonRestart?: boolean } = {}): void {
     const activeKeys = new Set(active.map(usageIdentity))
     const rows = this.#database.prepare(
       `SELECT * FROM provider_usage
@@ -331,7 +336,11 @@ export class UsageLedger {
       const row = turnUsageFromRow(value)
       if (!row.accounting || activeKeys.has(row.accounting.key)) continue
       const accounting = updateUsageCoverage({ ...row.accounting, status: "interrupted",
-        ...(row.accounting.turn ? { turn: { ...row.accounting.turn, completedAt: new Date(this.#now()).toISOString() } } : {}),
+        ...(row.accounting.turn ? { turn: {
+          ...row.accounting.turn,
+          completedAt: new Date(this.#now()).toISOString(),
+          ...(options.daemonRestart ? { completedAtSource: "daemon-restart" as const } : {}),
+        } } : {}),
       })
       this.#upsert({ ...row, accounting }, null)
     }

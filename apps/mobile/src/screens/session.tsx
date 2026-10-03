@@ -24,6 +24,7 @@ import type { ArtifactRow } from "../artifact-rows"
 import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
 import type { Attachment } from "../attachments"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
+import type { PhoneRefusal } from "../session-refusal"
 import { useTheme } from "../theme/theme-provider"
 
 // The handoff tints a step's mark with the state it is in rather than outlining
@@ -554,6 +555,8 @@ export function SessionScreen({
   onRemoveAttachment,
   starting,
   startProblem,
+  startRefusal,
+  onSeeHeldBack,
   onStartLike,
   onTellAgent,
 }: {
@@ -602,6 +605,10 @@ export function SessionScreen({
   // and model, with words from the person and a mode, Plan by default.
   starting: boolean
   startProblem: string
+  // A start refused over a repository git filter, and the way to the phone
+  // Tools screen that shows what is held back.
+  startRefusal?: PhoneRefusal | undefined
+  onSeeHeldBack?: (() => void) | undefined
   onStartLike: (prompt: string, mode: PermissionMode) => void
   // Sends a policy refusal's remedy to the agent as a steer (ruling Q356 A).
   // Resolves to how the daemon took the message, or undefined when it did not.
@@ -776,6 +783,11 @@ export function SessionScreen({
         like={{ title: detail.title, machine, runtime: detail.runtime }}
         starting={starting}
         problem={startProblem}
+        refusal={startRefusal}
+        onSeeHeldBack={onSeeHeldBack ? () => {
+          setStartOpen(false)
+          onSeeHeldBack()
+        } : undefined}
         onStart={(prompt, mode) => onStartLike(prompt, mode)}
         onClose={() => setStartOpen(false)}
       />

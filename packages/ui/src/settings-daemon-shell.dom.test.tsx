@@ -17,6 +17,11 @@ async function skipFirstRun(user: ReturnType<typeof userEvent.setup>) {
   if (skip) { await user.click(skip); await settle() }
 }
 const settle = () => act(async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve() })
+// Q349 A: Remove asks first. This presses Remove, then confirms in the dialog.
+async function confirmRemove(user: ReturnType<typeof userEvent.setup>, section: HTMLElement) {
+  await user.click(within(section).getByRole("button", { name: "Remove" }))
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Remove the service" }))
+}
 
 // Without an install, the bridge offers no login service, as a desktop that
 // ships no daemon runtime does.
@@ -120,7 +125,7 @@ it("draws a daemon outside the app as the service once the desktop reports the s
   await user.click(screen.getByRole("button", { name: "Settings" }))
   const section = await screen.findByRole("region", { name: "Daemon on this machine" })
   expect(within(section).getByText("Running")).toBeTruthy()
-  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+  expect(within(section).getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(false)
 })
 
 it("keeps a daemon outside the app unnamed when the service status cannot be read", async () => {
@@ -134,7 +139,7 @@ it("keeps a daemon outside the app unnamed when the service status cannot be rea
   await user.click(screen.getByRole("button", { name: "Settings" }))
   const section = await screen.findByRole("region", { name: "Daemon on this machine" })
   expect(within(section).getByText("Not started here")).toBeTruthy()
-  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
+  expect(within(section).getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(true)
 })
 
 // Ruled 2026-09-23 (#577, B): the service answered with its own version in
@@ -281,8 +286,8 @@ it("refreshes the daemon owner when an unreadable reply follows a change the rea
   for (const [action, button, after, changed] of [
     ["install", "Install", { installed: true, running: true, detail: "" }, true],
     ["install", "Install", { installed: false, running: false, detail: "" }, false],
-    ["remove", "Unload and delete the LaunchAgent", { installed: false, running: false, detail: "" }, true],
-    ["remove", "Unload and delete the LaunchAgent", { installed: true, running: true, detail: "" }, false],
+    ["remove", "Remove", { installed: false, running: false, detail: "" }, true],
+    ["remove", "Remove", { installed: true, running: true, detail: "" }, false],
   ] as const) {
     const windowBridge = bridge(vi.fn())
     const unreadable = vi.fn(async () => { throw new Error("Desktop returned an invalid service outcome") })
@@ -292,7 +297,8 @@ it("refreshes the daemon owner when an unreadable reply follows a change the rea
     windowBridge.daemonService!.status = vi.fn().mockResolvedValueOnce(before).mockResolvedValue(after)
     const onLocalDaemonChanged = vi.fn()
     const { user, section } = await openDaemonSection(windowBridge, action === "install" ? inApp : outside, onLocalDaemonChanged)
-    await user.click(within(section()).getByRole("button", { name: button }))
+    if (button === "Remove") await confirmRemove(user, section())
+    else await user.click(within(section()).getByRole("button", { name: button }))
     // Ruled 2026-09-25: after a change the read-back confirms, the header
     // does not say the change failed.
     const header = changed
@@ -319,7 +325,7 @@ it("keeps the newer status when a read started before an install answers after i
   await act(async () => { stale.resolve({ installed: false, running: false, detail: "" }) })
   await settle()
   expect(within(section()).getByText("Running")).toBeTruthy()
-  expect(within(section()).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+  expect(within(section()).getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(false)
 })
 
 it("keeps the newer status when a read started before a removal answers after it", async () => {
@@ -330,13 +336,13 @@ it("keeps the newer status when a read started before a removal answers after it
     .mockImplementationOnce(() => stale.promise)
     .mockResolvedValue({ installed: false, running: false, detail: "" })
   const { user, section, moveTo } = await openDaemonSection(windowBridge, { ...outside, serviceInstalled: true })
-  await user.click(within(section()).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  await confirmRemove(user, section())
   await within(section()).findByText(/This app is connected to a daemon it did not start/)
   moveTo(outside)
   await act(async () => { stale.resolve({ installed: true, running: true, detail: "pid 48213" }) })
   await settle()
   expect(within(section()).getByText("Not started here")).toBeTruthy()
-  expect(within(section()).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
+  expect(within(section()).getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(true)
 })
 
 it("keeps the newer status when a read started before an unreadable reply answers after the re-read", async () => {
@@ -352,7 +358,7 @@ it("keeps the newer status when a read started before an unreadable reply answer
   await act(async () => { stale.resolve({ installed: false, running: false, detail: "" }) })
   await settle()
   expect(within(section()).getByText("Running")).toBeTruthy()
-  expect(within(section()).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+  expect(within(section()).getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(false)
 })
 
 // Security review round 5 of #576. A readable failure can still change who
@@ -390,7 +396,8 @@ it.each(failureCases)("refreshes the owner after a failed $action (read-back $se
   const onLocalDaemonChanged = vi.fn(() => moveTo(resolved))
   const opened = await openDaemonSection(windowBridge, before, onLocalDaemonChanged)
   moveTo = opened.moveTo
-  await opened.user.click(within(opened.section()).getByRole("button", { name: action === "install" ? "Install" : "Unload and delete the LaunchAgent" }))
+  if (action === "install") await opened.user.click(within(opened.section()).getByRole("button", { name: "Install" }))
+  else await confirmRemove(opened.user, opened.section())
   await within(opened.section()).findByText(action === "install" ? "Could not install the service" : "Could not remove the service")
   await settle()
   expect(onLocalDaemonChanged).toHaveBeenCalledTimes(refreshes ? 1 : 0)
@@ -412,7 +419,7 @@ it.each(failureCases)("refreshes the owner after a failed $action (read-back $se
   // it expected the bug.)
   expect(section.textContent?.includes("launchd starts it again.")).toBe(running)
   const installed = service?.installed === true
-  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(!installed)
+  expect(within(section).getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(!installed)
   if (installed) {
     expect(section.textContent).toContain("Install is off: the service is already installed.")
     expect(section.textContent).not.toContain("nothing is installed")

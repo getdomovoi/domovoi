@@ -332,7 +332,10 @@ export function prepareWslUpdate(
   }
 }
 
-export async function runWslServiceCommand(verb: string, dependencies: ServiceCommandDependencies, deadline: OperationDeadline): Promise<number> {
+// beforeChanges: an install from the app's runtime publishes its copy under
+// the profile here (Q408 A), after every check that can refuse and under the
+// profile lease, before the first file is written, as installService does.
+export async function runWslServiceCommand(verb: string, dependencies: ServiceCommandDependencies, deadline: OperationDeadline, beforeChanges?: () => Promise<void>): Promise<number> {
   const home = dependencies.home
   if (!home || !posix.isAbsolute(home)) throw new Error("WSL service requires an absolute guest home")
   const path = serviceConfigurationPath(home, "linux")
@@ -379,6 +382,7 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
     const profile = profileLocation(home, configuration.profileDirectory)
     const lease = dependencies.claimProfile(profile)
     try {
+      if (beforeChanges !== undefined) await withinServiceDeadline(deadline, beforeChanges)
       await withinServiceDeadline(deadline, () => dependencies.remove(localOwnerRemovalReceiptPath(profile), deadline))
       await withinServiceDeadline(deadline, () => dependencies.write(path, contents, deadline))
     } finally { if (!deadline.signal.aborted) lease.release() }

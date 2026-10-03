@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { cleanup, getDefaultNormalizer, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -9,6 +9,7 @@ import {
   type RepositoryTrustState,
   type ToolInventory,
   type ToolInventoryEntry,
+  type ToolInventoryGitFilters,
   type ToolInventoryProvider,
 } from "@getdomovoi/protocol"
 
@@ -18,6 +19,18 @@ afterEach(cleanup)
 
 const digest = `sha256:${"a".repeat(64)}`
 const changedDigest = `sha256:${"c".repeat(64)}`
+// tool.inventory's digest over the git filter block it lists.
+const reviewDigest = `sha256:${"b".repeat(64)}`
+// It promises nothing about moving a setting to another file: the review
+// digest names a file by its shown, redacted label (ruling Q325).
+// A filter driver's commands are a definition list, one row per operation
+// and its command (rulings Q328, Q335), read here as [operation, command].
+const filterPairs = (scope: HTMLElement) =>
+  [...scope.querySelectorAll("dl[data-slot='filter-commands'] > div")].map((row) => [
+    row.querySelector("dt")?.textContent,
+    row.querySelector("dd")?.textContent,
+  ])
+const gitConfigPinnedText = "In the Git config only the filter settings listed here are pinned, not the whole file: changing one of them holds them back again. Other Git settings in that file are not pinned."
 const grant = { trustedDigest: digest, trustedAt: "2026-09-12T10:41:00.000Z", trustedBy: { client: "desktop" as const } }
 const readAt = new Date("2026-09-29T14:02:31")
 const notTrusted: RepositoryTrustState = { state: "untrusted", reason: "not-trusted" }
@@ -388,6 +401,329 @@ describe("trust review sheet", () => {
     expect(within(open).getByRole("button", { name: "Trust for this machine" })).toBeTruthy()
     expect(onTrust).toHaveBeenCalledOnce()
     expect(onRetry).not.toHaveBeenCalled()
+  })
+})
+
+// The repository's own Git config sets a filter driver: tool.inventory lists
+// each driver's commands by the file and scope Git read them in.
+const sopsFilters: ToolInventoryGitFilters = {
+  files: [{ path: ".git/config", scope: "local" }],
+  entries: [
+    { driver: "sops", operation: "smudge", command: "sops -d", required: "true", file: ".git/config", scope: "local", heldBack: true },
+    { driver: "sops", operation: "clean", command: "sops -e", required: "true", file: ".git/config", scope: "local", heldBack: true },
+  ],
+  omittedEntries: 0,
+  reviewDigest,
+}
+
+function withGitFilters(value: ToolInventory, gitFilters: ToolInventoryGitFilters): ToolInventory {
+  return toolInventorySchema.parse({ ...value, repository: { ...value.repository, gitFilters } })
+}
+
+describe("git filters in the review", () => {
+  it("lists the filter's config file in the held back card, with its count", () => {
+    show(withGitFilters(inventory(), sopsFilters), { onTrust: vi.fn() })
+
+    expect(within(heldCard()).getAllByRole("listitem").map((file) => file.textContent)).toEqual([
+      ".mcp.json2 tool servers",
+      ".claude/settings.json2 hooks · 1 plugin · 1 env entry · 1 rule",
+      ".git/config1 filter driver",
+    ])
+  })
+
+  // The read line counts the Git config files the filters come from, once per
+  // path, and an unreadable Git config as unreadable (bot finding 4151622883).
+  it("counts the git config files it read, and an unreadable one", () => {
+    const none = claude({ files: [{ path: ".mcp.json", source: "repository-file", state: "absent" }], entries: [] })
+    const shared: ToolInventoryGitFilters = {
+      files: [{ path: ".git/config", scope: "local" }, { path: "shared.gitconfig", scope: "local" }, { path: "shared.gitconfig", scope: "worktree" }],
+      entries: [
+        sopsFilters.entries[0]!,
+        { ...sopsFilters.entries[0]!, file: "shared.gitconfig" },
+        { ...sopsFilters.entries[0]!, file: "shared.gitconfig", scope: "worktree" },
+      ],
+      omittedEntries: 0,
+      reviewDigest,
+    }
+    show(withGitFilters(inventory(notTrusted, [none]), shared), { onTrust: vi.fn() })
+    expect(screen.getByText("read 14:02:31 · 2 files")).toBeTruthy()
+    cleanup()
+
+    show(withGitFilters(inventory(notTrusted, [none]), { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" }, reviewDigest }), { onTrust: vi.fn() })
+    expect(screen.getByText("read 14:02:31 · 0 files · 1 unreadable")).toBeTruthy()
+  })
+
+  it("offers trust for a repository whose only config is a git filter", async () => {
+    const none = claude({ files: [{ path: ".mcp.json", source: "repository-file", state: "absent" }], entries: [] })
+    show(withGitFilters(inventory(notTrusted, [none]), sopsFilters), { onTrust: vi.fn() })
+
+    const card = heldCard()
+    expect(within(card).getByText("Its hooks, tool servers, plugins, env, rules and git filter do not load for any agent.")).toBeTruthy()
+    const { sheet } = await openSheet()
+    expect(within(sheet).getByText("Everything this repository would run for any agent here. None of it has run.")).toBeTruthy()
+    expect(within(sheet).getByRole("button", { name: "Trust for this machine" })).toBeTruthy()
+    // The digest pins the reviewed filter settings, not the whole Git config
+    // file, so the sheet does not promise that any change to it counts.
+    expect(within(sheet).queryByText(/^It is pinned to one digest of/u)).toBeNull()
+    expect(within(sheet).getByText(gitConfigPinnedText)).toBeTruthy()
+  })
+
+  it("shows a group per git config file and scope, each driver with its operations and redacted commands", async () => {
+    const filters: ToolInventoryGitFilters = {
+      files: [{ path: ".git/config", scope: "local" }, { path: ".git/worktrees/w1/config.worktree", scope: "worktree" }],
+      entries: [
+        ...sopsFilters.entries,
+        { driver: "crypt", operation: "process", command: "./bin/crypt --token [REDACTED]", commandInexact: true, required: "unset", file: ".git/worktrees/w1/config.worktree", scope: "worktree", heldBack: true },
+      ],
+      omittedEntries: 0,
+      reviewDigest,
+    }
+    show(withGitFilters(inventory(), filters), { onTrust: vi.fn() })
+    const { sheet } = await openSheet()
+
+    const local = within(sheet).getByRole("group", { name: ".git/config" })
+    expect(within(local).getByText("local git config")).toBeTruthy()
+    expect(within(local).getByText("1 filter driver")).toBeTruthy()
+    expect(within(local).getByText("Filter driver")).toBeTruthy()
+    expect(within(local).getByText("sops")).toBeTruthy()
+    expect(filterPairs(local)).toEqual([["smudge", "sops -d"], ["clean", "sops -e"]])
+    // A trusted filter runs whatever its command names (ruling Q205 A).
+    expect(within(local).getByText("A filter driver runs its command whenever Git checks out or stages a file. If the command runs a file in this repository, it runs whatever that file holds, an agent's edit included.")).toBeTruthy()
+
+    const worktree = within(sheet).getByRole("group", { name: ".git/worktrees/w1/config.worktree" })
+    expect(within(worktree).getByText("worktree git config")).toBeTruthy()
+    expect(within(worktree).getByText("crypt")).toBeTruthy()
+    expect(filterPairs(worktree)).toEqual([["process", "./bin/crypt --token [REDACTED]"]])
+    expect(within(worktree).getByText("Cut at a credential. Domovoi shows no secret.")).toBeTruthy()
+
+    // Provider files are pinned whole; the Git config only by its filter settings.
+    expect(within(sheet).getByText("It is pinned to one digest of these two files. Any change, an agent's edit included, holds it back again.")).toBeTruthy()
+    expect(within(sheet).getByText(gitConfigPinnedText)).toBeTruthy()
+  })
+
+  // The review digest covers each driver's required state, so the review
+  // shows it: it decides whether Git keeps unfiltered bytes when the filter fails.
+  it("shows each driver's required state", async () => {
+    const filters: ToolInventoryGitFilters = {
+      files: [{ path: ".git/config", scope: "local" }],
+      entries: [
+        ...sopsFilters.entries,
+        { driver: "crypt", operation: "process", command: "./bin/crypt", required: "unset", file: ".git/config", scope: "local", heldBack: true },
+        { driver: "lock", operation: "clean", command: "./bin/lock", required: "false", file: ".git/config", scope: "local", heldBack: true },
+      ],
+      omittedEntries: 0,
+      reviewDigest,
+    }
+    show(withGitFilters(inventory(), filters), { onTrust: vi.fn() })
+    const { sheet } = await openSheet()
+
+    const rows = within(within(sheet).getByRole("group", { name: ".git/config" })).getAllByRole("listitem")
+    expect(rows.map((row) => within(row).getAllByText(/^required is /u).map((line) => line.textContent))).toEqual([
+      ["required is true: if the filter fails, the Git command fails."],
+      ["required is not set: if the filter fails, Git stores or checks out the file unfiltered."],
+      ["required is false: if the filter fails, Git stores or checks out the file unfiltered."],
+    ])
+  })
+
+  // A reviewable command is shown byte for byte (ruling Q325), and a browser
+  // collapses runs of spaces in ordinary text: two spaces inside quotes are
+  // one shell argument that one space would change (ruling Q328). The command
+  // is its own element, apart from its operation, and keeps its whitespace.
+  // jsdom lays nothing out, so this checks the contract: the exact text in an
+  // element styled to keep it.
+  it("shows a filter command's whitespace as configured, apart from its operation", async () => {
+    const command = "review-label 'two  spaces'   x"
+    const onTrust = vi.fn<Trust>().mockResolvedValue(trustResult({
+      outcome: "trusted",
+      repository: { projectId: "project-acme", configDigest: digest, trust: { state: "trusted", ...grant } },
+    }))
+    show(withGitFilters(inventory(), {
+      ...sopsFilters,
+      entries: sopsFilters.entries.map((entry) => entry.operation === "smudge" ? { ...entry, command } : entry),
+    }), { onTrust })
+    const { user, sheet } = await openSheet()
+
+    const shown = within(sheet).getByText(command, { normalizer: getDefaultNormalizer({ trim: false, collapseWhitespace: false }) })
+    expect(shown.textContent).toBe(command)
+    expect(shown.className).toContain("whitespace-break-spaces")
+    expect(within(sheet).getByText("smudge")).not.toBe(shown)
+    // Shown exactly, so it can be reviewed.
+    await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
+    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest, gitFilters: { reviewed: true, reviewDigest } })
+  })
+
+  // Two configurations that would read the same as one line: A sets smudge
+  // `review-label` and clean `review-clean`; B sets only smudge, to
+  // `review-label · clean review-clean`. Each operation and its command is a
+  // row of its own, the operation a term and the command its definition, with
+  // no delimiter text between rows, so A shows two rows and B one, and B's
+  // "clean" stays inside its command (ruling Q335).
+  it("draws each operation and its command as a bounded row, so a command cannot pass for another operation", async () => {
+    const pairs = (sheet: HTMLElement) => {
+      const list = within(sheet).getByRole("group", { name: ".git/config" }).querySelector("dl[data-slot='filter-commands']")
+      expect(list).not.toBeNull()
+      // No delimiter text between rows: every child is a row of one term and
+      // its definition.
+      for (const row of list!.childNodes) {
+        expect(row.nodeName).toBe("DIV")
+        expect([...row.childNodes].map((node) => node.nodeName)).toEqual(["DT", "DD"])
+      }
+      return within(list as HTMLElement).getAllByRole("term").map((term) => {
+        const definition = term.nextElementSibling as HTMLElement
+        expect(definition.tagName).toBe("DD")
+        expect(definition.className).toContain("whitespace-break-spaces")
+        expect(definition.className).toContain("bg-code")
+        expect(term.parentElement).toBe(definition.parentElement)
+        return [term.textContent, definition.textContent]
+      })
+    }
+    const entry = sopsFilters.entries[0]!
+    const a = withGitFilters(inventory(), {
+      ...sopsFilters,
+      entries: [{ ...entry, operation: "smudge", command: "review-label" }, { ...entry, operation: "clean", command: "review-clean" }],
+    })
+    const b = withGitFilters(inventory(), {
+      ...sopsFilters,
+      entries: [{ ...entry, operation: "smudge", command: "review-label · clean review-clean" }],
+      reviewDigest: `sha256:${"e".repeat(64)}`,
+    })
+
+    show(a, { onTrust: vi.fn() })
+    expect(pairs((await openSheet()).sheet)).toEqual([["smudge", "review-label"], ["clean", "review-clean"]])
+    cleanup()
+    show(b, { onTrust: vi.fn() })
+    expect(pairs((await openSheet()).sheet)).toEqual([["smudge", "review-label · clean review-clean"]])
+  })
+
+  // The same holds for a hook's or tool server's command the review lists.
+  it("shows a provider command's whitespace as configured, in the review and the Tools tab", async () => {
+    const command = "./scripts/sync.sh 'two  spaces'"
+    show(inventory(notTrusted, [claude({ entries: [
+      { kind: "hook", file: ".claude/settings.json", event: "SessionStart", command, startsAtSessionStart: true, heldBack: true },
+    ] })]), { onTrust: vi.fn() })
+    const exact = { normalizer: getDefaultNormalizer({ trim: false, collapseWhitespace: false }) }
+
+    for (const element of screen.getAllByText(command, exact)) expect(element.className).toContain("whitespace-break-spaces")
+    const { sheet } = await openSheet()
+    const reviewed = within(sheet).getByText(command, exact)
+    expect(reviewed.textContent).toBe(command)
+    expect(reviewed.className).toContain("whitespace-break-spaces")
+  })
+
+  it("offers no trust while the repository's Git config could not be read", async () => {
+    const onTrust = vi.fn<Trust>()
+    show(withGitFilters(inventory(), { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "git-failed" }, reviewDigest }), { onTrust })
+
+    expect(within(heldCard()).getAllByRole("listitem").at(-1)?.textContent).toBe("Git confignot read")
+    const { sheet } = await openSheet()
+    expect(within(sheet).queryByRole("button", { name: "Trust for this machine" })).toBeNull()
+    expect(within(sheet).getByText("This list is not complete")).toBeTruthy()
+    expect(within(sheet).getByText("The repository's Git config could not be read: git config failed. Trust is not offered until it can be read.")).toBeTruthy()
+    expect(onTrust).not.toHaveBeenCalled()
+  })
+
+  // A command not shown exactly as Git runs it cannot be reviewed, so neither
+  // trust nor the acknowledgement is offered for its block (rulings Q323,
+  // Q325). The daemon's flag decides it, with or without the marker.
+  it.each([
+    ["cut", "[REDACTED]"],
+    ["rewritten", "sops -d \\*.enc"],
+  ])("offers no trust and sends nothing while a filter command is %s", async (_label, command) => {
+    const onTrust = vi.fn<Trust>()
+    show(withGitFilters(inventory(), {
+      ...sopsFilters,
+      entries: sopsFilters.entries.map((entry) => entry.operation === "smudge" ? { ...entry, command, commandInexact: true as const } : entry),
+    }), { onTrust })
+    const { sheet } = await openSheet()
+
+    expect(within(sheet).queryByRole("button", { name: "Trust for this machine" })).toBeNull()
+    expect(within(sheet).getByText("This list is not complete")).toBeTruthy()
+    expect(within(sheet).getByText("Domovoi cannot show 1 filter command exactly as Git runs it, because it hides text that could hold a secret or that it cannot show safely. Its filters stay held back, and trust is not offered until every filter command can be shown exactly.")).toBeTruthy()
+    expect(onTrust).not.toHaveBeenCalled()
+  })
+
+  it("offers no trust while git filter entries are left out of the list", async () => {
+    show(withGitFilters(inventory(), { ...sopsFilters, omittedEntries: 2 }), { onTrust: vi.fn() })
+    const { sheet } = await openSheet()
+
+    expect(within(sheet).queryByRole("button", { name: "Trust for this machine" })).toBeNull()
+    expect(within(sheet).getByText("2 entries are not shown. Trust is not offered until every entry can be listed.")).toBeTruthy()
+    expect(within(sheet).getByText("Git filters: 2 more entries were left out of this list.")).toBeTruthy()
+  })
+
+  // The daemon runs the filters only under a grant that says the client showed
+  // them, naming the block by the review digest tool.inventory gave (#688).
+  it("acknowledges the git filters it showed, by the review digest it was given", async () => {
+    const onTrust = vi.fn<Trust>().mockResolvedValue(trustResult({
+      outcome: "trusted",
+      repository: { projectId: "project-acme", configDigest: digest, trust: { state: "trusted", ...grant } },
+    }))
+    show(withGitFilters(inventory(), sopsFilters), { onTrust })
+    const { user, sheet } = await openSheet()
+
+    await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
+
+    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest, gitFilters: { reviewed: true, reviewDigest } })
+  })
+
+  it("acknowledges no git filter where it showed none", async () => {
+    const onTrust = vi.fn<Trust>().mockResolvedValue(trustResult({
+      outcome: "trusted",
+      repository: { projectId: "project-acme", configDigest: digest, trust: { state: "trusted", ...grant } },
+    }))
+    show(withGitFilters(inventory(), { files: [], entries: [], omittedEntries: 0, reviewDigest }), { onTrust })
+    const { user, sheet } = await openSheet()
+
+    await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
+
+    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest })
+  })
+
+  it("says the files changed when its git filters change while it is open, and acknowledges only the ones it shows now", async () => {
+    const onTrust = vi.fn<Trust>().mockResolvedValue(trustResult({
+      outcome: "trusted",
+      repository: { projectId: "project-acme", configDigest: digest, trust: { state: "trusted", ...grant } },
+    }))
+    const { rerender } = show(withGitFilters(inventory(), sopsFilters), { onTrust })
+    const { user, sheet } = await openSheet()
+    expect(within(sheet).queryByText("The files changed while this was open")).toBeNull()
+
+    const newDigest = `sha256:${"d".repeat(64)}`
+    rerender(loaded(withGitFilters(inventory(), {
+      ...sopsFilters,
+      entries: sopsFilters.entries.map((entry) => entry.operation === "smudge" ? { ...entry, command: "sops -d --keep" } : entry),
+      reviewDigest: newDigest,
+    })))
+
+    const open = screen.getByRole("dialog")
+    expect(within(open).getByText("The files changed while this was open")).toBeTruthy()
+    expect(filterPairs(open)).toEqual([["smudge", "sops -d --keep"], ["clean", "sops -e"]])
+    await user.click(within(open).getByRole("button", { name: "Trust for this machine" }))
+    expect(onTrust).toHaveBeenCalledExactlyOnceWith({ projectId: "project-acme", configDigest: digest, gitFilters: { reviewed: true, reviewDigest: newDigest } })
+  })
+
+  it("reads the files again when the daemon refuses the git filters it showed, and says they changed", async () => {
+    const onTrust = vi.fn<Trust>().mockRejectedValue(new Error("Domovoi granted no trust: the git filters this client showed are not the ones Domovoi reads now."))
+    const { onRetry, rerender } = show(withGitFilters(inventory(), sopsFilters), { onTrust })
+    const { user, sheet } = await openSheet()
+
+    await user.click(within(sheet).getByRole("button", { name: "Trust for this machine" }))
+
+    expect(onRetry).toHaveBeenCalledOnce()
+    rerender({ state: "loading" })
+    rerender(loaded(withGitFilters(inventory(), { ...sopsFilters, reviewDigest: `sha256:${"d".repeat(64)}` })))
+    const open = screen.getByRole("dialog")
+    expect(within(open).getByText("The files changed while this was open")).toBeTruthy()
+    expect(within(open).queryByText("Trust was not granted")).toBeNull()
+    // Trusting what the files hold now is a second decision.
+    expect(onTrust).toHaveBeenCalledOnce()
+  })
+
+  it("counts the filter's commands among the entries held back", async () => {
+    const provider = claude({ entries: entries().map((entry) => entry.file === ".mcp.json" ? entry : { ...entry, heldBack: false }) })
+    show(withGitFilters(inventory(notTrusted, [provider]), sopsFilters), { onTrust: vi.fn() })
+
+    expect(within(heldCard()).getByText("4 of 9 entries from this repository are held back. The rest load.")).toBeTruthy()
   })
 })
 

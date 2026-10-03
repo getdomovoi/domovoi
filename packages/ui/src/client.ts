@@ -9,6 +9,7 @@ import {
   rpcMethods,
   rpcResponseSchema,
   artifactAuthorizeResultSchema,
+  deviceCodeOutcomeNotificationSchema,
   fleetChangedNotificationSchema,
   terminalAcceptedSchema,
   terminalClosedNotificationSchema,
@@ -960,6 +961,12 @@ export class DomovoiClient extends EventTarget {
     return this.request("update.status", {}, options)
   }
 
+  // TailnetReach (Q404 A): whether the daemon answers on the tailnet now, and
+  // until when its certificate is valid.
+  tailnetStatus(options?: DomovoiRequestOptions): Promise<RpcResult<"tailnet.status">> {
+    return this.request("tailnet.status", {}, options)
+  }
+
   // The same code `domovoid pair --client` prints, for the kind named and no
   // other. A watching client is refused before the request leaves.
   issueDeviceCode(targetClient: ClientKind, options?: DomovoiRequestOptions): Promise<RpcResult<"device.issueCode">> {
@@ -1188,6 +1195,18 @@ export class DomovoiClient extends EventTarget {
         } else {
           this.#reportProtocolError(
             "Daemon sent a terminal.ownership notification this client could not parse",
+          )
+        }
+        return
+      }
+      // Sent only to the connection that issued the code it names.
+      if (notification.data.method === "device.codeOutcome") {
+        const outcome = deviceCodeOutcomeNotificationSchema.safeParse(notification.data.params)
+        if (outcome.success) {
+          this.dispatchEvent(new CustomEvent("device-code-outcome", { detail: outcome.data }))
+        } else {
+          this.#reportProtocolError(
+            "Daemon sent a device.codeOutcome notification this client could not parse",
           )
         }
         return

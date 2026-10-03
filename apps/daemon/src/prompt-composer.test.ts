@@ -82,6 +82,11 @@ function annotation(index: number): Annotation {
   }
 }
 
+// The message sends every comment in the snapshot (rulings Q348 A, Q342 A).
+function sendingAll(snapshot: WorkspaceSnapshot) {
+  return { review: { annotationIds: snapshot.annotations.map((annotation) => annotation.id) } }
+}
+
 function input(snapshot: WorkspaceSnapshot, userPrompt: string) {
   return {
     snapshot,
@@ -125,6 +130,7 @@ describe("composeProviderPrompt budget", () => {
 
     const result = await composeProviderPrompt({
       ...input(snapshot, "u".repeat(250_000)),
+      ...sendingAll(snapshot),
       skillCatalog: fixture.catalog,
     })
 
@@ -174,7 +180,7 @@ describe("composeProviderPrompt budget", () => {
     const snapshot = baseSnapshot()
     snapshot.annotations = Array.from({ length: 10 }, (_, index) => annotation(index))
 
-    const result = await composeProviderPrompt(input(snapshot, "u".repeat(250_000)))
+    const result = await composeProviderPrompt({ ...input(snapshot, "u".repeat(250_000)), ...sendingAll(snapshot) })
 
     expect(result.prompt.length).toBeLessThanOrEqual(maximumProviderPromptCodeUnits)
     expect(result.providerPromptDelivery.annotations.omitted.budget).toBeGreaterThan(0)
@@ -201,6 +207,7 @@ describe("composeProviderPrompt budget", () => {
 
     const result = await composeProviderPrompt({
       ...input(snapshot, "u".repeat(257_000)),
+      ...sendingAll(snapshot),
       capabilities: { vision: true },
       annotationVisualContext: { read },
     })
@@ -237,13 +244,111 @@ describe("composeProviderPrompt budget", () => {
   })
 })
 
+// Security review r1 P2: the first send after a provider handoff also carries a
+// handoff context. With a review, current comments reach the provider only
+// through the review section, so the whole prompt holds what the review
+// names and deliveredIds says so. Without one (Q402), the handoff keeps them.
+describe("composeProviderPrompt review after a provider handoff", () => {
+  function afterHandoff() {
+    const snapshot = baseSnapshot()
+    const sessionId = snapshot.sessions[0]!.id
+    snapshot.annotations = [
+      { ...annotation(1), body: "Selected comment body" },
+      { ...annotation(2), body: "Unselected draft body" },
+    ]
+    snapshot.artifacts = [{
+      id: "artifact-preview-b", sessionId, title: "Checkout B", type: "preview", revision: 1,
+      variant: { id: "variant-b", groupId: "checkout", label: "B", order: 1 },
+    }]
+    snapshot.thread = [{
+      id: "handoff-1", sessionId, kind: "system", body: "Handed off codex to claude-code.", createdAt: "2026-09-03T13:00:00.000Z",
+    }]
+    return snapshot
+  }
+
+  it.each([
+    ["a subset review", { annotationIds: ["annotation-1"] }, ["annotation-1"]],
+    ["a build-basis-only review", { annotationIds: [], buildBasis: { artifactId: "artifact-preview-b" } }, []],
+    ["an empty review", { annotationIds: [] }, []],
+  ])("holds only what %s names, in the whole prompt", async (_label, review, sent) => {
+    const result = await composeProviderPrompt({ ...input(afterHandoff(), "Continue"), review })
+
+    expect(result.prompt).toContain("<domovoi_handoff_context>")
+    expect(result.providerPromptDelivery.annotations.deliveredIds).toEqual(sent)
+    expect(result.prompt).not.toContain("annotation-2")
+    expect(result.prompt).not.toContain("Unselected draft body")
+    if (sent.length === 0) {
+      expect(result.prompt).not.toContain("annotation-1")
+      expect(result.prompt).not.toContain("Selected comment body")
+    } else {
+      expect(result.prompt.split("Selected comment body")).toHaveLength(2)
+    }
+  })
+
+  it("keeps every open comment in the handoff for a message without a review (Q402)", async () => {
+    const result = await composeProviderPrompt(input(afterHandoff(), "Continue"))
+    const handoff = /<domovoi_handoff_context>\n(.+)\n<\/domovoi_handoff_context>/.exec(result.prompt)![1]!
+    expect(handoff).toContain("annotation-1")
+    expect(handoff).toContain("annotation-2")
+  })
+})
+
+describe("composeProviderPrompt review", () => {
+  it("carries only the comments a review names", async () => {
+    const snapshot = baseSnapshot()
+    snapshot.annotations = [annotation(1), annotation(2)]
+
+    const result = await composeProviderPrompt({ ...input(snapshot, "Ship it"), review: { annotationIds: ["annotation-1"] } })
+
+    expect(result.providerPromptDelivery.annotations).toEqual({
+      availableCount: 1, deliveredIds: ["annotation-1"], omitted: { budget: 0, limit: 0 },
+    })
+    expect(result.prompt).not.toContain("annotation-2")
+  })
+
+  // Ruling Q402: the legacy default, removed before 0.8.0 ships.
+  it("carries every open comment when the message has no review", async () => {
+    const snapshot = baseSnapshot()
+    snapshot.annotations = [annotation(1), annotation(2), { ...annotation(3), status: "resolved" }]
+
+    const result = await composeProviderPrompt(input(snapshot, "Ship it"))
+
+    expect(result.providerPromptDelivery.annotations).toEqual({
+      availableCount: 2, deliveredIds: ["annotation-2", "annotation-1"], omitted: { budget: 0, limit: 0 },
+    })
+  })
+
+  it("keeps the build basis after the budget has dropped every comment", async () => {
+    const snapshot = baseSnapshot()
+    const sessionId = snapshot.sessions[0]!.id
+    snapshot.annotations = [annotation(1)]
+    snapshot.artifacts = [{
+      id: "artifact-preview-b", sessionId, title: "Checkout B", type: "preview", revision: 2,
+      variant: { id: "variant-b", groupId: "checkout", label: "B", order: 1 },
+    }]
+    const request = {
+      ...input(snapshot, "Build it"),
+      review: { annotationIds: ["annotation-1"], buildBasis: { artifactId: "artifact-preview-b" } },
+    }
+    const full = await composeProviderPrompt(request)
+    expect(full.providerPromptDelivery.annotations.deliveredIds).toEqual(["annotation-1"])
+
+    const tight = await composeProviderPrompt({ ...request, budgetCodeUnits: full.prompt.length - 1 })
+    expect(tight.providerPromptDelivery.annotations).toEqual({
+      availableCount: 1, deliveredIds: [], omitted: { budget: 1, limit: 0 }, buildBasis: { artifactId: "artifact-preview-b" },
+    })
+    expect(tight.prompt).toContain('"buildBasis":{"artifactId":"artifact-preview-b","artifactTitle":"Checkout B","artifactRevision":2,"variant":{"id":"variant-b","groupId":"checkout","label":"B"}}')
+    expect(tight.prompt).not.toContain("Review 1")
+  })
+})
+
 describe("composeProviderPrompt budget option", () => {
   it("keeps a prompt under the configured budget untouched", async () => {
     const snapshot = baseSnapshot()
     const fixture = skillFixture()
     snapshot.annotations = [annotation(1)]
     snapshot.skillEnablements = [fixture.review]
-    const request = { ...input(snapshot, "Ship it"), skillCatalog: fixture.catalog }
+    const request = { ...input(snapshot, "Ship it"), ...sendingAll(snapshot), skillCatalog: fixture.catalog }
 
     const unbounded = await composeProviderPrompt(request)
     const bounded = await composeProviderPrompt({
@@ -329,6 +434,8 @@ describe("composeProviderPrompt drop order", () => {
         createdAt: "2026-09-03T13:00:00.000Z",
       },
     ]
+    // No review: the Q402 legacy default, the one path on which the handoff
+    // still carries open comments, so every drop step is exercised.
     const request = {
       ...input(snapshot, "Continue"),
       skillCatalog: {

@@ -16,6 +16,7 @@ import { DomovoiMark } from "./domovoi-mark"
 import { StopMenu } from "./stop-menu"
 import { usageTodayRefreshDelayMs, usageTodayWindow } from "./session-usage"
 import { StatusDot } from "./status-dot"
+import { startOpenerRef } from "./start-handoff"
 import { type DesktopWindowBridge, type WorkspaceWindowDecoration } from "./desktop-platform"
 import { cn } from "./lib/utils"
 import { titlebarTipClassName } from "./titlebar-tip"
@@ -110,7 +111,9 @@ export function AppBar({
       {sessionsDrawer ? <span className="electron-no-drag inline-flex items-center">{sessionsDrawer}</span> : null}
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label="New session" disabled={watching || !onNewSession} onClick={onNewSession}>
+          {/* startOpenerRef registers a control that opens a session start:
+              a refusal of that start may take focus from it (ruling Q410). */}
+          <Button ref={startOpenerRef} variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label="New session" disabled={watching || !onNewSession} onClick={onNewSession}>
             <PlusIcon className="size-4" />
           </Button>
         </TooltipTrigger>

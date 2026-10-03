@@ -411,6 +411,30 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("publishes what became of a pairing code this connection issued", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const received: unknown[] = []
+    const protocolErrors: string[] = []
+    client.addEventListener("device-code-outcome", (event) => {
+      received.push((event as CustomEvent).detail)
+    })
+    client.addEventListener("protocol-error", (event) => {
+      protocolErrors.push((event as CustomEvent<{ reason: string }>).detail.reason)
+    })
+    const outcome = { pairingId: `pairing-${"c".repeat(32)}`, outcome: "refused", reason: "device-limit", label: "iPad Pro" }
+    socket.receive({ jsonrpc: "2.0", method: "device.codeOutcome", params: outcome })
+    socket.receive({ jsonrpc: "2.0", method: "device.codeOutcome", params: { ...outcome, reason: "invented" } })
+
+    expect(received).toEqual([outcome])
+    expect(protocolErrors).toEqual(["Daemon sent a device.codeOutcome notification this client could not parse"])
+    client.disconnect()
+  })
+
   it("requests preview access scoped to the bridge channel", async () => {
     const client = new DomovoiClient("wss://machine.example/rpc", "tablet", { budgets })
     const connecting = client.connect()
@@ -1116,6 +1140,27 @@ describe("DomovoiClient", () => {
     socket.receive({ jsonrpc: "2.0", id: 3, result: { channel: "stable", currentVersion: "0.9.4", state: "idle" } })
     await expect(next).resolves.toMatchObject({ state: "idle" })
     expect(FakeWebSocket.instances).toHaveLength(1)
+  })
+
+  // TailnetReach (Q404 A): the daemon's own account of its tailnet listener,
+  // validated as tailnet.status's result.
+  it("asks the daemon for its tailnet listener and refuses an answer outside the schema", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets, scheduler })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const listening = client.tailnetStatus()
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({ id: 2, method: "tailnet.status", params: {} })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: { state: "listening", address: "100.101.102.103", port: 47831, certificateExpiresAt: "2026-12-20T04:12:00.000Z" } })
+    await expect(listening).resolves.toEqual({ state: "listening", address: "100.101.102.103", port: 47831, certificateExpiresAt: "2026-12-20T04:12:00.000Z" })
+
+    const odd = client.tailnetStatus()
+    socket.receive({ jsonrpc: "2.0", id: 3, result: { state: "on" } })
+    await expect(odd).rejects.toBeDefined()
   })
 
   it("does not let stale socket callbacks create or revive a connection", async () => {

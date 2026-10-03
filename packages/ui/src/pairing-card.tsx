@@ -4,7 +4,10 @@ import qrcode from "qrcode-generator"
 import { useEffect, useMemo, useState } from "react"
 
 import { Button } from "./components/ui/button"
+import { useCommandLinkView } from "./command-links.js"
+import { printedCommand } from "./printed-command.js"
 import { pairingAddressOf, type IssuedPairingCode, type PairingAddressReport } from "./pairing-address.js"
+import type { TailnetReachController } from "./tailnet-reach-card.js"
 
 export type { IssuedPairingCode, PairingAddressReport } from "./pairing-address.js"
 
@@ -25,19 +28,53 @@ const kinds: Record<Kind, { label: string; noun: string; client: ClientKind; Ico
   browser: { label: "Web browser", noun: "a browser", client: "web", Icon: GlobeIcon, how: "Open the address in the browser and type the code." },
 }
 
-type Problem = { title: string; mono: string; still: string; next: string }
+type Problem = { title: string; mono: string; still: string; next: string; refusal?: string; action?: { label: string; primary: boolean; run: () => void } }
 
 // The daemon's problem text is shared with `domovoid pair`, which ends it with
 // "then run this again"; the card has its own next step, so the tail goes.
-function problemFor(report: PairingAddressReport, kind: Kind): Problem | undefined {
+// With the desktop's tailnet switch (Q404 A), the design's two actions lead
+// to it: a loopback daemon to the setting, a missing certificate to
+// Tailscale, which turning the switch on (or renewing) asks for.
+function problemFor(report: PairingAddressReport, kind: Kind, tailnet: TailnetReachController | undefined): Problem | undefined {
   const noun = kinds[kind].noun
   if ("problem" in report) {
-    return { title: `No code: ${noun} would not trust this daemon`, mono: report.problem.replace(/,? then run this again\.$/u, "."), still: "Sessions and this window are unaffected.", next: "Give the daemon a certificate for its tailnet name, then show a code." }
+    const name = tailnet?.report && tailnet.report.state !== "none" ? tailnet.report.name : "this machine's name"
+    if (tailnet?.running?.direction === "on") {
+      return { title: "Asking Tailscale for a certificate", mono: `tailscale cert ${name}`, still: "The daemon restarts once the certificate is stored.", next: "The code button comes back when the certificate arrives." }
+    }
+    if (tailnet?.failure?.outcome.reason === "https-off") {
+      return { title: "No code: HTTPS certificates are off for this tailnet", mono: name, still: "Domovoi stopped and changed nothing.", next: "A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console.", action: { label: "Try again", primary: false, run: () => void tailnet.turnOn() } }
+    }
+    return {
+      title: `No code: ${noun} would not trust this daemon`, mono: report.problem.replace(/,? then run this again\.$/u, "."), still: "Sessions and this window are unaffected.",
+      ...(tailnet
+        ? { next: "Ask Tailscale for one. The key stays on this machine.", action: { label: "Get it from Tailscale", primary: true, run: () => void tailnet.turnOn() } }
+        : { next: "Give the daemon a certificate for its tailnet name, then show a code." }),
+      // Review of 049b1383 (P3-d): why the last request did not get one.
+      ...(tailnet?.failure?.direction === "on" ? { refusal: tailnet.failure.outcome.message } : {}),
+    }
   }
   if (report.loopback) {
     // A browser on this machine can reach loopback; the one that cannot is
     // elsewhere (ruled 2026-09-23).
-    return { title: `No code: ${kind === "browser" ? "a browser on another device" : noun} cannot reach this daemon`, mono: "listening on 127.0.0.1 only", still: "Sessions and this window are unaffected.", next: "Let the daemon answer on your tailnet, then show a code." }
+    const who = kind === "browser" ? "a browser on another device" : noun
+    const name = tailnet?.report && tailnet.report.state !== "none" ? tailnet.report.name : "this machine's name"
+    if (tailnet?.running?.direction === "on") {
+      return { title: "Making this machine reachable from your tailnet", mono: `tailscale cert ${name}`, still: "The daemon restarts once the certificate is stored.", next: "The code button comes back when the service has restarted." }
+    }
+    if (tailnet?.failure?.outcome.reason === "https-off") {
+      return { title: "No code: HTTPS certificates are off for this tailnet", mono: name, still: "Domovoi stopped and changed nothing.", next: "A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console.", action: { label: "Go to the setting", primary: false, run: tailnet.reveal } }
+    }
+    if (tailnet?.report?.state === "none") {
+      return { title: "No code: there is no tailnet on this machine", mono: tailnet.report.detail, still: "Sessions and this window are unaffected.", next: "Domovoi does not set one up for you. Bring Tailscale up, then come back." }
+    }
+    if (tailnet?.report?.state === "off") {
+      return { title: `No code: ${who} cannot reach this machine yet`, mono: "not reachable from your tailnet", still: "Sessions and this window are unaffected.", next: "Turn on Reach this machine from my tailnet, then show a code.", action: { label: "Go to the setting", primary: true, run: tailnet.reveal } }
+    }
+    return {
+      title: `No code: ${who} cannot reach this daemon`, mono: "listening on 127.0.0.1 only", still: "Sessions and this window are unaffected.", next: "Let the daemon answer on your tailnet, then show a code.",
+      ...(tailnet ? { action: { label: "Go to the tailnet setting", primary: true, run: tailnet.reveal } } : {}),
+    }
   }
   return undefined
 }
@@ -71,6 +108,7 @@ export function PairingCard({
   inAppDaemon = false,
   onIssueCode,
   onCopy,
+  tailnet,
 }: {
   connected: boolean
   // A watching window can see the card and ask for nothing.
@@ -78,8 +116,12 @@ export function PairingCard({
   inAppDaemon?: boolean
   onIssueCode: (client: ClientKind) => Promise<IssuedPairingCode>
   onCopy: (text: string) => Promise<void>
+  // The desktop's tailnet switch, the one the Settings card draws.
+  tailnet?: TailnetReachController
 }) {
   const [kind, setKind] = useState<Kind>("phone")
+  // Q336 A: the printed command names what runs on this machine.
+  const links = useCommandLinkView()
   const [issued, setIssued] = useState<IssuedPairingCode | null>(null)
   // The kind the shown code was issued for; the picker can move on without it.
   const [issuedKind, setIssuedKind] = useState<Kind>("phone")
@@ -116,7 +158,7 @@ export function PairingCard({
   }
 
   const address = issued ? pairingAddressOf(issued) : undefined
-  const problem = address ? problemFor(address, issuedKind) : undefined
+  const problem = address ? problemFor(address, issuedKind, tailnet) : undefined
   const expired = issued !== null && left === 0
   const codeShown = issued !== null && !expired && !problem && address !== undefined && !("problem" in address)
   const grants = phoneAndTabletPromise.map((line) => ({ text: line.text, tone: line.tone === "granted" ? "bg-success" : "bg-info" }))
@@ -156,7 +198,7 @@ export function PairingCard({
                 })}
               </div>
               <div className="flex flex-wrap items-center gap-3">
-                <Button type="button" disabled={readOnly || !connected || pending} onClick={() => void show()}>
+                <Button type="button" disabled={readOnly || !connected || pending || tailnet?.running !== undefined} onClick={() => void show()}>
                   {readOnly ? <LockIcon data-icon="inline-start" /> : <QrCodeIcon data-icon="inline-start" />}
                   {expired || problem ? "Show another" : "Show a pairing code"}
                 </Button>
@@ -165,12 +207,13 @@ export function PairingCard({
               {readOnly ? (
                 <div className="flex flex-col gap-1">
                   <span className="text-[11.5px] text-warn-dim">Locked: this window is watching only, and only a full client can ask for a code.</span>
-                  <span className="font-machine text-[10.5px] text-faint">pair.issue refused · watch_only_client</span>
+                  {/* The daemon's refusal of a watching credential (Q347 A). */}
+                  <span className="font-machine text-[10.5px] text-faint">device.issueCode refused · watching-only credential</span>
                 </div>
               ) : (
                 <div className="flex flex-wrap items-baseline gap-2 text-[11px] text-muted-foreground">
                   <span>The same code as</span>
-                  <span className="font-machine text-foreground">{`domovoid pair --client ${kinds[kind].client}`}</span>
+                  <span className="font-machine text-foreground">{printedCommand(`domovoid pair --client ${kinds[kind].client}`, links)}</span>
                 </div>
               )}
             </>
@@ -210,6 +253,10 @@ export function PairingCard({
               <span className="font-machine text-[10.5px] text-faint">{problem ? problem.mono : `${issued.code} · 180s`}</span>
               <span className="text-muted-foreground">{problem ? problem.still : "No device paired with it."}</span>
               <span className="text-muted-foreground">{problem ? problem.next : "Show another code to try again."}</span>
+              {problem?.refusal ? <span role="alert" className="text-destructive">{problem.refusal}</span> : null}
+              {problem?.action ? (
+                <Button type="button" size="sm" variant={problem.action.primary ? "default" : "outline"} className="mt-1 self-start" onClick={problem.action.run}>{problem.action.label}</Button>
+              ) : null}
             </div>
           ) : null}
           {error ? <p role="alert" className="m-0 text-[11.5px] text-destructive">{error}</p> : null}

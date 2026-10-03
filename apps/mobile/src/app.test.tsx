@@ -491,6 +491,62 @@ describe("App", () => {
     expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
   })
 
+  // Skills design step 16 (ruling Q203 A): a phone start refused over a
+  // repository git filter shows the refusal, opens what is held back, and
+  // says trust is granted from desktop or web. The phone never asks to trust.
+  it("shows a start refused over a git filter and opens what is held back", async () => {
+    const snapshot = workspace()
+    const runtime = billing.runtime
+    snapshot.machine.providers = [{ id: runtime.provider, command: runtime.provider, status: "ready", sessionCapable: true }]
+    // The Sessions tab offers a fresh start when no session exists, so the
+    // snapshot holds nothing that names one.
+    Object.assign(snapshot, { sessions: [], approvals: [], activeSessionId: null, thread: [], workingPlans: [], artifacts: [], annotations: [] })
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: "Start a session" }))
+    await fireEvent.changeText(screen.getByLabelText("What to do"), "Rotate the staging keys")
+    await fireEvent.press(screen.getByRole("button", { name: "Start" }))
+    await settle()
+    await act(async () => {
+      socket.answer("runtime.discover", {
+        machineId: snapshot.machine.id,
+        provider: runtime.provider,
+        status: "ready",
+        models: [{ provider: runtime.provider, id: runtime.model, displayName: runtime.model, description: "", supportedReasoningEfforts: [runtime.reasoning], defaultReasoningEffort: runtime.reasoning, isDefault: true }],
+        defaultRuntime: runtime,
+        permissionModes: [runtime.permissionMode],
+        supportsAuto: runtime.permissionMode === "build",
+      })
+    })
+    await settle()
+    const create = socket.requests("session.create")[0]!
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: create.id, error: {
+        code: -32020,
+        message: "This repository's own Git config sets the filter \"sops\".",
+        data: {
+          kind: "repository-git-filter",
+          projectId: snapshot.project!.id,
+          configDigest: `sha256:${"a".repeat(64)}`,
+          trust: { state: "untrusted", reason: "not-trusted" },
+          drivers: [{ name: "sops", scope: "local" }],
+          omittedDrivers: 0,
+        },
+      } }) })
+    })
+    await settle()
+
+    expect(screen.getByText("Domovoi did not start this session")).toBeOnTheScreen()
+    expect(screen.getByText(`Checking out acme-api would run the sops filter driver, which is not trusted on ${snapshot.machine.name}.`)).toBeOnTheScreen()
+    expect(screen.getByText("Trust from desktop or web")).toBeOnTheScreen()
+    expect(socket.requests("session.send")).toEqual([])
+
+    await fireEvent.press(screen.getByRole("button", { name: "See what is held back" }))
+    await settle()
+    expect(socket.requests("tool.inventory").map((frame) => frame.params)).toEqual([{}])
+    expect(screen.getByText(`Reading the agents' files on ${snapshot.machine.name}.`)).toBeOnTheScreen()
+    expect(socket.sent.filter((frame) => frame.method.startsWith("repository."))).toEqual([])
+  })
+
   // An inventory read on an earlier visit is not a claim about now: Tools
   // opened again while the connection is down shows nothing read, not it.
   it("does not show the last inventory when Tools opens again while disconnected", async () => {

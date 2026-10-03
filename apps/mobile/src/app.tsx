@@ -46,6 +46,7 @@ import { DenyExplainScreen } from "./screens/deny-explain"
 import { ArtifactScreen, type PreviewRender } from "./screens/artifact"
 import { fleetLoader } from "./fleet-load"
 import { freshSessionReadiness, startFreshSession } from "./fresh-session"
+import { phoneRefusalFrom, type PhoneRefusal } from "./session-refusal"
 import { MachinesScreen } from "./screens/fleet"
 import { annotationRows } from "./review-rows"
 import { SessionScreen, type TellDelivery } from "./screens/session"
@@ -167,6 +168,7 @@ export function App() {
   const [freshOpen, setFreshOpen] = useState(false)
   const [freshStarting, setFreshStarting] = useState(false)
   const [freshProblem, setFreshProblem] = useState("")
+  const [freshRefusal, setFreshRefusal] = useState<PhoneRefusal | undefined>(undefined)
   const [composerFocused, setComposerFocused] = useState(false)
   // Stable, so the thread's memoized rows are not redrawn on every keystroke.
   const watchReceipt = useCallback(() => setComposerFocused(false), [])
@@ -539,11 +541,17 @@ export function App() {
   // opens it so the person lands where the work is.
   const [starting, setStarting] = useState(false)
   const [startProblem, setStartProblem] = useState("")
+  const [startRefusal, setStartRefusal] = useState<PhoneRefusal | undefined>(undefined)
+  // A start refused over a repository git filter reads as a refusal card with
+  // the filters it names (Skills design step 16); any other failure keeps the
+  // daemon's sentence.
+  const refusalOf = (cause: unknown) => phoneRefusalFrom(cause, snapshot?.project?.name ?? "this repository", snapshot?.machine.name ?? "the machine")
   const startLike = async (sessionId: string, prompt: string, mode: PermissionMode) => {
     const like = snapshot?.sessions.find((session) => session.id === sessionId)
     if (!like) return
     setStarting(true)
     setStartProblem("")
+    setStartRefusal(undefined)
     try {
       const request = startLikeRequest(like, prompt, mode)
       const created = workspaceSnapshotSchema.parse(await mutate("session.create", {
@@ -561,6 +569,7 @@ export function App() {
       setAttachments([])
       setAttachProblem("")
     } catch (cause) {
+      setStartRefusal(refusalOf(cause))
       setStartProblem(cause instanceof Error ? cause.message : "The session was not started")
     } finally {
       setStarting(false)
@@ -580,15 +589,23 @@ export function App() {
     if (!snapshot) return
     setFreshStarting(true)
     setFreshProblem("")
+    setFreshRefusal(undefined)
     try {
       const sessionId = await startFreshSession(snapshot, prompt, mutate, client)
       setFreshOpen(false)
       setOpenSessionId(sessionId)
     } catch (cause) {
+      setFreshRefusal(refusalOf(cause))
       setFreshProblem(cause instanceof Error ? cause.message : "The session was not started")
     } finally {
       setFreshStarting(false)
     }
+  }
+
+  // See what is held back: the refusal's way to the phone Tools screen.
+  const seeHeldBack = () => {
+    setFreshOpen(false)
+    setToolsOpen(true)
   }
 
   const cancelQueuedSend = async (sessionId: string, queueId: string) => {
@@ -791,6 +808,7 @@ export function App() {
             }}
             onNewSession={() => {
               setFreshProblem("")
+              setFreshRefusal(undefined)
               setFreshOpen(true)
             }}
             onOpenMachines={() => selectTab("machines")}
@@ -815,6 +833,8 @@ export function App() {
             project={snapshot.project?.name ?? snapshot.project?.path ?? "the open project"}
             starting={freshStarting}
             problem={freshProblem}
+            refusal={freshRefusal}
+            onSeeHeldBack={seeHeldBack}
             onStart={(prompt) => void startFresh(prompt)}
             onClose={() => { if (!freshStarting) setFreshOpen(false) }}
           />
@@ -870,6 +890,8 @@ export function App() {
             onRemoveAttachment={(index) => setAttachments((current) => current.filter((_item, at) => at !== index))}
             starting={starting}
             startProblem={startProblem}
+            startRefusal={startRefusal}
+            onSeeHeldBack={() => setToolsOpen(true)}
             onStartLike={(prompt, mode) => void startLike(openSession.id, prompt, mode)}
             onTellAgent={(text) => tellAgent(openSession.id, text)}
           />
@@ -975,6 +997,7 @@ export function App() {
                 onRefresh={() => void refreshWorkspace()}
                 onStartSession={() => {
                   setFreshProblem("")
+                  setFreshRefusal(undefined)
                   setFreshOpen(true)
                 }}
                 startDisabledReason={clientAccess === "watching"
@@ -1067,6 +1090,8 @@ export function App() {
           project={snapshot?.project?.name ?? snapshot?.project?.path ?? "the open project"}
           starting={freshStarting}
           problem={freshProblem}
+          refusal={freshRefusal}
+          onSeeHeldBack={seeHeldBack}
           onStart={(prompt) => void startFresh(prompt)}
           onClose={() => {
             if (!freshStarting) setFreshOpen(false)

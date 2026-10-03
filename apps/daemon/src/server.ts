@@ -9,6 +9,7 @@ import {
   buildVersion,
   maximumRpcMessageBytes,
   type SessionAttachmentRefusal,
+  type SessionReviewRefusal,
   boundedClientThread,
   canonicalBase64DecodedByteLength,
   credentialSchema,
@@ -80,6 +81,7 @@ import {
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
   type SessionTurn,
+  type SnapshotTurn,
   type SessionTransferReconciliationReason,
   type SessionTransferCoverage,
   type SessionTransferPreview,
@@ -221,6 +223,7 @@ import {
   AnnotationVisualContextService,
   type AnnotationVisualContextReader,
 } from "./annotation-visual-context.js"
+import { AnnotationReviewError, resolveAnnotationReview } from "./annotation-context.js"
 import {
   composeProviderPrompt,
   PromptCompositionLimitError,
@@ -245,7 +248,7 @@ import type { RepositoryFilterTrustSource } from "./repository-git-filter-gate.j
 import { RepositoryGitConfigUnreadableError } from "./repository-git-filters.js"
 import { GitTooOldForIsolationError } from "./isolated-checkout.js"
 import { GitNotFoundError } from "./git-command.js"
-import { maximumRevokedTrustThreads, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
+import { gitFilterBlockReviewable, maximumRevokedTrustThreads, projectRootRead, repositoryTrustState } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant, RepositoryTrustStore } from "./repository-trust-store.js"
 import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { mergeSessionSnapshotSlice } from "./session-snapshot-slice.js"
@@ -272,8 +275,17 @@ import { UsageLedger, type TurnUsage } from "./usage.js"
 import { usageIdentity } from "./usage-accounting.js"
 import { StoredMachineIdentityMismatchError, type MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
+import {
+  defaultTailnetRetryMs,
+  tailnetExpiryDelay,
+  tailnetCertificateCheck,
+  tailnetStatusOf,
+  type DaemonTailnetListenerOptions,
+  type TailnetListenerState,
+} from "./tailnet-listener.js"
 import { wslSharePath } from "./wsl-open-target.js"
-import { PairingCodeError, PairingCodeService } from "./pairing-codes.js"
+import { PairingCodeError, PairingCodeService, PairingDeviceLimitError, pairingCodeTtlMs } from "./pairing-codes.js"
+import { PairingIssuerSlot } from "./pairing-issuer.js"
 import {
   DeviceLabelMismatchError,
   DeviceLimitReachedError,
@@ -294,7 +306,7 @@ import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { TerminalReplayBuffer, type TerminalReplayRecord } from "./terminal-replay.js"
-import { pairingAddressFor } from "./pairing-address.js"
+import { certificateHostNames, pairingAddressFor } from "./pairing-address.js"
 import { searchSessions } from "./session-search.js"
 import {
   type RpcOutboundBackpressureOptions,
@@ -325,6 +337,7 @@ import {
   clearWorkingPlanApprovalBlockers,
   discardPendingWorkingPlanEdit,
   finalizePendingWorkingPlanEdit,
+  isWorkingPlanArtifact,
   markWorkingPlanDelivered,
   submitWorkingPlanEdit,
   syncWorkingPlanArtifact,
@@ -759,12 +772,7 @@ function writePlanArtifact(
   append: boolean,
 ): Artifact {
   const artifactId = `plan-${sessionId}`
-  const legacyPrefix = `${artifactId}-`
-  const matching = artifacts.filter((artifact) =>
-    artifact.sessionId === sessionId
-    && artifact.type === "plan"
-    && (artifact.id === artifactId || artifact.id.startsWith(legacyPrefix)),
-  )
+  const matching = artifacts.filter((artifact) => isWorkingPlanArtifact(artifact, sessionId))
 
   if (matching.length === 0) {
     const artifact: Artifact = {
@@ -789,6 +797,8 @@ function writePlanArtifact(
     ? `${matching.map((candidate) => candidate.content ?? "").join("")}${content}`
     : content
   artifact.revision = matching.reduce((total, candidate) => total + candidate.revision, 0) + 1
+  delete artifact.path
+  delete artifact.variant
 
   for (let index = artifacts.length - 1; index >= 0; index -= 1) {
     if (matching.includes(artifacts[index]!) && artifacts[index] !== artifact) artifacts.splice(index, 1)
@@ -1053,7 +1063,45 @@ export class ActiveAssistantItemCache {
 // Every snapshot a client receives states the active projects and the cap.
 // The daemon keeps one project open (J31 S1), so the list is that project
 // alone. It is built here, the one place snapshots are built for clients.
-export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
+// Reads the usage ledger's record of the named turns of one session.
+export type ClientTurnLoader = (sessionId: string, turnIds: readonly string[]) => readonly SessionTurn[]
+
+// Ruling Q401: the start, end and status of every turn the client thread
+// links, from the ledger, for "Worked for N" and the header clock. A turn the
+// ledger recorded at a daemon restart gets no end: the restart time is when the
+// daemon noticed, not when the turn ended.
+function clientTurns(thread: WorkspaceSnapshot["thread"], loadTurns: ClientTurnLoader): SnapshotTurn[] {
+  const linked = new Map<string, Set<string>>()
+  for (const item of thread) {
+    if (!item.turnId) continue
+    const ids = linked.get(item.sessionId) ?? new Set<string>()
+    ids.add(item.turnId)
+    linked.set(item.sessionId, ids)
+  }
+  const turns: SnapshotTurn[] = []
+  // Turn ids are unique in a snapshot. One the ledger answers twice, in this
+  // session or another, is listed once rather than failing the snapshot.
+  const emitted = new Set<string>()
+  for (const [sessionId, ids] of linked) {
+    for (const turn of loadTurns(sessionId, [...ids])) {
+      if (turn.sessionId !== sessionId || !ids.has(turn.id) || emitted.has(turn.id)) continue
+      emitted.add(turn.id)
+      turns.push({
+        id: turn.id,
+        sessionId,
+        ordinal: turn.ordinal,
+        startedAt: turn.startedAt,
+        ...(turn.completedAt !== undefined && turn.completedAtSource !== "daemon-restart"
+          ? { completedAt: turn.completedAt }
+          : {}),
+        status: turn.status,
+      })
+    }
+  }
+  return turns
+}
+
+export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot, loadTurns?: ClientTurnLoader): WorkspaceSnapshot {
   const projects = snapshot.project ? [snapshot.project] : []
   // The store refuses state with several projects (ruling Q257), so nothing
   // here belongs to a project the list leaves out. If something ever does,
@@ -1067,12 +1115,16 @@ export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot): Workspa
   }
   const thread = boundedClientThread(snapshot.thread, snapshot.activeSessionId)
   const historyTruncated = thread.length < snapshot.thread.length
+  // Turns are derived for each client snapshot and never stored.
+  const { turns: _stored, ...state } = snapshot
+  const turns = loadTurns ? clientTurns(thread, loadTurns) : []
   return {
-    ...snapshot,
+    ...state,
     projects,
     projectCap: activeProjectCap,
     thread,
     ...(historyTruncated ? { historyTruncated: true } : {}),
+    ...(turns.length > 0 ? { turns } : {}),
   }
 }
 
@@ -1505,6 +1557,10 @@ export type DaemonServerOptions = {
   annotationVisualContext?: AnnotationVisualContextStore
   machineIdentity?: MachineIdentity
   tls?: TlsMaterial
+  // TailnetReach (Q404 A): a second listener, TLS only, on this machine's
+  // Tailscale address and the loopback listener's port. It needs
+  // allowRemoteTransport, as any listener off this machine does.
+  tailnetListener?: DaemonTailnetListenerOptions
   advertiseHost?: string
   tailnetHost?: string
   sshTunnels?: readonly ConfiguredSshTunnel[]
@@ -1619,7 +1675,12 @@ export class DomovoiDaemon {
   readonly allowedOrigins: ReadonlySet<string>
   readonly #webAppUrl: string | undefined
   #http: HttpServer | undefined
-  #websocket: WebSocketServer | undefined
+  readonly #tailnetOptions: DaemonTailnetListenerOptions | undefined
+  #tailnet: TailnetListenerState = { state: "off" }
+  #tailnetHttp: HttpServer | undefined
+  #tailnetRpc: WebSocketServer | undefined
+  #tailnetRetry: ReturnType<typeof setTimeout> | undefined
+  #tailnetExpiryCheck: ReturnType<typeof setTimeout> | undefined
   #rpcClients = new Set<RpcOutboundSocket>()
   #relaySockets = new Set<DaemonRelaySocket>()
   #relayStaticKey: Uint8Array | undefined
@@ -1690,6 +1751,10 @@ export class DomovoiDaemon {
   #closedTerminals = new Map<string, ClosedTerminal>()
   #authToken: string
   #authenticatedClients = new WeakSet<RpcOutboundSocket>()
+  // Tailnet connections open when its certificate expired, or upgraded once
+  // their listener stopped admitting. Nothing more they send is handled; see
+  // #expireTailnetIfDue and #rpcServer.
+  #expiredTailnetClients = new WeakSet<RpcOutboundSocket>()
   #deviceCredentials = new WeakMap<RpcOutboundSocket, {
     token: string
     verified: VerifiedDeviceCredential
@@ -1831,6 +1896,14 @@ export class DomovoiDaemon {
   #wsl: MachineWslFacts | undefined
   #advertisedProtocolVersion: string
   #pairing: PairingCodeService | undefined
+  // Ruling Q354 A. The open client code's issuing connection, the one place
+  // its outcome goes. A later code, the outcome that ends this one, the code
+  // running out its time or the connection closing clears it, so a connection
+  // is never told about a code it did not issue and no closed socket is kept.
+  #pairingIssuer = new PairingIssuerSlot<RpcOutboundSocket>()
+  // Set while the usage ledger cannot answer a snapshot's turn times, so the
+  // failure is reported once (ruling Q401, review P3-6).
+  #turnTimesUnreadable = false
   #machineCredentials: AsyncMachineCredentials | undefined
   #fleetEnrollment: FleetEnrollmentService
   #readTransferBundle: ((bundlePath: string) => Promise<Buffer>) | undefined
@@ -1936,9 +2009,10 @@ export class DomovoiDaemon {
         ...(signal ? { signal } : {}),
       }),
     })
-    if (!isLoopbackHost(this.host) && !options.allowRemoteTransport) {
+    if ((!isLoopbackHost(this.host) || options.tailnetListener) && !options.allowRemoteTransport) {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
     }
+    this.#tailnetOptions = options.tailnetListener
     this.#webAppUrl = options.webAppUrl
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://", "domovoi-app://desktop"],
@@ -2145,6 +2219,15 @@ export class DomovoiDaemon {
   // that draws a code.
   #pairingAddress(): PairingAddress {
     const port = this.address?.port ?? this.requestedPort
+    // While the tailnet listener answers, a code names the host on its
+    // certificate: that is the address a phone off this machine can dial.
+    const tailnet = this.#tailnetOptions?.tls
+    if (this.#tailnet.state === "listening" && tailnet && "cert" in tailnet) {
+      return pairingAddressFor(
+        { host: this.#tailnet.address, port: this.#tailnet.port, tls: { certPath: "the tailnet certificate this daemon serves" } },
+        () => tailnet.cert.toString("utf8"),
+      )
+    }
     const tls = this.#tls
     return pairingAddressFor(
       { host: this.host, port, ...(tls ? { tls: { certPath: "the certificate this daemon serves" } } : {}) },
@@ -2170,6 +2253,7 @@ export class DomovoiDaemon {
         ...(this.#tls ? { tls: true } : {}),
         ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
         ...(this.#tailnetHost ? { tailnetHost: this.#tailnetHost } : {}),
+        ...(this.#tailnet.state === "listening" ? { tailnetListener: true } : {}),
       }),
       ...(this.#wsl ? { wsl: this.#wsl } : {}),
     })
@@ -2866,7 +2950,43 @@ export class DomovoiDaemon {
 
   issuePairingCode(): { code: string; expiresAt: string } {
     if (!this.#pairing) throw new Error("Device pairing is unavailable")
-    return this.#pairing.issue(Date.now())
+    const { replacedPairingId, ...issued } = this.#pairing.issue(Date.now())
+    this.#codeReplaced(replacedPairingId)
+    return issued
+  }
+
+  #notifyPairingIssuer(
+    pairingId: string,
+    outcome: NotificationParams<"device.codeOutcome">,
+    codeEnded: boolean,
+  ): void {
+    const issuer = this.#pairingIssuer.issuer(pairingId, codeEnded)
+    if (issuer === undefined) return
+    // notifyClients writes only to an open, authenticated client connection.
+    this.#notifyClients([issuer], "device.codeOutcome", outcome)
+  }
+
+  #codeReplaced(replacedPairingId: string | undefined): void {
+    if (replacedPairingId !== undefined) {
+      this.#notifyPairingIssuer(replacedPairingId, { pairingId: replacedPairingId, outcome: "closed", reason: "replaced" }, true)
+    }
+    // Whatever was open is gone, reported or not.
+    this.#pairingIssuer.clear()
+  }
+
+  // A refusal that ended the open code tells its issuer why. An expired code
+  // says nothing: its issuer holds the expiry. A plain wrong guess leaves the
+  // code open and names no code.
+  #reportPairingRefusal(error: PairingCodeError): void {
+    const pairingId = error.closedPairingId
+    if (pairingId === undefined) return
+    if (error.refusal === "attempts-exhausted") {
+      this.#notifyPairingIssuer(pairingId, { pairingId, outcome: "closed", reason: "attempts-exhausted" }, true)
+    } else if (error.refusal === "wrong-kind") {
+      this.#notifyPairingIssuer(pairingId, { pairingId, outcome: "refused", reason: "wrong-kind" }, true)
+    } else {
+      this.#pairingIssuer.issuer(pairingId, true)
+    }
   }
 
   get authToken(): string {
@@ -2891,7 +3011,9 @@ export class DomovoiDaemon {
     signal?.throwIfAborted()
     await this.#recoverSessionArchives()
     signal?.throwIfAborted()
-    this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.())
+    // Every turn still pending ran into this daemon's previous stop; when it
+    // ended is unknown (ruling Q401).
+    this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.([], { daemonRestart: true }))
     if (this.#dropUndeliveredRules(this.#snapshot, "startup-recovery").length > 0) {
       workspaceSnapshotSchema.parse(this.#snapshot)
       this.#store.save(this.#snapshot)
@@ -2911,7 +3033,32 @@ export class DomovoiDaemon {
         requestHandler,
       )
       : (requestHandler: Parameters<typeof createServer>[1]) => createServer(requestHandler)
-    this.#http = listen((request, response) => {
+    this.#http = listen(this.#requestHandler(() => this.address && { hosts: [this.address.host], port: this.address.port }))
+    this.#rpcServer(this.#http)
+
+    await new Promise<void>((resolve, reject) => {
+      this.#http!.once("error", reject)
+      this.#http!.listen(this.requestedPort, this.host, () => resolve())
+    })
+    signal?.throwIfAborted()
+    // Beside loopback, on the same port. Its failure never stops the daemon:
+    // the desktop and the CLI attach on loopback, which already answers.
+    await this.#openTailnetListener(this.address!.port)
+
+    // A dead target must not hold daemon startup hostage. Each frozen source
+    // remains read-only while its own resource queue reconciles in background.
+    this.#scheduleSessionTransferRecovery()
+    this.#scheduleRecoveredOwnershipChecks()
+    this.#fleetEnrollment.start()
+    if (this.#providerProbe) this.#queueProviderRefresh(true)
+
+    return this.address!
+  }
+
+  // Shared by the loopback and tailnet listeners. listener: the hosts an
+  // artifact request's Host may name on the listener it arrived on, and its port.
+  #requestHandler(listener: () => { hosts: readonly string[]; port: number } | undefined): Parameters<typeof createServer>[1] {
+    return (request, response) => {
       if (request.url === "/healthz") {
         response.writeHead(200, { "content-type": "application/json" })
         response.end(JSON.stringify({ status: "ok", protocolVersion: this.#advertisedProtocolVersion }))
@@ -2919,7 +3066,7 @@ export class DomovoiDaemon {
       }
 
       if (request.method === "GET" && request.url?.startsWith("/artifacts/")) {
-        if (!this.#acceptsHost(request.headers.host)) {
+        if (!this.#acceptsHost(request.headers.host, listener())) {
           response.writeHead(404, { "content-type": "application/json" })
           response.end(JSON.stringify({ error: "not_found" }))
           return
@@ -2930,14 +3077,20 @@ export class DomovoiDaemon {
 
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
-    })
+    }
+  }
 
+  // The RPC endpoint on one listener. Every listener admits, authenticates and
+  // budgets a connection the same way; nothing here depends on which one,
+  // except that a listener may stop admitting while the daemon runs:
+  // listening is false from then on, for that listener only.
+  #rpcServer(server: HttpServer, listening: () => boolean = () => true): WebSocketServer {
     const verifyClient: VerifyClientCallbackSync = ({ origin, req }) =>
-      !this.#stopping && !this.#stopped
+      !this.#stopping && !this.#stopped && listening()
       && (!origin || this.allowedOrigins.has(origin) || namesThisDaemon(origin, req))
 
-    this.#websocket = new WebSocketServer({
-      server: this.#http,
+    const websocket = new WebSocketServer({
+      server,
       path: "/rpc",
       verifyClient,
       maxPayload: maximumWebSocketPayloadBytes,
@@ -2945,11 +3098,11 @@ export class DomovoiDaemon {
     // The WebSocket server re-emits its HTTP server's errors. A listen failure
     // such as a port in use is answered by start() below; without a listener
     // here the re-emitted copy throws first and start() never settles.
-    this.#websocket.on("error", (error) => {
+    websocket.on("error", (error) => {
       // Before listening, start() answers the listen failure itself.
-      if (this.#http?.listening) this.#reportError("Domovoi WebSocket server failed", error)
+      if (server.listening) this.#reportError("Domovoi WebSocket server failed", error)
     })
-    this.#websocket.on("headers", (headers, request) => {
+    websocket.on("headers", (headers, request) => {
       const nonce = request.headers["x-domovoi-owner-nonce"]
       const peer = request.socket.remoteAddress
       const local = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
@@ -2960,7 +3113,15 @@ export class DomovoiDaemon {
         headers.push(`X-Domovoi-Owner-Proof: ${localOwnerProof(this.#localOwner.secret, this.#localOwner.identity, nonce)}`)
       }
     })
-    this.#websocket.on("connection", (socket, request) => {
+    websocket.on("connection", (socket, request) => {
+      // Codex review round 3 (P3): an upgrade verified as its listener
+      // stopped. Fenced and ended before anything it sends is read.
+      if (!listening()) {
+        this.#expiredTailnetClients.add(socket)
+        socket.on("error", () => {})
+        socket.terminate()
+        return
+      }
       this.#rpcClients.add(socket)
       // Use the socket peer, never caller-authored forwarding headers. NAT or
       // proxy peers share a budget; neither a reconnect nor hello resets it.
@@ -2968,6 +3129,7 @@ export class DomovoiDaemon {
       socket.once("close", () => {
         this.#rpcClients.delete(socket)
         this.#rpcOutbound.forget(socket)
+        this.#pairingIssuer.forget(socket)
         this.#releaseTerminalOwnership(socket)
         // A stopping daemon keeps the fence: its sockets close before it has
         // finished, and no turn may start in that gap either.
@@ -3009,6 +3171,7 @@ export class DomovoiDaemon {
         socket.once("close", () => clearTimeout(deadline))
       }
       socket.on("message", (data) => {
+        if (this.#expiredTailnetClients.has(socket)) return
         if (
           !this.#authenticatedClients.has(socket)
           && webSocketPayloadByteLength(data) > maximumAuthenticationPayloadBytes
@@ -3020,21 +3183,120 @@ export class DomovoiDaemon {
         this.#dispatch(socket, raw)
       })
     })
+    return websocket
+  }
 
-    await new Promise<void>((resolve, reject) => {
-      this.#http!.once("error", reject)
-      this.#http!.listen(this.requestedPort, this.host, () => resolve())
+  // TailnetReach (Q404 A). Opens the second listener, or records why not and
+  // says so in the daemon log. Never throws: loopback already answers.
+  async #openTailnetListener(port: number): Promise<void> {
+    const options = this.#tailnetOptions
+    if (!options || this.#stopping || this.#stopped) return
+    const { address } = options
+    const refuse = (reason: string, retrying: boolean, notAfter?: Date) => {
+      this.#tailnet = { state: "refused", address, reason, retrying, ...(notAfter ? { notAfter } : {}) }
+      this.#reportError("Domovoi did not start the tailnet listener", reason)
+    }
+    if (!("cert" in options.tls)) return refuse(options.tls.refused, false)
+    const certificate = tailnetCertificateCheck(options.tls.cert, Date.now())
+    if ("refused" in certificate) return refuse(certificate.refused!, false, "notAfter" in certificate ? certificate.notAfter : undefined)
+    const { notAfter } = certificate
+    let server: HttpServer
+    // Review of 049b1383 (P2-4): a phone dials the certificate's name, not
+    // the address, and builds preview URLs from it, so an artifact request may
+    // name the address, a name on the certificate or the advertised tailnet
+    // name. TLS has already held the connection to this certificate.
+    const hosts = [address, ...certificateHostNames(options.tls.cert.toString("utf8")), ...(this.#tailnetHost ? [this.#tailnetHost] : [])]
+    try {
+      server = createSecureServer({ cert: options.tls.cert, key: options.tls.key }, this.#requestHandler(() => ({ hosts, port })))
+    } catch {
+      // Node names only "key values mismatch" or a parse failure here.
+      return refuse("The tailnet certificate and key do not belong together, so the daemon answers on this computer only.", false, notAfter)
+    }
+    // Admits only while this server is the tailnet listener: not before it
+    // listens, and not once expiry, a refusal or the daemon's stop let it go.
+    const rpc = this.#rpcServer(server, () => this.#tailnetHttp === server && this.#tailnet.state === "listening")
+    let listened = false
+    return new Promise<void>((settle) => {
+      server.once("error", (error: NodeJS.ErrnoException) => {
+        // After listening, the RPC server's own handler reports errors.
+        if (listened) return
+        rpc.close()
+        server.close()
+        settle()
+        if (this.#stopping || this.#stopped) return
+        // Tailscale assigns the address once it is up, which at login can be
+        // after the service starts. Only that is tried again.
+        const retrying = error.code === "EADDRNOTAVAIL"
+        refuse(retrying
+          ? `The tailnet address ${address} is not on this machine (${error.code}). Tailscale may not be up yet; the daemon tries again every ${Math.max(1, Math.round((options.retryMs ?? defaultTailnetRetryMs) / 1_000))} seconds and answers on this computer meanwhile.`
+          : `The daemon could not listen on ${address} port ${port} (${error.code ?? "unknown error"}), so it answers on this computer only.`,
+        retrying, notAfter)
+        if (retrying) {
+          this.#tailnetRetry = setTimeout(() => {
+            this.#tailnetRetry = undefined
+            void this.#openTailnetListener(port)
+          }, options.retryMs ?? defaultTailnetRetryMs)
+          this.#tailnetRetry.unref?.()
+        }
+      })
+      server.listen(port, address, () => {
+        listened = true
+        settle()
+        if (this.#stopping || this.#stopped) {
+          rpc.close()
+          server.close()
+          return
+        }
+        this.#tailnetHttp = server
+        this.#tailnetRpc = rpc
+        this.#tailnet = { state: "listening", address, port, notAfter }
+        this.#armTailnetExpiry(notAfter, options.expiryRecheckMs)
+      })
     })
-    signal?.throwIfAborted()
+  }
 
-    // A dead target must not hold daemon startup hostage. Each frozen source
-    // remains read-only while its own resource queue reconciles in background.
-    this.#scheduleSessionTransferRecovery()
-    this.#scheduleRecoveredOwnershipChecks()
-    this.#fleetEnrollment.start()
-    if (this.#providerProbe) this.#queueProviderRefresh(true)
+  // Codex review round 1 (P3-7): a timer armed for notAfter itself, checked
+  // against the clock when it fires and armed again while the listener is up.
+  #armTailnetExpiry(notAfter: Date, recheckMs: number | undefined): void {
+    this.#tailnetExpiryCheck = setTimeout(() => {
+      this.#tailnetExpiryCheck = undefined
+      this.#expireTailnetIfDue()
+      if (this.#tailnet.state === "listening") this.#armTailnetExpiry(notAfter, recheckMs)
+    }, tailnetExpiryDelay(notAfter.getTime(), Date.now(), recheckMs))
+    this.#tailnetExpiryCheck.unref?.()
+  }
 
-    return this.address!
+  // An expired certificate is refused by every device, so the tailnet
+  // listener closes at notAfter, with every connection it carried, and the
+  // daemon answers on this computer only until a restart serves a renewed one.
+  // Checked when the timer armed for notAfter fires and whenever
+  // tailnet.status is asked.
+  #expireTailnetIfDue(): void {
+    const state = this.#tailnet
+    const tls = this.#tailnetOptions?.tls
+    if (state.state !== "listening" || !tls || !("cert" in tls) || Date.now() < state.notAfter.getTime()) return
+    const checked = tailnetCertificateCheck(tls.cert, Date.now())
+    const reason = "refused" in checked && checked.refused ? checked.refused : "The tailnet certificate expired, so the daemon answers on this computer only."
+    this.#tailnet = { state: "refused", address: state.address, reason, retrying: false, notAfter: state.notAfter }
+    if (this.#tailnetExpiryCheck) clearTimeout(this.#tailnetExpiryCheck)
+    this.#tailnetExpiryCheck = undefined
+    // Codex review round 2 (P3): a graceful close keeps the connection open,
+    // and its messages arriving, while the client answers it, up to 30 seconds.
+    // The fence drops what arrives from now on, and what was queued but has
+    // not started; terminate ends the transport at once. Loopback is untouched.
+    // Codex review round 3 (P3): an upgrade still in flight on a transport
+    // accepted before expiry is not in the sweep. Closing the WebSocket
+    // server detaches its upgrade handler first, and the listener's
+    // admission check (#rpcServer) refuses and ends any socket it still makes.
+    this.#tailnetRpc?.close()
+    for (const client of this.#tailnetRpc?.clients ?? []) {
+      this.#expiredTailnetClients.add(client)
+      client.terminate()
+    }
+    this.#tailnetHttp?.close()
+    this.#tailnetHttp = undefined
+    this.#tailnetRpc = undefined
+    this.#reportError("Domovoi stopped the tailnet listener", reason)
   }
 
   stop(): Promise<void> {
@@ -3076,6 +3338,7 @@ export class DomovoiDaemon {
     }
     this.#closeAllTerminals()
     this.#dropClosedTerminals()
+    this.#pairingIssuer.clear()
     this.#rpcOutbound.dispose()
     for (const client of this.#rpcClients) client.close(1001, "daemon stopping")
 
@@ -3091,8 +3354,24 @@ export class DomovoiDaemon {
     } catch (error) {
       failures.push(error)
     }
+    if (this.#tailnetRetry) clearTimeout(this.#tailnetRetry)
+    this.#tailnetRetry = undefined
+    if (this.#tailnetExpiryCheck) clearTimeout(this.#tailnetExpiryCheck)
+    this.#tailnetExpiryCheck = undefined
+    this.#tailnetRpc?.close()
+    this.#tailnetRpc = undefined
+    try {
+      await new Promise<void>((resolve, reject) => {
+        if (!this.#tailnetHttp) return resolve()
+        this.#tailnetHttp.close((error) => (
+          error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve()
+        ))
+      })
+    } catch (error) {
+      failures.push(error)
+    }
+    this.#tailnetHttp = undefined
 
-    this.#websocket = undefined
     this.#rpcClients.clear()
     this.#relayStaticKey?.fill(0)
     this.#relayStaticKey = undefined
@@ -3516,7 +3795,7 @@ export class DomovoiDaemon {
         : []),
     ))
     this.#sealUnsettledApprovals()
-    this.#broadcastNotification("workspace.changed", workspaceSnapshotForClient(this.#snapshot), true)
+    this.#broadcastNotification("workspace.changed", this.#clientSnapshot(), true)
     this.#syncArtifactWatchActivity()
   }
 
@@ -3533,6 +3812,30 @@ export class DomovoiDaemon {
     try { update() } catch (error) {
       this.#reportError("Domovoi could not persist provider usage", error)
     }
+  }
+
+  // The snapshot a client receives, with the ledger's turn timing (ruling
+  // Q401). A ledger that cannot be read leaves turns out rather than failing
+  // the snapshot. It reports the failure once, not on every snapshot, and
+  // again only after a snapshot whose every session read cleanly: one session
+  // failing while another reads is still the same failure.
+  #clientSnapshot(): WorkspaceSnapshot {
+    let failed = false
+    const snapshot = workspaceSnapshotForClient(this.#snapshot, (sessionId, turnIds) => {
+      let turns: readonly SessionTurn[] = []
+      try {
+        turns = this.#usageLedger.turns?.(sessionId, turnIds) ?? []
+      } catch (error) {
+        failed = true
+        if (!this.#turnTimesUnreadable) {
+          this.#turnTimesUnreadable = true
+          this.#reportError("Domovoi could not read turn times for a snapshot", error)
+        }
+      }
+      return turns
+    })
+    if (!failed) this.#turnTimesUnreadable = false
+    return snapshot
   }
 
   #turnLink(sessionId: string, provider: string, threadId: string, turnId: string | undefined): { turnId?: string } {
@@ -3710,7 +4013,7 @@ export class DomovoiDaemon {
           frame,
           () => {
             this.#flushPendingWorkspaceDeltas()
-            return this.#notificationMessage("workspace.changed", workspaceSnapshotForClient(this.#snapshot))
+            return this.#notificationMessage("workspace.changed", this.#clientSnapshot())
           },
         )
       }
@@ -3760,7 +4063,7 @@ export class DomovoiDaemon {
     code: number,
     message: string,
     data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal
-      | RepositoryGitFilterRefusal,
+      | RepositoryGitFilterRefusal | SessionReviewRefusal,
   ): void {
     this.#send(socket, this.#errorFrame(id, { code, message, ...(data ? { data } : {}) }))
   }
@@ -4035,6 +4338,7 @@ export class DomovoiDaemon {
       prompt: params.prompt,
       ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
       ...(params.attachments ? { uploads: params.attachments } : {}),
+      ...(params.review ? { review: params.review } : {}),
       ...(credentialDeviceId ? { credentialDeviceId } : {}),
     }
     this.#store.replaceQueuedSessionSend?.(queued)
@@ -4144,6 +4448,7 @@ export class DomovoiDaemon {
         client: queued.origin.client,
         ...(queued.skillSelection ? { skillSelection: queued.skillSelection } : {}),
         ...(queued.uploads ? { attachments: queued.uploads } : {}),
+        ...(queued.review ? { review: queued.review } : {}),
       },
     }), signal)
     const result = await response
@@ -4165,6 +4470,7 @@ export class DomovoiDaemon {
     const rpcError = result.error as { data?: { kind?: unknown }; message?: unknown }
     const refused = rpcError.data?.kind === "turn-skill-selection-refused"
       || rpcError.data?.kind === "session-attachment-refused"
+      || rpcError.data?.kind === "session-review-refused"
     const state = current?.activeTurnId ? "unconfirmed" : refused ? "refused" : "held"
     const reason = typeof rpcError.message === "string"
       ? rpcError.message
@@ -5211,10 +5517,9 @@ export class DomovoiDaemon {
     }
   }
 
-  #acceptsHost(host: string | undefined): boolean {
-    const address = this.address
-    if (!host || !address) return false
-    return hostAuthorityMatches(host, address.host, address.port)
+  #acceptsHost(host: string | undefined, listener: { hosts: readonly string[]; port: number } | undefined): boolean {
+    if (!host || !listener) return false
+    return listener.hosts.some((name) => hostAuthorityMatches(host, name, listener.port))
   }
 
   #enqueueMutation(task: () => Promise<void>): Promise<void> {
@@ -5306,6 +5611,7 @@ export class DomovoiDaemon {
       return request.method === "runtime.models"
         || request.method === "permission.hardGates"
         || request.method === "update.status"
+        || request.method === "tailnet.status"
         || request.method === "update.check"
         || request.method === "update.activate"
         || request.method === "relay.recovery"
@@ -5694,6 +6000,8 @@ export class DomovoiDaemon {
   }
 
   async #handle(socket: RpcOutboundSocket, raw: string, signal?: AbortSignal): Promise<void> {
+    // Queued before the tailnet certificate expired, started after: dropped.
+    if (this.#expiredTailnetClients.has(socket)) return
     let input: unknown
     try {
       input = JSON.parse(raw)
@@ -5900,6 +6208,33 @@ export class DomovoiDaemon {
         this.#error(socket, request.id, protocolVersionMismatchErrorCode,
           "Client and daemon protocol versions are incompatible",
           { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: params.protocolVersion, compatibility })
+        // The issuer of the code it holds is told, but only after the refusal
+        // is written: matching the code and notifying stays off the
+        // redeemer's response path, so the refusal's timing cannot say whether
+        // the code is live (security review r1 P3).
+        const attributedAt = Date.now()
+        const daemonProtocolVersion = this.#advertisedProtocolVersion
+        // Only the code whose issuer was waiting when the refusal went out can
+        // be told of it. A code issued before attribution runs is another
+        // code even when its words repeat (security review r2 P3).
+        const issuedPairingId = this.#pairingIssuer.current
+        setImmediate(() => {
+          try {
+            const matched = this.#pairing?.matchingPairing(params.code, attributedAt)
+            if (matched === undefined || matched !== issuedPairingId) return
+            this.#notifyPairingIssuer(matched, {
+              pairingId: matched,
+              outcome: "refused",
+              reason: "protocol-mismatch",
+              label: params.label,
+              daemonProtocolVersion,
+              clientProtocolVersion: params.protocolVersion,
+              compatibility,
+            }, false)
+          } catch (error) {
+            this.#reportError("Domovoi could not tell a code's issuer about a refused redemption", error)
+          }
+        }).unref()
         return
       }
       if (!this.#pairing) {
@@ -5907,13 +6242,14 @@ export class DomovoiDaemon {
         return
       }
       try {
-        const paired = this.#pairing.redeem(params.code, { label: params.label }, Date.now())
+        const { pairingId, ...paired } = this.#pairing.redeem(params.code, { label: params.label }, Date.now())
         this.#appendAudit({
           actor: { kind: "daemon", component: "rpc" },
           action: "device.redeemCode",
           outcome: "succeeded",
           target: paired.device.id,
         })
+        this.#notifyPairingIssuer(pairingId, { pairingId, outcome: "redeemed", device: paired.device }, true)
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -5921,11 +6257,17 @@ export class DomovoiDaemon {
         })
       } catch (error) {
         if (error instanceof DeviceLimitReachedError) {
+          if (error instanceof PairingDeviceLimitError) {
+            this.#notifyPairingIssuer(error.pairingId, {
+              pairingId: error.pairingId, outcome: "refused", reason: "device-limit", label: params.label,
+            }, true)
+          }
           this.#appendPreAuthAudit("pairing", "The paired device limit is reached")
           this.#error(socket, request.id, devicePairingLimitErrorCode, "The paired device limit is reached")
           return
         }
         if (!(error instanceof PairingCodeError)) throw error
+        this.#reportPairingRefusal(error)
         // The same uniform refusal a machine claim gets, for the same reason:
         // whoever is spending codes must not learn from the answer whether one
         // exists, was spent, expired, or was shown for another kind of device.
@@ -5982,6 +6324,7 @@ export class DomovoiDaemon {
           return
         }
         if (!(error instanceof PairingCodeError)) throw error
+        this.#reportPairingRefusal(error)
         // The reason is recorded for an operator but never returned: an
         // unauthenticated caller must not learn whether a code exists, has
         // expired, or was simply wrong.
@@ -6151,6 +6494,11 @@ export class DomovoiDaemon {
           : method === "update.check" ? await this.#updates.check(paramsResult.data as RpcParams<"update.check">)
             : this.#updates.activate(paramsResult.data as RpcParams<"update.activate">)
         this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
+        return
+      }
+      if (method === "tailnet.status") {
+        this.#expireTailnetIfDue()
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(tailnetStatusOf(this.#tailnet)) })
         return
       }
       if (method === "device.current") {
@@ -6725,7 +7073,7 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse(workspaceSnapshotForClient(this.#snapshot)),
+          result: rpcMethods[method].result.parse(this.#clientSnapshot()),
         })
         return
       }
@@ -7191,7 +7539,7 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
-          result: workspaceSnapshotForClient(this.#snapshot),
+          result: this.#clientSnapshot(),
         })
         return
       }
@@ -7293,7 +7641,7 @@ export class DomovoiDaemon {
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
-            result: workspaceSnapshotForClient(this.#snapshot),
+            result: this.#clientSnapshot(),
           })
           return
         }
@@ -7307,7 +7655,7 @@ export class DomovoiDaemon {
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
-            result: workspaceSnapshotForClient(this.#snapshot),
+            result: this.#clientSnapshot(),
           })
           return
         }
@@ -7359,7 +7707,7 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
-          result: workspaceSnapshotForClient(this.#snapshot),
+          result: this.#clientSnapshot(),
         })
         return
       }
@@ -7490,11 +7838,20 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, daemonAuthenticationErrorCode, desktopPairingRefusal)
           return
         }
+        const { replacedPairingId, ...issued } = this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess)
+        this.#codeReplaced(replacedPairingId)
+        // Only a client code reports its outcome, and only to this connection.
+        // Issuance can wait in the mutation queue past this connection's close,
+        // which has already let the slot go and will not run again, so a
+        // closed connection never takes it (security review r2 P3).
+        if (params.targetClient !== undefined && socket.readyState === WebSocket.OPEN) {
+          this.#pairingIssuer.set(issued.pairingId, socket, pairingCodeTtlMs)
+        }
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
-            ...this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess),
+            ...issued,
             pairingAddress: this.#pairingAddress(),
             ...(this.#webAppUrl ? { webAppUrl: this.#webAppUrl } : {}),
           }),
@@ -7737,9 +8094,10 @@ export class DomovoiDaemon {
         // recorded, and the catch below answers it as a cancelled operation.
         signal?.throwIfAborted()
         // The grant runs the repository's git filters only when the client says
-        // it showed them, and this read listed every one: none omitted past a
-        // cap and none unreadable, so what was shown is all there is. Any other
-        // grant keeps them held back; a repository with none needs nothing.
+        // it showed them, and this read listed every one exactly: none omitted
+        // past a cap, none unreadable and every command shown as Git runs it
+        // (rulings Q323, Q325), so what was shown is all there is. Any other grant
+        // keeps them held back; a repository with none needs nothing.
         const filters = config.gitFilters
         // The acknowledgement names the block the client fetched by its review
         // digest. For the configuration read now, a digest other than this
@@ -7753,8 +8111,7 @@ export class DomovoiDaemon {
         }
         // The grant keeps the digest of the block it reviewed, and the gate
         // runs the filters only while the block read then has it (ruling Q265).
-        const gitFiltersReviewed = gitFilters?.reviewed === true && filters !== undefined
-          && filters.unreadable === undefined && filters.omittedEntries === 0
+        const gitFiltersReviewed = gitFilters?.reviewed === true && gitFilterBlockReviewable(filters)
         const record = () => store.record({
           projectId: project.id, trustedDigest: config.configDigest, trustedBy,
           ...(gitFiltersReviewed ? { gitFilterReviewDigest: filters.reviewDigest } : {}),
@@ -8316,7 +8673,7 @@ export class DomovoiDaemon {
         workspaceSnapshotSchema.parse(this.#snapshot)
         await this.#persistSnapshot()
         this.#flushPendingWorkspaceDeltas()
-        const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
+        const clientSnapshot = structuredClone(this.#clientSnapshot())
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -8404,7 +8761,7 @@ export class DomovoiDaemon {
         workspaceSnapshotSchema.parse(this.#snapshot)
         await this.#persistSnapshot()
         this.#flushPendingWorkspaceDeltas()
-        const clientSnapshot = structuredClone(workspaceSnapshotForClient(this.#snapshot))
+        const clientSnapshot = structuredClone(this.#clientSnapshot())
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -8618,6 +8975,7 @@ export class DomovoiDaemon {
             id: approvedCheckpoint.id,
             sessionId: approval.sessionId,
             kind: "checkpoint",
+            reason: "before-approved-command",
             label: `${approvedCheckpoint.commit.slice(0, 8)} · before an approved command`,
             commit: approvedCheckpoint.commit,
             createdAt: decidedAt,
@@ -9542,7 +9900,7 @@ export class DomovoiDaemon {
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
-            result: workspaceSnapshotForClient(this.#snapshot),
+            result: this.#clientSnapshot(),
           })
           return
         }
@@ -9754,7 +10112,7 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
-          result: workspaceSnapshotForClient(this.#snapshot),
+          result: this.#clientSnapshot(),
         })
         this.#broadcastSnapshot()
         return
@@ -9795,6 +10153,16 @@ export class DomovoiDaemon {
           const connectionId = this.#connectionIds.get(socket)
           if (!actor || actor.kind !== "client" || !connectionId) {
             this.#error(socket, request.id, invalidParams, "Queued sends require an authenticated connection identity")
+            return
+          }
+          // Checked now so a bad review is refused while the person is there,
+          // and again when the send is released, since a comment can close
+          // in between.
+          try {
+            resolveAnnotationReview(this.#snapshot, session.id, params.review)
+          } catch (error) {
+            if (!(error instanceof AnnotationReviewError)) throw error
+            this.#error(socket, request.id, invalidParams, error.message, error.refusal)
             return
           }
           this.#replaceQueuedSessionSend(
@@ -9868,9 +10236,14 @@ export class DomovoiDaemon {
             requireTrustedSkills:
               session.runtime.permissionMode === "build" && session.runtime.auto,
             ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
+            ...(params.review ? { review: params.review } : {}),
           })
           preparedTurn.visualContexts.push(...attachments)
         } catch (error) {
+          if (error instanceof AnnotationReviewError) {
+            this.#error(socket, request.id, invalidParams, error.message, error.refusal)
+            return
+          }
           if (error instanceof SessionAttachmentError) {
             this.#error(socket, request.id, invalidParams, error.message, error.refusal)
             return
@@ -10354,8 +10727,8 @@ export class DomovoiDaemon {
       if (changed && !alreadyPersisted) await this.#persistSnapshot()
       this.#flushPendingWorkspaceDeltas()
       const clientSnapshot = changed
-        ? structuredClone(workspaceSnapshotForClient(this.#snapshot))
-        : workspaceSnapshotForClient(this.#snapshot)
+        ? structuredClone(this.#clientSnapshot())
+        : this.#clientSnapshot()
       const helloConnectionId = this.#connectionIds.get(socket)
       const actor = this.#authenticatedActors.get(socket)
       const helloCredential = this.#deviceCredentials.get(socket)?.verified
@@ -10526,16 +10899,26 @@ export class DomovoiDaemon {
         (plan) => plan.sessionId === session.id,
       )
       if (!canonical) {
-        const previousPlanIds = new Set(this.#snapshot.artifacts.filter((artifact) =>
-          artifact.sessionId === session.id && artifact.type === "plan"
-        ).map((artifact) => artifact.id))
+        // Watched plan files are not part of the merge, so they must not
+        // force a full snapshot for every streamed chunk. plan.append carries
+        // only content and revision, so the merge may change nothing else:
+        // folding another artifact in, or taking over a saved working plan
+        // that kept a file's path, variant or title, needs the snapshot.
+        const previous = this.#snapshot.artifacts
+          .filter((artifact) => isWorkingPlanArtifact(artifact, session.id))
+          .map(({ id, title, mimeType, path, variant }) => ({ id, title, mimeType, path, variant }))
         const artifact = appendPlanDelta(
           this.#snapshot.artifacts,
           this.#snapshot.annotations,
           session.id,
           event.delta,
         )
-        requiresFullSnapshot = [...previousPlanIds].some((id) => id !== artifact.id)
+        requiresFullSnapshot = previous.some((candidate) =>
+          candidate.id !== artifact.id
+          || candidate.title !== artifact.title
+          || candidate.mimeType !== artifact.mimeType
+          || candidate.path !== artifact.path
+          || candidate.variant !== artifact.variant)
         if (!requiresFullSnapshot) {
           delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
             kind: "plan.append" as const,
@@ -11671,7 +12054,7 @@ export class DomovoiDaemon {
       }
     }
     const result: SystemEmergencyStopResult = {
-      snapshot: workspaceSnapshotForClient(this.#snapshot),
+      snapshot: this.#clientSnapshot(),
       stopId,
       requestedAt,
       client,
@@ -12741,7 +13124,7 @@ export class DomovoiDaemon {
       this.#reportError("Domovoi could not stream a workspace delta", validated.error)
       this.#broadcastNotification(
         "workspace.changed",
-        structuredClone(workspaceSnapshotForClient(this.#snapshot)),
+        structuredClone(this.#clientSnapshot()),
         duringStop,
       )
       return
@@ -12778,7 +13161,7 @@ export class DomovoiDaemon {
     this.#flushPendingWorkspaceDeltas()
     this.#broadcastNotification(
       "workspace.changed",
-      structuredClone(workspaceSnapshotForClient(this.#snapshot)),
+      structuredClone(this.#clientSnapshot()),
     )
   }
 

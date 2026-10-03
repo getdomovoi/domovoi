@@ -92,9 +92,16 @@ export type DesktopWindowBridge = {
     // runtime in place.
     update(): Promise<DaemonServiceOutcome>
   }
+  // TailnetReach (Q404 A): read the switch, turn it on (or renew), turn it
+  // off. The answer is checked loosely by the preload and parsed exactly by
+  // tailnet-reach.ts before anything draws it.
+  tailnetReach?(action: "status" | "on" | "off"): Promise<unknown>
   // One fixed address, the release page, opened in the person's browser. The
   // renderer names no URL, so this cannot become a way to open any address.
   openReleasePage?(): Promise<boolean>
+  // Q336 A: the ~/.local/bin links for domovoid and domovoi. The answer is
+  // read by parseCommandLinkResult (printed-command.ts), not trusted as typed.
+  commandLinks?(action: "status" | "link" | "unlink"): Promise<unknown>
   onDeepLink(listener: (sessionId: string) => void): () => void
   getWindowDecoration(): Promise<WorkspaceWindowDecoration>
   setWindowDecoration(decoration: WorkspaceWindowDecoration): Promise<boolean>

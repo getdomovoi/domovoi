@@ -86,6 +86,31 @@ describe("durable turn ordinals", () => {
     }
   })
 
+  // Ruling Q401: a turn the daemon lost to its own restart is recorded at the
+  // restart, and the record says so; a turn that stopped while the daemon ran
+  // is recorded when the daemon saw it stop, with no such mark.
+  it("marks a turn interrupted by a daemon restart, and only that one", () => {
+    let now = Date.parse(startedAt)
+    const ledger = new UsageLedger(":memory:", { now: () => now })
+    try {
+      const lost = { ...dispatch, turnId: "lost" }
+      const stopped = { ...dispatch, turnId: "stopped" }
+      ledger.begin(stopped)
+      now += 60_000
+      ledger.interruptPending([])
+      expect(ledger.lookup(stopped)!.accounting!.turn).toEqual({ ordinal: 1, startedAt, completedAt: "2026-09-10T12:01:00.000Z" })
+      ledger.begin(lost)
+      now += 3_600_000
+      ledger.interruptPending([], { daemonRestart: true })
+      expect(ledger.lookup(lost)!.accounting).toMatchObject({
+        status: "interrupted",
+        turn: { ordinal: 2, completedAt: "2026-09-10T13:01:00.000Z", completedAtSource: "daemon-restart" },
+      })
+      expect(ledger.lookup(stopped)!.accounting!.turn).not.toHaveProperty("completedAtSource")
+      expect(ledger.turns(dispatch.sessionId, [usageIdentity(lost)])).toMatchObject([{ completedAtSource: "daemon-restart" }])
+    } finally { ledger.close() }
+  })
+
   it("allocates once per dispatch, independently of time, provider IDs and message count", () => {
     const ledger = new UsageLedger(":memory:", { now: () => Date.parse(startedAt) })
     try {

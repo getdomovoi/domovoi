@@ -1,6 +1,6 @@
 import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { agentPromptWithAnnotations } from "./annotation-context.js"
+import { agentPromptWithAnnotations, type AnnotationReview } from "./annotation-context.js"
 import type { AgentCapabilities, AgentVisualContext } from "./agents.js"
 import type { AnnotationVisualContextReader } from "./annotation-visual-context.js"
 
@@ -14,9 +14,11 @@ export type PreparedAnnotationVisuals = {
   visualContexts: AgentVisualContext[]
 }
 
+// Crops are read only for the comments the message sends.
 export async function prepareAnnotationVisuals(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
+  annotationIds: ReadonlySet<string>,
   capabilities: AgentCapabilities | undefined,
   reader: AnnotationVisualContextReader,
 ): Promise<PreparedAnnotationVisuals> {
@@ -24,7 +26,7 @@ export async function prepareAnnotationVisuals(
   const visualContexts: AgentVisualContext[] = []
   let totalBytes = 0
   const annotations = snapshot.annotations
-    .filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")
+    .filter((annotation) => annotationIds.has(annotation.id) && annotation.sessionId === sessionId && annotation.status === "open")
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
   for (const annotation of annotations) {
     const crop = annotation.visualContext
@@ -56,6 +58,7 @@ export async function prepareAnnotationVisuals(
 export async function prepareAnnotationTurn(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
+  review: AnnotationReview,
   userPrompt: string,
   capabilities: AgentCapabilities | undefined,
   reader: AnnotationVisualContextReader,
@@ -63,11 +66,12 @@ export async function prepareAnnotationTurn(
   const prepared = await prepareAnnotationVisuals(
     snapshot,
     sessionId,
+    review.annotationIds,
     capabilities,
     reader,
   )
   return {
-    prompt: agentPromptWithAnnotations(snapshot, sessionId, userPrompt, prepared.deliveries),
+    prompt: agentPromptWithAnnotations(snapshot, sessionId, review, userPrompt, prepared.deliveries),
     visualContexts: prepared.visualContexts,
   }
 }

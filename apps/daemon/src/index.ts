@@ -117,12 +117,23 @@ Environment:
   DOMOVOI_TLS_KEY_PATH            TLS private key, required off loopback
   DOMOVOI_ADVERTISE_HOST          Name an encrypted listener is reachable by
   DOMOVOI_TAILNET_HOST            Explicit tailnet host for a non-loopback TLS listener
+  DOMOVOI_TAILNET_ADDRESS         This machine's Tailscale address for a second TLS listener
+  DOMOVOI_TAILNET_TLS_CERT_PATH   TLS certificate chain for that second listener
+  DOMOVOI_TAILNET_TLS_KEY_PATH    TLS private key for that second listener
   DOMOVOI_SSH_TUNNELS             JSON list of source-local {machineId, endpoint} forwards
   DOMOVOI_TOOL_PATH               Directories searched first for agent CLIs
   DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY  Off-machine signer's relay public key
   DOMOVOI_RELAY_CREDENTIAL_FILE   Absolute relay credential file instead of the keychain
   DOMOVOI_WINDOWS_POWERSHELL      Guest path to powershell.exe for WSL service install
 `
+
+// The version in this package's manifest, beside dist/.
+function ownVersion(): string {
+  const manifest = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version: string }
+  return manifest.version
+}
 
 async function main() {
   const args = process.argv.slice(2)
@@ -131,10 +142,7 @@ async function main() {
     return
   }
   if (args.length === 1 && ["-v", "--version"].includes(args[0]!)) {
-    const manifest = JSON.parse(
-      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-    ) as { version: string }
-    process.stdout.write(`${manifest.version}\n`)
+    process.stdout.write(`${ownVersion()}\n`)
     return
   }
   if (args[0] === "secret") {
@@ -190,6 +198,9 @@ async function main() {
       user: username,
       environment: process.env,
       workingDirectory: process.cwd(),
+      // Q408 A: names the runtime copy an install from an app's runtime
+      // makes. Unread, only that install refuses.
+      ...(() => { try { return { version: ownVersion() } } catch { return {} } })(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })

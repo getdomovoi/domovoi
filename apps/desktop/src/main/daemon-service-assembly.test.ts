@@ -1,3 +1,4 @@
+import { nodeRuntimeFileSystem, prepareDaemonRuntime } from "@getdomovoi/daemon"
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -6,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { createDesktopDaemonService } from "./daemon-service-assembly.js"
 import type { DaemonModule } from "./daemon-module.js"
-import { daemonRuntimeLayout } from "./daemon-service.js"
 import type { DesktopDaemon } from "./desktop-daemon.js"
 
 // Security review round 2 of #577 (P1): the service calls act for the profile
@@ -20,7 +20,8 @@ describe("the login service assembled for this app's profile", () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-assembly-")))
     roots.push(root)
     const resourcesPath = join(root, "Resources")
-    const shipped = daemonRuntimeLayout(resourcesPath, process.platform)
+    // The runtime the app ships, in <resources>/daemon-runtime.
+    const shipped = daemonRuntimeLayoutUnder(join(resourcesPath, "daemon-runtime"))
     await mkdir(dirname(shipped.nodePath), { recursive: true })
     await mkdir(dirname(shipped.daemonEntryPath), { recursive: true })
     await writeFile(shipped.nodePath, "node")
@@ -45,6 +46,10 @@ describe("the login service assembled for this app's profile", () => {
       readDaemonServiceStatus: vi.fn(async () => ({ installed: true, running: true, detail: "" })),
       readDaemonServiceRuntimeCopy: vi.fn(async () => ({ installed: false as const })),
       removeUnusedDaemonRuntimes: vi.fn(async () => ({ removed: [] })),
+      // The daemon's own copy routine, run for real against the scratch
+      // directories.
+      prepareDaemonRuntime,
+      nodeRuntimeFileSystem,
     }
   }
 
@@ -59,6 +64,39 @@ describe("the login service assembled for this app's profile", () => {
       restart: async () => attached,
     } as unknown as DesktopDaemon
   }
+
+  // Review of 049b1383 (P2-3): with the tailnet switch on, a login service
+  // installed afterwards keeps the tailnet listener the in-app daemon had.
+  it("installs the service with the tailnet listener the switch saved", async () => {
+    const { resourcesPath, home, profile } = await scratch()
+    const dataDirectory = join(home, "app-data")
+    await mkdir(dataDirectory)
+    const name = "studio.tail4c2e.ts.net"
+    const tls = join(profile, "tls")
+    await writeFile(join(dataDirectory, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(tls, `${name}.crt`), keyPath: join(tls, `${name}.key`), certIdentity: "1:2:946684800000", keyIdentity: "1:3:946684800000" }))
+    const daemon = daemonModule()
+    // A hand-set DOMOVOI_HOST belongs to this app's own daemon, not the service.
+    const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.9.4", home, dataDirectory, environment: { DOMOVOI_PROFILE_DIR: profile, DOMOVOI_HOST: "0.0.0.0" } }, daemon as unknown as DaemonModule)
+    await expect(service.install()).resolves.toMatchObject({ ok: true })
+    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: {
+      DOMOVOI_PROFILE_DIR: profile,
+      DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+      DOMOVOI_TAILNET_ADDRESS: "100.101.102.103",
+      DOMOVOI_TAILNET_TLS_CERT_PATH: join(tls, `${name}.crt`),
+      DOMOVOI_TAILNET_TLS_KEY_PATH: join(tls, `${name}.key`),
+      DOMOVOI_TAILNET_HOST: name,
+    } }))
+  })
+
+  it("installs the service on loopback alone when the switch is off", async () => {
+    const { resourcesPath, home, profile } = await scratch()
+    const dataDirectory = join(home, "app-data")
+    await mkdir(dataDirectory)
+    const daemon = daemonModule()
+    const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.9.4", home, dataDirectory, environment: { DOMOVOI_PROFILE_DIR: profile } }, daemon as unknown as DaemonModule)
+    await expect(service.install()).resolves.toMatchObject({ ok: true })
+    expect(daemon.installDaemonService).toHaveBeenCalledWith(expect.objectContaining({ environment: { DOMOVOI_PROFILE_DIR: profile } }))
+  })
 
   it("installs, updates and removes for the profile this app's environment names", async () => {
     const { resourcesPath, home, profile } = await scratch()

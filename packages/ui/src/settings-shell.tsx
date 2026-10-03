@@ -1,18 +1,32 @@
-import { localOwnerRequiredErrorCode, loginServiceHomePaths, loginServiceTaskName, type ApprovalRule, type ClientKind, type PairedDeviceSummary, type ProviderRuntime, type UpdateStatus } from "@getdomovoi/protocol"
+import { localOwnerRequiredErrorCode, type ApprovalRule, type ClientKind, type PairedDeviceSummary, type ProviderRuntime, type UpdateStatus } from "@getdomovoi/protocol"
 import { ChevronRightIcon, ExternalLinkIcon, TerminalIcon } from "lucide-react"
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react"
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { AppearanceSettings, ExternalEditorSettings, ProviderSettings, type ProviderSecretStatus } from "./provider-settings.js"
 import type { WorkspaceTheme } from "./appearance.js"
 import { DaemonRpcError } from "./client.js"
 import type { DaemonServiceOutcome, DaemonServiceStatusReport, DesktopExternalEditor, WorkspaceWindowDecoration } from "./desktop-platform.js"
+import { failedStill, loginServices, readBackFact, type FailedServiceOutcome } from "./login-service-copy.js"
+import { CommandLinksRow, useCommandLinkView } from "./command-links.js"
+import { printedCommand } from "./printed-command.js"
 import { NotificationSettings } from "./notification-settings.js"
 import type { NotificationPreferences } from "./notification-preferences.js"
 import type { WorkspaceClientCapabilities } from "./workspace-platform.js"
 import { PermissionRuleSettings } from "./permission-settings.js"
 import { PairingCard, type IssuedPairingCode } from "./pairing-card.js"
+import { TailnetReachCard, useTailnetReach, type TailnetReachController, type TailnetReachSource } from "./tailnet-reach-card.js"
 
 
 type DesktopCapability = {
@@ -62,19 +76,6 @@ export type LocalDaemonDescription = {
   inApp?: boolean | undefined
 }
 
-// J24 (2026-09-23). What each platform's login service is. The names come from
-// the daemon's installer through login-service; this window only names them.
-// Native Windows runs the logon task without the crash supervisor, which only
-// the WSL task has (Phase 1 decided to supervise it like WSL). Installing and
-// removing from this window are not built: the app ships no daemon runtime a
-// service could point at (ND9), so both controls stay locked with the
-// command that does the job beside them.
-const loginServices = {
-  darwin: { kind: "LaunchAgent", manager: "launchd", definition: `~/${loginServiceHomePaths.darwin}`, removeLabel: "Unload and delete the LaunchAgent", crash: "launchd starts it again." },
-  linux: { kind: "systemd user unit", manager: "systemd", definition: `~/${loginServiceHomePaths.linux}`, removeLabel: "Stop, disable and delete the user unit", crash: "systemd starts it again." },
-  win32: { kind: "logon task", manager: "Task Scheduler", definition: `Task Scheduler task "${loginServiceTaskName}"`, removeLabel: "Delete the logon task", crash: "Nothing restarts it until you next sign in." },
-} as const
-
 type ServicePhase =
   | { kind: "idle" }
   | { kind: "installing" }
@@ -106,24 +107,7 @@ function olderRelease(version: string, than: string): boolean {
   return false
 }
 
-// Security review round 1 of #576, lines approved by fetzy on 2026-09-25: a
-// failed install or removal the service manager left half done, a read-back
-// that could not be taken, or a daemon this app did not start.
-
-type FailedOutcome = Extract<DaemonServiceOutcome, { ok: false; reason: "failed" }>
-
-function readBackFact(kind: string, action: "install" | "remove", service: FailedOutcome["service"]): string {
-  if (!service || service.installed === null) return `Whether the ${kind} is installed is not known from here.`
-  if (action === "install") return service.installed ? `The ${kind} is installed${service.running ? " and running" : " but not running"}.` : "Nothing was installed."
-  return service.installed ? `The ${kind} is still installed ${service.running ? "and running" : "but not running"}.` : `The ${kind} is gone, but the removal did not finish.`
-}
-
-function daemonFact(daemon: FailedOutcome["daemon"]): string {
-  if (daemon === "restarted") return "The daemon is running inside this app again."
-  if (daemon === "attached") return "This app is connected to a daemon it did not start."
-  if (daemon === "stopped") return "No daemon is running for this app, so no session is running. Quit and reopen Domovoi to start it."
-  return "The daemon inside this app was not stopped."
-}
+type FailedOutcome = FailedServiceOutcome
 
 async function readServiceBack(status: (() => Promise<DaemonServiceStatusReport>) | undefined): Promise<FailedOutcome["service"]> {
   if (!status) return null
@@ -155,23 +139,6 @@ function unknownAnswerHeader(action: "install" | "remove", service: FailedOutcom
   return action === "install" ? "Could not confirm the install" : "Could not confirm the removal"
 }
 
-// What is still true after a failed install or removal. The approved lines
-// hold only when the service read back afterwards shows nothing changed.
-function failedStill(kind: string, action: "install" | "remove", outcome: FailedOutcome): string {
-  const service = outcome.service
-  if (action === "install" && service?.installed === false && outcome.daemon !== "attached") {
-    return outcome.daemon === "restarted"
-      ? "The daemon is back inside this app. Nothing else was touched."
-      : outcome.daemon === "stopped"
-        ? "Nothing was installed. The daemon inside this app stopped and did not start again, so no session is running. Quit and reopen Domovoi to start it."
-        : "Nothing was installed."
-  }
-  if (action === "remove" && service?.installed === true && service.running && outcome.daemon === "untouched") {
-    return `Nothing was removed. The ${kind} still holds the daemon, and every session keeps running.`
-  }
-  return `${readBackFact(kind, action, service)} ${daemonFact(outcome.daemon)}`
-}
-
 // The daemon installer's own words for a removal that leaves the profile owner
 // unresolved (service/install.ts), led by what did happen.
 function removalRecovery(outcome: Extract<DaemonServiceOutcome, { ok: true }>): string | undefined {
@@ -184,10 +151,74 @@ function removalRecovery(outcome: Extract<DaemonServiceOutcome, { ok: true }>): 
   return undefined
 }
 
+// Q349 A: removal stops every session on the next quit, so Remove asks first,
+// as the 2026-09-23 desktop design draws it. The order and the rows follow the
+// daemon's installer (service/install.ts): it stops the service, and if the
+// manager refuses, deletes nothing; then it deletes the service definition and
+// the record, and on Linux turns lingering off only where its record says
+// Domovoi turned it on. The desktop then starts the daemon inside this app.
+function RemoveServiceDialog({ open, platform, onOpenChange, onConfirm }: {
+  open: boolean
+  platform: keyof typeof loginServices
+  onOpenChange: (open: boolean) => void
+  onConfirm: () => void
+}) {
+  const service = loginServices[platform]
+  const eyebrow = "m-0 text-[10.5px] font-medium tracking-[0.13em] text-faint"
+  const removed = [
+    { label: service.removeLabel, value: service.definition },
+    { label: "Delete the service record", value: "~/.domovoi/service.json" },
+    ...(platform === "linux" ? [{ label: "Turn lingering off, if Domovoi turned it on", value: "loginctl disable-linger" }] : []),
+  ]
+  const kept = ["Sessions, worktrees and checkpoints", "Pairings, and the tokens in your keychain", "This app and the daemon inside it"]
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent className="data-[size=default]:sm:max-w-[560px]">
+        <AlertDialogHeader>
+          <AlertDialogTitle className="flex flex-wrap items-baseline gap-2.5">
+            Remove the login service?
+            <span className="font-machine text-[10.5px] font-normal text-faint">{service.kind}</span>
+          </AlertDialogTitle>
+          <AlertDialogDescription>Domovoi unloads the service, deletes exactly these, then starts the daemon inside this app again. If unloading fails, nothing else is touched.</AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="flex flex-col gap-3 text-[12px] leading-[1.5]">
+          <p id="service-removed" className={eyebrow}>REMOVED</p>
+          <ul aria-labelledby="service-removed" className="m-0 list-none overflow-hidden rounded-lg border p-0">
+            {removed.map((row, index) => (
+              <li key={row.label} className={`flex flex-col gap-0.5 px-3 py-2.5${index ? " border-t" : ""}`}>
+                <span>{row.label}</span>
+                <span className="font-machine text-[10.5px] text-strong">{row.value}</span>
+              </li>
+            ))}
+          </ul>
+          <p id="service-kept" className={eyebrow}>KEPT</p>
+          <ul aria-labelledby="service-kept" className="m-0 flex list-none flex-col gap-1.5 p-0">
+            {kept.map((line) => (
+              <li key={line} className="flex items-center gap-2.5 text-strong">
+                <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-faint" />
+                <span>{line}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="m-0 pt-0.5">After this, quitting Domovoi stops the daemon and every session on it.</p>
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep it</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={onConfirm}>Remove the service</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
 // `footer` is the design's last row of the card: About this build.
 function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> }; footer?: ReactNode }) {
   const service = loginServices[daemon.platform]
+  // Q336 A: every printed command names what runs on this machine.
+  const links = useCommandLinkView()
+  const printed = (command: string) => printedCommand(command, links)
   const [phase, setPhase] = useState<ServicePhase>({ kind: "idle" })
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
   const live = daemon.service
   const busy = phase.kind === "installing" || phase.kind === "removing"
   const run = async (action: "install" | "remove") => {
@@ -246,7 +277,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
     { label: "Record", value: "~/.domovoi/service.json", note: "What Domovoi installed, so removing undoes exactly that.", item: installed ? "written" : "will write" },
     ...(on ? [{ label: "After a crash", value: "", note: service.crash, item: "" }] : []),
   ]
-  const command = unknown ? "domovoid service status" : installed ? "domovoid service remove" : "domovoid service install"
+  const command = printed(unknown ? "domovoid service status" : installed ? "domovoid service remove" : "domovoid service install")
   const lockReason = busy
     ? (phase.kind === "installing" ? "Both wait until the install finishes." : "Both wait until the removal finishes.")
     : installed
@@ -254,6 +285,11 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
       : unknown ? "Install and Remove are off: this app did not start that daemon." : "Remove is off: nothing is installed."
   const installLocked = !live || installed || unknown || busy || updating || Boolean(live.refusal)
   const removeLocked = !live || !installed || busy || updating || Boolean(live.refusal)
+  // Review P3-8: a confirmation that Remove locking closed stays closed when
+  // the lock lifts; the person asks again.
+  useEffect(() => {
+    if (removeLocked) setConfirmingRemove(false)
+  }, [removeLocked])
   return (
     <section aria-labelledby="settings-daemon" className="flex flex-col gap-3 rounded-lg border bg-card p-4">
       <div className="flex flex-col gap-1">
@@ -300,7 +336,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           {phase.recovery ? (
             <>
               <span>{phase.recovery}</span>
-              <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{profileRecoverCommand}</span>
+              <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{printed(profileRecoverCommand)}</span>
             </>
           ) : phase.daemonRunning && !phase.attached ? <span>Removed. Quitting Domovoi now stops the daemon and every session on it.</span> : null}
           {phase.daemonRunning && phase.attached ? <span>{`${phase.recovery ? "" : "Removed. "}This app is connected to a daemon it did not start. Quitting this app leaves it running.`}</span> : null}
@@ -320,7 +356,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           <span className="font-machine text-[10.5px] opacity-80">{phase.message}</span>
           <span>{`The ${service.kind} is installed and the daemon inside this app is stopped. Whether the service started is not known from here.`}</span>
           <span>To check, run this in a terminal.</span>
-          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />domovoid service status</span>
+          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{printed("domovoid service status")}</span>
         </div>
       ) : null}
       {phase.kind === "failed" ? (
@@ -329,7 +365,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           <span className="font-machine text-[10.5px] opacity-80">{phase.message}</span>
           <span>{phase.still}</span>
           <span>To finish by hand, run this in a terminal.</span>
-          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{phase.action === "install" ? "domovoid service install" : "domovoid service remove"}</span>
+          <span className="flex items-center gap-2 font-machine text-[11px]"><TerminalIcon className="size-3.5" />{printed(phase.action === "install" ? "domovoid service install" : "domovoid service remove")}</span>
         </div>
       ) : null}
       {unknown && !installed ? null : <div className="flex flex-col gap-1.5">
@@ -364,9 +400,19 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
       </div> : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" disabled={installLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => void run("install")}>Install</Button>
-        <Button size="sm" variant="outline" disabled={removeLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => void run("remove")}>{service.removeLabel}</Button>
+        <Button size="sm" variant="outline" className="border-danger-border text-destructive" disabled={removeLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => setConfirmingRemove(true)}>Remove</Button>
         {live?.refusal && !installed && !unknown && !busy ? null : <span className="text-[11px] text-faint">{lockReason}</span>}
       </div>
+      <RemoveServiceDialog
+        open={confirmingRemove && !removeLocked}
+        platform={daemon.platform}
+        onOpenChange={setConfirmingRemove}
+        onConfirm={() => {
+          setConfirmingRemove(false)
+          void run("remove")
+        }}
+      />
+      <CommandLinksRow />
       {footer}
     </section>
   )
@@ -381,9 +427,12 @@ export type PairingSettings = {
   onCopy: (text: string) => Promise<void>
   onListDevices: () => Promise<{ devices: PairedDeviceSummary[] }>
   inAppDaemon?: boolean | undefined
+  // TailnetReach (Q404 A): the desktop's tailnet switch, drawn in the daemon
+  // card and reached from the pairing card.
+  tailnet?: TailnetReachSource | undefined
 }
 
-function PairingSection({ pairing, readOnly, onOpenFleet }: { pairing: PairingSettings; readOnly: boolean; onOpenFleet: () => void }) {
+function PairingSection({ pairing, readOnly, onOpenFleet, tailnet }: { pairing: PairingSettings; readOnly: boolean; onOpenFleet: () => void; tailnet?: TailnetReachController | undefined }) {
   const [count, setCount] = useState<number | null>(null)
   const { onListDevices } = pairing
   useEffect(() => {
@@ -400,7 +449,7 @@ function PairingSection({ pairing, readOnly, onOpenFleet }: { pairing: PairingSe
         <h2 id="settings-pairing" className="m-0 text-[13px] font-medium">Phone and tablet</h2>
         <p className="m-0 text-[11.5px] text-muted-foreground">Pair a device to watch sessions and answer gates while away from the desk.</p>
       </div>
-      <PairingCard connected={pairing.connected} readOnly={readOnly} inAppDaemon={pairing.inAppDaemon ?? false} onIssueCode={pairing.onIssueCode} onCopy={pairing.onCopy} />
+      <PairingCard connected={pairing.connected} readOnly={readOnly} inAppDaemon={pairing.inAppDaemon ?? false} onIssueCode={pairing.onIssueCode} onCopy={pairing.onCopy} {...(tailnet ? { tailnet } : {})} />
       <Button variant="ghost" className="h-auto justify-between rounded-lg border px-[15px] py-3 text-left" onClick={onOpenFleet}>
         <span className="flex flex-col items-start gap-0.5">
           <span>{count === null ? "Paired devices" : `${count} ${count === 1 ? "client" : "clients"} paired with this daemon`}</span>
@@ -576,6 +625,9 @@ export function SettingsShell({
   const editorCapability = externalEditor !== undefined && onExternalEditorChange !== undefined
     ? { editor: externalEditor, onChange: onExternalEditorChange }
     : undefined
+  // Only for this machine's daemon: Settings for an attached machine gets no
+  // localDaemon, and its commands print as written.
+  const links = useCommandLinkView()
   const daemonSection = localDaemon?.owner && localDaemon.platform
     ? { ...localDaemon, owner: localDaemon.owner, platform: localDaemon.platform }
     : undefined
@@ -584,6 +636,7 @@ export function SettingsShell({
     && onWindowDecorationChange !== undefined
     ? { decoration: windowDecoration, active: activeWindowDecoration, onChange: onWindowDecorationChange }
     : undefined
+  const tailnet = useTailnetReach(pairing?.tailnet)
 
   return (
     <ScrollArea className="min-h-0 min-w-0 flex-1">
@@ -596,15 +649,16 @@ export function SettingsShell({
         </header>
 
         <fieldset disabled={readOnly} className="contents">
-          {daemonSection ? <DaemonSection daemon={daemonSection} footer={about ? <AboutBuildSection about={about} inCard /> : undefined} /> : null}
+          {daemonSection ? <DaemonSection daemon={daemonSection} footer={about || tailnet ? <>{tailnet ? <TailnetReachCard controller={tailnet} inCard /> : null}{about ? <AboutBuildSection about={about} inCard /> : null}</> : undefined} /> : null}
+          {tailnet && !daemonSection ? <TailnetReachCard controller={tailnet} /> : null}
 
           <section aria-label="Providers and tokens">
-            <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} />
+            <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
           </section>
 
           {about && !daemonSection ? <AboutBuildSection about={about} /> : null}
 
-          {pairing ? <PairingSection pairing={pairing} readOnly={readOnly} onOpenFleet={onOpenFleet} /> : null}
+          {pairing ? <PairingSection pairing={pairing} readOnly={readOnly} onOpenFleet={onOpenFleet} tailnet={tailnet} /> : null}
 
           <section aria-label="Notifications">
             <NotificationSettings

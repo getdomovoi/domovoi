@@ -8,7 +8,7 @@ export {
 
 export type { DaemonErrorEntry, DaemonErrorSink } from "./server.js"
 export { verifyLocalFleetClientRoute } from "./local-client-route.js"
-export { holdServiceHandoffFence, readLocalServiceHandoffRefusal, type ServiceHandoffFence } from "./local-service-handoff.js"
+export { holdServiceHandoffFence, readLocalServiceHandoffRefusal, readLocalTailnetStatus, type ServiceHandoffFence } from "./local-service-handoff.js"
 // The desktop main process calls this before anything else runs.
 export { captureInheritedCredentials, type InheritedCredentialValues } from "./inherited-credentials.js"
 // The desktop recognises the profile refusals by name, so their classes stay
@@ -46,6 +46,7 @@ export {
   type DaemonServiceStatus,
   type DaemonServiceUpdateOptions,
   type DaemonServiceUpdateOutcome,
+  type DaemonServiceTailnetChange,
   type RuntimeFileState,
   WindowsTaskArgumentVariableError,
   WindowsTaskNotDomovoiError,
@@ -57,3 +58,9 @@ export {
   type DaemonRuntimeCleanupOptions,
   type DaemonRuntimeCleanupResult,
 } from "./service/runtime-cleanup.js"
+// Only what the desktop loads (apps/desktop/src/main/daemon-module.ts).
+export {
+  nodeRuntimeFileSystem,
+  prepareDaemonRuntime,
+  type PreparedDaemonRuntime,
+} from "./service/runtime-stage.js"

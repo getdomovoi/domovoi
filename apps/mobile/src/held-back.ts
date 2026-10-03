@@ -1,4 +1,5 @@
 import type {
+  RepositoryGitFilterScope,
   RepositoryTrustRefusal,
   RepositoryTrustState,
   ToolInventory,
@@ -44,6 +45,12 @@ const kindCountNames: ReadonlyArray<[ToolInventoryEntry["kind"], string, string]
   ["skill", "skill", "skills"],
 ]
 
+const gitScopeLabel: Record<RepositoryGitFilterScope, string> = {
+  local: "local git config",
+  worktree: "worktree git config",
+  command: "command-line git config",
+}
+
 const refusalLabel: Record<RepositoryTrustRefusal["code"], string> = {
   "nested-config": "Agent configuration below the repository root",
   "main-checkout-hooks": "Hooks in this worktree's main checkout",
@@ -60,6 +67,9 @@ export type HeldBackRow = {
 }
 
 export type HeldBackFile = {
+  // The group's identity: one agent file is one group, and one Git config file
+  // is one group per scope Git reads it in, so a path alone is not unique.
+  key: string
   path: string
   source: string
   // Every agent that reads this file and holds something in it back.
@@ -204,7 +214,7 @@ export function heldBackView(inventory: ToolInventory): HeldBackView {
       held += 1
       let group = files.get(file.path)
       if (!group) {
-        group = { path: file.path, source: sourceLabel[file.source], providers: [], counts: "", rows: [], kinds: [] }
+        group = { key: `agent\u0000${file.path}`, path: file.path, source: sourceLabel[file.source], providers: [], counts: "", rows: [], kinds: [] }
         files.set(file.path, group)
       }
       if (!group.providers.includes(provider.provider)) group.providers.push(provider.provider)
@@ -227,8 +237,38 @@ export function heldBackView(inventory: ToolInventory): HeldBackView {
     }
   }
 
+  // A filter the repository's own Git config sets runs for every agent, so
+  // its file names no agent. Each command is an entry, as the daemon lists it.
+  const gitFilters = repository.gitFilters
+  const gitFiles: HeldBackFile[] = []
+  omitted += gitFilters?.omittedEntries ?? 0
+  for (const file of gitFilters?.files ?? []) {
+    const entries = gitFilters!.entries.filter((entry) => entry.file === file.path && entry.scope === file.scope)
+    total += entries.length
+    const heldEntries = entries.filter((entry) => entry.heldBack)
+    held += heldEntries.length
+    if (heldEntries.length === 0) continue
+    const drivers = new Map<string, string[]>()
+    for (const entry of heldEntries) drivers.set(entry.driver, [...drivers.get(entry.driver) ?? [], `${entry.operation} ${entry.command}`])
+    gitFiles.push({
+      key: `git\u0000${file.scope}\u0000${file.path}`,
+      path: file.path,
+      source: gitScopeLabel[file.scope],
+      providers: [],
+      counts: plural(drivers.size, "filter driver", "filter drivers"),
+      rows: [...drivers].map(([driver, operations]) => ({
+        key: `${file.scope}\u0000${file.path}\u0000${driver}`,
+        provider: "",
+        kind: "Filter driver",
+        name: driver,
+        detail: operations.join(" · "),
+      })),
+    })
+  }
+
   const incompleteParts = [
     ...(unreadable > 0 ? [`${plural(unreadable, "file", "files")} could not be read`] : []),
+    ...(gitFilters?.unreadable ? ["the Git config could not be read"] : []),
     ...(omitted > 0 ? [`${omitted} ${omitted === 1 ? "entry was" : "entries were"} left out`] : []),
   ]
   const incomplete = incompleteParts.length > 0 ? incompleteParts.join(" and ") : undefined
@@ -260,14 +300,14 @@ export function heldBackView(inventory: ToolInventory): HeldBackView {
     trust: trustSummary(trust),
     awaitsTrust: awaitsTrust(trust),
     held,
-    files: [...files.values()].map(({ kinds, ...file }) => ({
+    files: [...[...files.values()].map(({ kinds, ...file }) => ({
       ...file,
       counts: kindCountNames
         .map(([kind, one, many]) => [kinds.filter((candidate) => candidate === kind).length, one, many] as const)
         .filter(([count]) => count > 0)
         .map(([count, one, many]) => plural(count, one, many))
         .join(" · "),
-    })),
+    })), ...gitFiles],
     unread,
     incomplete,
     refusals: trust.state === "untrusted" && trust.reason === "cannot-trust"
