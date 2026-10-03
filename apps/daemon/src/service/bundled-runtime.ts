@@ -51,6 +51,14 @@ export type BundledServiceRuntime = {
   copy: string
   // Run by the installer under its service-operation lease, after its profile
   // checks: writes the copy, then checks both parts are files there.
+  //
+  // By design it leaves its private staging directory in the system
+  // temporary directory, as the app's Install does: empty after a publish,
+  // holding the partial copy after a failure. Security review round 8 of #577
+  // (P2, runtime-stage.ts): Node cannot remove a directory relative to one it
+  // holds open, so a check that the path is still that directory cannot be
+  // bound to its removal, and a directory swapped in between would be removed
+  // instead. It is only disk space.
   publish: () => Promise<void>
 }
 
