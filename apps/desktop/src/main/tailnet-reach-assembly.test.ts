@@ -132,6 +132,18 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("kept")
   })
 
+  // Re-review of 10dba4a2 (P3-1): a change that could not put the previous
+  // files back keeps them in its pending directory and says so; the sweep
+  // leaves that one for the person to recover.
+  it("leaves a pending directory holding previous files that could not be put back", async () => {
+    const tls = join(home, ".domovoi", "tls")
+    await mkdir(join(tls, ".pending-Kept12"), { recursive: true })
+    await writeFile(join(tls, ".pending-Kept12", "previous.key"), "the only copy")
+    assemble()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(await readFile(join(tls, ".pending-Kept12", "previous.key"), "utf8")).toBe("the only copy")
+  })
+
   // index.ts loads the module at startup only when the switch is on, and the
   // module starts its own renewal checks, so main carries none of that.
   it("starts its renewal checks when created with the switch on, and none when off", async () => {

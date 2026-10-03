@@ -38,6 +38,8 @@ function harness(options: {
   preflight?: string
   restart?: { ok: false; message: string }
   conflict?: string
+  // A move that fails, as a rename can, leaving both paths as they were.
+  failMove?: (from: string, to: string) => boolean
 } = {}) {
   const calls: string[] = []
   const files = new Map<string, string>(Object.entries(options.files ?? {}))
@@ -81,6 +83,7 @@ function harness(options: {
       },
       move: async (from, to) => {
         calls.push(`move ${from} ${to}`)
+        if (options.failMove?.(from, to)) throw Object.assign(new Error(`EIO: rename ${from}`), { code: "EIO" })
         files.set(to, files.get(from)!)
         files.delete(from)
       },
@@ -269,6 +272,48 @@ describe("turning TailnetReach on", () => {
     await expect(reach.turnOn()).resolves.toMatchObject({ ok: false, step: "restart" })
     expect(record()).toEqual(old)
     expect([...files.keys()].sort()).toEqual([old.certPath, old.keyPath].sort())
+  })
+
+  // Re-review of 10dba4a2 (P3-1): a failed move partway must not delete a file
+  // still in use, and a put-back that fails must not delete the only copy.
+  it("deletes only what it moved in when setting the key aside fails", async () => {
+    const { reach, files, record, deps } = harness({
+      record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" },
+      failMove: (from, to) => from === keyPath && to.endsWith("/previous.key"),
+    })
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: false, reason: "failed", step: "store" })
+    expect(files.get(certPath)).toBe("old certificate")
+    expect(files.get(keyPath)).toBe("old key")
+    expect(record()).toEqual(ours)
+    expect(deps.restart).not.toHaveBeenCalled()
+  })
+
+  it("keeps the pending directory and says where the previous files are when putting them back fails", async () => {
+    const { reach, files, calls } = harness({
+      record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" },
+      restart: { ok: false, message: "The daemon did not start again." },
+      failMove: (from) => from.endsWith("/previous.crt"),
+    })
+    await expect(reach.turnOn()).resolves.toEqual({
+      ok: false, reason: "failed", step: "restart",
+      message: "The daemon did not start again. The previous certificate and key could not be put back and are in ~/.domovoi/tls/.pending-1.",
+    })
+    expect(files.get(`${tls}/.pending-1/previous.crt`)).toBe("old certificate")
+    expect(calls).not.toContain(`remove directory ${tls}/.pending-1`)
+  })
+
+  it("does the same when a renewal check cannot put the previous files back", async () => {
+    const { reach, files, calls } = harness({
+      record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" },
+      restart: { ok: false, message: "The daemon did not start again." },
+      failMove: (from) => from.endsWith("/previous.crt"),
+    })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(files.get(`${tls}/.pending-1/previous.crt`)).toBe("old certificate")
+    expect(calls).not.toContain(`remove directory ${tls}/.pending-1`)
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: {
+      message: "A new certificate is ready, but the daemon did not restart: The daemon did not start again. The previous certificate and key could not be put back and are in ~/.domovoi/tls/.pending-1.",
+    } })
   })
 
   // Review of 049b1383 (P2-2): Renew now while on runs this path. A restart

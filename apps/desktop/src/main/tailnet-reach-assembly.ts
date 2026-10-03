@@ -212,7 +212,11 @@ async function sweepPending(tlsDirectory: string): Promise<void> {
   for (const name of names.filter((entry) => /^\.pending-[A-Za-z0-9]{6}$/u.test(entry))) {
     const path = join(tlsDirectory, name)
     try {
-      if ((await lstat(path)).isDirectory()) await rm(path, { recursive: true, force: true })
+      if (!(await lstat(path)).isDirectory()) continue
+      // A change that could not put the previous files back left them here
+      // and said so; they stay for the person to recover.
+      if ((await readdir(path)).some((entry) => entry.startsWith("previous."))) continue
+      await rm(path, { recursive: true, force: true })
     } catch {
       // Gone already, or not ours to remove: the next load tries again.
     }

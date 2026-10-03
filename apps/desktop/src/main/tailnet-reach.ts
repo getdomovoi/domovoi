@@ -184,6 +184,7 @@ export class TailnetReach {
     if (!record) return "off"
     const { name, certPath, keyPath } = record
     const pending = await this.deps.files.privateDirectory(this.deps.tlsDirectory)
+    const swap = this.#swap(pending, [certPath, keyPath])
     try {
       const pendingCert = `${pending}/${name}.crt`
       const pendingKey = `${pending}/${name}.key`
@@ -195,28 +196,60 @@ export class TailnetReach {
 
       const refusal = await this.deps.preflight()
       if (refusal !== undefined) return this.#fail(`A new certificate is ready, but the daemon cannot restart now: ${refusal} The current certificate stays until the next try.`)
-      const previousCert = `${pending}/previous.crt`
-      const previousKey = `${pending}/previous.key`
-      const keptCert = current !== undefined
-      const keptKey = await this.deps.files.exists(keyPath)
-      if (keptCert) await this.deps.files.move(certPath, previousCert)
-      if (keptKey) await this.deps.files.move(keyPath, previousKey)
-      await this.deps.files.move(pendingCert, certPath)
-      await this.deps.files.move(pendingKey, keyPath)
-      await this.deps.files.restrict(keyPath)
+      try {
+        await swap.place(pendingCert, pendingKey, certPath, keyPath)
+      } catch (cause) {
+        return this.#fail(`The certificate for ${name} could not be renewed: ${detail(cause instanceof Error ? cause.message : String(cause))} ${await swap.undo()}`)
+      }
       const restarted = await this.deps.restart({ set: { address: record.address, name, certPath, keyPath } })
       if (restarted.ok) return "renewed"
-      if (keptCert) await this.deps.files.move(previousCert, certPath)
-      if (keptKey) {
-        await this.deps.files.move(previousKey, keyPath)
-        await this.deps.files.restrict(keyPath)
-      }
+      const undone = await swap.undo()
       await this.deps.recover?.()
-      return this.#fail(`A new certificate is ready, but the daemon did not restart: ${restarted.message} The previous certificate was put back.`)
-    } catch (cause) {
-      return this.#fail(`The certificate for ${name} could not be renewed: ${detail(cause instanceof Error ? cause.message : String(cause))}`)
+      return this.#fail(`A new certificate is ready, but the daemon did not restart: ${restarted.message} ${undone}`)
     } finally {
-      await this.deps.files.removeDirectory(pending).catch(() => {})
+      if (!swap.stranded()) await this.deps.files.removeDirectory(pending).catch(() => {})
+    }
+  }
+
+  // Re-review of 10dba4a2 (P3-1): replacing the switch's files sets the ones
+  // in use aside in pending and moves the new ones in. undo deletes only the
+  // paths a new file was moved into and moves the previous files back; when
+  // that fails the previous files stay in pending, which is then kept, and
+  // the line says where they are.
+  #swap(pending: string, owned: readonly string[]) {
+    const kept: Array<[aside: string, path: string]> = []
+    const placed: string[] = []
+    let stranded = false
+    return {
+      place: async (newCert: string, newKey: string, certPath: string, keyPath: string): Promise<void> => {
+        for (const [path, aside] of [[certPath, `${pending}/previous.crt`], [keyPath, `${pending}/previous.key`]] as const) {
+          if (owned.includes(path) && await this.deps.files.exists(path)) {
+            await this.deps.files.move(path, aside)
+            kept.push([aside, path])
+          }
+        }
+        await this.deps.files.move(newCert, certPath)
+        placed.push(certPath)
+        await this.deps.files.move(newKey, keyPath)
+        placed.push(keyPath)
+        await this.deps.files.restrict(keyPath)
+      },
+      // The sentence that says what became of the previous files.
+      undo: async (): Promise<string> => {
+        await this.#forget(placed)
+        try {
+          for (const [aside, path] of kept) {
+            await this.deps.files.move(aside, path)
+            if (path.endsWith(".key")) await this.deps.files.restrict(path)
+          }
+        } catch {
+          stranded = true
+          return `The previous certificate and key could not be put back and are in ${this.deps.display(pending)}.`
+        }
+        return kept.length ? "The previous certificate was put back." : ""
+      },
+      kept: () => kept.length > 0,
+      stranded: () => stranded,
     }
   }
 
@@ -315,7 +348,7 @@ export class TailnetReach {
     // record, if the new ones cannot be stored or the restart fails
     // (review of 049b1383, P2-2).
     const pending = await this.deps.files.privateDirectory(this.deps.tlsDirectory)
-    const kept: Array<[aside: string, path: string]> = []
+    const swap = this.#swap(pending, [...owned])
     try {
       const pendingCert = `${pending}/${name}.crt`
       const pendingKey = `${pending}/${name}.key`
@@ -340,21 +373,12 @@ export class TailnetReach {
         }
       }
       try {
-        for (const [path, aside] of [[certPath, `${pending}/previous.crt`], [keyPath, `${pending}/previous.key`]] as const) {
-          if (owned.has(path) && await this.deps.files.exists(path)) {
-            await this.deps.files.move(path, aside)
-            kept.push([aside, path])
-          }
-        }
-        await this.deps.files.move(pendingCert, certPath)
-        await this.deps.files.move(pendingKey, keyPath)
-        await this.deps.files.restrict(keyPath)
+        await swap.place(pendingCert, pendingKey, certPath, keyPath)
       } catch (cause) {
-        await this.#forget([certPath, keyPath])
-        await this.#putBack(kept)
+        const undone = await swap.undo()
         return {
           ok: false, reason: "failed", step: "store",
-          message: `The certificate could not be stored in ${this.deps.display(this.deps.tlsDirectory)}. ${kept.length ? "The previous certificate was put back. " : ""}Nothing was restarted.`,
+          message: `The certificate could not be stored in ${this.deps.display(this.deps.tlsDirectory)}. ${undone ? `${undone} ` : ""}Nothing was restarted.`,
           detail: detail(cause instanceof Error ? cause.message : String(cause)),
         }
       }
@@ -363,16 +387,15 @@ export class TailnetReach {
       await this.deps.record.write(record)
       const restarted = await this.deps.restart({ set: { address, name, certPath, keyPath } })
       if (!restarted.ok) {
-        await this.#forget([certPath, keyPath])
-        await this.#putBack(kept)
+        const undone = await swap.undo()
         if (previous) await this.deps.record.write(previous)
         else await this.deps.record.remove()
         await this.deps.recover?.()
         return {
           ok: false, reason: "failed", step: "restart",
-          message: previous
-            ? `${restarted.message} The previous certificate was put back, and the switch stays on.`
-            : `${restarted.message} The certificate and key were deleted again, and the switch stays off.`,
+          message: swap.stranded() ? `${restarted.message} ${undone}`
+            : previous ? `${restarted.message} ${swap.kept() ? "The previous certificate was put back" : "The previous certificate stays in use"}, and the switch stays on.`
+              : `${restarted.message} The certificate and key were deleted again, and the switch stays off.`,
         }
       }
       // Review of 049b1383 (P3-b): Tailscale renamed this machine. The
@@ -382,15 +405,7 @@ export class TailnetReach {
       this.#schedule(renewalCheckMs)
       return { ok: true, report: await this.#onReport(record) }
     } finally {
-      await this.deps.files.removeDirectory(pending).catch(() => {})
-    }
-  }
-
-  // The files a change set aside, back where they were.
-  async #putBack(kept: ReadonlyArray<readonly [aside: string, path: string]>): Promise<void> {
-    for (const [aside, path] of kept) {
-      await this.deps.files.move(aside, path)
-      if (path.endsWith(".key")) await this.deps.files.restrict(path)
+      if (!swap.stranded()) await this.deps.files.removeDirectory(pending).catch(() => {})
     }
   }
 
