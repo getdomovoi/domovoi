@@ -67,3 +67,19 @@ auditConfig:
     # the daemon, desktop, web and CLI do not depend on it. Ruling Q309 A,
     # 2026-10-01. Remove once node-forge or Expo ships a fix.
     - GHSA-86w9-cpqp-85rv
+    # GHSA-ch52-4w7c-c8xp, high: http-cache-semantics lets a large max-stale read
+    # zeroed shared-cache entries. Every release is affected (<= 4.2.0) and none is
+    # patched as of 2026-10-02; the advisory names no fixed version and npm has no
+    # 4.2.1, so an override has nothing to force. It reaches only apps/desktop, as
+    # a devDependency: electron-builder > @electron/get > got > cacheable-request,
+    # used while packaging. No shipped client or daemon depends on it. Remove once
+    # a patched http-cache-semantics is published, and force it in overrides.
+    - GHSA-ch52-4w7c-c8xp
+    # GHSA-vfj7-8cjw-p6xm, high: braces recursion has no depth guard, so a deeply
+    # nested pattern exhausts the stack. Every release is affected (<= 3.0.3) and
+    # none is patched as of 2026-10-02; the advisory names no fixed version and npm
+    # has no 3.0.4, so an override has nothing to force. It reaches only Node build
+    # tooling through micromatch and chokidar: Metro, Expo CLI, Jest and Tailwind in
+    # apps/mobile, and the shadcn CLI in packages/ui. Remove once a patched braces
+    # is published, and force it in overrides.
+    - GHSA-vfj7-8cjw-p6xm
