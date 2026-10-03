@@ -87,9 +87,10 @@ export function browserLimits(
     { what: "Choose a folder", state: "type the path", tone: "conditional", why: browserRefusalMessage["dialogs-unsupported"] },
     // The composer reads the file in this tab and sends it with the message.
     // The limits are the ones attachmentFromBrowserFile and the composer
-    // enforce: maximumImageUploadBytes, maximumTextAttachmentBytes and
+    // enforce: maximumImageUploadBytes, maximumImageUploadDimension (through
+    // sessionAttachmentSchema), maximumTextAttachmentBytes and
     // maximumSessionAttachments.
-    { what: "Attach a local file", state: "always a payload", tone: "conditional", why: "There is no shared filesystem, so a file from your device has to travel to the machine. A PNG or JPEG image up to 1.5 MB, or a text file up to 256 KB, two per message." },
+    { what: "Attach a local file", state: "always a payload", tone: "conditional", why: "There is no shared filesystem, so a file from your device has to travel to the machine. A PNG or JPEG image up to 1.5 MB and 2048 pixels on each side, or a text file up to 256 KB, two per message." },
     { what: "Open the repository", state: "not possible", tone: "never", why: "Nothing is cloned into the browser. Paths are read on the machine, one directory at a time." },
     credentialStorable
       ? { what: "Hold the credential", state: "this tab only", tone: "conditional", why: "The device credential lives in this tab's session storage. Closing the tab forgets it; pairing again mints another." }

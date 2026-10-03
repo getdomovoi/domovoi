@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { maximumImageUploadBytes, maximumSessionAttachments, maximumTextAttachmentBytes } from "@getdomovoi/protocol"
+import { maximumImageUploadBytes, maximumImageUploadDimension, maximumSessionAttachments, maximumTextAttachmentBytes } from "@getdomovoi/protocol"
 
 import { browserLimits, type BrowserLimitRow } from "./browser-limits"
 import type { BrowserPlatformEnvironment } from "./browser-platform"
@@ -79,9 +79,9 @@ describe("browserLimits", () => {
       what: "Attach a local file",
       state: "always a payload",
       tone: "conditional",
-      why: "There is no shared filesystem, so a file from your device has to travel to the machine. A PNG or JPEG image up to 1.5 MB, or a text file up to 256 KB, two per message.",
+      why: "There is no shared filesystem, so a file from your device has to travel to the machine. A PNG or JPEG image up to 1.5 MB and 2048 pixels on each side, or a text file up to 256 KB, two per message.",
     })
-    expect([maximumImageUploadBytes, maximumTextAttachmentBytes, maximumSessionAttachments]).toEqual([1_500_000, 262_144, 2])
+    expect([maximumImageUploadBytes, maximumImageUploadDimension, maximumTextAttachmentBytes, maximumSessionAttachments]).toEqual([1_500_000, 2048, 262_144, 2])
     expect(row(rows, "Hold the credential")).toMatchObject({ state: "this tab only", tone: "conditional" })
 
     const blocked = browserLimits(environment(), "ws://127.0.0.1:47831/rpc", false)
