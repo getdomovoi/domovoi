@@ -3632,14 +3632,16 @@ export class DomovoiDaemon {
   // The snapshot a client receives, with the ledger's turn timing (ruling
   // Q401). A ledger that cannot be read leaves turns out rather than failing
   // the snapshot. It reports the failure once, not on every snapshot, and
-  // again only after a read has succeeded in between.
+  // again only after a snapshot whose every session read cleanly: one session
+  // failing while another reads is still the same failure.
   #clientSnapshot(): WorkspaceSnapshot {
-    return workspaceSnapshotForClient(this.#snapshot, (sessionId, turnIds) => {
+    let failed = false
+    const snapshot = workspaceSnapshotForClient(this.#snapshot, (sessionId, turnIds) => {
       let turns: readonly SessionTurn[] = []
       try {
         turns = this.#usageLedger.turns?.(sessionId, turnIds) ?? []
-        this.#turnTimesUnreadable = false
       } catch (error) {
+        failed = true
         if (!this.#turnTimesUnreadable) {
           this.#turnTimesUnreadable = true
           this.#reportError("Domovoi could not read turn times for a snapshot", error)
@@ -3647,6 +3649,8 @@ export class DomovoiDaemon {
       }
       return turns
     })
+    if (!failed) this.#turnTimesUnreadable = false
+    return snapshot
   }
 
   #turnLink(sessionId: string, provider: string, threadId: string, turnId: string | undefined): { turnId?: string } {

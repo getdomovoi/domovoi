@@ -160,4 +160,36 @@ describe("a usage ledger that cannot be read", () => {
     expect(errorSink.mock.calls.filter(([report]) => (report as { context?: string }).context === "Domovoi could not read turn times for a snapshot"))
       .toHaveLength(1)
   })
+
+  // Round-2 review: one session failing while another reads cleanly in the
+  // same snapshot is still one failure, reported once. Only a snapshot whose
+  // every read is clean lets a later failure be reported again.
+  it("reports once when one session fails and another reads, and again only after a clean snapshot", async () => {
+    const ledger = new UsageLedger(":memory:")
+    const other = workspace().sessions.find((candidate) => candidate.id !== sessionId)!.id
+    let failing = true
+    const turns = vi.spyOn(ledger, "turns").mockImplementation((session) => {
+      if (session === sessionId && failing) throw new Error("ledger unreadable")
+      return []
+    })
+    const errorSink = vi.fn()
+    const snapshot = workspace()
+    snapshot.thread.push(
+      { id: "user-failing", sessionId, kind: "user", body: "Run it", turnId: "f".repeat(64), createdAt: "2026-10-02T12:00:00.000Z" },
+      { id: "user-reading", sessionId: other, kind: "user", body: "Run it", turnId: "e".repeat(64), createdAt: "2026-10-02T12:00:00.000Z" },
+    )
+    const { snapshot: read } = await start({ snapshot, ledger, errorSink })
+    const reports = () => errorSink.mock.calls
+      .filter(([report]) => (report as { context?: string }).context === "Domovoi could not read turn times for a snapshot").length
+
+    for (let attempt = 0; attempt < 3; attempt += 1) await read()
+    expect(turns.mock.calls.some(([session]) => session === other)).toBe(true)
+    expect(reports()).toBe(1)
+
+    failing = false
+    await read()
+    failing = true
+    await read()
+    expect(reports()).toBe(2)
+  })
 })
