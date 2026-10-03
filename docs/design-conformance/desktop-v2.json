@@ -571,7 +571,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the section draws the real ownership state and the per-platform facts, and Install and Remove now run through windowBridge.daemonService (the earlier ND9 lock is gone). Left: the supervisor gave-up banner with Start it again, pid and uptime, and the Check again and Start it status actions, which need the supervisor state over the desktop bridge (DaemonServiceStatusReport carries installed, running and detail only, while the supervisor record has exhausted with restart-limit; it exhausts at 4 crashes, so the copy must take the real count, not the drawn 5); the drawn card arrangement (header row, service sub-card, WHAT IT WROTE rows, footer); and the TailnetReach row, blocked in tailnet-reach-v2.json"
+        "reason": "the section draws the real ownership state and the per-platform facts, and Install and Remove now run through windowBridge.daemonService (the earlier ND9 lock is gone). Left: the supervisor gave-up banner with Start it again, pid and uptime, and the Check again and Start it status actions, which need the supervisor state over the desktop bridge (DaemonServiceStatusReport carries installed, running and detail only, while the supervisor record has exhausted with restart-limit; it exhausts at 4 crashes, so the copy must take the real count, not the drawn 5); and the drawn card arrangement (header row, service sub-card, WHAT IT WROTE rows, footer). The TailnetReach row is built as the card's footer row since 2026-10-02 (settings-shell.tsx, read in tailnet-reach-v2.json)"
       }
     },
     {
@@ -2224,8 +2224,8 @@
     },
     {
       "id": "settings.pairing",
-      "since": "2026-09-23",
-      "note": "Shown to desktop clients only: device.issueCode takes the daemon credential, which a web tab (a paired device) does not hold. The card's problem states that point at a tailnet setting draw no action while TailnetReach is blocked; the reach and certificate lines come from the pairingAddress the daemon sends with the code."
+      "since": "2026-10-03",
+      "note": "Shown to desktop clients only: device.issueCode takes the daemon credential, which a web tab (a paired device) does not hold. The card's problem states that point at a tailnet setting lead to the Settings tailnet row since TailnetReach landed (pairing-card-v2.json, pairing-card.reach, 2026-10-02); the reach and certificate lines come from the pairingAddress the daemon sends with the code."
     },
     {
       "id": "palette.other-machines",

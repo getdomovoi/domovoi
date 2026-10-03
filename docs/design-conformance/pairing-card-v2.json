@@ -79,6 +79,90 @@
         "needs": "protocol",
         "reason": "nothing tells the window that issued a code that a device redeemed it or was refused (protocol mismatch, device list full): device.issueCode returns the code, expiry and address only, so the paired receipt and the refusals cannot be drawn. Q354 A (2026-10-02): the daemon sends a notification or an issueCode follow-up saying redeemed, or refused with a reason (protocol); inferring it from device.list could name the wrong device and is ruled out"
       }
+    },
+    {
+      "id": "pairing-card.reach",
+      "name": "No code: a phone could not reach or trust the daemon",
+      "where": "the card's problem box after a code: the loopback daemon with Go to the tailnet setting, the switch off with Go to the setting, no tailnet, turning on, HTTPS certificates off, and a certificate the daemon cannot serve with Get it from Tailscale (Q404 A)",
+      "states": [
+        "loopback",
+        "switch off",
+        "no tailnet",
+        "turning on",
+        "HTTPS certificates off",
+        "no trusted certificate",
+        "asking Tailscale"
+      ],
+      "copy": [
+        "No code: a phone cannot reach this daemon",
+        "listening on 127.0.0.1 only",
+        "Sessions and this window are unaffected.",
+        "Let the daemon answer on your tailnet, then show a code.",
+        "Go to the tailnet setting",
+        "No code: a phone would not trust this daemon",
+        "Ask Tailscale for one. The key stays on this machine.",
+        "Get it from Tailscale",
+        "Asking Tailscale for a certificate",
+        "tailscale cert",
+        "The code button comes back when the certificate arrives.",
+        "No code: HTTPS certificates are off for this tailnet",
+        "Try again",
+        "No code: a phone cannot reach this machine yet",
+        "not reachable from your tailnet",
+        "Turn on Reach this machine from my tailnet, then show a code.",
+        "Go to the setting",
+        "No code: there is no tailnet on this machine",
+        "Domovoi does not set one up for you. Bring Tailscale up, then come back.",
+        "Making this machine reachable from your tailnet",
+        "The code button comes back when the service has restarted.",
+        "Domovoi stopped and changed nothing.",
+        "A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console."
+      ],
+      "evidence": [
+        "listening on 127.0.0.1 only",
+        "Let the daemon answer on your tailnet, then show a code.",
+        "Go to the tailnet setting",
+        "Ask Tailscale for one. The key stays on this machine.",
+        "Get it from Tailscale",
+        "Asking Tailscale for a certificate",
+        "The code button comes back when the certificate arrives.",
+        "No code: HTTPS certificates are off for this tailnet",
+        "not reachable from your tailnet",
+        "Turn on Reach this machine from my tailnet, then show a code.",
+        "Go to the setting",
+        "No code: there is no tailnet on this machine",
+        "Domovoi does not set one up for you. Bring Tailscale up, then come back.",
+        "Making this machine reachable from your tailnet",
+        "The code button comes back when the service has restarted.",
+        "Domovoi stopped and changed nothing."
+      ]
+    },
+    {
+      "id": "pairing-card.reach-lines",
+      "name": "Reach lines the card cannot say",
+      "where": "the problem box's mono and still lines, and the turning-off state",
+      "copy": [
+        "no certificate for",
+        "The tailnet address works. Only the certificate is missing.",
+        "Nothing else changes while it runs.",
+        "A tailnet admin turns them on under DNS in the Tailscale admin console.",
+        "tailscale status · no tailnet interface",
+        "Turning tailnet reach off",
+        "Paired devices disconnect until it is on again.",
+        "Nothing to do here."
+      ],
+      "presence": [
+        "The daemon restarts once the certificate is stored."
+      ],
+      "evidence": [
+        "The tailnet address works. Only the certificate is missing.",
+        "Nothing else changes while it runs.",
+        "Turning tailnet reach off"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "The card draws what it knows. Its mono line is the daemon's own problem, or Tailscale's own words with no tailnet, not a fixed line. It cannot know that the tailnet address works. Turning the switch on restarts the daemon once, so the still line says that rather than that nothing else changes. The turning-off state is drawn by the Settings card, not the pairing card. The HTTPS line is the longer design line both cards share."
+      }
     }
   ],
   "humanRead": [
@@ -104,8 +188,13 @@
     },
     {
       "id": "pairing-card.code",
+      "since": "2026-10-03",
+      "note": "Open gaps in the code slot, apart from the Web browser path (see the Q398 and Q399 note). The card learns of a loopback-only or certificate problem only after spending a code. Its problem box draws the tailnet actions since TailnetReach landed (pairing-card.reach, 2026-10-02); Show another is the code button's own label after a problem or an expiry, not an action inside the box as the design draws it, and Open Machines belongs to the refusal states, which wait on pairing-card.done's protocol block. The line The same code as domovoid pair --client <kind> names a command that prints usage and fails without --label. Q336 A is built: printedCommand draws the linked name, its ~/.local/bin path, or the bundled launcher's full path, so a DMG install no longer names a domovoid that is not on PATH."
+    },
+    {
+      "id": "pairing-card.reach",
       "since": "2026-10-02",
-      "note": "Open gaps in the code slot, apart from the Web browser path (see the Q398 and Q399 note). The card learns of a loopback-only or certificate problem only after spending a code, and its problem block has no actions (the design draws Show another, Open Machines and the tailnet actions; the tailnet ones wait on TailnetReach). The certificate problem's copy differs on purpose while TailnetReach is unbuilt. The line The same code as domovoid pair --client <kind> names a command that prints usage and fails without --label, and from a DMG install no domovoid is on PATH (Q336 A links Domovoi's own binaries into ~/.local/bin or shows the absolute bundled command)."
+      "note": "Read in Chromium against a fixture with no daemon and no Tailscale: a loopback code with the switch off leads to the setting, which scrolls the Settings card into view and marks it for 1.6 seconds; a code with no trusted certificate asks Tailscale through the switch. The titles name the device kind chosen, so \"a phone\" reads \"a tablet\" or \"a browser on another device\" there."
     }
   ],
   "scriptBacklog": {
@@ -128,37 +217,6 @@
       "the browser",
       "Open the address in the browser and type the code.",
       "px); grid-auto-rows:",
-      "No code: a phone cannot reach this daemon",
-      "listening on 127.0.0.1 only",
-      "Sessions and this window are unaffected.",
-      "Let the daemon answer on your tailnet, then show a code.",
-      "Go to the tailnet setting",
-      "No code: a phone would not trust this daemon",
-      "no certificate for",
-      "The tailnet address works. Only the certificate is missing.",
-      "Ask Tailscale for one. The key stays on this machine.",
-      "Get it from Tailscale",
-      "Asking Tailscale for a certificate",
-      "tailscale cert",
-      "Nothing else changes while it runs.",
-      "The code button comes back when the certificate arrives.",
-      "No code: HTTPS certificates are off for this tailnet",
-      "A tailnet admin turns them on under DNS in the Tailscale admin console.",
-      "Try again",
-      "No code: a phone cannot reach this machine yet",
-      "not reachable from your tailnet",
-      "Turn on Reach this machine from my tailnet, then show a code.",
-      "Go to the setting",
-      "No code: there is no tailnet on this machine",
-      "tailscale status · no tailnet interface",
-      "Domovoi does not set one up for you. Bring Tailscale up, then come back.",
-      "Making this machine reachable from your tailnet",
-      "The code button comes back when the service has restarted.",
-      "Turning tailnet reach off",
-      "Paired devices disconnect until it is on again.",
-      "Nothing to do here.",
-      "Domovoi stopped and changed nothing.",
-      "A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console.",
       "The code expired",
       "No device paired with it.",
       "Show another code to try again.",

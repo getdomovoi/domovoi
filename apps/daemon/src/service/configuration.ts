@@ -29,6 +29,10 @@ const configurationSchema = z.object({
   relayIdentityPublicKey: z.string().optional(),
   relayCredentialFile: pathSchema.optional(),
   tls: z.object({ certPath: pathSchema, keyPath: pathSchema }).strict().optional(),
+  tailnetListener: z.object({
+    address: z.string(),
+    tls: z.object({ certPath: pathSchema, keyPath: pathSchema }).strict(),
+  }).strict().optional(),
   advertiseHost: z.string().optional(),
   tailnetHost: tailnetHostSchema.optional(),
   sshTunnels: configuredSshTunnelsSchema.optional(),
@@ -73,6 +77,11 @@ export function serviceEnvironment(config: ServiceConfiguration): DaemonEnvironm
     ...(config.tls ? {
       DOMOVOI_TLS_CERT_PATH: config.tls.certPath,
       DOMOVOI_TLS_KEY_PATH: config.tls.keyPath,
+    } : {}),
+    ...(config.tailnetListener ? {
+      DOMOVOI_TAILNET_ADDRESS: config.tailnetListener.address,
+      DOMOVOI_TAILNET_TLS_CERT_PATH: config.tailnetListener.tls.certPath,
+      DOMOVOI_TAILNET_TLS_KEY_PATH: config.tailnetListener.tls.keyPath,
     } : {}),
     ...(config.advertiseHost !== undefined ? { DOMOVOI_ADVERTISE_HOST: config.advertiseHost } : {}),
     ...(config.tailnetHost !== undefined ? { DOMOVOI_TAILNET_HOST: config.tailnetHost } : {}),
@@ -209,7 +218,7 @@ export function serviceProfileMismatch(input: { environment: NodeJS.ProcessEnv; 
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, serviceRuntime, lingerEnabledByDomovoi, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, tailnetListener, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, serviceRuntime, lingerEnabledByDomovoi, ...required } = configurationSchema.parse(JSON.parse(text))
     const webAppUrl = webAppUrlSetting(savedWebAppUrl)
     const config: ServiceConfiguration = {
       ...required,
@@ -221,6 +230,7 @@ export function parseServiceConfiguration(text: string): ServiceConfiguration {
       ...(relayCredentialFile !== undefined ? { relayCredentialFile } : {}),
       ...(registrationId !== undefined ? { registrationId } : {}),
       ...(tls !== undefined ? { tls } : {}),
+      ...(tailnetListener !== undefined ? { tailnetListener } : {}),
       ...(advertiseHost !== undefined ? { advertiseHost } : {}),
       ...(tailnetHost !== undefined ? { tailnetHost } : {}),
       ...(sshTunnels !== undefined ? { sshTunnels } : {}),

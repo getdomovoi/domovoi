@@ -9,8 +9,8 @@
       "rendererJavascriptBytes": 1280000,
       "rendererLazyJavascriptBytes": 400000,
       "rendererStylesheetBytes": 128000,
-      "mainBytes": 44032,
-      "preloadBytes": 9728
+      "mainBytes": 44544,
+      "preloadBytes": 10752
     }
   },
   "memory": {

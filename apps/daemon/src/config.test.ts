@@ -20,6 +20,9 @@ describe("parseDaemonEnvironment", () => {
 
   it.each(["", "0.0.0.0", "::", "[::]", "localhost", "localhost.", "127.1", "::1", "[::ffff:127.0.0.1]", "127%2e0%2e0%2e1",
     "studio/rpc", "studio?secret", "studio#fragment", "user@studio", "studio:443", " studio", "x".repeat(254),
+    // Re-review of 10dba4a2 (P2): names the URL parser rewrites into another
+    // host, checked on what it parses to: 0.0.0.0, 127.0.0.1, 1.0.0.0.
+    "0.0x0", "127.0x1", "a.0x7f000001", "1.0x0", "0x7f.0.0.1", "studio.0x10",
   ])("refuses invalid or non-routable tailnet hosts: %s", (tailnetHost) => {
     expect(() => parseDaemonEnvironment({ ...encryptedRemote, DOMOVOI_TAILNET_HOST: tailnetHost }, "/home/tester"))
       .toThrow("DOMOVOI_TAILNET_HOST")
@@ -260,4 +263,83 @@ describe("parseDaemonEnvironment", () => {
         .toThrow("43-character base64url")
     },
   )
+})
+
+// TailnetReach (Q404 A): a second listener, TLS only, on this machine's
+// Tailscale address, beside the loopback one the desktop and CLI attach on.
+describe("the tailnet listener settings", () => {
+  const tailnet = {
+    DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+    DOMOVOI_TAILNET_ADDRESS: "100.101.102.103",
+    DOMOVOI_TAILNET_TLS_CERT_PATH: "/home/tester/.domovoi/tls/studio.tail4c2e.ts.net.crt",
+    DOMOVOI_TAILNET_TLS_KEY_PATH: "/home/tester/.domovoi/tls/studio.tail4c2e.ts.net.key",
+  }
+
+  it("is absent unless configured, and loopback stays as it was", () => {
+    const config = parseDaemonEnvironment({}, "/home/tester")
+    expect(config).not.toHaveProperty("tailnetListener")
+    expect(config).toMatchObject({ host: "127.0.0.1", port: 47831, allowRemoteTransport: false })
+  })
+
+  it("adds the listener beside the loopback one", () => {
+    expect(parseDaemonEnvironment(tailnet, "/home/tester")).toMatchObject({
+      host: "127.0.0.1",
+      allowRemoteTransport: true,
+      tailnetListener: {
+        address: "100.101.102.103",
+        tls: {
+          certPath: "/home/tester/.domovoi/tls/studio.tail4c2e.ts.net.crt",
+          keyPath: "/home/tester/.domovoi/tls/studio.tail4c2e.ts.net.key",
+        },
+      },
+    })
+  })
+
+  it.each(["fd7a:115c:a1e0::1", "fd7a:115c:a1e0:ab12:4843:cd96:6265:6667", "100.64.0.1", "100.127.255.254"])(
+    "accepts a Tailscale address: %s", (address) => {
+      expect(parseDaemonEnvironment({ ...tailnet, DOMOVOI_TAILNET_ADDRESS: address }, "/home/tester").tailnetListener?.address)
+        .toBe(address)
+    },
+  )
+
+  it.each(["", " 100.101.102.103", "100.63.255.255", "100.128.0.1", "192.168.1.20", "10.0.0.2", "127.0.0.1", "::1",
+    "0.0.0.0", "::", "fd7a:115c:a1e1::1", "fe80::1", "studio.tail4c2e.ts.net", "[fd7a:115c:a1e0::1]", "100.101.102.103:47831"])(
+    "refuses an address outside Tailscale's ranges: %s", (address) => {
+      expect(() => parseDaemonEnvironment({ ...tailnet, DOMOVOI_TAILNET_ADDRESS: address }, "/home/tester"))
+        .toThrow("DOMOVOI_TAILNET_ADDRESS must be this machine's Tailscale address")
+    },
+  )
+
+  it("refuses the listener without the remote transport opt-in", () => {
+    expect(() => parseDaemonEnvironment({ ...tailnet, DOMOVOI_ALLOW_REMOTE_TRANSPORT: "0" }, "/home/tester"))
+      .toThrow("DOMOVOI_TAILNET_ADDRESS requires DOMOVOI_ALLOW_REMOTE_TRANSPORT=1")
+  })
+
+  it.each(["DOMOVOI_TAILNET_ADDRESS", "DOMOVOI_TAILNET_TLS_CERT_PATH", "DOMOVOI_TAILNET_TLS_KEY_PATH"] as const)(
+    "refuses a half-configured listener without %s", (missing) => {
+      const { [missing]: _left, ...rest } = tailnet
+      expect(() => parseDaemonEnvironment(rest, "/home/tester"))
+        .toThrow("DOMOVOI_TAILNET_ADDRESS, DOMOVOI_TAILNET_TLS_CERT_PATH and DOMOVOI_TAILNET_TLS_KEY_PATH must be set together")
+    },
+  )
+
+  it.each(["relative/studio.crt", "", "  ", "/home/tester/a\nb.crt"])("refuses a certificate path that is not absolute: %j", (path) => {
+    expect(() => parseDaemonEnvironment({ ...tailnet, DOMOVOI_TAILNET_TLS_CERT_PATH: path }, "/home/tester"))
+      .toThrow("DOMOVOI_TAILNET_TLS_CERT_PATH and DOMOVOI_TAILNET_TLS_KEY_PATH must be absolute file paths")
+    expect(() => parseDaemonEnvironment({ ...tailnet, DOMOVOI_TAILNET_TLS_KEY_PATH: path }, "/home/tester"))
+      .toThrow("DOMOVOI_TAILNET_TLS_CERT_PATH and DOMOVOI_TAILNET_TLS_KEY_PATH must be absolute file paths")
+  })
+
+  it("refuses the listener beside a listener that is not loopback", () => {
+    // A wildcard or tailnet DOMOVOI_HOST already answers on the tailnet
+    // address, so a second listener there is a conflict, not an addition.
+    expect(() => parseDaemonEnvironment({ ...tailnet, DOMOVOI_HOST: "0.0.0.0",
+      DOMOVOI_TLS_CERT_PATH: "/cert.pem", DOMOVOI_TLS_KEY_PATH: "/key.pem" }, "/home/tester"))
+      .toThrow("DOMOVOI_TAILNET_ADDRESS adds a listener beside a loopback DOMOVOI_HOST")
+  })
+
+  it("lets the tailnet name be advertised for the listener", () => {
+    expect(parseDaemonEnvironment({ ...tailnet, DOMOVOI_TAILNET_HOST: "studio.tail4c2e.ts.net" }, "/home/tester"))
+      .toMatchObject({ host: "127.0.0.1", tailnetHost: "studio.tail4c2e.ts.net" })
+  })
 })

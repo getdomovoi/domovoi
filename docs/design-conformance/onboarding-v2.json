@@ -151,7 +151,7 @@
       ],
       "missing": {
         "since": "2026-10-02",
-        "reason": "no client, daemon or desktop module reads the tailnet: listing peers and which of them answer a daemon on the Domovoi port needs a Tailscale read and a probe on the daemon or desktop side (no Tailscale code exists outside tests)"
+        "reason": "nothing lists the tailnet's peers: the desktop reads tailscale status --json for this machine's own name only (apps/desktop/src/main/tailnet-reach.ts, for TailnetReach), and listing peers and which of them answer a daemon on the Domovoi port needs a peer read and a probe on the daemon or desktop side"
       }
     },
     {
@@ -165,10 +165,9 @@
       "evidence": [
         "A phone can pair with this machine only once it is on."
       ],
-      "blocked": {
-        "since": "2026-10-02",
-        "needs": "protocol",
-        "reason": "its body is the imported TailnetReach card, which is blocked (tailnet-reach-v2.json); drawing the section header alone would show a switch that does nothing. J25 is decided, so the block is implementation (daemon or desktop), not a decision"
+      "missing": {
+        "since": "2026-10-03",
+        "reason": "the TailnetReach card is built (tailnet-reach-v2.json, 2026-10-02) and imported by Settings only; first run has no Add a machine step (onboarding.add-machine), so nothing draws THIS MACHINE, its optional line or the card there"
       }
     },
     {

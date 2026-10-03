@@ -1,4 +1,4 @@
-import { rpcMethods, serviceHandoffRefusal, workspaceSnapshotSchema } from "@getdomovoi/protocol"
+import { rpcMethods, serviceHandoffRefusal, workspaceSnapshotSchema, type TailnetListenerStatus } from "@getdomovoi/protocol"
 
 import { callDaemonHeld, callDaemonOnce, type CliRpcTarget } from "./cli-rpc.js"
 import { OperationDeadline } from "./operation-deadline.js"
@@ -31,6 +31,27 @@ export async function readLocalServiceHandoffRefusal(input: {
     }))
     deadline.throwIfExpired()
     return serviceHandoffRefusal(snapshot)
+  } finally {
+    deadline.clear()
+  }
+}
+
+// Codex review round 1 of #713 (P2-5): TailnetReach restarts the daemon on a
+// new certificate and keeps the previous one until the daemon says it serves
+// the new one on the tailnet. This reads that answer from the daemon's own
+// endpoint. A daemon that cannot be read throws: not knowing is not a yes.
+export async function readLocalTailnetStatus(input: {
+  endpoint: { url: string; token: string }
+  timeoutMs: number
+}): Promise<TailnetListenerStatus> {
+  const target = localTarget(input.endpoint)
+  const deadline = OperationDeadline.start(input.timeoutMs)
+  try {
+    const status = rpcMethods["tailnet.status"].result.parse(await callDaemonOnce({
+      target, token: input.endpoint.token, method: "tailnet.status", params: {}, deadline,
+    }))
+    deadline.throwIfExpired()
+    return status
   } finally {
     deadline.clear()
   }

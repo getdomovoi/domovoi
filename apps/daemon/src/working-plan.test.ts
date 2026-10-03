@@ -235,6 +235,121 @@ describe("working-plan artifacts", () => {
     })
     expect(result.artifact.revision).toBe(revision)
   })
+
+  // The artifact watcher names plan files found in the worktree
+  // plan-<sessionId>-<hash> and always records their path. Turn-scoped
+  // working plans never had a path, so a path marks a file artifact.
+  it("leaves watched plan files and their annotations alone", () => {
+    const watched: Artifact = {
+      id: "plan-session-a-0123456789abcdef",
+      sessionId: "session-a",
+      title: "Plan",
+      type: "plan",
+      revision: 2,
+      path: "PLAN.md",
+      mimeType: "text/markdown",
+      content: "# Agent plan\n",
+    }
+    const artifacts: Artifact[] = [
+      { ...watched },
+      {
+        id: "plan-session-a-current",
+        sessionId: "session-a",
+        title: "Working plan",
+        type: "plan",
+        revision: 1,
+        mimeType: "text/markdown",
+        content: "Legacy plan",
+      },
+    ]
+    const annotations: Annotation[] = [
+      {
+        id: "annotation-file",
+        sessionId: "session-a",
+        artifactId: watched.id,
+        anchor: { textQuote: "Agent plan" },
+        body: "Comment on the file",
+        status: "open",
+        origin: "desktop",
+        thread: [],
+        createdAt: firstAt,
+        updatedAt: firstAt,
+      },
+      {
+        id: "annotation-legacy",
+        sessionId: "session-a",
+        artifactId: "plan-session-a-current",
+        anchor: { textQuote: "Legacy plan" },
+        body: "Comment on the legacy plan",
+        status: "open",
+        origin: "desktop",
+        thread: [],
+        createdAt: firstAt,
+        updatedAt: firstAt,
+      },
+    ]
+
+    const first = syncWorkingPlanArtifact(artifacts, annotations, plan(), true)
+    expect(first.artifact).toMatchObject({ id: "plan-session-a", revision: 2 })
+    const second = syncWorkingPlanArtifact(artifacts, annotations, plan({ revision: 3 }), true)
+    expect(second.artifact).toMatchObject({ id: "plan-session-a", revision: 3 })
+
+    expect(artifacts.map(({ id }) => id).sort()).toEqual([
+      "plan-session-a",
+      "plan-session-a-0123456789abcdef",
+    ])
+    expect(artifacts.find(({ id }) => id === watched.id)).toEqual(watched)
+    expect(annotations.map(({ artifactId }) => artifactId)).toEqual([
+      watched.id,
+      "plan-session-a",
+    ])
+  })
+
+  it("creates the working plan beside a watched plan file", () => {
+    const watched: Artifact = {
+      id: "plan-session-a-0123456789abcdef",
+      sessionId: "session-a",
+      title: "Plan",
+      type: "plan",
+      revision: 1,
+      path: "PLAN.md",
+      mimeType: "text/markdown",
+      content: "# Agent plan\n",
+    }
+    const artifacts: Artifact[] = [{ ...watched }]
+
+    const result = syncWorkingPlanArtifact(artifacts, [], plan(), true)
+
+    expect(result.artifact).toMatchObject({ id: "plan-session-a", revision: 1 })
+    expect(artifacts.find(({ id }) => id === watched.id)).toEqual(watched)
+    expect(artifacts).toHaveLength(2)
+  })
+
+  // Before the watched-file fix, a plan delta could rename a watched plan
+  // file to plan-<sessionId> and keep its path. A saved profile can still
+  // hold that artifact; it is the working plan, not a second one.
+  it("takes over a saved working plan that kept a watched file's path", () => {
+    const artifacts: Artifact[] = [{
+      id: "plan-session-a",
+      sessionId: "session-a",
+      title: "Working plan",
+      type: "plan",
+      revision: 2,
+      path: "PLAN.md",
+      variant: { id: "variant-a", groupId: "plans", label: "A", order: 0 },
+      mimeType: "text/markdown",
+      content: "# Agent plan\n",
+    }]
+
+    const result = syncWorkingPlanArtifact(artifacts, [], plan(), true)
+
+    expect(artifacts.filter(({ id }) => id === "plan-session-a")).toHaveLength(1)
+    expect(artifacts).toHaveLength(1)
+    expect(result.artifact).toBe(artifacts[0])
+    expect(result.artifact).toMatchObject({ id: "plan-session-a", revision: 3 })
+    expect(result.artifact).not.toHaveProperty("path")
+    expect(result.artifact).not.toHaveProperty("variant")
+  })
 })
 
 describe("working-plan provider delivery", () => {

@@ -4,6 +4,7 @@ import { posix, win32 } from "node:path"
 import type { DaemonModule } from "./daemon-module.js"
 import { DesktopDaemonService } from "./daemon-service.js"
 import type { DesktopDaemon } from "./desktop-daemon.js"
+import { savedTailnetReachRecord, tailnetReachEnvironment } from "./tailnet-reach-record.js"
 
 // J24: the login service, assembled on first use. index.ts loads this module
 // with import() only when Settings first asks about the service, so none of
@@ -41,7 +42,13 @@ export function createDesktopDaemonService(
       platform: process.platform,
       fileSystem: daemon.nodeRuntimeFileSystem(),
     }),
-    install: (options) => daemon.installDaemonService({ ...options, environment: profile }),
+    // Review of 049b1383 (P2-3): with the tailnet switch on, the service keeps
+    // the tailnet listener the in-app daemon had. Read at install, as saved;
+    // a hand-set DOMOVOI_HOST is this app's own and does not go with it.
+    install: (options) => daemon.installDaemonService({ ...options, environment: {
+      ...profile,
+      ...(app.dataDirectory === undefined ? {} : tailnetReachEnvironment(savedTailnetReachRecord(app.dataDirectory, environment, home))),
+    } }),
     status: () => daemon.readDaemonServiceStatus(),
     // The profile this app's daemon runs, read as its acquisition reads it,
     // against the one the saved service configuration names.
