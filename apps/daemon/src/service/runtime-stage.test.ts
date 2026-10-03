@@ -731,6 +731,16 @@ describe("staging the shipped runtime under the profile", () => {
       expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp", fileSystem({}, ["C:\\Users\\dana\\AppData"]))).toBe("C:\\Users\\dana\\AppData\\Local\\Temp")
       expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp", fileSystem({}, ["C:\\Users\\dana"]))).toBe("C:\\Users\\dana\\AppData\\Local\\Temp")
     })
+
+    // Round 4 (P2-4): a file system with no unique 64-bit file id answers 0,
+    // or all ones (ReFS when its 128-bit id does not fit), without failing.
+    // Two such answers are equal without being the same directory.
+    it.each([["0"], ["18446744073709551615"]])("refuses a place when the file id read is %s, which names no one directory", async (ino) => {
+      const unknown = `7:${ino}`
+      const files = fileSystem({ "C:\\Users\\dana": unknown, "C:\\Users\\Dana": unknown, "C:\\Users\\Dana\\Temp": unknown })
+      expect(await check("C:\\Users\\Dana\\Temp", files)).toBe("C:\\Users\\Dana\\Temp")
+      expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp", files)).toBe("C:\\Users\\dana\\AppData\\Local\\Temp")
+    })
   })
 
   // PR #712 security review round 1 (P2): the staging place is checked when
