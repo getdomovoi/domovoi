@@ -276,7 +276,8 @@ import { usageIdentity } from "./usage-accounting.js"
 import { StoredMachineIdentityMismatchError, type MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
 import { wslSharePath } from "./wsl-open-target.js"
-import { PairingCodeError, PairingCodeService, PairingDeviceLimitError } from "./pairing-codes.js"
+import { PairingCodeError, PairingCodeService, PairingDeviceLimitError, pairingCodeTtlMs } from "./pairing-codes.js"
+import { PairingIssuerSlot } from "./pairing-issuer.js"
 import {
   DeviceLabelMismatchError,
   DeviceLimitReachedError,
@@ -1877,9 +1878,10 @@ export class DomovoiDaemon {
   #advertisedProtocolVersion: string
   #pairing: PairingCodeService | undefined
   // Ruling Q354 A. The open client code's issuing connection, the one place
-  // its outcome goes. A later code, or the outcome that ends this one, clears
-  // it, so a connection is never told about a code it did not issue.
-  #pairingIssuer: { pairingId: string, socket: RpcOutboundSocket } | undefined
+  // its outcome goes. A later code, the outcome that ends this one, the code
+  // running out its time or the connection closing clears it, so a connection
+  // is never told about a code it did not issue and no closed socket is kept.
+  #pairingIssuer = new PairingIssuerSlot<RpcOutboundSocket>()
   // Set while the usage ledger cannot answer a snapshot's turn times, so the
   // failure is reported once (ruling Q401, review P3-6).
   #turnTimesUnreadable = false
@@ -2928,11 +2930,10 @@ export class DomovoiDaemon {
     outcome: NotificationParams<"device.codeOutcome">,
     codeEnded: boolean,
   ): void {
-    const issuer = this.#pairingIssuer
-    if (issuer?.pairingId !== pairingId) return
-    if (codeEnded) this.#pairingIssuer = undefined
+    const issuer = this.#pairingIssuer.issuer(pairingId, codeEnded)
+    if (issuer === undefined) return
     // notifyClients writes only to an open, authenticated client connection.
-    this.#notifyClients([issuer.socket], "device.codeOutcome", outcome)
+    this.#notifyClients([issuer], "device.codeOutcome", outcome)
   }
 
   #codeReplaced(replacedPairingId: string | undefined): void {
@@ -2940,7 +2941,7 @@ export class DomovoiDaemon {
       this.#notifyPairingIssuer(replacedPairingId, { pairingId: replacedPairingId, outcome: "closed", reason: "replaced" }, true)
     }
     // Whatever was open is gone, reported or not.
-    this.#pairingIssuer = undefined
+    this.#pairingIssuer.clear()
   }
 
   // A refusal that ended the open code tells its issuer why. An expired code
@@ -2953,8 +2954,8 @@ export class DomovoiDaemon {
       this.#notifyPairingIssuer(pairingId, { pairingId, outcome: "closed", reason: "attempts-exhausted" }, true)
     } else if (error.refusal === "wrong-kind") {
       this.#notifyPairingIssuer(pairingId, { pairingId, outcome: "refused", reason: "wrong-kind" }, true)
-    } else if (this.#pairingIssuer?.pairingId === pairingId) {
-      this.#pairingIssuer = undefined
+    } else {
+      this.#pairingIssuer.issuer(pairingId, true)
     }
   }
 
@@ -3059,6 +3060,7 @@ export class DomovoiDaemon {
       socket.once("close", () => {
         this.#rpcClients.delete(socket)
         this.#rpcOutbound.forget(socket)
+        this.#pairingIssuer.forget(socket)
         this.#releaseTerminalOwnership(socket)
         // A stopping daemon keeps the fence: its sockets close before it has
         // finished, and no turn may start in that gap either.
@@ -3167,6 +3169,7 @@ export class DomovoiDaemon {
     }
     this.#closeAllTerminals()
     this.#dropClosedTerminals()
+    this.#pairingIssuer.clear()
     this.#rpcOutbound.dispose()
     for (const client of this.#rpcClients) client.close(1001, "daemon stopping")
 
@@ -7638,7 +7641,7 @@ export class DomovoiDaemon {
         const { replacedPairingId, ...issued } = this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess)
         this.#codeReplaced(replacedPairingId)
         // Only a client code reports its outcome, and only to this connection.
-        if (params.targetClient !== undefined) this.#pairingIssuer = { pairingId: issued.pairingId, socket }
+        if (params.targetClient !== undefined) this.#pairingIssuer.set(issued.pairingId, socket, pairingCodeTtlMs)
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
