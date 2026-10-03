@@ -32,11 +32,21 @@
         "The previous code no longer works.",
         "The QR holds this address and the code, never a credential:"
       ],
-      "evidence": [
+      "presence": [
         "Show a pairing code",
         "A code lasts 180 seconds. Showing another cancels it.",
         "The QR holds this address and the code, never a credential"
-      ]
+      ],
+      "evidence": [
+        "Show a pairing code",
+        "A code lasts 180 seconds. Showing another cancels it.",
+        "The QR holds this address and the code, never a credential",
+        "issuedKind !== \"browser\""
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the phone and tablet paths are built; the Web browser path is not right. It draws the same domovoi-pair QR and Copy payload as a phone, which the web connect page refuses (it parses only the word code), and a phone camera scanning that QR opens the phone's own pairing, greets as a phone and spends the web code. Q398 and Q399 (2026-10-02) draw no QR on the Web browser tab, say to type the code there, show webAppUrl as text when the daemon has one, and copy the bare code; that branch is built on open PR #704 (fix/v2-web), not on main. The evidence names the branch on the issued kind that #704 adds"
+      }
     },
     {
       "id": "pairing-card.grants",
@@ -90,7 +100,12 @@
     {
       "id": "pairing-card.code",
       "since": "2026-10-02",
-      "note": "Open gaps in the code slot. Copy for Web browser copies a domovoi-pair payload, which the web connect page refuses (it parses only the code); the design says to type the code. The card learns of a loopback-only or certificate problem only after spending a code, and its problem block has no actions (the design draws Show another, Open Machines and the tailnet actions; the tailnet ones wait on TailnetReach). The certificate problem's copy differs on purpose while TailnetReach is unbuilt. The line The same code as domovoid pair --client <kind> names a command that prints usage and fails without --label, and from a DMG install no domovoid is on PATH (Q336 A links Domovoi's own binaries into ~/.local/bin or shows the absolute bundled command)."
+      "note": "Q398 and Q399 (2026-10-02), a ruled difference from the drawn browser QR: the Web browser tab draws no QR, even when the daemon has a webAppUrl, and says to type the code into the web page, showing webAppUrl as text when there is one; Copy hands over the bare code. The drawn browser QR would be scanned by a phone camera, whose browser greets as a phone or tablet, so a web-kind code would always end in a kind mismatch and an extra paired device. Built on open PR #704, not on main yet."
+    },
+    {
+      "id": "pairing-card.code",
+      "since": "2026-10-02",
+      "note": "Open gaps in the code slot, apart from the Web browser path (see the Q398 and Q399 note). The card learns of a loopback-only or certificate problem only after spending a code, and its problem block has no actions (the design draws Show another, Open Machines and the tailnet actions; the tailnet ones wait on TailnetReach). The certificate problem's copy differs on purpose while TailnetReach is unbuilt. The line The same code as domovoid pair --client <kind> names a command that prints usage and fails without --label, and from a DMG install no domovoid is on PATH (Q336 A links Domovoi's own binaries into ~/.local/bin or shows the absolute bundled command)."
     }
   ],
   "scriptBacklog": {
