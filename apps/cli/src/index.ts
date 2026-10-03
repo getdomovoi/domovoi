@@ -7,7 +7,7 @@ import { protocolVersion } from "@getdomovoi/protocol"
 import { diagnose, renderDoctor } from "./doctor.js"
 import { exitCode, renderExitCodes } from "./exit-codes.js"
 import { readLogs, renderLogs } from "./logs.js"
-import { pairWithDaemon, PairingError, readPairingCode, redeemPairingCode, renderPaired } from "./pair.js"
+import { deviceLabelProblem, pairWithDaemon, PairingError, readPairingCode, redeemPairingCode, renderPaired } from "./pair.js"
 import { readPlainLine, readSecretLine } from "./secret-input.js"
 import { installSkill, previewSkill, renderPreview, SkillInstallError } from "./skill-install.js"
 import { connectToDaemon, DaemonUnreachableError, defaultEndpoint } from "./rpc.js"
@@ -56,7 +56,8 @@ function parse(argv: string[]): Options {
     else if (argument === "--credential-file") options.credentialFile = value()
     else if (argument === "--label") {
       const label = value().trim()
-      if (label.length === 0) throw new UsageError("--label needs a name the daemon can show")
+      const problem = deviceLabelProblem(label, "--label")
+      if (problem !== undefined) throw new UsageError(problem)
       options.label = label
     }
     else if (argument === "--limit") {
@@ -103,6 +104,13 @@ async function main(argv: string[]): Promise<number> {
   })
 
   if (command === "pair") {
+    // The hostname default is bounded like --label, and before the code is
+    // read, so a bad label never costs a pairing admission.
+    const label = options.label ?? hostname().trim()
+    if (options.label === undefined) {
+      const problem = deviceLabelProblem(label, "hostname")
+      if (problem !== undefined) throw new UsageError(problem)
+    }
     const credentials = await store()
     const entered = readPairingCode(await readSecretLine("Paste the pairing code: "))
     // The payload names the address the daemon issued the code for, the same
@@ -110,7 +118,7 @@ async function main(argv: string[]): Promise<number> {
     // wins, for a route the daemon cannot know about, such as a forwarded port.
     const endpoint = options.daemonGiven ? options.daemon : entered.url ?? options.daemon
     const redeemed = await redeemPairingCode({
-      endpoint, code: entered.code, label: options.label ?? hostname(),
+      endpoint, code: entered.code, label,
       open: (endpoint) => connectToDaemon({ endpoint, hello: false }),
     })
     const paired = await pairWithDaemon({

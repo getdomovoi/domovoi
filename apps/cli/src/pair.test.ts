@@ -5,7 +5,7 @@ import { createPrivateKey, createPublicKey } from "node:crypto"
 
 import { encodePairingPayload, protocolVersion } from "@getdomovoi/protocol"
 
-import { pairWithDaemon, PairingError, readPairingCode, redeemPairingCode, renderPaired } from "./pair.js"
+import { deviceLabelProblem, pairWithDaemon, PairingError, readPairingCode, redeemPairingCode, renderPaired } from "./pair.js"
 import { DaemonRefusedError, DaemonUnreachableError } from "./rpc.js"
 
 const token = "t".repeat(43)
@@ -94,6 +94,21 @@ describe("readPairingCode", () => {
     expect(() => readPairingCode(token)).toThrow(PairingError)
     expect(() => readPairingCode("")).toThrow(PairingError)
     expect(() => readPairingCode("domovoi-pair:1:!!!")).toThrow(PairingError)
+  })
+})
+
+describe("deviceLabelProblem", () => {
+  it("accepts what the wire accepts: 1 to 128 UTF-16 units after trimming", () => {
+    expect(deviceLabelProblem("my shell", "--label")).toBeUndefined()
+    expect(deviceLabelProblem("a".repeat(128), "--label")).toBeUndefined()
+    expect(deviceLabelProblem("a".repeat(128), "hostname")).toBeUndefined()
+  })
+
+  it("refuses an over-long or empty label before any code is spent on it", () => {
+    expect(deviceLabelProblem("a".repeat(129), "--label")).toBe("--label takes at most 128 characters")
+    expect(deviceLabelProblem("   ", "--label")).toBe("--label needs a name the daemon can show")
+    expect(deviceLabelProblem("a".repeat(129), "hostname")).toBe("This machine's hostname does not fit a device label (1 to 128 characters), so pass --label <device label>")
+    expect(deviceLabelProblem("", "hostname")).toBe("This machine's hostname does not fit a device label (1 to 128 characters), so pass --label <device label>")
   })
 })
 

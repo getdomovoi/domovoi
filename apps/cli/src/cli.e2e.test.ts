@@ -184,6 +184,14 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
     expect(await runCli(["doctor", "now", "--daemon", "ws://127.0.0.1:1/rpc", "--credential-file", join(home!, "unused.json")])).toMatchObject({ code: 2 })
   })
 
+  it("refuses a label the daemon would refuse before any connection, so no admission is spent", async () => {
+    // An unreachable address: reaching it would exit 3, so a 2 proves the
+    // label was refused first.
+    const long = await runCli(["pair", "--label", "x".repeat(129), "--daemon", "ws://127.0.0.1:1/rpc", "--credential-file", join(home!, "unused.json")], "hearth-quiet-ember-42\n")
+    expect(long.code).toBe(2)
+    expect(long.stderr).toMatch(/^--label takes at most 128 characters$/m)
+  })
+
   it("refuses a pairing code passed as an argument", async () => {
     const result = await runCli(["pair", "hearth-quiet-ember-42", "--daemon", url, "--credential-file", join(home!, "unused.json")])
     expect(result.code).toBe(2)

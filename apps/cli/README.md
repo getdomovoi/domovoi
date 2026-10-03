@@ -29,7 +29,9 @@ domovoi skill install <path> [--scope user|project] [--yes]
   code is spent, the daemon lists the device under its label whatever happens next; when the
   hello is refused or the credential cannot be stored, the message names that device so it can
   be revoked before another code is shown. `--label`
-  names this device in the daemon's Devices list and defaults to the hostname. The pasted line's
+  names this device in the daemon's Devices list and defaults to the hostname; either is checked
+  against the wire's bound of 1 to 128 characters before the code is read, because the daemon
+  counts a refused label as one of the three admissions below. The pasted line's
   address is used unless `--daemon` is given; the credential is keyed by that address, the
   success line prints it, and when it is not the default it says that later commands need
   `--daemon` with it. The daemon admits three redemptions per source per

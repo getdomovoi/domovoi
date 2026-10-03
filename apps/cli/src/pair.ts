@@ -1,4 +1,4 @@
-import { decodePairingPayload, deviceCurrentResultSchema, devicePairResultSchema, pairingCodeSchema, pairingPayloadPrefix, protocolVersion } from "@getdomovoi/protocol"
+import { decodePairingPayload, deviceCurrentResultSchema, deviceLabelSchema, devicePairResultSchema, maximumPairedDeviceLabelLength, pairingCodeSchema, pairingPayloadPrefix, protocolVersion } from "@getdomovoi/protocol"
 
 import type { CredentialStore } from "./credentials.js"
 import { reconcileRelayPin } from "./relay-pin.js"
@@ -27,6 +27,16 @@ const copy = {
 
 function revoke(label: string): string {
   return `Revoke "${label}" on the machine, then show a code for the cli.`
+}
+
+// The label is bounded here, before anything is sent: the daemon admits the
+// claim before it reads the label, so an over-long one would cost one of the
+// three pairing admissions a source gets per minute and the code it carried.
+// The bound is the wire's, 1 to 128 UTF-16 units after trimming.
+export function deviceLabelProblem(label: string, source: "--label" | "hostname"): string | undefined {
+  if (deviceLabelSchema.safeParse(label).success) return undefined
+  if (source === "hostname") return `This machine's hostname does not fit a device label (1 to ${maximumPairedDeviceLabelLength} characters), so pass --label <device label>`
+  return label.trim().length === 0 ? "--label needs a name the daemon can show" : `--label takes at most ${maximumPairedDeviceLabelLength} characters`
 }
 
 // The daemon side of pairing is `domovoid pair --client cli --label <device
