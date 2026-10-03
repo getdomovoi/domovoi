@@ -111,7 +111,7 @@ export function ModeChip({
             <div className={cn("text-[12.5px]", autoOffered ? "text-foreground" : "text-faint")}>{runtime.auto ? "Auto, on" : "Auto"}</div>
             <p className="m-0 mt-0.5 text-[11px] leading-snug text-muted-foreground">
               {autoOffered
-                ? "Runs step after step without stopping between them. Hard gates and policy refusals still stop it."
+                ? "Runs step after step. Commands Auto or a rule allows run without stopping. Any other command still stops it at a gate, as do hard gates and policy refusals."
                 : "Only legal with Build, because Plan and Ask stop on every step by definition."}
             </p>
           </div>

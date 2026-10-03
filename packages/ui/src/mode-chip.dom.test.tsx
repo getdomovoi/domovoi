@@ -61,6 +61,9 @@ it("offers Auto only in Build, clears it on leaving Build, and says why elsewher
   await user.click(screen.getByRole("button", { name: /^Mode: Build/ }))
   const auto = screen.getByRole("switch", { name: "Auto" }) as HTMLButtonElement
   expect(auto.disabled).toBe(false)
+  // Auto allows only what its safe patterns, a bounded resolution or a
+  // standing rule clear; any other command still raises a normal gate.
+  expect(screen.getByText("Runs step after step. Commands Auto or a rule allows run without stopping. Any other command still stops it at a gate, as do hard gates and policy refusals.")).toBeTruthy()
   await user.click(auto)
   expect(onSetRuntime).toHaveBeenCalledWith({ ...runtime, auto: true })
 

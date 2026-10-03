@@ -107,8 +107,11 @@ it.each([
     "Write and run inside the worktree. Gates still stop it for your decision.",
     "Take a checkpoint before any command you allow at a gate. A command a rule allows runs without one.",
   ]],
+  // Auto allows only commands its safe patterns or a bounded resolution
+  // clear, or a standing rule matches (permission-policy.ts); any other
+  // command raises a normal gate and the turn waits on it.
   ["build", true, [
-    "Write and run inside the worktree, step after step without stopping. Hard gates and policy refusals still stop it.",
+    "Write and run inside the worktree, step after step. Commands Auto or a rule allows run without stopping. Any other command still stops it at a gate, as do hard gates and policy refusals.",
     "Take a checkpoint before any command you allow at a gate. Commands that Auto or a rule allows run without one.",
   ]],
 ] as const)("says what %s (auto %s) will do first, and nothing it will not", (mode, auto, rows) => {

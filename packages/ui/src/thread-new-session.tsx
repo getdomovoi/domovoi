@@ -23,9 +23,13 @@ export function whatItWillDoFirst(runtime: Pick<Runtime, "provider" | "permissio
       ? [reads, { text: "Take a checkpoint before any command you allow at a gate, so the worktree can go back to it.", tone: "info" }]
       : [reads]
   }
+  // Auto allows only a command its safe patterns clear or whose resolution is
+  // bounded (permission-policy.ts), and a standing rule answers a normal gate
+  // whose digest it matches. Any other command raises a normal gate and the
+  // turn waits on it, so Auto does not run without stopping.
   if (runtime.auto) {
     return [
-      { text: "Write and run inside the worktree, step after step without stopping. Hard gates and policy refusals still stop it.", tone: "success" },
+      { text: "Write and run inside the worktree, step after step. Commands Auto or a rule allows run without stopping. Any other command still stops it at a gate, as do hard gates and policy refusals.", tone: "success" },
       { text: "Take a checkpoint before any command you allow at a gate. Commands that Auto or a rule allows run without one.", tone: "info" },
     ]
   }
