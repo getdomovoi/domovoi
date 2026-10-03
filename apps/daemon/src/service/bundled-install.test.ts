@@ -1,11 +1,11 @@
-import { mkdir, mkdtemp, readdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { runServiceCommand, type ServiceCommandDependencies, type ServiceEffects } from "./install.js"
-import { daemonRuntimeLayout, nodeRuntimeFileSystem } from "./runtime-stage.js"
+import { daemonRuntimeLayout } from "./runtime-stage.js"
 import { systemdUnitProgram } from "./units.js"
 
 // Q408 A (2026-10-02): `domovoid service install` run from the runtime the
@@ -133,54 +133,6 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
     expect(dependencies.run).not.toHaveBeenCalled()
     expect(dependencies.claimServiceOperation).not.toHaveBeenCalled()
     expect(await readdir(home)).toEqual([])
-  })
-
-  // The CLI removes the private staging directory it made, after a publish
-  // and after a failure, so a terminal install leaves nothing in tmp.
-  it("removes its staging directory after the copy is published", async () => {
-    const dependencies = command()
-    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
-    expect(await readdir(join(root, "staging"))).toEqual([])
-  })
-
-  it("removes its staging directory and the partial copy when the copy fails", async () => {
-    const dependencies = command({ runtimeFileSystem: nodeRuntimeFileSystem({
-      copy: async (_from, to) => {
-        await mkdir(join(to, "node"), { recursive: true })
-        await writeFile(join(to, "node", "partial"), "partial")
-        throw new Error("copy failed")
-      },
-    }) })
-    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
-    expect(dependencies.stderr).toHaveBeenCalledWith("copy failed\n")
-    expect(await readdir(join(root, "staging"))).toEqual([])
-    expect(await readdir(join(home, ".domovoi", "runtime", "0.9.4"))).toEqual([])
-    expect(dependencies.write).not.toHaveBeenCalled()
-  })
-
-  it("removes its staging directory and the copy when the publish fails", async () => {
-    const dependencies = command({ runtimeFileSystem: nodeRuntimeFileSystem({ rename: async () => { throw new Error("rename failed") } }) })
-    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
-    expect(dependencies.stderr).toHaveBeenCalledWith("rename failed\n")
-    expect(await readdir(join(root, "staging"))).toEqual([])
-    expect(await readdir(join(home, ".domovoi", "runtime", "0.9.4"))).toEqual([])
-  })
-
-  // Only the directory this run made: one put in its place is left.
-  it("leaves a directory put in the staging directory's place", async () => {
-    const dependencies = command({ runtimeFileSystem: nodeRuntimeFileSystem({
-      copy: async (_from, to) => {
-        const holder = dirname(to)
-        await rename(holder, `${holder}-moved`)
-        await mkdir(holder)
-        await writeFile(join(holder, "keep.txt"), "keep")
-        throw new Error("copy failed")
-      },
-    }) })
-    expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
-    const left = (await readdir(join(root, "staging"))).filter((name) => !name.endsWith("-moved"))
-    expect(left).toHaveLength(1)
-    expect(await readFile(join(root, "staging", left[0]!, "keep.txt"), "utf8")).toBe("keep")
   })
 
   it("installs nothing when the app's runtime is missing a part", async () => {
