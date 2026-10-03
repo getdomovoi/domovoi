@@ -90,7 +90,7 @@ it("leads a loopback pairing code to the tailnet setting", async () => {
   await user.click(await screen.findByRole("button", { name: "Show a pairing code" }))
   await settle()
   await act(async () => {
-    respond(socket, "device.issueCode", { code: "hearth-quiet-ember-42", expiresAt: new Date(Date.now() + 180_000).toISOString(), pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true } })
+    respond(socket, "device.issueCode", { pairingId: `pairing-${"c".repeat(32)}`, code: "hearth-quiet-ember-42", expiresAt: new Date(Date.now() + 180_000).toISOString(), pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true } })
   })
   await settle()
   expect(screen.getByText("No code: a phone cannot reach this machine yet")).toBeTruthy()
