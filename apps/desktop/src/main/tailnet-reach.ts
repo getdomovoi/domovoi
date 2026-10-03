@@ -311,8 +311,12 @@ export class TailnetReach {
     const previous = await this.deps.record.read()
     const owned = new Set(previous ? [previous.certPath, previous.keyPath] : [])
     // tailscale cert writes into a private directory first, so a refused or
-    // failed request leaves nothing in the profile.
+    // failed request leaves nothing in the profile. Turned on again (Renew
+    // now), the files in use are set aside there too and put back, with the
+    // record, if the new ones cannot be stored or the restart fails
+    // (review of 049b1383, P2-2).
     const pending = await this.deps.files.privateDirectory(this.deps.tlsDirectory)
+    const kept: Array<[aside: string, path: string]> = []
     try {
       const pendingCert = `${pending}/${name}.crt`
       const pendingKey = `${pending}/${name}.key`
@@ -337,36 +341,55 @@ export class TailnetReach {
         }
       }
       try {
+        for (const [path, aside] of [[certPath, `${pending}/previous.crt`], [keyPath, `${pending}/previous.key`]] as const) {
+          if (owned.has(path) && await this.deps.files.exists(path)) {
+            await this.deps.files.move(path, aside)
+            kept.push([aside, path])
+          }
+        }
         await this.deps.files.move(pendingCert, certPath)
         await this.deps.files.move(pendingKey, keyPath)
         await this.deps.files.restrict(keyPath)
       } catch (cause) {
         await this.#forget([certPath, keyPath])
+        await this.#putBack(kept)
         return {
           ok: false, reason: "failed", step: "store",
-          message: `The certificate could not be stored in ${this.deps.display(this.deps.tlsDirectory)}. Nothing was restarted.`,
+          message: `The certificate could not be stored in ${this.deps.display(this.deps.tlsDirectory)}. ${kept.length ? "The previous certificate was put back. " : ""}Nothing was restarted.`,
           detail: detail(cause instanceof Error ? cause.message : String(cause)),
         }
       }
+
+      const record: TailnetReachRecord = { version: 1, name, address, certPath, keyPath }
+      await this.deps.record.write(record)
+      const restarted = await this.deps.restart({ set: { address, name, certPath, keyPath } })
+      if (!restarted.ok) {
+        await this.#forget([certPath, keyPath])
+        await this.#putBack(kept)
+        if (previous) await this.deps.record.write(previous)
+        else await this.deps.record.remove()
+        await this.deps.recover?.()
+        return {
+          ok: false, reason: "failed", step: "restart",
+          message: previous
+            ? `${restarted.message} The previous certificate was put back, and the switch stays on.`
+            : `${restarted.message} The certificate and key were deleted again, and the switch stays off.`,
+        }
+      }
+      this.#renewalFailure = undefined
+      this.#schedule(renewalCheckMs)
+      return { ok: true, report: await this.#onReport(record) }
     } finally {
       await this.deps.files.removeDirectory(pending).catch(() => {})
     }
+  }
 
-    const record: TailnetReachRecord = { version: 1, name, address, certPath, keyPath }
-    await this.deps.record.write(record)
-    const restarted = await this.deps.restart({ set: { address, name, certPath, keyPath } })
-    if (!restarted.ok) {
-      await this.#forget([certPath, keyPath])
-      await this.deps.record.remove()
-      await this.deps.recover?.()
-      return {
-        ok: false, reason: "failed", step: "restart",
-        message: `${restarted.message} The certificate and key were deleted again, and the switch stays off.`,
-      }
+  // The files a change set aside, back where they were.
+  async #putBack(kept: ReadonlyArray<readonly [aside: string, path: string]>): Promise<void> {
+    for (const [aside, path] of kept) {
+      await this.deps.files.move(aside, path)
+      if (path.endsWith(".key")) await this.deps.files.restrict(path)
     }
-    this.#renewalFailure = undefined
-    this.#schedule(renewalCheckMs)
-    return { ok: true, report: await this.#onReport(record) }
   }
 
   async #turnOff(): Promise<TailnetReachOutcome> {

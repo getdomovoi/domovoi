@@ -168,9 +168,10 @@ describe("turning TailnetReach on", () => {
       `move ${tls}/.pending-1/${name}.crt ${certPath}`,
       `move ${tls}/.pending-1/${name}.key ${keyPath}`,
       `restrict ${keyPath}`,
-      `remove directory ${tls}/.pending-1`,
       "record write",
       "restart set",
+      // Held until the change ends: a failed restart puts files back from it.
+      `remove directory ${tls}/.pending-1`,
     ])
     expect(deps.restart).toHaveBeenCalledWith({ set: { address: "100.101.102.103", name, certPath, keyPath } })
     expect(record()).toEqual(ours)
@@ -236,9 +237,26 @@ describe("turning TailnetReach on", () => {
   })
 
   it("renews over its own files", async () => {
-    const { reach, calls } = harness({ record: ours, files: { [certPath]: "old", [keyPath]: "old key" } })
+    const { reach, calls, files } = harness({ record: ours, files: { [certPath]: "old", [keyPath]: "old key" } })
     await expect(reach.turnOn()).resolves.toMatchObject({ ok: true })
     expect(calls).toContain(`move ${tls}/.pending-1/${name}.crt ${certPath}`)
+    expect(files.get(certPath)).toBe(certificate)
+    expect([...files.keys()].sort()).toEqual([certPath, keyPath])
+  })
+
+  // Review of 049b1383 (P2-2): Renew now while on runs this path. A restart
+  // that fails must not take the working certificate, or the switch, with it.
+  it("puts the working certificate and record back when a renewal's restart fails, and stays on", async () => {
+    const { reach, files, record, calls } = harness({ record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" }, restart: { ok: false, message: "The daemon did not start again." } })
+    await expect(reach.turnOn()).resolves.toEqual({
+      ok: false, reason: "failed", step: "restart",
+      message: "The daemon did not start again. The previous certificate was put back, and the switch stays on.",
+    })
+    expect(files.get(certPath)).toBe("old certificate")
+    expect(files.get(keyPath)).toBe("old key")
+    expect(record()).toEqual(ours)
+    expect(calls).toContain("recover")
+    expect(calls).not.toContain("record remove")
   })
 
   it("deletes what it stored again when the restart fails, and the switch stays off", async () => {
