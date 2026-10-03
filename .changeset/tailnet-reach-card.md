@@ -11,7 +11,10 @@ a daemon not answering on the tailnet in its own words, and a hand-set
 daemon's `tailnet.status` says it listens, and says when that is not known. The
 pairing card's "Go to the tailnet setting" leads to it, and "Get it from
 Tailscale" turns it on. A login service installed while the switch is on keeps
-the tailnet listener.
+the tailnet listener. While Settings is open the row reads the switch and
+`tailnet.status` again when the window is focused or shown again, and every
+minute while it is shown, so a failed renewal or an expired certificate is
+drawn without a click.
 
 When the daemon still answers on the tailnet with the switch off because
 `DOMOVOI_TAILNET_*` was set by hand, the row says the switch cannot clear it

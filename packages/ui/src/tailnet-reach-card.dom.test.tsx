@@ -1,7 +1,7 @@
 import type { TailnetListenerStatus } from "@getdomovoi/protocol"
 import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, expect, it, vi } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { TailnetReachCard, useTailnetReach, type TailnetReachSource } from "./tailnet-reach-card"
 
@@ -309,4 +309,72 @@ it("turns off through the switch, listing the two steps", async () => {
   turning.resolve({ ok: true, report: off })
   await settle()
   expect(view.getByText("Off")).toBeTruthy()
+})
+
+// Review of PR #713 (P2): a renewal fails, or the daemon refuses the tailnet
+// listener at the certificate's expiry, with Settings open and nothing
+// clicked. The card reads the switch and tailnet.status again when the window
+// is focused or shown again, and every minute while it is shown.
+describe("reading again while Settings stays open", () => {
+  const expired: TailnetListenerStatus = { state: "refused", address: "100.101.102.103", retrying: false, reason: "The tailnet certificate expired on 2026-12-20, so the daemon answers on this computer only.", certificateExpiresAt: "2026-12-20T12:00:00.000Z" }
+  const failedOn = { ...on, renewalFailed: { at: "2026-10-02T12:00:00.000Z", message: `Tailscale did not renew the certificate for ${name}: tailscaled did not answer.` } }
+
+  function changing(initial: { status: unknown; listener: TailnetListenerStatus }) {
+    const now = { ...initial }
+    const ask = vi.fn(async () => now.status)
+    const listener = vi.fn(async () => now.listener)
+    render(<Harness source={{ act: ask, listener, inApp: true }} />)
+    return { now, ask, listener }
+  }
+
+  afterEach(() => { vi.useRealTimers() })
+
+  it("when the window is focused again", async () => {
+    const { now } = changing({ status: on, listener: listening })
+    await settle()
+    expect(within(region()).getByText("Devices on your tailnet can reach the daemon. Each one still has to pair.")).toBeTruthy()
+    now.listener = expired
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    await settle()
+    expect(within(region()).getByText("Not answering")).toBeTruthy()
+    expect(within(region()).getByText(expired.reason)).toBeTruthy()
+  })
+
+  it("when the window is shown again", async () => {
+    const { now } = changing({ status: on, listener: listening })
+    await settle()
+    now.status = failedOn
+    await act(async () => { document.dispatchEvent(new Event("visibilitychange")) })
+    await settle()
+    expect(within(region()).getByText("Renewal failed")).toBeTruthy()
+  })
+
+  it("every minute while the window is shown", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] })
+    const { now, ask } = changing({ status: on, listener: listening })
+    await settle()
+    expect(ask).toHaveBeenCalledTimes(1)
+    now.status = failedOn
+    await act(async () => { vi.advanceTimersByTime(59_999) })
+    await settle()
+    expect(ask).toHaveBeenCalledTimes(1)
+    await act(async () => { vi.advanceTimersByTime(1) })
+    await settle()
+    expect(ask).toHaveBeenCalledTimes(2)
+    expect(within(region()).getByText("Renewal failed")).toBeTruthy()
+  })
+
+  it("not while a change runs", async () => {
+    const turning = deferred<unknown>()
+    const ask = vi.fn(async (action: "status" | "on" | "off") => action === "off" ? turning.promise : on)
+    render(<Harness source={{ act: ask, listener: async () => listening, inApp: true }} />)
+    await settle()
+    await userEvent.setup().click(toggle())
+    expect(ask).toHaveBeenCalledTimes(2)
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    await settle()
+    expect(ask).toHaveBeenCalledTimes(2)
+    turning.resolve({ ok: true, report: off })
+    await settle()
+  })
 })

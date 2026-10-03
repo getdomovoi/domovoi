@@ -46,6 +46,9 @@ export type TailnetReachController = {
   reveal(): void
 }
 
+// How often an open card reads the switch and tailnet.status again.
+const tailnetReachRereadMs = 60_000
+
 // One controller serves the Settings card and the pairing card, so both draw
 // the same switch. The source object may be rebuilt on every render; only
 // whether there is one decides when to read.
@@ -79,9 +82,29 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
   const present = source !== undefined
   useEffect(() => { if (present) void read() }, [present, read])
 
+  // Review of PR #713 (P2): the switch and the listener also change on their
+  // own, with Settings open: a renewal fails, or the daemon refuses the
+  // tailnet listener at the certificate's expiry. Both are read again when the
+  // window is focused or shown again, and every minute while it is shown, but
+  // not while a change runs, which reads them once it ends.
+  const changing = useRef(false)
+  useEffect(() => {
+    if (!present || typeof document === "undefined") return
+    const again = () => { if (document.visibilityState === "visible" && !changing.current) void read() }
+    window.addEventListener("focus", again)
+    document.addEventListener("visibilitychange", again)
+    const timer = setInterval(again, tailnetReachRereadMs)
+    return () => {
+      window.removeEventListener("focus", again)
+      document.removeEventListener("visibilitychange", again)
+      clearInterval(timer)
+    }
+  }, [present, read])
+
   const change = useCallback(async (direction: Direction): Promise<TailnetReachOutcome | undefined> => {
     const current = sourceRef.current
     if (!current) return undefined
+    changing.current = true
     setFailure(undefined)
     setRunning({ direction, renew: direction === "on" && report?.state === "on" })
     let outcome: TailnetReachOutcome
@@ -93,6 +116,7 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
     if (outcome.ok) setReport(outcome.report)
     else setFailure({ direction, outcome })
     await read()
+    changing.current = false
     setRunning(undefined)
     return outcome
   }, [read, report?.state])
