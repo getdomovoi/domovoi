@@ -354,16 +354,21 @@ export class TailnetReach {
       }
       return setAside ? "The previous certificate was put back." : ""
     }
+    // An owned file at path, moved into pending as previous.crt or .key.
+    const putAside = async (path: string): Promise<void> => {
+      const previous = `${pending}/previous.${path.endsWith(".key") ? "key" : "crt"}`
+      if (owned.includes(path) && await this.deps.files.exists(path)) {
+        await this.deps.files.move(path, previous, () => { aside.push([previous, path]); setAside += 1 })
+      }
+    }
     return {
       commit: () => { committed = true },
       committed: () => committed,
       removable: () => committed || aside.length === 0,
+      setAside: putAside,
       place: async (newCert: string, newKey: string, certPath: string, keyPath: string): Promise<void> => {
-        for (const [path, previous] of [[certPath, `${pending}/previous.crt`], [keyPath, `${pending}/previous.key`]] as const) {
-          if (owned.includes(path) && await this.deps.files.exists(path)) {
-            await this.deps.files.move(path, previous, () => { aside.push([previous, path]); setAside += 1 })
-          }
-        }
+        await putAside(certPath)
+        await putAside(keyPath)
         await this.deps.files.move(newCert, certPath, () => { placed.push(certPath) })
         await this.deps.files.move(newKey, keyPath, () => { placed.push(keyPath) })
         await this.deps.files.restrict(keyPath)
@@ -638,6 +643,7 @@ export class TailnetReach {
     if (record) {
       // Codex review round 1 (P2-4): nothing is deleted unless both files
       // are gone or still the ones the switch wrote.
+      const present: string[] = []
       for (const [path, recorded] of [[record.certPath, record.certIdentity], [record.keyPath, record.keyIdentity]] as const) {
         let found: string | undefined
         try {
@@ -655,19 +661,10 @@ export class TailnetReach {
             message: `${this.deps.display(path)} is not the file the switch wrote. Domovoi deletes only files it wrote, so nothing was deleted and the switch stays on. Move that file away, then turn the switch off again.`,
           }
         }
+        if (found !== undefined) present.push(path)
       }
-      for (const path of [record.certPath, record.keyPath]) {
-        try {
-          await this.deps.files.remove(path)
-        } catch (cause) {
-          return {
-            ok: false, reason: "failed", step: "delete",
-            message: `${this.deps.display(path)} could not be deleted, so the switch stays on.`,
-            detail: detail(cause instanceof Error ? cause.message : String(cause)),
-          }
-        }
-      }
-      await this.deps.record.remove()
+      const refused = await this.#forgetRecorded(present)
+      if (refused) return refused
     }
     this.#schedule(undefined)
     this.#renewalFailure = undefined
@@ -679,6 +676,52 @@ export class TailnetReach {
       }
     }
     return { ok: true, report: await this.status() }
+  }
+
+  // Review of PR #713 (P2): turning off sets the switch's files aside in a
+  // pending directory, deletes the record, and only then deletes the files.
+  // When a file cannot be set aside, or the record cannot be deleted, the
+  // files go back, so the switch stays on as it was: both files and the
+  // record. A file that cannot be put back stays in pending, and the switch's
+  // state says where, as for a change that turned on. A record that cannot be
+  // deleted throws as it did before, once the files are back.
+  async #forgetRecorded(present: readonly string[]): Promise<TailnetReachOutcome | undefined> {
+    const stays = (path: string, cause: unknown): TailnetReachOutcome => ({
+      ok: false, reason: "failed", step: "delete",
+      message: `${this.deps.display(path)} could not be deleted, so the switch stays on.`,
+      detail: detail(cause instanceof Error ? cause.message : String(cause)),
+    })
+    if (!present.length) {
+      await this.deps.record.remove()
+      return undefined
+    }
+    let pending: string
+    try {
+      pending = await this.deps.files.privateDirectory(this.deps.tlsDirectory)
+    } catch (cause) {
+      return stays(present[0]!, cause)
+    }
+    const swap = this.#swap(pending, present)
+    try {
+      for (const path of present) {
+        try {
+          await swap.setAside(path)
+        } catch (cause) {
+          await swap.undo()
+          return stays(path, cause)
+        }
+      }
+      try {
+        await this.deps.record.remove()
+      } catch (cause) {
+        await swap.undo()
+        throw cause
+      }
+      swap.commit()
+      return undefined
+    } finally {
+      if (swap.removable()) await this.deps.files.removeDirectory(pending).catch(() => {})
+    }
   }
 
   async #forget(paths: readonly string[]): Promise<void> {

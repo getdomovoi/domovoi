@@ -51,6 +51,11 @@ function harness(options: {
   // A move that renames, then fails, as publishFileDurably does when the
   // directory flush after the rename fails.
   failAfterRename?: (from: string, to: string) => boolean
+  // Files that can be neither deleted nor moved away, as an immutable file
+  // cannot.
+  immovable?: string[]
+  // Deleting the record fails.
+  recordRemoveThrows?: Error
   // The restart throws instead of answering, as a service module that fails
   // to load does.
   restartThrows?: Error
@@ -121,6 +126,7 @@ function harness(options: {
       move: async (from, to, renamed) => {
         calls.push(`move ${from} ${to}`)
         if (options.failMove?.(from, to)) throw Object.assign(new Error(`EIO: rename ${from}`), { code: "EIO" })
+        if (options.immovable?.includes(from)) throw Object.assign(new Error(`EPERM: rename ${from}`), { code: "EPERM" })
         if (!files.has(from)) throw Object.assign(new Error(`ENOENT: rename ${from}`), { code: "ENOENT" })
         files.set(to, files.get(from)!)
         files.delete(from)
@@ -133,7 +139,12 @@ function harness(options: {
       restrict: async (path) => { calls.push(`restrict ${path}`) },
       identity: async (path) => files.has(path) ? identities.get(path) ?? `${path}#mark` : undefined,
       mark: async (path) => { marked.push(path); identities.set(path, `${path}#mark`) },
-      remove: async (path) => { calls.push(`remove ${path}`); files.delete(path); identities.delete(path) },
+      remove: async (path) => {
+        calls.push(`remove ${path}`)
+        if (options.immovable?.includes(path)) throw Object.assign(new Error(`EPERM: unlink ${path}`), { code: "EPERM" })
+        files.delete(path)
+        identities.delete(path)
+      },
       removeDirectory: async (path) => {
         calls.push(`remove directory ${path}`)
         for (const file of [...files.keys()]) if (file.startsWith(`${path}/`)) files.delete(file)
@@ -142,7 +153,11 @@ function harness(options: {
     record: {
       read: async () => record,
       write: async (value) => { calls.push("record write"); record = value },
-      remove: async () => { calls.push("record remove"); record = undefined },
+      remove: async () => {
+        calls.push("record remove")
+        if (options.recordRemoveThrows) throw options.recordRemoveThrows
+        record = undefined
+      },
     },
     check: vi.fn(() => options.invalid ? { refused: options.invalid } : { notAfter: issuedNotAfter }),
     listener: vi.fn(async () => {
@@ -608,10 +623,71 @@ describe("turning TailnetReach off", () => {
   it("deletes only the files it wrote, forgets them, then restarts on this computer only", async () => {
     const { reach, deps, calls, files, record } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key", [`${tls}/other.crt`]: "kept" } })
     await expect(reach.turnOff()).resolves.toEqual({ ok: true, report: expect.objectContaining({ state: "off" }) })
-    expect(calls.slice(0, 5)).toEqual(["preflight", `remove ${certPath}`, `remove ${keyPath}`, "record remove", "restart clear"])
+    // Review of PR #713 (P2): set aside first, deleted once the record is gone.
+    expect(calls.slice(0, 7)).toEqual([
+      "preflight", `directory ${tls}/.pending-1`, `move ${certPath} ${tls}/.pending-1/previous.crt`, `move ${keyPath} ${tls}/.pending-1/previous.key`,
+      "record remove", `remove directory ${tls}/.pending-1`, "restart clear",
+    ])
     expect(deps.restart).toHaveBeenCalledWith({ clear: true })
     expect([...files.keys()]).toEqual([`${tls}/other.crt`])
     expect(record()).toBeUndefined()
+  })
+
+  it("turns off when its files are already gone", async () => {
+    const { reach, calls, record } = harness({ record: ours })
+    await expect(reach.turnOff()).resolves.toMatchObject({ ok: true })
+    expect(calls.slice(0, 3)).toEqual(["preflight", "record remove", "restart clear"])
+    expect(record()).toBeUndefined()
+  })
+
+  // Review of PR #713 (P2): a turn-off that fails part way leaves the switch
+  // on as it was, both files and the record, not one file deleted under a
+  // record that still names it.
+  it("puts the certificate back when the key cannot be deleted, and stays on", async () => {
+    const { reach, deps, files, record } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, immovable: [keyPath] })
+    await expect(reach.turnOff()).resolves.toEqual({
+      ok: false, reason: "failed", step: "delete",
+      message: `~/.domovoi/tls/${name}.key could not be deleted, so the switch stays on.`,
+      detail: `EPERM: rename ${keyPath}`,
+    })
+    expect(Object.fromEntries(files)).toEqual({ [certPath]: certificate, [keyPath]: "key" })
+    expect(record()).toEqual(ours)
+    expect(deps.restart).not.toHaveBeenCalled()
+    await expect(reach.status()).resolves.not.toHaveProperty("kept")
+  })
+
+  it("puts both files back when the record cannot be deleted, and stays on", async () => {
+    const refusal = new Error("EACCES: permission denied, unlink '/Users/dana/Library/Application Support/Domovoi/tailnet-reach.json'")
+    const { reach, deps, files, record } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, recordRemoveThrows: refusal })
+    await expect(reach.turnOff()).rejects.toBe(refusal)
+    expect(Object.fromEntries(files)).toEqual({ [certPath]: certificate, [keyPath]: "key" })
+    expect(record()).toEqual(ours)
+    expect(deps.restart).not.toHaveBeenCalled()
+    await expect(reach.status()).resolves.toMatchObject({ state: "on" })
+  })
+
+  it("says where the certificate is when it cannot be put back either", async () => {
+    const { reach, files, record } = harness({
+      record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, immovable: [keyPath],
+      failMove: (from) => from === `${tls}/.pending-1/previous.crt`,
+    })
+    await expect(reach.turnOff()).resolves.toMatchObject({
+      ok: false, reason: "failed", step: "delete", message: `~/.domovoi/tls/${name}.key could not be deleted, so the switch stays on.`,
+    })
+    expect(files.get(`${tls}/.pending-1/previous.crt`)).toBe(certificate)
+    expect(record()).toEqual(ours)
+    await expect(reach.status()).resolves.toMatchObject({ state: "on", kept: "~/.domovoi/tls/.pending-1" })
+  })
+
+  it("deletes nothing when it cannot set the files aside", async () => {
+    const { reach, files, record } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, privateDirectoryThrows: new Error("ENOSPC: no space left on device") })
+    await expect(reach.turnOff()).resolves.toEqual({
+      ok: false, reason: "failed", step: "delete",
+      message: `~/.domovoi/tls/${name}.crt could not be deleted, so the switch stays on.`,
+      detail: "ENOSPC: no space left on device",
+    })
+    expect(Object.fromEntries(files)).toEqual({ [certPath]: certificate, [keyPath]: "key" })
+    expect(record()).toEqual(ours)
   })
 
   it("is refused while the daemon cannot restart, and deletes nothing", async () => {
