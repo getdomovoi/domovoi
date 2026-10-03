@@ -7,7 +7,7 @@
     "apps/desktop/src/**/*.{ts,tsx}",
     "packages/ui/src/**/*.{ts,tsx}"
   ],
-  "note": "Inventory re-derived 2026-09-23 from the handoff vendored that day. The design gained the login-service install (J24), the unsigned-build line (J10), the tailnet reach card (J25, drawn in TailnetReach and inventoried in tailnet-reach-v2.json), SSH hosts (J41), and the account-free lines replaced (I59). Repository browsing moved into the imported RemoteBrowser (J40, remote-browser-v2.json). Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks. Re-read against the code 2026-10-02 (v2 parity audit, rulings Q336 to Q397): onboarding.account was split, because it held the providers, add-machine, tailnet-node and repository lines, none of them Cloud work; the desktop first run today is the v1 dialog, and Q351 A starts it at the login-service step.",
+  "note": "Inventory re-derived 2026-09-23 from the handoff vendored that day. The design gained the login-service install (J24), the unsigned-build line (J10), the tailnet reach card (J25, drawn in TailnetReach and inventoried in tailnet-reach-v2.json), SSH hosts (J41), and the account-free lines replaced (I59). Repository browsing moved into the imported RemoteBrowser (J40, remote-browser-v2.json). Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks. Re-read against the code 2026-10-02 (v2 parity audit, rulings Q336 to Q397): onboarding.account was split, because it held the providers, add-machine, tailnet-node and repository lines, none of them Cloud work; the desktop first run was the v1 dialog until #712 (2026-10-03) rebuilt it from this design under Q351 A and Q353 A, starting at the login-service step.",
   "elements": [
     {
       "id": "onboarding.daemon",
@@ -48,11 +48,16 @@
       ],
       "evidence": [
         "For your user only. Nothing is system-wide.",
+        "WHAT STILL WORKS",
+        "The system refused lingering, so the daemon stops when you log out."
+      ],
+      "presence": [
+        "For your user only. Nothing is system-wide.",
         "WHAT STILL WORKS"
       ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "missing from onboarding, though the capability exists: Settings installs, removes and updates the login service through windowBridge.daemonService (settings-shell.tsx DaemonSection). First run never offers it: the first-run dialog is the v1 Desktop design (A good spirit lives in your machines., three local setup steps), and Q351 A (2026-10-02) makes this the first step of desktop onboarding, with Not now. The four per-action rows and the live log need step events the desktop bridge does not emit (DaemonServiceOutcome is final-only); the fixed WHAT STILL WORKS line is true only when the in-app daemon was untouched or restarted, so a build uses the outcome's computed line"
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "desktop first run starts here (Q351 A) and installs through the desktop bridge, with WHAT FAILED and WHAT STILL WORKS from the outcome; the rows are what installing does, not live per-action progress, there is no Show the log, and a refused lingering shows the daemon's own warning (Q307) rather than the drawn line and command, because the desktop IPC reports only the final outcome"
       }
     },
     {
@@ -67,7 +72,7 @@
       ],
       "missing": {
         "since": "2026-09-23",
-        "reason": "missing from onboarding: Settings > About says This build is not signed and does not update itself. (the ND6 wording, held by scripts/unsigned-build.mjs), but no first-run step draws the version and build line under the install card"
+        "reason": "the design's wording is not drawn: the first-run install card's foot (desktop-first-run.tsx) draws domovoid <version> and This build is not signed and does not update itself., the ND6 wording that scripts/unsigned-build.mjs holds to the Settings > About line"
       }
     },
     {
@@ -107,17 +112,11 @@
         "Connect an agent on mac-mini-m4",
         "Agents you already have. Tokens stay in this machine's keychain, so each machine authenticates separately."
       ],
-      "presence": [
-        "Connect a coding agent"
-      ],
       "evidence": [
-        "Connect a coding agent",
-        "Agents you already have."
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the desktop first-run dialog (v1 design) has a Connect a coding agent step: a toggle group of provider names and, for the selected one only, a recovery footer with Copy sign-in command or Copy CLI name. The design's per-agent card list is not drawn. Its Sign in and Paste a key do not exist: the provider CLI owns sign-in and direct keys go only through domovoid secret set on the machine (J18 not decided). Q353 A (2026-10-02) builds the card list, each action copying the provider CLI's own sign-in command, and a missing CLI gets install guide text, not an installer"
-      }
+        "Connect an agent on ",
+        "Agents you already have.",
+        "Install guide"
+      ]
     },
     {
       "id": "onboarding.add-machine",
@@ -258,7 +257,7 @@
     {
       "id": "onboarding.service-install",
       "since": "2026-10-02",
-      "note": "Q389 A: the design's domovoi daemon install is not a command and its port 7717 is not the daemon's; a build prints domovoid service install and port 47831. The install line's Homebrew tap (getdomovoi/tap) does not exist and has no real substitute, which is an open gap for whoever builds the step. Q336 A: from a DMG install no domovoid is on PATH until a desktop action links Domovoi's own binaries into ~/.local/bin; where the link is absent the text shows the absolute bundled command."
+      "note": "Q389 A substitutions in packages/ui/src/desktop-first-run.tsx, read against the design's installModel: no made-up command or port is drawn (the log with $ domovoi daemon install is not built, and 127.0.0.1:7717 reads the address of the daemon this window reached, 127.0.0.1:47831 by default, or loopback when none is known, because DOMOVOI_HOST and DOMOVOI_PORT move the service with the app); the rows follow the real installer, adding Copy this app's daemon runtime and naming the handover without launchctl bootstrap gui/501; the done line ends It answers on loopback only, because pairing does not change where the daemon listens; the foot reads domovoid <version> and uses the ND6 wording This build is not signed and does not update itself, held to Settings by scripts/unsigned-build.mjs. For the unbuilt log: the design's domovoi daemon install is not a command and its port 7717 is not the daemon's; a build prints domovoid service install and port 47831. The install line's Homebrew tap (getdomovoi/tap) does not exist and has no real substitute, which is an open gap for whoever builds the log. Q336 A: from a DMG install no domovoid is on PATH until a desktop action links Domovoi's own binaries into ~/.local/bin; where the link is absent the text shows the absolute bundled command."
     },
     {
       "id": "onboarding.add-machine",
@@ -278,7 +277,7 @@
     {
       "id": "onboarding.providers",
       "since": "2026-10-02",
-      "note": "Q352 A: the first-run dialog's Choose a permission mode for new projects step, which the design does not draw, is dropped; new sessions default to Build manual and the mode changes from the composer's mode chip."
+      "note": "Built for the desktop under Q353 A (packages/ui/src/desktop-first-run.tsx). Substitutions: the subtitle says each agent signs in through its own CLI on this machine instead of tokens in this machine's keychain, which is not true of every provider CLI; Sign in and Paste a key become Copy sign-in command with the CLI's own command (claude auth login, codex login); a missing CLI gets the Install guide text and no install command (pipx install aider-chat is not drawn). Add another machine is not drawn: the setup dialog has no route to Machines yet. Q352 A: the first-run dialog's Choose a permission mode for new projects step, which the design does not draw, is dropped; new sessions default to Build manual and the mode changes from the composer's mode chip."
     }
   ],
   "scriptBacklog": {

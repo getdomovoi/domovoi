@@ -49,4 +49,25 @@ describe("StartLikeSheet", () => {
     expect(props.onStart).not.toHaveBeenCalled()
     expect(screen.getByText("Session create failed")).toBeOnTheScreen()
   })
+
+  it("shows a start refused over a git filter as its refusal, with the way to what is held back", async () => {
+    const onSeeHeldBack = jest.fn<() => void>()
+    await draw({
+      problem: "This repository's own Git config sets the filter \"sops\".",
+      refusal: {
+        title: "Domovoi did not start this session",
+        code: "refused · untrusted git filter",
+        sentence: "Checking out acme-api would run the sops filter driver, which is not trusted on mac-mini-m4.",
+        names: ["sops · local git config"],
+        omitted: 0,
+        awaitsTrust: true,
+      },
+      onSeeHeldBack,
+    })
+
+    expect(screen.getByText("Domovoi did not start this session")).toBeOnTheScreen()
+    expect(screen.queryByText(/own Git config sets the filter/)).toBeNull()
+    await fireEvent.press(screen.getByRole("button", { name: "See what is held back" }))
+    expect(onSeeHeldBack).toHaveBeenCalledTimes(1)
+  })
 })

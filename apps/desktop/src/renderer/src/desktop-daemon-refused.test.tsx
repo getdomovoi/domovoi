@@ -17,6 +17,15 @@ describe("DesktopDaemonRefused", () => {
     expect(markup).not.toContain("Update the service</button>")
   })
 
+  // Q336 A: the command runs as printed, so where no link exists it names the
+  // launcher inside the app.
+  it("names the shipped launcher by its full path where no link exists", () => {
+    const launcher = "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/bin/domovoid"
+    const links = { available: true as const, directory: "~/.local/bin" as const, onPath: false, commands: [{ name: "domovoid" as const, launcher, state: "absent" as const }] }
+    const markup = renderToStaticMarkup(<DesktopDaemonRefused reason="owner-incompatible" message={incompatible} retrying={false} onRetry={vi.fn()} links={links} />)
+    expect(markup).toMatch(new RegExp(`<code[^>]*>${launcher.replaceAll(".", "\\.")} service install</code>`, "u"))
+  })
+
   it("shows no command for any other refusal", () => {
     const markup = renderToStaticMarkup(<DesktopDaemonRefused reason="owner-busy" message="The local daemon is changing owners." retrying={false} onRetry={vi.fn()} />)
     expect(markup).not.toContain("domovoid service install")

@@ -63,6 +63,16 @@ test("names every workspace package the desktop app and the npm packages carry a
   for (const name of publishablePackages) assert.ok(auditedPackages.includes(name), `${name} is audited`)
 })
 
+// Review P3-5: every workspace package the runtime deploys beside the archive
+// (the daemon, and since Q336 A the domovoi CLI) is walked by the audit and
+// the notices.
+test("audits every workspace package the desktop runtime deploys", async () => {
+  const runtime = await readFile(join(root, "apps/desktop/scripts/daemon-runtime.mjs"), "utf8")
+  const deployed = [...runtime.matchAll(/deployWorkspacePackage\(\{ name: "(@getdomovoi\/[a-z-]+)"/gu)].map((match) => match[1])
+  assert.ok(deployed.length >= 2, "the runtime deploys the daemon and the CLI")
+  assert.deepEqual([...deployed].sort(), [...desktopRuntimeWorkspacePackages].sort())
+})
+
 test("merges license graphs without repeating a package or a version", () => {
   assert.deepEqual(mergeLicenseGraphs(
     { MIT: [{ name: "ws", versions: ["8.18.3"], paths: ["/a/ws"] }] },

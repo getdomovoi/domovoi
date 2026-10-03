@@ -4,6 +4,7 @@ import {
   completeDesktopFirstRun,
   defaultDesktopFirstRunState,
   desktopFirstRunStorageKey,
+  dismissDesktopFirstRun,
   loadDesktopFirstRunState,
   resetDesktopFirstRunState,
   saveDesktopFirstRunState,
@@ -38,6 +39,17 @@ describe("desktop first-run persistence", () => {
       providerId: "codex",
       completedAt: "2026-08-30T12:00:00.000Z",
     })).toMatchObject({ permissionMode: "build", auto: false })
+  })
+
+  // Setup closed without a ready agent stays closed on the next launch; only
+  // Settings > First-run setup opens it again.
+  it("remembers setup dismissed, so it does not open again on every launch", () => {
+    const storage = memoryStorage()
+    const dismissed = dismissDesktopFirstRun("2026-10-02T09:00:00.000Z")
+    saveDesktopFirstRunState(storage, dismissed)
+    expect(loadDesktopFirstRunState(storage)).toEqual({ version: 1, status: "dismissed", dismissedAt: "2026-10-02T09:00:00.000Z" })
+    expect(loadDesktopFirstRunState(memoryStorage(JSON.stringify({ version: 1, status: "dismissed", dismissedAt: "yesterday" })))).toEqual(defaultDesktopFirstRunState())
+    expect(loadDesktopFirstRunState(memoryStorage(JSON.stringify({ version: 1, status: "dismissed", dismissedAt: "2026-10-02T09:00:00.000Z", providerId: "codex" })))).toEqual(defaultDesktopFirstRunState())
   })
 
   it.each([

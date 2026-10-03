@@ -29,8 +29,10 @@ import { DaemonServiceUpdateError, publishFirst, runServiceUpdate, trackInFlight
 import { prepareWslUpdate } from "./wsl-install.js"
 import { lingerInstallLine, type LingerInstallOutcome, type LingerRemovalOutcome } from "./linger.js"
 import { windowsSchtasksPath } from "./windows-task.js"
+import { DaemonServiceRuntimeMissingError } from "./runtime-stage.js"
 
 export { DaemonServiceUpdateError, type DaemonServiceUpdateOutcome } from "./update-outcome.js"
+export { DaemonServiceRuntimeMissingError }
 
 export {
   DaemonServiceHandoffError,
@@ -129,25 +131,6 @@ export type DaemonServiceDependencies = {
 }
 
 const taskName = "Domovoi daemon"
-
-export class DaemonServiceRuntimeMissingError extends Error {
-  constructor(
-    readonly part: "node" | "daemon",
-    readonly path: string,
-    reason: "missing" | "not-file" | "relative",
-    operation: "install" | "update" = "install",
-  ) {
-    const what = part === "node" ? "The Node runtime this app ships" : "The Domovoi daemon this app ships"
-    const why = reason === "relative"
-      ? `is named by a relative path, ${path}`
-      : reason === "not-file" ? `is not a runnable file at ${path}` : `was not found at ${path}`
-    const outcome = operation === "install"
-      ? "No service was installed and no service files were changed."
-      : "The service was not updated and no service files were changed."
-    super(`${what} ${why}. ${outcome}`)
-    this.name = "DaemonServiceRuntimeMissingError"
-  }
-}
 
 async function checkRuntime(runtime: DaemonServiceRuntime, dependencies: DaemonServiceDependencies, operation: "install" | "update" = "install"): Promise<void> {
   const paths = dependencies.platform === "win32" ? win32 : posix

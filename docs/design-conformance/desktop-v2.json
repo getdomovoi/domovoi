@@ -593,11 +593,7 @@
       ],
       "evidence": [
         "Remove the login service?"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the desktop removes the login service (Settings runs windowBridge.daemonService.remove), but at once from a button labelled with the platform's removal text (Unload and delete the LaunchAgent on macOS), with no confirmation. The drawn dialog (Remove the login service?, REMOVED and KEPT, the consequence line, Remove the service and Keep it) is not built; Q349 A (2026-10-02) labels the button Remove and opens that dialog"
-      }
+      ]
     },
     {
       "id": "settings.about-build",
@@ -2201,6 +2197,11 @@
     }
   ],
   "humanRead": [
+    {
+      "id": "settings.service-remove",
+      "since": "2026-10-02",
+      "note": "Built for Q349 A. The body sentence is reordered to the installer's real order: the design says the daemon starts inside the app before the files are deleted; the installer deletes them first and the desktop restarts the daemon after. The Linux REMOVED row says lingering goes off only if Domovoi turned it on, because the window does not read that record. Try removing again after a failure is not drawn; the button keeps Remove."
+    },
     {
       "id": "composer.send-hint",
       "since": "2026-09-19",
