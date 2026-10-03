@@ -248,8 +248,14 @@ type SessionStartAttempt =
 
 // Where a start was made: the generation of the shell's thread scope
 // (machine, project and active session), which advances on every change, and
-// the names the refusal card shows for it.
-type StartScope = { generation: number; machineId: string; machine: string; repository: string }
+// the names the refusal card shows for it, and the control that opened it.
+type StartScope = {
+  generation: number
+  machineId: string
+  machine: string
+  repository: string
+  focusFrom: { trigger: Element | null; within: Element | null }
+}
 
 export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
@@ -626,12 +632,25 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     startGeneration.current += 1
     setStartRefusal(null)
   }, [refusalScope])
+  // The last control focused outside any dialog: the one that opened the
+  // launcher or fork dialog a start came from, which that dialog restores
+  // focus to when it closes. A refusal card may take focus from it, and from
+  // nothing else the person moved to (ruling Q400).
+  const focusOutsideDialogs = useRef<Element | null>(null)
+  useEffect(() => {
+    const track = (event: FocusEvent) => {
+      if (event.target instanceof Element && !event.target.closest("[role='dialog'], [role='alertdialog']")) focusOutsideDialogs.current = event.target
+    }
+    document.addEventListener("focusin", track)
+    return () => document.removeEventListener("focusin", track)
+  }, [])
   const startSession = async (attempt: SessionStartAttempt) => {
     const scope: StartScope = {
       generation: startGeneration.current,
       machineId: attached?.machineId ?? snapshot?.machine.id ?? "",
       machine: snapshot?.machine.name ?? "this machine",
       repository: snapshot?.project?.name ?? "this repository",
+      focusFrom: { trigger: focusOutsideDialogs.current, within: document.activeElement },
     }
     try {
       if (attempt.kind === "create") await createSession(attempt.title, attempt.runtime)
@@ -1744,6 +1763,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                       repository={startRefusal.scope.repository}
                       machine={startRefusal.scope.machine}
                       machineId={startRefusal.scope.machineId}
+                      focusFrom={startRefusal.scope.focusFrom}
                       loadInventory={(signal) => getToolInventory({ signal })}
                       // As on the Tools tab: desktop or web, never watching (ruling Q67).
                       onTrust={!watching && (clientKind === "desktop" || clientKind === "web")

@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -82,12 +82,14 @@ function show(options: {
   onTrust?: Trust
   loadInventory?: (signal: AbortSignal) => Promise<ToolInventory>
   onStartAgain?: () => Promise<void>
+  focusFrom?: { trigger: Element | null; within: Element | null }
 } = {}) {
   const props = {
     refusal: options.refusal ?? refusal(),
     repository: "acme-api",
     machine: "mac-mini-m4",
     machineId: "machine-1",
+    focusFrom: options.focusFrom ?? { trigger: null, within: null },
     loadInventory: options.loadInventory ?? vi.fn(async () => inventory()),
     onOpenTools: vi.fn(),
     onStartAgain: options.onStartAgain ?? vi.fn(async () => {}),
@@ -96,6 +98,86 @@ function show(options: {
   render(<SessionRefusalCard {...props} {...(options.onTrust ? { onTrust: options.onTrust } : {})} />)
   return { ...props, user: userEvent.setup(), card: screen.getByRole("region", { name: "Domovoi did not start this session" }) }
 }
+
+// The card moves focus to its heading one frame after it appears, and only
+// while the person is still where the refused start left them: the document,
+// the loading line, or the control that opened the start. Focus they moved
+// anywhere else, an input above all, stays there (ruling Q400).
+describe("focus when the refusal appears", () => {
+  function frames() {
+    const pending: FrameRequestCallback[] = []
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => pending.push(callback))
+    vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {})
+    return () => { for (const callback of pending.splice(0)) act(() => callback(0)) }
+  }
+  afterEach(() => {
+    cleanup()
+    vi.restoreAllMocks()
+    document.body.replaceChildren()
+  })
+
+  it("takes focus from the document", () => {
+    const run = frames()
+    show()
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    run()
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Domovoi did not start this session" }))
+  })
+
+  it("takes focus from the control that opened the start", () => {
+    const run = frames()
+    const trigger = document.body.appendChild(document.createElement("button"))
+    trigger.focus()
+    show({ focusFrom: { trigger, within: null } })
+    run()
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Domovoi did not start this session" }))
+  })
+
+  // The card can appear while the launcher the start came from is still
+  // closing: it waits for focus to leave that dialog, then decides.
+  it("waits while focus is still in the dialog the start came from", () => {
+    const run = frames()
+    const trigger = document.body.appendChild(document.createElement("button"))
+    const launcher = document.body.appendChild(document.createElement("div"))
+    launcher.setAttribute("role", "dialog")
+    const submit = launcher.appendChild(document.createElement("button"))
+    submit.focus()
+    show({ focusFrom: { trigger, within: submit } })
+    run()
+    expect(document.activeElement).toBe(submit)
+    // The launcher closes and gives focus back to its trigger.
+    launcher.remove()
+    trigger.focus()
+    run()
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Domovoi did not start this session" }))
+  })
+
+  it.each([
+    ["an input", () => document.createElement("input")],
+    ["a text area", () => document.createElement("textarea")],
+    ["an editable region", () => Object.assign(document.createElement("div"), { contentEditable: "true", tabIndex: 0 })],
+    ["another control", () => document.createElement("button")],
+  ])("leaves focus in %s the person moved to before the frame", (_label, make) => {
+    const run = frames()
+    const trigger = document.body.appendChild(document.createElement("button"))
+    show({ focusFrom: { trigger, within: null } })
+    const elsewhere = document.body.appendChild(make())
+    elsewhere.focus()
+    run()
+    expect(document.activeElement).toBe(elsewhere)
+  })
+
+  it("leaves focus in another dialog", () => {
+    const run = frames()
+    show()
+    const dialog = document.body.appendChild(Object.assign(document.createElement("div"), { role: "dialog" }))
+    dialog.setAttribute("role", "dialog")
+    const button = dialog.appendChild(document.createElement("button"))
+    button.focus()
+    run()
+    expect(document.activeElement).toBe(button)
+  })
+})
 
 describe("reading a refusal", () => {
   it("reads the git filter refusal from the daemon's error, and nothing else", () => {

@@ -33,12 +33,17 @@ export function SessionRefusalCard({
   onOpenTools,
   onStartAgain,
   onClose,
+  focusFrom,
 }: {
   refusal: RepositoryGitFilterRefusal
   // The repository and machine as they were when the refused start was made.
   repository: string
   machine: string
   machineId: string
+  // Where the refused start came from: trigger, the control that opened it,
+  // which a closing dialog restores focus to and the card may take focus
+  // from; within, the element it was submitted from, in that dialog.
+  focusFrom?: { trigger: Element | null; within: Element | null } | undefined
   loadInventory: (signal: AbortSignal) => Promise<ToolInventory>
   onTrust?: RepositoryTrustRequest | undefined
   onOpenTools: () => void
@@ -61,9 +66,30 @@ export function SessionRefusalCard({
   // its code may load first behind a loading line that holds focus. Focus
   // lands on its heading when it appears, so it is met rather than lost to
   // the document (bot finding 4151622873). A dialog closing in the same turn
-  // restores focus to its trigger afterwards, so the move waits a frame.
+  // restores focus to its trigger afterwards, so the move waits a frame, and
+  // happens only if the person is still where the start left them: the
+  // document, the loading line, or the control that opened the start. Focus
+  // they moved anywhere else while the code loaded stays there (ruling Q400).
+  //
+  // While focus is still inside the dialog the start was made from (the
+  // launcher closing after the refusal), the card waits a frame at a time,
+  // up to about two seconds, and decides once focus has left it.
+  const focusFromRef = useRef(focusFrom)
+  focusFromRef.current = focusFrom
   useEffect(() => {
-    const frame = requestAnimationFrame(() => heading.current?.focus())
+    let frame = 0
+    let waited = 0
+    const attempt = () => {
+      const active = document.activeElement
+      const startDialog = focusFromRef.current?.within?.closest(dialogSelector)
+      if (startDialog?.isConnected && active && startDialog.contains(active) && waited < 120) {
+        waited += 1
+        frame = requestAnimationFrame(attempt)
+        return
+      }
+      if (stillInStartFlow(active, focusFromRef.current?.trigger)) heading.current?.focus()
+    }
+    frame = requestAnimationFrame(attempt)
     return () => cancelAnimationFrame(frame)
   }, [])
 
@@ -178,6 +204,20 @@ export function SessionRefusalCard({
       ) : null}
     </section>
   )
+}
+
+// Whether focus is still where a refused start left it, so the card may take
+// it: nowhere (the document), the loading line its code loaded behind, or the
+// control that opened the start, which a closing dialog restores focus to.
+// Never from text entry or another dialog, wherever focus came from.
+const dialogSelector = "[role='dialog'], [role='alertdialog']"
+
+function stillInStartFlow(active: Element | null, trigger: Element | null | undefined): boolean {
+  if (!active || active === document.body || active === document.documentElement) return true
+  if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement) return false
+  if (active instanceof HTMLElement && active.isContentEditable) return false
+  if (active.closest(dialogSelector)) return false
+  return active.closest("[data-surface-loading]") !== null || (trigger !== undefined && trigger !== null && active === trigger)
 }
 
 const otherScopeText = "Domovoi read the tools of another project or machine than the one that refused this session, so they are not shown for review."
