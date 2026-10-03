@@ -156,8 +156,11 @@ export function PolicyRefusalCards({ refusal }: {
   return (
     <>
       <Card className="gap-2 border-danger-border bg-danger-bg">
-        <Text variant="nav" className="text-danger-fg">Refused by policy</Text>
-        <Text variant="meta" className="text-danger-fg">The daemon refused before the command ran. No approval can override it.</Text>
+        <View className="flex-row items-center gap-2.5">
+          <View className="h-[9px] w-[9px] rounded-full bg-destructive" />
+          <Text className="font-sans-semibold text-[19px] leading-[24px] tracking-[-0.015em] text-danger-fg">Refused by policy</Text>
+        </View>
+        <Text variant="meta" className="text-danger-fg">There is no approve button here, because no decision of yours can permit it. The daemon refused before the command ran.</Text>
         <View className="rounded-xl bg-code p-3">
           <Text variant="machine" className="text-danger-fg">{refusal.command}</Text>
         </View>

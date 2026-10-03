@@ -253,6 +253,8 @@ describe("SessionScreen policy and queue states", () => {
     await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, policyRefusal: refusal, approvalId: undefined }} /></SafeAreaProvider>)
 
     expect(screen.getByText("Refused by policy")).toBeOnTheScreen()
+    // Frame 05 says why the buttons are absent, not only that they are.
+    expect(screen.getByText("There is no approve button here, because no decision of yours can permit it. The daemon refused before the command ran.")).toBeOnTheScreen()
     expect(screen.getByText(refusal.command)).toBeOnTheScreen()
     expect(screen.getByText(refusal.rule)).toBeOnTheScreen()
     expect(screen.getByText(refusal.setBy)).toBeOnTheScreen()

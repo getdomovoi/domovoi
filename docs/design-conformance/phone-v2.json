@@ -406,17 +406,7 @@
         "THE RULE IT BROKE",
         "WHAT YOU CAN DO",
         "There is no approve button here, because no decision of yours can permit it."
-      ],
-      "presence": [
-        "Nothing to approve",
-        "Refused by policy",
-        "THE RULE IT BROKE",
-        "WHAT YOU CAN DO"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the refusal card says The daemon refused before the command ran. No approval can override it., not the design's line, which the element's copy claimed without evidence"
-      }
+      ]
     },
     {
       "id": "launch.screen",
