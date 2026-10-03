@@ -83,6 +83,18 @@ it("copies the bare code for a web browser, the one thing its connect page takes
   expect(onCopy).toHaveBeenCalledWith("hearth-quiet-ember-42")
 })
 
+// The tablet app, like the phone app, takes the payload: address and code.
+it("copies the payload, not the bare code, for a tablet", async () => {
+  const { onIssueCode, onCopy, user } = card()
+  await user.click(screen.getByRole("button", { name: "Tablet" }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  expect(onIssueCode).toHaveBeenCalledWith("tablet")
+  await screen.findByText("hearth-quiet-ember-42")
+  await user.click(screen.getByRole("button", { name: "Copy" }))
+  expect(onCopy).toHaveBeenCalledWith(encodePairingPayload({ v: 1, url: address.url, code: "hearth-quiet-ember-42", label: address.label }))
+  expect(onCopy).not.toHaveBeenCalledWith("hearth-quiet-ember-42")
+})
+
 it("locks the code for a watching window and names the refusal", () => {
   card({ readOnly: true })
   expect(screen.getByRole("button", { name: "Show a pairing code" }).hasAttribute("disabled")).toBe(true)
