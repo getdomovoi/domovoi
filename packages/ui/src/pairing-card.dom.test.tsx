@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
-import { PairingCard, pairingQrText, type IssuedPairingCode } from "./pairing-card"
+import { PairingCard, type IssuedPairingCode } from "./pairing-card"
 
 beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }) })
 afterEach(() => { cleanup(); vi.useRealTimers() })
@@ -83,41 +83,44 @@ it("copies the bare code for a web browser, the one thing its connect page takes
   expect(onCopy).toHaveBeenCalledWith("hearth-quiet-ember-42")
 })
 
-// A phone camera opens a web address, not a domovoi-pair payload. When the
-// daemon's owner set the web app address, the browser QR is that address
-// with ?code= filled in, which the web connect page reads and strips.
-it("draws the web app address with the code for a browser when the daemon has one", async () => {
+// Q399: a phone camera scanning a browser QR opens the phone's own pairing,
+// which greets as a phone, spends the web code and leaves an extra device.
+// So the Web browser tab draws no QR at all. It names the web app address to
+// open on that device when the daemon has one, and says to type the code.
+it("draws no QR for a browser and names the web app address to open when the daemon has one", async () => {
   const webAppUrl = "https://domovoi.example/app/"
   const { onIssueCode, user } = card()
   onIssueCode.mockResolvedValueOnce(issued({ webAppUrl }))
   await user.click(screen.getByRole("button", { name: "Web browser" }))
   await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
   await screen.findByText("hearth-quiet-ember-42")
-  expect(screen.getByRole("img", { name: `Pairing code for ${webAppUrl}` })).toBeTruthy()
+  expect(screen.queryByRole("img", { name: /Pairing code/ })).toBeNull()
+  expect(screen.getByText("Open this address in the browser on that device, then type the code.")).toBeTruthy()
   expect(screen.getByText(webAppUrl)).toBeTruthy()
-  expect(pairingQrText("browser", issued({ webAppUrl }))).toBe("https://domovoi.example/app/?code=hearth-quiet-ember-42")
-  expect(pairingQrText("browser", issued({ webAppUrl: "https://domovoi.example/app?theme=dark" }))).toBe("https://domovoi.example/app?theme=dark&code=hearth-quiet-ember-42")
+  expect(document.body.textContent).not.toContain("?code=")
+  expect(screen.queryByText("The QR holds this address and the code, never a credential:")).toBeNull()
 })
 
-// Q398 A: without a web app address there is no page for a camera to open,
-// so the browser tab draws no QR and says to type the code instead.
-it("draws no QR for a browser when the daemon has no web app address, and says to type the code", async () => {
+it("draws no QR for a browser and says to open Domovoi there when the daemon has no web app address", async () => {
   const { onCopy, user } = card()
   await user.click(screen.getByRole("button", { name: "Web browser" }))
   await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
   await screen.findByText("hearth-quiet-ember-42")
   expect(screen.queryByRole("img", { name: /Pairing code/ })).toBeNull()
-  expect(screen.getByText("No web app address is set for this daemon, so type the code into the web page.")).toBeTruthy()
+  expect(screen.getByText("Open Domovoi in the browser on that device and type the code.")).toBeTruthy()
+  expect(screen.queryByText("Open the address in the browser and type the code.")).toBeNull()
   expect(screen.queryByText("The QR holds this address and the code, never a credential:")).toBeNull()
-  expect(pairingQrText("browser", issued())).toBeUndefined()
   await user.click(screen.getByRole("button", { name: "Copy" }))
   expect(onCopy).toHaveBeenCalledWith("hearth-quiet-ember-42")
 })
 
-it("keeps the payload in the QR for a phone or tablet even when the daemon has a web app address", () => {
-  const payload = encodePairingPayload({ v: 1, url: address.url, code: "hearth-quiet-ember-42", label: address.label })
-  expect(pairingQrText("phone", issued({ webAppUrl: "https://domovoi.example/app/" }))).toBe(payload)
-  expect(pairingQrText("tablet", issued({ webAppUrl: "https://domovoi.example/app/" }))).toBe(payload)
+it("still draws the payload QR for a phone when the daemon has a web app address", async () => {
+  const { onIssueCode, user } = card()
+  onIssueCode.mockResolvedValueOnce(issued({ webAppUrl: "https://domovoi.example/app/" }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await screen.findByText("hearth-quiet-ember-42")
+  expect(screen.getByRole("img", { name: "Pairing code for mac-mini-m4.tail4c2e.ts.net" })).toBeTruthy()
+  expect(screen.getByText("The QR holds this address and the code, never a credential:")).toBeTruthy()
 })
 
 // The tablet app, like the phone app, takes the payload: address and code.

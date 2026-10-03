@@ -11,20 +11,24 @@ export type { IssuedPairingCode, PairingAddressReport } from "./pairing-address.
 // The pairing card for Settings > Phone and tablet, from PairingCard in the
 // 2026-09-23 desktop design. The desktop asks its own daemon for the same code
 // `domovoid pair` prints. A code lives 180 seconds and asking for another
-// cancels it. The QR carries the address and the code, never a credential.
-// When a phone could not reach or trust the daemon, the card says so instead
+// cancels it. The QR carries the address and the code, never a credential,
+// and only a phone or tablet gets one; a browser is told where to type the
+// code (Q399). When a phone could not reach or trust the daemon, the card says so instead
 // of drawing a QR. What the card cannot know stays undrawn: nothing tells the
 // window that issued a code that a device redeemed or was refused it, so the
 // paired receipt and the refusals stay in the design.
 
-export type PairingCardKind = "phone" | "tablet" | "browser"
-type Kind = PairingCardKind
+type Kind = "phone" | "tablet" | "browser"
 
+// The browser's line depends on whether the daemon's owner set the web app
+// address, so it is chosen where the code is drawn.
 const kinds: Record<Kind, { label: string; noun: string; client: ClientKind; Icon: typeof SmartphoneIcon; how: string }> = {
   phone: { label: "Phone", noun: "a phone", client: "phone", Icon: SmartphoneIcon, how: "Scan it with the Domovoi app, or paste the code." },
   tablet: { label: "Tablet", noun: "a tablet", client: "tablet", Icon: TabletIcon, how: "Scan it with the Domovoi app, or paste the code." },
-  browser: { label: "Web browser", noun: "a browser", client: "web", Icon: GlobeIcon, how: "Open the address in the browser and type the code." },
+  browser: { label: "Web browser", noun: "a browser", client: "web", Icon: GlobeIcon, how: "Open Domovoi in the browser on that device and type the code." },
 }
+
+const browserAddressHow = "Open this address in the browser on that device, then type the code."
 
 type Problem = { title: string; mono: string; still: string; next: string }
 
@@ -43,30 +47,18 @@ function problemFor(report: PairingAddressReport, kind: Kind): Problem | undefin
   return undefined
 }
 
-// What the QR carries. A phone or tablet app scans the domovoi-pair payload:
-// the address it dials and the code. A browser is opened by a phone camera,
-// which needs a web address, so when the daemon's owner set the web app
-// address the QR is that address with ?code= filled in; the connect page
-// reads it and strips it from the bar. Without one the card has no page
-// address to give, so a browser gets no QR at all (Q398 A): a QR a camera
-// cannot open is not drawn.
-export function pairingQrText(kind: PairingCardKind, issued: IssuedPairingCode): string | undefined {
+// What a phone or tablet QR carries: the domovoi-pair payload, the address
+// the app dials and the code. A browser gets no QR (Q399): a phone camera
+// scanning one opens the phone's own pairing, which greets as a phone, spends
+// the web code and leaves an extra device.
+function pairingPayloadText(issued: IssuedPairingCode): string | undefined {
   const address = pairingAddressOf(issued)
   if ("problem" in address) return undefined
-  if (kind === "browser") {
-    if (!issued.webAppUrl) return undefined
-    const page = new URL(issued.webAppUrl)
-    page.searchParams.set("code", issued.code)
-    return page.toString()
-  }
   return encodePairingPayload({ v: 1, url: address.url, code: issued.code, ...(address.label ? { label: address.label } : {}) })
 }
 
-// The address the card names beside the QR: the page for a browser QR link,
-// otherwise the address the device dials.
-function qrAddressLabel(kind: PairingCardKind, issued: IssuedPairingCode): string {
+function dialedAddressLabel(issued: IssuedPairingCode): string {
   const address = pairingAddressOf(issued)
-  if (kind === "browser" && issued.webAppUrl) return issued.webAppUrl
   return "problem" in address ? "" : address.label ?? address.url
 }
 
@@ -147,7 +139,8 @@ export function PairingCard({
   const problem = address ? problemFor(address, issuedKind) : undefined
   const expired = issued !== null && left === 0
   const codeShown = issued !== null && !expired && !problem && address !== undefined && !("problem" in address)
-  const qrText = issued ? pairingQrText(issuedKind, issued) : undefined
+  const qrText = issued && issuedKind !== "browser" ? pairingPayloadText(issued) : undefined
+  const webAppUrl = issued && issuedKind === "browser" ? issued.webAppUrl : undefined
   const grants = phoneAndTabletPromise.map((line) => ({ text: line.text, tone: line.tone === "granted" ? "bg-success" : "bg-info" }))
 
   const copy = async () => {
@@ -155,9 +148,7 @@ export function PairingCard({
     // The phone and tablet apps take the payload, address and code together.
     // A browser is already at the address, and its connect page takes the
     // word code alone, so that is what a browser's Copy hands over.
-    await onCopy(issuedKind === "browser"
-      ? issued.code
-      : encodePairingPayload({ v: 1, url: address.url, code: issued.code, ...(address.label ? { label: address.label } : {}) }))
+    await onCopy(issuedKind === "browser" ? issued.code : pairingPayloadText(issued) ?? issued.code)
     setCopied(true)
     setTimeout(() => setCopied(false), 1400)
   }
@@ -167,9 +158,12 @@ export function PairingCard({
       <div className="flex flex-wrap items-start gap-4">
         <div className="flex size-[165px] shrink-0 items-center justify-center rounded-[calc(var(--radius)-3px)] border border-dashed text-faint">
           {codeShown && qrText ? (
-            <QrSymbol text={qrText} label={`Pairing code for ${qrAddressLabel(issuedKind, issued)}`} />
+            <QrSymbol text={qrText} label={`Pairing code for ${dialedAddressLabel(issued)}`} />
           ) : codeShown ? (
-            <p className="m-0 px-3 text-center text-[11px] leading-relaxed text-muted-foreground">No web app address is set for this daemon, so type the code into the web page.</p>
+            <div className="flex flex-col items-center gap-2 px-3 text-center text-[11px]">
+              <GlobeIcon className="size-6" />
+              <span>No QR for a browser. Type the code there.</span>
+            </div>
           ) : (
             <div className="flex flex-col items-center gap-2 text-[11px]">
               {readOnly ? <LockIcon className="size-6" /> : <QrCodeIcon className="size-6" />}
@@ -214,7 +208,8 @@ export function PairingCard({
 
           {codeShown && issued ? (
             <div className="flex flex-col gap-2">
-              <span className="text-[12px]">{kinds[kind].how}</span>
+              <span className="text-[12px]">{webAppUrl ? browserAddressHow : kinds[issuedKind].how}</span>
+              {webAppUrl ? <span className="break-all font-machine text-[11px] text-foreground">{webAppUrl}</span> : null}
               <div className="flex flex-wrap items-center gap-2">
                 <span className="rounded-md bg-code px-3 py-2 font-machine text-[15px] tracking-wide text-strong">{issued.code}</span>
                 <Button type="button" variant="outline" size="sm" onClick={() => void copy()}>
@@ -233,7 +228,7 @@ export function PairingCard({
               {qrText ? (
                 <div className="flex flex-col gap-0.5 text-[11px] text-muted-foreground">
                   <span>The QR holds this address and the code, never a credential:</span>
-                  <span className="font-machine text-foreground">{qrAddressLabel(issuedKind, issued)}</span>
+                  <span className="font-machine text-foreground">{dialedAddressLabel(issued)}</span>
                 </div>
               ) : null}
               {kind === "browser" ? (
