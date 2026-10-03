@@ -18,7 +18,8 @@ export type CommandLinkState = "linked" | "absent" | "stale" | "other"
 
 export type CommandLinkReport =
   // launchers: the shipped launchers by their full path, when they exist,
-  // so a printed command still runs where no link can be made.
+  // so a printed command still runs where no link can be made. Never for an
+  // app running from a path that will not exist next time.
   | { available: false; reason: string; launchers?: { name: CommandName; launcher: string }[] }
   | {
       available: true
@@ -140,19 +141,24 @@ async function shippedLaunchers(resourcesPath: string): Promise<{ name: CommandN
 // Review P3-4: a path the app will not run from next time would leave a link
 // to nothing: macOS App Translocation's temporary copy, a mounted disk image,
 // and an AppImage, which mounts at a new path on every launch.
+// Review P2-A: the report names no launcher there either. A printed command
+// with that path, such as service install, would leave a login service that
+// breaks once the app quits, so commands print as written and the reason
+// points to the in-app Install, which copies the runtime out of the app.
+const inAppInstall = " To keep Domovoi running after you quit, use Install under Daemon on this machine in Settings."
 function unstableLocation(environment: CommandLinkEnvironment): string | undefined {
-  if (environment.appImage) return "Domovoi is running as an AppImage, which mounts at a new path on every launch, so a link to it would break."
-  if (environment.resourcesPath.includes("/AppTranslocation/")) return "macOS is running Domovoi from a temporary copy. Move Domovoi to Applications and open it from there to link its commands."
-  if (environment.resourcesPath.startsWith("/Volumes/")) return "Domovoi is running from a disk image. Copy it to Applications and open it from there to link its commands."
+  if (environment.appImage) return `Domovoi is running as an AppImage, which mounts at a new path on every launch, so a link to it would break.${inAppInstall}`
+  if (environment.resourcesPath.includes("/AppTranslocation/")) return `macOS is running Domovoi from a temporary copy. Move Domovoi to Applications and open it from there to link its commands.${inAppInstall}`
+  if (environment.resourcesPath.startsWith("/Volumes/")) return `Domovoi is running from a disk image. Copy it to Applications and open it from there to link its commands.${inAppInstall}`
   return undefined
 }
 
 async function inspect(environment: CommandLinkEnvironment, directories: DirectoryState): Promise<Inspected> {
   if (environment.platform === "win32") return { available: false, reason: "Domovoi links no commands on Windows." }
+  const unstable = unstableLocation(environment)
+  if (unstable) return { available: false, reason: unstable }
   const shipped = await shippedLaunchers(environment.resourcesPath)
   const unavailable = (reason: string): Inspected => shipped.length > 0 ? { available: false, reason, launchers: shipped } : { available: false, reason }
-  const unstable = unstableLocation(environment)
-  if (unstable) return unavailable(unstable)
   if (shipped[0]?.name !== "domovoid") return { available: false, reason: "This build ships no domovoid launcher, so there is nothing to link." }
   if (directories.kind === "refused") return unavailable(directories.reason)
   const directory = join(environment.home, ".local", "bin")

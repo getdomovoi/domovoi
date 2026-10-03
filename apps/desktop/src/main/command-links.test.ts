@@ -78,22 +78,25 @@ describe("command links", () => {
     const translocated = join(root, "private", "var", "folders", "x", "AppTranslocation", "1A2B", "d", "Domovoi.app", "Contents", "Resources")
     await mkdir(join(translocated, "daemon-runtime", "bin"), { recursive: true })
     await writeFile(join(translocated, "daemon-runtime", "bin", "domovoid"), "#!/bin/sh\n", { mode: 0o755 })
-    // The launchers it ships still run from where it is now, so printed
-    // commands can name them by their full path.
-    expect(await commandLinks("link", environment({ resourcesPath: translocated }))).toEqual({ report: {
-      available: false,
-      reason: "macOS is running Domovoi from a temporary copy. Move Domovoi to Applications and open it from there to link its commands.",
-      launchers: [{ name: "domovoid", launcher: join(translocated, "daemon-runtime", "bin", "domovoid") }],
-    } })
-    expect(await commandLinks("link", environment({ resourcesPath: "/Volumes/Domovoi 0.9.4/Domovoi.app/Contents/Resources" }))).toEqual({ report: {
-      available: false,
-      reason: "Domovoi is running from a disk image. Copy it to Applications and open it from there to link its commands.",
-    } })
-    expect(await commandLinks("link", environment({ platform: "linux", appImage: "/home/dana/Domovoi.AppImage" }))).toEqual({ report: {
-      available: false,
-      reason: "Domovoi is running as an AppImage, which mounts at a new path on every launch, so a link to it would break.",
-      launchers: shipped(),
-    } })
+    // Review P2-A: nor are its launchers named. A command printed with that
+    // path, such as service install, would leave a login service that breaks
+    // once the app quits, so commands print as written and the reason points
+    // to the in-app Install.
+    const install = " To keep Domovoi running after you quit, use Install under Daemon on this machine in Settings."
+    for (const action of ["status", "link", "unlink"] as const) {
+      expect(await commandLinks(action, environment({ resourcesPath: translocated }))).toEqual({ report: {
+        available: false,
+        reason: `macOS is running Domovoi from a temporary copy. Move Domovoi to Applications and open it from there to link its commands.${install}`,
+      } })
+      expect(await commandLinks(action, environment({ resourcesPath: "/Volumes/Domovoi 0.9.4/Domovoi.app/Contents/Resources" }))).toEqual({ report: {
+        available: false,
+        reason: `Domovoi is running from a disk image. Copy it to Applications and open it from there to link its commands.${install}`,
+      } })
+      expect(await commandLinks(action, environment({ platform: "linux", appImage: "/home/dana/Domovoi.AppImage" }))).toEqual({ report: {
+        available: false,
+        reason: `Domovoi is running as an AppImage, which mounts at a new path on every launch, so a link to it would break.${install}`,
+      } })
+    }
     await expect(lstat(join(home, ".local"))).rejects.toThrow()
   })
 
