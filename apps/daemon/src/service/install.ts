@@ -1433,27 +1433,38 @@ export async function runServiceCommand(
       && dependencies.readConfiguration?.(assertHome(dependencies.home), "linux")?.wsl !== undefined
     const installingFromWsl = verb === "install" && (dependencies.environment?.WSL_DISTRO_NAME !== undefined
       || dependencies.environment?.WSL_INTEROP !== undefined)
-    if (dependencies.platform === "linux" && (savedWsl || installingFromWsl)) {
-      return await serviceOperation(dependencies, (deadline) => runWslServiceCommand(verb, dependencies, deadline))
-    }
-    if (verb === "install") {
-      const configuration = createServiceConfiguration(dependencies.environment ?? {}, {
+    const configuration = verb === "install"
+      ? createServiceConfiguration(dependencies.environment ?? {}, {
         platform: dependencies.platform,
         homeDirectory: assertHome(dependencies.home),
         workingDirectory: dependencies.workingDirectory ?? process.cwd(),
       })
-      // Q408 A: from an app's runtime, the service runs a copy under the
-      // profile, published under the service-operation lease.
-      const bundled = await bundledServiceRuntime({
-        execPath: dependencies.execPath,
-        platform: dependencies.platform,
-        environment: dependencies.environment ?? {},
-        profileDirectory: configuration.profileDirectory ?? profileDirectory(configuration.homeDirectory, dependencies.platform),
-        version: dependencies.version,
-        home: configuration.homeDirectory,
-        ...(dependencies.runtimeFileSystem === undefined ? {} : { fileSystem: dependencies.runtimeFileSystem }),
-        ...(dependencies.runtimeStagingParent === undefined ? {} : { stagingParent: dependencies.runtimeStagingParent }),
-      })
+      : undefined
+    // Q408 A: from an app's runtime, the service runs a copy under the
+    // profile, published under the service-operation lease. Inside WSL too:
+    // the Windows task starts the guest runtime, and the app's path goes away
+    // once an AppImage unmounts or the app moves.
+    const bundled = configuration === undefined ? undefined : await bundledServiceRuntime({
+      execPath: dependencies.execPath,
+      platform: dependencies.platform,
+      environment: dependencies.environment ?? {},
+      profileDirectory: configuration.profileDirectory ?? profileDirectory(configuration.homeDirectory, dependencies.platform),
+      version: dependencies.version,
+      home: configuration.homeDirectory,
+      ...(dependencies.runtimeFileSystem === undefined ? {} : { fileSystem: dependencies.runtimeFileSystem }),
+      ...(dependencies.runtimeStagingParent === undefined ? {} : { stagingParent: dependencies.runtimeStagingParent }),
+    })
+    if (dependencies.platform === "linux" && (savedWsl || installingFromWsl)) {
+      const guest = bundled === undefined
+        ? dependencies
+        : { ...dependencies, execPath: bundled.runtime.daemonEntryPath, runtime: bundled.runtime.nodePath }
+      const publish = bundled === undefined ? undefined : async () => {
+        await bundled.publish()
+        dependencies.stdout(`Copied the daemon runtime out of the app to ${bundled.copy}, so the service does not run from inside the app.\n`)
+      }
+      return await serviceOperation(dependencies, (deadline) => runWslServiceCommand(verb, guest, deadline, publish))
+    }
+    if (configuration !== undefined) {
       const plan = bundled === undefined
         ? await installService({ ...target, configuration }, dependencies)
         : await installService({ ...target, execPath: bundled.runtime.daemonEntryPath, runtime: bundled.runtime.nodePath, configuration }, dependencies, { beforeChanges: bundled.publish })

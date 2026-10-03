@@ -154,6 +154,46 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
     expect(await readdir(home)).toEqual([])
   })
 
+  // Inside WSL the install registers a Windows task that starts the guest
+  // runtime. From the app's runtime it must start the copy too: the app's
+  // path goes away once an AppImage unmounts or the app moves.
+  describe("inside WSL", () => {
+    const powershell = "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+    function inWsl(overrides: Partial<ServiceCommandDependencies> = {}): ServiceCommandDependencies {
+      return command({
+        environment: { WSL_DISTRO_NAME: "Ubuntu", WSL_INTEROP: "/run/WSL/1_interop" },
+        capture: vi.fn(async (_command: string, args: string[]) => ({ code: 0, stdout: args[0] === "-u" ? powershell : "C:\\Windows" })),
+        exists: vi.fn(async () => false),
+        ...overrides,
+      })
+    }
+
+    it("copies the runtime under the profile and registers the task against the copy", async () => {
+      const dependencies = inWsl()
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
+      expect(dependencies.stderr).not.toHaveBeenCalled()
+      const versions = join(home, ".domovoi", "runtime", "0.9.4")
+      const [copy] = await readdir(versions)
+      const runtime = { nodePath: join(versions, copy!, "node", "bin", "node"), daemonEntryPath: join(versions, copy!, "daemon", "dist", "index.js") }
+      expect(await readFile(runtime.daemonEntryPath, "utf8")).toBe("daemon")
+      const saved = JSON.parse(written(dependencies, "service.json")!)
+      expect(saved).toMatchObject({
+        wsl: { executable: runtime.nodePath, args: [runtime.daemonEntryPath] },
+        serviceRuntime: { executable: runtime.nodePath, entry: runtime.daemonEntryPath },
+      })
+      for (const [, contents] of vi.mocked(dependencies.write).mock.calls) expect(contents).not.toContain(resources)
+      for (const [, args] of vi.mocked(dependencies.run).mock.calls) expect(args.join(" ")).not.toContain(resources)
+      expect(dependencies.stdout).toHaveBeenCalledWith(`Copied the daemon runtime out of the app to ${join(versions, copy!)}, so the service does not run from inside the app.\n`)
+    })
+
+    it("copies nothing when the WSL install is refused before its changes", async () => {
+      const dependencies = inWsl({ exists: vi.fn(async (path: string) => path.endsWith("domovoid.service")) })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+      expect(dependencies.stderr).toHaveBeenCalledWith("Remove the existing systemd registration before installing the WSL service\n")
+      expect(await readdir(home)).toEqual([])
+    })
+  })
+
   // Where /tmp is a tmpfs (Fedora, Arch, Debian 13) and TMPDIR is unset, the
   // system temporary directory is on another volume from the profile, so the
   // copy could not be moved in by one rename. The command then stages under
