@@ -57,14 +57,15 @@ export function ShellNotice({
         contentContainerClassName="grow items-center justify-center gap-3 px-6"
         bottomInset={bottomInset}
       >
-        {/* Launch (frame 06) leads with the mark while daemons answer. A
-            refused credential, or a failure being retried, is not launch and
-            keeps the failure's sign. */}
+        {/* Launch (frame 06) leads with the mark's working variant while
+            daemons answer (ruling Q386 A). A refused credential, or a
+            failure being retried, is not launch and keeps the failure's
+            sign. */}
         {shell.kind === "refused" || shell.faulted ? (
           <View testID="fault-sign">
             <Icon name="unplug" tone={shell.kind === "refused" ? "destructive" : "faint"} size={24} />
           </View>
-        ) : <Mark size={62} />}
+        ) : <Mark size={62} variant="working" />}
         <Text className="text-center font-sans-medium text-[14.5px] text-foreground">
           {shell.headline}
         </Text>

@@ -71,10 +71,12 @@ describe("ShellNotice", () => {
   // Phone v2 frame 06: launch leads with the Domovoi mark while daemons
   // answer. A refused credential is not launch, and keeps its own sign.
   it("leads launch with the Domovoi mark, and not a refusal", async () => {
+    // Frame 06 draws the mark's working variant while daemons answer
+    // (ruling Q386 A).
     await draw({ shell: launching })
-    expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
+    expect(screen.getByTestId("domovoi-mark-working", { includeHiddenElements: true })).toBeOnTheScreen()
     await draw({ shell: restoring })
-    expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
+    expect(screen.getByTestId("domovoi-mark-working", { includeHiddenElements: true })).toBeOnTheScreen()
     await draw({ shell: refused })
     expect(screen.queryByTestId("domovoi-mark", { includeHiddenElements: true })).toBeNull()
   })

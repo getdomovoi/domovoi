@@ -11,6 +11,13 @@ describe("Splash", () => {
     expect(screen.getByText("Domovoi")).toBeOnTheScreen()
   })
 
+  // Frame 06 draws the mark's working variant while the app starts (ruling
+  // Q386 A).
+  it("draws the working mark", async () => {
+    await render(<Splash />)
+    expect(screen.getByTestId("domovoi-mark-working", { includeHiddenElements: true })).toBeOnTheScreen()
+  })
+
   // The wordmark already says Domovoi, so the mark is not announced twice.
   it("names Domovoi once to a screen reader", async () => {
     await render(<Splash />)
