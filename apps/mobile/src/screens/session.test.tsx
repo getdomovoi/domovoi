@@ -322,7 +322,7 @@ describe("SessionScreen policy and queue states", () => {
       scope: "every machine on this account",
       remedy: "Run it against acme_dev instead.",
     }
-    const onTellAgent = jest.fn<(text: string) => Promise<boolean>>(async () => true)
+    const onTellAgent = jest.fn<(text: string) => Promise<"next-turn" | "direct" | undefined>>(async () => "direct")
     const { props } = await draw({ onTellAgent })
     const canSend = { ...props.detail, policyRefusal: refusal, approvalId: undefined, sending: { can: true as const, hint: undefined } }
     await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={canSend} /></SafeAreaProvider>)
@@ -364,7 +364,7 @@ describe("SessionScreen policy and queue states", () => {
     }
 
     it("says the remedy replaces the message already queued", async () => {
-      const { props } = await draw({ onTellAgent: jest.fn<(text: string) => Promise<boolean>>(async () => true) })
+      const { props } = await draw({ onTellAgent: jest.fn<(text: string) => Promise<"next-turn" | "direct" | undefined>>(async () => "next-turn") })
       await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, policyRefusal: refusal, approvalId: undefined, activeTurn: true, queuedSend, sending: { can: true, hint: undefined } }} /></SafeAreaProvider>)
 
       expect(screen.getByText("This replaces the message already queued for the next turn.")).toBeOnTheScreen()
@@ -373,7 +373,7 @@ describe("SessionScreen policy and queue states", () => {
     })
 
     it("says where the remedy went once it is sent", async () => {
-      const { props } = await draw({ onTellAgent: jest.fn<(text: string) => Promise<boolean>>(async () => true) })
+      const { props } = await draw({ onTellAgent: jest.fn<(text: string) => Promise<"next-turn" | "direct" | undefined>>(async () => "next-turn") })
       await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, policyRefusal: refusal, approvalId: undefined, activeTurn: true, sending: { can: true, hint: undefined } }} /></SafeAreaProvider>)
 
       await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))
@@ -381,8 +381,23 @@ describe("SessionScreen policy and queue states", () => {
       expect(screen.getByText("Sent. It will reach the agent when this turn ends.")).toBeOnTheScreen()
     })
 
+    // The line follows how the message was actually sent at the tap, not the
+    // turn's state when the screen redraws: the turn can end, or start, in
+    // between.
+    it("names the delivery used at the tap, whatever the turn is doing now", async () => {
+      const direct = await draw({ onTellAgent: jest.fn<(text: string) => Promise<"next-turn" | "direct" | undefined>>(async () => "direct") })
+      await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...direct.props} detail={{ ...direct.props.detail, policyRefusal: refusal, approvalId: undefined, activeTurn: true, sending: { can: true, hint: undefined } }} /></SafeAreaProvider>)
+      await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))
+      expect(screen.getByText("Sent to the agent.")).toBeOnTheScreen()
+
+      const queued = await draw({ onTellAgent: jest.fn<(text: string) => Promise<"next-turn" | "direct" | undefined>>(async () => "next-turn") })
+      await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...queued.props} detail={{ ...queued.props.detail, policyRefusal: refusal, approvalId: undefined, activeTurn: false, sending: { can: true, hint: undefined } }} /></SafeAreaProvider>)
+      await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))
+      expect(screen.getByText("Sent. It will reach the agent when this turn ends.")).toBeOnTheScreen()
+    })
+
     it("says nothing was sent when the send fails", async () => {
-      const { props } = await draw({ onTellAgent: jest.fn<(text: string) => Promise<boolean>>(async () => false) })
+      const { props } = await draw({ onTellAgent: jest.fn<(text: string) => Promise<"next-turn" | "direct" | undefined>>(async () => undefined) })
       await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, policyRefusal: refusal, approvalId: undefined, activeTurn: true, sending: { can: true, hint: undefined } }} /></SafeAreaProvider>)
 
       await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))

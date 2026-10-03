@@ -48,7 +48,7 @@ import { fleetLoader } from "./fleet-load"
 import { freshSessionReadiness, startFreshSession } from "./fresh-session"
 import { MachinesScreen } from "./screens/fleet"
 import { annotationRows } from "./review-rows"
-import { SessionScreen } from "./screens/session"
+import { SessionScreen, type TellDelivery } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
 import { PairScanScreen, usePairCameraPermission } from "./screens/pair-scan"
 import { SettingsScreen } from "./screens/settings"
@@ -656,25 +656,27 @@ export function App() {
   // Ruling Q356 A: a policy refusal's remedy sent to the agent as a steer. It
   // is a message like any other, so it goes through the same send and the
   // same guard against a second tap, without the draft or its attachments.
-  // Resolves true once the daemon took the message, so the refusal can say
-  // where it went.
-  const tellAgent = async (sessionId: string, text: string): Promise<boolean> => {
-    if (inFlightSend.current) return false
+  // Resolves to the delivery the send used, read at the tap, so the refusal
+  // says where the message went even if the turn ends before it redraws.
+  // Undefined when the daemon did not take it.
+  const tellAgent = async (sessionId: string, text: string): Promise<TellDelivery | undefined> => {
+    if (inFlightSend.current) return undefined
     inFlightSend.current = true
     setSending(true)
     setSendProblem("")
     try {
       const session = snapshot?.sessions.find((candidate) => candidate.id === sessionId)
+      const delivery = session ? sendDelivery(session) : {}
       await mutate("session.send", {
         sessionId,
         prompt: text,
         client,
-        ...(session ? sendDelivery(session) : {}),
+        ...delivery,
       })
-      return true
+      return delivery.delivery === "next-turn-replace" ? "next-turn" : "direct"
     } catch (cause) {
       setSendProblem(cause instanceof Error ? cause.message : "The message was not sent", sessionId)
-      return false
+      return undefined
     } finally {
       inFlightSend.current = false
       setSending(false)

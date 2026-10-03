@@ -156,9 +156,13 @@ const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWa
 // where the remedy went after the tap.
 const replaceable: ReadonlySet<QueuedSessionSend["state"]> = new Set(["waiting", "held", "unconfirmed"])
 
+// How a remedy went: as the next turn's message (next-turn-replace), or
+// straight to the session.
+export type TellDelivery = "next-turn" | "direct"
+
 function PolicyRefusal({ refusal, onTellAgent, sending, problem, activeTurn, queuedSend, canCancel, onCancelQueuedSend }: {
   refusal: Extract<ThreadEntry, { kind: "policy-refusal" }>
-  onTellAgent: ((text: string) => Promise<boolean>) | undefined
+  onTellAgent: ((text: string) => Promise<TellDelivery | undefined>) | undefined
   sending: boolean
   problem: string
   activeTurn: boolean
@@ -166,7 +170,9 @@ function PolicyRefusal({ refusal, onTellAgent, sending, problem, activeTurn, que
   canCancel: boolean
   onCancelQueuedSend: (queueId: string) => void
 }) {
-  const [sent, setSent] = useState(false)
+  // How the remedy was sent at the tap. The turn can end or start before the
+  // screen redraws, so the line is picked from this, not from activeTurn.
+  const [sent, setSent] = useState<TellDelivery | undefined>(undefined)
   const replaces = activeTurn && queuedSend !== undefined && replaceable.has(queuedSend.state)
   return (
     <View className="gap-3">
@@ -182,13 +188,13 @@ function PolicyRefusal({ refusal, onTellAgent, sending, problem, activeTurn, que
             shape="block"
             disabled={sending}
             onPress={() => {
-              setSent(false)
+              setSent(undefined)
               void onTellAgent(refusal.remedy).then(setSent)
             }}
           />
           {sent ? (
             <Text accessibilityRole="alert" variant="note" className="px-1">
-              {activeTurn ? "Sent. It will reach the agent when this turn ends." : "Sent to the agent."}
+              {sent === "next-turn" ? "Sent. It will reach the agent when this turn ends." : "Sent to the agent."}
             </Text>
           ) : null}
           {problem ? <Text accessibilityRole="alert" variant="note" className="px-1 text-destructive">{problem}</Text> : null}
@@ -599,8 +605,8 @@ export function SessionScreen({
   startProblem: string
   onStartLike: (prompt: string, mode: PermissionMode) => void
   // Sends a policy refusal's remedy to the agent as a steer (ruling Q356 A).
-  // Resolves true once the daemon took the message.
-  onTellAgent?: ((text: string) => Promise<boolean>) | undefined
+  // Resolves to how the daemon took the message, or undefined when it did not.
+  onTellAgent?: ((text: string) => Promise<TellDelivery | undefined>) | undefined
 }) {
   const [startOpen, setStartOpen] = useState(false)
   const [attachOpen, setAttachOpen] = useState(false)
