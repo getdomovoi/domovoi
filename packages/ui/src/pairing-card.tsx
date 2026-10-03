@@ -123,7 +123,12 @@ export function PairingCard({
 
   const copy = async () => {
     if (!issued || !address || "problem" in address) return
-    await onCopy(encodePairingPayload({ v: 1, url: address.url, code: issued.code, ...(address.label ? { label: address.label } : {}) }))
+    // The phone and tablet apps take the payload, address and code together.
+    // A browser is already at the address, and its connect page takes the
+    // word code alone, so that is what a browser's Copy hands over.
+    await onCopy(issuedKind === "browser"
+      ? issued.code
+      : encodePairingPayload({ v: 1, url: address.url, code: issued.code, ...(address.label ? { label: address.label } : {}) }))
     setCopied(true)
     setTimeout(() => setCopied(false), 1400)
   }

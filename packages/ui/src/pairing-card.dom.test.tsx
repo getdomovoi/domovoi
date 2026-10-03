@@ -72,6 +72,17 @@ it("draws the browser's certificate line and the web flag", async () => {
   expect(await screen.findByText("A certificate warning means the address is not this machine's full tailnet name, or its certificate lapsed. Do not click through.")).toBeTruthy()
 })
 
+// The browser's connect page takes the word code alone; a pasted payload is
+// refused there, so Copy for a browser hands over the code the card shows.
+it("copies the bare code for a web browser, the one thing its connect page takes", async () => {
+  const { onCopy, user } = card()
+  await user.click(screen.getByRole("button", { name: "Web browser" }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await screen.findByText("hearth-quiet-ember-42")
+  await user.click(screen.getByRole("button", { name: "Copy" }))
+  expect(onCopy).toHaveBeenCalledWith("hearth-quiet-ember-42")
+})
+
 it("locks the code for a watching window and names the refusal", () => {
   card({ readOnly: true })
   expect(screen.getByRole("button", { name: "Show a pairing code" }).hasAttribute("disabled")).toBe(true)
