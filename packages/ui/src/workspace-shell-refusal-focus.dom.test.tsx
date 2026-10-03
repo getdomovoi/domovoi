@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { repositoryGitFilterErrorCode, type ProviderRuntime } from "@getdomovoi/protocol"
 
+import { isStartOpener } from "./start-handoff"
 import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
 import { assignSlotsLikeABrowser } from "./test-support/assigned-slot"
@@ -79,8 +80,13 @@ const codex: ProviderRuntime = { id: "codex", command: "codex", status: "ready",
 
 // A start refused while the card's code is still loading: the loading line
 // holds focus, and the person moves into a text field and types. When the
-// card arrives it does not take focus from the field (ruling Q400).
-it("leaves focus in a field the person moved to while the refusal's code loaded", async () => {
+// card arrives it does not take focus from the field (ruling Q400), even
+// when the page put the loading line's old attribute on it (security review
+// round 8).
+it.each([
+  ["a field", false],
+  ["a field carrying the loading line's attribute", true],
+])("leaves focus in %s the person moved to while the refusal's code loaded", async (_label, attribute) => {
   const base = workspaceSnapshot()
   const snapshot = workspaceSnapshot({ machine: { ...base.machine, providers: [codex] } })
   render(<WorkspaceShell />)
@@ -115,6 +121,7 @@ it("leaves focus in a field the person moved to while the refusal's code loaded"
   expect(await screen.findByText("Opening the refusal")).toBeTruthy()
 
   const field = document.body.appendChild(Object.assign(document.createElement("input"), { "aria-label": "Search session history" }))
+  if (attribute) field.setAttribute("data-surface-loading", "")
   await user.click(field)
   await user.keyboard("review note")
 
@@ -129,22 +136,50 @@ it("leaves focus in a field the person moved to while the refusal's code loaded"
   expect(field.value).toBe("review note more")
 })
 
-// The card takes focus only from a control Domovoi marked as a start's opener
-// (ruling Q410): the New session button, the palette's New session row and
-// the launcher's submit. A row that opens nothing is not marked.
-it("marks the controls that open a session start, and no others", async () => {
+// The card takes focus only from a control Domovoi registered as a start's
+// opener (ruling Q410): the New session button, the palette's New session row
+// and the launcher's submit. A row that opens nothing is not registered.
+it("registers the controls that open a session start, and no others", async () => {
   const { user } = await connectedShell()
-  const opener = "data-domovoi-opener"
-  expect(screen.getByRole("button", { name: "New session" }).hasAttribute(opener)).toBe(true)
+  expect(isStartOpener(screen.getByRole("button", { name: "New session" }))).toBe(true)
 
   await user.keyboard("{Control>}k{/Control}")
-  expect(screen.getByRole("option", { name: /New session/ }).hasAttribute(opener)).toBe(true)
-  expect(screen.getByRole("option", { name: /Open project/ }).hasAttribute(opener)).toBe(false)
+  expect(isStartOpener(screen.getByRole("option", { name: /New session/ }))).toBe(true)
+  expect(isStartOpener(screen.getByRole("option", { name: /Open project/ }))).toBe(false)
   await user.type(screen.getByRole("combobox"), "New session")
   await user.keyboard("{Enter}")
   await settle()
-  expect(screen.getByRole("button", { name: "Create session" }).hasAttribute(opener)).toBe(true)
-  expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute(opener)).toBe(false)
+  expect(isStartOpener(screen.getByRole("button", { name: "Create session" }))).toBe(true)
+  expect(isStartOpener(screen.getByRole("button", { name: "Cancel" }))).toBe(false)
+})
+
+// With no session open, the thread's empty state offers New session too.
+it("registers the empty thread's New session button", async () => {
+  render(<WorkspaceShell />)
+  const socket = harness.socket(0)
+  const empty = workspaceSnapshot({
+    sessions: [], activeSessionId: null, approvals: [], thread: [], annotations: [], artifacts: [], workingPlans: [],
+  })
+  await act(async () => { completeHandshake(socket, empty) })
+  await settle()
+  const buttons = screen.getAllByRole("button", { name: "New session" })
+  expect(buttons.length).toBe(2)
+  for (const button of buttons) expect(isStartOpener(button)).toBe(true)
+})
+
+// The launcher closes after the refusal and gives focus back to the New
+// session button that opened it, before the card's code arrives. That is the
+// start's own opener, so the card takes focus from it.
+it("takes focus from the New session button the launcher gave focus back to", async () => {
+  const shell = await connectedShell()
+  const { user } = shell
+  const newSession = screen.getByRole("button", { name: "New session" })
+  await user.click(newSession)
+  await settle()
+  await refusedFromLauncher(shell)
+  newSession.focus()
+  const heading = await cardArrives()
+  expect(document.activeElement).toBe(heading)
 })
 
 // A browser hands a document focusin listener the event retargeted to the
@@ -186,11 +221,17 @@ async function connectedShell() {
 
 // From wherever focus is, open the command palette, start a new session and
 // have the daemon refuse it. The refusal's code is still loading afterwards.
-async function refusedFromPalette({ socket, snapshot, user }: Awaited<ReturnType<typeof connectedShell>>) {
+async function refusedFromPalette(shell: Awaited<ReturnType<typeof connectedShell>>) {
+  const { user } = shell
   await user.keyboard("{Control>}k{/Control}")
   await user.type(screen.getByRole("combobox"), "New session")
   await user.keyboard("{Enter}")
   await settle()
+  await refusedFromLauncher(shell)
+}
+
+// With the launcher open, create a session and have the daemon refuse it.
+async function refusedFromLauncher({ socket, snapshot, user }: Awaited<ReturnType<typeof connectedShell>>) {
   const models = [{
     provider: "codex", id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", description: "",
     supportedReasoningEfforts: ["medium" as const], defaultReasoningEffort: "medium" as const, isDefault: true,
@@ -253,16 +294,46 @@ it("leaves focus in a shadow root field the start was launched from", async () =
   }
 })
 
+// The same flow from a light DOM field the page put the opener's old
+// attribute on. The field is where focus was before the start, so the shell
+// saves it as the trigger, but no attribute makes it Domovoi's own control
+// (security review round 8).
+it("leaves focus in a field carrying the opener attribute the start was launched from", async () => {
+  const shell = await connectedShell()
+  const { user } = shell
+  const field = document.body.appendChild(Object.assign(document.createElement("input"), { "aria-label": "Review note" }))
+  field.setAttribute("data-domovoi-opener", "")
+  await user.click(field)
+  await user.keyboard("review note")
+
+  await refusedFromPalette(shell)
+  expect(chunk.focusFrom?.trigger).toBe(field)
+  await user.click(field)
+  const heading = await cardArrives()
+
+  expect(document.activeElement).not.toBe(heading)
+  expect(document.activeElement).toBe(field)
+  await user.keyboard(" more")
+  expect(field.value).toBe("review note more")
+})
+
 // The same flow from a field inside a closed shadow root whose host takes
-// focus by tabindex. Nothing outside the root can see whether the host or
-// the field holds focus, and the host is where focus was before the start,
-// so the card leaves focus where it is (ruling Q410).
-it.each([0, -1])("leaves focus in a closed shadow root whose host has tabindex %i", async (tabIndex) => {
+// focus by tabindex, with or without an attribute the page copied onto the
+// host. Nothing outside the root can see whether the host or the field holds
+// focus, and the host is where focus was before the start, so the card leaves
+// focus where it is (ruling Q410, security review round 8).
+it.each([
+  [0, ""],
+  [-1, ""],
+  [0, "data-domovoi-opener"],
+  [0, "data-surface-loading"],
+])("leaves focus in a closed shadow root whose host has tabindex %i and attribute '%s'", async (tabIndex, attribute) => {
   const restore = retargetFocusLikeABrowser()
   try {
     const shell = await connectedShell()
     const { user } = shell
     const host = document.body.appendChild(Object.assign(document.createElement("div"), { tabIndex }))
+    if (attribute) host.setAttribute(attribute, "")
     const root = host.attachShadow({ mode: "closed" })
     const field = root.appendChild(Object.assign(document.createElement("input"), { "aria-label": "Review note" }))
     await user.click(field)

@@ -10,6 +10,7 @@ import {
   AlertDialogTrigger,
 } from "./components/ui/alert-dialog"
 import { Button } from "./components/ui/button"
+import { startOpenerRef } from "./start-handoff"
 
 // One control for restoring a checkpoint, wherever it is offered. The thread
 // and the history pane both reach a destructive action, so they share the
@@ -77,11 +78,11 @@ export function CheckpointFork({
 }) {
   return (
     <AlertDialog>
-      {/* data-domovoi-opener marks a control that opens a session start: a
+      {/* startOpenerRef registers a control that opens a session start: a
           refusal of the fork may take focus from this trigger when the
           confirm gives focus back to it (ruling Q410). */}
       <AlertDialogTrigger asChild>
-        <Button variant={triggerVariant} size="sm" data-domovoi-opener="" disabled={disabled} className="h-6 rounded-full px-2 text-micro">
+        <Button ref={startOpenerRef} variant={triggerVariant} size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-micro">
           {triggerLabel}
         </Button>
       </AlertDialogTrigger>
@@ -97,7 +98,7 @@ export function CheckpointFork({
         </AlertDialogHeader>
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <AlertDialogAction data-domovoi-opener="" disabled={disabled} onClick={() => onFork(checkpointId)}>
+          <AlertDialogAction ref={startOpenerRef} disabled={disabled} onClick={() => onFork(checkpointId)}>
             Fork session
           </AlertDialogAction>
         </AlertDialogFooter>

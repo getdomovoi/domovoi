@@ -8,6 +8,7 @@ import { Button } from "./components/ui/button"
 import { closestComposed, containsComposed, focusedElement } from "./composed-focus"
 import { cn } from "./lib/utils"
 import { RepositoryTrustSheet, type RepositoryTrustRequest } from "./repository-trust-sheet"
+import { isLoadingLine, isStartOpener } from "./start-handoff"
 import { awaitsTrust, gitFilterScopeLabel } from "./tool-inventory-model"
 import { GrantedWhere, mono } from "./tool-inventory-parts"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
@@ -43,8 +44,8 @@ export function SessionRefusalCard({
   machineId: string
   // Where the refused start came from: trigger, the control that opened it,
   // which a closing dialog restores focus to and the card may take focus
-  // from when Domovoi marked it data-domovoi-opener; within, the element it
-  // was submitted from, in that dialog.
+  // from when it is the control Domovoi registered as the start's opener;
+  // within, the element it was submitted from, in that dialog.
   focusFrom?: { trigger: Element | null; within: Element | null } | undefined
   loadInventory: (signal: AbortSignal) => Promise<ToolInventory>
   onTrust?: RepositoryTrustRequest | undefined
@@ -70,8 +71,8 @@ export function SessionRefusalCard({
   // the document (bot finding 4151622873). A dialog closing in the same turn
   // restores focus to its trigger afterwards, so the move waits a frame, and
   // happens only if the person is still where the start left them: the
-  // document, the loading line, or the Domovoi control marked as the one that
-  // opened the start. Focus anywhere else stays there (rulings Q400, Q410).
+  // document, the loading line, or the Domovoi control registered as the one
+  // that opened the start. Focus anywhere else stays there (rulings Q400, Q410).
   //
   // While focus is still inside the dialog the start was made from (the
   // launcher closing after the refusal), the card waits a frame at a time,
@@ -211,23 +212,36 @@ export function SessionRefusalCard({
 
 // Whether focus is still where a refused start left it, so the card may take
 // it (ruling Q410). Only three places qualify: nowhere (the document),
-// Domovoi's loading line its code loaded behind, or the Domovoi control marked
-// data-domovoi-opener that opened this start, which a closing dialog
-// restores focus to. Everything else keeps focus: text entry, other
-// controls, other dialogs, frames, and every shadow host or element in a
-// shadow root. A host with a closed root may be passing focus to a field the
-// card cannot see, and neither its tabindex nor a null shadowRoot says
-// otherwise. Domovoi renders its own controls in the document, never in a
-// shadow root, so an element in one is never taken for one of them.
+// Domovoi's loading line its code loaded behind, or the Domovoi control that
+// opened this start, which a closing dialog restores focus to. The last two
+// are the exact nodes Domovoi's components registered (start-handoff.ts); an
+// attribute, which any page can copy, grants nothing (security review round
+// 8). Everything else keeps focus: other controls, other dialogs and every
+// element in a shadow root. Text entry, frames, open shadow hosts and custom
+// elements keep it even when registered. A host with a closed root may be
+// passing focus to a field the card cannot see, and neither its tabindex nor
+// a null shadowRoot says otherwise, so only a registered node is trusted not
+// to be one. Domovoi renders its own controls in the document, never in a
+// shadow root.
 const dialogSelector = "[role='dialog'], [role='alertdialog']"
 
 function stillInStartFlow(trigger: Element | null | undefined): boolean {
   const active = focusedElement()
   if (!active || active === document.body || active === document.documentElement) return true
+  if (mayHoldTyping(active)) return false
   if (active.getRootNode() !== document) return false
   if (closestComposed(active, dialogSelector)) return false
-  if (active.matches("[data-surface-loading]")) return true
-  return active === trigger && active.matches("[data-domovoi-opener]")
+  if (isLoadingLine(active)) return true
+  return active === trigger && isStartOpener(active)
+}
+
+// Text entry, a frame with focus of its own, or a host that may pass focus to
+// either, whoever registered it.
+function mayHoldTyping(element: Element): boolean {
+  if (element instanceof HTMLInputElement || element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement) return true
+  if (element instanceof HTMLElement && element.isContentEditable) return true
+  if (element instanceof HTMLIFrameElement || element instanceof HTMLObjectElement || element instanceof HTMLEmbedElement) return true
+  return element.shadowRoot !== null || element.localName.includes("-")
 }
 
 const otherScopeText = "Domovoi read the tools of another project or machine than the one that refused this session, so they are not shown for review."

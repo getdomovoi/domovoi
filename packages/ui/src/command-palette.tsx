@@ -35,6 +35,7 @@ import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
 import type { SessionSearchMatch, SessionSearchResult } from "@getdomovoi/protocol"
 
 import { fleetMachines, transferTargets } from "./fleet-entries"
+import { startOpenerRef } from "./start-handoff"
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { machineAttachment } from "./machine-selection"
 import type { WorkspaceSurface } from "./workspace-persistence"
@@ -89,8 +90,8 @@ export type WorkspaceCommand = {
   elsewhereTargets?: readonly WorkspaceCommand[] | undefined
   tone?: StatusMeaning | undefined
   restoreFocus?: boolean
-  // Whether this row opens a session start. Its item is marked
-  // data-domovoi-opener, as Domovoi's other start controls are (ruling Q410).
+  // Whether this row opens a session start. Its item is registered with
+  // startOpenerRef, as Domovoi's other start controls are (ruling Q410).
   opensStart?: boolean
   disabled?: boolean
   run: () => void
@@ -608,7 +609,7 @@ export function CommandPalette({
                     <CommandItem
                       key={command.id}
                       {...(command.disabled === undefined ? {} : { disabled: command.disabled })}
-                      {...(command.opensStart ? { "data-domovoi-opener": "" } : {})}
+                      {...(command.opensStart ? { ref: startOpenerRef } : {})}
                       value={command.id}
                       onSelect={() => {
                         if (command.disabled) return

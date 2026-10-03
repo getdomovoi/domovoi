@@ -13,9 +13,11 @@ import {
   type ToolInventory,
 } from "@getdomovoi/protocol"
 
+import { CheckpointFork } from "./checkpoint-actions.js"
 import { DaemonRpcError } from "./client.js"
 import { SessionRefusalCard } from "./session-refusal-card.js"
 import { gitFilterRefusalFrom } from "./session-refusal.js"
+import { loadingLineRef, startOpenerRef } from "./start-handoff.js"
 import { assignSlotsLikeABrowser } from "./test-support/assigned-slot.js"
 
 afterEach(cleanup)
@@ -102,9 +104,9 @@ function show(options: {
 
 // The card moves focus to its heading one frame after it appears, and only
 // while the person is still where the refused start left them: the document,
-// Domovoi's loading line, or the Domovoi control marked as the opener of the
-// start that opened this one. Focus anywhere else stays there (rulings Q400,
-// Q410).
+// Domovoi's own loading line, or the Domovoi control that opened the start,
+// each known by the exact node its component registered. Focus anywhere else
+// stays there (rulings Q400, Q410).
 describe("focus when the refusal appears", () => {
   function frames() {
     const pending: FrameRequestCallback[] = []
@@ -121,15 +123,22 @@ describe("focus when the refusal appears", () => {
     document.body.replaceChildren()
   })
   const heading = () => screen.getByRole("heading", { name: "Domovoi did not start this session" })
-  // A control Domovoi marks as one that opens a session start.
+  // A control registered, as Domovoi's own start controls register theirs, as
+  // one that opens a session start.
   function opener(element: HTMLElement = document.createElement("button")) {
-    element.setAttribute("data-domovoi-opener", "")
+    startOpenerRef(element)
     return element
   }
-  function loadingLine() {
-    const line = Object.assign(document.createElement("p"), { tabIndex: -1 })
-    line.setAttribute("data-surface-loading", "")
+  // A line registered as the one a surface's code loads behind.
+  function loadingLine(line: HTMLElement = Object.assign(document.createElement("p"), { tabIndex: -1 })) {
+    loadingLineRef(line)
     return line
+  }
+  // The attributes earlier rounds read. A page can put them on anything, so
+  // they grant nothing (security review round 8).
+  function withAttribute<E extends HTMLElement>(element: E, name: "data-domovoi-opener" | "data-surface-loading") {
+    element.setAttribute(name, "")
+    return element
   }
 
   it("takes focus from the document", () => {
@@ -149,10 +158,25 @@ describe("focus when the refusal appears", () => {
     expect(document.activeElement).toBe(heading())
   })
 
-  it("takes focus from the marked control that opened the start", () => {
+  it("takes focus from the registered control that opened the start", () => {
     const run = frames()
     const trigger = document.body.appendChild(opener())
     trigger.focus()
+    show({ focusFrom: { trigger, within: null } })
+    run()
+    expect(document.activeElement).toBe(heading())
+  })
+
+  // The fork confirm closes and gives focus back to its Fork trigger, the
+  // start's own opener, which Domovoi's fork control registered.
+  it("takes focus from the fork trigger the confirm gave focus back to", async () => {
+    const user = userEvent.setup()
+    render(<CheckpointFork checkpointId="checkpoint-7f23" label="before migration" disabled={false} onFork={vi.fn()} />)
+    const trigger = screen.getByRole("button", { name: "Fork from here" })
+    await user.click(trigger)
+    await user.click(screen.getByRole("button", { name: "Fork session" }))
+    await vi.waitFor(() => expect(document.activeElement).toBe(trigger))
+    const run = frames()
     show({ focusFrom: { trigger, within: null } })
     run()
     expect(document.activeElement).toBe(heading())
@@ -203,7 +227,7 @@ describe("focus when the refusal appears", () => {
     ["a text area", () => document.createElement("textarea")],
     ["an editable region", () => Object.assign(document.createElement("div"), { contentEditable: "true", tabIndex: 0 })],
     ["another control", () => document.createElement("button")],
-    ["another marked control", () => opener()],
+    ["another registered control", () => opener()],
   ])("leaves focus in %s the person moved to before the frame", (_label, make) => {
     const run = frames()
     const trigger = document.body.appendChild(opener())
@@ -228,9 +252,9 @@ describe("focus when the refusal appears", () => {
   // document.activeElement names only the outermost shadow host, and a frame
   // holds focus of its own. The saved trigger can be that host or frame while
   // the person types inside it. Whether a closed root holds focus cannot be
-  // seen at all, tabindex or not, so the card takes focus only from a control
-  // Domovoi marked as the start's opener, and from nothing a page or widget
-  // drew (ruling Q410).
+  // seen at all, tabindex or not, so the card takes focus only from the exact
+  // control Domovoi registered as the start's opener, and from nothing a page
+  // or widget drew (ruling Q410).
   function shadowInput(host: HTMLElement, mode: ShadowRootMode) {
     return host.attachShadow({ mode }).appendChild(document.createElement("input"))
   }
@@ -242,7 +266,7 @@ describe("focus when the refusal appears", () => {
     return widget.appendChild(control)
   }
   it.each([
-    ["an unmarked control that opened the start", () => {
+    ["an unregistered control that opened the start", () => {
       const button = document.body.appendChild(document.createElement("button"))
       return { trigger: button, focus: button }
     }],
@@ -282,7 +306,7 @@ describe("focus when the refusal appears", () => {
       const button = host.attachShadow({ mode: "open" }).appendChild(document.createElement("button"))
       return { trigger: button, focus: button }
     }],
-    ["a marked control in an open shadow root", () => {
+    ["a registered control in an open shadow root", () => {
       const host = document.body.appendChild(document.createElement("div"))
       const button = host.attachShadow({ mode: "open" }).appendChild(opener())
       return { trigger: button, focus: button }
@@ -307,9 +331,61 @@ describe("focus when the refusal appears", () => {
       const button = slottedInDialog(document.createElement("button"))
       return { trigger: button, focus: button }
     }],
-    ["a marked control slotted into a dialog in an open shadow root", () => {
+    ["a registered control slotted into a dialog in an open shadow root", () => {
       const button = slottedInDialog(opener())
       return { trigger: button, focus: button }
+    }],
+    // Security review round 8: a page can copy any attribute onto its own
+    // field or host, so no attribute lets the card take focus.
+    ["an input carrying the opener attribute", () => {
+      const input = document.body.appendChild(withAttribute(document.createElement("input"), "data-domovoi-opener"))
+      return { trigger: input, focus: input }
+    }],
+    ["a text area carrying the opener attribute", () => {
+      const area = document.body.appendChild(withAttribute(document.createElement("textarea"), "data-domovoi-opener"))
+      return { trigger: area, focus: area }
+    }],
+    ["an editable region carrying the opener attribute", () => {
+      const region = document.body.appendChild(withAttribute(Object.assign(document.createElement("div"), { contentEditable: "true", tabIndex: 0 }), "data-domovoi-opener"))
+      return { trigger: region, focus: region }
+    }],
+    ["a button carrying the opener attribute that Domovoi did not register", () => {
+      const button = document.body.appendChild(withAttribute(document.createElement("button"), "data-domovoi-opener"))
+      return { trigger: button, focus: button }
+    }],
+    ["a closed shadow root whose host carries the opener attribute", () => {
+      const host = document.body.appendChild(withAttribute(Object.assign(document.createElement("div"), { tabIndex: 0 }), "data-domovoi-opener"))
+      return { trigger: host, focus: shadowInput(host, "closed") }
+    }],
+    ["an unrelated input carrying the loading line's attribute, with no saved trigger", () => {
+      const input = document.body.appendChild(withAttribute(document.createElement("input"), "data-surface-loading"))
+      return { trigger: null, focus: input }
+    }],
+    ["a closed shadow root whose host carries the loading line's attribute", () => {
+      const host = document.body.appendChild(withAttribute(Object.assign(document.createElement("div"), { tabIndex: 0 }), "data-surface-loading"))
+      return { trigger: null, focus: shadowInput(host, "closed") }
+    }],
+    // Registration is no pass for text entry, frames or hosts either.
+    ["an input registered as an opener", () => {
+      const input = document.body.appendChild(opener(document.createElement("input")))
+      return { trigger: input, focus: input }
+    }],
+    ["an input registered as a loading line", () => {
+      const input = document.body.appendChild(loadingLine(document.createElement("input")))
+      return { trigger: null, focus: input }
+    }],
+    ["an open shadow host registered as a loading line", () => {
+      const host = document.body.appendChild(loadingLine(Object.assign(document.createElement("div"), { tabIndex: -1 })))
+      host.attachShadow({ mode: "open" }).appendChild(document.createElement("span"))
+      return { trigger: null, focus: host }
+    }],
+    ["a custom element registered as a loading line", () => {
+      const element = document.body.appendChild(loadingLine(Object.assign(document.createElement("review-note"), { tabIndex: -1 })))
+      return { trigger: null, focus: element }
+    }],
+    ["a frame registered as a loading line", () => {
+      const frame = document.body.appendChild(loadingLine(document.createElement("iframe")))
+      return { trigger: null, focus: frame }
     }],
   ])("leaves focus in %s, even when it is the saved trigger", (_label, make) => {
     const run = frames()

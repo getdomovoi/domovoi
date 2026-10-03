@@ -16,6 +16,7 @@ import {
 } from "react"
 
 import { Button } from "./components/ui/button"
+import { loadingLineRef } from "./start-handoff"
 
 // A surface the shell does not open on: its code loads the first time it is
 // opened, and at idle once the shell has painted. Loading shows the v2 States
@@ -116,12 +117,18 @@ function FocusSurfaceHeading({ region }: { region: RefObject<HTMLDivElement | nu
 
 function SurfaceLoading({ name }: { name: string }) {
   const line = useRef<HTMLParagraphElement>(null)
-  useEffect(() => { line.current?.focus() }, [])
+  // The line is registered by identity: a surface that loads behind it may
+  // take focus from it once loaded (start-handoff.ts).
+  useEffect(() => {
+    const node = line.current
+    if (!node) return
+    const unregister = loadingLineRef(node)
+    node.focus()
+    return unregister
+  }, [])
   return (
     <main className="flex min-h-0 flex-1 flex-col gap-4 bg-background p-6">
-      {/* data-surface-loading: a surface that loads behind this line may take
-          focus from it once loaded, and from nowhere else it did not give. */}
-      <p ref={line} role="status" tabIndex={-1} data-surface-loading="" className="font-machine text-mono-xs text-faint outline-none">Opening {name}</p>
+      <p ref={line} role="status" tabIndex={-1} className="font-machine text-mono-xs text-faint outline-none">Opening {name}</p>
       {[0, 1, 2].map((block) => (
         <div key={block} aria-hidden className="flex flex-col gap-2">
           <span className="skeleton-bar block h-2.5 w-1/3 rounded-sm" />

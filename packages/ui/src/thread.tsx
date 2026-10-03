@@ -117,6 +117,7 @@ import {
 import { restoreFocusAfterUpdate } from "./restore-focus"
 import { FailedReadState } from "./failed-read-state"
 import { PolicyRefusalCard } from "./policy-refusal-card"
+import { startOpenerRef } from "./start-handoff"
 import {
   attachmentFromBrowserFile,
   attachmentMeta,
@@ -903,10 +904,10 @@ export function Thread({
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            {/* data-domovoi-opener marks a control that opens a session
+            {/* startOpenerRef registers a control that opens a session
                 start: a refusal of that start may take focus from it (ruling
                 Q410). */}
-            <Button data-domovoi-opener="" disabled={watching} onClick={onNewSession}>
+            <Button ref={startOpenerRef} disabled={watching} onClick={onNewSession}>
               {hasProject ? <BotIcon data-icon="inline-start" /> : <FolderOpenIcon data-icon="inline-start" />}
               {hasProject ? "New session" : "Open project"}
             </Button>
