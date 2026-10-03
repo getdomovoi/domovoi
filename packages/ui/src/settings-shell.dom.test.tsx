@@ -24,6 +24,12 @@ function shellProps() {
   }
 }
 
+// Q349 A: Remove asks first. This presses Remove, then confirms in the dialog.
+async function confirmRemove(user: ReturnType<typeof userEvent.setup>, section: HTMLElement) {
+  await user.click(within(section).getByRole("button", { name: "Remove" }))
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Remove the service" }))
+}
+
 it("renders the v2 settings contract as one ordered scrolling column", () => {
   const { container } = render(<SettingsShell {...shellProps()} />)
 
@@ -403,7 +409,7 @@ it("draws the daemon section for a daemon inside this app, with Install locked a
   expect(install.hasAttribute("disabled")).toBe(true)
   expect(section.textContent).toContain("To finish by hand, run this in a terminal.")
   expect(within(section).getByText("domovoid service install")).toBeTruthy()
-  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
+  expect(within(section).getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(true)
 })
 
 it("draws the installed service as running, with what it wrote", () => {
@@ -415,7 +421,7 @@ it("draws the installed service as running, with what it wrote", () => {
   expect(section.textContent).toContain("~/.config/systemd/user/domovoid.service")
   expect(section.textContent).toContain("systemd starts it again.")
   expect(section.textContent).toContain("Install is off: the service is already installed.")
-  expect(within(section).getByRole("button", { name: "Stop, disable and delete the user unit" }).hasAttribute("disabled")).toBe(true)
+  expect(within(section).getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(true)
   expect(within(section).getByText("domovoid service remove")).toBeTruthy()
 })
 
@@ -455,9 +461,52 @@ it("removes the installed service and says the daemon is back inside this app", 
   const remove = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", profileRecovery: "not-needed" as const, daemonRunning: true }))
   render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", service: { install: vi.fn(), remove } }} />)
   const section = screen.getByRole("region", { name: "Daemon on this machine" })
-  await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  await confirmRemove(user, section)
   expect(remove).toHaveBeenCalledOnce()
   expect(await within(section).findByText("Removed. Quitting Domovoi now stops the daemon and every session on it.")).toBeTruthy()
+})
+
+// Q349 A: Remove opens the drawn confirmation first. Removal stops sessions on
+// the next quit, so nothing is removed until the person confirms.
+it("asks before removing the login service, naming what goes and what stays", async () => {
+  const user = userEvent.setup()
+  const remove = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/Users/dana/Library/LaunchAgents/sh.domovoi.domovoid.plist", profileRecovery: "not-needed" as const, daemonRunning: true }))
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "darwin", service: { install: vi.fn(), remove } }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  expect(within(section).queryByRole("button", { name: "Unload and delete the LaunchAgent" })).toBeNull()
+  await user.click(within(section).getByRole("button", { name: "Remove" }))
+  expect(remove).not.toHaveBeenCalled()
+  const dialog = screen.getByRole("alertdialog", { name: /^Remove the login service\?/ })
+  expect(dialog.textContent).toContain("LaunchAgent")
+  expect(dialog.textContent).toContain("Domovoi unloads the service, deletes exactly these, then starts the daemon inside this app again. If unloading fails, nothing else is touched.")
+  const removed = within(dialog).getByRole("list", { name: "REMOVED" })
+  expect(removed.textContent).toContain("Unload and delete the LaunchAgent")
+  expect(removed.textContent).toContain("~/Library/LaunchAgents/sh.domovoi.domovoid.plist")
+  expect(removed.textContent).toContain("Delete the service record")
+  expect(removed.textContent).toContain("~/.domovoi/service.json")
+  const kept = within(dialog).getByRole("list", { name: "KEPT" })
+  for (const line of ["Sessions, worktrees and checkpoints", "Pairings, and the tokens in your keychain", "This app and the daemon inside it"]) {
+    expect(within(kept).getByText(line)).toBeTruthy()
+  }
+  expect(dialog.textContent).toContain("After this, quitting Domovoi stops the daemon and every session on it.")
+  await user.click(within(dialog).getByRole("button", { name: "Keep it" }))
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  expect(remove).not.toHaveBeenCalled()
+  await user.click(within(section).getByRole("button", { name: "Remove" }))
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Remove the service" }))
+  expect(remove).toHaveBeenCalledOnce()
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  expect(await within(section).findByText("Removed. Quitting Domovoi now stops the daemon and every session on it.")).toBeTruthy()
+})
+
+it("names lingering in the Linux removal, since the installer turns off only what it turned on", async () => {
+  const user = userEvent.setup()
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "linux", service: { install: vi.fn(), remove: vi.fn() } }} />)
+  await user.click(within(screen.getByRole("region", { name: "Daemon on this machine" })).getByRole("button", { name: "Remove" }))
+  const removed = within(screen.getByRole("alertdialog", { name: /^Remove the login service\?/ })).getByRole("list", { name: "REMOVED" })
+  expect(removed.textContent).toContain("Stop, disable and delete the user unit")
+  expect(removed.textContent).toContain("~/.config/systemd/user/domovoid.service")
+  expect(removed.textContent).toContain("Turn lingering off, if Domovoi turned it on")
 })
 
 // Review round 1 of #576: Remove waits for the same work Install waits for,
@@ -473,7 +522,7 @@ function daemonSection(owner: "app" | "outside", service: { install?: () => Prom
 
 it("locks Remove while a turn runs or a gate waits, and names the work", () => {
   const section = daemonSection("outside", { refusal: "1 turn is running (Migrate billing webhooks)." })
-  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(true)
+  expect(within(section).getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(true)
   expect(section.textContent).toContain("The switch waits: 1 turn is running (Migrate billing webhooks). Nothing is interrupted.")
 })
 
@@ -483,10 +532,9 @@ it("draws the main process's own refusal, and a check that could not be read", a
     .mockResolvedValueOnce({ ok: false, reason: "refused", message: "1 gate is waiting (Port the CLI auth flow)." })
     .mockResolvedValueOnce({ ok: false, reason: "check-failed", message: "connect ECONNREFUSED 127.0.0.1:47831" })
   const section = daemonSection("outside", { remove })
-  const button = within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" })
-  await user.click(button)
+  await confirmRemove(user, section)
   expect(await within(section).findByText("The switch waits: 1 gate is waiting (Port the CLI auth flow). Nothing is interrupted.")).toBeTruthy()
-  await user.click(button)
+  await confirmRemove(user, section)
   expect(await within(section).findByText("Could not check for running turns or waiting gates, so the switch waits. Nothing is interrupted.")).toBeTruthy()
   expect(section.textContent).toContain("connect ECONNREFUSED 127.0.0.1:47831")
   expect(section.textContent).not.toContain("Could not remove the service")
@@ -522,7 +570,7 @@ it("says the daemon is not running when a removal could not start it again", asy
   const user = userEvent.setup()
   const remove = vi.fn(async () => ({ ok: true, kind: "file", target: "/Users/dana/Library/LaunchAgents/sh.domovoi.daemon.plist", profileRecovery: "not-needed", daemonRunning: false }))
   const section = daemonSection("outside", { remove })
-  await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  await confirmRemove(user, section)
   expect(await within(section).findByText("Removed. The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.")).toBeTruthy()
   expect(section.textContent).not.toContain("Removed. Quitting Domovoi now stops the daemon")
 })
@@ -533,11 +581,10 @@ it("says what the person must do when the removal leaves the profile owner unres
     .mockResolvedValueOnce({ ok: true, kind: "file", target: "/p", profileRecovery: "operator-confirmation-required", daemonRunning: true })
     .mockResolvedValueOnce({ ok: true, kind: "file", target: "/p", profileRecovery: "proof-unavailable", profileRecoveryDetail: "The service record at ~/.domovoi/service.json could not be read", daemonRunning: true })
   const section = daemonSection("outside", { remove })
-  const button = within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" })
-  await user.click(button)
+  await confirmRemove(user, section)
   expect(await within(section).findByText("Removed. The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run this in a terminal.")).toBeTruthy()
   expect(within(section).getByText("domovoid profile recover --confirm-no-supervisor")).toBeTruthy()
-  await user.click(button)
+  await confirmRemove(user, section)
   expect(await within(section).findByText("Removed. The service record at ~/.domovoi/service.json could not be read. No recovery receipt was written. Repair or inspect that file, then after confirming no custom or legacy supervisor will restart the daemon, run this in a terminal.")).toBeTruthy()
   expect(within(section).getByText("domovoid profile recover --confirm-no-supervisor")).toBeTruthy()
 })
@@ -600,7 +647,7 @@ it("says Removed once when the profile owner is unresolved and the daemon did no
   const user = userEvent.setup()
   const remove = vi.fn(async () => ({ ok: true, kind: "file", target: "/p", profileRecovery: "operator-confirmation-required", daemonRunning: false }))
   const section = daemonSection("outside", { remove })
-  await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  await confirmRemove(user, section)
   expect(await within(section).findByText("Removed. The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run this in a terminal.")).toBeTruthy()
   expect(within(section).getByText("The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.")).toBeTruthy()
   expect(section.textContent?.match(/Removed\./g)).toHaveLength(1)
@@ -678,15 +725,14 @@ it("does not say nothing was removed when the removal stopped or deleted part of
     .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl could not be run", daemon: "restarted", service: null })
     .mockResolvedValueOnce({ ok: false, reason: "failed", message: "launchctl bootout exited 5", daemon: "untouched", service: { installed: true, running: true } })
   const section = daemonSection("outside", { remove })
-  const button = within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" })
   for (const fact of ["The LaunchAgent is still installed but not running", "The LaunchAgent is gone", "Whether the LaunchAgent is installed is not known from here"]) {
-    await user.click(button)
+    await confirmRemove(user, section)
     expect(await within(section).findByText("Could not remove the service")).toBeTruthy()
     expect(section.textContent).toContain(fact)
     expect(section.textContent).not.toContain("Nothing was removed.")
     expect(section.textContent).not.toContain("every session keeps running")
   }
-  await user.click(button)
+  await confirmRemove(user, section)
   expect(await within(section).findByText("Nothing was removed. The LaunchAgent still holds the daemon, and every session keeps running.")).toBeTruthy()
 })
 
@@ -694,7 +740,7 @@ it("does not say quitting stops the daemon, or that no session runs, when the re
   const user = userEvent.setup()
   const remove = vi.fn(async () => ({ ok: true, kind: "file", target: "/p", profileRecovery: "not-needed", daemonRunning: true, daemonAttached: true }))
   const section = daemonSection("outside", { remove })
-  await user.click(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }))
+  await confirmRemove(user, section)
   expect(await within(section).findByText(/This app is connected to a daemon it did not start/)).toBeTruthy()
   expect(section.textContent).not.toContain("Quitting Domovoi now stops the daemon")
   expect(section.textContent).not.toContain("no session is running")
@@ -746,12 +792,11 @@ it("reads the service back when the answer to a removal cannot be read, and neve
     .mockResolvedValueOnce({ installed: null, running: false, detail: "" })
     .mockResolvedValueOnce({ installed: false, running: false, detail: "" })
   const section = daemonSection("outside", { remove, status })
-  const button = within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" })
   // The last line was approved by fetzy on 2026-09-25: the removal may or may
   // not have finished, so "gone, but the removal did not finish" would claim
   // more than is known.
   for (const fact of ["The LaunchAgent is still installed but not running.", "Whether the LaunchAgent is installed is not known from here.", "The LaunchAgent is not installed."]) {
-    await user.click(button)
+    await confirmRemove(user, section)
     expect(await within(section).findByText(fact)).toBeTruthy()
     expect(section.textContent).not.toContain("Nothing changed.")
     expect(section.textContent).not.toContain("Nothing was removed.")
@@ -779,14 +824,15 @@ it("heads an unreadable answer by what the read-back shows, never 'Could not' af
     ["app", "Install", { installed: true, running: false }, "Could not confirm the install"],
     ["app", "Install", { installed: false, running: false }, "Could not install the service"],
     ["app", "Install", null, "Could not install the service"],
-    ["outside", "Unload and delete the LaunchAgent", { installed: false, running: false }, "Could not confirm the removal"],
-    ["outside", "Unload and delete the LaunchAgent", { installed: true, running: false }, "Could not confirm the removal"],
-    ["outside", "Unload and delete the LaunchAgent", { installed: true, running: true }, "Could not remove the service"],
-    ["outside", "Unload and delete the LaunchAgent", null, "Could not remove the service"],
+    ["outside", "Remove", { installed: false, running: false }, "Could not confirm the removal"],
+    ["outside", "Remove", { installed: true, running: false }, "Could not confirm the removal"],
+    ["outside", "Remove", { installed: true, running: true }, "Could not remove the service"],
+    ["outside", "Remove", null, "Could not remove the service"],
   ] as const) {
     const status = vi.fn(async () => read ? { ...read, detail: "" } : { unavailable: "launchctl could not be run" })
     const section = daemonSection(owner, { install: unreadable, remove: unreadable, status })
-    await user.click(within(section).getByRole("button", { name: button }))
+    if (button === "Remove") await confirmRemove(user, section)
+    else await user.click(within(section).getByRole("button", { name: button }))
     expect(await within(section).findByText(header)).toBeTruthy()
     if (header.startsWith("Could not confirm")) {
       expect(section.textContent).not.toContain("Could not install the service")
@@ -821,7 +867,7 @@ it("keeps Remove live for an installed service while the daemon runs inside this
   const section = screen.getByRole("region", { name: "Daemon on this machine" })
   expect(within(section).getByText("Off")).toBeTruthy()
   expect(section.textContent).toContain("Quitting Domovoi stops the daemon and every session on it.")
-  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+  expect(within(section).getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(false)
   expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
   expect(section.textContent).toContain("Install is off: the service is already installed.")
   expect(section.textContent).toContain("WHAT IT WROTE")
@@ -858,7 +904,7 @@ it("does not call a daemon outside the app the running service while the service
   expect(within(section).getByText("Not started here")).toBeTruthy()
   expect(section.textContent).toContain("A daemon this app did not start. Quitting this app leaves it running.")
   expect(section.textContent).not.toContain("launchd starts it again.")
-  expect(within(section).getByRole("button", { name: "Unload and delete the LaunchAgent" }).hasAttribute("disabled")).toBe(false)
+  expect(within(section).getByRole("button", { name: "Remove" }).hasAttribute("disabled")).toBe(false)
   expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
   expect(section.textContent).toContain("Install is off: the service is already installed.")
   expect(section.textContent).not.toContain("Install and Remove are off")

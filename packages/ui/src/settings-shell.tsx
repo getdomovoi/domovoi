@@ -2,6 +2,16 @@ import { localOwnerRequiredErrorCode, loginServiceHomePaths, loginServiceTaskNam
 import { ChevronRightIcon, ExternalLinkIcon, TerminalIcon } from "lucide-react"
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react"
 
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { AppearanceSettings, ExternalEditorSettings, ProviderSettings, type ProviderSecretStatus } from "./provider-settings.js"
@@ -184,10 +194,71 @@ function removalRecovery(outcome: Extract<DaemonServiceOutcome, { ok: true }>): 
   return undefined
 }
 
+// Q349 A: removal stops every session on the next quit, so Remove asks first,
+// as the 2026-09-23 desktop design draws it. The order and the rows follow the
+// daemon's installer (service/install.ts): it stops the service, and if the
+// manager refuses, deletes nothing; then it deletes the service definition and
+// the record, and on Linux turns lingering off only where its record says
+// Domovoi turned it on. The desktop then starts the daemon inside this app.
+function RemoveServiceDialog({ open, platform, onOpenChange, onConfirm }: {
+  open: boolean
+  platform: keyof typeof loginServices
+  onOpenChange: (open: boolean) => void
+  onConfirm: () => void
+}) {
+  const service = loginServices[platform]
+  const eyebrow = "m-0 text-[10.5px] font-medium tracking-[0.13em] text-faint"
+  const removed = [
+    { label: service.removeLabel, value: service.definition },
+    { label: "Delete the service record", value: "~/.domovoi/service.json" },
+    ...(platform === "linux" ? [{ label: "Turn lingering off, if Domovoi turned it on", value: "loginctl disable-linger" }] : []),
+  ]
+  const kept = ["Sessions, worktrees and checkpoints", "Pairings, and the tokens in your keychain", "This app and the daemon inside it"]
+  return (
+    <AlertDialog open={open} onOpenChange={onOpenChange}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle className="flex flex-wrap items-baseline gap-2.5">
+            Remove the login service?
+            <span className="font-machine text-[10.5px] font-normal text-faint">{service.kind}</span>
+          </AlertDialogTitle>
+          <AlertDialogDescription>Domovoi unloads the service, deletes exactly these, then starts the daemon inside this app again. If unloading fails, nothing else is touched.</AlertDialogDescription>
+        </AlertDialogHeader>
+        <div className="flex flex-col gap-3 text-[12px] leading-[1.5]">
+          <p id="service-removed" className={eyebrow}>REMOVED</p>
+          <ul aria-labelledby="service-removed" className="m-0 list-none overflow-hidden rounded-lg border p-0">
+            {removed.map((row, index) => (
+              <li key={row.label} className={`flex flex-col gap-0.5 px-3 py-2.5${index ? " border-t" : ""}`}>
+                <span>{row.label}</span>
+                <span className="font-machine text-[10.5px] text-strong">{row.value}</span>
+              </li>
+            ))}
+          </ul>
+          <p id="service-kept" className={eyebrow}>KEPT</p>
+          <ul aria-labelledby="service-kept" className="m-0 flex list-none flex-col gap-1.5 p-0">
+            {kept.map((line) => (
+              <li key={line} className="flex items-center gap-2.5 text-strong">
+                <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-faint" />
+                <span>{line}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="m-0 pt-0.5">After this, quitting Domovoi stops the daemon and every session on it.</p>
+        </div>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Keep it</AlertDialogCancel>
+          <AlertDialogAction variant="destructive" onClick={onConfirm}>Remove the service</AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+}
+
 // `footer` is the design's last row of the card: About this build.
 function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> }; footer?: ReactNode }) {
   const service = loginServices[daemon.platform]
   const [phase, setPhase] = useState<ServicePhase>({ kind: "idle" })
+  const [confirmingRemove, setConfirmingRemove] = useState(false)
   const live = daemon.service
   const busy = phase.kind === "installing" || phase.kind === "removing"
   const run = async (action: "install" | "remove") => {
@@ -364,9 +435,18 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
       </div> : null}
       <div className="flex flex-wrap items-center gap-2">
         <Button size="sm" disabled={installLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => void run("install")}>Install</Button>
-        <Button size="sm" variant="outline" disabled={removeLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => void run("remove")}>{service.removeLabel}</Button>
+        <Button size="sm" variant="outline" className="border-danger-border text-destructive" disabled={removeLocked} {...(live ? {} : { title: "Not built yet" })} onClick={() => setConfirmingRemove(true)}>Remove</Button>
         {live?.refusal && !installed && !unknown && !busy ? null : <span className="text-[11px] text-faint">{lockReason}</span>}
       </div>
+      <RemoveServiceDialog
+        open={confirmingRemove && !removeLocked}
+        platform={daemon.platform}
+        onOpenChange={setConfirmingRemove}
+        onConfirm={() => {
+          setConfirmingRemove(false)
+          void run("remove")
+        }}
+      />
       {footer}
     </section>
   )
