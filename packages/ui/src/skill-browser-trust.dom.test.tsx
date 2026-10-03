@@ -165,6 +165,19 @@ it("revokes for the project only and leaves the machine review in place", async 
   expect(onReviewSkill).not.toHaveBeenCalled()
 })
 
+it("names the revoke in the title when revoking fails", async () => {
+  const user = userEvent.setup()
+  const onSetSkillEnabled = vi.fn(async () => { throw new Error("Skill content changed; review it again") })
+  render(<SkillBrowser {...props({ skills: [trusted], enablements: [enabled], onSetSkillEnabled })} />)
+
+  await user.click(screen.getByRole("button", { name: "Revoke" }))
+
+  const alert = screen.getByRole("alert")
+  expect(within(alert).getByText("Revoke failed")).toBeTruthy()
+  expect(within(alert).getByText("Skill content changed; review it again")).toBeTruthy()
+  expect(alert.textContent).not.toContain("Review failed")
+})
+
 // Enabled but untrusted is a half-recorded decision (the review call failed, or
 // the enablement predates the one-decision rule). Both halves stay offered so
 // it can be finished or taken back.

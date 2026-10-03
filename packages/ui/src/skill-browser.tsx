@@ -611,7 +611,7 @@ export function SkillBrowser({
               </Alert>
               {reviewError ? (
                 <Alert variant="destructive" className="mt-4">
-                  <AlertTitle>Review failed</AlertTitle>
+                  <AlertTitle>{reviewError.step === "revoke" ? "Revoke failed" : "Review failed"}</AlertTitle>
                   <AlertDescription className="flex flex-col gap-1">
                     <span>{reviewError.message}</span>
                     {/* The first RPC succeeded, so the skill is enabled for the
