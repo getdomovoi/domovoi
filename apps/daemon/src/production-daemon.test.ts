@@ -426,6 +426,51 @@ describe("createProductionDaemon", () => {
     expect(await handle.start()).toMatchObject({ url: "wss://studio.tailnet.example:49200/rpc" })
   })
 
+  // TailnetReach (Q404 A): the desktop and the CLI attach on loopback, so the
+  // endpoint this daemon publishes stays loopback with the tailnet listener on.
+  const tailnetEnvironment = {
+    DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1", DOMOVOI_TAILNET_ADDRESS: "100.101.102.103",
+    DOMOVOI_TAILNET_TLS_CERT_PATH: "/profile/tls/studio.tail4c2e.ts.net.crt",
+    DOMOVOI_TAILNET_TLS_KEY_PATH: "/profile/tls/studio.tail4c2e.ts.net.key",
+    DOMOVOI_TAILNET_HOST: "studio.tail4c2e.ts.net",
+  }
+
+  it("passes the tailnet listener to the server and keeps the loopback endpoint", async () => {
+    const material = { cert: Buffer.from("tailnet certificate"), key: Buffer.from("tailnet key") }
+    const loadTls = vi.fn(async () => material)
+    const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+    const handle = await createProductionDaemonWithDependencies({ environment: tailnetEnvironment, homeDirectory: await temporaryHome() }, {
+      ...productionDaemonDependencies,
+      loadTls,
+      createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+      createDaemon,
+    })
+    running.push(handle)
+    expect(loadTls).toHaveBeenCalledWith({ certPath: tailnetEnvironment.DOMOVOI_TAILNET_TLS_CERT_PATH, keyPath: tailnetEnvironment.DOMOVOI_TAILNET_TLS_KEY_PATH })
+    expect(createDaemon).toHaveBeenCalledWith(expect.objectContaining({
+      host: "127.0.0.1", allowRemoteTransport: true, tailnetHost: "studio.tail4c2e.ts.net",
+      tailnetListener: { address: "100.101.102.103", tls: material },
+    }))
+    expect(createDaemon.mock.calls[0]![0]).not.toHaveProperty("tls")
+    expect(handle.secureTransport).toBe(false)
+    expect(await handle.start()).toEqual({ host: "127.0.0.1", port: 49_200, url: "ws://127.0.0.1:49200/rpc" })
+  })
+
+  it("starts on loopback and says why when the tailnet certificate cannot be read", async () => {
+    const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+    const handle = await createProductionDaemonWithDependencies({ environment: tailnetEnvironment, homeDirectory: await temporaryHome() }, {
+      ...productionDaemonDependencies,
+      loadTls: async (paths) => { throw new Error(`Domovoi could not read the TLS certificate at ${paths.certPath}: ENOENT`) },
+      createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
+      createDaemon,
+    })
+    running.push(handle)
+    expect(createDaemon).toHaveBeenCalledWith(expect.objectContaining({
+      tailnetListener: { address: "100.101.102.103", tls: { refused: "Domovoi could not read the TLS certificate at /profile/tls/studio.tail4c2e.ts.net.crt: ENOENT" } },
+    }))
+    expect(await handle.start()).toMatchObject({ url: "ws://127.0.0.1:49200/rpc" })
+  })
+
   it("assembles every mandatory production dependency", async () => {
     const homeDirectory = await temporaryHome()
     const authToken = testToken("production-factory")

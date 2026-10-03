@@ -137,6 +137,15 @@ export async function createProductionDaemonWithDependencies(
     // Validate transport before any secret or listener side effect. Store
     // construction itself writes state, so ownership precedes its constructor.
     const tls = config.tls ? await beforeDeadline(dependencies.loadTls(config.tls), deadline) : undefined
+    // TailnetReach (Q404 A): unlike the main listener's, a certificate that
+    // cannot be read refuses only the tailnet listener. The daemon still
+    // starts on loopback, which the desktop and the CLI attach on, and says why.
+    const tailnetListener = config.tailnetListener ? {
+      address: config.tailnetListener.address,
+      tls: await beforeDeadline(dependencies.loadTls(config.tailnetListener.tls).catch((error: unknown) => (
+        { refused: error instanceof Error ? error.message : "The tailnet certificate and key could not be read." }
+      )), deadline),
+    } : undefined
     deadline.throwIfExpired()
     lease ??= claimProfile(profile)
     const ownedLease = lease
@@ -208,6 +217,7 @@ export async function createProductionDaemonWithDependencies(
       providerProbe: dependencies.createProviderProbe(toolPath.path),
       machineIdentity,
       ...(tls ? { tls } : {}),
+      ...(tailnetListener ? { tailnetListener } : {}),
       ...(config.advertiseHost ? { advertiseHost: config.advertiseHost } : {}),
       ...(config.tailnetHost ? { tailnetHost: config.tailnetHost } : {}),
       ...(config.sshTunnels ? { sshTunnels: config.sshTunnels } : {}),
@@ -248,7 +258,9 @@ export async function createProductionDaemonWithDependencies(
           starting = daemon.start(startDeadline.signal).then((address) => {
             startDeadline!.throwIfExpired()
             if (stopping) throw new Error("Daemon stopped during startup")
-            const reachableHost = config.advertiseHost ?? config.tailnetHost ?? address.host
+            // With the tailnet listener on, the tailnet name belongs to that
+            // listener; the endpoint published here stays the loopback one.
+            const reachableHost = config.advertiseHost ?? (config.tailnetListener ? undefined : config.tailnetHost) ?? address.host
             const endpoint = { ...address, url: `${secureTransport ? "wss" : "ws"}://${urlHost(reachableHost)}:${address.port}/rpc` }
             writeLocalOwnerRecord(profile, { ...record, state: "ready", url: endpoint.url })
             return endpoint
