@@ -21,7 +21,9 @@ When the daemon still answers on the tailnet with the switch off because
 instead of offering to turn it off again. When a change could not put the
 previous certificate and key back, the row says which directory holds them; a
 directory found when the app started is named with a softer line, since it may
-be from a change that did not finish.
+be from a change that did not finish. When a turn-off could not delete the
+files it set aside, the row says "The certificate and key were set aside in
+<dir> and could not be deleted." in the same softer style.
 
 Off, the row says only this computer can reach the daemon only for the daemon
 inside this app, when the daemon has said it has no tailnet listener and no

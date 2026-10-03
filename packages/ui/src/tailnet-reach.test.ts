@@ -20,6 +20,7 @@ describe("the TailnetReach answer", () => {
     { ...on, state: "off", handSet: "The tailnet listener comes from DOMOVOI_TAILNET_ADDRESS set by hand in this app's environment, and the switch cannot clear it." },
     { ...on, kept: "~/.domovoi/tls/.pending-Ab3xYz" },
     { ...on, state: "off", setAside: "~/.domovoi/tls/.pending-Ab3xYz" },
+    { ...on, state: "off", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" },
   ])("reads a report: %j", (report) => {
     expect(parseTailnetReachReport(report)).toEqual(report)
   })

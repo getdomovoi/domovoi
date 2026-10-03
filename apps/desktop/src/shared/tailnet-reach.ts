@@ -12,8 +12,8 @@
 // the one in use. ignored: why the daemon inside this app does not use the
 // switch's settings (a hand-set DOMOVOI_HOST beyond loopback). handSet: the
 // daemon inside this app takes a tailnet listener from DOMOVOI_TAILNET_* set
-// by hand, which turning the switch off does not clear. kept and setAside:
-// see below.
+// by hand, which turning the switch off does not clear. kept, setAside and
+// undeleted: see below.
 export type TailnetReachReport =
   | { state: "none"; detail: string }
   | {
@@ -33,6 +33,9 @@ export type TailnetReachReport =
       // the app started. It may be from a put-back that failed or from a
       // change cut off before it finished. Never removed for the person.
       setAside?: string
+      // Q417 A: a pending directory holding the files a turn-off set aside and
+      // then could not delete, once the record was gone. The switch is off.
+      undeleted?: string
     }
 
 // The step a change stopped at, in the order the card lists them.

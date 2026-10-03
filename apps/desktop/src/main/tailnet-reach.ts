@@ -191,6 +191,9 @@ export class TailnetReach {
   #renewalFailure: { at: string; message: string } | undefined
   // Where a change in this session left previous files it could not put back.
   #keptPending: string | undefined
+  // Where a turn-off in this session set the files aside, deleted the record,
+  // and then could not delete them (Q417 A).
+  #undeletedPending: string | undefined
 
   constructor(private readonly deps: TailnetReachDependencies) {}
 
@@ -442,16 +445,20 @@ export class TailnetReach {
   // re-review, P3-3). Round 4 review (P3-3): one this session could not put
   // back is named apart from one the sweep found at load, and each only while
   // it still holds previous files.
-  async #notes(): Promise<{ ignored?: string; handSet?: string; kept?: string; setAside?: string }> {
+  // Q417 A: and one a turn-off could not remove once the record was gone.
+  async #notes(): Promise<{ ignored?: string; handSet?: string; kept?: string; setAside?: string; undeleted?: string }> {
     const ignored = this.deps.conflict?.()
     const handSet = this.deps.handSet?.()
     if (this.#keptPending !== undefined && !(await this.#holdsPrevious(this.#keptPending))) this.#keptPending = undefined
+    if (this.#undeletedPending !== undefined && !(await this.#holdsPrevious(this.#undeletedPending))) this.#undeletedPending = undefined
     const kept = this.#keptPending
+    const undeleted = this.#undeletedPending
     const found = await this.deps.setAside?.()
-    const setAside = found !== undefined && found !== kept && await this.#holdsPrevious(found) ? found : undefined
+    const setAside = found !== undefined && found !== kept && found !== undeleted && await this.#holdsPrevious(found) ? found : undefined
     return {
       ...(ignored ? { ignored } : {}), ...(handSet ? { handSet } : {}),
       ...(kept ? { kept: this.deps.display(kept) } : {}), ...(setAside ? { setAside: this.deps.display(setAside) } : {}),
+      ...(undeleted ? { undeleted: this.deps.display(undeleted) } : {}),
     }
   }
 
@@ -726,7 +733,9 @@ export class TailnetReach {
       swap.commit()
       return undefined
     } finally {
-      if (swap.removable()) await this.deps.files.removeDirectory(pending).catch(() => {})
+      // Q417 A: once the record is gone the switch is off, and files it could
+      // not delete are named at once.
+      if (swap.removable()) await this.deps.files.removeDirectory(pending).catch(() => { if (swap.committed()) this.#undeletedPending = pending })
     }
   }
 

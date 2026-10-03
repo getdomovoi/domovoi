@@ -65,6 +65,8 @@ function harness(options: {
   handSet?: string
   // Making the pending directory fails, as mkdir does on a full disk.
   privateDirectoryThrows?: Error
+  // Removing a pending directory fails, leaving what is in it.
+  removeDirectoryThrows?: Error
   // Reading the notes for the switch's state throws.
   notesThrow?: Error
   // The directory the sweep at load left because it holds previous files.
@@ -148,6 +150,7 @@ function harness(options: {
       },
       removeDirectory: async (path) => {
         calls.push(`remove directory ${path}`)
+        if (options.removeDirectoryThrows) throw options.removeDirectoryThrows
         for (const file of [...files.keys()]) if (file.startsWith(`${path}/`)) files.delete(file)
       },
     },
@@ -682,6 +685,34 @@ describe("turning TailnetReach off", () => {
     })
     expect(record()).toEqual(ours)
     expect(deps.restart).not.toHaveBeenCalled()
+  })
+
+  // Q417 A: the record is gone and the switch is off, but the files set aside
+  // are still in pending. The switch's state says so at once, until they go.
+  it("says where the files are when the pending directory cannot be removed after the record is gone", async () => {
+    const { reach, files, record, deps } = harness({
+      record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, removeDirectoryThrows: new Error("EIO: rmdir"),
+    })
+    await expect(reach.turnOff()).resolves.toEqual({ ok: true, report: expect.objectContaining({ state: "off", undeleted: "~/.domovoi/tls/.pending-1" }) })
+    expect(record()).toBeUndefined()
+    expect(deps.restart).toHaveBeenCalledWith({ clear: true })
+    expect(files.get(`${tls}/.pending-1/previous.crt`)).toBe(certificate)
+    await expect(reach.status()).resolves.toMatchObject({ state: "off", undeleted: "~/.domovoi/tls/.pending-1" })
+    expect((await reach.status())).not.toHaveProperty("kept")
+    // Gone, by hand or otherwise: the line goes too.
+    files.delete(`${tls}/.pending-1/previous.crt`)
+    files.delete(`${tls}/.pending-1/previous.key`)
+    await expect(reach.status()).resolves.not.toHaveProperty("undeleted")
+  })
+
+  it("does not name the same directory as one found at load", async () => {
+    const { reach } = harness({
+      record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, removeDirectoryThrows: new Error("EIO: rmdir"), setAside: `${tls}/.pending-1`,
+    })
+    await reach.turnOff()
+    const report = await reach.status()
+    expect(report).toMatchObject({ undeleted: "~/.domovoi/tls/.pending-1" })
+    expect(report).not.toHaveProperty("setAside")
   })
 
   it("says where the certificate is when it cannot be put back either", async () => {

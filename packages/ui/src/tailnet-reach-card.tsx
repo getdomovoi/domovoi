@@ -304,6 +304,8 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
       {named?.kept ? <p role="alert" className="m-0 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground">{`The previous certificate and key could not be put back and are in ${named.kept}.`}</p> : null}
       {/* Round 4 review (P3-3): found when the app started, from a put-back that failed or a change cut off before it finished. */}
       {named?.setAside ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">{`Domovoi found an earlier certificate and key it set aside in ${named.setAside}. They may be from a change that did not finish.`}</p> : null}
+      {/* Q417 A: a turn-off deleted the record, then could not delete the files it set aside. */}
+      {named?.undeleted ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">{`The certificate and key were set aside in ${named.undeleted} and could not be deleted.`}</p> : null}
 
       {report?.state === "none" || (!report && readError) ? (
         <div className="flex flex-wrap items-center gap-2.5">

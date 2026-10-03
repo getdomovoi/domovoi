@@ -251,6 +251,16 @@ it.each([["off", off], ["on", on]] as const)("says where an earlier set-aside ce
   expect(within(region()).queryByText(/could not be put back/u)).toBeNull()
 })
 
+// Q417 A: turned off, the record gone, but the files set aside could not be
+// deleted. Said at once, in the set-aside line's warning style.
+it("says where the files a turn-off could not delete are", async () => {
+  await card({ status: { ...off, undeleted: "~/.domovoi/tls/.pending-Ab3xYz" } })
+  const line = within(region()).getByText("The certificate and key were set aside in ~/.domovoi/tls/.pending-Ab3xYz and could not be deleted.")
+  expect(line.className).toContain("bg-warn-background")
+  expect(within(region()).queryByText(/could not be put back/u)).toBeNull()
+  expect(within(region()).getByText("Off")).toBeTruthy()
+})
+
 // Round 3 re-review (P3-2): when the listener comes from DOMOVOI_TAILNET_*
 // set by hand in this app's environment, turning off does not clear it, so
 // the card says where it comes from instead of offering that.
