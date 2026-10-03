@@ -66,6 +66,10 @@ function digestOf(code: string): string {
   return createHash("sha256").update(code).digest("hex")
 }
 
+// Compared against when no code is open, so the comparison still runs. No
+// presented code hashes to it: the schema refuses an empty code.
+const absentDigest = digestOf("")
+
 function codesMatch(left: string, right: string): boolean {
   const a = Buffer.from(left, "hex")
   const b = Buffer.from(right, "hex")
@@ -118,11 +122,14 @@ export class PairingCodeService {
   // The id of the open, unexpired code this one is, or undefined. It neither
   // spends the code nor counts a guess, so it is for attributing a refusal
   // that happens before a spend, never for deciding one. The caller's answer
-  // to the spender must not depend on it.
+  // to the spender must not depend on it. It hashes and compares exactly once
+  // whether the code is live, wrong, expired, spent or absent, so its own cost
+  // says nothing about the code (security review r1 P3).
   matchingPairing(code: string, nowMs: number): string | undefined {
     const open = this.#open
-    if (!open || open.expiresAtMs <= nowMs) return undefined
-    return codesMatch(open.digest, digestOf(code)) ? open.id : undefined
+    const live = open !== undefined && open.expiresAtMs > nowMs
+    const matches = codesMatch(open?.digest ?? absentDigest, digestOf(code))
+    return live && matches ? open.id : undefined
   }
 
   claim(code: string, input: { label: string; machineId: string; channelPublicKey?: string }, nowMs: number): DeviceClaim {

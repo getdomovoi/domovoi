@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { maximumPairedDevices } from "./device-registry.js"
 import { PairingClaimAdmission } from "./pairing-admission.js"
+import { PairingCodeService } from "./pairing-codes.js"
 import { DomovoiDaemon } from "./server.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
@@ -164,6 +165,32 @@ describe("the window that issued a client code", () => {
     expect((await redeem(updated, code)).error).toBeUndefined()
     await waitForDaemon(async () => expect(issuer.outcomes).toHaveLength(2))
     expect(deviceCodeOutcomeNotificationSchema.parse(issuer.outcomes[1])).toMatchObject({ pairingId, outcome: "redeemed" })
+  })
+
+  // Security review r1 P3: the code is matched only after the refusal has been
+  // written, so the refusal's latency cannot depend on whether the code is live.
+  it("writes the mismatch refusal before it looks at the code", async () => {
+    const daemon = await start()
+    const issuer = await owner(daemon)
+    const { code } = await issue(issuer)
+    const events: string[] = []
+    const send = WebSocket.prototype.send
+    vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (this: WebSocket, data: unknown, ...rest: unknown[]) {
+      // The redeemer's refusal, not the issuer's notification, which names the
+      // same reason.
+      if (typeof data === "string" && data.includes("\"error\"") && data.includes("\"protocol-mismatch\"")) events.push("refusal written")
+      return (send as (...args: unknown[]) => void).call(this, data, ...rest)
+    })
+    const match = PairingCodeService.prototype.matchingPairing
+    vi.spyOn(PairingCodeService.prototype, "matchingPairing").mockImplementation(function (this: PairingCodeService, ...args) {
+      events.push("code matched")
+      return match.apply(this, args)
+    })
+
+    const older = await connect(daemon)
+    expect((await redeem(older, code, "old iPhone", "0.7.0")).error?.code).toBe(protocolVersionMismatchErrorCode)
+    await waitForDaemon(async () => expect(issuer.outcomes).toHaveLength(1))
+    expect(events).toEqual(["refusal written", "code matched"])
   })
 
   it("learns that the device list was full, with the refused device's label", async () => {

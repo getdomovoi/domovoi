@@ -6010,24 +6010,33 @@ export class DomovoiDaemon {
       const compatibility = protocolCompatibility(this.#advertisedProtocolVersion, params.protocolVersion)
       if (compatibility !== "compatible") {
         // Checked before the code is spent, so an old client does not burn the
-        // code the machine is showing and leave the operator reissuing. The
-        // issuer of the code it holds is told; the answer here is the same
-        // whether or not the code matched.
-        const matched = this.#pairing?.matchingPairing(params.code, Date.now())
-        if (matched !== undefined) {
-          this.#notifyPairingIssuer(matched, {
-            pairingId: matched,
-            outcome: "refused",
-            reason: "protocol-mismatch",
-            label: params.label,
-            daemonProtocolVersion: this.#advertisedProtocolVersion,
-            clientProtocolVersion: params.protocolVersion,
-            compatibility,
-          }, false)
-        }
+        // code the machine is showing and leave the operator reissuing.
         this.#error(socket, request.id, protocolVersionMismatchErrorCode,
           "Client and daemon protocol versions are incompatible",
           { kind: "protocol-mismatch", daemonProtocolVersion: this.#advertisedProtocolVersion, clientProtocolVersion: params.protocolVersion, compatibility })
+        // The issuer of the code it holds is told, but only after the refusal
+        // is written: matching the code and notifying stays off the
+        // redeemer's response path, so the refusal's timing cannot say whether
+        // the code is live (security review r1 P3).
+        const attributedAt = Date.now()
+        const daemonProtocolVersion = this.#advertisedProtocolVersion
+        setImmediate(() => {
+          try {
+            const matched = this.#pairing?.matchingPairing(params.code, attributedAt)
+            if (matched === undefined) return
+            this.#notifyPairingIssuer(matched, {
+              pairingId: matched,
+              outcome: "refused",
+              reason: "protocol-mismatch",
+              label: params.label,
+              daemonProtocolVersion,
+              clientProtocolVersion: params.protocolVersion,
+              compatibility,
+            }, false)
+          } catch (error) {
+            this.#reportError("Domovoi could not tell a code's issuer about a refused redemption", error)
+          }
+        }).unref()
         return
       }
       if (!this.#pairing) {
