@@ -191,19 +191,32 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = 
   )
 }
 
+// The phone's receipt logic at tablet size: success colours only for an
+// allow, the checkpoint sentence only when an allow took one, and the gate's
+// wait named as the wait.
 export function TabletReceipt({ entry }: { entry: Extract<ThreadEntry, { kind: "receipt" }> }) {
+  const denied = entry.recorded === "deny" || entry.recorded === "deny-explain"
+  const ink = denied ? "text-strong" : "text-ok-fg"
+  const dim = denied ? "text-muted-foreground" : "text-ok-dim"
   return (
-    <Card className="gap-1.5 border-ok-border bg-ok-bg">
+    <Card className={cn("gap-1.5", denied ? "border-border bg-card" : "border-ok-border bg-ok-bg")}>
       <View className="flex-row items-center gap-2">
-        <View className="h-2 w-2 rounded-full bg-success" />
-        <Text className="flex-1 font-sans-medium text-[14px] text-ok-fg">{entry.decision}</Text>
-        <Text variant="machine" className="text-ok-dim">
-          {entry.decidedAfter ?? (entry.declaredClient ? `${entry.client} · declared ${entry.declaredClient}` : entry.client)}
+        <View className={cn("h-2 w-2 rounded-full", denied ? "bg-faint" : "bg-success")} />
+        <Text className={cn("flex-1 font-sans-medium text-[14px]", ink)}>{entry.decision}</Text>
+        <Text variant="machine" className={dim}>
+          {entry.decidedAfter
+            ? `decided after ${entry.decidedAfter}`
+            : entry.declaredClient ? `${entry.client} · declared ${entry.declaredClient}` : entry.client}
         </Text>
       </View>
-      <Text className="text-[13px] leading-[19px] text-ok-fg">
-        {entry.operation}. Checkpoint {entry.checkpoint} was recorded before it ran.
-      </Text>
+      <Text className={cn("text-[13px] leading-[19px]", ink)}>{entry.operation}</Text>
+      {entry.checkpointTaken ? (
+        <Text className={cn("text-[13px] leading-[19px]", dim)}>
+          {entry.ranFor
+            ? `Checkpoint ${entry.checkpoint} was taken first, then it ran in ${entry.ranFor}.`
+            : `Checkpoint ${entry.checkpoint} was taken first.`}
+        </Text>
+      ) : null}
     </Card>
   )
 }

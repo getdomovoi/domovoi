@@ -218,6 +218,45 @@ describe("TabletShell", () => {
     expect(screen.getByText(refusal.remedy)).toBeOnTheScreen()
   })
 
+  // The tablet receipt says what the phone's says: a checkpoint only when an
+  // allow took one, how long the command ran when it has, and the gate's wait
+  // under its own name rather than as an unlabeled number.
+  describe("receipts", () => {
+    function receipt(id: string, decision: "allow-once" | "deny", checkpoint: string, extra: { ranForMs?: number, decisionDurationMs?: number } = {}) {
+      return {
+        id, kind: "receipt" as const, decision, operation: `operation ${id}`, checkpoint,
+        client: "tablet" as const, createdAt: "2026-09-22T12:00:00.000Z", ...extra,
+      }
+    }
+    const commit = "8f3c1de0000000000000000000000000deadbeef"
+
+    it("names the checkpoint an allow took and how long it ran, and labels the wait", async () => {
+      await draw("normal", "full", (snapshot) => {
+        snapshot.thread.push({ ...receipt("allowed", "allow-once", commit, { ranForMs: 12_000, decisionDurationMs: 38_000 }), sessionId: snapshot.approvals[0]!.sessionId })
+      })
+      expect(screen.getByText("Checkpoint 8f3c1de was taken first, then it ran in 12s.")).toBeOnTheScreen()
+      expect(screen.getByText("decided after 38s")).toBeOnTheScreen()
+    })
+
+    it("claims no checkpoint for a deny", async () => {
+      await draw("normal", "full", (snapshot) => {
+        snapshot.thread.push({ ...receipt("denied", "deny", commit), sessionId: snapshot.approvals[0]!.sessionId })
+      })
+      expect(screen.getByText("operation denied")).toBeOnTheScreen()
+      // The open gate beside it has a Checkpoint fact; the receipt's sentence
+      // is what must be absent.
+      expect(screen.queryByText(/was taken first|was recorded before it ran/)).toBeNull()
+    })
+
+    it("says nothing about a checkpoint an allow could not take", async () => {
+      await draw("normal", "full", (snapshot) => {
+        snapshot.thread.push({ ...receipt("unchecked", "allow-once", "unavailable"), sessionId: snapshot.approvals[0]!.sessionId })
+      })
+      expect(screen.getByText("operation unchecked")).toBeOnTheScreen()
+      expect(screen.queryByText(/no checkpoint/)).toBeNull()
+    })
+  })
+
   it("shows the connection notice, so a tablet hears when the daemon sent something it could not read", async () => {
     await draw("normal", "full", undefined, { notice: {
       tone: "warning",
