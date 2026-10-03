@@ -10,4 +10,6 @@ after it changed on disk. Turn-scoped working plans from older profiles are stil
 working plan. A saved working plan that kept a plan file's path from that fold is taken over as the
 working plan and loses the path, so a session never holds two working plans with the same id.
 Streamed plan text now reaches clients as appends while a watched plan file exists, instead of a full
-workspace snapshot for every chunk.
+workspace snapshot for every chunk. An append carries only content and revision, so the chunk that
+takes over such a saved working plan still sends the full snapshot, and clients drop its path,
+variant and file title as the daemon did.

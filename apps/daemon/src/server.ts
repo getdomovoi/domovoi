@@ -10525,17 +10525,25 @@ export class DomovoiDaemon {
       )
       if (!canonical) {
         // Watched plan files are not part of the merge, so they must not
-        // force a full snapshot for every streamed chunk.
-        const previousPlanIds = new Set(this.#snapshot.artifacts.filter((artifact) =>
-          isWorkingPlanArtifact(artifact, session.id)
-        ).map((artifact) => artifact.id))
+        // force a full snapshot for every streamed chunk. plan.append carries
+        // only content and revision, so the merge may change nothing else:
+        // folding another artifact in, or taking over a saved working plan
+        // that kept a file's path, variant or title, needs the snapshot.
+        const previous = this.#snapshot.artifacts
+          .filter((artifact) => isWorkingPlanArtifact(artifact, session.id))
+          .map(({ id, title, mimeType, path, variant }) => ({ id, title, mimeType, path, variant }))
         const artifact = appendPlanDelta(
           this.#snapshot.artifacts,
           this.#snapshot.annotations,
           session.id,
           event.delta,
         )
-        requiresFullSnapshot = [...previousPlanIds].some((id) => id !== artifact.id)
+        requiresFullSnapshot = previous.some((candidate) =>
+          candidate.id !== artifact.id
+          || candidate.title !== artifact.title
+          || candidate.mimeType !== artifact.mimeType
+          || candidate.path !== artifact.path
+          || candidate.variant !== artifact.variant)
         if (!requiresFullSnapshot) {
           delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
             kind: "plan.append" as const,

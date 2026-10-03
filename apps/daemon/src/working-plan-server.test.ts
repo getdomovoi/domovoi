@@ -3,10 +3,13 @@ import WebSocket from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
+  applyWorkspaceDelta,
   demoWorkspace,
   protocolVersion,
   type RpcMethod,
   type RpcResult,
+  type WorkspaceDelta,
+  type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
 import type { AuditLog } from "./audit-log.js"
@@ -1130,6 +1133,102 @@ describe("working plan RPC", () => {
     )?.params?.operations).toEqual([
       expect.objectContaining({ kind: "plan.append", id: `plan-${session.id}`, delta: "2. Verify" }),
     ])
+    context.socket.close()
+  })
+
+  it("shows clients a streamed take-over of a working plan that kept a path", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.workspacePath = "/worktrees/plan-takeover"
+    session.providerThreadId = "thread-plan-takeover"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.workingPlans = []
+    snapshot.artifacts = snapshot.artifacts.filter((artifact) => artifact.sessionId !== session.id)
+    snapshot.annotations = snapshot.annotations.filter(
+      (annotation) => annotation.sessionId !== session.id,
+    )
+    // An older daemon renamed a watched plan file to the working plan id and
+    // kept its path and variant.
+    snapshot.artifacts.push({
+      id: `plan-${session.id}`,
+      sessionId: session.id,
+      title: "Plan",
+      type: "plan",
+      revision: 1,
+      path: "PLAN.md",
+      variant: { id: "variant-a", groupId: "plans", label: "A", order: 0 },
+      mimeType: "text/markdown",
+      content: "1. Inspect\n",
+    })
+    let emit: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-plan-takeover"),
+      steerTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        emit = listener
+        return () => { emit = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const context = await startedDaemon(snapshot, { "claude-code": agent })
+    const notifications: Array<{ method: string, params: WorkspaceSnapshot | WorkspaceDelta }> = []
+    context.socket.on("message", (data) => {
+      const message = JSON.parse(data.toString()) as (typeof notifications)[number]
+      if (message.method) notifications.push(message)
+    })
+    const started = await context.rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Go",
+      client: "desktop",
+    })
+    expect(started).not.toHaveProperty("error")
+    const { result: before } = await context.rpc("workspace.get", {})
+    expect(before.artifacts).toEqual([
+      expect.objectContaining({ id: `plan-${session.id}`, path: "PLAN.md" }),
+    ])
+    notifications.length = 0
+
+    emit!({
+      type: "plan-delta",
+      threadId: "thread-plan-takeover",
+      turnId: "turn-plan-takeover",
+      delta: "2. Verify",
+    })
+
+    await waitForDaemon(() => expect(notifications.map(({ method }) => method)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/^workspace\.(delta|changed)$/)]),
+    ))
+    // The client folds every notification the way the apps do; the result is
+    // the working plan the daemon holds, whichever kind of notification said so.
+    const seen = notifications.reduce((workspace, notification) => {
+      if (notification.method === "workspace.changed") return notification.params as WorkspaceSnapshot
+      if (notification.method === "workspace.delta") {
+        return applyWorkspaceDelta(workspace, notification.params as WorkspaceDelta)
+      }
+      return workspace
+    }, before)
+    expect(seen.artifacts.filter((artifact) => artifact.sessionId === session.id)).toEqual([{
+      id: `plan-${session.id}`,
+      sessionId: session.id,
+      title: "Working plan",
+      type: "plan",
+      revision: 2,
+      mimeType: "text/markdown",
+      content: "1. Inspect\n2. Verify",
+    }])
+    await waitForDaemon(() => expect(context.durable().artifacts).toEqual([
+      expect.objectContaining({ id: `plan-${session.id}`, content: "1. Inspect\n2. Verify" }),
+    ]))
+    expect(context.durable().artifacts[0]).not.toHaveProperty("path")
     context.socket.close()
   })
 })
