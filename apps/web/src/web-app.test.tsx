@@ -210,6 +210,64 @@ describe("WebApp", () => {
     expect(text()).toContain("Pair this browser")
   })
 
+  // A version refusal is cured by a reload, not by another code, so that is
+  // the action it offers. The code was not spent.
+  it("offers a reload when the daemon refuses this page's protocol version", async () => {
+    const { DaemonRpcError } = await import("@/client")
+    const { protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
+    const reloadPage = vi.fn()
+    const client = { ...pairingClient("pairs"), request: vi.fn(async () => { throw new DaemonRpcError(protocolVersionMismatchErrorCode, "Protocol version mismatch", { daemonProtocolVersion: "9.0.0", clientProtocolVersion: "0.8.0" }) }) }
+    await act(async () => {
+      root.render(
+        <WebApp
+          rpcUrl={rpcUrl}
+          clientKind="web"
+          environment={{ ...environment, reloadPage }}
+          storage={memoryStorage()}
+          createClient={vi.fn(() => client)}
+          labelSuffix={() => "1234"}
+          workspace={() => <main />}
+        />,
+      )
+    })
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("This page is older than the daemon on 127.0.0.1:47831")
+    expect(() => button("Type a new code")).toThrow()
+    await act(async () => { button("Reload this page").click() })
+    expect(reloadPage).toHaveBeenCalledOnce()
+  })
+
+  it("offers no action for a version refusal where the page cannot be reloaded", async () => {
+    const { DaemonRpcError } = await import("@/client")
+    const { protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
+    const client = { ...pairingClient("pairs"), request: vi.fn(async () => { throw new DaemonRpcError(protocolVersionMismatchErrorCode, "Protocol version mismatch") }) }
+    await draw(memoryStorage(), vi.fn(() => client))
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("Reload the page to update it.")
+    expect(() => button("Type a new code")).toThrow()
+    expect(() => button("Reload this page")).toThrow()
+  })
+
+  // Every other refusal is cured by another code, the daemon's uniform
+  // refusal included; the page does not guess why a code was refused.
+  it("offers a new code for a device limit and a code of the wrong kind", async () => {
+    const { DaemonRpcError } = await import("@/client")
+    const { devicePairingLimitErrorCode } = await import("@getdomovoi/protocol")
+    const full = { ...pairingClient("pairs"), request: vi.fn(async () => { throw new DaemonRpcError(devicePairingLimitErrorCode, "Device limit reached") }) }
+    await draw(memoryStorage(), vi.fn(() => full))
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("has no room for another device")
+    await act(async () => { button("Type a new code").click() })
+    expect(text()).toContain("Pair this browser")
+
+    await act(async () => { root.unmount() })
+    root = createRoot(container)
+    await draw(memoryStorage(), vi.fn(() => pairingClient("pairs")), { clientKind: "phone" })
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("This code is for a web browser")
+    expect(() => button("Type a new code")).not.toThrow()
+  })
+
   it("says why pairing failed and stays on the prompt", async () => {
     const client = pairingClient("refuses")
     await draw(memoryStorage(), vi.fn(() => client))

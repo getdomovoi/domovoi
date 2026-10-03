@@ -143,6 +143,12 @@ export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOut
   return { tone: "plain", pill: "unconfirmed", title: `${host} did not answer, so pairing is unconfirmed`, mono: `pair · no reply · ${host}`, body: "The daemon may have stopped or left the tailnet. If the machine lists this browser under Phone and tablet, it paired." }
 }
 
+// What cures a refusal. A page older than the daemon needs a reload, and its
+// code was not used; every other outcome is answered with another code.
+export function pairingNextStep(cause: unknown): "reload" | "new-code" {
+  return cause instanceof DaemonRpcError && cause.code === protocolVersionMismatchErrorCode ? "reload" : "new-code"
+}
+
 export const daemonCredentialShapeMessage =
   "A daemon credential is one 43 character line. Copy the whole line from ~/.domovoi/daemon.token on the execution machine."
 

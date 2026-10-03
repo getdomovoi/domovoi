@@ -7,7 +7,7 @@ import { browserLimits } from "./browser-limits"
 import { browserLimitsSeen, markBrowserLimitsSeen } from "./browser-limits-seen"
 import type { BrowserPlatformEnvironment } from "./browser-platform"
 import { browserDeviceLabel, clearDaemonSession, loadDaemonSession, saveDaemonSession, type DaemonSession } from "./credential"
-import { codeNameFor, pairBrowserDevice, pairingOutcomeFor, redeemBrowserCode, type PairingClientFactory } from "./daemon-pairing"
+import { codeNameFor, pairBrowserDevice, pairingNextStep, pairingOutcomeFor, redeemBrowserCode, type PairingClientFactory } from "./daemon-pairing"
 
 export type WebAppProps = {
   rpcUrl: string
@@ -128,7 +128,13 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
           })
         }).catch((cause: unknown) => {
           const refusal = pairingOutcomeFor(cause, host)
-          setOutcome({ ...refusal, action: { label: "Type a new code", run: () => setOutcome(undefined) } })
+          const reloadPage = environment.reloadPage
+          // A host with no page to reload gets no button: another code
+          // would meet the same refusal, and the card says to reload.
+          const action = pairingNextStep(cause) === "new-code"
+            ? { label: "Type a new code", run: () => setOutcome(undefined) }
+            : reloadPage ? { label: "Reload this page", run: () => reloadPage() } : undefined
+          setOutcome({ ...refusal, action })
         }).finally(() => {
           setPairing(false)
         })
