@@ -1,0 +1,357 @@
+import type { TailnetListenerStatus } from "@getdomovoi/protocol"
+import { useCallback, useEffect, useRef, useState } from "react"
+
+import { Button } from "./components/ui/button"
+import { Switch } from "./components/ui/switch"
+import {
+  parseTailnetReachOutcome,
+  parseTailnetReachReport,
+  type TailnetReachOutcome,
+  type TailnetReachReport,
+  type TailnetReachStep,
+} from "./tailnet-reach.js"
+
+// TailnetReach (Q404 A, J25), the card from TailnetReach in the v2 handoff:
+// "Reach this machine from my tailnet". It draws what the desktop answers
+// about the switch and what the daemon answers about its tailnet listener
+// (tailnet.status), and nothing it cannot know. One request runs a whole
+// change, so while it runs the steps are listed in order without claiming
+// which one is under way; afterwards the answer names where it stopped.
+
+export type TailnetReachSource = {
+  act(action: "status" | "on" | "off"): Promise<unknown>
+  // The daemon's tailnet.status. Absent, the card draws the switch alone.
+  listener?: (() => Promise<TailnetListenerStatus>) | undefined
+  // The daemon runs inside this app (it restarts in place) rather than as
+  // the login service (it restarts through the service update).
+  inApp: boolean
+}
+
+type Direction = "on" | "off"
+type Failure = Extract<TailnetReachOutcome, { ok: false }>
+
+export type TailnetReachController = {
+  report: TailnetReachReport | undefined
+  readError: string | undefined
+  listener: TailnetListenerStatus | undefined
+  running: { direction: Direction; renew: boolean } | undefined
+  failure: { direction: Direction; outcome: Failure } | undefined
+  inApp: boolean
+  check(): void
+  turnOn(): Promise<TailnetReachOutcome | undefined>
+  turnOff(): Promise<TailnetReachOutcome | undefined>
+  // "Go to the tailnet setting": counts requests, so the card scrolls itself
+  // into view and marks itself for a moment on each one.
+  revealed: number
+  reveal(): void
+}
+
+// One controller serves the Settings card and the pairing card, so both draw
+// the same switch. The source object may be rebuilt on every render; only
+// whether there is one decides when to read.
+export function useTailnetReach(source: TailnetReachSource | undefined): TailnetReachController | undefined {
+  const sourceRef = useRef(source)
+  sourceRef.current = source
+  const [report, setReport] = useState<TailnetReachReport>()
+  const [readError, setReadError] = useState<string>()
+  const [listener, setListener] = useState<TailnetListenerStatus>()
+  const [running, setRunning] = useState<TailnetReachController["running"]>()
+  const [failure, setFailure] = useState<TailnetReachController["failure"]>()
+  const [revealed, setRevealed] = useState(0)
+  const reading = useRef(0)
+
+  const read = useCallback(async () => {
+    const current = sourceRef.current
+    if (!current) return
+    const request = ++reading.current
+    // Each answer is drawn as it arrives: a daemon slow to answer
+    // tailnet.status does not hold back the desktop's switch.
+    // A restarted daemon answers it once its client reconnects.
+    void current.listener?.().then((value) => { if (request === reading.current) setListener(value) }, () => { if (request === reading.current) setListener(undefined) })
+    try {
+      const answer = parseTailnetReachReport(await current.act("status"))
+      if (request === reading.current) { setReport(answer); setReadError(undefined) }
+    } catch (cause) {
+      if (request === reading.current) setReadError(cause instanceof Error ? cause.message : "The desktop did not answer.")
+    }
+  }, [])
+
+  const present = source !== undefined
+  useEffect(() => { if (present) void read() }, [present, read])
+
+  const change = useCallback(async (direction: Direction): Promise<TailnetReachOutcome | undefined> => {
+    const current = sourceRef.current
+    if (!current) return undefined
+    setFailure(undefined)
+    setRunning({ direction, renew: direction === "on" && report?.state === "on" })
+    let outcome: TailnetReachOutcome
+    try {
+      outcome = parseTailnetReachOutcome(await current.act(direction))
+    } catch (cause) {
+      outcome = { ok: false, reason: "failed", step: direction === "on" ? "status" : "delete", message: cause instanceof Error ? cause.message : "The desktop did not answer." }
+    }
+    if (outcome.ok) setReport(outcome.report)
+    else setFailure({ direction, outcome })
+    await read()
+    setRunning(undefined)
+    return outcome
+  }, [read, report?.state])
+
+  const check = useCallback(() => { setFailure(undefined); void read() }, [read])
+  const turnOn = useCallback(() => change("on"), [change])
+  const turnOff = useCallback(() => change("off"), [change])
+  const reveal = useCallback(() => setRevealed((count) => count + 1), [])
+  if (!source) return undefined
+  return { report, readError, listener, running, failure, inApp: source.inApp, check, turnOn, turnOff, revealed, reveal }
+}
+
+const title = "Reach this machine from my tailnet"
+const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+
+// The design's "20 Dec 2026", in this computer's time zone.
+function day(iso: string): string {
+  const date = new Date(iso)
+  return `${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`
+}
+
+function moment(iso: string): string {
+  const date = new Date(iso)
+  return `${date.getDate()} ${months[date.getMonth()]} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
+}
+
+type StepRow = { step: TailnetReachStep; label: string; mono: string }
+type Row = { label: string; mono: string; state: "" | "done" | "failed" | "not run" }
+
+function Steps({ rows, busy }: { rows: Row[]; busy: boolean }) {
+  return (
+    <ol className="m-0 flex list-none flex-col overflow-hidden rounded-[calc(var(--radius)-3px)] border bg-background p-0">
+      {rows.map((row, index) => (
+        <li key={row.label} className={`flex items-start gap-2.5 px-3 py-2.5 ${index ? "border-t" : ""}`}>
+          <span aria-hidden className={`mt-[5px] size-[7px] shrink-0 rounded-full ${row.state === "done" ? "bg-success" : row.state === "failed" ? "bg-destructive" : busy ? "bg-primary" : "bg-faint"}`} />
+          <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
+            <span className={`text-[11.5px] leading-[1.5] ${row.state === "not run" ? "text-muted-foreground" : "text-foreground"}`}>{row.label}</span>
+            <span className="font-machine text-[10.5px] break-all text-muted-foreground">{row.mono}</span>
+          </span>
+          {row.state ? <span className={`shrink-0 font-machine text-[10.5px] ${row.state === "failed" ? "text-destructive" : row.state === "done" ? "text-success" : "text-faint"}`}>{row.state}</span> : null}
+        </li>
+      ))}
+    </ol>
+  )
+}
+
+function Alert({ heading, body, mono, action, onAction, after }: { heading: string; body: string; mono?: string | undefined; action?: string; onAction?: () => void; after?: string | undefined }) {
+  return (
+    <div role="alert" className="flex flex-col gap-1.5 rounded-[calc(var(--radius)-3px)] border border-danger-border bg-danger-background px-[13px] py-3 text-danger-foreground">
+      <span className="text-[12.5px] font-medium">{heading}</span>
+      <span className="text-[11.5px] leading-[1.55]">{body}</span>
+      {mono ? <span className="font-machine text-[10.5px] break-all opacity-80">{mono}</span> : null}
+      {action || after ? (
+        <div className="mt-[3px] flex flex-wrap items-center gap-2.5">
+          {action && onAction ? <Button type="button" variant="outline" size="sm" className="border-danger-border text-danger-foreground" onClick={onAction}>{action}</Button> : null}
+          {after ? <span className="text-[11px] leading-[1.5]">{after}</span> : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+export function TailnetReachCard({ controller, inCard = false }: { controller: TailnetReachController; inCard?: boolean }) {
+  const { report, readError, listener, running, failure, inApp } = controller
+  const ref = useRef<HTMLElement>(null)
+  const [flash, setFlash] = useState(false)
+  useEffect(() => {
+    if (!controller.revealed) return
+    ref.current?.scrollIntoView?.({ behavior: "smooth", block: "center" })
+    setFlash(true)
+    const timer = setTimeout(() => setFlash(false), 1_600)
+    return () => clearTimeout(timer)
+  }, [controller.revealed])
+
+  const named = report && report.state !== "none" ? report : undefined
+  const name = named?.name ?? "this machine's name"
+  const tailnet = name.split(".").slice(1).join(".")
+  const restart = inApp ? "the daemon inside this app restarts" : "the login service is updated and restarted"
+  const store = named?.stored ?? "the Domovoi profile"
+  const onSteps: StepRow[] = [
+    { step: "status", label: "Read the tailnet status", mono: "tailscale status --json · reads only" },
+    { step: "certificate", label: "Ask Tailscale for a certificate for this machine's own name", mono: `tailscale cert ${name}` },
+    { step: "store", label: "Store the certificate and key in the Domovoi profile", mono: store },
+    { step: "restart", label: "Restart the service so it answers on the tailnet", mono: restart },
+  ]
+  const offSteps: StepRow[] = [
+    { step: "delete", label: "Delete the certificate and key from the Domovoi profile", mono: store },
+    { step: "restart", label: "Restart the service on this computer only", mono: restart },
+  ]
+
+  // Where a failed change stopped: the steps before it done, it failed, the
+  // rest not run. A refusal ran none of them, so it lists none.
+  const failedRows = failure && failure.outcome.reason !== "refused" && failure.outcome.reason !== "busy"
+    ? (() => {
+        const list = failure.direction === "on" ? onSteps : offSteps
+        const at = Math.max(0, list.findIndex((row) => row.step === failure.outcome.step))
+        return list.map((row, index): Row => ({ label: row.label, mono: row.mono, state: index < at ? "done" : index === at ? "failed" : "not run" }))
+      })()
+    : undefined
+  const httpsOff = failure?.outcome.reason === "https-off"
+  const isOn = report?.state === "on"
+  const expiry = listener?.state === "listening" ? listener.certificateExpiresAt : named?.certificateExpiresAt
+  const renewalFailed = isOn ? named?.renewalFailed : undefined
+  const notAnswering = isOn && listener?.state === "refused" ? listener : undefined
+  const stoppedOn = failure?.direction === "on" && !isOn
+
+  const [tone, label] = running
+    ? ["bg-primary", running.direction === "off" ? "Turning off" : running.renew ? "Renewing" : "Turning on"]
+    : stoppedOn ? ["bg-destructive", "Stopped"]
+      : !report ? ["bg-faint", readError ? "Not known" : "Reading"]
+        : report.state === "none" ? ["bg-faint", "No tailnet"]
+          : report.state === "off" ? ["bg-faint", "Off"]
+            : notAnswering ? ["bg-destructive", "Not answering"]
+              : renewalFailed ? ["bg-destructive", "Renewal failed"]
+                : ["bg-success", "On"]
+  const line = running
+    ? running.direction === "off" ? "Turning off. The steps run in this order."
+      : running.renew ? "Renewing. Tailscale is asked for the certificate again, then the daemon restarts once."
+        : "Turning on. The steps run in this order."
+    : stoppedOn ? (httpsOff ? "Stopped before storing or restarting anything." : "The switch stays off.")
+      : !report ? (readError ?? "Reading the tailnet status from Tailscale.")
+        : report.state === "none" ? "No tailnet interface found on this machine. Domovoi does not set one up for you."
+          : report.state === "off" ? "Off. Only this computer can reach the daemon."
+            : notAnswering ? "On, but the daemon is not answering on the tailnet."
+              : renewalFailed ? (expiry ? `Still on. The certificate did not renew and expires on ${day(expiry)}.` : "Still on. The certificate did not renew.")
+                : "Devices on your tailnet can reach the daemon. Each one still has to pair."
+  const mono = report?.state === "none" ? report.detail : report?.state === "off" ? `${report.name} · read from Tailscale, not changed` : named?.name
+  // Beside a hand-set DOMOVOI_HOST the daemon would not use the settings, so
+  // the switch offers no turning on; turning off stays.
+  const locked = !report || report.state === "none" || running !== undefined || (report.state === "off" && report.ignored !== undefined)
+
+  const facts = isOn && named && !running ? [
+    { label: "Tailnet name", value: named.name },
+    ...(expiry ? [{ label: "Certificate", value: `expires ${day(expiry)}`, note: renewalFailed ? "Renewal failed. Retrying on its own." : "Renews on its own.", bad: Boolean(renewalFailed) }] : []),
+    { label: "Stored in", value: named.stored },
+    { label: "Answers on", value: listener?.state === "listening" ? `127.0.0.1 · ${named.name}` : "127.0.0.1 only" },
+  ] : []
+
+  return (
+    <section
+      ref={ref}
+      id="settings-tailnet"
+      aria-labelledby="settings-tailnet-title"
+      className={`flex flex-col gap-3 transition-colors duration-300 ${inCard ? "border-t pt-3" : "rounded-lg border bg-card p-4"} ${flash ? "bg-primary/10" : ""}`}
+    >
+      <div className="flex items-start gap-3.5">
+        <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <span id="settings-tailnet-title" className="text-[12.5px] font-medium">{title}</span>
+          <span className="text-[11.5px] leading-[1.55] text-muted-foreground">{line}</span>
+          {mono ? <span className="truncate font-machine text-[10.5px] text-faint">{mono}</span> : null}
+        </div>
+        <div className="flex shrink-0 items-center gap-2.5 pt-px">
+          <span className="flex items-center gap-[7px] text-[11.5px] text-strong">
+            <span aria-hidden className={`size-[7px] rounded-full ${tone}`} />
+            {label}
+          </span>
+          <Switch aria-label={title} checked={running ? running.direction === "on" : isOn} disabled={locked} onCheckedChange={(checked: boolean) => { void (checked ? controller.turnOn() : controller.turnOff()) }} />
+        </div>
+      </div>
+      {running ? <span aria-hidden className="relative block h-[3px] w-[60px] overflow-hidden rounded-[3px] bg-muted"><span className="sweep-bar absolute inset-y-0 left-0 block w-[30%] rounded-[3px] bg-primary" /></span> : null}
+
+      {named?.ignored && !running ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">{named.ignored}</p> : null}
+
+      {report?.state === "none" || (!report && readError) ? (
+        <div className="flex flex-wrap items-center gap-2.5">
+          <Button type="button" variant="outline" size="sm" onClick={controller.check}>Check again</Button>
+          <span className="text-[11px] leading-[1.5] text-muted-foreground">Bring Tailscale up yourself, then check again.</span>
+        </div>
+      ) : null}
+
+      {report?.state === "off" && !running && !failedRows ? (
+        <>
+          {!report.httpsCertificates && !failure ? (
+            <div className="flex flex-col gap-[3px] text-[11px] leading-[1.5] text-warn-foreground">
+              <span>{`HTTPS certificates are off for ${tailnet}.`}</span>
+              <span>A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console.</span>
+            </div>
+          ) : null}
+          <div className="grid gap-2.5 [grid-template-columns:repeat(auto-fit,minmax(230px,1fr))]">
+            <div className="flex flex-col gap-2 rounded-[calc(var(--radius)-3px)] border bg-background px-3 py-[11px]">
+              <span className="text-[10.5px] font-medium tracking-[0.13em] text-faint">TURNING IT ON CHANGES</span>
+              {[
+                { label: "Asks Tailscale for a certificate for this machine's own name", mono: `tailscale cert ${report.name}` },
+                { label: "Stores the certificate and key in the Domovoi profile", mono: report.stored },
+                { label: "Restarts the service once so it answers on the tailnet", mono: restart },
+              ].map((change) => (
+                <div key={change.label} className="flex flex-col gap-[3px]">
+                  <span className="text-[11.5px] leading-[1.5] text-strong">{change.label}</span>
+                  <span className="font-machine text-[10.5px] break-all text-muted-foreground">{change.mono}</span>
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-col gap-2 rounded-[calc(var(--radius)-3px)] border border-dashed px-3 py-[11px]">
+              <span className="text-[10.5px] font-medium tracking-[0.13em] text-faint">DOMOVOI NEVER TOUCHES</span>
+              {["Tailnet settings, access rules or DNS entries", "Whether Tailscale is up, or who is signed in to it", "Any other machine on the tailnet"].map((text) => (
+                <span key={text} className="text-[11.5px] leading-[1.5] text-strong">{text}</span>
+              ))}
+            </div>
+          </div>
+          <div className="flex flex-col gap-[3px] text-[11px] leading-[1.5] text-muted-foreground">
+            <span>Every certificate is recorded in public logs, so this machine's tailnet name becomes public.</span>
+            <span>Turning it off deletes those files and restarts the service on 127.0.0.1 only.</span>
+          </div>
+        </>
+      ) : null}
+
+      {running ? <Steps rows={(running.direction === "on" ? onSteps : offSteps).map((row) => ({ label: row.label, mono: row.mono, state: "" }))} busy /> : null}
+      {!running && failedRows ? <Steps rows={failedRows} busy={false} /> : null}
+
+      {!running && failure ? (
+        httpsOff ? (
+          <Alert
+            heading={`HTTPS certificates are off for ${tailnet}`}
+            body="A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console. Domovoi never falls back to plain HTTP or a self-signed certificate."
+            mono={`tailscale status --json · no certificate domain for ${name}`}
+            action="Try again" onAction={() => void controller.turnOn()}
+            after="The switch stays off. Nothing was stored and nothing restarted."
+          />
+        ) : (
+          <Alert
+            heading={failure.direction === "on" ? "Could not turn it on" : "Could not turn it off"}
+            body={failure.outcome.message} mono={failure.outcome.detail}
+            action="Try again" onAction={() => void (failure.direction === "on" ? controller.turnOn() : controller.turnOff())}
+          />
+        )
+      ) : null}
+
+      {!running && renewalFailed ? (
+        <Alert
+          heading="The certificate did not renew"
+          body={expiry ? `Until ${day(expiry)} paired devices keep connecting and new ones can pair. After that the daemon answers on this computer only until a renewal succeeds.` : "Paired devices keep connecting until the certificate expires. After that the daemon answers on this computer only until a renewal succeeds."}
+          mono={`${moment(renewalFailed.at)} · ${renewalFailed.message}`}
+          action="Renew now" onAction={() => void controller.turnOn()}
+          after="Domovoi also tries again on its own."
+        />
+      ) : null}
+      {!running && notAnswering ? (
+        <Alert
+          heading="The daemon is not answering on the tailnet"
+          body={notAnswering.reason}
+          mono={`tailnet.status · ${notAnswering.address}`}
+          action="Renew now" onAction={() => void controller.turnOn()}
+          after={notAnswering.retrying ? "The daemon tries the address again on its own." : undefined}
+        />
+      ) : null}
+
+      {facts.length ? (
+        <dl className="m-0 flex flex-col overflow-hidden rounded-[calc(var(--radius)-3px)] border bg-background">
+          {facts.map((fact, index) => (
+            <div key={fact.label} className={`flex items-start gap-2.5 px-3 py-[9px] ${index ? "border-t" : ""}`}>
+              <dt className="w-[104px] shrink-0 text-[11.5px] text-muted-foreground">{fact.label}</dt>
+              <dd className="m-0 flex min-w-0 flex-1 flex-col gap-[3px]">
+                <span className="font-machine text-[10.5px] break-all text-strong">{fact.value}</span>
+                {"note" in fact && fact.note ? <span className={`text-[11.5px] leading-[1.5] ${fact.bad ? "text-destructive" : "text-muted-foreground"}`}>{fact.note}</span> : null}
+              </dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
+    </section>
+  )
+}
