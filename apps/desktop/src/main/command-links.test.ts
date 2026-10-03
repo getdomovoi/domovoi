@@ -71,6 +71,27 @@ describe("command links", () => {
     await expect(lstat(bin())).rejects.toThrow()
   })
 
+  // Review P3-4: an app running from a path that will not exist next time
+  // would leave a link to nothing, so linking is not offered there.
+  it("offers no link while the app runs from a temporary or mounted path", async () => {
+    const translocated = join(root, "private", "var", "folders", "x", "AppTranslocation", "1A2B", "d", "Domovoi.app", "Contents", "Resources")
+    await mkdir(join(translocated, "daemon-runtime", "bin"), { recursive: true })
+    await writeFile(join(translocated, "daemon-runtime", "bin", "domovoid"), "#!/bin/sh\n", { mode: 0o755 })
+    expect(await commandLinks("link", environment({ resourcesPath: translocated }))).toEqual({ report: {
+      available: false,
+      reason: "macOS is running Domovoi from a temporary copy. Move Domovoi to Applications and open it from there to link its commands.",
+    } })
+    expect(await commandLinks("link", environment({ resourcesPath: "/Volumes/Domovoi 0.9.4/Domovoi.app/Contents/Resources" }))).toEqual({ report: {
+      available: false,
+      reason: "Domovoi is running from a disk image. Copy it to Applications and open it from there to link its commands.",
+    } })
+    expect(await commandLinks("link", environment({ platform: "linux", appImage: "/home/dana/Domovoi.AppImage" }))).toEqual({ report: {
+      available: false,
+      reason: "Domovoi is running as an AppImage, which mounts at a new path on every launch, so a link to it would break.",
+    } })
+    await expect(lstat(join(home, ".local"))).rejects.toThrow()
+  })
+
   it("makes nothing when it only reads or unlinks", async () => {
     expect((await commandLinks("status", environment())).report).toMatchObject({ commands: [{ state: "absent" }] })
     expect((await commandLinks("unlink", environment())).report).toMatchObject({ commands: [{ state: "absent" }] })

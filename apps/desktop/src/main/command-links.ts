@@ -35,6 +35,8 @@ export type CommandLinkEnvironment = {
   resourcesPath: string
   platform: NodeJS.Platform
   path: string | undefined
+  // APPIMAGE as the AppImage runtime sets it, when the app runs as one.
+  appImage?: string | undefined
 }
 
 const names = ["domovoid"] as const
@@ -121,8 +123,20 @@ type Inspected =
   | { available: false; reason: string }
   | { available: true; onPath: boolean; commands: { name: "domovoid"; launcher: string; state: CommandLinkState; target?: string | undefined }[] }
 
+// Review P3-4: a path the app will not run from next time would leave a link
+// to nothing: macOS App Translocation's temporary copy, a mounted disk image,
+// and an AppImage, which mounts at a new path on every launch.
+function unstableLocation(environment: CommandLinkEnvironment): string | undefined {
+  if (environment.appImage) return "Domovoi is running as an AppImage, which mounts at a new path on every launch, so a link to it would break."
+  if (environment.resourcesPath.includes("/AppTranslocation/")) return "macOS is running Domovoi from a temporary copy. Move Domovoi to Applications and open it from there to link its commands."
+  if (environment.resourcesPath.startsWith("/Volumes/")) return "Domovoi is running from a disk image. Copy it to Applications and open it from there to link its commands."
+  return undefined
+}
+
 async function inspect(environment: CommandLinkEnvironment, directories: DirectoryState): Promise<Inspected> {
   if (environment.platform === "win32") return { available: false, reason: "Domovoi links no commands on Windows." }
+  const unstable = unstableLocation(environment)
+  if (unstable) return { available: false, reason: unstable }
   const launcher = join(environment.resourcesPath, "daemon-runtime", "bin", "domovoid")
   const shipped = await entry(launcher)
   if (!shipped?.isFile()) return { available: false, reason: "This build ships no domovoid launcher, so there is nothing to link." }
