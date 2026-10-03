@@ -42,11 +42,42 @@ export function decisionSummary(receipt: Receipt): { verdict: string, rule: stri
 // records "unavailable". A denial, and an allow written before that change,
 // carry the session's base commit or "unavailable". Restoring only ever
 // touches files in the worktree, so the note says so.
-export function recoveryNote(receipt: Receipt): string {
-  if (receipt.checkpoint === "unavailable") {
-    return "No reference was recorded for this session, so Domovoi has nothing to compare this against."
+//
+// Nothing on the receipt says which of those it holds, so checkpointTaken is
+// set only when the thread shows the checkpoint row taken at this decision.
+export function recoveryNote(receipt: Receipt, checkpointTaken = false): string {
+  const ran = receipt.ranForMs === undefined ? undefined : runTime(receipt.ranForMs)
+  if (checkpointTaken && receipt.checkpoint !== "unavailable") {
+    const taken = `Checkpoint ${shortReference(receipt.checkpoint)} was taken first${ran ? `, then it ran in ${ran}` : ""}.`
+    return `${taken} Going back to it restores files in the worktree; it cannot undo effects outside it.`
   }
-  return `Recorded against ${shortReference(receipt.checkpoint)}. Going back to it restores files in the worktree; it cannot undo effects outside it.`
+  const ranNote = ran ? ` It ran in ${ran}.` : ""
+  if (receipt.checkpoint === "unavailable") {
+    return `No reference was recorded for this session, so Domovoi has nothing to compare this against.${ranNote}`
+  }
+  return `Recorded against ${shortReference(receipt.checkpoint)}. Going back to it restores files in the worktree; it cannot undo effects outside it.${ranNote}`
+}
+
+// The design's clock: "38s", "4m 18s", and hours with minutes past that.
+export function runTime(ms: number): string {
+  if (ms < 1_000) return "under 1s"
+  const seconds = Math.round(ms / 1_000)
+  if (seconds < 60) return `${seconds}s`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`
+}
+
+// The checkpoint a person's allow took is recorded twice at the same moment:
+// on the receipt, and as a checkpoint row with that commit. A base commit an
+// older receipt carries may match an earlier row, never one at the decision.
+export function receiptCheckpointTaken(receipt: Receipt, thread: readonly ThreadItem[]): boolean {
+  return thread.some((item) =>
+    item.kind === "checkpoint"
+    && item.sessionId === receipt.sessionId
+    && item.commit === receipt.checkpoint
+    && item.createdAt === receipt.createdAt
+  )
 }
 
 // Only a full commit SHA is safe to shorten. Every other id the daemon may put
@@ -55,9 +86,24 @@ function shortReference(reference: string): string {
   return /^[0-9a-f]{40}$/.test(reference) ? reference.slice(0, 7) : reference
 }
 
-export function ApprovalReceipt({ receipt, className }: { receipt: Receipt, className?: string }) {
+export function ApprovalReceipt({
+  receipt,
+  checkpointTaken = false,
+  className,
+}: {
+  receipt: Receipt
+  // Set when the thread shows the checkpoint this allow took; see
+  // receiptCheckpointTaken.
+  checkpointTaken?: boolean
+  className?: string
+}) {
   const denied = receipt.decision === "deny" || receipt.decision === "deny-explain"
   const { verdict, rule } = decisionSummary(receipt)
+  const named = !denied && checkpointTaken && receipt.checkpoint !== "unavailable"
+  const meta = denied ? "" : [
+    named ? shortReference(receipt.checkpoint) : undefined,
+    receipt.ranForMs === undefined ? undefined : runTime(receipt.ranForMs),
+  ].filter(Boolean).join(" · ")
   const decidedFrom = receipt.connectionId
     ? `${receipt.client}, connection ${receipt.connectionId}`
     : receipt.clientId
@@ -76,12 +122,13 @@ export function ApprovalReceipt({ receipt, className }: { receipt: Receipt, clas
       <h3 className={cn("flex items-center gap-2 text-[12.5px] font-semibold", denied ? "text-strong" : "text-info-foreground")}>
         {denied ? <CircleSlashIcon aria-hidden className="size-3.5" /> : <CheckIcon aria-hidden className="size-3.5" />}
         {verdict}
+        {meta ? <span className="ml-auto font-mono text-[10.5px] font-normal text-info-dim">{meta}</span> : null}
       </h3>
       <p className={cn("m-0 font-mono text-[11px]", denied ? "text-muted-foreground" : "text-info-foreground")}>
         {receipt.operation}
       </p>
       <p className={cn("m-0 text-[11.5px]", denied ? "text-faint" : "text-info-dim")}>{rule}</p>
-      {denied ? null : <p className="m-0 text-[11.5px] text-info-dim">{recoveryNote(receipt)}</p>}
+      {denied ? null : <p className="m-0 text-[11.5px] text-info-dim">{recoveryNote(receipt, checkpointTaken)}</p>}
       {receipt.explanation ? (
         <p className="m-0 text-[11.5px] text-muted-foreground">{receipt.explanation}</p>
       ) : null}

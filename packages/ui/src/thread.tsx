@@ -63,7 +63,7 @@ import { TransferSessionDialog } from "./transfer-session-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { cn } from "./lib/utils"
 import { DomovoiMark } from "./domovoi-mark"
-import { ApprovalReceipt } from "./approval-receipt"
+import { ApprovalReceipt, receiptCheckpointTaken } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
 import { effortName } from "./effort-scales.js"
 import { permissionModeLabel, withPermissionMode } from "./permission-mode.js"
@@ -997,7 +997,7 @@ export function Thread({
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>System</AlertTitle><AlertDescription><MarkdownQuickView source={[item.body, item.detail].filter(Boolean).join("\n\n")} /></AlertDescription></Alert>
             }
             if (item.kind === "receipt") {
-              return <ApprovalReceipt key={item.id} receipt={item} />
+              return <ApprovalReceipt key={item.id} receipt={item} checkpointTaken={receiptCheckpointTaken(item, renderedThread)} />
             }
             if (item.kind === "policy-refusal") {
               return <PolicyRefusalCard key={item.id} refusal={item} />
