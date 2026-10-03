@@ -10,6 +10,7 @@ import type {
 import { artifactBody, artifactRows, diffLines } from "./artifact-rows"
 import type { ConnectionNotice } from "./connection-notice"
 import { ConnectionBanner } from "./components/connection-banner"
+import { Mark } from "./components/mark"
 import { cn } from "./lib/cn"
 import { planForSession, planSummary } from "./plan-rows"
 import { sessionDetail, type SessionDetail, type ThreadEntry } from "./session-detail"
@@ -70,7 +71,8 @@ export function TabletSessionsPane({ snapshot, selectedSessionId, access, onSele
   const groups = sessionGroups(snapshot)
   return (
     <View testID="tablet-sessions-pane" className="w-[30%] min-w-[260px] max-w-[340px] border-r border-border bg-sidebar">
-      <View className="flex-row items-center gap-2 border-b border-border px-4 py-3">
+      <View className="flex-row items-center gap-[11px] border-b border-border px-4 py-3">
+        <Mark size={26} />
         <Text variant="nav" className="flex-1">Domovoi</Text>
         <Button title="Machines" onPress={onOpenMachines} />
       </View>

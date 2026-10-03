@@ -62,6 +62,15 @@ describe("TabletShell", () => {
     expect(screen.getByText("NEEDS YOU")).toBeOnTheScreen()
   })
 
+  // Tablet v2 heads the sessions pane with the shared Domovoi mark beside the
+  // wordmark (ruling Q386: one mark component for phone and tablet). The
+  // wordmark names it, so the mark is not announced.
+  it("heads the sessions pane with the Domovoi mark", async () => {
+    await draw()
+    expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
+    expect(screen.queryByRole("image", { name: "Domovoi" })).toBeNull()
+  })
+
   it("shows a watching tablet the gate without decisions", async () => {
     await draw("hard-gate", "watching")
 
