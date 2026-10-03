@@ -4,20 +4,16 @@ import { cn } from "../lib/cn"
 import type { LaunchPhase } from "../launch-state"
 import type { UnreachableShell } from "../shell-state"
 import { LaunchPhases } from "./launch-phases"
+import { Mark } from "./mark"
 import { PageScroller } from "./page-scroller"
 import { Button } from "./ui/button"
 import { Card } from "./ui/card"
-import { Icon, type IconName } from "./ui/icon"
+import { Icon } from "./ui/icon"
 import { Text } from "./ui/text"
 
 // A phone that cannot see a daemon is not a broken screen. The handoff gives it
 // the whole screen: what was tried, what came back, and the one thing worth
 // pressing. It refuses to guess at session state, so nothing else is drawn.
-const marks: Record<UnreachableShell["kind"], { icon: IconName, tone: "faint" | "destructive" }> = {
-  restoring: { icon: "layers", tone: "faint" },
-  refused: { icon: "unplug", tone: "destructive" },
-  reaching: { icon: "unplug", tone: "faint" },
-}
 
 // A credential the daemon has refused is fixed in one place. The other two are
 // the phone still working, where a button would only offer to interrupt it.
@@ -44,7 +40,6 @@ export function ShellNotice({
   onOpenSettings: () => void
   onRetry: () => void
 }) {
-  const mark = marks[shell.kind]
   const unreachable = shell.kind === "reaching" || shell.kind === "refused"
   return (
     <View className="flex-1 bg-background">
@@ -62,7 +57,11 @@ export function ShellNotice({
         contentContainerClassName="grow items-center justify-center gap-3 px-6"
         bottomInset={bottomInset}
       >
-        <Icon name={mark.icon} tone={mark.tone} size={24} />
+        {/* Launch (frame 06) leads with the mark while daemons answer. A
+            refused credential is not launch, and keeps its own sign. */}
+        {shell.kind === "refused"
+          ? <Icon name="unplug" tone="destructive" size={24} />
+          : <Mark size={62} />}
         <Text className="text-center font-sans-medium text-[14.5px] text-foreground">
           {shell.headline}
         </Text>

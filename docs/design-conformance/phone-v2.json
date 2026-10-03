@@ -225,7 +225,8 @@
       ],
       "evidence": [
         "label: \"Machines\"",
-        "label: \"Settings\""
+        "label: \"Settings\"",
+        "accessibilityLabel=\"Domovoi\""
       ]
     },
     {
@@ -416,7 +417,8 @@
         "Reaching your machines over the routes you configured. No spinner, because the phase is knowable."
       ],
       "evidence": [
-        "Reaching your machines over the routes you configured"
+        "Reaching your machines over the routes you configured",
+        "<Mark size={62} />"
       ]
     },
     {

@@ -60,6 +60,17 @@ async function draw(overrides: Partial<Parameters<typeof ShellNotice>[0]> = {}) 
 }
 
 describe("ShellNotice", () => {
+  // Phone v2 frame 06: launch leads with the Domovoi mark while daemons
+  // answer. A refused credential is not launch, and keeps its own sign.
+  it("leads launch with the Domovoi mark, and not a refusal", async () => {
+    await draw()
+    expect(screen.getByRole("image", { name: "Domovoi" })).toBeOnTheScreen()
+    await draw({ shell: restoring })
+    expect(screen.getByRole("image", { name: "Domovoi" })).toBeOnTheScreen()
+    await draw({ shell: refused })
+    expect(screen.queryByRole("image", { name: "Domovoi" })).toBeNull()
+  })
+
   // The whole point of the screen: it says the phone cannot see anything rather
   // than drawing a session list it cannot vouch for.
   it("says no daemon is reachable and names the one route it has", async () => {

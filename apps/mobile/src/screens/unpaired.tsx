@@ -1,5 +1,6 @@
 import { View } from "react-native"
 
+import { Mark } from "../components/mark"
 import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
 import { Icon, type IconName } from "../components/ui/icon"
@@ -65,7 +66,8 @@ export function UnpairedScreen({
 
   return (
     <View className="flex-1 bg-background">
-      <View className="px-4 pb-3 pt-2">
+      <View className="flex-row items-center gap-[11px] px-4 pb-3 pt-2">
+        <Mark size={24} />
         <Text variant="heading">{sessions.title}</Text>
       </View>
       <PageScroller

@@ -49,6 +49,12 @@ function tappable(): string[] {
 }
 
 describe("SessionsScreen", () => {
+  // Phone v2 frames 01 and 10 put the Domovoi mark beside the title.
+  it("marks the Sessions title with the Domovoi mark", async () => {
+    await draw()
+    expect(screen.getByRole("image", { name: "Domovoi" })).toBeOnTheScreen()
+  })
+
   it("has no global stop control in its header", async () => {
     await draw()
     expect(screen.queryByRole("button", { name: "Stop everything" })).toBeNull()

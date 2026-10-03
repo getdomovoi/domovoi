@@ -2,6 +2,7 @@ import { RefreshControl, View } from "react-native"
 import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { ConnectionBanner } from "../components/connection-banner"
+import { Mark } from "../components/mark"
 import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
@@ -164,7 +165,10 @@ export function SessionsScreen({
     <View className="flex-1 bg-background">
       <View className="flex-row items-center gap-2.5 px-4 pb-3 pt-2">
         <View className="flex-1">
-          <Text variant="heading">Sessions</Text>
+          <View className="flex-row items-center gap-[11px]">
+            <Mark size={24} />
+            <Text variant="heading">Sessions</Text>
+          </View>
           <Text variant="meta" className="mt-[3px]">
             {needed > 0 ? `${needed} need you · ${countLabel}` : countLabel}
           </Text>
