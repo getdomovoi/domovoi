@@ -229,6 +229,10 @@ async function stagingAccessFailure(real: string, options: StagingAccessOptions)
     if (me === undefined) return { path: real, access: "unknown" }
     for (let at = real; ; at = posix.dirname(at)) {
       const { uid, mode } = await fs.permissions(at)
+      // A level that is no longer a directory (a link swapped in after the
+      // real path was read) fails without a reason: Linux reports a link as
+      // 0777, and a chmod there would follow the link.
+      if ((mode & 0o170000) !== 0o040000) return { path: at, access: "unknown" }
       const othersWrite = (mode & 0o022) !== 0
       const rootSticky = uid === 0 && (mode & 0o1000) !== 0
       if ((uid !== me && uid !== 0) || (othersWrite && !rootSticky)) {

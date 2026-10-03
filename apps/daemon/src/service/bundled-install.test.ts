@@ -318,6 +318,18 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
       expect(dependencies.write).not.toHaveBeenCalled()
     })
 
+    // Linux reports every link as 0777 (macOS uses the umask), so a level
+    // swapped for a link looked like this user's own open directory. A chmod
+    // there would follow the link, so a non-directory gets no chmod.
+    it("gives no chmod for a level that is not a directory, as a link Linux reports 0777", async () => {
+      const state = join(home, ".local", "state", "domovoi")
+      await mkdir(state, { recursive: true })
+      const dependencies = fromSystemPlaces({ runtimeFileSystem: gated(state, { uid: me, mode: 0o120777 }) })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(state))
+      expect(dependencies.write).not.toHaveBeenCalled()
+    })
+
     it("stages under ~/.local/state/domovoi, making only the directories it needs", async () => {
       const dependencies = fromSystemPlaces({ runtimeFileSystem: offVolume() })
       expect(await runServiceCommand(["service", "install"], dependencies)).toBe(0)
