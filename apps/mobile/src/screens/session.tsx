@@ -142,13 +142,31 @@ const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWa
   )
 })
 
-function PolicyRefusal({ refusal }: {
+// Ruling Q356 A: the refusal's one remedy can go to the agent as a steer from
+// here, because the composer is not drawn under a refusal. The protocol
+// carries a single remedy string; frame 05's tone-coded alternatives wait on
+// a protocol change.
+function PolicyRefusal({ refusal, onTellAgent, sending, problem }: {
   refusal: Extract<ThreadEntry, { kind: "policy-refusal" }>
+  onTellAgent: ((text: string) => void) | undefined
+  sending: boolean
+  problem: string
 }) {
   return (
     <View className="gap-3">
       <Text variant="title" className="text-[24px] leading-[30px]">Nothing to approve</Text>
       <PolicyRefusalCards refusal={refusal} />
+      {onTellAgent ? (
+        <View className="gap-2">
+          <Button
+            title="Tell the agent"
+            shape="block"
+            disabled={sending}
+            onPress={() => onTellAgent(refusal.remedy)}
+          />
+          {problem ? <Text accessibilityRole="alert" variant="note" className="px-1 text-destructive">{problem}</Text> : null}
+        </View>
+      ) : null}
     </View>
   )
 }
@@ -502,6 +520,7 @@ export function SessionScreen({
   starting,
   startProblem,
   onStartLike,
+  onTellAgent,
 }: {
   detail: SessionDetail
   // The route can die while the thread is open; the screen says what is drawn
@@ -549,6 +568,8 @@ export function SessionScreen({
   starting: boolean
   startProblem: string
   onStartLike: (prompt: string, mode: PermissionMode) => void
+  // Sends a policy refusal's remedy to the agent as a steer (ruling Q356 A).
+  onTellAgent?: ((text: string) => void) | undefined
 }) {
   const [startOpen, setStartOpen] = useState(false)
   const [attachOpen, setAttachOpen] = useState(false)
@@ -623,7 +644,14 @@ export function SessionScreen({
           testID="thread"
         >
           <ConnectionBanner notice={notice} />
-          {detail.policyRefusal ? <PolicyRefusal refusal={detail.policyRefusal} /> : <>
+          {detail.policyRefusal ? (
+            <PolicyRefusal
+              refusal={detail.policyRefusal}
+              onTellAgent={access === "full" && detail.sending.can ? onTellAgent : undefined}
+              sending={sending}
+              problem={sendProblem}
+            />
+          ) : <>
           {/* The reason the phone was picked up goes above the reading, because
               scrolling a thread to find the decision is the slow path. */}
           {approvalId ? (

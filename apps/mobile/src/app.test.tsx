@@ -217,6 +217,36 @@ describe("App", () => {
     expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeOnTheScreen()
   })
 
+  // Ruling Q356 A: Tell the agent on a policy refusal sends the refusal's
+  // remedy to the session as a steer, through the same session.send a typed
+  // message uses.
+  it("sends a policy refusal's remedy to the agent", async () => {
+    const snapshot = workspace()
+    const session = snapshot.sessions.find((candidate) => candidate.id === audit.id)!
+    session.workspacePath = "/worktrees/repo-audit"
+    session.providerThreadId = "provider-thread-audit"
+    snapshot.thread.push({
+      id: "refusal-audit",
+      sessionId: audit.id,
+      kind: "policy-refusal",
+      operation: "Apply a production database migration",
+      command: "prisma migrate deploy --url $PROD_DATABASE_URL",
+      rule: "no writes to a production database",
+      setBy: "dana@acme.dev",
+      scope: "every machine on this account",
+      remedy: "Run it against acme_dev instead.",
+      createdAt: "2026-08-25T23:00:00.000Z",
+    })
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))
+    await settle()
+
+    const sent = socket.requests("session.send")
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.params).toMatchObject({ sessionId: audit.id, prompt: "Run it against acme_dev instead.", client: "phone" })
+  })
+
   it("sends one turn for a double tap on Send", async () => {
     const snapshot = workspace()
     const idle = snapshot.sessions.find((session) => session.id === audit.id)!

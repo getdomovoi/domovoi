@@ -648,6 +648,30 @@ export function App() {
     }
   }
 
+  // Ruling Q356 A: a policy refusal's remedy sent to the agent as a steer. It
+  // is a message like any other, so it goes through the same send and the
+  // same guard against a second tap, without the draft or its attachments.
+  const tellAgent = async (sessionId: string, text: string) => {
+    if (inFlightSend.current) return
+    inFlightSend.current = true
+    setSending(true)
+    setSendProblem("")
+    try {
+      const session = snapshot?.sessions.find((candidate) => candidate.id === sessionId)
+      await mutate("session.send", {
+        sessionId,
+        prompt: text,
+        client,
+        ...(session ? sendDelivery(session) : {}),
+      })
+    } catch (cause) {
+      setSendProblem(cause instanceof Error ? cause.message : "The message was not sent")
+    } finally {
+      inFlightSend.current = false
+      setSending(false)
+    }
+  }
+
   // An approval is the reason the phone exists, so it takes the whole screen
   // and the tab bar goes away until it is answered or dismissed.
   if (openApproval && (!tablet || explaining)) {
@@ -820,6 +844,7 @@ export function App() {
             starting={starting}
             startProblem={startProblem}
             onStartLike={(prompt, mode) => void startLike(openSession.id, prompt, mode)}
+            onTellAgent={(text) => void tellAgent(openSession.id, text)}
           />
           <SkillSheet
             open={skillsOpen}

@@ -308,6 +308,36 @@ describe("SessionScreen policy and queue states", () => {
     expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()
   })
 
+  // Ruling Q356 A: the refusal's remedy can be sent to the agent as a steer
+  // from the refusal itself. A watching phone cannot steer, so it gets no
+  // button.
+  it("tells the agent the remedy, and only from a phone that can steer", async () => {
+    const refusal = {
+      id: "refusal-1",
+      kind: "policy-refusal" as const,
+      operation: "Apply a production database migration",
+      command: "prisma migrate deploy --url $PROD_DATABASE_URL",
+      rule: "no writes to a production database",
+      setBy: "dana@acme.dev",
+      scope: "every machine on this account",
+      remedy: "Run it against acme_dev instead.",
+    }
+    const onTellAgent = jest.fn<(text: string) => void>()
+    const { props } = await draw({ onTellAgent })
+    const canSend = { ...props.detail, policyRefusal: refusal, approvalId: undefined, sending: { can: true as const, hint: undefined } }
+    await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={canSend} /></SafeAreaProvider>)
+
+    await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))
+    expect(onTellAgent).toHaveBeenCalledWith(refusal.remedy)
+
+    await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} access="watching" detail={canSend} /></SafeAreaProvider>)
+    expect(screen.queryByRole("button", { name: "Tell the agent" })).toBeNull()
+
+    // A session the daemon would refuse a send to offers nothing to press.
+    await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...canSend, sending: { can: false, reason: "Archived sessions are read-only." } }} /></SafeAreaProvider>)
+    expect(screen.queryByRole("button", { name: "Tell the agent" })).toBeNull()
+  })
+
   it("shows canonical queued state and cancels by the daemon queue id", async () => {
     const { props } = await draw()
     const queuedSend = {

@@ -419,18 +419,8 @@
         "THE RULE IT BROKE",
         "WHAT YOU CAN DO",
         "There is no approve button here, because no decision of yours can permit it.",
-        "Tell the agent"
-      ],
-      "presence": [
-        "Nothing to approve",
-        "Refused by policy",
-        "THE RULE IT BROKE",
-        "WHAT YOU CAN DO"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "frame 05 draws WHAT YOU CAN DO as rows with a green or amber dot each, and a button that tells the agent to take the alternative; the phone draws the refusal's one remedy as a paragraph and no button. The policy-refusal item carries a single remedy string, with no list of alternatives, tones or steer (decision D3 in the 2026-10-02 cross-check)"
-      }
+        "title=\"Tell the agent\""
+      ]
     },
     {
       "id": "launch.screen",
@@ -838,6 +828,11 @@
       "id": "machines.unpaired",
       "since": "2026-10-02",
       "note": "approved difference, ruling Q387 A: WHAT STAYS UNAVAILABLE lists Sessions, Machines and Machine settings, each with its reason. The design's Review row, No approvals are sitting somewhere unseen., is not drawn because the phone has no Review tab. Machine settings carries a reason the design does not draw: They live on a machine, so they wait until one is paired."
+    },
+    {
+      "id": "policy.screen",
+      "since": "2026-10-02",
+      "note": "ruling Q356 A: Tell the agent sends the refusal's one remedy to the agent as a steer, from the refusal itself. Still open, and waiting on a protocol change the ruling defers: frame 05 draws WHAT YOU CAN DO as several alternatives, each with a green or amber dot, and the policy-refusal item carries a single remedy string with no list, tones or per-alternative steer"
     }
   ],
   "scriptBacklog": {
