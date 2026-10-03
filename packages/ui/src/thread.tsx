@@ -271,6 +271,22 @@ function ArchivedSessionNotice({ session }: { session: SessionSummary }) {
 
 const threadClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
 
+// The design's paused notice, with copy that is true today: the turn ended and
+// the session holds nothing back, so there is nothing to resume (ruled Q361 A).
+function StoppedSessionNotice({ at }: { at: Date }) {
+  return (
+    <div
+      role="status"
+      aria-label="Session stopped"
+      className="flex flex-none flex-wrap items-center gap-[11px] border-b border-info-border bg-info-background px-4 py-[11px]"
+    >
+      <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-info" />
+      <span className="text-[12.5px] text-info-foreground">Stopped. The turn ended. The next message you send starts the next turn.</span>
+      <span className="font-machine text-[10.5px] text-info-dim">stopped {threadClock.format(at)} · from this client</span>
+    </div>
+  )
+}
+
 // v2 opens a conversation with one mono rule naming where the work happens, and
 // lets it scroll away. The session title is already in the command palette pill
 // at the top of the window, so a fixed banner would say it twice and take the
@@ -565,6 +581,14 @@ export function Thread({
     onPendingTransferTargetChange?.(machineId)
   }
   const [transferReceipt, setTransferReceipt] = useState<SessionTransferReceipt | null>(null)
+  // The turn this client stopped, and when. The wire has no paused state:
+  // session.pause ends the running turn and the next send starts another
+  // (ruled Q361 A). Any later turn retires the notice.
+  const [stopped, setStopped] = useState<{ turnId: string, at: Date }>()
+  const runningTurnId = active?.activeTurnId
+  useEffect(() => {
+    if (runningTurnId && stopped && runningTurnId !== stopped.turnId) setStopped(undefined)
+  }, [runningTurnId, stopped])
   const [pending, setPending] = useState(false)
   // Local only, and never a thread item. The daemon owns the thread, so an
   // in-flight message is shown beside it as a note, not forged into it.
@@ -867,8 +891,10 @@ export function Thread({
     // Stopping is a refusal to run more work in this session. Without this the
     // queue would leave at the boundary the stop itself created.
     if (queued) onQueuedChange(heldAfter(queued, "Held because this session was stopped. Send it when you want it to run."))
+    const turnId = active.activeTurnId
     try {
       await onPauseSession(active.id)
+      setStopped({ turnId, at: new Date() })
     } catch (cause) {
       setSendError(cause instanceof Error ? cause.message : "The session could not be paused")
     } finally {
@@ -997,6 +1023,9 @@ export function Thread({
 
   return (
     <main className="flex h-full min-w-0 flex-col bg-background">
+      {/* Shown once the stopped turn has ended, where the design draws its
+          session notice: a strip above the thread. */}
+      {stopped && !active.activeTurnId ? <StoppedSessionNotice at={stopped.at} /> : null}
       <ScrollArea className="min-h-0 flex-1" viewportRef={threadViewport} onViewportScroll={follow.onScroll}>
         {/* One column with the composer: 24px of side padding inside the
             maximum leaves the content box at --shell-thread, the composer
