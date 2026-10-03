@@ -165,6 +165,26 @@ describe("command links", () => {
     await expect(lstat(join(elsewhere, "domovoid"))).rejects.toThrow()
   })
 
+  // Review P3-3: a path whose parent is not a directory answers ENOTDIR; that
+  // is the not-a-directory refusal, not a thrown error.
+  it("refuses, rather than throws, when a parent is not a directory", async () => {
+    await rm(home, { recursive: true })
+    await writeFile(home, "a file where home should be")
+    const reason = "~/.local is not a directory, so Domovoi does not read or write there."
+    expect(await commandLinks("status", environment())).toEqual({ report: { available: false, reason } })
+    expect((await commandLinks("link", environment())).refused).toBe(reason)
+    await rm(home)
+    await mkdir(home)
+    race.afterRead = async (call, path) => {
+      if (call !== "lstat" || path !== bin()) return
+      race.afterRead = undefined
+      await rm(join(home, ".local"), { recursive: true })
+      await writeFile(join(home, ".local"), "now a file")
+    }
+    expect((await commandLinks("link", environment())).refused).toBe(reason)
+    expect(await readFile(join(home, ".local"), "utf8")).toBe("now a file")
+  })
+
   // Review P2-2: a ~/.local/bin that is a link (a stow-folded dotfiles
   // directory, say) is not read, written or cleaned through, for any action.
   it("reads, writes and removes nothing through a ~/.local or ~/.local/bin that is a link", async () => {

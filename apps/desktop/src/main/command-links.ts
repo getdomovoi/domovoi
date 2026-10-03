@@ -80,20 +80,37 @@ async function stillReads(path: string, target: string | undefined): Promise<boo
 // reported as missing; only linking makes them.
 type DirectoryState = { kind: "ready" } | { kind: "missing" } | { kind: "refused"; reason: string }
 
+const notDirectory = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOTDIR"
+
 async function directoryState(home: string): Promise<DirectoryState> {
   for (const [path, shown] of [[join(home, ".local"), "~/.local"], [join(home, ".local", "bin"), "~/.local/bin"]] as const) {
-    const found = await entry(path)
+    const refusedNotDirectory = { kind: "refused" as const, reason: `${shown} is not a directory, so Domovoi does not read or write there.` }
+    let found
+    try {
+      found = await entry(path)
+    } catch (error) {
+      // Review P3-3: a parent that is not a directory answers ENOTDIR.
+      if (notDirectory(error)) return refusedNotDirectory
+      throw error
+    }
     if (!found) return { kind: "missing" }
     if (found.isSymbolicLink()) return { kind: "refused", reason: `${shown} is a link to another directory, so Domovoi does not read or write there.` }
-    if (!found.isDirectory()) return { kind: "refused", reason: `${shown} is not a directory, so Domovoi does not read or write there.` }
+    if (!found.isDirectory()) return refusedNotDirectory
   }
   return { kind: "ready" }
 }
 
-// Makes each missing directory, checking the chain again after each one.
+// Makes each missing directory, checking the chain again after each one. A
+// parent that changed in between makes mkdir fail; the check that follows
+// says what is there now.
 async function makeDirectories(home: string): Promise<DirectoryState> {
   for (const path of [join(home, ".local"), join(home, ".local", "bin")]) {
-    if (!await entry(path)) await mkdir(path)
+    if (!await entry(path).catch(() => undefined)) {
+      await mkdir(path).catch((error: unknown) => {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== "ENOTDIR" && code !== "EEXIST") throw error
+      })
+    }
     const state = await directoryState(home)
     if (state.kind === "refused") return state
   }
