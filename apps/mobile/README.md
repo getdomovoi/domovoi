@@ -57,8 +57,10 @@ the native module.
 The installed app finds Metro on its own; it does not read the address the terminal prints:
 
 - iOS simulator: `localhost:8081`.
-- Android emulator or a phone on USB: `localhost:8081`, which `expo run:android` forwards to the
-  computer with `adb reverse`.
+- Android emulator: `10.0.2.2:8081`, the emulator's address for the computer
+  (`AndroidInfoHelpers.kt` in React Native).
+- An Android phone on USB: `localhost:8081`, which `expo run:android` forwards to the computer
+  with `adb reverse`.
 - A real iPhone: the computer's first local network address, written into the app when it was
   built (`ip.txt`, from React Native's `scripts/react-native-xcode.sh`). Allow the app's Local
   Network prompt. A rebuild on another network writes a new address.
