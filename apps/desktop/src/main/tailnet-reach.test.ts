@@ -37,12 +37,22 @@ function harness(options: {
   files?: Record<string, string>
   preflight?: string
   restart?: { ok: false; message: string }
+  conflict?: string
 } = {}) {
   const calls: string[] = []
   const files = new Map<string, string>(Object.entries(options.files ?? {}))
   let record = options.record
   let temporary = 0
+  // Timers are recorded, not run: a test runs the one it wants.
+  const timers: { run: () => void; ms: number; cleared: boolean }[] = []
   const deps: TailnetReachDependencies = {
+    timers: {
+      set: (run, ms) => { const timer = { run, ms, cleared: false }; timers.push(timer); return timer },
+      clear: (handle) => { (handle as { cleared: boolean }).cleared = true },
+    },
+    now: () => Date.parse("2026-10-02T12:00:00.000Z"),
+    ...(options.conflict ? { conflict: () => options.conflict } : {}),
+    recover: vi.fn(async () => { calls.push("recover") }),
     tailscale: vi.fn(async (args: readonly string[]) => {
       calls.push(`tailscale ${args.join(" ")}`)
       if (args[0] === "status") {
@@ -89,7 +99,8 @@ function harness(options: {
     preflight: vi.fn(async () => { calls.push("preflight"); return options.preflight }),
     restart: vi.fn(async (change) => { calls.push(`restart ${"set" in change ? "set" : "clear"}`); return options.restart ?? { ok: true as const } }),
   }
-  return { reach: new TailnetReach(deps), deps, calls, files, record: () => record }
+  const pending = () => timers.filter((timer) => !timer.cleared)
+  return { reach: new TailnetReach(deps), deps, calls, files, record: () => record, timers: pending }
 }
 
 describe("TailnetReach actions from the renderer", () => {
@@ -273,5 +284,145 @@ describe("turning TailnetReach off", () => {
       ok: false, reason: "failed", step: "restart",
       message: "The certificate and key were deleted, but the daemon did not restart: The service did not report ready.",
     })
+  })
+})
+
+// Q404 follow-up: a hand-set DOMOVOI_HOST beyond loopback keeps the saved
+// settings out of the in-app daemon (tailnet-reach-record.ts). The switch says
+// so rather than claim the daemon answers on the tailnet.
+describe("TailnetReach beside a hand-set DOMOVOI_HOST", () => {
+  const conflict = "DOMOVOI_HOST is set to 0.0.0.0 in this app's environment, so the daemon inside this app listens there and starts without the tailnet listener."
+
+  it("reports the switch on with the reason its settings are not used", async () => {
+    const { reach } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, conflict })
+    await expect(reach.status()).resolves.toMatchObject({ state: "on", ignored: conflict })
+  })
+
+  it("reports the switch off with the same reason", async () => {
+    const { reach } = harness({ conflict })
+    await expect(reach.status()).resolves.toMatchObject({ state: "off", ignored: conflict })
+  })
+
+  it("does not turn on, and asks Tailscale for nothing", async () => {
+    const { reach, calls } = harness({ conflict })
+    await expect(reach.turnOn()).resolves.toEqual({ ok: false, reason: "refused", step: "status", message: `${conflict} Nothing was changed.` })
+    expect(calls).toEqual([])
+  })
+
+  it("still turns off, deleting its own files", async () => {
+    const { reach, files } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, conflict })
+    await expect(reach.turnOff()).resolves.toMatchObject({ ok: true })
+    expect(files.size).toBe(0)
+  })
+})
+
+// Q404 follow-up: "Renews on its own." While the switch is on, the desktop
+// runs `tailscale cert --min-validity 720h` every 12 hours, the first time a
+// minute after the module loads. Tailscale returns the certificate it holds
+// unless that one is valid for less than 30 days, so a Let's Encrypt
+// certificate (90 days) is replaced about 30 days before it expires, with up
+// to 30 days of failed tries before it lapses. A failure is tried again after
+// an hour.
+describe("TailnetReach renewal", () => {
+  const renewedCall = `tailscale cert --cert-file ${tls}/.pending-1/${name}.crt --key-file ${tls}/.pending-1/${name}.key --min-validity 720h ${name}`
+
+  it("checks a minute after it starts while the switch is on, then every 12 hours", async () => {
+    const { reach, timers } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
+    await reach.startRenewal()
+    expect(timers().map((timer) => timer.ms)).toEqual([60_000])
+    await expect(reach.renew()).resolves.toBe("unchanged")
+    expect(timers().map((timer) => timer.ms)).toEqual([12 * 60 * 60_000])
+  })
+
+  it("does not schedule anything while the switch is off", async () => {
+    const { reach, timers, calls } = harness()
+    await reach.startRenewal()
+    expect(timers()).toEqual([])
+    await expect(reach.renew()).resolves.toBe("off")
+    expect(calls).toEqual([])
+  })
+
+  it("leaves its files and the daemon alone when Tailscale returns the same certificate", async () => {
+    const { reach, calls, deps } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
+    await expect(reach.renew()).resolves.toBe("unchanged")
+    expect(calls).toEqual([`directory ${tls}/.pending-1`, renewedCall, `remove directory ${tls}/.pending-1`])
+    expect(deps.restart).not.toHaveBeenCalled()
+  })
+
+  it("replaces only its own files and restarts once when the certificate changed", async () => {
+    const { reach, calls, files, deps } = harness({ record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key", [`${tls}/other.crt`]: "kept" } })
+    await expect(reach.renew()).resolves.toBe("renewed")
+    expect(calls).toEqual([
+      `directory ${tls}/.pending-1`,
+      renewedCall,
+      "preflight",
+      `move ${certPath} ${tls}/.pending-1/previous.crt`,
+      `move ${keyPath} ${tls}/.pending-1/previous.key`,
+      `move ${tls}/.pending-1/${name}.crt ${certPath}`,
+      `move ${tls}/.pending-1/${name}.key ${keyPath}`,
+      `restrict ${keyPath}`,
+      "restart set",
+      `remove directory ${tls}/.pending-1`,
+    ])
+    expect(deps.restart).toHaveBeenCalledWith({ set: { address: "100.101.102.103", name, certPath, keyPath } })
+    expect(files.get(certPath)).toBe(certificate)
+    expect(files.get(`${tls}/other.crt`)).toBe("kept")
+    await expect(reach.status()).resolves.not.toHaveProperty("renewalFailed")
+  })
+
+  it("keeps the old certificate and says so when Tailscale does not renew it, then tries again in an hour", async () => {
+    const { reach, files, timers, deps } = harness({ record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" }, cert: { code: 1, stderr: "tailscaled did not answer\n" } })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(files.get(certPath)).toBe("old certificate")
+    expect(deps.restart).not.toHaveBeenCalled()
+    await expect(reach.status()).resolves.toMatchObject({
+      state: "on",
+      renewalFailed: { at: "2026-10-02T12:00:00.000Z", message: `Tailscale did not renew the certificate for ${name}: tailscaled did not answer.` },
+    })
+    expect(timers().map((timer) => timer.ms)).toEqual([60 * 60_000])
+  })
+
+  it("keeps the old certificate while the daemon cannot restart", async () => {
+    const { reach, files, deps } = harness({ record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" }, preflight: "1 turn is running (Fix login)." })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(files.get(certPath)).toBe("old certificate")
+    expect(deps.restart).not.toHaveBeenCalled()
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: {
+      message: "A new certificate is ready, but the daemon cannot restart now: 1 turn is running (Fix login). The current certificate stays until the next try.",
+    } })
+  })
+
+  it("puts the old certificate back and starts the daemon as it was when the restart fails", async () => {
+    const { reach, files, calls } = harness({ record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" }, restart: { ok: false, message: "The daemon did not start again." } })
+    await expect(reach.renew()).resolves.toBe("failed")
+    expect(files.get(certPath)).toBe("old certificate")
+    expect(files.get(keyPath)).toBe("old key")
+    expect(calls.slice(-5)).toEqual([
+      `move ${tls}/.pending-1/previous.crt ${certPath}`,
+      `move ${tls}/.pending-1/previous.key ${keyPath}`,
+      `restrict ${keyPath}`,
+      "recover",
+      `remove directory ${tls}/.pending-1`,
+    ])
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: {
+      message: "A new certificate is ready, but the daemon did not restart: The daemon did not start again. The previous certificate was put back.",
+    } })
+  })
+
+  it("stops when the switch is turned off, and a new turn-on starts again", async () => {
+    const { reach, timers } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
+    await reach.startRenewal()
+    await reach.turnOff()
+    expect(timers()).toEqual([])
+    await reach.turnOn()
+    expect(timers().map((timer) => timer.ms)).toEqual([12 * 60 * 60_000])
+  })
+
+  it("waits while the switch is changing", async () => {
+    const { reach, timers } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
+    const changing = reach.turnOff()
+    await expect(reach.renew()).resolves.toBe("busy")
+    await changing
+    expect(timers()).toEqual([])
   })
 })

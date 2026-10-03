@@ -58,10 +58,17 @@ afterEach(async () => {
   await rm(root, { recursive: true, force: true })
 })
 
-function assemble(owned = true) {
+function assemble(owned = true, environment: Record<string, string> = {}) {
+  // The settings index.ts hands the in-app daemon at its next acquisition,
+  // and what they were when the daemon was restarted.
+  const settings: Record<string, string>[] = []
+  const restartedWith: Record<string, string>[] = []
   const endHandoff = vi.fn()
   const stopOwned = vi.fn(async () => {})
-  const restart = vi.fn(async () => ({ kind: "owned" as const, url: "ws://127.0.0.1:47831/rpc", token: "t" }))
+  const restart = vi.fn(async () => {
+    restartedWith.push(settings.at(-1) ?? {})
+    return { kind: "owned" as const, url: "ws://127.0.0.1:47831/rpc", token: "t" }
+  })
   const release = vi.fn()
   const update = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "plist", configurationPath: "service.json", daemonRunning: true as const }))
   const reach = createTailnetReach({
@@ -76,11 +83,12 @@ function assemble(owned = true) {
     service: async () => ({ update, status: async () => ({ installed: true, running: true, detail: "running" }) }),
     dataDirectory: data,
     home,
-    environment: { PATH: bin },
+    environment: { PATH: bin, ...environment },
     platform: "darwin",
     tailscaleLocations: [],
+    applySettings: (next) => { settings.push(next) },
   })
-  return { reach, stopOwned, restart, endHandoff, release, update }
+  return { reach, stopOwned, restart, endHandoff, release, update, settings, restartedWith }
 }
 
 describe.skipIf(process.platform === "win32")("TailnetReach on this machine's files", () => {
@@ -104,19 +112,22 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
   })
 
   it("stores a private certificate and key in the profile, records them for the in-app daemon, and restarts it", async () => {
-    const { reach, stopOwned, restart, endHandoff, release } = assemble()
+    const { reach, stopOwned, restart, endHandoff, release, restartedWith } = assemble()
     await expect(reach.turnOn()).resolves.toMatchObject({ ok: true, report: { state: "on", name, certificateExpiresAt: "2025-01-02T00:00:00.000Z" } })
     const tls = join(home, ".domovoi", "tls")
     expect(((await stat(tls)).mode & 0o777).toString(8)).toBe("700")
     expect(((await stat(join(tls, `${name}.key`))).mode & 0o777).toString(8)).toBe("600")
     expect(await readFile(join(tls, `${name}.crt`), "utf8")).toBe(certificate)
-    expect(savedTailnetReachEnvironment(data)).toEqual({
+    const expected = {
       DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
       DOMOVOI_TAILNET_ADDRESS: "100.101.102.103",
       DOMOVOI_TAILNET_TLS_CERT_PATH: join(tls, `${name}.crt`),
       DOMOVOI_TAILNET_TLS_KEY_PATH: join(tls, `${name}.key`),
       DOMOVOI_TAILNET_HOST: name,
-    })
+    }
+    expect(savedTailnetReachEnvironment(data, {})).toEqual(expected)
+    // The restarted daemon starts with them.
+    expect(restartedWith).toEqual([expected])
     expect(stopOwned).toHaveBeenCalledOnce()
     expect(restart).toHaveBeenCalledOnce()
     expect(endHandoff).toHaveBeenCalled()
@@ -125,13 +136,46 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
   })
 
   it("deletes only what it wrote when turned off, and forgets the settings", async () => {
-    const { reach } = assemble()
+    const { reach, restartedWith } = assemble()
     await reach.turnOn()
     const tls = join(home, ".domovoi", "tls")
     await writeFile(join(tls, "kept.crt"), "not Domovoi's")
     await expect(reach.turnOff()).resolves.toMatchObject({ ok: true, report: { state: "off" } })
     await expect(readdir(tls)).resolves.toEqual(["kept.crt"])
-    expect(savedTailnetReachEnvironment(data)).toEqual({})
+    expect(savedTailnetReachEnvironment(data, {})).toEqual({})
+    expect(restartedWith.at(-1)).toEqual({})
+  })
+
+  it("renews over its own files with --min-validity and restarts once when the certificate changed", async () => {
+    const { reach, restart } = assemble()
+    await reach.turnOn()
+    const tls = join(home, ".domovoi", "tls")
+    await expect(reach.renew()).resolves.toBe("unchanged")
+    expect(restart).toHaveBeenCalledOnce()
+    await writeFile(join(tls, `${name}.crt`), "an older certificate")
+    await expect(reach.renew()).resolves.toBe("renewed")
+    expect(restart).toHaveBeenCalledTimes(2)
+    expect(await readFile(join(tls, `${name}.crt`), "utf8")).toBe(certificate)
+    expect(((await stat(join(tls, `${name}.key`))).mode & 0o777).toString(8)).toBe("600")
+    await expect(readdir(tls)).resolves.toEqual([`${name}.crt`, `${name}.key`])
+    expect((await readFile(join(root, "calls.log"), "utf8")).trim().split("\n").at(-1)).toMatch(new RegExp(`^cert --cert-file \\S+ --key-file \\S+ --min-validity 720h ${name}$`))
+    reach.stopRenewal()
+  })
+
+  // Q404 follow-up: a hand-set DOMOVOI_HOST beyond loopback keeps the saved
+  // settings out of the in-app daemon, which starts without them.
+  it("refuses to turn on beside a hand-set DOMOVOI_HOST, and says why in the switch state", async () => {
+    const { reach } = assemble(true, { DOMOVOI_HOST: "0.0.0.0" })
+    const why = "DOMOVOI_HOST is set to 0.0.0.0 in this app's environment, so the daemon inside this app listens there and starts without the tailnet listener."
+    await expect(reach.status()).resolves.toMatchObject({ state: "off", ignored: why })
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: false, reason: "refused", message: `${why} Nothing was changed.` })
+  })
+
+  it("does not apply the in-app daemon's DOMOVOI_HOST to the login service", async () => {
+    const { reach, update } = assemble(false, { DOMOVOI_HOST: "0.0.0.0" })
+    await expect(reach.status()).resolves.not.toHaveProperty("ignored")
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true })
+    expect(update).toHaveBeenCalledOnce()
   })
 
   it("applies the change through the service update when the app runs on the login service", async () => {

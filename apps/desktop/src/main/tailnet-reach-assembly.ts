@@ -10,7 +10,13 @@ import type { DaemonServiceTailnetChange } from "@getdomovoi/daemon"
 import type { DaemonServiceOutcome, DaemonServiceStatusReport } from "./daemon-service.js"
 import type { DaemonModule } from "./daemon-module.js"
 import type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
-import { parseTailnetReachRecord, tailnetReachRecordFile, type TailnetReachRecord } from "./tailnet-reach-record.js"
+import {
+  parseTailnetReachRecord,
+  savedTailnetReachEnvironment,
+  tailnetHostConflict,
+  tailnetReachRecordFile,
+  type TailnetReachRecord,
+} from "./tailnet-reach-record.js"
 import { TailnetReach, type TailscaleRun } from "./tailnet-reach.js"
 
 // TailnetReach (Q404 A), assembled on first use: index.ts loads this module
@@ -74,6 +80,9 @@ export function createTailnetReach(input: {
   environment?: NodeJS.ProcessEnv
   platform?: NodeJS.Platform
   tailscaleLocations?: readonly string[]
+  // index.ts keeps these for the in-app daemon's next acquisition. They are
+  // handed over whenever the record changes, before any restart.
+  applySettings?: (settings: Record<string, string>) => void
 }): TailnetReach {
   const home = input.home ?? homedir()
   const environment = input.environment ?? process.env
@@ -123,9 +132,16 @@ export function createTailnetReach(input: {
         const pending = `${recordPath}.${process.pid}.pending`
         await writeFile(pending, `${JSON.stringify(record)}\n`, { mode: 0o600 })
         await publishFileDurably(pending, recordPath)
+        input.applySettings?.(savedTailnetReachEnvironment(input.dataDirectory, environment))
       },
-      remove: () => rm(recordPath, { force: true }),
+      remove: async () => {
+        await rm(recordPath, { force: true })
+        input.applySettings?.({})
+      },
     },
+    // Only the daemon inside this app reads this app's environment; a login
+    // service runs the settings it saved.
+    conflict: () => input.desktopDaemon.current()?.kind === "attached" ? undefined : tailnetHostConflict(environment),
     preflight: async () => {
       const daemon = await reached()
       if ("refusal" in daemon) return daemon.refusal

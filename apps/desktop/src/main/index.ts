@@ -2,7 +2,7 @@
 // of the app runs (see inherited-environment.ts).
 import { developmentEnvironment } from "./inherited-environment.js"
 import { homedir, hostname } from "node:os"
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 import { realpath, stat } from "node:fs/promises"
 import { join, resolve } from "node:path"
 
@@ -14,7 +14,6 @@ import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import type { DesktopDaemonService } from "./daemon-service.js"
 import type { TailnetReach } from "./tailnet-reach.js"
-import { savedTailnetReachEnvironment } from "./tailnet-reach-record.js"
 import { loadDaemonModule } from "./daemon-module.js"
 import { withServiceMismatch } from "./service-mismatch.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
@@ -148,14 +147,21 @@ const daemonSeam = developmentLoopModule
     })
   : withServiceMismatch(acquireLocalDaemon, () => readDaemonServiceRuntimeVersion())
 
+// TailnetReach (Q404 A): the tailnet listener the switch saved. The module that
+// reads the record loads only when one exists or the switch is used, so a
+// machine that never turned it on loads nothing new at startup.
+const tailnetReachSaved = existsSync(join(app.getPath("userData"), "tailnet-reach.json"))
+let tailnetSettings: Record<string, string> = tailnetReachSaved
+  ? (await import("./tailnet-reach-record.js")).savedTailnetReachEnvironment(app.getPath("userData"), process.env)
+  : {}
+
 // Attach to the profile's owner, or own a daemon only when the profile is free.
 const desktopDaemon = new DesktopDaemon(daemonSeam, () => ({
   // The window resolves its renderer target before the first acquisition, so a
   // development daemon is told the origin its renderer is actually served from,
   // as an override on top of process.env so the inherited bearer stays bound.
-  // TailnetReach (Q404 A): the tailnet listener the switch saved, if any.
   environment: process.env,
-  environmentOverrides: { ...savedTailnetReachEnvironment(app.getPath("userData")), ...mainRendererTarget && developmentDaemonOverrides(process.env, mainRendererTarget) },
+  environmentOverrides: { ...tailnetSettings, ...mainRendererTarget && developmentDaemonOverrides(process.env, mainRendererTarget) },
   homeDirectory: homedir(),
   machineLabel: hostname(),
   errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
@@ -180,12 +186,14 @@ const daemonService = (): Promise<DesktopDaemonService> => {
   )
   return desktopDaemonService
 }
-// TailnetReach (Q404 A), loaded on first use like the service above.
+// TailnetReach (Q404 A), loaded on first use like the service above, or after
+// startup when the switch is on, to renew its certificate.
 let tailnetReach: Promise<TailnetReach> | undefined
-const reach = (): Promise<TailnetReach> => tailnetReach ??= import("./tailnet-reach-assembly.js").then(
-  (assembly) => assembly.createTailnetReach({ desktopDaemon, daemon: daemonModule.module, service: daemonService, dataDirectory: app.getPath("userData") }),
-  (error: unknown) => { tailnetReach = undefined; throw error },
-)
+const reach = (): Promise<TailnetReach> => tailnetReach ??= import("./tailnet-reach-assembly.js").then((assembly) => {
+  const created = assembly.createTailnetReach({ desktopDaemon, daemon: daemonModule.module, service: daemonService, dataDirectory: app.getPath("userData"), applySettings: (next) => { tailnetSettings = next } })
+  void created.startRenewal()
+  return created
+}, (error: unknown) => { tailnetReach = undefined; throw error })
 const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
   console.error("Local daemon failed to release during desktop shutdown", error)
 })
@@ -481,6 +489,8 @@ if (!hasSingleInstanceLock) {
       }
       startupMetrics.mark("daemon-ready")
     })
+    // The switch is on: load it so it renews its certificate on its own.
+    if (tailnetReachSaved && !launchSmoke) void reach().catch(() => {})
     app.on("activate", () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })

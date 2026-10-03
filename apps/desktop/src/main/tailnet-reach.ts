@@ -53,6 +53,31 @@ export type TailnetReachDependencies = {
   // After a restart that failed, once the settings are gone again: starts the
   // daemon as it was before the switch was touched.
   recover?(): Promise<void>
+  // Why the daemon this app runs would not use the switch's settings (a
+  // hand-set DOMOVOI_HOST beyond loopback), or undefined.
+  conflict?(): string | undefined
+  // Renewal's timers and clock. Defaults: setTimeout, unref'd, and Date.now.
+  timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void }
+  now?(): number
+}
+
+// Renewal (Q404 follow-up): Tailscale's certificates come from Let's Encrypt
+// and last 90 days. `tailscale cert --min-validity 720h` returns the one it
+// holds unless that is valid for less than 30 days, so checking every 12
+// hours replaces it about 30 days before it expires and leaves 30 days of
+// failed tries before it lapses. The first check runs a minute after the
+// module loads, which a saved record does at startup; a failure is tried
+// again after an hour.
+export const renewalMinimumValidity = "720h"
+export const renewalCheckMs = 12 * 60 * 60_000
+export const renewalRetryMs = 60 * 60_000
+export const renewalFirstCheckMs = 60_000
+
+export type TailnetRenewal = "off" | "busy" | "unchanged" | "renewed" | "failed"
+
+const defaultTimers = {
+  set: (run: () => void, ms: number): unknown => setTimeout(run, ms).unref(),
+  clear: (handle: unknown) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 }
 
 const statusTimeoutMs = 10_000
@@ -105,8 +130,96 @@ function readTailnet(result: TailscaleResult | "missing"): Tailnet | { none: str
 
 export class TailnetReach {
   #busy = false
+  #renewalTimer: unknown
+  #renewalFailure: { at: string; message: string } | undefined
 
   constructor(private readonly deps: TailnetReachDependencies) {}
+
+  get #timers() {
+    return this.deps.timers ?? defaultTimers
+  }
+
+  #schedule(ms: number | undefined): void {
+    if (this.#renewalTimer !== undefined) this.#timers.clear(this.#renewalTimer)
+    this.#renewalTimer = ms === undefined ? undefined : this.#timers.set(() => { void this.renew() }, ms)
+  }
+
+  #fail(message: string): "failed" {
+    this.#renewalFailure = { at: new Date(this.deps.now?.() ?? Date.now()).toISOString(), message }
+    return "failed"
+  }
+
+  // Starts the renewal checks when the switch is on. Called when the module
+  // loads; turning the switch on or off starts or stops them as well.
+  async startRenewal(): Promise<void> {
+    if (await this.deps.record.read()) this.#schedule(renewalFirstCheckMs)
+  }
+
+  stopRenewal(): void {
+    this.#schedule(undefined)
+  }
+
+  // One renewal check. It writes only the recorded certificate and key, and
+  // restarts the daemon only when Tailscale handed back a different
+  // certificate. Any failure keeps the current certificate and is reported
+  // with the switch's state until a check succeeds.
+  async renew(): Promise<TailnetRenewal> {
+    if (this.#busy) {
+      this.#schedule(renewalRetryMs)
+      return "busy"
+    }
+    this.#busy = true
+    let result: TailnetRenewal = "failed"
+    try {
+      result = await this.#renew()
+      if (result === "unchanged" || result === "renewed" || result === "off") this.#renewalFailure = undefined
+      return result
+    } finally {
+      this.#busy = false
+      this.#schedule(result === "off" ? undefined : result === "failed" ? renewalRetryMs : renewalCheckMs)
+    }
+  }
+
+  async #renew(): Promise<TailnetRenewal> {
+    const record = await this.deps.record.read()
+    if (!record) return "off"
+    const { name, certPath, keyPath } = record
+    const pending = await this.deps.files.privateDirectory(this.deps.tlsDirectory)
+    try {
+      const pendingCert = `${pending}/${name}.crt`
+      const pendingKey = `${pending}/${name}.key`
+      const issued = await this.deps.tailscale(["cert", "--cert-file", pendingCert, "--key-file", pendingKey, "--min-validity", renewalMinimumValidity, name], certificateTimeoutMs)
+      if (issued === "missing") return this.#fail(`Domovoi found no tailscale command to renew the certificate for ${name}.`)
+      if (issued.code !== 0) return this.#fail(`Tailscale did not renew the certificate for ${name}: ${certificateRefusal(issued)}`)
+      const current = await this.deps.files.read(certPath).catch(() => undefined)
+      if (current?.equals(await this.deps.files.read(pendingCert))) return "unchanged"
+
+      const refusal = await this.deps.preflight()
+      if (refusal !== undefined) return this.#fail(`A new certificate is ready, but the daemon cannot restart now: ${refusal} The current certificate stays until the next try.`)
+      const previousCert = `${pending}/previous.crt`
+      const previousKey = `${pending}/previous.key`
+      const keptCert = current !== undefined
+      const keptKey = await this.deps.files.exists(keyPath)
+      if (keptCert) await this.deps.files.move(certPath, previousCert)
+      if (keptKey) await this.deps.files.move(keyPath, previousKey)
+      await this.deps.files.move(pendingCert, certPath)
+      await this.deps.files.move(pendingKey, keyPath)
+      await this.deps.files.restrict(keyPath)
+      const restarted = await this.deps.restart({ set: { address: record.address, name, certPath, keyPath } })
+      if (restarted.ok) return "renewed"
+      if (keptCert) await this.deps.files.move(previousCert, certPath)
+      if (keptKey) {
+        await this.deps.files.move(previousKey, keyPath)
+        await this.deps.files.restrict(keyPath)
+      }
+      await this.deps.recover?.()
+      return this.#fail(`A new certificate is ready, but the daemon did not restart: ${restarted.message} The previous certificate was put back.`)
+    } catch (cause) {
+      return this.#fail(`The certificate for ${name} could not be renewed: ${detail(cause instanceof Error ? cause.message : String(cause))}`)
+    } finally {
+      await this.deps.files.removeDirectory(pending).catch(() => {})
+    }
+  }
 
   #paths(name: string): { certPath: string; keyPath: string } {
     const separator = this.deps.tlsDirectory.includes("\\") && !this.deps.tlsDirectory.includes("/") ? "\\" : "/"
@@ -131,9 +244,12 @@ export class TailnetReach {
 
   async #onReport(record: TailnetReachRecord): Promise<TailnetReachReport> {
     const expiresAt = await this.#expiry(record.certPath)
+    const ignored = this.deps.conflict?.()
     return {
       state: "on", name: record.name, address: record.address, stored: this.#stored(record.name), httpsCertificates: true,
       ...(expiresAt ? { certificateExpiresAt: expiresAt } : {}),
+      ...(this.#renewalFailure ? { renewalFailed: { ...this.#renewalFailure } } : {}),
+      ...(ignored ? { ignored } : {}),
     }
   }
 
@@ -143,7 +259,11 @@ export class TailnetReach {
     if (record) return this.#onReport(record)
     const tailnet = readTailnet(await this.deps.tailscale(["status", "--json"], statusTimeoutMs))
     if ("none" in tailnet) return { state: "none", detail: tailnet.none }
-    return { state: "off", name: tailnet.name, address: tailnet.address, stored: this.#stored(tailnet.name), httpsCertificates: tailnet.httpsCertificates }
+    const ignored = this.deps.conflict?.()
+    return {
+      state: "off", name: tailnet.name, address: tailnet.address, stored: this.#stored(tailnet.name), httpsCertificates: tailnet.httpsCertificates,
+      ...(ignored ? { ignored } : {}),
+    }
   }
 
   // The renderer's request, as the IPC channel passes it on unread.
@@ -180,6 +300,8 @@ export class TailnetReach {
   }
 
   async #turnOn(): Promise<TailnetReachOutcome> {
+    const conflict = this.deps.conflict?.()
+    if (conflict) return { ok: false, reason: "refused", step: "status", message: `${conflict} Nothing was changed.` }
     const refused = await this.#refusal("status")
     if (refused) return refused
     const tailnet = readTailnet(await this.deps.tailscale(["status", "--json"], statusTimeoutMs))
@@ -245,6 +367,8 @@ export class TailnetReach {
         message: `${restarted.message} The certificate and key were deleted again, and the switch stays off.`,
       }
     }
+    this.#renewalFailure = undefined
+    this.#schedule(renewalCheckMs)
     return { ok: true, report: await this.#onReport(record) }
   }
 
@@ -266,6 +390,8 @@ export class TailnetReach {
       }
       await this.deps.record.remove()
     }
+    this.#schedule(undefined)
+    this.#renewalFailure = undefined
     const restarted = await this.deps.restart({ clear: true })
     if (!restarted.ok) {
       return {
