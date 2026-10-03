@@ -195,23 +195,22 @@ export function threadEntries(
   return { entries, omitted: mine.length - bounded.length }
 }
 
-// Ruling Q357 A draws only the latest receipt of the open turn in full. The
-// daemon writes receipts without a turn id today, so a receipt belongs to the
-// open turn when the session holds one and no message of yours has started
-// another since; a receipt that does carry a turn id must name that turn.
+// Ruling Q357 A draws only the latest receipt of the open turn in full. A
+// receipt belongs to the open turn when the session holds one and no message
+// of yours has started another since.
 //
-// Known limitation: a steer into the same running turn (from a desktop, say)
-// also writes a user item, so it folds the latest receipt to compact. Telling
-// a steer from a new turn needs the daemon's usage digest: a thread item's
-// turnId is that digest, not the raw provider id in session.activeTurnId.
+// Known limitation: a thread item's turnId is the daemon's usage digest, not
+// the raw provider id in session.activeTurnId, so the two cannot be compared.
+// That is why a steer into the same running turn (from a desktop, say) still
+// folds the latest receipt to compact: its user item looks like a new turn.
+// For the same reason a receipt's own turnId is not compared and does not
+// decide whether it is current; the scan rule alone does.
 function currentReceiptIndex(items: readonly ThreadItem[], activeTurnId: string | undefined): number | undefined {
   if (!activeTurnId) return undefined
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index]!
     if (item.kind === "user") return undefined
-    if (item.kind === "receipt") {
-      return item.turnId === undefined || item.turnId === activeTurnId ? index : undefined
-    }
+    if (item.kind === "receipt") return index
   }
   return undefined
 }

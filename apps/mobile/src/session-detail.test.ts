@@ -136,6 +136,14 @@ describe("current receipt", () => {
     expect(currents(true, [receipt("r1", "2026-08-25T21:40:00.000Z"), you("u1", "2026-08-25T21:50:00.000Z")])).toEqual([false])
   })
 
+  // A thread item's turnId is the daemon's usage digest (64 hex), never the
+  // raw provider id in session.activeTurnId, so a receipt's turnId cannot say
+  // whether it belongs to the open turn and must not make it history.
+  it("keeps a receipt current when it carries the daemon's digest turn id", () => {
+    const digest = "a3f1".repeat(16)
+    expect(currents(true, [{ ...receipt("r1", "2026-08-25T21:40:00.000Z"), turnId: digest }])).toEqual([true])
+  })
+
   it("marks nothing current while no turn is running", () => {
     expect(currents(false, [receipt("r1", "2026-08-25T21:40:00.000Z")])).toEqual([false])
   })
