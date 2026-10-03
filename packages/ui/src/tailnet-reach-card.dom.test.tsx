@@ -3,7 +3,7 @@ import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { TailnetReachCard, useTailnetReach, type TailnetReachSource } from "./tailnet-reach-card"
+import { TailnetReachCard, tailnetReachDesktopDeadlineMs, useTailnetReach, type TailnetReachSource } from "./tailnet-reach-card"
 
 // TailnetReach (Q404 A), the card in desktop Settings, from TailnetReach in
 // the v2 handoff. Every state is drawn from what the desktop and the daemon
@@ -495,6 +495,52 @@ describe("reading again while Settings stays open", () => {
     await act(async () => { document.dispatchEvent(new Event("visibilitychange")) })
     await settle()
     expect(reads).toHaveLength(2)
+  })
+
+  // Codex review round 7 (P3): a desktop status that never answers must not
+  // hold automatic reads forever. Past the deadline the listener is read again
+  // on each trigger; the desktop is not asked again while its answer is still
+  // pending, and is asked once more after it settles.
+  it("reads the listener again past the desktop's deadline, and asks the desktop once more only after it answers", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] })
+    const reads: { resolve(value: unknown): void }[] = []
+    const now = { listener: { state: "off" } as TailnetListenerStatus }
+    const ask = vi.fn((action: "status" | "on" | "off"): Promise<unknown> => {
+      if (action !== "status") return Promise.resolve({ ok: true, report: off })
+      return new Promise((resolve) => { reads.push({ resolve }) })
+    })
+    const listener = vi.fn(async () => now.listener)
+    render(<Harness source={{ act: ask, listener, inApp: true }} />)
+    await settle()
+    expect(reads).toHaveLength(1)
+    expect(listener).toHaveBeenCalledTimes(1)
+    await act(async () => { vi.advanceTimersByTime(tailnetReachDesktopDeadlineMs - 1) })
+    await settle()
+    expect(listener).toHaveBeenCalledTimes(1)
+    await act(async () => { vi.advanceTimersByTime(1) })
+    await settle()
+    expect(listener).toHaveBeenCalledTimes(2)
+    expect(reads).toHaveLength(1)
+    expect(within(region()).getByText("Not known")).toBeTruthy()
+    expect(within(region()).getByText("The desktop did not answer.")).toBeTruthy()
+    // The next read shares the pending desktop answer and ends at its own
+    // deadline; a trigger meanwhile is one more read after it.
+    now.listener = expired
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    await settle()
+    expect(listener).toHaveBeenCalledTimes(2)
+    await act(async () => { vi.advanceTimersByTime(tailnetReachDesktopDeadlineMs) })
+    await settle()
+    expect(listener).toHaveBeenCalledTimes(3)
+    expect(reads).toHaveLength(1)
+    reads[0]!.resolve(on)
+    await settle()
+    expect(within(region()).getByText("Not answering")).toBeTruthy()
+    expect(within(region()).getByText(expired.reason)).toBeTruthy()
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    await settle()
+    expect(reads).toHaveLength(2)
+    expect(listener).toHaveBeenCalledTimes(4)
   })
 
   it("keeps what a change read over a read that started before it", async () => {

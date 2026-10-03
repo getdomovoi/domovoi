@@ -48,6 +48,15 @@ export type TailnetReachController = {
 
 // How often an open card reads the switch and tailnet.status again.
 const tailnetReachRereadMs = 60_000
+// How long an automatic read waits for the desktop's status before it counts
+// as unanswered: the workspace's request budget for the daemon half
+// (use-workspace.ts requestMs), so neither half holds the next read longer.
+export const tailnetReachDesktopDeadlineMs = 120_000
+
+// A source call as a promise, even when it throws instead of answering.
+function attempt<T>(run: () => Promise<T>): Promise<T> {
+  try { return Promise.resolve(run()) } catch (cause) { return Promise.reject(cause) }
+}
 
 // One controller serves the Settings card and the pairing card, so both draw
 // the same switch. The source object may be rebuilt on every render; only
@@ -62,25 +71,45 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
   const [failure, setFailure] = useState<TailnetReachController["failure"]>()
   const [revealed, setRevealed] = useState(0)
   const reading = useRef(0)
-
-  // listened settles once tailnet.status has answered or failed; the
-  // desktop's answer is in when read itself settles.
-  const read = useCallback(async (): Promise<{ listened: Promise<void> }> => {
-    const current = sourceRef.current
-    if (!current) return { listened: Promise.resolve() }
-    const request = ++reading.current
-    // Each answer is drawn as it arrives: a daemon slow to answer
-    // tailnet.status does not hold back the desktop's switch.
-    // A restarted daemon answers it once its client reconnects.
-    const listened = current.listener?.().then((value) => { if (request === reading.current) setListener(value) }, () => { if (request === reading.current) setListener(undefined) }) ?? Promise.resolve()
-    try {
-      const answer = parseTailnetReachReport(await current.act("status"))
-      if (request === reading.current) { setReport(answer); setReadError(undefined) }
-    } catch (cause) {
-      if (request === reading.current) setReadError(cause instanceof Error ? cause.message : "The desktop did not answer.")
-    }
-    return { listened }
+  // The desktop's status call still pending, if any. Off, each one runs
+  // tailscale status, so an automatic read shares a pending one instead of
+  // starting another; an explicit check starts its own.
+  const pending = useRef<Promise<unknown>>(undefined)
+  const status = useCallback((current: TailnetReachSource, shared: boolean): Promise<unknown> => {
+    if (shared && pending.current) return pending.current
+    const call = attempt(() => current.act("status"))
+    pending.current = call
+    const settled = () => { if (pending.current === call) pending.current = undefined }
+    call.then(settled, settled)
+    return call
   }, [])
+
+  // Each answer is drawn as it arrives: a daemon slow to answer tailnet.status
+  // does not hold back the desktop's switch. A restarted daemon answers it
+  // once its client reconnects. desktop settles with the desktop's answer or
+  // failure, listened once tailnet.status has answered or failed. An automatic
+  // read's desktop half also settles at the deadline, as a failure; the
+  // desktop's answer is still drawn if it arrives before the next read.
+  const read = useCallback((automatic = false): { desktop: Promise<void>; listened: Promise<void> } => {
+    const current = sourceRef.current
+    if (!current) return { desktop: Promise.resolve(), listened: Promise.resolve() }
+    const request = ++reading.current
+    const listened = current.listener
+      ? attempt(current.listener).then((value) => { if (request === reading.current) setListener(value) }, () => { if (request === reading.current) setListener(undefined) })
+      : Promise.resolve()
+    const failed = (cause: unknown) => { if (request === reading.current) setReadError(cause instanceof Error ? cause.message : "The desktop did not answer.") }
+    const answered = status(current, automatic).then(parseTailnetReachReport).then(
+      (answer) => { if (request === reading.current) { setReport(answer); setReadError(undefined) } },
+      failed,
+    )
+    const desktop = automatic
+      ? new Promise<void>((resolve) => {
+        const deadline = setTimeout(() => { failed(undefined); resolve() }, tailnetReachDesktopDeadlineMs)
+        void answered.then(() => { clearTimeout(deadline); resolve() })
+      })
+      : answered
+    return { desktop, listened }
+  }, [status])
 
   // Review of PR #713 (P2): the switch and the listener also change on their
   // own, with Settings open: a renewal fails, or the daemon refuses the
@@ -92,6 +121,10 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
   // These reads, and the first, run one at a time until both answers are in or
   // failed; what comes in meanwhile is one more read after it, if the window
   // is still shown and no change runs by then.
+  //
+  // Codex review round 7 (P3): the desktop half is bounded by its deadline,
+  // after which the next read goes ahead, reading the listener again and
+  // sharing the desktop's pending answer.
   const changing = useRef(false)
   const automatic = useRef({ running: false, again: false })
   const readOnItsOwn = useCallback((first = false): void => {
@@ -108,7 +141,8 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
       state.again = false
       readOnItsOwn()
     }
-    read().then(({ listened }) => listened).then(done, done)
+    const { desktop, listened } = read(true)
+    Promise.all([desktop, listened]).then(done, done)
   }, [read])
 
   const present = source !== undefined
@@ -141,13 +175,13 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
     }
     if (outcome.ok) setReport(outcome.report)
     else setFailure({ direction, outcome })
-    await read()
+    await read().desktop
     changing.current = false
     setRunning(undefined)
     return outcome
   }, [read, report?.state])
 
-  const check = useCallback(() => { setFailure(undefined); void read() }, [read])
+  const check = useCallback(() => { setFailure(undefined); read() }, [read])
   const turnOn = useCallback(() => change("on"), [change])
   const turnOff = useCallback(() => change("off"), [change])
   const reveal = useCallback(() => setRevealed((count) => count + 1), [])
