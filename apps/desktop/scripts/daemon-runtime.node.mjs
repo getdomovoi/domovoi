@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join, sep } from "node:path"
 import test from "node:test"
 
-import { fetchNodeArchive, nodePins, nodeVersion, proveDaemonRuns, runtimeTarget, sha256Of, writeDaemonRuntimeManifest } from "./daemon-runtime.mjs"
+import { assertShippedTreeContained, fetchNodeArchive, nodePins, nodeVersion, proveDaemonRuns, runtimeTarget, sha256Of, writeCommandLaunchers, writeDaemonRuntimeManifest } from "./daemon-runtime.mjs"
 import { createHash } from "node:crypto"
 
 test("pins one Node build per platform and architecture the desktop ships for", () => {
@@ -568,6 +568,47 @@ test("records the digest of every file in the daemon's dist, and refuses anythin
     await rm(join(daemonRoot, "dist", "nested"), { recursive: true })
     await symlink(join(daemonRoot, "dist", "public.js"), join(daemonRoot, "dist", "linked.js"))
     await assert.rejects(writeDaemonRuntimeManifest({ daemonRoot, manifestPath }), /linked\.js is not a regular file/)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Q336 A: the app links domovoid into ~/.local/bin. The link names a launcher
+// inside the runtime, which runs the daemon with the Node program shipped
+// beside it, found through any chain of links to the launcher.
+test("ships a domovoid launcher that runs the shipped daemon through a link to it", { skip: process.platform === "win32" }, async () => {
+  const { chmod, mkdir, realpath, symlink } = await import("node:fs/promises")
+  const { execFile } = await import("node:child_process")
+  const { promisify } = await import("node:util")
+  const root = await mkdtemp(join(tmpdir(), "domovoi runtime launcher-"))
+  try {
+    const runtime = join(root, "daemon-runtime")
+    await mkdir(join(runtime, "node", "bin"), { recursive: true })
+    await mkdir(join(runtime, "daemon", "dist"), { recursive: true })
+    // A stand-in for the pinned program: it prints the arguments it was given.
+    await writeFile(join(runtime, "node", "bin", "node"), "#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+    await chmod(join(runtime, "node", "bin", "node"), 0o755)
+    await writeFile(join(runtime, "daemon", "dist", "index.js"), "")
+    assert.deepEqual(await writeCommandLaunchers({ root: runtime, platform: process.platform }), ["domovoid"])
+    const bin = join(root, "local bin")
+    await mkdir(bin)
+    await symlink(join(runtime, "bin", "domovoid"), join(bin, "domovoid"))
+    await symlink(join(bin, "domovoid"), join(root, "second link"))
+    for (const called of [join(runtime, "bin", "domovoid"), join(bin, "domovoid"), join(root, "second link")]) {
+      const { stdout } = await promisify(execFile)(called, ["service", "status"])
+      assert.deepEqual(stdout.trim().split("\n"), [join(await realpath(runtime), "daemon", "dist", "index.js"), "service", "status"])
+    }
+    assert.equal(await assertShippedTreeContained(runtime), 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("ships no launcher on Windows, where nothing is linked", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-launcher-win-"))
+  try {
+    assert.deepEqual(await writeCommandLaunchers({ root, platform: "win32" }), [])
+    await assert.rejects(readFile(join(root, "bin", "domovoid")))
   } finally {
     await rm(root, { recursive: true, force: true })
   }

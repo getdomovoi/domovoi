@@ -89,6 +89,17 @@ if (runtimeProbe.timedOut || runtimeProbe.code !== 0 || runtimeProbe.stdout.trim
   throw new Error(`${description} shipped daemon runtime printed ${JSON.stringify(runtimeProbe.stdout.trim())} for --version, expected ${daemonManifest.version}`)
 }
 process.stdout.write(`shipped daemon runtime runs: ${runtimeDaemon} --version printed ${daemonManifest.version} under ${runtimeNode}\n`)
+// Q336 A: the launcher the desktop links into ~/.local/bin, run as the link
+// would run it. Windows ships none.
+if (process.platform !== "win32") {
+  const launcher = join(resourcesDirectory, "daemon-runtime", "bin", "domovoid")
+  const launched = await runSmokeProcess({ command: launcher, args: ["--version"], cwd: desktopRoot, env: process.env, timeoutMs: 30_000 })
+  if (launched.timedOut || launched.code !== 0 || launched.stdout.trim() !== daemonManifest.version) {
+    reportSmokeOutput(launched)
+    throw new Error(`${description} shipped domovoid launcher at ${launcher} printed ${JSON.stringify(launched.stdout.trim())} for --version, expected ${daemonManifest.version}`)
+  }
+  process.stdout.write(`shipped domovoid launcher runs: ${launcher} --version printed ${daemonManifest.version}\n`)
+}
 
 const timeoutMs = launchSmokeTimeoutMs({ platform: process.platform, env: process.env })
 

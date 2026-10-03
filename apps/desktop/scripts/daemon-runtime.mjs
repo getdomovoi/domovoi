@@ -389,6 +389,35 @@ export async function writeDaemonRuntimeManifest({ daemonRoot, manifestPath }) {
   return digests
 }
 
+// Q336 A (2026-10-02): the desktop links domovoid into ~/.local/bin
+// (src/main/command-links.ts), and the link names this launcher. It follows
+// every link to itself back to the runtime it ships in, so it runs the daemon
+// with the Node program beside it wherever the link sits and wherever the app
+// moves. Only domovoid: the runtime ships the daemon, not the domovoi CLI.
+// Windows links nothing, so it gets no launcher.
+const commandLauncher = `#!/bin/sh
+# domovoid, from the Domovoi app's daemon runtime.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case $link in
+    /*) self=$link ;;
+    *) self=$(dirname "$self")/$link ;;
+  esac
+done
+runtime=$(CDPATH= cd -- "$(dirname -- "$self")/.." && pwd -P) || exit 1
+exec "$runtime/node/bin/node" "$runtime/daemon/dist/index.js" "$@"
+`
+
+export async function writeCommandLaunchers({ root, platform }) {
+  if (platform === "win32") return []
+  await mkdir(join(root, "bin"), { recursive: true })
+  const launcher = join(root, "bin", "domovoid")
+  await writeFile(launcher, commandLauncher, { mode: 0o755 })
+  await chmod(launcher, 0o755)
+  return ["domovoid"]
+}
+
 // Bytes on disk, links counted once as links: pnpm's store is reached through
 // symlinks, and following them would count every package several times.
 export async function directoryBytes(path) {
@@ -414,6 +443,8 @@ export async function prepareDaemonRuntime({
   const daemonEntry = await deployDaemon({ repositoryRoot, destination: join(output, "daemon"), run })
   const pruned = await pruneDaemonRuntime(join(output, "daemon"), { platform, arch })
   log(`pruned ${pruned.files} entries, ${(pruned.bytes / 1048576).toFixed(1)} MB, the runtime never loads on ${target.key}`)
+  const launchers = await writeCommandLaunchers({ root: output, platform })
+  if (launchers.length > 0) log(`wrote the ${launchers.join(", ")} launcher in daemon-runtime/${target.key}/bin`)
   // After the last change to the tree: this, not the cleanup above, decides.
   const links = await assertShippedTreeContained(output)
   log(`${links} link${links === 1 ? "" : "s"} in daemon-runtime/${target.key}, every one relative and inside it`)
