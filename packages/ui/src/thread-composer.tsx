@@ -296,9 +296,11 @@ export function ThreadComposer({
         // v2 draws the field with no box of its own: it sits straight on
         // the card. The dark variant on the shared Textarea has to be
         // turned off by name, or it paints a panel the design never draws.
+        // Its md:text-sm is overridden the same way, at the same breakpoint,
+        // or the field renders at 14px on every desktop width.
         className={slashOpen
           ? "sr-only"
-          : "max-h-[172px] min-h-[22px] resize-none overflow-y-auto border-0 bg-transparent p-0 text-[13.5px] leading-[1.6] shadow-none [field-sizing:content] focus-visible:ring-0 dark:bg-transparent"}
+          : "max-h-[172px] min-h-[22px] resize-none overflow-y-auto border-0 bg-transparent p-0 text-[13.5px] leading-[1.6] shadow-none [field-sizing:content] focus-visible:ring-0 md:text-[13.5px] dark:bg-transparent"}
         placeholder={surface === "web" && connected
           ? "Steer it, or queue the next message"
           : composerPlaceholder({ offline: !connected, working: turnRunning })}
