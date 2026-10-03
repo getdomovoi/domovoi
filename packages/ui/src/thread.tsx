@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArchiveIcon,
   ArrowDownIcon,
@@ -99,8 +99,26 @@ import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
 import { ThreadComposer } from "./thread-composer"
 import { attachmentName, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
-import { NothingHasRunYet, WorktreeReadyHeader } from "./thread-new-session"
-import { startOpenerRef } from "./start-handoff"
+import { loadingLineRef, startOpenerRef } from "./start-handoff"
+
+// The fresh-start panel is drawn only on a session nothing has run in, so its
+// code loads on first use, and at idle once the shell has painted (the shell
+// prefetches it with the surfaces). Both pieces come from one chunk.
+const loadFreshStart = () => import("./thread-new-session")
+export const freshStartPanel = { prefetch: () => { void loadFreshStart().catch(() => undefined) } }
+const WorktreeReadyHeader = lazy(async () => ({ default: (await loadFreshStart()).WorktreeReadyHeader }))
+const NothingHasRunYet = lazy(async () => ({ default: (await loadFreshStart()).NothingHasRunYet }))
+
+// The line the panel's code loads behind, registered by identity so the start
+// flow's focus rules hold for it (start-handoff.ts). It takes no focus of its
+// own: the thread is already open and the start flow decides where focus is.
+function FreshStartLoading() {
+  const line = useRef<HTMLParagraphElement>(null)
+  useEffect(() => loadingLineRef(line.current), [])
+  return (
+    <p ref={line} role="status" tabIndex={-1} className="font-machine text-mono-xs text-faint outline-none">Opening the fresh-start panel</p>
+  )
+}
 
 // The states name a meaning rather than a colour now, so the palette lives in
 // StatusDot alone instead of being restated per surface.
@@ -1084,13 +1102,21 @@ export function Thread({
       {/* Shown once the stopped turn has ended, where the design draws its
           session notice: a strip above the thread. */}
       {stoppedAt && !active.activeTurnId ? <StoppedSessionNotice at={stoppedAt} /> : null}
-      {freshWorktree ? <WorktreeReadyHeader workspacePath={freshWorktree} baseCommit={active.baseCommit} /> : null}
+      {freshWorktree ? (
+        <Suspense fallback={null}>
+          <WorktreeReadyHeader workspacePath={freshWorktree} baseCommit={active.baseCommit} />
+        </Suspense>
+      ) : null}
       <ScrollArea className="min-h-0 flex-1" viewportRef={threadViewport} onViewportScroll={follow.onScroll}>
         {/* One column with the composer: 24px of side padding inside the
             maximum leaves the content box at --shell-thread, the composer
             card's width. */}
         <div data-thread-column="" className="mx-auto flex w-full max-w-[calc(var(--shell-thread)+3rem)] flex-col gap-5 px-6 pt-6 pb-14">
-          {freshWorktree ? <NothingHasRunYet runtime={active.runtime} /> : (
+          {freshWorktree ? (
+            <Suspense fallback={<FreshStartLoading />}>
+              <NothingHasRunYet runtime={active.runtime} />
+            </Suspense>
+          ) : (
             <ThreadStartLine
               {...(snapshot.project ? { project: snapshot.project.name, branch: snapshot.project.branch } : {})}
               {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}

@@ -2,9 +2,27 @@ import { demoWorkspace, maximumEffectiveClientThreadItems, type PermissionMode, 
 import { cleanup, render, screen, within } from "@testing-library/react"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { isLoadingLine } from "./start-handoff"
 import { Thread } from "./workspace-shell.js"
 
-afterEach(cleanup)
+// The panel's code loads on first use. The first test holds its chunk back
+// until it has seen the loading line; the module is then cached, so every
+// later test gets it at once.
+const chunk = vi.hoisted(() => {
+  let release = () => {}
+  const open = new Promise<void>((resolve) => { release = resolve })
+  return { open, release, held: false }
+})
+vi.mock("./thread-new-session", async (importOriginal) => {
+  if (chunk.held) await chunk.open
+  return importOriginal()
+})
+
+afterEach(() => {
+  cleanup()
+  // A held chunk is let go even when the holding test failed first.
+  chunk.release()
+})
 
 function freshSession(permissionMode: PermissionMode = "ask", auto = false): WorkspaceSnapshot {
   const snapshot = structuredClone(demoWorkspace)
@@ -61,13 +79,35 @@ function renderThread(snapshot: WorkspaceSnapshot, surface: "desktop" | "web" = 
   )
 }
 
+// The panel is drawn only on a session nothing has run in, so its code loads
+// on first use behind the registered loading line, as a surface's does. The
+// line takes no focus of its own: the start flow decides where focus is.
+it("loads the panel's code on first use behind the registered loading line", async () => {
+  chunk.held = true
+  renderThread(freshSession())
+
+  const line = screen.getByText("Opening the fresh-start panel")
+  expect(line.getAttribute("role")).toBe("status")
+  expect(isLoadingLine(line)).toBe(true)
+  expect(document.activeElement).not.toBe(line)
+  expect(screen.queryByRole("heading", { name: "Nothing has run yet" })).toBeNull()
+  expect(screen.queryByRole("status", { name: "Worktree ready" })).toBeNull()
+
+  chunk.release()
+  expect(await screen.findByRole("heading", { name: "Nothing has run yet" })).toBeTruthy()
+  expect(screen.getByRole("status", { name: "Worktree ready" })).toBeTruthy()
+  expect(screen.queryByText("Opening the fresh-start panel")).toBeNull()
+  expect(isLoadingLine(line)).toBe(false)
+})
+
 // Ruled Q368 A: the header, title, body and placeholder as drawn; the rows
 // only from the session's permission mode and checkpoint policy; no starters,
 // which need a suggestion source.
-it.each(["desktop", "web"] as const)("draws Nothing has run yet on a %s session with an empty thread", (surface) => {
+it.each(["desktop", "web"] as const)("draws Nothing has run yet on a %s session with an empty thread", async (surface) => {
   renderThread(freshSession(), surface)
 
-  const header = screen.getByRole("status", { name: "Worktree ready" })
+  // The panel's code loads on first use.
+  const header = await screen.findByRole("status", { name: "Worktree ready" })
   expect(header.textContent).toContain("Worktree ready")
   expect(header.textContent).toContain("wt-search-index at 8f3c1de")
   expect(screen.getByRole("heading", { name: "Nothing has run yet" })).toBeTruthy()
@@ -90,13 +130,13 @@ it.each([
     "Take a checkpoint before any command you allow at a gate, so the worktree can go back to it.",
   ]],
   ["opencode", "ask", ["Read the repository. Edits and shell commands are refused."]],
-] as const)("says what %s in %s will do first, from what the daemon enforces", (provider, mode, rows) => {
+] as const)("says what %s in %s will do first, from what the daemon enforces", async (provider, mode, rows) => {
   const snapshot = freshSession(mode)
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
   active.runtime = { ...active.runtime, provider }
   renderThread(snapshot)
 
-  const list = screen.getByRole("list", { name: "What it will do first" })
+  const list = await screen.findByRole("list", { name: "What it will do first" })
   expect(within(list).getAllByRole("listitem").map((row) => row.textContent)).toEqual([...rows])
 })
 
@@ -114,10 +154,10 @@ it.each([
     "Write and run inside the worktree, step after step. Commands Auto or a rule allows run without stopping. Any other command still stops it at a gate, as do hard gates and policy refusals.",
     "Take a checkpoint before any command you allow at a gate. Commands that Auto or a rule allows run without one.",
   ]],
-] as const)("says what %s (auto %s) will do first, and nothing it will not", (mode, auto, rows) => {
+] as const)("says what %s (auto %s) will do first, and nothing it will not", async (mode, auto, rows) => {
   renderThread(freshSession(mode, auto))
 
-  const list = screen.getByRole("list", { name: "What it will do first" })
+  const list = await screen.findByRole("list", { name: "What it will do first" })
   expect(within(list).getAllByRole("listitem").map((row) => row.textContent)).toEqual([...rows])
 })
 
