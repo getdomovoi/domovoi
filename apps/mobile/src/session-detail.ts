@@ -34,7 +34,13 @@ export type ThreadEntry =
     operation: string
     explanation: string | undefined
     client: string
-    credential: string | undefined
+    // The client id a hello declared, which legacy receipts carry. No paired
+    // credential vouches for it, so it is shown as declared, never as a
+    // credential (packages/ui/src/session-history.ts names it the same way).
+    declaredClient: string | undefined
+    // Whether the decision came over a connection the daemon verified, which
+    // is what current receipts record instead of a declared id.
+    connected: boolean
     checkpoint: string
     // True only when the daemon took this checkpoint before running the
     // command: an allow that names a commit. A deny records the session's
@@ -102,7 +108,7 @@ function elapsed(ms: number): string {
   return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
 }
 
-function credentialReference(clientId: string): string {
+function clientReference(clientId: string): string {
   const normalized = clientId.replace(/^device-/, "device ")
   if (normalized.length <= 16) return normalized
   return `${normalized.slice(0, 11)}…${normalized.slice(-4)}`
@@ -139,7 +145,8 @@ function entryFor(item: ThreadItem): ThreadEntry {
         operation: item.operation,
         explanation: item.explanation,
         client: item.client,
-        credential: item.clientId ? credentialReference(item.clientId) : undefined,
+        declaredClient: item.clientId ? clientReference(item.clientId) : undefined,
+        connected: item.connectionId !== undefined,
         checkpoint: item.checkpoint === "unavailable" ? "no checkpoint" : shortReference(item.checkpoint),
         checkpointTaken: allowed && item.checkpoint !== "unavailable",
         ranFor: item.ranForMs === undefined ? undefined : elapsed(item.ranForMs),

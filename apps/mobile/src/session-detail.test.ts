@@ -110,7 +110,9 @@ describe("threadEntries receipt", () => {
   // decisionDurationMs is how long the gate waited for an answer; ranForMs is
   // how long the allowed command took once answered. The design's "ran in" is
   // the second, so the two are carried apart.
-  it("names the outcome, who decided, the credential, the checkpoint and how long it ran", () => {
+  // A legacy receipt carries the client id a hello declared, which no paired
+  // credential vouches for, so it is named as declared (as packages/ui does).
+  it("names the outcome, who decided, the declared client, the checkpoint and how long it ran", () => {
     const snapshot = workspace()
     snapshot.thread = [{
       id: "t-receipt",
@@ -136,12 +138,32 @@ describe("threadEntries receipt", () => {
       operation: "pnpm -w prisma migrate deploy",
       explanation: undefined,
       client: "phone",
-      credential: "device fcbd…cdf8",
+      declaredClient: "device fcbd…cdf8",
+      connected: false,
       checkpoint: "8f3c1de",
       checkpointTaken: true,
       ranFor: "12s",
       decidedAfter: "38s",
     })
+  })
+
+  // A receipt the daemon wrote for a decision on a verified connection names
+  // that connection and declares no client id.
+  it("says when a decision came over a verified connection", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "pnpm test",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "phone",
+      connectionId: "3f1c2b8e-1d2a-4c5b-9e6f-7a8b9c0d1e2f",
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }]
+
+    expect(threadEntries(snapshot, "session-billing").entries[0]).toMatchObject({ connected: true, declaredClient: undefined })
   })
 
   it("says minutes for a command that ran past one", () => {
@@ -237,7 +259,8 @@ describe("threadEntries receipt", () => {
       operation: "rm -rf node_modules",
       explanation: "Not on the release branch.",
       client: "web",
-      credential: undefined,
+      declaredClient: undefined,
+      connected: false,
       checkpoint: "no checkpoint",
       checkpointTaken: false,
       ranFor: undefined,

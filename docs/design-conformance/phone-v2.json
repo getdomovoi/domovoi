@@ -319,7 +319,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "RECORDED AS differs from frame 03: the Decision row shows the recorded value (allow-once) rather than the words allow once; Decided on shows the client kind (phone) rather than the device's label; the checkpoint is named by its commit because the receipt carries no short checkpoint id; and the phone adds a Decided after row the design does not draw. The last two are decision D4 in the 2026-10-02 cross-check"
+        "reason": "RECORDED AS differs from frame 03: the Decision row shows the recorded value (allow-once) rather than the words allow once; Decided on shows the client kind (phone) rather than the device's label; the checkpoint is named by its commit because the receipt carries no short checkpoint id; and the phone adds a Decided after row the design does not draw. The design's Credential row (device 9c41…a7e) is not drawn: current receipts record a verified connection id, not a credential, and a legacy receipt's clientId is a value the hello declared, so the phone lists it as Declared client. The verified-credential note shows only for a phone decision recorded over a verified connection"
       }
     },
     {

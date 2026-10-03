@@ -198,7 +198,7 @@ export function TabletReceipt({ entry }: { entry: Extract<ThreadEntry, { kind: "
         <View className="h-2 w-2 rounded-full bg-success" />
         <Text className="flex-1 font-sans-medium text-[14px] text-ok-fg">{entry.decision}</Text>
         <Text variant="machine" className="text-ok-dim">
-          {entry.decidedAfter ?? (entry.credential ? `${entry.client} · ${entry.credential}` : entry.client)}
+          {entry.decidedAfter ?? (entry.declaredClient ? `${entry.client} · declared ${entry.declaredClient}` : entry.client)}
         </Text>
       </View>
       <Text className="text-[13px] leading-[19px] text-ok-fg">

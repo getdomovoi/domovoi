@@ -55,7 +55,7 @@ function Receipt({ entry, onWatch }: {
   const record: Array<[string, string]> = [
     ["Decision", entry.recorded],
     ["Decided on", entry.client],
-    ...(entry.credential ? [["Credential", entry.credential] as [string, string]] : []),
+    ...(entry.declaredClient ? [["Declared client", entry.declaredClient] as [string, string]] : []),
     ["Checkpoint", entry.checkpoint],
     ...(entry.decidedAfter ? [["Decided after", entry.decidedAfter] as [string, string]] : []),
   ]
@@ -94,9 +94,10 @@ function Receipt({ entry, onWatch }: {
           </View>
         ))}
       </View>
-      {/* The note speaks of a phone's credential, so it is shown only for a
-          decision a phone made. */}
-      {entry.client === "phone" ? (
+      {/* The note speaks of a phone's verified credential, so it is shown
+          only for a decision a phone made over a connection the daemon
+          verified. A legacy receipt holds a declared id instead. */}
+      {entry.client === "phone" && entry.connected ? (
         <Text className="font-sans text-[12px] leading-[19px] text-faint">
           The audit row names this phone's verified credential, not the label you gave it. Renaming the device later does not rewrite the record.
         </Text>

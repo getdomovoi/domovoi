@@ -194,14 +194,15 @@ describe("SessionScreen decision receipt", () => {
     operation: "pnpm -w prisma migrate deploy",
     explanation: undefined,
     client: "phone",
-    credential: "device fcbd…cdf8",
+    declaredClient: undefined as string | undefined,
+    connected: true,
     checkpoint: "8f3c1de",
     checkpointTaken: true,
-    ranFor: "12s",
+    ranFor: "12s" as string | undefined,
     decidedAfter: "38s",
   }
 
-  async function drawReceipt(entry: typeof allowed | (Omit<typeof allowed, "ranFor" | "credential"> & { ranFor: undefined, credential: undefined })) {
+  async function drawReceipt(entry: typeof allowed) {
     const { props } = await draw()
     await render(
       <SafeAreaProvider initialMetrics={metrics}>
@@ -226,17 +227,27 @@ describe("SessionScreen decision receipt", () => {
     await drawReceipt(allowed)
 
     expect(screen.getByText("Checkpoint 8f3c1de was taken first, then it ran in 12s.")).toBeOnTheScreen()
-    for (const [key, value] of [["Decision", "allow-once"], ["Decided on", "phone"], ["Credential", "device fcbd…cdf8"], ["Checkpoint", "8f3c1de"], ["Decided after", "38s"]]) {
+    for (const [key, value] of [["Decision", "allow-once"], ["Decided on", "phone"], ["Checkpoint", "8f3c1de"], ["Decided after", "38s"]]) {
       expect(screen.getByLabelText(`${key}, ${value}`)).toBeOnTheScreen()
     }
     expect(screen.getByText("The audit row names this phone's verified credential, not the label you gave it. Renaming the device later does not rewrite the record.")).toBeOnTheScreen()
   })
 
   it("names the checkpoint alone while the command has not finished", async () => {
-    await drawReceipt({ ...allowed, ranFor: undefined, credential: undefined })
+    await drawReceipt({ ...allowed, ranFor: undefined })
 
     expect(screen.getByText("Checkpoint 8f3c1de was taken first.")).toBeOnTheScreen()
+  })
+
+  // A legacy receipt carries a client id the hello declared. No credential
+  // vouches for it, so it is named as declared, never as a credential, and the
+  // note about a verified credential is not shown for it.
+  it("names a legacy client id as declared, not as a credential", async () => {
+    await drawReceipt({ ...allowed, declaredClient: "device fcbd…cdf8", connected: false })
+
+    expect(screen.getByLabelText("Declared client, device fcbd…cdf8")).toBeOnTheScreen()
     expect(screen.queryByLabelText(/^Credential,/)).toBeNull()
+    expect(screen.queryByText(/The audit row names this phone's verified credential/)).toBeNull()
   })
 
   it("does not speak of a phone's credential for a decision made elsewhere", async () => {
@@ -247,7 +258,7 @@ describe("SessionScreen decision receipt", () => {
   })
 
   it("claims no checkpoint for a receipt that took none", async () => {
-    await drawReceipt({ ...allowed, decision: "Denied", recorded: "deny", checkpointTaken: false, ranFor: undefined, credential: undefined })
+    await drawReceipt({ ...allowed, decision: "Denied", recorded: "deny", checkpointTaken: false, ranFor: undefined })
 
     expect(screen.queryByText(/was taken first/)).toBeNull()
     expect(screen.getByText("pnpm -w prisma migrate deploy")).toBeOnTheScreen()
