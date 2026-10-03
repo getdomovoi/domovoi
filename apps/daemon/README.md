@@ -528,8 +528,10 @@ does not restore it automatically.
 
 ## Provider prompt budget
 
-Each `session.send` composes one provider prompt from reviewed skills, open annotations, the
-working plan, the provider handoff, and the person's request. The prompt is measured in UTF-16
+Each `session.send` composes one provider prompt from reviewed skills, the open annotations and
+build basis its `review` names, the working plan, the provider handoff, and the person's request.
+A message without a `review` carries no annotation and no build basis; the daemon never attaches
+an annotation the message did not name. The prompt is measured in UTF-16
 code units (`String.length`) against one total budget. The default is 262,144, the protocol's
 `maximumProviderPromptCodeUnits`, which is also the most a single `session.send` request may
 carry. `DaemonServerOptions.providerPromptBudgetCodeUnits` lowers it. The value must be an
@@ -537,16 +539,17 @@ integer from 1 through 262,144 and is validated before workspace state is opened
 bounds payload size only; it is not a provider token-window guarantee.
 
 Each section is shaped by its own limit first: skill content is cut at 12,000 code units per
-skill, at most 20 open annotations are offered, and the handoff offers its newest 40 thread items
-inside 24,000 code units. The total budget then applies to the composed prompt. When it does not
-fit, the composer drops one item at a time in this order and stops as soon as the prompt fits:
+skill, a review names at most 20 annotations, and the handoff offers its newest 40 thread items
+inside 24,000 code units. The handoff lists no open annotation of its own: annotations reach the
+provider only through the review. The total budget then applies to the composed prompt. When it
+does not fit, the composer drops one item at a time in this order and stops as soon as the
+prompt fits:
 
 1. Project-default skills, last by name first. Skills a person selected for the turn are required
    and are never dropped.
-2. Open annotations, oldest first.
+2. Reviewed annotations, oldest first. A build basis is never dropped.
 3. Handoff thread history, oldest item first.
-4. Handoff open annotations, last listed first.
-5. Handoff artifacts, last listed first.
+4. Handoff artifacts, last listed first.
 
 The person's request, the working plan, the handoff summary, and the framing instructions are never
 dropped. If those alone exceed the budget, `session.send` fails with `invalidParams` naming the

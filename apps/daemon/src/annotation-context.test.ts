@@ -4,7 +4,6 @@ import { demoWorkspace, type Annotation } from "@getdomovoi/protocol"
 
 import {
   agentPromptWithAnnotations,
-  legacyOpenCommentReview,
   noAnnotationReview,
   resolveAnnotationReview,
   type AnnotationReview,
@@ -97,17 +96,19 @@ describe("agentPromptWithAnnotations", () => {
     expect(agentPromptWithAnnotations(snapshot, "session-billing", noAnnotationReview, "Continue.")).toBe("Continue.")
   })
 
-  // Ruling Q402: the one place a message without a review gets comments.
-  it("resolves a message without a review to every open comment of its session, and no build basis", () => {
+  // Ruling Q402: a message without a review sends no comment. The legacy
+  // default that attached every open comment of the session is gone, so open
+  // comments the message did not name stay out of the turn.
+  it("resolves a message without a review to no comment and no build basis", () => {
     const snapshot = structuredClone(demoWorkspace)
     snapshot.annotations[1]!.status = "open"
-    snapshot.annotations.push({ ...structuredClone(snapshot.annotations[1]!), id: "annotation-closed", status: "resolved" })
-    snapshot.annotations.push({ ...structuredClone(snapshot.annotations[1]!), id: "annotation-elsewhere", sessionId: "session-onboarding" })
-    const legacy = resolveAnnotationReview(snapshot, "session-billing", undefined)
-    expect(legacy).toEqual(legacyOpenCommentReview(snapshot, "session-billing"))
-    expect([...legacy.annotationIds].sort()).toEqual(["annotation-migration-machine", "annotation-replay-copy"])
-    expect(legacy).not.toHaveProperty("buildBasis")
-    // A review, even one naming a single comment, never widens to the default.
+    expect(snapshot.annotations.filter((annotation) => annotation.sessionId === "session-billing" && annotation.status === "open")).toHaveLength(2)
+    const none = resolveAnnotationReview(snapshot, "session-billing", undefined)
+    expect([...none.annotationIds]).toEqual([])
+    expect(none).not.toHaveProperty("buildBasis")
+    expect(none).toEqual(noAnnotationReview)
+    expect(agentPromptWithAnnotations(snapshot, "session-billing", none, "Continue.")).toBe("Continue.")
+    // A review naming a single comment sends that one, never the rest.
     expect([...resolveAnnotationReview(snapshot, "session-billing", { annotationIds: ["annotation-replay-copy"] }).annotationIds])
       .toEqual(["annotation-replay-copy"])
   })

@@ -17,9 +17,9 @@ import { waitForDaemon } from "./test-wait-for.js"
 
 // Rulings Q348 A and Q342 A: a message that carries a review sends only the
 // comments it names, and the variant chosen as the build basis travels with
-// it, so a half-written comment no longer steers that turn. Ruling Q402: until
-// every client sends a review, a message without one still attaches every
-// open comment of its session.
+// it, so a half-written comment no longer steers that turn. Ruling Q402: a
+// message without a review sends no comment and no build basis; the legacy
+// default that attached every open comment of its session is gone.
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -121,22 +121,33 @@ function reviewContext(prompt: string): { unresolvedAnnotations: Array<{ annotat
 }
 
 describe("a message with no review", () => {
-  // Ruling Q402: until every client sends `review`, a message without one
-  // keeps the behaviour clients were built against: every open comment of the
-  // session attaches, and no build basis. Removed before 0.8.0 ships.
-  it("still attaches every open comment of its session, and no build basis", async () => {
-    const { provider, send, lastUserItem } = await start()
+  // Ruling Q402: a message without a review sends no comment and no build
+  // basis, while three comments are open on the session. The legacy default
+  // that attached every open comment is gone; nothing attaches a comment the
+  // message did not name.
+  it("sends no comment and no build basis while open ones exist", async () => {
+    const { provider, send, snapshot, lastUserItem } = await start()
+    expect((await snapshot()).annotations.filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")).toHaveLength(3)
     expect((await send("Carry on")).error).toBeUndefined()
-    const context = reviewContext(provider.startTurn.mock.calls[0]![0].prompt)
-    expect(context?.unresolvedAnnotations.map((item) => item.annotationId))
-      .toEqual(["comment-half-written", "comment-ready", "comment-older"])
-    expect(context).not.toHaveProperty("buildBasis")
+    const prompt = provider.startTurn.mock.calls[0]![0].prompt
+    expect(reviewContext(prompt)).toBeUndefined()
+    expect(prompt).not.toContain("comment-half-written")
+    expect(prompt).not.toContain("maybe make the")
+    expect(prompt).not.toContain("buildBasis")
     expect(((await lastUserItem()) as { providerPromptDelivery?: { annotations: unknown } }).providerPromptDelivery?.annotations).toEqual({
-      availableCount: 3, deliveredIds: ["comment-half-written", "comment-ready", "comment-older"], omitted: { budget: 0, limit: 0 },
+      availableCount: 0, deliveredIds: [], omitted: { budget: 0, limit: 0 },
     })
   })
 
-  it("is the only path that attaches a comment the message did not name", async () => {
+  it("is read the same as an empty review", async () => {
+    const unreviewed = await start()
+    expect((await unreviewed.send("Carry on")).error).toBeUndefined()
+    const explicit = await start()
+    expect((await explicit.send("Carry on", { review: { annotationIds: [] } })).error).toBeUndefined()
+    expect(unreviewed.provider.startTurn.mock.calls[0]![0].prompt).toBe(explicit.provider.startTurn.mock.calls[0]![0].prompt)
+  })
+
+  it("delivers only what a review names, never the rest", async () => {
     const { provider, send } = await start()
     expect((await send("Only this", { review: { annotationIds: ["comment-older"] } })).error).toBeUndefined()
     expect(reviewContext(provider.startTurn.mock.calls[0]![0].prompt)?.unresolvedAnnotations.map((item) => item.annotationId))
@@ -145,7 +156,7 @@ describe("a message with no review", () => {
 })
 
 describe("a message with an empty review", () => {
-  it("sends no comment while open ones exist, so a client can opt out of the legacy default", async () => {
+  it("sends no comment while open ones exist", async () => {
     const { provider, send, lastUserItem } = await start()
     expect((await send("Carry on", { review: { annotationIds: [] } })).error).toBeUndefined()
     const prompt = provider.startTurn.mock.calls[0]![0].prompt

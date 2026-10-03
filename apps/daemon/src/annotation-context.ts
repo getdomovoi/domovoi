@@ -52,26 +52,16 @@ export type AnnotationReview = {
 
 export const noAnnotationReview: AnnotationReview = { annotationIds: new Set() }
 
-// LEGACY DEFAULT, ruling Q402. Until desktop, web, phone, tablet and the CLI
-// send `review`, a message without one keeps the behaviour those clients were
-// built against: every open comment of the session attaches, and no build
-// basis. This is the only path that attaches a comment a message did not name.
-// It is removed before protocol 0.8.0 ships (SHIP-PLAN.md, Preview and review);
-// a message without a review then sends no comment.
-export function legacyOpenCommentReview(snapshot: WorkspaceSnapshot, sessionId: string): AnnotationReview {
-  return {
-    annotationIds: new Set(snapshot.annotations
-      .filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")
-      .map((annotation) => annotation.id)),
-  }
-}
-
+// A message without a review sends no comment and no build basis (ruling
+// Q402). Nothing here attaches a comment the message did not name: the legacy
+// default that attached every open comment of the session went before
+// protocol 0.8.0, once every client sent `review`.
 export function resolveAnnotationReview(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
   review: SessionSendReview | undefined,
 ): AnnotationReview {
-  if (!review) return legacyOpenCommentReview(snapshot, sessionId)
+  if (!review) return noAnnotationReview
   for (const annotationId of review.annotationIds) {
     const annotation = snapshot.annotations.find((candidate) => candidate.id === annotationId)
     if (!annotation || annotation.sessionId !== sessionId || annotation.status !== "open") {

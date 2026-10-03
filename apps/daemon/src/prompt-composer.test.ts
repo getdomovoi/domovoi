@@ -247,7 +247,8 @@ describe("composeProviderPrompt budget", () => {
 // Security review r1 P2: the first send after a provider handoff also carries a
 // handoff context. With a review, current comments reach the provider only
 // through the review section, so the whole prompt holds what the review
-// names and deliveredIds says so. Without one (Q402), the handoff keeps them.
+// names and deliveredIds says so. Without one the message sends no comment
+// (ruling Q402), and the handoff carries none either.
 describe("composeProviderPrompt review after a provider handoff", () => {
   function afterHandoff() {
     const snapshot = baseSnapshot()
@@ -285,11 +286,15 @@ describe("composeProviderPrompt review after a provider handoff", () => {
     }
   })
 
-  it("keeps every open comment in the handoff for a message without a review (Q402)", async () => {
+  it("carries no open comment, in the handoff or the review, for a message without a review (Q402)", async () => {
     const result = await composeProviderPrompt(input(afterHandoff(), "Continue"))
-    const handoff = /<domovoi_handoff_context>\n(.+)\n<\/domovoi_handoff_context>/.exec(result.prompt)![1]!
-    expect(handoff).toContain("annotation-1")
-    expect(handoff).toContain("annotation-2")
+    expect(result.prompt).toContain("<domovoi_handoff_context>")
+    expect(result.prompt).not.toContain("annotation-1")
+    expect(result.prompt).not.toContain("annotation-2")
+    expect(result.prompt).not.toContain("Selected comment body")
+    expect(result.prompt).not.toContain("Unselected draft body")
+    expect(result.providerPromptDelivery.annotations).toMatchObject({ availableCount: 0, deliveredIds: [] })
+    expect(result.providerPromptDelivery.handoff).toMatchObject({ status: "delivered", omitted: { annotations: 0 } })
   })
 })
 
@@ -306,16 +311,18 @@ describe("composeProviderPrompt review", () => {
     expect(result.prompt).not.toContain("annotation-2")
   })
 
-  // Ruling Q402: the legacy default, removed before 0.8.0 ships.
-  it("carries every open comment when the message has no review", async () => {
+  // Ruling Q402: no comment attaches without being named. The legacy default
+  // that carried every open comment went before 0.8.0 shipped.
+  it("carries no comment when the message has no review", async () => {
     const snapshot = baseSnapshot()
     snapshot.annotations = [annotation(1), annotation(2), { ...annotation(3), status: "resolved" }]
 
     const result = await composeProviderPrompt(input(snapshot, "Ship it"))
 
     expect(result.providerPromptDelivery.annotations).toEqual({
-      availableCount: 2, deliveredIds: ["annotation-2", "annotation-1"], omitted: { budget: 0, limit: 0 },
+      availableCount: 0, deliveredIds: [], omitted: { budget: 0, limit: 0 },
     })
+    expect(result.prompt).toBe("Ship it")
   })
 
   it("keeps the build basis after the budget has dropped every comment", async () => {
@@ -434,10 +441,12 @@ describe("composeProviderPrompt drop order", () => {
         createdAt: "2026-09-03T13:00:00.000Z",
       },
     ]
-    // No review: the Q402 legacy default, the one path on which the handoff
-    // still carries open comments, so every drop step is exercised.
+    // The review names every comment, so the review section is dropped one
+    // comment at a time. The handoff carries no comment on any path (ruling
+    // Q402), so its annotation drop step never has work.
     const request = {
       ...input(snapshot, "Continue"),
+      ...sendingAll(snapshot),
       skillCatalog: {
         list: vi.fn(async () => [alpha.summary, beta.summary]),
         read: vi.fn(async (skillId: string) =>
@@ -507,27 +516,13 @@ describe("composeProviderPrompt drop order", () => {
         skills: [alpha.summary.id, beta.summary.id],
         annotations: [],
         handoff: { threadItems: 3, annotations: 0, artifacts: 0 },
-        absent: ["History 2"],
-        present: ["annotation-0", "annotation-1", "artifact-diff"],
-      },
-      {
-        skills: [alpha.summary.id, beta.summary.id],
-        annotations: [],
-        handoff: { threadItems: 3, annotations: 1, artifacts: 0 },
-        absent: ["annotation-1"],
-        present: ["annotation-0", "artifact-diff"],
-      },
-      {
-        skills: [alpha.summary.id, beta.summary.id],
-        annotations: [],
-        handoff: { threadItems: 3, annotations: 2, artifacts: 0 },
-        absent: ["annotation-0"],
+        absent: ["History 2", "annotation-0", "annotation-1"],
         present: ["artifact-diff"],
       },
       {
         skills: [alpha.summary.id, beta.summary.id],
         annotations: [],
-        handoff: { threadItems: 3, annotations: 2, artifacts: 1 },
+        handoff: { threadItems: 3, annotations: 0, artifacts: 1 },
         absent: ["artifact-diff"],
         present: ["Handed off codex to claude-code.", "<user_request>\nContinue\n</user_request>"],
       },

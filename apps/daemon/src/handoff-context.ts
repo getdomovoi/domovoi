@@ -65,11 +65,12 @@ export type PreparedHandoffContext =
   | { status: "not-required" }
   | { status: "delivered"; context: HandoffContext; omitted: HandoffOmissions }
 
-// openAnnotations "none": the message carries a review, which alone decides
-// which current comments reach the provider (rulings Q348 A, Q402; security
-// review r1 P2). The handoff then carries none, so a comment the review left
-// out cannot travel here. "all" keeps every open comment, as a message without
-// a review has always had it.
+// openAnnotations "none": a message's review alone decides which current
+// comments reach the provider (rulings Q348 A, Q402; security review r1 P2).
+// The handoff then carries none, so a comment the review left out, or a
+// message without a review, cannot travel here. composeProviderPrompt always
+// passes "none". "all" lists every open comment; only prepareHandoffPrompt
+// defaults to it, and no send path calls that.
 export type HandoffCommentScope = "all" | "none"
 
 export function prepareHandoffContext(
