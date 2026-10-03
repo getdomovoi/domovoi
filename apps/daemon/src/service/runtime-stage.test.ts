@@ -735,7 +735,9 @@ describe("staging the shipped runtime under the profile", () => {
     // Round 4 (P2-4): a file system with no unique 64-bit file id answers 0,
     // or all ones (ReFS when its 128-bit id does not fit), without failing.
     // Two such answers are equal without being the same directory.
-    it.each([["0"], ["18446744073709551615"]])("refuses a place when the file id read is %s, which names no one directory", async (ino) => {
+    // Node reads stat fields through a signed 64-bit array, so all ones
+    // arrives as -1 (round 5); the unsigned spelling is kept as well.
+    it.each([["0"], ["-1"], ["18446744073709551615"]])("refuses a place when the file id read is %s, which names no one directory", async (ino) => {
       const unknown = `7:${ino}`
       const files = fileSystem({ "C:\\Users\\dana": unknown, "C:\\Users\\Dana": unknown, "C:\\Users\\Dana\\Temp": unknown })
       expect(await check("C:\\Users\\Dana\\Temp", files)).toBe("C:\\Users\\Dana\\Temp")

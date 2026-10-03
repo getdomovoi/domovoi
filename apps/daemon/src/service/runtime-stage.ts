@@ -294,7 +294,9 @@ async function stagingAccessFailure(real: string, options: StagingAccessOptions)
       const identify = async (path: string) => {
         const found = await fs.identity(path)
         const ino = found.slice(found.lastIndexOf(":") + 1)
-        if (ino === "0" || ino === "18446744073709551615") throw new Error(`${path} has no unique file id.`)
+        // Node reads the id through a signed 64-bit array, so all ones
+        // arrives as -1 (round 5); the unsigned spelling is refused too.
+        if (ino === "0" || ino === "-1" || ino === "18446744073709551615") throw new Error(`${path} has no unique file id.`)
         return found
       }
       const profile = await identify(user)
