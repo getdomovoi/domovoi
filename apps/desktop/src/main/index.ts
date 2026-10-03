@@ -147,13 +147,16 @@ const daemonSeam = developmentLoopModule
     })
   : withServiceMismatch(acquireLocalDaemon, () => readDaemonServiceRuntimeVersion())
 
+// The app's data directory, read once. The launch smoke sets it above and
+// nothing sets it later (launch-smoke-profile.test.ts holds that order).
+const userDataDirectory = app.getPath("userData")
+
 // TailnetReach (Q404 A): the tailnet listener the switch saved. The module that
 // reads the record loads only when one exists or the switch is used, so a
 // machine that never turned it on loads nothing new at startup.
-const tailnetData = app.getPath("userData")
-const tailnetReachSaved = existsSync(join(tailnetData, "tailnet-reach.json"))
+const tailnetReachSaved = existsSync(join(userDataDirectory, "tailnet-reach.json"))
 let tailnetSettings: Record<string, string> = tailnetReachSaved
-  ? (await import("./tailnet-reach-record.js")).savedTailnetReachEnvironment(tailnetData, process.env)
+  ? (await import("./tailnet-reach-record.js")).savedTailnetReachEnvironment(userDataDirectory, process.env)
   : {}
 
 // Attach to the profile's owner, or own a daemon only when the profile is free.
@@ -179,7 +182,7 @@ const fleetOrigins = new FleetOriginAdmission(async (machineId, timeoutMs) => {
 let desktopDaemonService: Promise<DesktopDaemonService> | undefined
 const daemonService = (): Promise<DesktopDaemonService> => {
   desktopDaemonService ??= import("./daemon-service-assembly.js").then(
-    (assembly) => assembly.createDesktopDaemonService(desktopDaemon, { resourcesPath: process.resourcesPath, version: app.getVersion(), dataDirectory: app.getPath("userData") }, daemonModule.module),
+    (assembly) => assembly.createDesktopDaemonService(desktopDaemon, { resourcesPath: process.resourcesPath, version: app.getVersion(), dataDirectory: userDataDirectory }, daemonModule.module),
     (error: unknown) => {
       desktopDaemonService = undefined
       throw error
@@ -191,7 +194,7 @@ const daemonService = (): Promise<DesktopDaemonService> => {
 // startup when the switch is on; loaded, it renews its certificate on its own.
 let tailnetReach: Promise<TailnetReach> | undefined
 const reach = (): Promise<TailnetReach> => tailnetReach ??= import("./tailnet-reach-assembly.js").then(
-  (assembly) => assembly.createTailnetReach({ desktopDaemon, daemon: daemonModule.module, service: daemonService, dataDirectory: tailnetData, applySettings: (next) => { tailnetSettings = next } }),
+  (assembly) => assembly.createTailnetReach({ desktopDaemon, daemon: daemonModule.module, service: daemonService, dataDirectory: userDataDirectory, applySettings: (next) => { tailnetSettings = next } }),
   (error: unknown) => { tailnetReach = undefined; throw error },
 )
 const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
@@ -209,7 +212,7 @@ function finishLaunchSmoke(code: 0 | 1): void {
 }
 
 function windowDecorationPath(): string {
-  return join(app.getPath("userData"), windowDecorationFileName)
+  return join(userDataDirectory, windowDecorationFileName)
 }
 
 function storedWindowDecoration(): WindowDecoration {
@@ -369,7 +372,7 @@ function serveRendererPolicy(): void {
 registerDesktopIpc(ipcMain, {
   fleetRoute: (machineId, budgetMs) => fleetOrigins.authorize(machineId, budgetMs),
   forgetFleetRoute: (machineId) => fleetOrigins.forget(machineId),
-  relayPins: createRelayPinFile(join(app.getPath("userData"), relayPinFileName)),
+  relayPins: createRelayPinFile(join(userDataDirectory, relayPinFileName)),
   authorized: authorizedDesktopSender,
   mainWindow: () => mainWindow,
   focusMainWindow,
