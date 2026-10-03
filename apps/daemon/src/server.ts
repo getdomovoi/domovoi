@@ -329,6 +329,7 @@ import {
   clearWorkingPlanApprovalBlockers,
   discardPendingWorkingPlanEdit,
   finalizePendingWorkingPlanEdit,
+  isWorkingPlanArtifact,
   markWorkingPlanDelivered,
   submitWorkingPlanEdit,
   syncWorkingPlanArtifact,
@@ -763,12 +764,7 @@ function writePlanArtifact(
   append: boolean,
 ): Artifact {
   const artifactId = `plan-${sessionId}`
-  const legacyPrefix = `${artifactId}-`
-  const matching = artifacts.filter((artifact) =>
-    artifact.sessionId === sessionId
-    && artifact.type === "plan"
-    && (artifact.id === artifactId || artifact.id.startsWith(legacyPrefix)),
-  )
+  const matching = artifacts.filter((artifact) => isWorkingPlanArtifact(artifact, sessionId))
 
   if (matching.length === 0) {
     const artifact: Artifact = {
@@ -793,6 +789,8 @@ function writePlanArtifact(
     ? `${matching.map((candidate) => candidate.content ?? "").join("")}${content}`
     : content
   artifact.revision = matching.reduce((total, candidate) => total + candidate.revision, 0) + 1
+  delete artifact.path
+  delete artifact.variant
 
   for (let index = artifacts.length - 1; index >= 0; index -= 1) {
     if (matching.includes(artifacts[index]!) && artifacts[index] !== artifact) artifacts.splice(index, 1)
@@ -10707,16 +10705,26 @@ export class DomovoiDaemon {
         (plan) => plan.sessionId === session.id,
       )
       if (!canonical) {
-        const previousPlanIds = new Set(this.#snapshot.artifacts.filter((artifact) =>
-          artifact.sessionId === session.id && artifact.type === "plan"
-        ).map((artifact) => artifact.id))
+        // Watched plan files are not part of the merge, so they must not
+        // force a full snapshot for every streamed chunk. plan.append carries
+        // only content and revision, so the merge may change nothing else:
+        // folding another artifact in, or taking over a saved working plan
+        // that kept a file's path, variant or title, needs the snapshot.
+        const previous = this.#snapshot.artifacts
+          .filter((artifact) => isWorkingPlanArtifact(artifact, session.id))
+          .map(({ id, title, mimeType, path, variant }) => ({ id, title, mimeType, path, variant }))
         const artifact = appendPlanDelta(
           this.#snapshot.artifacts,
           this.#snapshot.annotations,
           session.id,
           event.delta,
         )
-        requiresFullSnapshot = [...previousPlanIds].some((id) => id !== artifact.id)
+        requiresFullSnapshot = previous.some((candidate) =>
+          candidate.id !== artifact.id
+          || candidate.title !== artifact.title
+          || candidate.mimeType !== artifact.mimeType
+          || candidate.path !== artifact.path
+          || candidate.variant !== artifact.variant)
         if (!requiresFullSnapshot) {
           delta.operations.push(...workspaceDeltaChunks(event.delta).map((chunk) => ({
             kind: "plan.append" as const,
