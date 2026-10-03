@@ -124,12 +124,15 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
   //
   // Codex review round 7 (P3): the desktop half is bounded by its deadline,
   // after which the next read goes ahead, reading the listener again and
-  // sharing the desktop's pending answer.
+  // sharing the desktop's pending answer. Each run of the effect below owns
+  // one scheduler; its cleanup ends that scheduler, so a read queued while it
+  // was open starts nothing after Settings closes or the effect is replayed.
   const changing = useRef(false)
-  const automatic = useRef({ running: false, again: false })
+  const automatic = useRef({ running: false, again: false, live: false })
   const readOnItsOwn = useCallback((first = false): void => {
-    if (!first && (document.visibilityState !== "visible" || changing.current)) return
     const state = automatic.current
+    if (!state.live) return
+    if (!first && (document.visibilityState !== "visible" || changing.current)) return
     if (state.running) {
       state.again = true
       return
@@ -137,7 +140,7 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
     state.running = true
     const done = () => {
       state.running = false
-      if (!state.again) return
+      if (!state.again || !state.live) return
       state.again = false
       readOnItsOwn()
     }
@@ -146,15 +149,18 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
   }, [read])
 
   const present = source !== undefined
-  useEffect(() => { if (present) readOnItsOwn(true) }, [present, readOnItsOwn])
-
   useEffect(() => {
-    if (!present || typeof document === "undefined") return
+    if (!present) return
+    const state = { running: false, again: false, live: true }
+    automatic.current = state
+    readOnItsOwn(true)
+    if (typeof document === "undefined") return () => { state.live = false }
     const again = () => readOnItsOwn()
     window.addEventListener("focus", again)
     document.addEventListener("visibilitychange", again)
     const timer = setInterval(again, tailnetReachRereadMs)
     return () => {
+      state.live = false
       window.removeEventListener("focus", again)
       document.removeEventListener("visibilitychange", again)
       clearInterval(timer)

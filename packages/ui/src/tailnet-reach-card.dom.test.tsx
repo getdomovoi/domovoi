@@ -1,6 +1,7 @@
 import type { TailnetListenerStatus } from "@getdomovoi/protocol"
 import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { StrictMode } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { TailnetReachCard, tailnetReachDesktopDeadlineMs, useTailnetReach, type TailnetReachSource } from "./tailnet-reach-card"
@@ -541,6 +542,50 @@ describe("reading again while Settings stays open", () => {
     await settle()
     expect(reads).toHaveLength(2)
     expect(listener).toHaveBeenCalledTimes(4)
+  })
+
+  // Codex review round 7 (P3): a read queued while Settings was open starts
+  // nothing once it is closed; Settings opened again reads on its own.
+  it("starts no queued read after Settings closes, and reads again when it opens", async () => {
+    const reads: { resolve(value: unknown): void }[] = []
+    const ask = vi.fn((action: "status" | "on" | "off"): Promise<unknown> => {
+      if (action !== "status") return Promise.resolve({ ok: true, report: off })
+      return new Promise((resolve) => { reads.push({ resolve }) })
+    })
+    const source: TailnetReachSource = { act: ask, listener: async () => ({ state: "off" as const }), inApp: true }
+    const first = render(<Harness source={source} />)
+    await settle()
+    expect(reads).toHaveLength(1)
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    first.unmount()
+    reads[0]!.resolve(on)
+    await settle()
+    expect(reads).toHaveLength(1)
+    render(<Harness source={source} />)
+    await settle()
+    expect(reads).toHaveLength(2)
+    reads[1]!.resolve(off)
+    await settle()
+    expect(reads).toHaveLength(2)
+    expect(within(region()).getByText("Off")).toBeTruthy()
+  })
+
+  it("asks the desktop once when React replays the effect", async () => {
+    const reads: { resolve(value: unknown): void }[] = []
+    const ask = vi.fn((action: "status" | "on" | "off"): Promise<unknown> => {
+      if (action !== "status") return Promise.resolve({ ok: true, report: off })
+      return new Promise((resolve) => { reads.push({ resolve }) })
+    })
+    render(<StrictMode><Harness source={{ act: ask, listener: async () => ({ state: "off" as const }), inApp: true }} /></StrictMode>)
+    await settle()
+    expect(reads).toHaveLength(1)
+    reads[0]!.resolve(off)
+    await settle()
+    expect(reads).toHaveLength(1)
+    expect(within(region()).getByText("Off")).toBeTruthy()
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    await settle()
+    expect(reads).toHaveLength(2)
   })
 
   it("keeps what a change read over a read that started before it", async () => {
