@@ -12,6 +12,9 @@ export type SessionRow = {
   // acting rather than watching, so this decides how the row reads.
   attention: "approval" | "preview" | undefined
   dot: "active" | "waiting" | "quiet"
+  // When the approval this session holds was raised, for the clock the row
+  // shows after its machine. Undefined when nothing waits on the person.
+  waitingSince: string | undefined
 }
 
 // How long something has been waiting, in the shortest form that is still true.
@@ -68,6 +71,7 @@ export function sessionRows(snapshot: WorkspaceSnapshot): SessionRow[] {
           dot: session.state === "active"
             ? "active" as const
             : session.state === "waiting" ? "waiting" as const : "quiet" as const,
+          waitingSince: awaiting.get(session.id),
         },
       }
     })

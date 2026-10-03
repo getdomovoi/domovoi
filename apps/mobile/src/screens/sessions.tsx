@@ -12,7 +12,7 @@ import type { ConnectionNotice } from "../connection-notice"
 import { sessionsGateReach } from "../gate-reach"
 import { cn } from "../lib/cn"
 import { machineRows, type MachineRow } from "../machine-rows"
-import { sessionGroups, sessionsHeaderLine, waitingCount, type SessionGroup, type SessionRow } from "../session-rows"
+import { elapsedLabel, sessionGroups, sessionsHeaderLine, waitingCount, type SessionGroup, type SessionRow } from "../session-rows"
 import { useTheme } from "../theme/theme-provider"
 
 const dotColour: Record<SessionRow["dot"], string> = {
@@ -87,9 +87,10 @@ function IdleFleet({ fleet, now }: { fleet: FleetEntry[], now: number }) {
   )
 }
 
-function SessionCard({ row, approvalId, onOpen, onOpenApproval }: {
+function SessionCard({ row, approvalId, now, onOpen, onOpenApproval }: {
   row: SessionRow
   approvalId: string | undefined
+  now: number
   onOpen: (id: string) => void
   onOpenApproval: (id: string) => void
 }) {
@@ -117,7 +118,9 @@ function SessionCard({ row, approvalId, onOpen, onOpenApproval }: {
         ) : null}
       </View>
       <Text variant="machine" className="mt-[5px] pl-[17px] text-faint">
-        {row.machine}
+        {[row.machine, row.waitingSince ? elapsedLabel(row.waitingSince, now) : undefined]
+          .filter((part) => part !== undefined)
+          .join(" · ")}
       </Text>
     </PressableCard>
   )
@@ -217,6 +220,7 @@ export function SessionsScreen({
                 key={row.id}
                 row={row}
                 approvalId={snapshot.approvals.find((approval) => approval.sessionId === row.id)?.id}
+                now={now}
                 onOpen={onOpenSession}
                 onOpenApproval={onOpenApproval}
               />

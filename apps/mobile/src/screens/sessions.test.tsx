@@ -49,6 +49,18 @@ function tappable(): string[] {
 }
 
 describe("SessionsScreen", () => {
+  // Phone v2 frame 01: a session waiting on you says how long it has waited,
+  // after its machine. Rows that wait on nobody carry no clock.
+  it("says how long a waiting session has waited on you", async () => {
+    const snapshot = workspace()
+    const approval = snapshot.approvals[0]
+    if (!approval) throw new Error("fixture needs a pending approval")
+    await draw({ snapshot, now: Date.parse(approval.requestedAt) + 4 * 60_000 })
+
+    expect(screen.getByText(`${snapshot.machine.name} · 4m`)).toBeOnTheScreen()
+    expect(screen.getAllByText(new RegExp(`^${snapshot.machine.name} · `))).toHaveLength(1)
+  })
+
   // Phone v2 frames 01 and 10 put the Domovoi mark beside the title.
   it("marks the Sessions title with the Domovoi mark", async () => {
     await draw()
