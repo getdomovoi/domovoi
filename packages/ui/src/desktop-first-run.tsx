@@ -126,6 +126,22 @@ export function providerFirstRunRecovery(
   }
 }
 
+// Review P2-3: the agent setup records as the default for new sessions. Only
+// an agent whose diagnostics are ready qualifies: the one already chosen if
+// it is ready, else Codex if it is ready, else the first ready one.
+export function firstRunDefaultProvider(
+  providers: readonly ProviderRuntime[],
+  sessions: readonly SessionSummary[],
+  chosenId?: string,
+): ProviderRuntime | undefined {
+  const ready = providers.filter((provider) =>
+    providerFirstRunRecovery(provider, firstRunFailureForProvider(provider.id, sessions)).canComplete
+  )
+  return ready.find((provider) => provider.id === chosenId)
+    ?? ready.find((provider) => provider.id === "codex")
+    ?? ready[0]
+}
+
 // One case per failure kind, so a kind added to the protocol fails typecheck
 // here instead of reading as a ready provider. Undefined only for a failure
 // that says nothing about the provider's setup.
@@ -488,11 +504,8 @@ export function DesktopFirstRunDialog({
     wasOpen.current = open
   }, [open, offersService])
 
-  const selectedProvider = providers.find((provider) => provider.id === selectedProviderId)
-  const ready = connected && !refreshing && selectedProvider !== undefined && providerFirstRunRecovery(
-    selectedProvider,
-    firstRunFailureForProvider(selectedProvider.id, sessions),
-  ).canComplete
+  const defaultProvider = firstRunDefaultProvider(providers, sessions, selectedProviderId)
+  const ready = connected && !refreshing && defaultProvider !== undefined
 
   // Closing setup is remembered, so it does not open again on every launch.
   // Settings > First-run setup opens it again.
@@ -562,8 +575,8 @@ export function DesktopFirstRunDialog({
               <div className="flex flex-wrap items-center gap-2 pb-10">
                 <Button disabled={refreshing} onClick={finish}>One machine is enough for now</Button>
                 <span className="text-[11.5px] text-muted-foreground">
-                  {ready
-                    ? `New sessions start with ${providerDisplayName(selectedProviderId)} in Build manual. Add machines later from Machines.`
+                  {ready && defaultProvider
+                    ? `New sessions start with ${providerDisplayName(defaultProvider.id)} in Build manual. Add machines later from Machines.`
                     : "No agent is ready yet. Setup can end now. Once an agent signs in, new sessions can use it."}
                 </span>
               </div>

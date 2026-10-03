@@ -77,8 +77,7 @@ import { notificationPreferenceFor, type NotificationPreferences } from "./notif
 import {
   DesktopFirstRunDialog,
   desktopFirstRunAvailable,
-  firstRunFailureForProvider,
-  providerFirstRunRecovery,
+  firstRunDefaultProvider,
 } from "./desktop-first-run"
 import {
   browserDesktopFirstRunStorage,
@@ -752,13 +751,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }
   const completeFirstRun = () => {
     if (!firstRunEnabled || !connected || !snapshot) return
-    const provider = snapshot.machine.providers.find(
-      (candidate) => candidate.id === desktopFirstRun.selectedProviderId,
+    // Review P2-3: the default is a ready agent, preferring the chosen one,
+    // then Codex.
+    const provider = firstRunDefaultProvider(
+      snapshot.machine.providers,
+      snapshot.sessions,
+      desktopFirstRun.selectedProviderId,
     )
-    if (!provider || !providerFirstRunRecovery(
-      provider,
-      firstRunFailureForProvider(provider.id, snapshot.sessions),
-    ).canComplete) {
+    if (!provider) {
       setDesktopFirstRun((current) => ({
         ...current,
         error: "Choose a provider whose diagnostics are ready before finishing setup.",
@@ -1178,11 +1178,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (!firstRunEnabled || !snapshot) return
     const providers = snapshot.machine.providers
     setDesktopFirstRun((current) => {
-      if (providers.some((provider) => provider.id === current.selectedProviderId)) return current
       const persistedProviderId = current.persisted.status === "complete"
         ? current.persisted.providerId
         : undefined
-      const provider = providers.find((candidate) => candidate.id === persistedProviderId)
+      // Review P2-3: a ready agent first, so the selection never rests on
+      // one whose diagnostics are not ready while another is.
+      const ready = firstRunDefaultProvider(providers, snapshot.sessions, current.selectedProviderId || persistedProviderId)
+      if (!ready && providers.some((provider) => provider.id === current.selectedProviderId)) return current
+      const provider = ready
+        ?? providers.find((candidate) => candidate.id === persistedProviderId)
         ?? preferredSessionProvider(providers)
         ?? providers[0]
       const selectedProviderId = provider?.id ?? ""
