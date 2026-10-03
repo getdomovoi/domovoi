@@ -124,7 +124,7 @@ export function ToolsScreen({
                 </Card>
               ) : null}
 
-              {view.files.map((file) => <FileCard key={file.path} file={file} reason={view.reason} />)}
+              {view.files.map((file) => <FileCard key={file.key} file={file} reason={view.reason} />)}
 
               {view.unread.map((file) => <UnreadCard key={`${file.provider}:${file.path}`} file={file} />)}
 

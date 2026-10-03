@@ -131,6 +131,28 @@ describe("readRepositoryGitFilters", () => {
     expect(await readRepositoryGitFilters(linked)).toEqual([])
   })
 
+  // Git's output is decoded strictly, as isolation decodes it (ruling Q325):
+  // a value, key or file name that is not valid UTF-8 refuses as unreadable
+  // config, never shown with replacement characters a review could approve.
+  it("refuses a filter setting that is not valid UTF-8 as unreadable", async () => {
+    const { root } = await repository()
+    await writeFile(join(root, ".git", "config"), Buffer.concat([
+      Buffer.from("[filter \"sops\"]\n\tsmudge = sops -d "),
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from("\n"),
+    ]), { flag: "a" })
+    await expect(readRepositoryGitFilters(root)).rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", reason: "git-failed" })
+
+    // A driver name that is not valid UTF-8. (A file name that is not cannot
+    // be made on every file system, APFS refuses one; the whole output is
+    // decoded at once, so it refuses the same way.)
+    const other = await repository()
+    await writeFile(join(other.root, ".git", "config"), Buffer.concat([
+      Buffer.from("[filter \"sops"), Buffer.from([0xc3, 0x28]), Buffer.from("\"]\n\tclean = sops -e\n"),
+    ]), { flag: "a" })
+    await expect(readRepositoryGitFilters(other.root)).rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", reason: "git-failed" })
+  })
+
   // Ruling Q207 A as amended 2026-09-30: the exact install lines run the
   // person's own git-lfs, but git-lfs then starts programs the repository's
   // own config names. Each such setting is listed, and the exemption does not

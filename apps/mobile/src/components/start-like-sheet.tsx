@@ -3,7 +3,9 @@ import { Modal, Pressable, TextInput, View } from "react-native"
 import type { PermissionMode } from "@getdomovoi/protocol"
 
 import { cn } from "../lib/cn"
+import type { PhoneRefusal } from "../session-refusal"
 import { useTheme } from "../theme/theme-provider"
+import { RefusalCard } from "./refusal-card"
 import { Button } from "./ui/button"
 import { Text } from "./ui/text"
 
@@ -17,11 +19,14 @@ const modes: { id: PermissionMode, label: string, note: string }[] = [
   { id: "build", label: "Build", note: "The agent writes to the worktree with nobody reading. Gates still stop it." },
 ]
 
-export function StartLikeSheet({ open, like, starting, problem, onStart, onClose }: {
+export function StartLikeSheet({ open, like, starting, problem, refusal, onSeeHeldBack, onStart, onClose }: {
   open: boolean
   like: { title: string, machine: string, runtime: string }
   starting: boolean
   problem: string
+  // A start refused over a repository git filter shows as its refusal card.
+  refusal?: PhoneRefusal | undefined
+  onSeeHeldBack?: (() => void) | undefined
   onStart: (prompt: string, mode: PermissionMode) => void
   onClose: () => void
 }) {
@@ -41,7 +46,9 @@ export function StartLikeSheet({ open, like, starting, problem, onStart, onClose
         <Text variant="note">
           Same machine, repository, provider and model as “{like.title}”: {like.machine} · {like.runtime}.
         </Text>
-        {problem ? <Text className="text-[11.5px] text-destructive">{problem}</Text> : null}
+        {refusal && onSeeHeldBack
+          ? <RefusalCard refusal={refusal} onSeeHeldBack={onSeeHeldBack} />
+          : problem ? <Text className="text-[11.5px] text-destructive">{problem}</Text> : null}
         <TextInput
           multiline
           autoFocus

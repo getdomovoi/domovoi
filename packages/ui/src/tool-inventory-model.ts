@@ -1,9 +1,13 @@
 import type {
+  repositoryGitConfigUnreadableReasons,
+  RepositoryGitFilterScope,
+  RepositoryTrustParams,
   RepositoryTrustRefusal,
   RepositoryTrustState,
   ToolInventory,
   ToolInventoryEntry,
   ToolInventoryFile,
+  ToolInventoryGitFilterEntry,
   ToolInventoryProvider,
   ToolInventorySource,
 } from "@getdomovoi/protocol"
@@ -143,8 +147,38 @@ export function unreadableFiles(files: readonly ToolInventoryFile[]): Extract<To
 // any repository file counts all of its omissions here.
 export type RepositoryRuns = {
   runs: ToolRow[]
+  filters: GitFilterSettingRow[]
   unreadable: number
   omitted: number
+}
+
+// A Git filter setting a grant covers, not held back (#688). It is a setting,
+// not a command that runs: Git runs the filters the effective settings define
+// (an empty process turns clean and smudge off, process is used before them,
+// a later value replaces an earlier one), and a Git LFS transfer agent's
+// program, arguments and selection are one agent. The client does not work
+// out which run; it lists every setting (ruling Q400).
+export type GitFilterSettingRow = {
+  key: string
+  // "Filter driver", "Git LFS transfer agent", ...
+  kind: string
+  // The driver, agent or extension name.
+  name: string
+  // "clean", "program", "arguments", "selects", ...
+  field: string
+  value: string
+  file: string
+}
+
+const gitFilterSettingLabels: Record<ToolInventoryGitFilterEntry["operation"], { kind: string; field: string }> = {
+  clean: { kind: "Filter driver", field: "clean" },
+  smudge: { kind: "Filter driver", field: "smudge" },
+  process: { kind: "Filter driver", field: "process" },
+  "lfs-transfer-path": { kind: "Git LFS transfer agent", field: "program" },
+  "lfs-transfer-args": { kind: "Git LFS transfer agent", field: "arguments" },
+  "lfs-standalone-agent": { kind: "Git LFS standalone agent", field: "selects" },
+  "lfs-extension-clean": { kind: "Git LFS extension", field: "clean" },
+  "lfs-extension-smudge": { kind: "Git LFS extension", field: "smudge" },
 }
 
 export function repositoryRuns(inventory: ToolInventory): RepositoryRuns {
@@ -158,7 +192,13 @@ export function repositoryRuns(inventory: ToolInventory): RepositoryRuns {
     omitted += provider.omittedEntries
     runs.push(...providerRows(provider).filter((row) => fromRepository(row.file.source) && row.start === "runs"))
   }
-  return { runs, unreadable, omitted }
+  // Settings a grant covers are listed beside what runs, so the summary never
+  // says nothing runs while they are covered (bot finding 4151622860). A
+  // held-back, omitted or unreadable block runs nothing: the gate refuses it.
+  const filters = (inventory.repository?.gitFilters?.entries ?? []).flatMap((entry, index): GitFilterSettingRow[] => entry.heldBack
+    ? []
+    : [{ key: `git:${index}`, ...gitFilterSettingLabels[entry.operation], name: entry.driver, value: entry.command, file: entry.file }])
+  return { runs, filters, unreadable, omitted }
 }
 
 // Why the repository's list may not be whole, or undefined when it is.
@@ -280,10 +320,122 @@ export function reviewCounts(group: RepositoryFileGroup): string {
     .join(" · ")
 }
 
-// How many of the repository's rows the daemon holds back, of all of them.
+// How many of the repository's rows the daemon holds back, of all of them. A
+// git filter's command counts as one entry, as tool.inventory lists it.
 export function repositoryHeldBack(inventory: ToolInventory): { held: number; total: number } {
   const rows = inventory.providers.flatMap((provider) => providerRows(provider).filter((row) => fromRepository(row.file.source)))
-  return { held: rows.filter((row) => row.start === "held").length, total: rows.length }
+  const filters = inventory.repository?.gitFilters?.entries ?? []
+  return {
+    held: rows.filter((row) => row.start === "held").length + filters.filter((entry) => entry.heldBack).length,
+    total: rows.length + filters.length,
+  }
+}
+
+// A git filter driver runs a command whenever Git checks a file out or stages
+// it, for every agent, so its file is no agent's. Git reads one file in each
+// scope it is included from, and the review shows it once per scope.
+export const gitFilterScopeLabel: Record<RepositoryGitFilterScope, string> = {
+  local: "local git config",
+  worktree: "worktree git config",
+  command: "command-line git config",
+}
+
+type RepositoryGitFilterRequiredState = NonNullable<ToolInventoryGitFilterEntry["required"]>
+
+export type GitFilterDriverRow = {
+  key: string
+  driver: string
+  // Each operation the file sets for the driver, with its redacted command:
+  // "smudge sops -d · clean sops -e".
+  detail: string
+  // The same, one operation and command at a time, so a review can draw each
+  // command as its own text and keep its whitespace (ruling Q328).
+  commands: Array<{ operation: ToolInventoryGitFilterEntry["operation"]; command: string }>
+  // The driver's required state, once per distinct value its commands carry.
+  // Git reads one effective value per driver, so this is one state; a Git LFS
+  // setting carries none.
+  required: RepositoryGitFilterRequiredState[]
+}
+
+// What a driver's effective filter.<driver>.required means when its command
+// fails. The review digest pins the value, so the review shows it.
+export const gitFilterRequiredText: Record<RepositoryGitFilterRequiredState, string> = {
+  true: "required is true: if the filter fails, the Git command fails.",
+  false: "required is false: if the filter fails, Git stores or checks out the file unfiltered.",
+  unset: "required is not set: if the filter fails, Git stores or checks out the file unfiltered.",
+}
+
+export type GitFilterGroup = {
+  key: string
+  path: string
+  scope: RepositoryGitFilterScope
+  drivers: GitFilterDriverRow[]
+}
+
+export function gitFilterGroups(inventory: ToolInventory): GitFilterGroup[] {
+  const filters = inventory.repository?.gitFilters
+  if (!filters) return []
+  return filters.files.map(({ path, scope }) => {
+    const drivers = new Map<string, { entries: ToolInventoryGitFilterEntry[] }>()
+    for (const entry of filters.entries) {
+      if (entry.file !== path || entry.scope !== scope) continue
+      const driver = drivers.get(entry.driver) ?? { entries: [] }
+      driver.entries.push(entry)
+      drivers.set(entry.driver, driver)
+    }
+    return {
+      key: `${scope}\u0000${path}`,
+      path,
+      scope,
+      drivers: [...drivers.entries()].map(([driver, { entries }]) => ({
+        key: `${scope}\u0000${path}\u0000${driver}`,
+        driver,
+        detail: entries.map((entry) => `${entry.operation} ${entry.command}`).join(" · "),
+        commands: entries.map(({ operation, command }) => ({ operation, command })),
+        required: entries.flatMap((entry) => entry.required === undefined ? [] : [entry.required])
+          .filter((state, index, all) => all.indexOf(state) === index),
+      })),
+    }
+  })
+}
+
+// What repository.trust says about the git filters a review showed. The
+// daemon runs the filters only under a grant that acknowledges them, by the
+// review digest tool.inventory gave for the block (#688), so the review sends
+// it only for the block it drew: every filter listed, none left out, the
+// config read and every command shown exactly as Git runs it. A block with
+// nothing in it needs no acknowledgement, and an incomplete one never gets one
+// (the review offers no trust then).
+export function gitFiltersAcknowledgement(inventory: ToolInventory): RepositoryTrustParams["gitFilters"] {
+  const filters = inventory.repository?.gitFilters
+  if (!filters || filters.unreadable !== undefined || filters.omittedEntries > 0 || filters.entries.length === 0) return undefined
+  if (inexactGitFilterCommands(inventory) > 0) return undefined
+  return { reviewed: true, reviewDigest: filters.reviewDigest }
+}
+
+// Filter commands the inventory does not show exactly as Git runs them, by
+// the daemon's flag: only it holds the configured value. Nobody can review
+// such a command, so its block offers no trust (rulings Q323, Q325).
+export function inexactGitFilterCommands(inventory: ToolInventory): number {
+  return inventory.repository?.gitFilters?.entries.filter((entry) => entry.commandInexact === true).length ?? 0
+}
+
+// Why trust is not offered while a filter command is not shown exactly.
+export function inexactGitFilterText(count: number): string {
+  return count === 1
+    ? "Domovoi cannot show 1 filter command exactly as Git runs it, because it hides text that could hold a secret or that it cannot show safely. Its filters stay held back, and trust is not offered until every filter command can be shown exactly."
+    : `Domovoi cannot show ${count} filter commands exactly as Git runs them, because it hides text that could hold a secret or that it cannot show safely. Their filters stay held back, and trust is not offered until every filter command can be shown exactly.`
+}
+
+export function gitFilterCount(group: GitFilterGroup): string {
+  return plural(group.drivers.length, "filter driver", "filter drivers")
+}
+
+// Why the repository's Git config could not be read, worded.
+type RepositoryGitConfigUnreadableReason = (typeof repositoryGitConfigUnreadableReasons)[number]
+export const gitConfigUnreadableText: Record<RepositoryGitConfigUnreadableReason, string> = {
+  "too-large": "its filter settings are larger than Domovoi reads",
+  "git-failed": "git config failed",
 }
 
 // The daemon's reader cuts a text at the first credential trigger and writes
