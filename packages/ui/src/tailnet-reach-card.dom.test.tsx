@@ -29,7 +29,7 @@ function Harness({ source }: { source: TailnetReachSource }) {
   return controller ? <TailnetReachCard controller={controller} /> : null
 }
 
-async function card(answers: Partial<Record<"status" | "on" | "off", unknown | (() => Promise<unknown>)>>, options: { inApp?: boolean; listener?: TailnetListenerStatus | "unknown" } = {}) {
+async function card(answers: Partial<Record<"status" | "on" | "off", unknown | (() => Promise<unknown>)>>, options: { inApp?: boolean; listener?: TailnetListenerStatus | "unknown"; listenerWhileOff?: TailnetListenerStatus } = {}) {
   // A change that succeeds is what the next status read reports, as the desktop's is.
   let status = answers.status
   const act = vi.fn(async (action: "status" | "on" | "off") => {
@@ -40,9 +40,12 @@ async function card(answers: Partial<Record<"status" | "on" | "off", unknown | (
     if (settled.ok === true) status = settled.report
     return outcome
   })
-  // "unknown": the daemon did not answer tailnet.status.
+  // The daemon follows the switch: listener while it is on, listenerWhileOff
+  // (no listener unless a test says otherwise) while it is off. "unknown":
+  // the daemon did not answer tailnet.status.
   const listener = vi.fn(async () => {
     if (options.listener === "unknown") throw new Error("Daemon connection is not open")
+    if ((status as { state?: string } | undefined)?.state !== "on") return options.listenerWhileOff ?? { state: "off" as const }
     return options.listener ?? { state: "off" as const }
   })
   render(<Harness source={{ act, listener, inApp: options.inApp ?? true }} />)
@@ -189,6 +192,22 @@ it("draws a failed renewal with its expiry, and renews on request", async () => 
   renewing.resolve({ ok: true, report: on })
   await settle()
   expect(view.getByText("On")).toBeTruthy()
+})
+
+// Re-review of 10dba4a2 (P3-2): a turn-on that ended installed-not-attached
+// leaves the service listening while the desktop's record is gone. Off is not
+// "only this computer" then; the card says so and offers turning off again.
+it("says the daemon still answers on the tailnet while the switch is off, and turns it off again", async () => {
+  const turning = deferred<unknown>()
+  const { act: ask, user } = await card({ status: off, off: () => turning.promise }, { listenerWhileOff: listening })
+  const view = within(region())
+  expect(view.getByText("Still answering")).toBeTruthy()
+  expect(view.getByText("The switch is off, but the daemon still answers on the tailnet.")).toBeTruthy()
+  expect(view.queryByText("Off. Only this computer can reach the daemon.")).toBeNull()
+  expect(view.getByText("Turning it off again clears the setting from the daemon and restarts it on 127.0.0.1 only.")).toBeTruthy()
+  await user.click(view.getByRole("button", { name: "Turn it off again" }))
+  expect(ask).toHaveBeenCalledWith("off")
+  expect(view.getByText("Turning off")).toBeTruthy()
 })
 
 // Review of 049b1383 (P2-3): the switch on is not the daemon listening. A

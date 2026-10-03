@@ -203,6 +203,9 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
   const notAnswering = isOn && listener !== undefined && !listening
   const refusedListener = isOn && listener?.state === "refused" ? listener : undefined
   const unconfirmed = isOn && listener === undefined
+  // Re-review of 10dba4a2 (P3-2): off here, yet the daemon still listens, as
+  // after a turn-on that ended with the service installed but not reached.
+  const stillAnswering = report?.state === "off" && listening
   const stoppedOn = failure?.direction === "on" && !isOn
 
   const [tone, label] = running
@@ -210,6 +213,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
     : stoppedOn ? ["bg-destructive", "Stopped"]
       : !report ? ["bg-faint", readError ? "Not known" : "Reading"]
         : report.state === "none" ? ["bg-faint", "No tailnet"]
+          : stillAnswering ? ["bg-destructive", "Still answering"]
           : report.state === "off" ? ["bg-faint", "Off"]
             : notAnswering ? ["bg-destructive", "Not answering"]
               : renewalFailed ? ["bg-destructive", "Renewal failed"]
@@ -221,6 +225,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
     : stoppedOn ? (httpsOff ? "Stopped before storing or restarting anything." : "The switch stays off.")
       : !report ? (readError ?? "Reading the tailnet status from Tailscale.")
         : report.state === "none" ? "No tailnet interface found on this machine. Domovoi does not set one up for you."
+          : stillAnswering ? "The switch is off, but the daemon still answers on the tailnet."
           : report.state === "off" ? "Off. Only this computer can reach the daemon."
             : notAnswering ? "On, but the daemon is not answering on the tailnet."
               : renewalFailed ? (expiry ? `Still on. The certificate did not renew and expires on ${day(expiry)}.` : "Still on. The certificate did not renew.")
@@ -270,7 +275,14 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
         </div>
       ) : null}
 
-      {report?.state === "off" && !running && !failedRows ? (
+      {stillAnswering && !running ? (
+        <div className="flex flex-wrap items-center gap-2.5 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">
+          <span className="min-w-0 flex-1">Turning it off again clears the setting from the daemon and restarts it on 127.0.0.1 only.</span>
+          <Button type="button" variant="outline" size="sm" onClick={() => void controller.turnOff()}>Turn it off again</Button>
+        </div>
+      ) : null}
+
+      {report?.state === "off" && !running && !failedRows && !stillAnswering ? (
         <>
           {!report.httpsCertificates && !failure ? (
             <div className="flex flex-col gap-[3px] text-[11px] leading-[1.5] text-warn-foreground">
