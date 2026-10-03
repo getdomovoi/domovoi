@@ -377,6 +377,8 @@ registerDesktopIpc(ipcMain, {
   },
   // The one address the renderer may ask the browser to open, fixed here.
   releasePage: { open: () => shell.openExternal("https://github.com/getdomovoi/domovoi/releases").then(() => true, () => false) },
+  // Q336 A: loads when Settings first asks, like the login service.
+  commandLinks: async (action) => (await import("./command-links.js")).commandLinks(action, { home: homedir(), resourcesPath: process.resourcesPath, platform: process.platform, path: process.env.PATH, appImage: process.env.APPIMAGE }),
   notifications: desktopNotifications,
   deepLinks,
   rendererDeepLinkSink: {
