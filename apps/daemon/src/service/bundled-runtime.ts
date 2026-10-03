@@ -101,11 +101,16 @@ function commandStagingRefusal(refused: DaemonRuntimeStagingRefusedError, dataDi
   const outcome = refused.made.length === 0
     ? "Nothing was changed."
     : `It made ${refused.made.join(", ")}, which hold no files, and changed nothing else.`
+  // PR #712 security review round 2 (P2): a place another account could
+  // change is refused too (unprotectedStagingDirectory, runtime-stage.ts).
+  // Windows cannot be asked that, so there the place must be inside this
+  // user's profile.
+  const who = platform === "win32" ? "inside your user profile" : "that no other account can change"
   const where = `on the same volume as the profile directory ${refused.profileDirectory} and outside every profile and repository`
   const failed = refused.failed ?? dataDirectory
   return failed === undefined
-    ? `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, must be a directory, not a link, ${where}, and it is not. Set ${platform === "win32" ? "TEMP" : "TMPDIR"} to a directory that is, and run this again. ${outcome}`
-    : `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${failed} must each be a directory, not a link, ${where}, and neither is. Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. ${outcome}`
+    ? `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, must be a directory, not a link, ${who}, ${where}, and it is not. Set ${platform === "win32" ? "TEMP" : "TMPDIR"} to a directory that is, and run this again. ${outcome}`
+    : `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${failed} must each be a directory, not a link, ${who}, ${where}, and neither is. Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. ${outcome}`
 }
 
 // The copy to install from when execPath is an app's runtime, or undefined.

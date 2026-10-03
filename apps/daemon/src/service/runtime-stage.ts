@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { constants } from "node:fs"
 import { access, cp, lstat, mkdir, mkdtemp, readdir, readlink, realpath } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { posix, win32 } from "node:path"
 
 import { publishFileDurably } from "@getdomovoi/credential-store"
@@ -109,6 +109,8 @@ export type RuntimeFileSystem = {
   // Whether the path is on a read-only mount, as a disk image is
   // (bundled-runtime.ts, unstableAppLocation).
   readOnly(path: string): Promise<boolean>
+  // Owner and mode of the entry itself, never through a link (POSIX only).
+  permissions(path: string): Promise<{ uid: number; mode: number }>
 }
 
 // A read-only mount, by what access(2) answers when asked for write access
@@ -159,6 +161,10 @@ export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}
     },
     makePrivateDirectory: (prefix) => mkdtemp(prefix),
     readOnly: readOnlyMount,
+    permissions: async (path) => {
+      const found = await lstat(path)
+      return { uid: found.uid, mode: found.mode }
+    },
     ...overrides,
   }
 }
@@ -166,6 +172,50 @@ export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}
 function inside(pathApi: typeof posix, root: string, path: string): boolean {
   const relative = pathApi.relative(root, path)
   return relative === "" || (relative.split(pathApi.sep)[0] !== ".." && !pathApi.isAbsolute(relative))
+}
+
+// PR #712 security review round 2 (P2): the windows between a check and the
+// mkdtemp, copy and rename it guards (Q411 A) are accepted only because no
+// other account can reach them. So a staging place, given by its real path,
+// must be one only this user (and root) can change, along with every
+// directory above it: otherwise another account could rename or replace the
+// private staging directory in it. Returns the first directory that fails,
+// or undefined.
+//
+// POSIX: each directory, from the place up to /, owned by this user or
+// root, and writable by neither group nor others, except a directory owned
+// by root with the sticky bit set, as /tmp is, where only an entry's owner
+// can rename or remove it. A group-writable directory fails even when only
+// this user is in the group: membership cannot be read here. Windows: Node
+// cannot read ACLs, so only a place inside this user's own profile
+// directory passes; that holds the default TEMP (%LOCALAPPDATA%\Temp) and
+// the app's userData (%APPDATA%). A failure to read fails the place.
+export async function unprotectedStagingDirectory(real: string, options: {
+  platform: string
+  fileSystem: RuntimeFileSystem
+  // Windows: this user's profile directory; os.homedir() by default.
+  userDirectory?: string
+  // POSIX: this user's id; process.getuid() by default.
+  uid?: number
+}): Promise<string | undefined> {
+  const fs = options.fileSystem
+  try {
+    if (options.platform === "win32") {
+      const user = (await fs.realpath(options.userDirectory ?? homedir())).toLowerCase()
+      return inside(win32, user, real.toLowerCase()) ? undefined : real
+    }
+    const me = options.uid ?? process.getuid?.()
+    if (me === undefined) return real
+    for (let at = real; ; at = posix.dirname(at)) {
+      const { uid, mode } = await fs.permissions(at)
+      const othersWrite = (mode & 0o022) !== 0
+      const rootSticky = uid === 0 && (mode & 0o1000) !== 0
+      if ((uid !== me && uid !== 0) || (othersWrite && !rootSticky)) return at
+      if (posix.dirname(at) === at) return undefined
+    }
+  } catch {
+    return real
+  }
 }
 
 // Each shipped part must be a regular file reached through real directories,
@@ -356,11 +406,17 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
   const ahead = await resolvedAhead(fs, pathApi, root)
   const runtimeDevice = device(pinned?.identity ?? ahead.identity)
   const profile = (await resolvedAhead(fs, pathApi, input.profileDirectory)).realpath
+  // The directory that made the last usable() fail because another account
+  // could change it (unprotectedStagingDirectory), so a refusal names it.
+  let unprotected: string | undefined
   const usable = async (path: string) => {
+    unprotected = undefined
     if (!pathApi.isAbsolute(path) || await fs.entry(path) !== "directory") return false
     if (device(await fs.identity(path)) !== runtimeDevice) return false
     const real = await fs.realpath(path)
-    return !inside(pathApi, profile, real) && !await insideRepositoryOrProfile(real)
+    if (inside(pathApi, profile, real) || await insideRepositoryOrProfile(real)) return false
+    unprotected = await unprotectedStagingDirectory(real, { platform: input.platform, fileSystem: fs })
+    return unprotected === undefined
   }
   const refusal = (failed: string | undefined, made: readonly string[] = []) => new DaemonRuntimeStagingRefusedError(input.profileDirectory, failed, made)
   // The data directories this staging needs that are not there yet, outermost
@@ -381,7 +437,10 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
     if (!pathApi.isAbsolute(path)) return false
     if (await fs.entry(path) !== "missing") {
       const identity = await fs.identity(path)
-      if (!await usable(path)) return false
+      if (!await usable(path)) {
+        failed = unprotected ?? path
+        return false
+      }
       anchor = { path, identity }
       return true
     }
@@ -395,7 +454,10 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
     }
     failed = at
     const identity = await fs.identity(at)
-    if (!await usable(at)) return false
+    if (!await usable(at)) {
+      failed = unprotected ?? at
+      return false
+    }
     failed = path
     const real = pathApi.join(await fs.realpath(at), pathApi.relative(at, path))
     if (inside(pathApi, profile, real) || await insideRepositoryOrProfile(real)) return false
@@ -411,6 +473,7 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
   let parent: string | undefined
   if (input.stagingParent !== undefined) {
     if (await usable(input.stagingParent)) parent = input.stagingParent
+    else failed = unprotected
   } else if (await usable(tmpdir())) {
     parent = tmpdir()
   } else if (input.dataDirectory !== undefined && await usableAhead(input.dataDirectory)) {
@@ -418,6 +481,7 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
     failed = candidate
     if (await fs.entry(candidate) === "missing") missing.push(candidate)
     if (missing.includes(candidate) || await usable(candidate)) parent = candidate
+    else failed = unprotected ?? candidate
   }
   if (parent === undefined) throw refusal(failed)
   if (!missing.includes(parent)) stagingPin = await pinOf(parent)
@@ -453,7 +517,7 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
         made.push(directory)
       }
       const identity = await fs.identity(directory)
-      if (!await usable(directory)) throw refusal(directory, made)
+      if (!await usable(directory)) throw refusal(unprotected ?? directory, made)
       above = { path: directory, identity }
       if (directory === stagingParent) stagingPin = { identity, realpath: await fs.realpath(directory) }
     }
@@ -500,7 +564,15 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
     if (!placeIntact || stagingPin === undefined) throw new Error(`${stagingParent} changed after it was checked, so the runtime was not copied there.`)
     const holder = await fs.makePrivateDirectory(pathApi.join(stagingParent, `.domovoi-runtime-${input.version}.staging-`))
     const holderReal = pathApi.join(stagingPin.realpath, pathApi.basename(holder))
-    if (await fs.entry(holder) !== "directory" || !samePath(await fs.realpath(holder), holderReal)) {
+    // Round 2 (P2): the private staging directory is this user's and open to
+    // no one else (mkdtemp makes it 0700). Windows has no POSIX mode; there
+    // the place it is in was checked to be inside this user's profile.
+    const holderPrivate = async () => {
+      if (input.platform === "win32") return true
+      const { uid, mode } = await fs.permissions(holder)
+      return uid === process.getuid?.() && (mode & 0o077) === 0
+    }
+    if (await fs.entry(holder) !== "directory" || !samePath(await fs.realpath(holder), holderReal) || !await holderPrivate()) {
       throw new Error(`${holder} changed after it was made, so the runtime was not copied there.`)
     }
     const holderIdentity = await fs.identity(holder)
@@ -510,13 +582,19 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
     const copied = await fs.entry(holder) === "directory"
       && await fs.identity(holder) === holderIdentity
       && samePath(await fs.realpath(holder), holderReal)
+      && await holderPrivate()
       && await fs.entry(staging) === "directory"
       && samePath(await fs.realpath(staging), pathApi.join(holderReal, "copy"))
     if (!copied) throw new Error(`${holder} changed while the runtime was copied, so it was not published.`)
     // Right before the rename. The instants between these checks and the
     // calls that follow them are not covered: Node has no mkdtemp, copy or
     // rename relative to an open directory, so each resolves its path again.
-    // A process of the same user that swaps a checked directory for a link in
+    // Round 2 (P2): only a process of this user can reach them. The staging
+    // place and every directory above it are ones no other account can
+    // change (unprotectedStagingDirectory, checked when chosen or made and
+    // again right before mkdtemp), and the private staging directory is this
+    // user's, mode 0700; the profile is this user's own. Such a process
+    // that swaps a checked directory for a link in
     // such an instant can have: the private staging directory made in the
     // link's target (one empty directory); the copy of the shipped runtime,
     // which holds no secrets, written there; or that copy, or a directory of

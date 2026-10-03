@@ -269,7 +269,24 @@ describe.skipIf(process.platform === "win32")("domovoid service install from the
       return dependencies
     }
     // Names the directory that failed, and every directory made before it.
-    const refusal = (failed: string, made: string[] = []) => `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${failed} must each be a directory, not a link, on the same volume as the profile directory ${join(home, ".domovoi")} and outside every profile and repository, and neither is. Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. ${made.length === 0 ? "Nothing was changed." : `It made ${made.join(", ")}, which hold no files, and changed nothing else.`}\n`
+    const refusal = (failed: string, made: string[] = []) => `The runtime could not be copied out of the app: the system temporary directory, ${tmpdir()}, and ${failed} must each be a directory, not a link, that no other account can change, on the same volume as the profile directory ${join(home, ".domovoi")} and outside every profile and repository, and neither is. Set TMPDIR or XDG_STATE_HOME to a directory that is, and run this again. ${made.length === 0 ? "Nothing was changed." : `It made ${made.join(", ")}, which hold no files, and changed nothing else.`}\n`
+
+    // PR #712 security review round 2 (P2): a state directory another
+    // account could change is refused like one on another volume, named.
+    it("refuses a state directory another account can write, naming it", async () => {
+      const state = join(home, ".local", "state", "domovoi")
+      await mkdir(state, { recursive: true })
+      const real = nodeRuntimeFileSystem()
+      const fileSystem = nodeRuntimeFileSystem({
+        identity: async (path) => path === tmpdir() ? "other-volume:1" : real.identity(path),
+        permissions: async (path) => path === state ? { uid: process.getuid?.() ?? 0, mode: 0o40777 } : real.permissions(path),
+      })
+      const dependencies = fromSystemPlaces({ runtimeFileSystem: fileSystem })
+      expect(await runServiceCommand(["service", "install"], dependencies)).toBe(1)
+      expect(dependencies.stderr).toHaveBeenCalledWith(refusal(state))
+      expect(dependencies.write).not.toHaveBeenCalled()
+      expect(await readdir(state)).toEqual([])
+    })
 
     it("stages under ~/.local/state/domovoi, making only the directories it needs", async () => {
       const dependencies = fromSystemPlaces({ runtimeFileSystem: offVolume() })

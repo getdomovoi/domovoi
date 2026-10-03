@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { basename, dirname, join, sep } from "node:path"
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonRuntimeLayout, nodeRuntimeFileSystem, prepareDaemonRuntime, profileRuntimeDirectory, stageDaemonRuntime, type RuntimeFileSystem } from "./runtime-stage.js"
+import { daemonRuntimeLayout, nodeRuntimeFileSystem, prepareDaemonRuntime, profileRuntimeDirectory, stageDaemonRuntime, unprotectedStagingDirectory, type RuntimeFileSystem } from "./runtime-stage.js"
 
 // Moved from the desktop (apps/desktop/src/main/daemon-service.test.ts) with
 // the copy routine itself (Q408 A), unchanged.
@@ -427,6 +427,88 @@ describe("staging the shipped runtime under the profile", () => {
       await expect(stage({ resources, home, version: "0.9.4", copy }))
         .rejects.toThrow(`${versions} changed while the runtime was copied, so it was not published.`)
       expect(await readdir(versions)).toEqual([])
+    })
+  })
+
+  // PR #712 security review round 2 (P2): the checks below leave windows
+  // between check and use (Q411 A), which only a process of this user may
+  // reach. So a staging place, and every directory above it, must be one
+  // no other account can change: owned by this user or root, and not
+  // writable by group or others unless it is root's and sticky, as /tmp is.
+  describe.skipIf(process.platform === "win32")("who else can change the staging place", () => {
+    const me = process.getuid?.() ?? -1
+    // Owner and mode as lstat would report them for the paths named.
+    const permissions = (answers: Record<string, { uid: number; mode: number }>) => {
+      const real = nodeRuntimeFileSystem().permissions
+      return nodeRuntimeFileSystem({ permissions: async (path) => answers[path] ?? real(path) })
+    }
+    const prepare = (resources: string, home: string, stagingParent: string, fileSystem: RuntimeFileSystem) =>
+      prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, stagingParent, fileSystem })
+
+    it.each([
+      ["group-writable and not sticky", 0o40775, () => me],
+      ["writable by others and not sticky", 0o40777, () => me],
+      ["writable by others and sticky but not root's", 0o41777, () => me],
+      ["owned by another account", 0o40755, () => me + 1],
+    ])("refuses a staging directory %s, naming it and writing nothing", async (_label, mode, uid) => {
+      await withScratch(async ({ root, resources, home }) => {
+        const staging = join(root, "staging")
+        await expect(prepare(resources, home, staging, permissions({ [staging]: { uid: uid(), mode } })))
+          .rejects.toMatchObject({ name: "DaemonRuntimeStagingRefusedError", failed: staging })
+        expect(await readdir(staging)).toEqual([])
+        expect(await entries(home)).toEqual([])
+      })
+    })
+
+    it("refuses a staging directory under a directory others can write, naming that one", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const staging = join(root, "staging")
+        await expect(prepare(resources, home, staging, permissions({ [root]: { uid: me, mode: 0o40777 } })))
+          .rejects.toMatchObject({ name: "DaemonRuntimeStagingRefusedError", failed: root })
+        expect(await readdir(staging)).toEqual([])
+      })
+    })
+
+    it("accepts a staging directory that is root's and sticky, as /tmp is", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const staging = join(root, "staging")
+        const prepared = await prepare(resources, home, staging, permissions({ [staging]: { uid: 0, mode: 0o41777 } }))
+        await prepared.publish()
+        expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
+      })
+    })
+
+    it("refuses at publish a staging directory others could change only after it was prepared", async () => {
+      await withScratch(async ({ root, resources, home }) => {
+        const staging = join(root, "staging")
+        const answers: Record<string, { uid: number; mode: number }> = {}
+        const prepared = await prepare(resources, home, staging, permissions(answers))
+        answers[staging] = { uid: me, mode: 0o40777 }
+        await expect(prepared.publish()).rejects.toThrow(`${staging} changed after it was checked, so the runtime was not copied there.`)
+        expect(await readdir(staging)).toEqual([])
+        // Publish makes the profile's runtime directories under its lease
+        // before it reaches the staging place; no copy is published there.
+        expect(await readdir(join(home, ".domovoi", "runtime", "0.9.4"))).toEqual([])
+      })
+    })
+  })
+
+  // Windows: Node cannot read ACLs, so a staging place is accepted only
+  // inside this user's own profile directory, where the default TEMP
+  // (%LOCALAPPDATA%\Temp) and the app's userData (%APPDATA%) are.
+  describe("on Windows", () => {
+    const fileSystem = (directories: string[]) => nodeRuntimeFileSystem({
+      entry: async (path) => directories.includes(path) ? "directory" : "missing",
+      realpath: async (path) => path,
+      permissions: async () => { throw new Error("Windows has no POSIX owner or mode to read") },
+    })
+    it("accepts a place inside the user's profile and names one outside it", async () => {
+      const directories = ["C:\\Users\\dana", "C:\\Users\\dana\\AppData\\Local\\Temp", "D:\\shared\\temp"]
+      const check = (path: string) => unprotectedStagingDirectory(path, { platform: "win32", fileSystem: fileSystem(directories), userDirectory: "C:\\Users\\dana" })
+      expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp")).toBeUndefined()
+      expect(await check("c:\\users\\DANA\\AppData\\Roaming\\Domovoi")).toBeUndefined()
+      expect(await check("D:\\shared\\temp")).toBe("D:\\shared\\temp")
+      expect(await check("C:\\Windows\\Temp")).toBe("C:\\Windows\\Temp")
     })
   })
 
