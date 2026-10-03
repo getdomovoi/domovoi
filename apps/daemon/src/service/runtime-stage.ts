@@ -437,16 +437,25 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
   // could change it (unprotectedStagingDirectory), so a refusal names it.
   let unprotected: string | undefined
   let gate: StagingAccessFailure | undefined
-  const usable = async (path: string) => {
+  // The real path of a place that can be used, or undefined.
+  //
+  // PR #712 security review round 3 (P2-1): the gate checks the real path,
+  // not the spelling given, so every later staging call (the missing levels,
+  // mkdtemp, the copy and the rename) goes through that real path. A link
+  // above the place, in a directory another account can write, could
+  // otherwise be retargeted after the check and send those calls elsewhere.
+  // A trusted alias such as macOS /tmp, a link to /private/tmp, keeps
+  // working: its real path is the one checked and used.
+  const usable = async (path: string): Promise<string | undefined> => {
     unprotected = undefined
     gate = undefined
-    if (!pathApi.isAbsolute(path) || await fs.entry(path) !== "directory") return false
-    if (device(await fs.identity(path)) !== runtimeDevice) return false
+    if (!pathApi.isAbsolute(path) || await fs.entry(path) !== "directory") return undefined
+    if (device(await fs.identity(path)) !== runtimeDevice) return undefined
     const real = await fs.realpath(path)
-    if (inside(pathApi, profile, real) || await insideRepositoryOrProfile(real)) return false
+    if (inside(pathApi, profile, real) || await insideRepositoryOrProfile(real)) return undefined
     gate = await stagingAccessFailure(real, { platform: input.platform, fileSystem: fs })
     unprotected = gate?.path
-    return gate === undefined
+    return gate === undefined ? real : undefined
   }
   // Q413 A: a refusal naming the directory the access gate failed carries
   // why, so the command can say what fixes it. Every refusal follows the
@@ -459,66 +468,72 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
   // install` passes (bundled-runtime.ts) may not be. A missing one is usable
   // when its nearest existing directory is and the whole path, resolved
   // through that directory, is outside every profile and repository, so a
-  // refusal makes nothing.
+  // refusal makes nothing. Round 3 of #712 (P2-1): each is named under the
+  // real path of that nearest directory, the path the gate checked.
   const missing: string[] = []
-  // The existing directory the first missing one is made in, with its device
-  // and inode when it was checked.
+  // The existing directory the first missing one is made in, by its real
+  // path, with its device and inode when it was checked.
   let anchor: { path: string; identity: string } | undefined
   // The directory under the data directory that could not be used, if any.
   let failed: string | undefined
-  const usableAhead = async (path: string) => {
+  // The real path of the data directory when it can be used, or undefined.
+  const usableAhead = async (path: string): Promise<string | undefined> => {
     failed = path
-    if (!pathApi.isAbsolute(path)) return false
-    if (await fs.entry(path) !== "missing") {
-      const identity = await fs.identity(path)
-      if (!await usable(path)) {
-        failed = unprotected ?? path
-        return false
-      }
-      anchor = { path, identity }
-      return true
-    }
-    // Each name above a missing path is made as written, so it must be
-    // written plainly: no "..", ".", or doubled separator.
-    if (pathApi.resolve(path) !== path) return false
+    if (!pathApi.isAbsolute(path)) return undefined
     let at = path
-    while (await fs.entry(at) === "missing" && pathApi.dirname(at) !== at) {
-      missing.unshift(at)
-      at = pathApi.dirname(at)
+    const names: string[] = []
+    if (await fs.entry(path) === "missing") {
+      // Each name above a missing path is made as written, so it must be
+      // written plainly: no "..", ".", or doubled separator.
+      if (pathApi.resolve(path) !== path) return undefined
+      while (await fs.entry(at) === "missing" && pathApi.dirname(at) !== at) {
+        names.unshift(pathApi.basename(at))
+        at = pathApi.dirname(at)
+      }
     }
     failed = at
     const identity = await fs.identity(at)
-    if (!await usable(at)) {
+    const real = await usable(at)
+    if (real === undefined) {
       failed = unprotected ?? at
-      return false
+      return undefined
     }
     failed = path
-    const real = pathApi.join(await fs.realpath(at), pathApi.relative(at, path))
-    if (inside(pathApi, profile, real) || await insideRepositoryOrProfile(real)) return false
-    anchor = { path: at, identity }
-    return true
+    // The real path checked must be the directory whose device and inode
+    // were read, the one the first missing level is made in.
+    if (await fs.identity(real) !== identity) return undefined
+    const levels = names.map((_name, index) => pathApi.join(real, ...names.slice(0, index + 1)))
+    const data = levels.at(-1) ?? real
+    if (levels.length > 0 && (inside(pathApi, profile, data) || await insideRepositoryOrProfile(data))) return undefined
+    missing.push(...levels)
+    anchor = { path: real, identity }
+    return data
   }
   // PR #712 security review round 1 (P2): the staging place chosen, pinned
   // by device, inode and real path when it was checked: here when it is
   // there now, at publish when publish makes it.
   type Pin = { identity: string; realpath: string }
-  const pinOf = async (path: string): Promise<Pin> => ({ identity: await fs.identity(path), realpath: await fs.realpath(path) })
   let stagingPin: Pin | undefined
+  // The staging place by the real path the gate checked (round 3, P2-1).
   let parent: string | undefined
   if (input.stagingParent !== undefined) {
-    if (await usable(input.stagingParent)) parent = input.stagingParent
-    else failed = unprotected
-  } else if (await usable(tmpdir())) {
-    parent = tmpdir()
-  } else if (input.dataDirectory !== undefined && await usableAhead(input.dataDirectory)) {
-    const candidate = pathApi.join(input.dataDirectory, "runtime-staging")
-    failed = candidate
-    if (await fs.entry(candidate) === "missing") missing.push(candidate)
-    if (missing.includes(candidate) || await usable(candidate)) parent = candidate
-    else failed = unprotected ?? candidate
+    parent = await usable(input.stagingParent)
+    if (parent === undefined) failed = unprotected
+  } else {
+    parent = await usable(tmpdir())
+    const data = parent === undefined && input.dataDirectory !== undefined ? await usableAhead(input.dataDirectory) : undefined
+    if (data !== undefined) {
+      const candidate = pathApi.join(data, "runtime-staging")
+      failed = candidate
+      if (await fs.entry(candidate) === "missing") missing.push(candidate)
+      parent = missing.includes(candidate) ? candidate : await usable(candidate)
+      if (parent === undefined) failed = unprotected ?? candidate
+    }
   }
   if (parent === undefined) throw refusal(failed)
-  if (!missing.includes(parent)) stagingPin = await pinOf(parent)
+  // Pinned to the real path checked, so publish refuses a place that no
+  // longer resolves to it.
+  if (!missing.includes(parent)) stagingPin = { identity: await fs.identity(parent), realpath: parent }
   const stagingParent = parent
   const destination = pathApi.join(versionDirectory, randomUUID().replaceAll("-", "").slice(0, 12))
   const layout = (at: string): DaemonServiceRuntime => ({
@@ -551,9 +566,13 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
         made.push(directory)
       }
       const identity = await fs.identity(directory)
-      if (!await usable(directory)) throw refusal(unprotected ?? directory, made)
+      const real = await usable(directory)
+      if (real === undefined) throw refusal(unprotected ?? directory, made)
+      // Round 3 (P2-1): each level is named by the real path checked, so it
+      // must still resolve to itself.
+      if (!samePath(real, directory)) throw refusal(directory, made)
       above = { path: directory, identity }
-      if (directory === stagingParent) stagingPin = { identity, realpath: await fs.realpath(directory) }
+      if (directory === stagingParent) stagingPin = { identity, realpath: directory }
     }
     await runtimeRoot(fs, pathApi, input.profileDirectory, true)
     pinned ??= await pin()
@@ -594,7 +613,7 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
       && await fs.entry(stagingParent) === "directory"
       && await fs.identity(stagingParent) === stagingPin.identity
       && samePath(await fs.realpath(stagingParent), stagingPin.realpath)
-      && await usable(stagingParent)
+      && await usable(stagingParent) !== undefined
     if (!placeIntact || stagingPin === undefined) throw new Error(`${stagingParent} changed after it was checked, so the runtime was not copied there.`)
     const holder = await fs.makePrivateDirectory(pathApi.join(stagingParent, `.domovoi-runtime-${input.version}.staging-`))
     const holderReal = pathApi.join(stagingPin.realpath, pathApi.basename(holder))

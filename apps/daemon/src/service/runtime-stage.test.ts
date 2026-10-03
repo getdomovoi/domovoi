@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rename, rm, symlink, unlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, sep } from "node:path"
 import { describe, expect, it, vi } from "vitest"
@@ -475,6 +475,88 @@ describe("staging the shipped runtime under the profile", () => {
         const prepared = await prepare(resources, home, staging, permissions({ [staging]: { uid: 0, mode: 0o41777 } }))
         await prepared.publish()
         expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
+      })
+    })
+
+    // PR #712 security review round 3 (P2-1): the gate checks the real path
+    // of the place, so every later staging call goes through that real path,
+    // never the spelling given: a link above the place, in a directory
+    // another account can write, could otherwise be retargeted after the
+    // check. Here that account retargets it once the place is checked.
+    describe("reached through a link in a directory another account can write", () => {
+      async function linked(root: string) {
+        const open = join(root, "open")
+        const kept = join(root, "kept")
+        const elsewhere = join(root, "elsewhere")
+        await mkdir(open)
+        await mkdir(join(kept, "staging"), { recursive: true })
+        await mkdir(join(kept, "home"), { recursive: true })
+        await mkdir(join(elsewhere, "staging"), { recursive: true })
+        await mkdir(join(elsewhere, "home"), { recursive: true })
+        const link = join(open, "link")
+        await symlink(kept, link, directoryLink)
+        const retarget = async () => {
+          await unlink(link)
+          await symlink(elsewhere, link, directoryLink)
+        }
+        // The directory holding the link is one the gate refuses.
+        const answers = { [open]: { uid: me + 1, mode: 0o41777 } }
+        expect(await unprotectedStagingDirectory(open, { platform, fileSystem: permissions(answers) })).toBe(open)
+        return { kept, elsewhere, link, retarget, fileSystem: permissions(answers) }
+      }
+
+      it("stages the given place at its checked real path, writing nothing where the link is retargeted", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const { kept, elsewhere, link, retarget, fileSystem: real } = await linked(root)
+          const writes: string[] = []
+          const fileSystem: RuntimeFileSystem = {
+            ...real,
+            makePrivateDirectory: async (prefix) => {
+              await retarget()
+              writes.push(prefix)
+              return real.makePrivateDirectory(prefix)
+            },
+            copy: async (from, to) => { writes.push(to); await real.copy(from, to) },
+            rename: async (from, to) => { writes.push(from); await real.rename(from, to) },
+          }
+          const prepared = await prepare(resources, home, join(link, "staging"), fileSystem)
+          await prepared.publish()
+          expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
+          expect(writes).toHaveLength(3)
+          expect(writes.filter((path) => !path.startsWith(`${join(kept, "staging")}${sep}`))).toEqual([])
+          expect(await readdir(join(elsewhere, "staging"))).toEqual([])
+          expect(await leftStaging(join(kept, "staging"))).toEqual([[]])
+        })
+      })
+
+      it("makes the missing data directories under the checked real path, writing nothing where the link is retargeted", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const { kept, elsewhere, link, retarget, fileSystem: real } = await linked(root)
+          const made: string[] = []
+          const fileSystem: RuntimeFileSystem = {
+            ...real,
+            // The system temporary directory is on another volume.
+            identity: async (path) => path === tmpdir() ? "other-volume:1" : real.identity(path),
+            makeDirectory: async (path) => {
+              if (made.length === 0) await retarget()
+              made.push(path)
+              await real.makeDirectory(path)
+            },
+            makePrivateDirectory: async (prefix) => { made.push(prefix); return real.makePrivateDirectory(prefix) },
+          }
+          const dataDirectory = join(link, "home", "state", "domovoi")
+          const prepared = await prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, dataDirectory, fileSystem })
+          await prepared.publish()
+          expect(await readFile(prepared.runtime.daemonEntryPath, "utf8")).toBe("daemon")
+          const state = join(kept, "home", "state")
+          expect(made.filter((path) => !path.startsWith(`${home}${sep}`))).toEqual([
+            state, join(state, "domovoi"), join(state, "domovoi", "runtime-staging"),
+            expect.stringMatching(/[\\/]runtime-staging[\\/]\.domovoi-runtime-0\.9\.4\.staging-$/u),
+          ])
+          expect(made.at(-1)!.startsWith(join(state, "domovoi", "runtime-staging"))).toBe(true)
+          expect(await readdir(join(elsewhere, "home"))).toEqual([])
+          expect(await leftStaging(join(state, "domovoi", "runtime-staging"))).toEqual([[]])
+        })
       })
     })
 
