@@ -13,6 +13,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { maximumPairedDevices } from "./device-registry.js"
 import { PairingClaimAdmission } from "./pairing-admission.js"
 import { PairingCodeService } from "./pairing-codes.js"
+import { PairingIssuerSlot } from "./pairing-issuer.js"
+import { ResourceMutationQueue } from "./resource-mutation-queue.js"
 import { DomovoiDaemon } from "./server.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
@@ -100,6 +102,20 @@ function redeem(connection: Connection, code: string, label = "iPhone 16 Pro", v
 // same socket, so one round trip after the spend is enough to see silence.
 async function settled(connection: Connection) {
   expect((await call(connection, "device.current", {})).error).toBeUndefined()
+}
+
+// Holds the next exclusive request (device.issueCode is one) behind a mutation
+// that runs until release is called.
+function holdNextExclusive() {
+  let release!: () => void
+  const blocker = new Promise<void>((resolve) => { release = resolve })
+  const enqueueExclusive = ResourceMutationQueue.prototype.enqueueExclusive
+  const queued = vi.spyOn(ResourceMutationQueue.prototype, "enqueueExclusive")
+    .mockImplementationOnce(function (this: ResourceMutationQueue, task, options) {
+      void enqueueExclusive.call(this, () => blocker)
+      return enqueueExclusive.call(this, task, options)
+    })
+  return { queued, release }
 }
 
 function only(outcomes: unknown[]): DeviceCodeOutcomeNotification {
@@ -282,5 +298,27 @@ describe("an issuer that has gone", () => {
     const phone = await connect(daemon)
     expect((await redeem(phone, code)).error).toBeUndefined()
     expect(issuer.outcomes).toEqual([])
+  })
+
+  // Security review r2 P3: an issuance queued behind a mutation can run after
+  // its connection closed, and that close has already let the slot go.
+  it("is not held when its queued issuance runs after it closed", async () => {
+    const daemon = await start()
+    const issuer = await owner(daemon)
+    const { queued, release } = holdNextExclusive()
+    const forget = vi.spyOn(PairingIssuerSlot.prototype, "forget")
+    const set = vi.spyOn(PairingIssuerSlot.prototype, "set")
+    const issued = vi.spyOn(PairingCodeService.prototype, "issue")
+
+    issuer.socket.send(JSON.stringify({ jsonrpc: "2.0", id: nextId++, method: "device.issueCode", params: { targetClient: "phone" } }))
+    await waitForDaemon(async () => expect(queued).toHaveBeenCalled())
+    issuer.socket.close()
+    await waitForDaemon(async () => expect(forget).toHaveBeenCalled())
+    release()
+    await waitForDaemon(async () => expect(issued).toHaveBeenCalledTimes(1))
+
+    // set takes the slot and starts its expiry timer.
+    expect(set).not.toHaveBeenCalled()
+    expect((forget.mock.contexts[0] as PairingIssuerSlot<unknown>).current).toBeUndefined()
   })
 })

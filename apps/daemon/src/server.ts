@@ -7645,7 +7645,12 @@ export class DomovoiDaemon {
         const { replacedPairingId, ...issued } = this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess)
         this.#codeReplaced(replacedPairingId)
         // Only a client code reports its outcome, and only to this connection.
-        if (params.targetClient !== undefined) this.#pairingIssuer.set(issued.pairingId, socket, pairingCodeTtlMs)
+        // Issuance can wait in the mutation queue past this connection's close,
+        // which has already let the slot go and will not run again, so a
+        // closed connection never takes it (security review r2 P3).
+        if (params.targetClient !== undefined && socket.readyState === WebSocket.OPEN) {
+          this.#pairingIssuer.set(issued.pairingId, socket, pairingCodeTtlMs)
+        }
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
