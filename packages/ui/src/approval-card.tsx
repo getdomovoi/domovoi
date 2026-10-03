@@ -150,8 +150,9 @@ export function ApprovalCard({
             {/* Ruled 2026-09-24: the daemon refuses a standing rule on a hard gate
                 and for a request it could not resolve, so the card offers none.
                 Ruled Q371 A: a rule matches this execution record, not a
-                command family, so the label names "this command" on every
-                surface rather than the design's "prisma migrate". */}
+                command family, so the label names "this command" on desktop
+                and web rather than the design's "prisma migrate". The tablet
+                draws its own card and still says "Always here". */}
             {approval.execution.state === "resolved" && approval.risk !== "hard-gate" ? (
               <Button variant="outline" size="sm" disabled={locked} onClick={press("always-project")}>Always for this command here</Button>
             ) : null}

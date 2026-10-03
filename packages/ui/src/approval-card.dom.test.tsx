@@ -323,7 +323,7 @@ it.each(["desktop", "web"] as const)("shows the rewritten file target on the %s 
   expect(affects()).toBe("The file two/file in the session worktree.")
 
   await user.click(screen.getByRole("button", { name: "Allow once" }))
-  // Ruled Q371 A: one label on every surface. A rule matches the execution
+  // Ruled Q371 A: one label on desktop and web. A rule matches the execution
   // record, not a command family, so it names "this command".
   await user.click(screen.getByRole("button", { name: "Always for this command here" }))
   await user.click(screen.getByRole("button", { name: "Deny" }))
