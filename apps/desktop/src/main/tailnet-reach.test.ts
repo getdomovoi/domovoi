@@ -755,6 +755,39 @@ describe("turning TailnetReach off", () => {
       message: "The certificate and key were deleted, but the daemon did not restart: The service did not report ready.",
     })
   })
+
+  // Codex review round 6 (P3-1): turning off does not need Tailscale, so the
+  // files it could not delete are named even when Tailscale cannot answer.
+  it("names the files it could not delete when Tailscale cannot answer", async () => {
+    const { reach, record } = harness({
+      record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, removeDirectoryThrows: new Error("EIO: rmdir"), status: "missing",
+    })
+    await expect(reach.turnOff()).resolves.toEqual({
+      ok: true, report: { state: "none", detail: "Domovoi found no tailscale command on this computer.", undeleted: "~/.domovoi/tls/.pending-1" },
+    })
+    expect(record()).toBeUndefined()
+    await expect(reach.status()).resolves.toEqual({ state: "none", detail: "Domovoi found no tailscale command on this computer.", undeleted: "~/.domovoi/tls/.pending-1" })
+  })
+
+  it("names a directory the sweep found when Tailscale cannot answer", async () => {
+    const { reach } = harness({ status: "missing", setAside: `${tls}/.pending-7`, files: { [`${tls}/.pending-7/previous.key`]: "key" } })
+    await expect(reach.status()).resolves.toEqual({ state: "none", detail: "Domovoi found no tailscale command on this computer.", setAside: "~/.domovoi/tls/.pending-7" })
+  })
+
+  // Codex review round 6 (P3-2): a restart that fails after files could not
+  // be deleted says so with the directory, and the answer carries it, so the
+  // card does not mark the deletion done.
+  it("names the files it could not delete when the restart fails too", async () => {
+    const { reach, record } = harness({
+      record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, removeDirectoryThrows: new Error("EIO: rmdir"), restart: { ok: false, message: "The service did not report ready." },
+    })
+    await expect(reach.turnOff()).resolves.toEqual({
+      ok: false, reason: "failed", step: "restart", undeleted: "~/.domovoi/tls/.pending-1",
+      message: "The certificate and key were deleted, but the daemon did not restart: The service did not report ready.",
+    })
+    expect(record()).toBeUndefined()
+    await expect(reach.status()).resolves.toMatchObject({ state: "off", undeleted: "~/.domovoi/tls/.pending-1" })
+  })
 })
 
 // Q404 follow-up: a hand-set DOMOVOI_HOST beyond loopback keeps the saved

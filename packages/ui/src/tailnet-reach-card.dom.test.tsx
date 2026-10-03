@@ -261,6 +261,43 @@ it("says where the files a turn-off could not delete are", async () => {
   expect(within(region()).getByText("Off")).toBeTruthy()
 })
 
+// Codex review round 6 (P3-1): turning off does not need Tailscale, so the
+// files it could not delete are named with no tailnet too, as are the other
+// directories still holding files.
+it("says where retained files are when there is no tailnet", async () => {
+  const none = { state: "none", detail: "Tailscale is not running on this computer (Stopped)." } as const
+  await card({ status: { ...none, undeleted: "~/.domovoi/tls/.pending-Ab3xYz", kept: "~/.domovoi/tls/.pending-Cd4wXy", setAside: "~/.domovoi/tls/.pending-Ef5vWx" } })
+  const view = within(region())
+  expect(view.getByText("No tailnet")).toBeTruthy()
+  expect(view.getByText("The certificate and key were set aside in ~/.domovoi/tls/.pending-Ab3xYz and could not be deleted.")).toBeTruthy()
+  expect(view.getByText("The previous certificate and key could not be put back and are in ~/.domovoi/tls/.pending-Cd4wXy.")).toBeTruthy()
+  expect(view.getByText("Domovoi found an earlier certificate and key it set aside in ~/.domovoi/tls/.pending-Ef5vWx. They may be from a change that did not finish.")).toBeTruthy()
+})
+
+// Codex review round 6 (P3-2): the restart failed after a turn-off deleted
+// the record but could not delete the files it set aside. The deletion step
+// is not drawn as done, and the next read names the directory.
+it("does not mark the deletion done when the restart fails with files retained", async () => {
+  const none = { state: "none", detail: "Tailscale is not running on this computer (Stopped)." } as const
+  let status: unknown = on
+  const ask = vi.fn(async (action: "status" | "on" | "off") => {
+    if (action === "status") return status
+    status = { ...none, undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+    return { ok: false, reason: "failed", step: "restart", message: "The daemon did not restart.", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+  })
+  render(<Harness source={{ act: ask, listener: async () => listening, inApp: true }} />)
+  await settle()
+  await userEvent.setup().click(toggle())
+  await settle()
+  const view = within(region())
+  expect(view.queryByText("done")).toBeNull()
+  expect(view.getAllByText("failed")).toHaveLength(2)
+  expect(view.getByText("Could not turn it off")).toBeTruthy()
+  expect(view.getByText("The daemon did not restart.")).toBeTruthy()
+  expect(view.getByText("The certificate and key were set aside in ~/.domovoi/tls/.pending-Ab3xYz and could not be deleted.")).toBeTruthy()
+  expect(toggle().getAttribute("aria-checked")).toBe("false")
+})
+
 // Round 3 re-review (P3-2): when the listener comes from DOMOVOI_TAILNET_*
 // set by hand in this app's environment, turning off does not clear it, so
 // the card says where it comes from instead of offering that.

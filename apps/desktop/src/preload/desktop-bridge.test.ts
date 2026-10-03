@@ -326,6 +326,12 @@ describe("createDesktopWindowBridge", () => {
     const outcome = { ok: false, reason: "failed", step: "certificate", message: "Tailscale did not issue a certificate.", detail: "x" }
     target.invoke.mockImplementation(async () => outcome)
     await expect(bridge.tailnetReach?.("on")).resolves.toEqual(outcome)
+    const retained = { ok: false, reason: "failed", step: "restart", message: "The daemon did not restart.", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+    target.invoke.mockImplementation(async () => retained)
+    await expect(bridge.tailnetReach?.("off")).resolves.toEqual(retained)
+    const none = { state: "none", detail: "Tailscale is not running on this computer (Stopped).", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+    target.invoke.mockImplementation(async () => none)
+    await expect(bridge.tailnetReach?.("status")).resolves.toEqual(none)
   })
 
   it.each([

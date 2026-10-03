@@ -4,7 +4,7 @@ import { isIPv4, isIPv6 } from "node:net"
 import type { DaemonServiceTailnetChange } from "@getdomovoi/daemon"
 import type { TailnetListenerStatus } from "@getdomovoi/protocol"
 
-import type { TailnetReachOutcome, TailnetReachReport, TailnetReachStep } from "../shared/tailnet-reach.js"
+import type { TailnetReachOutcome, TailnetReachReport, TailnetReachRetained, TailnetReachStep } from "../shared/tailnet-reach.js"
 import { tailnetFiles, tailnetName, type TailnetReachRecord } from "./tailnet-reach-record.js"
 
 // TailnetReach (Q404 A, J25): "Reach this machine from my tailnet". Domovoi
@@ -107,6 +107,15 @@ const statusTimeoutMs = 10_000
 // tailscale cert waits on the ACME exchange, which takes tens of seconds.
 const certificateTimeoutMs = 120_000
 const maximumDetailLength = 1_024
+
+// Codex review round 6 (P3-2): what a turn-off says when the restart fails
+// after the record was deleted but the files set aside could not be. The
+// sentence for that case awaits approval, so until it lands this says what a
+// restart failure after a turn-off always said, and takes the directory the
+// approved sentence will name.
+function restartFailedWithRetainedFiles(_directory: string, why: string): string {
+  return `The certificate and key were deleted, but the daemon did not restart: ${why}`
+}
 
 type Tailnet = { name: string; address: string; httpsCertificates: boolean }
 
@@ -446,9 +455,16 @@ export class TailnetReach {
   // back is named apart from one the sweep found at load, and each only while
   // it still holds previous files.
   // Q417 A: and one a turn-off could not remove once the record was gone.
-  async #notes(): Promise<{ ignored?: string; handSet?: string; kept?: string; setAside?: string; undeleted?: string }> {
+  async #notes(): Promise<{ ignored?: string; handSet?: string } & TailnetReachRetained> {
     const ignored = this.deps.conflict?.()
     const handSet = this.deps.handSet?.()
+    return { ...(ignored ? { ignored } : {}), ...(handSet ? { handSet } : {}), ...await this.#retained() }
+  }
+
+  // Codex review round 6 (P3-1): the directories still holding files, said
+  // with every state. Turning off does not need Tailscale, so neither does
+  // naming what it could not delete.
+  async #retained(): Promise<TailnetReachRetained> {
     if (this.#keptPending !== undefined && !(await this.#holdsPrevious(this.#keptPending))) this.#keptPending = undefined
     if (this.#undeletedPending !== undefined && !(await this.#holdsPrevious(this.#undeletedPending))) this.#undeletedPending = undefined
     const kept = this.#keptPending
@@ -456,7 +472,6 @@ export class TailnetReach {
     const found = await this.deps.setAside?.()
     const setAside = found !== undefined && found !== kept && found !== undeleted && await this.#holdsPrevious(found) ? found : undefined
     return {
-      ...(ignored ? { ignored } : {}), ...(handSet ? { handSet } : {}),
       ...(kept ? { kept: this.deps.display(kept) } : {}), ...(setAside ? { setAside: this.deps.display(setAside) } : {}),
       ...(undeleted ? { undeleted: this.deps.display(undeleted) } : {}),
     }
@@ -475,7 +490,7 @@ export class TailnetReach {
     // On, the record answers: turning it off must not depend on Tailscale.
     if (record) return this.#onReport(record)
     const tailnet = readTailnet(await this.deps.tailscale(["status", "--json"], statusTimeoutMs))
-    if ("none" in tailnet) return { state: "none", detail: tailnet.none }
+    if ("none" in tailnet) return { state: "none", detail: tailnet.none, ...await this.#retained() }
     return {
       state: "off", name: tailnet.name, address: tailnet.address, stored: this.#stored(tailnet.name), httpsCertificates: tailnet.httpsCertificates,
       ...await this.#notes(),
@@ -649,6 +664,8 @@ export class TailnetReach {
     const refused = await this.#refusal("delete")
     if (refused) return refused
     const record = await this.deps.record.read()
+    // The pending directory holding files this turn-off could not delete.
+    let undeleted: string | undefined
     if (record) {
       // Codex review round 1 (P2-4): nothing is deleted unless both files
       // are gone or still the ones the switch wrote.
@@ -672,16 +689,22 @@ export class TailnetReach {
         }
         if (found !== undefined) present.push(path)
       }
-      const refused = await this.#forgetRecorded(present)
-      if (refused) return refused
+      const forgotten = await this.#forgetRecorded(present)
+      if ("ok" in forgotten) return forgotten
+      undeleted = forgotten.undeleted
     }
     this.#schedule(undefined)
     this.#renewalFailure = undefined
     const restarted = await this.deps.restart({ clear: true })
     if (!restarted.ok) {
-      return {
+      // Codex review round 6 (P3-2): with files it could not delete, the
+      // answer names their directory, so the deletion is not drawn as done.
+      return undeleted === undefined ? {
         ok: false, reason: "failed", step: "restart",
         message: `The certificate and key were deleted, but the daemon did not restart: ${restarted.message}`,
+      } : {
+        ok: false, reason: "failed", step: "restart", undeleted: this.deps.display(undeleted),
+        message: restartFailedWithRetainedFiles(this.deps.display(undeleted), restarted.message),
       }
     }
     return { ok: true, report: await this.status() }
@@ -694,7 +717,10 @@ export class TailnetReach {
   // record. A file that cannot be put back stays in pending, and the switch's
   // state says where, as for a change that turned on. A record that cannot be
   // deleted is named as a file is (Q418 A), once the files are back.
-  async #forgetRecorded(present: readonly string[]): Promise<TailnetReachOutcome | undefined> {
+  //
+  // The answer is the refusal, or the record is gone and the answer names the
+  // pending directory when the files set aside could not be deleted.
+  async #forgetRecorded(present: readonly string[]): Promise<TailnetReachOutcome | { undeleted?: string }> {
     const stays = (path: string, cause: unknown): TailnetReachOutcome => ({
       ok: false, reason: "failed", step: "delete",
       message: `${this.deps.display(path)} could not be deleted, so the switch stays on.`,
@@ -706,7 +732,7 @@ export class TailnetReach {
       } catch (cause) {
         return stays(this.deps.record.path, cause)
       }
-      return undefined
+      return {}
     }
     let pending: string
     try {
@@ -715,6 +741,7 @@ export class TailnetReach {
       return stays(present[0]!, cause)
     }
     const swap = this.#swap(pending, present)
+    let retained: string | undefined
     try {
       for (const path of present) {
         try {
@@ -731,12 +758,12 @@ export class TailnetReach {
         return stays(this.deps.record.path, cause)
       }
       swap.commit()
-      return undefined
     } finally {
       // Q417 A: once the record is gone the switch is off, and files it could
       // not delete are named at once.
-      if (swap.removable()) await this.deps.files.removeDirectory(pending).catch(() => { if (swap.committed()) this.#undeletedPending = pending })
+      if (swap.removable()) await this.deps.files.removeDirectory(pending).catch(() => { if (swap.committed()) retained = this.#undeletedPending = pending })
     }
+    return retained === undefined ? {} : { undeleted: retained }
   }
 
   async #forget(paths: readonly string[]): Promise<void> {

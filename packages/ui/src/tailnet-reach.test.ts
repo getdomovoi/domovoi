@@ -21,6 +21,9 @@ describe("the TailnetReach answer", () => {
     { ...on, kept: "~/.domovoi/tls/.pending-Ab3xYz" },
     { ...on, state: "off", setAside: "~/.domovoi/tls/.pending-Ab3xYz" },
     { ...on, state: "off", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" },
+    // Codex review round 6 (P3-1): named with no tailnet too.
+    { state: "none", detail: "Tailscale is not running on this computer (Stopped).", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" },
+    { state: "none", detail: "Tailscale is not running on this computer (Stopped).", kept: "~/.domovoi/tls/.pending-Ab3xYz", setAside: "~/.domovoi/tls/.pending-Cd4wXy" },
   ])("reads a report: %j", (report) => {
     expect(parseTailnetReachReport(report)).toEqual(report)
   })
@@ -42,6 +45,9 @@ describe("the TailnetReach answer", () => {
     expect(parseTailnetReachOutcome({ ok: true, report: on })).toEqual({ ok: true, report: on })
     const failed = { ok: false, reason: "https-off", step: "certificate", message: "HTTPS certificates are off for tail4c2e.ts.net.", detail: "x" }
     expect(parseTailnetReachOutcome(failed)).toEqual(failed)
+    // Codex review round 6 (P3-2): a restart that failed after files could not be deleted names their directory.
+    const retained = { ok: false, reason: "failed", step: "restart", message: "The daemon did not restart.", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+    expect(parseTailnetReachOutcome(retained)).toEqual(retained)
   })
 
   it.each([

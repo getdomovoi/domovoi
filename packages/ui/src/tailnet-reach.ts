@@ -4,8 +4,8 @@
 // what the main process can have said.
 
 export type TailnetReachReport =
-  | { state: "none"; detail: string }
-  | {
+  | ({ state: "none"; detail: string } & TailnetReachRetained)
+  | ({
       state: "off" | "on"
       name: string
       address: string
@@ -17,13 +17,27 @@ export type TailnetReachReport =
       // The daemon inside this app takes a tailnet listener from settings set
       // by hand, which turning the switch off does not clear.
       handSet?: string
-      // A pending directory holding previous files a change could not put back.
-      kept?: string
-      // One found when the app started; it may be from a change that did not finish.
-      setAside?: string
-      // One holding the files a turn-off could not delete once the record was gone.
-      undeleted?: string
-    }
+    } & TailnetReachRetained)
+
+// Pending directories still holding files of the switch's, said with every
+// state: turning off does not need Tailscale, so neither does naming them.
+export type TailnetReachRetained = {
+  // One holding previous files a change could not put back.
+  kept?: string
+  // One found when the app started; it may be from a change that did not finish.
+  setAside?: string
+  // One holding the files a turn-off could not delete once the record was gone.
+  undeleted?: string
+}
+const retainedKeys = ["kept", "setAside", "undeleted"] as const
+
+function retained(read: Fields): TailnetReachRetained {
+  return {
+    ...(read.kept === undefined ? {} : { kept: text(read.kept) }),
+    ...(read.setAside === undefined ? {} : { setAside: text(read.setAside) }),
+    ...(read.undeleted === undefined ? {} : { undeleted: text(read.undeleted) }),
+  }
+}
 
 export const tailnetReachSteps = ["status", "certificate", "store", "restart", "delete"] as const
 export type TailnetReachStep = (typeof tailnetReachSteps)[number]
@@ -32,7 +46,9 @@ export type TailnetReachFailure = (typeof tailnetReachFailures)[number]
 
 export type TailnetReachOutcome =
   | { ok: true; report: TailnetReachReport }
-  | { ok: false; reason: TailnetReachFailure; step: TailnetReachStep; message: string; detail?: string }
+  // undeleted: the restart failed after a turn-off deleted the record but
+  // could not delete the files it set aside, which are in this directory.
+  | { ok: false; reason: TailnetReachFailure; step: TailnetReachStep; message: string; detail?: string; undeleted?: string }
 
 class UnreadableAnswer extends Error {
   constructor() {
@@ -63,9 +79,12 @@ function instant(value: unknown): string {
 
 export function parseTailnetReachReport(value: unknown): TailnetReachReport {
   const state = (value && typeof value === "object" ? (value as Fields).state : undefined)
-  if (state === "none") return { state, detail: text(fields(value, ["state", "detail"]).detail) }
+  if (state === "none") {
+    const read = fields(value, ["state", "detail"], retainedKeys)
+    return { state, detail: text(read.detail), ...retained(read) }
+  }
   if (state !== "off" && state !== "on") throw new UnreadableAnswer()
-  const read = fields(value, ["state", "name", "address", "stored", "httpsCertificates"], ["certificateExpiresAt", "renewalFailed", "ignored", "handSet", "kept", "setAside", "undeleted"])
+  const read = fields(value, ["state", "name", "address", "stored", "httpsCertificates"], ["certificateExpiresAt", "renewalFailed", "ignored", "handSet", ...retainedKeys])
   if (typeof read.httpsCertificates !== "boolean") throw new UnreadableAnswer()
   const failed = read.renewalFailed === undefined ? undefined : fields(read.renewalFailed, ["at", "message"])
   return {
@@ -74,9 +93,7 @@ export function parseTailnetReachReport(value: unknown): TailnetReachReport {
     ...(failed ? { renewalFailed: { at: instant(failed.at), message: text(failed.message) } } : {}),
     ...(read.ignored === undefined ? {} : { ignored: text(read.ignored) }),
     ...(read.handSet === undefined ? {} : { handSet: text(read.handSet) }),
-    ...(read.kept === undefined ? {} : { kept: text(read.kept) }),
-    ...(read.setAside === undefined ? {} : { setAside: text(read.setAside) }),
-    ...(read.undeleted === undefined ? {} : { undeleted: text(read.undeleted) }),
+    ...retained(read),
   }
 }
 
@@ -84,11 +101,12 @@ export function parseTailnetReachOutcome(value: unknown): TailnetReachOutcome {
   if (value && typeof value === "object" && (value as Fields).ok === true) {
     return { ok: true, report: parseTailnetReachReport(fields(value, ["ok", "report"]).report) }
   }
-  const read = fields(value, ["ok", "reason", "step", "message"], ["detail"])
+  const read = fields(value, ["ok", "reason", "step", "message"], ["detail", "undeleted"])
   const { reason, step } = read
   if (read.ok !== false || !tailnetReachFailures.includes(reason as TailnetReachFailure) || !tailnetReachSteps.includes(step as TailnetReachStep)) throw new UnreadableAnswer()
   return {
     ok: false, reason: reason as TailnetReachFailure, step: step as TailnetReachStep, message: text(read.message),
     ...(read.detail === undefined ? {} : { detail: text(read.detail) }),
+    ...(read.undeleted === undefined ? {} : { undeleted: text(read.undeleted) }),
   }
 }
