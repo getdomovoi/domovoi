@@ -145,7 +145,7 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
       DOMOVOI_TAILNET_TLS_KEY_PATH: join(tls, `${name}.key`),
       DOMOVOI_TAILNET_HOST: name,
     }
-    expect(savedTailnetReachEnvironment(data, {})).toEqual(expected)
+    expect(savedTailnetReachEnvironment(data, {}, home)).toEqual(expected)
     // The restarted daemon starts with them.
     expect(restartedWith).toEqual([expected])
     expect(stopOwned).toHaveBeenCalledOnce()
@@ -162,7 +162,7 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     await writeFile(join(tls, "kept.crt"), "not Domovoi's")
     await expect(reach.turnOff()).resolves.toMatchObject({ ok: true, report: { state: "off" } })
     await expect(readdir(tls)).resolves.toEqual(["kept.crt"])
-    expect(savedTailnetReachEnvironment(data, {})).toEqual({})
+    expect(savedTailnetReachEnvironment(data, {}, home)).toEqual({})
     expect(restartedWith.at(-1)).toEqual({})
   })
 

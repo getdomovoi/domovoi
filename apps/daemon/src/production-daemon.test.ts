@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { promisify } from "node:util"
 
 import { fleetEnrollResultSchema, fleetSnapshotSchema, protocolVersion } from "@getdomovoi/protocol"
 import { WebSocket } from "ws"
@@ -11,6 +13,7 @@ import {
   createProductionDaemon,
   createProductionDaemonWithDependencies,
   productionDaemonDependencies,
+  type ProductionDaemonDependencies,
   type ProductionDaemonHandle,
   type ProductionDaemonRuntime,
 } from "./production-daemon.js"
@@ -428,14 +431,27 @@ describe("createProductionDaemon", () => {
 
   // TailnetReach (Q404 A): the desktop and the CLI attach on loopback, so the
   // endpoint this daemon publishes stays loopback with the tailnet listener on.
-  const tailnetEnvironment = {
-    DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1", DOMOVOI_TAILNET_ADDRESS: "100.101.102.103",
-    DOMOVOI_TAILNET_TLS_CERT_PATH: "/profile/tls/studio.tail4c2e.ts.net.crt",
-    DOMOVOI_TAILNET_TLS_KEY_PATH: "/profile/tls/studio.tail4c2e.ts.net.key",
-    DOMOVOI_TAILNET_HOST: "studio.tail4c2e.ts.net",
+  // The certificate and key are real files in a temporary profile, so the
+  // regular-file check before loading sees what the daemon would.
+  async function tailnetFiles() {
+    const directory = join(await temporaryHome(), "tls")
+    await mkdir(directory)
+    const certPath = join(directory, "studio.tail4c2e.ts.net.crt")
+    const keyPath = join(directory, "studio.tail4c2e.ts.net.key")
+    await writeFile(certPath, "certificate")
+    await writeFile(keyPath, "key", { mode: 0o600 })
+    return {
+      certPath, keyPath,
+      environment: {
+        DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1", DOMOVOI_TAILNET_ADDRESS: "100.101.102.103",
+        DOMOVOI_TAILNET_TLS_CERT_PATH: certPath, DOMOVOI_TAILNET_TLS_KEY_PATH: keyPath,
+        DOMOVOI_TAILNET_HOST: "studio.tail4c2e.ts.net",
+      },
+    }
   }
 
   it("passes the tailnet listener to the server and keeps the loopback endpoint", async () => {
+    const { environment: tailnetEnvironment } = await tailnetFiles()
     const material = { cert: Buffer.from("tailnet certificate"), key: Buffer.from("tailnet key") }
     const loadTls = vi.fn(async () => material)
     const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
@@ -456,19 +472,57 @@ describe("createProductionDaemon", () => {
     expect(await handle.start()).toEqual({ host: "127.0.0.1", port: 49_200, url: "ws://127.0.0.1:49200/rpc" })
   })
 
-  it("starts on loopback and says why when the tailnet certificate cannot be read", async () => {
+  async function refusedWith(environment: Record<string, string>, loadTls: ProductionDaemonDependencies["loadTls"] = productionDaemonDependencies.loadTls, tailnetTlsTimeoutMs?: number) {
     const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
-    const handle = await createProductionDaemonWithDependencies({ environment: tailnetEnvironment, homeDirectory: await temporaryHome() }, {
+    const started = Date.now()
+    const handle = await createProductionDaemonWithDependencies({ environment, homeDirectory: await temporaryHome() }, {
       ...productionDaemonDependencies,
-      loadTls: async (paths) => { throw new Error(`Domovoi could not read the TLS certificate at ${paths.certPath}: ENOENT`) },
+      loadTls,
+      ...(tailnetTlsTimeoutMs === undefined ? {} : { tailnetTlsTimeoutMs }),
       createMachineCredentials: () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} })),
       createDaemon,
     })
     running.push(handle)
-    expect(createDaemon).toHaveBeenCalledWith(expect.objectContaining({
-      tailnetListener: { address: "100.101.102.103", tls: { refused: "Domovoi could not read the TLS certificate at /profile/tls/studio.tail4c2e.ts.net.crt: ENOENT" } },
-    }))
     expect(await handle.start()).toMatchObject({ url: "ws://127.0.0.1:49200/rpc" })
+    return { tls: createDaemon.mock.calls[0]![0].tailnetListener?.tls, elapsed: Date.now() - started }
+  }
+
+  it("starts on loopback and says why when the tailnet certificate cannot be read", async () => {
+    const files = await tailnetFiles()
+    const { tls } = await refusedWith(files.environment, async (paths) => { throw new Error(`Domovoi could not read the TLS certificate at ${paths.certPath}: EACCES`) })
+    expect(tls).toEqual({ refused: `Domovoi could not read the TLS certificate at ${files.certPath}: EACCES` })
+  })
+
+  it("refuses a tailnet certificate that is not there, before reading anything", async () => {
+    const files = await tailnetFiles()
+    await rm(files.certPath)
+    const loadTls = vi.fn(productionDaemonDependencies.loadTls)
+    const { tls } = await refusedWith(files.environment, loadTls)
+    expect(tls).toEqual({ refused: `Domovoi could not read the tailnet certificate at ${files.certPath} (ENOENT), so the daemon answers on this computer only.` })
+    expect(loadTls).not.toHaveBeenCalled()
+  })
+
+  // Review of 049b1383 (P2-1): a FIFO or a directory at the path is never
+  // opened, so it cannot hold the startup deadline.
+  it.skipIf(process.platform === "win32")("refuses a tailnet key that is not a regular file without opening it", async () => {
+    const files = await tailnetFiles()
+    await rm(files.keyPath)
+    await promisify(execFile)("mkfifo", [files.keyPath])
+    const loadTls = vi.fn(productionDaemonDependencies.loadTls)
+    const { tls, elapsed } = await refusedWith(files.environment, loadTls)
+    expect(tls).toEqual({ refused: `The tailnet key at ${files.keyPath} is not a regular file, so the daemon answers on this computer only.` })
+    expect(loadTls).not.toHaveBeenCalled()
+    expect(elapsed).toBeLessThan(5_000)
+    await rm(files.certPath)
+    await mkdir(files.certPath)
+    expect((await refusedWith(files.environment)).tls).toEqual({ refused: `The tailnet certificate at ${files.certPath} is not a regular file, so the daemon answers on this computer only.` })
+  })
+
+  it("gives the tailnet certificate its own short bound", async () => {
+    const files = await tailnetFiles()
+    const { tls, elapsed } = await refusedWith(files.environment, () => new Promise(() => {}), 100)
+    expect(tls).toEqual({ refused: `The tailnet certificate and key at ${files.certPath} were not read within 0.1 seconds, so the daemon answers on this computer only.` })
+    expect(elapsed).toBeLessThan(5_000)
   })
 
   it("assembles every mandatory production dependency", async () => {

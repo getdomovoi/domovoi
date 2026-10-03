@@ -6,6 +6,7 @@
 
 import { readFileSync } from "node:fs"
 import { isIPv4, isIPv6 } from "node:net"
+import { homedir } from "node:os"
 import { join, posix, win32 } from "node:path"
 
 // index.ts names the file too, to check for it without loading this module.
@@ -19,34 +20,56 @@ export type TailnetReachRecord = {
   keyPath: string
 }
 
-const hostName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u
-const path = (value: unknown): value is string =>
-  typeof value === "string" && value.length > 0 && value.length <= 4_096 && !/[\0\r\n]/u.test(value)
-  && value.trim() === value && (posix.isAbsolute(value) || win32.isAbsolute(value))
+// A DNS name of lower-case labels whose last label holds a letter, so it is
+// never an IP literal: the daemon refuses a loopback or wildcard address as
+// DOMOVOI_TAILNET_HOST (transport-config.ts tailnetHostSchema).
+const hostName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?=[a-z0-9-]*[a-z])[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u
 
-// The ranges the daemon accepts (config.ts): 100.64.0.0/10 and fd7a:115c:a1e0::/48.
+// The ranges the daemon accepts, checked as it checks them (config.ts
+// isTailscaleAddress): 100.64.0.0/10, or fd7a:115c:a1e0::/48 written without
+// an IPv4 tail or a zone.
 function tailscaleAddress(value: string): boolean {
   if (isIPv4(value)) return /^100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./u.test(value)
-  if (!isIPv6(value)) return false
-  try {
-    // The URL form is lower case and compressed, never across the first three groups here.
-    return new URL(`http://[${value}]/`).hostname.startsWith("[fd7a:115c:a1e0:")
-  } catch {
-    return false
-  }
+  if (!isIPv6(value) || value.includes(".") || value.includes("%")) return false
+  const [head = "", tail] = value.split("::")
+  const left = head ? head.split(":") : []
+  const right = tail ? tail.split(":") : []
+  const missing = 8 - left.length - right.length
+  if (tail === undefined ? missing !== 0 : missing < 1) return false
+  const groups = [...left, ...Array<string>(tail === undefined ? 0 : missing).fill("0"), ...right].map((group) => Number.parseInt(group, 16))
+  return groups[0] === 0xfd7a && groups[1] === 0x115c && groups[2] === 0xa1e0
 }
 
-// Undefined for anything that is not exactly a record this app wrote, with
-// settings the daemon accepts: a record it refused would stop it starting.
-export function parseTailnetReachRecord(text: string): TailnetReachRecord | undefined {
+// <profile>/tls, the only directory the switch writes, with the profile named
+// as the daemon names it (profile-directory.ts): DOMOVOI_PROFILE_DIR when it is
+// absolute, otherwise <home>/.domovoi. None for a profile the daemon refuses.
+export function tailnetTlsDirectory(environment: Readonly<Record<string, string | undefined>>, home: string): string | undefined {
+  const paths = win32.isAbsolute(home) && !posix.isAbsolute(home) ? win32 : posix
+  const configured = environment.DOMOVOI_PROFILE_DIR
+  if (configured === undefined) return paths.join(home, ".domovoi", "tls")
+  return paths.isAbsolute(configured) && !/[\0\r\n]/u.test(configured) ? paths.join(configured, "tls") : undefined
+}
+
+// The certificate and key the switch writes for name, and nothing else.
+export function tailnetFiles(tlsDirectory: string, name: string): { certPath: string; keyPath: string } {
+  const separator = tlsDirectory.includes("\\") && !tlsDirectory.includes("/") ? "\\" : "/"
+  return { certPath: `${tlsDirectory}${separator}${name}.crt`, keyPath: `${tlsDirectory}${separator}${name}.key` }
+}
+
+// Undefined for anything that is not exactly a record this app writes: a name
+// and address the daemon accepts, so a saved record never stops it starting,
+// and the certificate and key at <tlsDirectory>/<name>.crt and .key, so turning
+// the switch off or renewing touches only those two files.
+export function parseTailnetReachRecord(text: string, tlsDirectory: string): TailnetReachRecord | undefined {
   try {
     const value: unknown = JSON.parse(text)
     if (typeof value !== "object" || value === null) return undefined
     const { version, name, address: bound, certPath, keyPath, ...rest } = value as Record<string, unknown>
     if (version !== 1 || Object.keys(rest).length > 0) return undefined
     if (typeof name !== "string" || !hostName.test(name) || typeof bound !== "string" || !tailscaleAddress(bound)) return undefined
-    if (!path(certPath) || !path(keyPath)) return undefined
-    return { version, name, address: bound, certPath, keyPath }
+    const files = tailnetFiles(tlsDirectory, name)
+    if (certPath !== files.certPath || keyPath !== files.keyPath) return undefined
+    return { version, name, address: bound, ...files }
   } catch {
     return undefined
   }
@@ -74,13 +97,19 @@ export function tailnetHostConflict(environment: Readonly<Record<string, string 
   return `DOMOVOI_HOST is set to ${host} in this app's environment, so the daemon inside this app listens there and starts without the tailnet listener.`
 }
 
-// The settings saved in dataDirectory for a daemon started with environment,
-// or none. Read synchronously because the acquisition options are built so.
-export function savedTailnetReachEnvironment(dataDirectory: string, environment: Readonly<Record<string, string | undefined>>): Record<string, string> {
-  if (tailnetHostConflict(environment) !== undefined) return {}
+// The record saved in dataDirectory for the profile environment names, or none.
+// Read synchronously because the acquisition options are built so.
+export function savedTailnetReachRecord(dataDirectory: string, environment: Readonly<Record<string, string | undefined>>, home = homedir()): TailnetReachRecord | undefined {
+  const tls = tailnetTlsDirectory(environment, home)
+  if (tls === undefined) return undefined
   try {
-    return tailnetReachEnvironment(parseTailnetReachRecord(readFileSync(join(dataDirectory, tailnetReachRecordFile), "utf8")))
+    return parseTailnetReachRecord(readFileSync(join(dataDirectory, tailnetReachRecordFile), "utf8"), tls)
   } catch {
-    return {}
+    return undefined
   }
+}
+
+// The settings for a daemon started with environment, or none.
+export function savedTailnetReachEnvironment(dataDirectory: string, environment: Readonly<Record<string, string | undefined>>, home = homedir()): Record<string, string> {
+  return tailnetHostConflict(environment) === undefined ? tailnetReachEnvironment(savedTailnetReachRecord(dataDirectory, environment, home)) : {}
 }

@@ -4,7 +4,7 @@ import { isIPv4, isIPv6 } from "node:net"
 import type { DaemonServiceTailnetChange } from "@getdomovoi/daemon"
 
 import type { TailnetReachOutcome, TailnetReachReport, TailnetReachStep } from "../shared/tailnet-reach.js"
-import type { TailnetReachRecord } from "./tailnet-reach-record.js"
+import { tailnetFiles, type TailnetReachRecord } from "./tailnet-reach-record.js"
 
 // TailnetReach (Q404 A, J25): "Reach this machine from my tailnet". Domovoi
 // reads the tailnet status and changes nothing until the switch is turned on.
@@ -221,12 +221,9 @@ export class TailnetReach {
     }
   }
 
+  // The same two paths the record parser holds a record to.
   #paths(name: string): { certPath: string; keyPath: string } {
-    const separator = this.deps.tlsDirectory.includes("\\") && !this.deps.tlsDirectory.includes("/") ? "\\" : "/"
-    return {
-      certPath: `${this.deps.tlsDirectory}${separator}${name}.crt`,
-      keyPath: `${this.deps.tlsDirectory}${separator}${name}.key`,
-    }
+    return tailnetFiles(this.deps.tlsDirectory, name)
   }
 
   #stored(name: string): string {

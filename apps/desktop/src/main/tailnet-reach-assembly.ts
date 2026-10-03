@@ -2,7 +2,7 @@ import { execFile } from "node:child_process"
 import { constants } from "node:fs"
 import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
-import { delimiter, isAbsolute, join, resolve, sep } from "node:path"
+import { delimiter, isAbsolute, join, sep } from "node:path"
 
 import { publishFileDurably } from "@getdomovoi/credential-store"
 import type { DaemonServiceTailnetChange } from "@getdomovoi/daemon"
@@ -15,6 +15,7 @@ import {
   savedTailnetReachEnvironment,
   tailnetHostConflict,
   tailnetReachRecordFile,
+  tailnetTlsDirectory,
   type TailnetReachRecord,
 } from "./tailnet-reach-record.js"
 import { TailnetReach, type TailnetReachDependencies, type TailscaleRun } from "./tailnet-reach.js"
@@ -88,8 +89,9 @@ export function createTailnetReach(input: {
   const home = input.home ?? homedir()
   const environment = input.environment ?? process.env
   const platform = input.platform ?? process.platform
-  const profile = environment.DOMOVOI_PROFILE_DIR === undefined ? join(home, ".domovoi") : resolve(home, environment.DOMOVOI_PROFILE_DIR)
-  const tlsDirectory = join(profile, "tls")
+  // The daemon refuses a relative DOMOVOI_PROFILE_DIR and does not start, so
+  // the fallback is only somewhere to report status from.
+  const tlsDirectory = tailnetTlsDirectory(environment, home) ?? join(home, ".domovoi", "tls")
   const recordPath = join(input.dataDirectory, tailnetReachRecordFile)
 
   // The daemon this window reaches, if the switch may restart it: one this
@@ -124,7 +126,7 @@ export function createTailnetReach(input: {
     record: {
       read: async () => {
         try {
-          return parseTailnetReachRecord(await readFile(recordPath, "utf8"))
+          return parseTailnetReachRecord(await readFile(recordPath, "utf8"), tlsDirectory)
         } catch {
           return undefined
         }
@@ -134,7 +136,7 @@ export function createTailnetReach(input: {
         const pending = `${recordPath}.${process.pid}.pending`
         await writeFile(pending, `${JSON.stringify(record)}\n`, { mode: 0o600 })
         await publishFileDurably(pending, recordPath)
-        input.applySettings?.(savedTailnetReachEnvironment(input.dataDirectory, environment))
+        input.applySettings?.(savedTailnetReachEnvironment(input.dataDirectory, environment, home))
       },
       remove: async () => {
         await rm(recordPath, { force: true })

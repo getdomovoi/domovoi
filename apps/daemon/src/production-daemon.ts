@@ -26,6 +26,7 @@ import {
 import { skillTrustPath } from "./skill-signing.js"
 import { profileDirectory, profileLocation } from "./profile-directory.js"
 import { loadTlsMaterial, type TlsMaterial, type TlsMaterialPaths } from "./tls-material.js"
+import { loadTailnetTls } from "./tailnet-listener.js"
 import { wslHostFacts } from "./wsl-host.js"
 import { captureInheritedCredentials, refuseCredentialOverrides, withInheritedCredentials, withoutInheritedCredentials } from "./inherited-credentials.js"
 
@@ -85,6 +86,8 @@ export type ProductionDaemonDependencies = {
     defaults: { label: string },
   ): Promise<MachineIdentity>
   loadTls(paths: TlsMaterialPaths): Promise<TlsMaterial>
+  // The tailnet certificate's own bound; tests shorten it.
+  tailnetTlsTimeoutMs?: number
   loadRelayChannel: typeof loadOrProvisionRelayChannel
   resolveToolPath: typeof resolveToolPath
   createProviderProbe(toolPath: string | undefined): ProviderProbe
@@ -139,12 +142,11 @@ export async function createProductionDaemonWithDependencies(
     const tls = config.tls ? await beforeDeadline(dependencies.loadTls(config.tls), deadline) : undefined
     // TailnetReach (Q404 A): unlike the main listener's, a certificate that
     // cannot be read refuses only the tailnet listener. The daemon still
-    // starts on loopback, which the desktop and the CLI attach on, and says why.
+    // starts on loopback, which the desktop and the CLI attach on, and says
+    // why. Only regular files are read, within their own bound.
     const tailnetListener = config.tailnetListener ? {
       address: config.tailnetListener.address,
-      tls: await beforeDeadline(dependencies.loadTls(config.tailnetListener.tls).catch((error: unknown) => (
-        { refused: error instanceof Error ? error.message : "The tailnet certificate and key could not be read." }
-      )), deadline),
+      tls: await beforeDeadline(loadTailnetTls(dependencies.loadTls, config.tailnetListener.tls, dependencies.tailnetTlsTimeoutMs), deadline),
     } : undefined
     deadline.throwIfExpired()
     lease ??= claimProfile(profile)
