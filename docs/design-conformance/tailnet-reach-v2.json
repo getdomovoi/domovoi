@@ -35,9 +35,9 @@
         "DOMOVOI NEVER TOUCHES"
       ],
       "blocked": {
-        "since": "2026-09-23",
+        "since": "2026-10-02",
         "needs": "protocol",
-        "reason": "no RPC or desktop adapter turns tailnet serving on or off (a certificate for the tailnet name and a listen address beyond loopback); J25 was drawn as an owner decision"
+        "reason": "J25 is decided (SHIP-PLAN: asking Tailscale for this machine's own certificate is allowed, and no tailnet setting is touched), so the block is implementation, not a decision. No RPC or desktop adapter turns tailnet serving on or off: nothing reads tailscale status, fetches the certificate into the profile, rewrites the daemon's listen address and TLS paths, or restarts it, and no Tailscale code exists outside tests. Today reaching the tailnet means setting DOMOVOI_HOST, DOMOVOI_ALLOW_REMOTE_TRANSPORT and the TLS paths by hand, which an app opened from Finder does not inherit, so a DMG-only user has no in-product path to a paired phone, which bears on M1's a phone answers a gate"
       }
     }
   ],
