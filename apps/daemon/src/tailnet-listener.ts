@@ -15,6 +15,9 @@ export type DaemonTailnetListenerOptions = {
   // How long the daemon waits before binding an address that was not on this
   // machine yet (Tailscale not up at login). Tests shorten it.
   retryMs?: number
+  // The longest the timer armed for the certificate's notAfter waits before
+  // it checks the clock again. Tests shorten it.
+  expiryRecheckMs?: number
 }
 
 // Review of 049b1383 (P2-1): the tailnet certificate and key are loaded only
@@ -53,8 +56,14 @@ export async function loadTailnetTls(
 }
 
 export const defaultTailnetRetryMs = 30_000
-// How often a listening daemon checks its certificate against notAfter.
-export const tailnetExpiryCheckMs = 60 * 60_000
+// Codex review round 1 (P3-7): a listening daemon closes the tailnet listener
+// at the certificate's notAfter, from a timer armed for that moment, not from
+// a poll. A timer waits at most 2^31 - 1 ms (about 24.8 days), and a
+// certificate lasts 90, so a longer wait is re-armed when it fires.
+const maximumTimerMs = 2_147_483_647
+export function tailnetExpiryDelay(notAfter: number, now: number, recheckMs = maximumTimerMs): number {
+  return Math.max(0, Math.min(notAfter - now, recheckMs, maximumTimerMs))
+}
 
 // A reason travels in tailnet.status, bounded at 512 characters there.
 const maximumReasonLength = 512

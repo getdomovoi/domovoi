@@ -274,7 +274,7 @@ import { StoredMachineIdentityMismatchError, type MachineIdentity } from "./mach
 import type { TlsMaterial } from "./tls-material.js"
 import {
   defaultTailnetRetryMs,
-  tailnetExpiryCheckMs,
+  tailnetExpiryDelay,
   tailnetCertificateCheck,
   tailnetStatusOf,
   type DaemonTailnetListenerOptions,
@@ -1636,7 +1636,7 @@ export class DomovoiDaemon {
   #tailnetHttp: HttpServer | undefined
   #tailnetRpc: WebSocketServer | undefined
   #tailnetRetry: ReturnType<typeof setTimeout> | undefined
-  #tailnetExpiryCheck: ReturnType<typeof setInterval> | undefined
+  #tailnetExpiryCheck: ReturnType<typeof setTimeout> | undefined
   #rpcClients = new Set<RpcOutboundSocket>()
   #relaySockets = new Set<DaemonRelaySocket>()
   #relayStaticKey: Uint8Array | undefined
@@ -3140,16 +3140,27 @@ export class DomovoiDaemon {
         this.#tailnetHttp = server
         this.#tailnetRpc = rpc
         this.#tailnet = { state: "listening", address, port, notAfter }
-        this.#tailnetExpiryCheck = setInterval(() => this.#expireTailnetIfDue(), tailnetExpiryCheckMs)
-        this.#tailnetExpiryCheck.unref?.()
+        this.#armTailnetExpiry(notAfter, options.expiryRecheckMs)
       })
     })
+  }
+
+  // Codex review round 1 (P3-7): a timer armed for notAfter itself, checked
+  // against the clock when it fires and armed again while the listener is up.
+  #armTailnetExpiry(notAfter: Date, recheckMs: number | undefined): void {
+    this.#tailnetExpiryCheck = setTimeout(() => {
+      this.#tailnetExpiryCheck = undefined
+      this.#expireTailnetIfDue()
+      if (this.#tailnet.state === "listening") this.#armTailnetExpiry(notAfter, recheckMs)
+    }, tailnetExpiryDelay(notAfter.getTime(), Date.now(), recheckMs))
+    this.#tailnetExpiryCheck.unref?.()
   }
 
   // An expired certificate is refused by every device, so the tailnet
   // listener closes at notAfter, with every connection it carried, and the
   // daemon answers on this computer only until a restart serves a renewed one.
-  // Checked hourly and whenever tailnet.status is asked.
+  // Checked when the timer armed for notAfter fires and whenever
+  // tailnet.status is asked.
   #expireTailnetIfDue(): void {
     const state = this.#tailnet
     const tls = this.#tailnetOptions?.tls
@@ -3157,7 +3168,7 @@ export class DomovoiDaemon {
     const checked = tailnetCertificateCheck(tls.cert, Date.now())
     const reason = "refused" in checked && checked.refused ? checked.refused : "The tailnet certificate expired, so the daemon answers on this computer only."
     this.#tailnet = { state: "refused", address: state.address, reason, retrying: false, notAfter: state.notAfter }
-    if (this.#tailnetExpiryCheck) clearInterval(this.#tailnetExpiryCheck)
+    if (this.#tailnetExpiryCheck) clearTimeout(this.#tailnetExpiryCheck)
     this.#tailnetExpiryCheck = undefined
     for (const client of this.#tailnetRpc?.clients ?? []) client.close(1001, "tailnet certificate expired")
     this.#tailnetHttp?.close()
@@ -3222,7 +3233,7 @@ export class DomovoiDaemon {
     }
     if (this.#tailnetRetry) clearTimeout(this.#tailnetRetry)
     this.#tailnetRetry = undefined
-    if (this.#tailnetExpiryCheck) clearInterval(this.#tailnetExpiryCheck)
+    if (this.#tailnetExpiryCheck) clearTimeout(this.#tailnetExpiryCheck)
     this.#tailnetExpiryCheck = undefined
     this.#tailnetRpc = undefined
     try {

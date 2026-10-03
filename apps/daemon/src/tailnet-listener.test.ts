@@ -14,7 +14,7 @@ import { WebSocket } from "ws"
 
 import { DomovoiDaemon, type DaemonErrorEntry } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
-import { tailnetCertificateCheck, type DaemonTailnetListenerOptions } from "./tailnet-listener.js"
+import { tailnetCertificateCheck, tailnetExpiryDelay, type DaemonTailnetListenerOptions } from "./tailnet-listener.js"
 
 // TailnetReach (Q404 A): a second listener, TLS only, on this machine's
 // Tailscale address, beside the loopback listener the desktop and the CLI
@@ -252,6 +252,28 @@ describe("the tailnet listener", () => {
     expect(errors).toContainEqual({ context: "Domovoi stopped the tailnet listener", detail: expect.stringContaining("expired") })
   })
 
+  // Codex review round 1 (P3-7): the listener closes at notAfter on its own,
+  // with no status request to notice it. The timer armed for notAfter
+  // re-arms at most every expiryRecheckMs; the test shortens that and moves
+  // only the clock past notAfter.
+  it("closes at expiry with no status request", async (context) => {
+    if (!ipv6) context.skip()
+    const errors: DaemonErrorEntry[] = []
+    const served = daemon({ address: "::1", tls: { cert: certificate, key }, expiryRecheckMs: 50 }, errors)
+    const { port } = await served.start()
+    const remote = await open(`wss://[::1]:${port}/rpc`, trusting())
+    expect((await hello(remote, served.authToken)).error).toBeUndefined()
+    const notAfter = new Date(new X509Certificate(certificate).validTo)
+    vi.useFakeTimers({ toFake: ["Date"] })
+    try {
+      vi.setSystemTime(notAfter.getTime() + 1_000)
+      await once(remote, "close", { signal: AbortSignal.timeout(3_000) })
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(errors).toContainEqual({ context: "Domovoi stopped the tailnet listener", detail: expect.stringContaining("expired") })
+  })
+
   it("refuses the listener, says why and keeps loopback when the certificate could not be read", async () => {
     const errors: DaemonErrorEntry[] = []
     const served = daemon({ address: "100.101.102.103", tls: { refused: "Domovoi could not read the TLS certificate at /home/tester/.domovoi/tls/studio.crt: ENOENT" } }, errors)
@@ -320,6 +342,16 @@ m0csbcFZN38Diwdag5/o/56dxngzn9HR6/RuwQ==
       notAfter: new Date("2025-01-02T00:00:00Z"),
       refused: "The tailnet certificate expired on 2025-01-02, so the daemon answers on this computer only.",
     })
+  })
+
+  // Codex review round 1 (P3-7): the timer is armed for notAfter itself, or
+  // for the longest wait a timer takes when notAfter is further away.
+  it("waits until notAfter, at most one timer's longest wait at a time", () => {
+    const now = Date.parse("2026-10-02T00:00:00Z")
+    expect(tailnetExpiryDelay(now + 90_000, now)).toBe(90_000)
+    expect(tailnetExpiryDelay(now - 1, now)).toBe(0)
+    expect(tailnetExpiryDelay(now + 60 * 24 * 60 * 60_000, now)).toBe(2_147_483_647)
+    expect(tailnetExpiryDelay(now + 90_000, now, 50)).toBe(50)
   })
 
   it("refuses something that is not a certificate", () => {

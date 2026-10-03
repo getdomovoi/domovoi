@@ -17,8 +17,9 @@ when both are regular files, and within 5 seconds, so a FIFO, a directory or a
 stalled read cannot hold the daemon's start. An address that is not on the machine
 yet, as when Tailscale is not up at login, is tried again every 30 seconds.
 When the certificate passes its expiry while the daemon runs, the daemon closes
-the tailnet listener and its connections, logs why and reports it refused; it
-checks hourly and whenever `tailnet.status` is asked. While the listener answers, a pairing code names the host on its certificate,
+the tailnet listener and its connections, logs why and reports it refused. A
+timer armed for the certificate's expiry does this, re-armed when the expiry is
+further off than one timer can wait. While the listener answers, a pairing code names the host on its certificate,
 and the fleet advertises a tailnet route under `DOMOVOI_TAILNET_HOST`.
 
 `updateDaemonService` takes a `tailnet` change that sets or clears the listener
