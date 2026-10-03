@@ -9,6 +9,9 @@ it.each(["9.8.7", "9.8.7-test", "9.8.7+build.12"])("derives a numeric native ver
   const appConfig = (await import("../app.config")).default
   expect(appConfig.version).toBe("9.8.7")
   expect(appConfig.ios.bundleIdentifier).toBe("com.getdomovoi.domovoi")
+  // Prebuild writes this into the Xcode project, so a regenerated ios/
+  // keeps signing with the team instead of losing it on every --clean.
+  expect(appConfig.ios.appleTeamId).toBe("ZARRDB8J32")
 })
 
 it("refuses release metadata without a numeric native version", async () => {

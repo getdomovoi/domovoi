@@ -33,19 +33,21 @@ private func storeRepresentation(_ alias: String, _ representation: Data) throws
   }
 }
 
-internal final class DeviceKeyUnsupportedException: GenericException<String> {
+// ExpoModulesCore's Exception is @unchecked Sendable. Swift 6 compilers require a subclass to
+// restate that conformance; without it Xcode 27 warns on every exception below.
+internal final class DeviceKeyUnsupportedException: GenericException<String>, @unchecked Sendable {
   override var reason: String { param }
 }
 
-internal final class DeviceKeyMissingException: GenericException<String> {
+internal final class DeviceKeyMissingException: GenericException<String>, @unchecked Sendable {
   override var reason: String { "No static key is stored under \(param)" }
 }
 
-internal final class DeviceKeyPeerException: GenericException<String> {
+internal final class DeviceKeyPeerException: GenericException<String>, @unchecked Sendable {
   override var reason: String { param }
 }
 
-internal final class DeviceKeyKeychainException: GenericException<String> {
+internal final class DeviceKeyKeychainException: GenericException<String>, @unchecked Sendable {
   override var reason: String { param }
 }
 
