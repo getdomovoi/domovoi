@@ -322,7 +322,7 @@ describe("SessionScreen policy and queue states", () => {
       scope: "every machine on this account",
       remedy: "Run it against acme_dev instead.",
     }
-    const onTellAgent = jest.fn<(text: string) => void>()
+    const onTellAgent = jest.fn<(text: string) => Promise<boolean>>(async () => true)
     const { props } = await draw({ onTellAgent })
     const canSend = { ...props.detail, policyRefusal: refusal, approvalId: undefined, sending: { can: true as const, hint: undefined } }
     await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={canSend} /></SafeAreaProvider>)
@@ -336,6 +336,59 @@ describe("SessionScreen policy and queue states", () => {
     // A session the daemon would refuse a send to offers nothing to press.
     await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...canSend, sending: { can: false, reason: "Archived sessions are read-only." } }} /></SafeAreaProvider>)
     expect(screen.queryByRole("button", { name: "Tell the agent" })).toBeNull()
+  })
+
+  // During a running turn the remedy goes as the next turn's message, which
+  // replaces one already queued (server.ts, next-turn-replace). The refusal
+  // says so before the tap, and says where the message went after it, because
+  // under a refusal the thread that would show it is not drawn.
+  describe("telling the agent during a running turn", () => {
+    const refusal = {
+      id: "refusal-1",
+      kind: "policy-refusal" as const,
+      operation: "Apply a production database migration",
+      command: "prisma migrate deploy --url $PROD_DATABASE_URL",
+      rule: "no writes to a production database",
+      setBy: "dana@acme.dev",
+      scope: "every machine on this account",
+      remedy: "Run it against acme_dev instead.",
+    }
+    const queuedSend = {
+      id: "queue-7",
+      sessionId: "session-billing",
+      state: "waiting" as const,
+      createdAt: "2026-09-19T23:00:00.000Z",
+      origin: { client: "phone" as const, clientId: "phone-1", connectionId: "connection-1" },
+      skillIds: [],
+      attachments: [],
+    }
+
+    it("says the remedy replaces the message already queued", async () => {
+      const { props } = await draw({ onTellAgent: jest.fn<(text: string) => Promise<boolean>>(async () => true) })
+      await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, policyRefusal: refusal, approvalId: undefined, activeTurn: true, queuedSend, sending: { can: true, hint: undefined } }} /></SafeAreaProvider>)
+
+      expect(screen.getByText("This replaces the message already queued for the next turn.")).toBeOnTheScreen()
+      // The queued message itself is shown under the refusal, with its cancel.
+      expect(screen.getByText("Waiting for the next turn")).toBeOnTheScreen()
+    })
+
+    it("says where the remedy went once it is sent", async () => {
+      const { props } = await draw({ onTellAgent: jest.fn<(text: string) => Promise<boolean>>(async () => true) })
+      await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, policyRefusal: refusal, approvalId: undefined, activeTurn: true, sending: { can: true, hint: undefined } }} /></SafeAreaProvider>)
+
+      await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))
+
+      expect(screen.getByText("Sent. It will reach the agent when this turn ends.")).toBeOnTheScreen()
+    })
+
+    it("says nothing was sent when the send fails", async () => {
+      const { props } = await draw({ onTellAgent: jest.fn<(text: string) => Promise<boolean>>(async () => false) })
+      await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, policyRefusal: refusal, approvalId: undefined, activeTurn: true, sending: { can: true, hint: undefined } }} /></SafeAreaProvider>)
+
+      await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))
+
+      expect(screen.queryByText(/^Sent/)).toBeNull()
+    })
   })
 
   it("shows canonical queued state and cancels by the daemon queue id", async () => {

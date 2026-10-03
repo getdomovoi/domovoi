@@ -146,26 +146,54 @@ const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWa
 // here, because the composer is not drawn under a refusal. The protocol
 // carries a single remedy string; frame 05's tone-coded alternatives wait on
 // a protocol change.
-function PolicyRefusal({ refusal, onTellAgent, sending, problem }: {
+//
+// During a running turn the phone sends as the next turn's message, and the
+// daemon lets one such message wait per session: a new one replaces it. So the
+// refusal says that before the tap when one is waiting, draws the waiting one
+// with its cancel (the thread that would show it is not drawn here), and says
+// where the remedy went after the tap.
+const replaceable: ReadonlySet<QueuedSessionSend["state"]> = new Set(["waiting", "held", "unconfirmed"])
+
+function PolicyRefusal({ refusal, onTellAgent, sending, problem, activeTurn, queuedSend, canCancel, onCancelQueuedSend }: {
   refusal: Extract<ThreadEntry, { kind: "policy-refusal" }>
-  onTellAgent: ((text: string) => void) | undefined
+  onTellAgent: ((text: string) => Promise<boolean>) | undefined
   sending: boolean
   problem: string
+  activeTurn: boolean
+  queuedSend: QueuedSessionSend | undefined
+  canCancel: boolean
+  onCancelQueuedSend: (queueId: string) => void
 }) {
+  const [sent, setSent] = useState(false)
+  const replaces = activeTurn && queuedSend !== undefined && replaceable.has(queuedSend.state)
   return (
     <View className="gap-3">
       <Text variant="title" className="text-[24px] leading-[30px]">Nothing to approve</Text>
       <PolicyRefusalCards refusal={refusal} />
       {onTellAgent ? (
         <View className="gap-2">
+          {replaces && !sent ? (
+            <Text variant="note" className="px-1">This replaces the message already queued for the next turn.</Text>
+          ) : null}
           <Button
             title="Tell the agent"
             shape="block"
             disabled={sending}
-            onPress={() => onTellAgent(refusal.remedy)}
+            onPress={() => {
+              setSent(false)
+              void onTellAgent(refusal.remedy).then(setSent)
+            }}
           />
+          {sent ? (
+            <Text accessibilityRole="alert" variant="note" className="px-1">
+              {activeTurn ? "Sent. It will reach the agent when this turn ends." : "Sent to the agent."}
+            </Text>
+          ) : null}
           {problem ? <Text accessibilityRole="alert" variant="note" className="px-1 text-destructive">{problem}</Text> : null}
         </View>
+      ) : null}
+      {queuedSend ? (
+        <QueuedSendCard queued={queuedSend} canCancel={canCancel} onCancel={onCancelQueuedSend} />
       ) : null}
     </View>
   )
@@ -569,7 +597,8 @@ export function SessionScreen({
   startProblem: string
   onStartLike: (prompt: string, mode: PermissionMode) => void
   // Sends a policy refusal's remedy to the agent as a steer (ruling Q356 A).
-  onTellAgent?: ((text: string) => void) | undefined
+  // Resolves true once the daemon took the message.
+  onTellAgent?: ((text: string) => Promise<boolean>) | undefined
 }) {
   const [startOpen, setStartOpen] = useState(false)
   const [attachOpen, setAttachOpen] = useState(false)
@@ -646,10 +675,16 @@ export function SessionScreen({
           <ConnectionBanner notice={notice} />
           {detail.policyRefusal ? (
             <PolicyRefusal
+              // A new refusal starts with nothing sent.
+              key={detail.policyRefusal.id}
               refusal={detail.policyRefusal}
               onTellAgent={access === "full" && detail.sending.can ? onTellAgent : undefined}
               sending={sending}
               problem={sendProblem}
+              activeTurn={detail.activeTurn}
+              queuedSend={detail.queuedSend}
+              canCancel={access === "full"}
+              onCancelQueuedSend={onCancelQueuedSend}
             />
           ) : <>
           {/* The reason the phone was picked up goes above the reading, because

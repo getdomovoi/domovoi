@@ -656,8 +656,10 @@ export function App() {
   // Ruling Q356 A: a policy refusal's remedy sent to the agent as a steer. It
   // is a message like any other, so it goes through the same send and the
   // same guard against a second tap, without the draft or its attachments.
-  const tellAgent = async (sessionId: string, text: string) => {
-    if (inFlightSend.current) return
+  // Resolves true once the daemon took the message, so the refusal can say
+  // where it went.
+  const tellAgent = async (sessionId: string, text: string): Promise<boolean> => {
+    if (inFlightSend.current) return false
     inFlightSend.current = true
     setSending(true)
     setSendProblem("")
@@ -669,8 +671,10 @@ export function App() {
         client,
         ...(session ? sendDelivery(session) : {}),
       })
+      return true
     } catch (cause) {
       setSendProblem(cause instanceof Error ? cause.message : "The message was not sent", sessionId)
+      return false
     } finally {
       inFlightSend.current = false
       setSending(false)
@@ -849,7 +853,7 @@ export function App() {
             starting={starting}
             startProblem={startProblem}
             onStartLike={(prompt, mode) => void startLike(openSession.id, prompt, mode)}
-            onTellAgent={(text) => void tellAgent(openSession.id, text)}
+            onTellAgent={(text) => tellAgent(openSession.id, text)}
           />
           <SkillSheet
             open={skillsOpen}
