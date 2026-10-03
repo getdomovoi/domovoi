@@ -1210,11 +1210,21 @@
       "id": "composer.attachments",
       "name": "Attachment chips",
       "where": "top of the composer: mark, name, meta, remove; a more count",
-      "evidence": [
+      "presence": [
         "Image or file from this device",
         "setAttachments",
         "attachmentMeta"
-      ]
+      ],
+      "evidence": [
+        "Image or file from this device",
+        "setAttachments",
+        "attachmentMeta",
+        "re:\\+\\$\\{[^}]*\\} more"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "chips exist as rounded rectangles with a primary-coloured TXT or FILE mark; the design draws pills with a muted badge per kind (TS, DIR, PNG, LOG, TXT, SKILL), meta such as on <machine> or 820 kB · sent to <machine>, and a dashed +N more pill after three chips. The code shows every chip and clips the overflow"
+      }
     },
     {
       "id": "composer.images-locked",
@@ -1226,10 +1236,9 @@
       "evidence": [
         "cannot go to"
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "image input is one machine-wide flag on system.hello; nothing reports it per model"
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "no longer blocked: runtime.models reports ProviderModel.imageInput on every model (the daemon fills it from the provider's capabilities), the refusal code attach.image.model_no_input is in the protocol, and the daemon's refusal is the design's sentence (N images cannot go to <model>. Remove them or pick another model.). No client reads imageInput: the composer draws no notice, no Remove or Change model, and no image tags or lock in the menus. Client-only; an absent imageInput means not known and must not lock"
       }
     },
     {
@@ -1239,9 +1248,21 @@
       "copy": [
         "THIS TURN"
       ],
-      "evidence": [
+      "presence": [
         "THIS TURN"
-      ]
+      ],
+      "evidence": [
+        "THIS TURN",
+        "name: \"/checkpoint\"",
+        {
+          "absent": "argument: \"ckpt_7f24\"",
+          "in": "packages/ui/src/thread.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the list draws /run, /revert, /replan, /mode, /skill and /handoff; /checkpoint is missing though checkpoint.create exists, and /commit is J27, blocked with dock.commits (not M1, Q397 A). The argument column shows the design's sample data as if live (ckpt_7f24, hetzner-cx42, pr-triage) where it should show a real argument or a placeholder; the name column is 70px against 86px"
+      }
     },
     {
       "id": "composer.paste-converted",
@@ -1250,11 +1271,22 @@
       "copy": [
         "Too long to send inline. The prompt carries the first 40 lines, the agent reads the rest on request."
       ],
-      "evidence": [
+      "presence": [
         "Too long to send inline",
         "desktopInlineLineLimit",
         "The prompt carries the first 40 lines"
-      ]
+      ],
+      "evidence": [
+        "Too long to send inline",
+        "desktopInlineLineLimit",
+        "The prompt carries the first 40 lines",
+        "re:onPaste=",
+        "pasted-text-"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the strings exist but the behaviour does not: the composer has no paste handler, so a 640-line paste stays inline in the field. The Too long to send inline note appears only for a text attachment over 40 lines, drawn in warning amber where the design uses info. The pasted-text-N.txt card with size, line count, Peek and Hide and drop is not drawn. The daemon side holds: it sends the first 40 lines"
+      }
     },
     {
       "id": "composer.watching-note",
@@ -1267,7 +1299,7 @@
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "the drawn reason names a Free plan and a reads-only route; nothing on the wire says why a client is watching (no route capability or plan tier), so the composer says This device was paired to watch only. until the daemon reports a reason"
+        "reason": "the drawn reason names a Free plan and a reads-only route, which are relay tiers (M2 or later); nothing on the wire says why a client is watching (no route capability or plan tier), so the composer says This device was paired to watch only. until the daemon reports a reason"
       }
     },
     {
@@ -1295,12 +1327,24 @@
       "id": "composer.attach-menu",
       "name": "Attach menu",
       "where": "from the + button: File in this repo, Path on <machine>, Image or file from this device, Paste terminal output",
-      "evidence": [
+      "presence": [
         "File in this repo",
         "Path on",
         "Image or file from this device",
         "Paste terminal output"
-      ]
+      ],
+      "evidence": [
+        "File in this repo",
+        "Path on",
+        "Image or file from this device",
+        "Paste terminal output",
+        "That is this computer, so nothing leaves it.",
+        "takes image input, as its harness reports"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the four rows exist; the device row's mark is FILE where the design has PNG, and its note The selected file is copied to X with the next message replaces It is copied to <machine>. That is this computer, so nothing leaves it. There is no kbd column (@, drag or paste, the paste shortcut) and no footer with the model and takes image input, as its harness reports, which is client-buildable now from ProviderModel.imageInput"
+      }
     },
     {
       "id": "composer.model-chip",
@@ -1317,11 +1361,22 @@
         "A change lands at the next safe turn boundary. The thread, the plan and the worktree come with it, and the switch is recorded in the audit log.",
         "Ask the agents again"
       ],
-      "evidence": [
+      "presence": [
         "Nothing on this machine matches",
         "Ask the agents again",
         "A change lands at the next safe turn boundary"
-      ]
+      ],
+      "evidence": [
+        "Nothing on this machine matches",
+        "Ask the agents again",
+        "A change lands at the next safe turn boundary",
+        "may live on another machine.",
+        "SUBSCRIPTIONS AND LOCAL"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the chip reads provider · model in text where the design draws the harness mark and the short name; rows have no harness avatar, no SUBSCRIPTIONS AND LOCAL or API KEYS group headers and no image-input tag; the menu is 330px against 360px. The no-match line ends may live under another harness or need a sign-in first; Q373 A (2026-10-02) takes the design's may live on another machine. Key badges belong to api-keys (blocked); harness marks are not vendored (Q388 A keeps Skills and Tools text-only for that reason)"
+      }
     },
     {
       "id": "composer.mode-chip",
@@ -1360,11 +1415,21 @@
       "copy": [
         "USAGE"
       ],
-      "evidence": [
+      "presence": [
         "USAGE",
         "usageChipText",
         "Provider window"
-      ]
+      ],
+      "evidence": [
+        "USAGE",
+        "usageChipText",
+        "Provider window",
+        "Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key."
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the subscription ring and the unreported state are built; the api state (price after the separator) and the USAGE connection note are not drawn, because nothing on the wire says what pays for a runtime (subscription, API key or local). The code adds a TODAY row and Cost not shown: the wire does not say yet; Q374 A (2026-10-02) keeps TODAY and rewords the note to Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key."
+      }
     },
     {
       "id": "composer.stop",
@@ -1398,12 +1463,23 @@
         "working: Steer it while it works",
         "offline: Cannot send, the daemon is not answering"
       ],
-      "evidence": [
+      "presence": [
         "Reply, or steer the plan",
         "Steer it while it works",
         "Cannot send, the daemon is not answering",
         "max-h-[172px]"
       ],
+      "evidence": [
+        "Reply, or steer the plan",
+        "Steer it while it works",
+        "Cannot send, the daemon is not answering",
+        "max-h-[172px]",
+        "md:text-[13.5px]"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the field, its three placeholders and the 172px cap are built; it renders at 14px, not 13.5px, because the shared Textarea's md:text-sm beats text-[13.5px] at desktop widths (measured: 14px, line-height 22.4px). The placeholder is muted where the design uses faint, and offline the design dims the whole composer to .5 while the code dims only disabled buttons and leaves the attach, model and mode chips live"
+      },
       "note": "the design carries these strings in its data, not as drawn copy"
     },
     {
