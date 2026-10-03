@@ -162,7 +162,7 @@ export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOut
         return { tone: "danger", pill: "refused", title: `This page is older than the daemon on ${host}`, mono, body: "The daemon was updated while this tab was open. Reload the page to update it. The daemon needs nothing. The code was not used." }
       }
       if (older === "daemon") {
-        return { tone: "danger", pill: "refused", title: `The daemon on ${host} is older than this page`, mono, body: `Update Domovoi on ${host}, then type the code again. The daemon checked the version first, so the code was not used and works until it expires.` }
+        return { tone: "danger", pill: "refused", title: `The daemon on ${host} is older than this page`, mono, body: `Update Domovoi on ${host}, then show a new code there and type it here. The daemon checked the version first, so this code was not used.` }
       }
       return { tone: "danger", pill: "refused", title: `This page and the daemon on ${host} speak different protocol versions`, mono, body: "The daemon did not say which one is older, so this page cannot say which to update." }
     }
@@ -192,8 +192,8 @@ export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOut
 }
 
 // What cures a refusal. A page older than the daemon needs a reload. A daemon
-// older than the page needs updating on its machine, and it checks the version
-// before spending a code, so the code can be typed again. A mismatch that does
+// older than the page needs updating on its machine; the update restarts it
+// and drops the open code, so the way on is a new code. A mismatch that does
 // not say which side is older leaves this page nothing to offer. Only a
 // transport failure sends the same code again (Q366 A): a code the daemon did
 // spend meets the uniform refusal. A credential the tab could not keep or a

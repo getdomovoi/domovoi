@@ -228,7 +228,9 @@ describe("redeeming a web code", () => {
     expect(pairingOutcomeFor(mismatch("machine-behind"), "host")).toEqual({
       tone: "danger", pill: "refused", title: "The daemon on host is older than this page",
       mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.7.0",
-      body: "Update Domovoi on host, then type the code again. The daemon checked the version first, so the code was not used and works until it expires.",
+      // An update restarts the daemon, which drops the open code, and takes
+      // longer than its 180 seconds, so the way on is a new code.
+      body: "Update Domovoi on host, then show a new code there and type it here. The daemon checked the version first, so this code was not used.",
     })
     expect(pairingNextStep(mismatch("machine-behind"))).toBe("new-code")
 
