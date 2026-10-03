@@ -247,6 +247,67 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     await expect(assemble(true).reach.status()).resolves.not.toHaveProperty("handSet")
   })
 
+  // Codex review round 1 (P2-2): <profile>/tls is a directory of the
+  // profile's own. When it is a link, nothing is made, changed, read, swept or
+  // deleted through it; neither is a certificate or key that is a link.
+  describe("with the tls directory a link", () => {
+    async function linkedTls(): Promise<{ tls: string; elsewhere: string }> {
+      const tls = join(home, ".domovoi", "tls")
+      const elsewhere = join(root, "elsewhere")
+      await mkdir(elsewhere, { mode: 0o755 })
+      await chmod(elsewhere, 0o755)
+      await mkdir(join(home, ".domovoi"))
+      await symlink(elsewhere, tls)
+      return { tls, elsewhere }
+    }
+
+    it("turns nothing on through it", async () => {
+      const { elsewhere } = await linkedTls()
+      const { reach, restart } = assemble()
+      await expect(reach.turnOn()).resolves.toMatchObject({
+        ok: false, reason: "failed", step: "store",
+        message: "The certificate could not be stored in ~/.domovoi/tls. Nothing was stored and nothing restarted.",
+        detail: "~/.domovoi/tls is a link. Domovoi keeps the tailnet certificate and key only in a directory of its own in the profile, never through a link.",
+      })
+      await expect(readdir(elsewhere)).resolves.toEqual([])
+      expect(((await stat(elsewhere)).mode & 0o777).toString(8)).toBe("755")
+      expect(restart).not.toHaveBeenCalled()
+    })
+
+    it("sweeps nothing through it", async () => {
+      const { elsewhere } = await linkedTls()
+      await mkdir(join(elsewhere, ".pending-Ab3xYz"))
+      await writeFile(join(elsewhere, ".pending-Ab3xYz", "notes.txt"), "someone's")
+      assemble()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      await expect(readdir(elsewhere)).resolves.toEqual([".pending-Ab3xYz"])
+    })
+
+    it("deletes nothing through it when turned off", async () => {
+      const { tls, elsewhere } = await linkedTls()
+      await writeFile(join(elsewhere, `${name}.crt`), "someone's certificate")
+      await writeFile(join(elsewhere, `${name}.key`), "someone's key")
+      await writeFile(join(data, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(tls, `${name}.crt`), keyPath: join(tls, `${name}.key`) }))
+      const { reach } = assemble()
+      await expect(reach.turnOff()).resolves.toMatchObject({ ok: false, reason: "failed", step: "delete" })
+      await expect(readdir(elsewhere)).resolves.toEqual([`${name}.crt`, `${name}.key`])
+    })
+  })
+
+  it("renews nothing over a certificate that is a link", async () => {
+    const { reach, restart } = assemble()
+    await reach.turnOn()
+    const tls = join(home, ".domovoi", "tls")
+    const outside = join(root, "outside.crt")
+    await writeFile(outside, certificate)
+    await rm(join(tls, `${name}.crt`))
+    await symlink(outside, join(tls, `${name}.crt`))
+    await expect(reach.renew()).resolves.toBe("failed")
+    await expect(reach.status()).resolves.toMatchObject({ renewalFailed: { message: expect.stringContaining(`~/.domovoi/tls/${name}.crt is a link`) } })
+    expect(restart).toHaveBeenCalledOnce()
+    reach.stopRenewal()
+  })
+
   it("applies the change through the service update when the app runs on the login service", async () => {
     const { reach, update, stopOwned } = assemble(false)
     await expect(reach.turnOn()).resolves.toMatchObject({ ok: true })

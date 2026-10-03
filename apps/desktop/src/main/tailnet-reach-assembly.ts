@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { constants } from "node:fs"
-import { access, chmod, lstat, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises"
+import { access, chmod, lstat, mkdir, mkdtemp, open, readdir, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { delimiter, dirname, isAbsolute, join, sep } from "node:path"
 
@@ -114,11 +114,30 @@ export function createTailnetReach(input: {
     tlsDirectory,
     display,
     setAside: () => swept,
+    // Codex review round 1 (P2-2): every effect first checks that tls is a
+    // directory and not a link, and that the path it names is not a link, so
+    // nothing is made, read, moved or deleted through one. tls is
+    // <profile>/tls, so a tls that is not a link is inside the profile as the
+    // daemon resolves it. A link made between the check and the effect is
+    // same-user tampering with the profile, the accepted residual (Q411 A).
     files: {
-      exists: async (path) => access(path).then(() => true, () => false),
-      read: (path) => readFile(path),
+      exists: async (path) => {
+        await ownPath(tlsDirectory, path, display)
+        return lstat(path).then(() => true, () => false)
+      },
+      read: async (path) => {
+        await ownPath(tlsDirectory, path, display)
+        const handle = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+        try {
+          return await handle.readFile()
+        } finally {
+          await handle.close()
+        }
+      },
       privateDirectory: async (parent) => {
+        await confinedTls(tlsDirectory, display)
         await mkdir(parent, { recursive: true, mode: 0o700 })
+        await confinedTls(tlsDirectory, display)
         await chmod(parent, 0o700)
         return mkdtemp(join(parent, ".pending-"))
       },
@@ -127,13 +146,24 @@ export function createTailnetReach(input: {
       // the flush that can still fail, and the directory it left is flushed
       // too, so a crash cannot bring the old name back.
       move: async (from, to, renamed) => {
+        await ownPath(tlsDirectory, from, display)
+        await ownPath(tlsDirectory, to, display)
         await flush(from)
         await publishFileDurably(from, to, renamed)
         if (dirname(from) !== dirname(to)) await flush(dirname(from), true)
       },
-      restrict: (path) => chmod(path, 0o600),
-      remove: (path) => rm(path, { force: true }),
-      removeDirectory: (path) => rm(path, { recursive: true, force: true }),
+      restrict: async (path) => {
+        await ownPath(tlsDirectory, path, display)
+        await chmod(path, 0o600)
+      },
+      remove: async (path) => {
+        await ownPath(tlsDirectory, path, display)
+        await rm(path, { force: true })
+      },
+      removeDirectory: async (path) => {
+        await ownPath(tlsDirectory, path, display)
+        await rm(path, { recursive: true, force: true })
+      },
     },
     record: {
       // Codex review round 1 (P2-3): read as startup reads it, never through
@@ -211,6 +241,32 @@ export function createTailnetReach(input: {
   return reach
 }
 
+// Codex review round 1 (P2-2): tls is a directory of the profile's own, not a
+// link and not anything else. Missing is fine: privateDirectory makes it.
+async function confinedTls(tlsDirectory: string, display: (path: string) => string): Promise<void> {
+  let entry
+  try {
+    entry = await lstat(tlsDirectory)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return
+    throw error
+  }
+  if (entry.isSymbolicLink()) throw new Error(`${display(tlsDirectory)} is a link. Domovoi keeps the tailnet certificate and key only in a directory of its own in the profile, never through a link.`)
+  if (!entry.isDirectory()) throw new Error(`${display(tlsDirectory)} is not a directory. Domovoi keeps the tailnet certificate and key only in a directory of its own in the profile.`)
+}
+
+// tls as confinedTls has it, and path inside it no link. Missing is fine.
+async function ownPath(tlsDirectory: string, path: string, display: (path: string) => string): Promise<void> {
+  await confinedTls(tlsDirectory, display)
+  let link = false
+  try {
+    link = (await lstat(path)).isSymbolicLink()
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
+  }
+  if (link) throw new Error(`${display(path)} is a link. Domovoi reads and writes the tailnet certificate and key only as files of their own, never through a link.`)
+}
+
 // A file's bytes, or a directory's entries, written to disk. Windows opens no
 // directory to flush; publishFileDurably makes the same exception.
 async function flush(path: string, directory = false): Promise<void> {
@@ -233,6 +289,9 @@ async function flush(path: string, directory = false): Promise<void> {
 async function sweepPending(tlsDirectory: string): Promise<string | undefined> {
   let names: string[]
   try {
+    // Codex review round 1 (P2-2): never through a tls that is a link.
+    const entry = await lstat(tlsDirectory)
+    if (entry.isSymbolicLink() || !entry.isDirectory()) return undefined
     names = await readdir(tlsDirectory)
   } catch {
     return undefined

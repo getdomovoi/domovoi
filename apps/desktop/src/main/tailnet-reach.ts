@@ -349,7 +349,9 @@ export class TailnetReach {
 
   // The swap sets files in use aside under these two names only.
   async #holdsPrevious(directory: string): Promise<boolean> {
-    for (const file of ["previous.crt", "previous.key"]) if (await this.deps.files.exists(`${directory}/${file}`)) return true
+    // An exists that refuses (tls became a link) answers no, so the switch's
+    // state still answers.
+    for (const file of ["previous.crt", "previous.key"]) if (await this.deps.files.exists(`${directory}/${file}`).catch(() => false)) return true
     return false
   }
 
@@ -417,7 +419,18 @@ export class TailnetReach {
     // now), the files in use are set aside there too and put back, with the
     // record, if the new ones cannot be stored or the restart fails
     // (review of 049b1383, P2-2).
-    const pending = await this.deps.files.privateDirectory(this.deps.tlsDirectory)
+    // Codex review round 1 (P2-2): the directory cannot be made when tls is
+    // a link or not a directory; nothing is changed then.
+    let pending: string
+    try {
+      pending = await this.deps.files.privateDirectory(this.deps.tlsDirectory)
+    } catch (cause) {
+      return {
+        ok: false, reason: "failed", step: "store",
+        message: `The certificate could not be stored in ${this.deps.display(this.deps.tlsDirectory)}. Nothing was stored and nothing restarted.`,
+        detail: detail(cause instanceof Error ? cause.message : String(cause)),
+      }
+    }
     const swap = this.#swap(pending, [...owned])
     let recorded = false
     let restarting = false
