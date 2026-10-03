@@ -136,6 +136,17 @@ describe("current receipt", () => {
     expect(currents(true, [receipt("r1", "2026-08-25T21:40:00.000Z"), you("u1", "2026-08-25T21:50:00.000Z")])).toEqual([false])
   })
 
+  // A steer into the running turn (from a desktop, say) writes a message that
+  // carries that turn's id. It does not start another turn, so the receipt
+  // before it is still the open turn's.
+  it("keeps the receipt current across a steer into the same turn", () => {
+    expect(currents(true, [receipt("r1", "2026-08-25T21:40:00.000Z"), { ...you("u1", "2026-08-25T21:50:00.000Z"), turnId: "turn-open" }])).toEqual([true])
+  })
+
+  it("marks nothing current after a message from another turn", () => {
+    expect(currents(true, [receipt("r1", "2026-08-25T21:40:00.000Z"), { ...you("u1", "2026-08-25T21:50:00.000Z"), turnId: "turn-earlier" }])).toEqual([false])
+  })
+
   it("marks nothing current while no turn is running", () => {
     expect(currents(false, [receipt("r1", "2026-08-25T21:40:00.000Z")])).toEqual([false])
   })
