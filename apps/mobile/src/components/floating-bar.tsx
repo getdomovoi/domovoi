@@ -3,6 +3,7 @@ import { PixelRatio, useWindowDimensions, View, type LayoutChangeEvent, type Vie
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { cn } from "../lib/cn"
+import { useBlurTarget } from "./blur-backdrop"
 import { responsiveGeometry } from "../responsive-geometry"
 import { shadows } from "../theme/tokens.generated"
 import { useTheme } from "../theme/theme-provider"
@@ -63,6 +64,7 @@ export function FloatingBar({
   const insets = useSafeAreaInsets()
   const window = useWindowDimensions()
   const { resolved } = useTheme()
+  const blurTarget = useBlurTarget()
   const geometry = responsiveGeometry({
     width: window.width,
     height: window.height,
@@ -100,8 +102,10 @@ export function FloatingBar({
           intensity={30}
           tint={resolved}
           // Android draws nothing for a blur unless this method is asked for by
-          // name. Where it is unavailable the wash below still carries the bar.
+          // name and given the view to blur, which a BlurBackdrop supplies.
+          // Where either is missing the wash below still carries the bar.
           blurMethod="dimezisBlurView"
+          {...(blurTarget ? { blurTarget } : {})}
           style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }}
         />
         <View className={cn("bg-sidebar/60", paddings[padding], className)}>

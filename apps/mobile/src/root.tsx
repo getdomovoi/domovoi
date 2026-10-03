@@ -3,6 +3,7 @@ import { useFonts } from "expo-font"
 
 import { App } from "./app"
 import { AppErrorBoundary } from "./components/app-error-boundary"
+import { BlurBackdropProvider } from "./components/blur-backdrop"
 import { Splash } from "./components/splash"
 import { drawWithFonts, fontWaitLimitMs } from "./theme/font-gate"
 import { fontSources } from "./theme/fonts"
@@ -28,5 +29,9 @@ export function Root() {
   const content = drawWithFonts({ loaded, failed: error !== null, waitedOut })
     ? <AppErrorBoundary><App /></AppErrorBoundary>
     : <Splash />
-  return <ThemeProvider>{content}</ThemeProvider>
+  return (
+    <ThemeProvider>
+      <BlurBackdropProvider>{content}</BlurBackdropProvider>
+    </ThemeProvider>
+  )
 }
