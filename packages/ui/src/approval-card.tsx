@@ -85,7 +85,8 @@ export function ApprovalCard({
           </p>
         ) : null}
         {!watching && !connected ? (
-          <p className="text-[11px] text-warn-dim">Cannot answer this gate, the daemon is not answering.</p>
+          // The client knows it is disconnected, not why, so no cause is named.
+          <p className="text-[11px] text-warn-dim">Cannot answer this gate while this client is disconnected from the daemon.</p>
         ) : null}
         {watching ? (
           <p className="text-[11px] text-warn-dim">Watching only. A device paired with full access answers this gate.</p>

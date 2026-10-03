@@ -248,14 +248,16 @@ it("holds every decision while the daemon is disconnected, and says why", async 
   )
   const { rerender } = render(thread(false))
   const card = screen.getByRole("alert")
-  expect(card.textContent).toContain("Cannot answer this gate, the daemon is not answering.")
+  // The client knows it is disconnected, not why: an auth refusal and a lost
+  // network look the same from here, so the line names no cause.
+  expect(card.textContent).toContain("Cannot answer this gate while this client is disconnected from the daemon.")
   for (const name of ["Allow once", "Always in this project", "Deny"]) {
     expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true)
   }
 
   // A denial already being written is held too, and the words stay.
   rerender(thread(true))
-  expect(screen.getByRole("alert").textContent).not.toContain("the daemon is not answering")
+  expect(screen.getByRole("alert").textContent).not.toContain("disconnected from the daemon")
   await user.click(screen.getByRole("button", { name: "Deny" }))
   await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "Not now")
   rerender(thread(false))
