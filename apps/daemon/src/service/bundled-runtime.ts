@@ -1,3 +1,5 @@
+import { rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { posix, win32 } from "node:path"
 
 import type { DaemonEnvironment } from "../config.js"
@@ -73,7 +75,43 @@ export async function bundledServiceRuntime(input: {
   const unstable = unstableAppLocation(resources, input.environment)
   if (unstable) throw new Error(unstable)
   if (input.version === undefined) throw new Error("This domovoid could not read its own version, so no runtime was copied. Nothing was installed.")
-  const fileSystem = input.fileSystem ?? nodeRuntimeFileSystem()
+  const base = input.fileSystem ?? nodeRuntimeFileSystem()
+  // The private staging directory this run makes, by path and by the device
+  // and inode it had when made.
+  let made: { path: string; identity: string } | undefined
+  const fileSystem: RuntimeFileSystem = {
+    ...base,
+    makePrivateDirectory: async (prefix) => {
+      const path = await base.makePrivateDirectory(prefix)
+      made = { path, identity: await base.identity(path) }
+      return path
+    },
+  }
+  const prefix = `.domovoi-runtime-${input.version}.staging-`
+  const paths = input.platform === "win32" ? win32 : posix
+  // Requested 2026-10-02 before review: unlike the app, which leaves its
+  // staging directory (runtime-stage.ts, round 8), a terminal install removes
+  // it, with any partial copy in it. Only that directory, and only while it is
+  // still the one this run made: a real directory (never a link), with the
+  // device and inode it was made with, named with this prefix and inside the
+  // system temporary directory. fs.rm removes a link inside it as a link and
+  // never follows it. Limit, as round 8 says: Node cannot bind this check to
+  // the removal, so a directory a process of the same user swaps in between
+  // would be removed instead.
+  const removeStaging = async () => {
+    const holder = made
+    made = undefined
+    if (holder === undefined) return
+    try {
+      if (await base.entry(holder.path) !== "directory" || await base.identity(holder.path) !== holder.identity) return
+      if (!paths.basename(holder.path).startsWith(prefix)) return
+      const relative = paths.relative(await base.realpath(tmpdir()), await base.realpath(holder.path))
+      if (relative === "" || relative.split(paths.sep)[0] === ".." || paths.isAbsolute(relative)) return
+      await rm(holder.path, { recursive: true, force: false })
+    } catch {
+      // Left as the app leaves it: only disk space.
+    }
+  }
   const prepared = await prepareDaemonRuntime({
     resourcesPath: resources,
     profileDirectory: input.profileDirectory,
@@ -82,12 +120,15 @@ export async function bundledServiceRuntime(input: {
     fileSystem,
     ...(input.stagingParent === undefined ? {} : { stagingParent: input.stagingParent }),
   })
-  const paths = input.platform === "win32" ? win32 : posix
   return {
     runtime: prepared.runtime,
     copy: paths.dirname(paths.dirname(paths.dirname(prepared.runtime.daemonEntryPath))),
     publish: async () => {
-      await prepared.publish()
+      try {
+        await prepared.publish()
+      } finally {
+        await removeStaging()
+      }
       for (const [part, path] of [["node", prepared.runtime.nodePath], ["daemon", prepared.runtime.daemonEntryPath]] as const) {
         const found = await fileSystem.entry(path)
         if (found !== "file") throw new DaemonServiceRuntimeMissingError(part, path, found === "missing" ? "missing" : "not-file")
