@@ -244,6 +244,26 @@ describe("turning TailnetReach on", () => {
     expect([...files.keys()].sort()).toEqual([certPath, keyPath])
   })
 
+  // Review of 049b1383 (P3-b): Tailscale renamed this machine. The new name's
+  // files replace the record, and the old name's files go once it works.
+  it("removes the previous name's files once the new name's are in use", async () => {
+    const oldName = "old-studio.tail4c2e.ts.net"
+    const old = { version: 1 as const, name: oldName, address: "100.101.102.103", certPath: `${tls}/${oldName}.crt`, keyPath: `${tls}/${oldName}.key` }
+    const { reach, files, record } = harness({ record: old, files: { [old.certPath]: "old certificate", [old.keyPath]: "old key", [`${tls}/kept.crt`]: "kept" } })
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true })
+    expect(record()).toEqual(ours)
+    expect([...files.keys()].sort()).toEqual([certPath, keyPath, `${tls}/kept.crt`].sort())
+  })
+
+  it("keeps the previous name's files when the new name's restart fails", async () => {
+    const oldName = "old-studio.tail4c2e.ts.net"
+    const old = { version: 1 as const, name: oldName, address: "100.101.102.103", certPath: `${tls}/${oldName}.crt`, keyPath: `${tls}/${oldName}.key` }
+    const { reach, files, record } = harness({ record: old, files: { [old.certPath]: "old certificate", [old.keyPath]: "old key" }, restart: { ok: false, message: "The daemon did not start again." } })
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: false, step: "restart" })
+    expect(record()).toEqual(old)
+    expect([...files.keys()].sort()).toEqual([old.certPath, old.keyPath].sort())
+  })
+
   // Review of 049b1383 (P2-2): Renew now while on runs this path. A restart
   // that fails must not take the working certificate, or the switch, with it.
   it("puts the working certificate and record back when a renewal's restart fails, and stays on", async () => {

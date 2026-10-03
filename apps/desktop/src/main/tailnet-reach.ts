@@ -376,6 +376,9 @@ export class TailnetReach {
             : `${restarted.message} The certificate and key were deleted again, and the switch stays off.`,
         }
       }
+      // Review of 049b1383 (P3-b): Tailscale renamed this machine. The
+      // previous name's files were the switch's own; the record named them.
+      if (previous && previous.certPath !== certPath) await this.#forget([previous.certPath, previous.keyPath])
       this.#renewalFailure = undefined
       this.#schedule(renewalCheckMs)
       return { ok: true, report: await this.#onReport(record) }

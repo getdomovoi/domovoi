@@ -1,4 +1,4 @@
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -109,6 +109,27 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
       dataDirectory: data, home, environment: { PATH: join(root, "empty") }, platform: "darwin", tailscaleLocations: [],
     })
     await expect(reach.status()).resolves.toEqual({ state: "none", detail: "Domovoi found no tailscale command on this computer." })
+  })
+
+  // Review of 049b1383 (P3-c): a crash while a certificate was being issued
+  // leaves a pending directory holding a private key. Loading the module
+  // removes the ones Domovoi made, by their name inside <profile>/tls only,
+  // and never follows a link.
+  it("sweeps pending directories a crash left behind, and nothing else", async () => {
+    const tls = join(home, ".domovoi", "tls")
+    const outside = join(root, "outside")
+    await mkdir(join(tls, ".pending-Ab3xYz"), { recursive: true })
+    await writeFile(join(tls, ".pending-Ab3xYz", `${name}.key`), "private key")
+    await mkdir(outside)
+    await writeFile(join(outside, "keep.txt"), "kept")
+    await symlink(outside, join(tls, ".pending-Lnk123"))
+    await writeFile(join(tls, ".pending-File12"), "a file")
+    await mkdir(join(tls, ".pending-toolongname"))
+    await writeFile(join(tls, `${name}.crt`), "kept")
+    assemble()
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect((await readdir(tls)).sort()).toEqual([".pending-File12", ".pending-Lnk123", ".pending-toolongname", `${name}.crt`].sort())
+    expect(await readFile(join(outside, "keep.txt"), "utf8")).toBe("kept")
   })
 
   // index.ts loads the module at startup only when the switch is on, and the

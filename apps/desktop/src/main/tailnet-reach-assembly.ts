@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 import { constants } from "node:fs"
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { access, chmod, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { homedir } from "node:os"
 import { delimiter, isAbsolute, join, sep } from "node:path"
 
@@ -192,6 +192,29 @@ export function createTailnetReach(input: {
     },
   })
   // Renewal runs while the switch is on, from whenever this module loads.
+  void sweepPending(tlsDirectory)
   void reach.startRenewal()
   return reach
+}
+
+// Review of 049b1383 (P3-c): a crash while a certificate was being issued
+// leaves <tls>/.pending-XXXXXX holding a private key. When the module loads no
+// change is running, so every directory by that name (mkdtemp's six
+// characters) inside tls goes. A link by that name is left alone, never
+// followed, and so is anything else.
+async function sweepPending(tlsDirectory: string): Promise<void> {
+  let names: string[]
+  try {
+    names = await readdir(tlsDirectory)
+  } catch {
+    return
+  }
+  for (const name of names.filter((entry) => /^\.pending-[A-Za-z0-9]{6}$/u.test(entry))) {
+    const path = join(tlsDirectory, name)
+    try {
+      if ((await lstat(path)).isDirectory()) await rm(path, { recursive: true, force: true })
+    } catch {
+      // Gone already, or not ours to remove: the next load tries again.
+    }
+  }
 }
