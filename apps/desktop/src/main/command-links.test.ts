@@ -1,6 +1,6 @@
-import { lstat, mkdir, mkdtemp, readFile, readlink, rm, symlink, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -213,6 +213,49 @@ describe("command links", () => {
     const result = await commandLinks("unlink", environment())
     expect(result.refused).toBe("~/.local/bin/domovoid changed while Domovoi was reading it, so it was left as it is.")
     expect(await readlink(command)).toBe("/opt/mine/domovoid")
+  })
+
+  // PR #712 security review round 1 (P2): before every removal, both
+  // directories must still be the ones read (real directories, same device
+  // and inode) and the entry the same link, with the same target. A
+  // ~/.local/bin swapped for a link to a dotfiles directory holding a link
+  // with the same target is never removed through.
+  describe("when ~/.local/bin is swapped after it was read", () => {
+    async function swapBinAfterRead(target: string) {
+      const dotfiles = join(root, "dotfiles")
+      await mkdir(dotfiles)
+      await symlink(target, join(dotfiles, "domovoid"))
+      const command = join(bin(), "domovoid")
+      race.afterRead = async (call, path) => {
+        if (call !== "readlink" || path !== command) return
+        race.afterRead = undefined
+        await rename(bin(), join(root, "bin-moved"))
+        await symlink(dotfiles, bin())
+      }
+      return dotfiles
+    }
+
+    it("does not remove through it on unlink", async () => {
+      await commandLinks("link", environment())
+      const dotfiles = await swapBinAfterRead(launcher)
+      const result = await commandLinks("unlink", environment())
+      expect(result.refused).toBe("~/.local/bin changed while Domovoi was reading it, so nothing there was changed.")
+      expect(await readlink(join(dotfiles, "domovoid"))).toBe(launcher)
+      expect(await readlink(join(root, "bin-moved", "domovoid"))).toBe(launcher)
+    })
+
+    it("does not remove through it when replacing a stale link", async () => {
+      // A link this app made, left stale when the app moved.
+      await commandLinks("link", environment())
+      const moved = join(root, "Moved", "Domovoi.app", "Contents", "Resources")
+      await mkdir(dirname(moved), { recursive: true })
+      await rename(resources, moved)
+      const dotfiles = await swapBinAfterRead(launcher)
+      const result = await commandLinks("link", environment({ resourcesPath: moved }))
+      expect(result.refused).toBe("~/.local/bin changed while Domovoi was reading it, so nothing there was changed.")
+      expect(await readlink(join(dotfiles, "domovoid"))).toBe(launcher)
+      expect(await readlink(join(root, "bin-moved", "domovoid"))).toBe(launcher)
+    })
   })
 
   it("does not link through a ~/.local/bin that became a link after it was read", async () => {

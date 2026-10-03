@@ -1,4 +1,4 @@
-import { constants } from "node:fs"
+import { constants, type Stats } from "node:fs"
 import { access, lstat, mkdir, readlink, symlink, unlink } from "node:fs/promises"
 import { delimiter, dirname, join, resolve } from "node:path"
 
@@ -56,28 +56,56 @@ async function entry(path: string) {
   }
 }
 
-// The state of one command and, for a link, the target it was read with.
-async function stateOf(name: CommandName, path: string, launcher: string): Promise<{ state: CommandLinkState; target?: string }> {
+// Device and inode of an entry as lstat read it, never through a link.
+const identityOf = (found: Stats) => `${found.dev}:${found.ino}`
+
+// The state of one command and, for a link, the target and identity it was
+// read with.
+async function stateOf(name: CommandName, path: string, launcher: string): Promise<{ state: CommandLinkState; target?: string; identity?: string }> {
   const found = await entry(path)
   if (!found) return { state: "absent" }
   if (!found.isSymbolicLink()) return { state: "other" }
+  const identity = identityOf(found)
   const target = await readlink(path)
-  if (target === launcher) return { state: "linked", target }
+  if (target === launcher) return { state: "linked", target, identity }
   // Review P3-1: stale only when the launcher it names is gone (the app
   // moved or was deleted). A link to another Domovoi install that still
   // exists belongs to that install and is left alone.
   const stale = ownLauncher(name, target) && !await entry(resolve(dirname(path), target))
-  return stale ? { state: "stale", target } : { state: "other" }
+  return stale ? { state: "stale", target, identity } : { state: "other" }
 }
 
-// Review P3-2: read again right before a removal, so a link that changed
-// since it was read is never removed.
-async function stillReads(path: string, target: string | undefined): Promise<boolean> {
+// Review P3-2 and PR #712 security review round 1 (P2): read again right
+// before a removal, so an entry that is no longer the link read (another
+// inode, another target, not a link) is never removed.
+async function stillLink(path: string, target: string | undefined, identity: string | undefined): Promise<boolean> {
   try {
-    return target !== undefined && await readlink(path) === target
+    const found = await lstat(path)
+    return found.isSymbolicLink() && identityOf(found) === identity && target !== undefined && await readlink(path) === target
   } catch {
     return false
   }
+}
+
+// PR #712 security review round 1 (P2): ~/.local and ~/.local/bin, pinned
+// by device and inode once they are ready, and required to be those same
+// real directories right before every removal and every link made, so
+// nothing is removed or made through a directory swapped in after it was
+// read.
+type PinnedDirectories = { local: string; bin: string }
+async function pinDirectories(home: string): Promise<PinnedDirectories | undefined> {
+  try {
+    const local = await entry(join(home, ".local"))
+    const bin = await entry(join(home, ".local", "bin"))
+    if (!local?.isDirectory() || !bin?.isDirectory()) return undefined
+    return { local: identityOf(local), bin: identityOf(bin) }
+  } catch {
+    return undefined
+  }
+}
+async function directoriesUnchanged(home: string, pinned: PinnedDirectories | undefined): Promise<boolean> {
+  const now = await pinDirectories(home)
+  return pinned !== undefined && now !== undefined && now.local === pinned.local && now.bin === pinned.bin
 }
 
 // Review P2-2: ~/.local and ~/.local/bin are checked for every action. A
@@ -126,7 +154,7 @@ async function makeDirectories(home: string): Promise<DirectoryState> {
 
 type Inspected =
   | Extract<CommandLinkReport, { available: false }>
-  | { available: true; onPath: boolean; commands: { name: CommandName; launcher: string; state: CommandLinkState; target?: string | undefined }[] }
+  | { available: true; onPath: boolean; commands: { name: CommandName; launcher: string; state: CommandLinkState; target?: string | undefined; identity?: string | undefined }[] }
 
 // The launchers this app ships, in name order; domovoi only where the runtime
 // carries the CLI.
@@ -206,11 +234,14 @@ async function report(environment: CommandLinkEnvironment, directories: Director
 
 const otherFile = (name: string) => `~/.local/bin/${name} is not a link Domovoi made, so it was left as it is.`
 const changedFile = (name: string) => `~/.local/bin/${name} changed while Domovoi was reading it, so it was left as it is.`
+const changedDirectory = "~/.local/bin changed while Domovoi was reading it, so nothing there was changed."
 
 export async function commandLinks(action: unknown, environment: CommandLinkEnvironment): Promise<CommandLinkResult> {
   if (action !== "status" && action !== "link" && action !== "unlink") throw new Error("Command link request is invalid")
   let directories = await directoryState(environment.home)
   if (action === "status") return { report: await report(environment, directories) }
+  // Pinned before anything in them is read.
+  let pinned = directories.kind === "ready" ? await pinDirectories(environment.home) : undefined
   const before = await inspect(environment, directories)
   if (!before.available) {
     return directories.kind === "refused" ? { report: before, refused: before.reason } : { report: before }
@@ -218,9 +249,19 @@ export async function commandLinks(action: unknown, environment: CommandLinkEnvi
   if (action === "link" && directories.kind === "missing") {
     directories = await makeDirectories(environment.home)
     if (directories.kind === "refused") return { report: await report(environment, directories), refused: directories.reason }
+    pinned = await pinDirectories(environment.home)
   }
   const directory = join(environment.home, ".local", "bin")
   let refused: string | undefined
+  // Ruled Q411 A (2026-10-03), as round 8 of #577 did for the runtime
+  // copy: each check below is made right before the unlink or symlink it
+  // guards, and the instant between them is not covered. Node has no unlink
+  // or symlink relative to an open directory, so each resolves
+  // ~/.local/bin/<name> by path again. A process of the same user that swaps
+  // ~/.local or ~/.local/bin, or the entry, in that instant can have one
+  // entry of that name removed, or one link to this app's launcher made, in
+  // the directory it swapped in. unlink never removes a directory and does
+  // not follow a link at the entry itself.
   for (const command of before.commands) {
     const path = join(directory, command.name)
     if (command.state === "other") {
@@ -229,7 +270,11 @@ export async function commandLinks(action: unknown, environment: CommandLinkEnvi
     }
     if (command.state === "absent" ? action === "unlink" : command.state === "linked" && action === "link") continue
     if (command.state !== "absent") {
-      if (!await stillReads(path, command.target)) {
+      if (!await directoriesUnchanged(environment.home, pinned)) {
+        refused ??= changedDirectory
+        continue
+      }
+      if (!await stillLink(path, command.target, command.identity)) {
         refused ??= changedFile(command.name)
         continue
       }
@@ -242,6 +287,10 @@ export async function commandLinks(action: unknown, environment: CommandLinkEnvi
     const now = await directoryState(environment.home)
     if (now.kind !== "ready") {
       refused ??= now.kind === "refused" ? now.reason : "~/.local/bin disappeared while Domovoi was linking, so nothing was written."
+      continue
+    }
+    if (!await directoriesUnchanged(environment.home, pinned)) {
+      refused ??= changedDirectory
       continue
     }
     await symlink(command.launcher, path)
