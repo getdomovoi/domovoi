@@ -1,4 +1,4 @@
-import { daemonRuntimeLayout, nodeRuntimeFileSystem, prepareDaemonRuntime } from "@getdomovoi/daemon"
+import { nodeRuntimeFileSystem, prepareDaemonRuntime } from "@getdomovoi/daemon"
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -20,7 +20,8 @@ describe("the login service assembled for this app's profile", () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-assembly-")))
     roots.push(root)
     const resourcesPath = join(root, "Resources")
-    const shipped = daemonRuntimeLayout(resourcesPath, process.platform)
+    // The runtime the app ships, in <resources>/daemon-runtime.
+    const shipped = daemonRuntimeLayoutUnder(join(resourcesPath, "daemon-runtime"))
     await mkdir(dirname(shipped.nodePath), { recursive: true })
     await mkdir(dirname(shipped.daemonEntryPath), { recursive: true })
     await writeFile(shipped.nodePath, "node")

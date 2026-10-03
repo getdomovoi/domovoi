@@ -57,14 +57,9 @@ export {
   type DaemonRuntimeCleanupOptions,
   type DaemonRuntimeCleanupResult,
 } from "./service/runtime-cleanup.js"
+// Only what the desktop loads (apps/desktop/src/main/daemon-module.ts).
 export {
-  daemonRuntimeLayout,
   nodeRuntimeFileSystem,
   prepareDaemonRuntime,
-  profileRuntimeDirectory,
-  stageDaemonRuntime,
-  type DaemonRuntimeStageInput,
   type PreparedDaemonRuntime,
-  type RuntimeEntry,
-  type RuntimeFileSystem,
 } from "./service/runtime-stage.js"
