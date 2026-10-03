@@ -6,7 +6,7 @@
     "apps/mobile/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
   ],
-  "note": "Four frames: two pane with a gate waiting, decision made, the review sheet, on cellular. Nothing of the tablet exists (S3.5), so every element is missing with that reason; the phone app is where the tablet will live, hence the sources. The cellular frame reaches the machine over Domovoi Cloud, which is Phase 2, so it is blocked rather than missing. Evidence for the missing elements names the components the tablet will introduce under apps/mobile/src (TabletSessionsPane, TabletThreadHeader, TabletThread, TabletGateCard, TabletReceipt, TabletComposer, TabletReviewSheet); an implementer who names them differently updates the evidence in the same change.",
+  "note": "Four frames: two pane with a gate waiting, decision made, the review sheet, on cellular. The tablet shell exists since #517 (apps/mobile/src/tablet-shell.tsx, mounted by app.tsx at widths of 768pt or more), and app.json sets supportsTablet, so every iPad gets it although SHIP-PLAN leaves the tablet out of M1. Re-read against the code 2026-10-02: each element that passed on a component name alone is partial, because the name proves a function exists, not that the design is met; presence holds the anchored component definition and evidence names what is drawn and missing. Q338 A (2026-10-02) fixes the correctness gaps now (silent gate and send failures, the false receipt, the zero-session dead end, the thread opening at the top, artifacts counted as files, the transparent command block, the false comment-anchor copy) and leaves visual parity, tablet type sizes included, to S3.5. The cellular frame reaches the machine over Domovoi Cloud, the Phase 2 relay (M2), so it is blocked. Phone v2 frame 04f, the terminal beside the thread on a tablet, is inventoried as tablet.terminal-beside in phone-v2.json.",
   "sample": [
     "14:06",
     "62%",
@@ -37,25 +37,68 @@
         "Domovoi",
         "New session"
       ],
+      "presence": [
+        "re:export function TabletSessionsPane\\(",
+        "title=\"New session\""
+      ],
       "evidence": [
-        "TabletSessionsPane"
-      ]
+        "re:export function TabletSessionsPane\\(",
+        {
+          "absent": "<Button title=\"Machines\" onPress={onOpenMachines} />",
+          "in": "apps/mobile/src/tablet-shell.tsx"
+        },
+        {
+          "absent": "if (!sessionId || !detail) return <View",
+          "in": "apps/mobile/src/tablet-shell.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the pane draws Domovoi as text, a Machines pill, New session and the groups; the design draws the 26px mark, a machine chip (dot and name) and a 44px search square. With zero sessions TabletShell returns No session is selected. in place of the whole shell, so New session and Machines disappear and the tablet, which has no tab bar, dead-ends. Row metas are only waiting on you, running and quiet, with no age, review or failed state (the design draws review 7 files, failed 1h ago, running 12m, idle 2d), and failed and review sessions do not join NEEDS YOU. Q386 A (2026-10-02) ports the mark as an SVG component shared with the phone; search can be a client-side title filter (session.search is not on the phone and tablet allow-list)"
+      }
     },
     {
       "id": "thread.header",
       "name": "Thread header",
       "where": "right pane top: title, repo · branch · worktree · clock, the files button opening the sheet, theme toggle",
+      "presence": [
+        "re:export function TabletThreadHeader\\("
+      ],
       "evidence": [
-        "TabletThreadHeader"
-      ]
+        "re:export function TabletThreadHeader\\(",
+        {
+          "absent": "<Icon name=\"settings\" tone=\"muted\" size={18} />",
+          "in": "apps/mobile/src/tablet-shell.tsx"
+        },
+        {
+          "absent": "const artifactCount = snapshot.artifacts",
+          "in": "apps/mobile/src/tablet-shell.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the header draws the title and project · branch · worktree; there is no clock, the files button counts the session's artifacts, not its changed files (session.changedFiles and session.evidence are on the allow-list), the button is an outline pill without the GitCompare icon, and the theme toggle draws the settings gear, not a moon or sun (those icons are not in components/ui/icon.tsx). The clock waits on turn start and end on the protocol (Q390 A, 2026-10-02)"
+      }
     },
     {
       "id": "thread.turns",
       "name": "Thread turns with the activity row",
       "where": "right pane: the user message, prose, Worked for N with tools and files",
+      "presence": [
+        "re:export function TabletThread\\("
+      ],
       "evidence": [
-        "TabletThread"
-      ]
+        "re:export function TabletThread\\(",
+        "Worked for",
+        {
+          "absent": "const files = snapshot.artifacts",
+          "in": "apps/mobile/src/tablet-shell.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the thread draws turns and a static Work this turn pill with a session-wide tool count and an artifact count as files; it does not expand, every tool call renders inline as a note instead of folding into the activity list, the thread does not follow the end (TabletThread omits followEnd, so a long thread opens at the top with the gate off screen), and omitted items are not stated. The earlier evidence TabletThread was a substring of TabletThreadHeader and TabletThreadEntry, so it proved nothing. Worked for N waits on turn start and end on the protocol (Q390 A, 2026-10-02); per-tool durations need protocol too"
+      }
     },
     {
       "id": "thread.gate",
@@ -67,30 +110,64 @@
         "Always here",
         "Deny"
       ],
-      "evidence": [
-        "TabletGateCard",
+      "presence": [
+        "re:export function TabletGateCard\\(",
         "Always here"
-      ]
+      ],
+      "evidence": [
+        "re:export function TabletGateCard\\(",
+        "Always here",
+        {
+          "absent": "bg-warn-deep",
+          "in": "apps/mobile/src/tablet-shell.tsx"
+        },
+        "re:export function TabletGateCard\\(\\{[^}]*problem"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the card decides with 52 and 48px targets; a refused or failed Allow is silent (app.tsx sets decideProblem, TabletShell has no prop for it) and the card has no pending state, so a double tap sends twice. bg-warn-deep is not a registered token (warn-bg-deep is), so the command block has no background. step n of N is not drawn (the agent shows in its place; approvalRequestSchema has no plan-step reference). Type sizes and radius differ (command 10px against 13, labels 12 against 15 and 14, radius 10.4 against 16), which Q338 A leaves to S3.5"
+      }
     },
     {
       "id": "thread.receipt",
       "name": "Decision receipt at arm's length",
       "where": "in the thread after the decision: what ran, how long, that a checkpoint exists",
+      "presence": [
+        "re:export function TabletReceipt\\("
+      ],
       "evidence": [
-        "TabletReceipt"
-      ]
+        "re:export function TabletReceipt\\(",
+        {
+          "absent": "was recorded before it ran.",
+          "in": "apps/mobile/src/tablet-shell.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the receipt always prints <operation>. Checkpoint <checkpoint> was recorded before it ran. in success colours, which is false on a deny (nothing ran) and when no checkpoint was taken (it prints Checkpoint no checkpoint was recorded); the deny explanation is dropped and the meta shows the gate wait time, not the design's ckpt · ran for. The design's Ran in 38s. A checkpoint was taken first, so it is revertible. needs the receipt's checkpoint-taken and ran-for facts, which the protocol carries"
+      }
     },
     {
       "id": "composer",
       "name": "Tablet composer",
-      "where": "right pane foot: Reply, or steer the plan; queued row",
+      "where": "right pane foot: paperclip, the field with Reply, or steer the plan, harness glyph and model, usage ring or cost, send",
       "copy": [
         "Reply, or steer the plan"
       ],
-      "evidence": [
-        "TabletComposer",
+      "presence": [
+        "re:export function TabletComposer\\(",
         "Reply, or steer the plan"
-      ]
+      ],
+      "evidence": [
+        "re:export function TabletComposer\\(",
+        "Reply, or steer the plan",
+        "paperclip",
+        "re:export function TabletComposer\\(\\{[^}]*(problem|queued)"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the field and send exist; a failed or refused send shows nothing (sendProblem is never passed), a watching or read-only tablet gets a dead field with no reason (detail.sending.reason is not drawn), and a queued send is invisible and cannot be cancelled (session.cancelQueuedSend is on the allow-list). There is no paperclip (AttachSheet exists for the phone), no usage ring or cost (session.usage and usage.window are on the allow-list), and the model reads claude-code · sonnet-4.6 where the design draws a harness glyph and the short name; the harness glyph asset is not in the repository"
+      }
     },
     {
       "id": "sheet",
@@ -101,10 +178,26 @@
         "Post",
         "Cancel"
       ],
-      "evidence": [
-        "TabletReviewSheet",
+      "presence": [
+        "re:export function TabletReviewSheet\\(",
         "Say what is wrong with this element"
-      ]
+      ],
+      "evidence": [
+        "re:export function TabletReviewSheet\\(",
+        "Say what is wrong with this element",
+        {
+          "absent": "cssSelector: \"body\"",
+          "in": "apps/mobile/src/app.tsx"
+        },
+        {
+          "absent": "artifactRows(snapshot, sessionId)",
+          "in": "apps/mobile/src/tablet-shell.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the sheet has the grab handle and four tabs; Changes lists artifacts (PLAN, PREVIEW, DIFF) instead of changed files (session.evidence is on the allow-list); the diff has no file header, line numbers or tints; Review has no render, no anchored bubbles and no comment list, and posts every comment anchored to body while saying Tap a bubble to comment. Comments reference that element in this render., which is false (the phone's ArtifactScreen already does the anchored flow); tabs are primary pills where the design draws accent tabs"
+      }
     },
     {
       "id": "cellular-banner",
@@ -119,7 +212,7 @@
       "blocked": {
         "since": "2026-09-18",
         "needs": "platform",
-        "reason": "the route is the Phase 2 relay; M1 has loopback and the tailnet"
+        "reason": "the route is the Phase 2 relay (M2); M1 has loopback and the tailnet. The 5G · cloud relay status and the info-tinted machine chip are blocked with it"
       }
     },
     {
@@ -138,7 +231,23 @@
     }
   ],
   "annotations": [],
-  "humanRead": [],
+  "humanRead": [
+    {
+      "id": "thread.gate",
+      "since": "2026-10-02",
+      "note": "Ruled differences: the design draws Always here on a hard gate, and the card hides Always on hard gates and unresolved requests (ruled 2026-09-24, #545). Deny opens the full-screen explain flow (I68, 6542cb30). The design folds the facts behind What does this touch? under the decisions; Q355 A keeps all facts expanded but moves them below the decisions, so nothing is behind a tap. Today they sit above the decisions, which is an open gap until that fix."
+    },
+    {
+      "id": "sheet",
+      "since": "2026-10-02",
+      "note": "Ruled differences: Build on this and the A, B, C variant chips are not built on the tablet, because choosing a variant is a desktop commitment (2026-09-16 ruling, #465; the design edit goes back to Claude Design). The design's Send N comments and Attached to your next turn become the phone's Save for later and Send to the agent split (Q348 A)."
+    },
+    {
+      "id": "pairing.success",
+      "since": "2026-10-02",
+      "note": "Copy and structure match; sizes do not. The title is 11.5px against 17px, the limit line 11.5px against 14px, and Open Sessions a 12px pill against a 44px button. The card stands alone rather than floating over the shell, because no snapshot exists before pairing. Q338 A leaves tablet type sizes to S3.5."
+    }
+  ],
   "scriptBacklog": {
     "since": "2026-09-26",
     "reason": "Copy the design builds in its data script, collected by the gate since audit G23 and not yet read against the implementation. Classify each string as an element's copy, sample or annotations, and remove it here.",
