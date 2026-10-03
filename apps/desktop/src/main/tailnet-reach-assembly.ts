@@ -105,11 +105,17 @@ export function createTailnetReach(input: {
     return { refusal: "this window reaches a daemon started outside this app, which only whoever started it can restart." }
   }
 
+  const display = (path: string) => path === home || path.startsWith(`${home}${sep}`) ? `~${path.slice(home.length)}` : path
+  const swept = sweepPending(tlsDirectory)
   const reach = new TailnetReach({
     ...(input.timers ? { timers: input.timers } : {}),
     tailscale: tailscaleRunner(environment, platform, input.tailscaleLocations ?? tailscaleLocations(platform)),
     tlsDirectory,
-    display: (path) => path === home || path.startsWith(`${home}${sep}`) ? `~${path.slice(home.length)}` : path,
+    display,
+    keptPending: async () => {
+      const kept = await swept
+      return kept === undefined ? undefined : display(kept)
+    },
     files: {
       exists: async (path) => access(path).then(() => true, () => false),
       read: (path) => readFile(path),
@@ -196,7 +202,6 @@ export function createTailnetReach(input: {
     },
   })
   // Renewal runs while the switch is on, from whenever this module loads.
-  void sweepPending(tlsDirectory)
   void reach.startRenewal()
   return reach
 }
@@ -205,24 +210,29 @@ export function createTailnetReach(input: {
 // leaves <tls>/.pending-XXXXXX holding a private key. When the module loads no
 // change is running, so every directory by that name (mkdtemp's six
 // characters) inside tls goes. A link by that name is left alone, never
-// followed, and so is anything else.
-async function sweepPending(tlsDirectory: string): Promise<void> {
+// followed, and so is anything else. A directory holding previous files a
+// change could not put back stays, and is answered so the switch can say
+// where it is (round 3 re-review, P3-3).
+async function sweepPending(tlsDirectory: string): Promise<string | undefined> {
   let names: string[]
   try {
     names = await readdir(tlsDirectory)
   } catch {
-    return
+    return undefined
   }
+  let kept: string | undefined
   for (const name of names.filter((entry) => /^\.pending-[A-Za-z0-9]{6}$/u.test(entry))) {
     const path = join(tlsDirectory, name)
     try {
       if (!(await lstat(path)).isDirectory()) continue
-      // A change that could not put the previous files back left them here
-      // and said so; they stay for the person to recover.
-      if ((await readdir(path)).some((entry) => entry.startsWith("previous."))) continue
+      if ((await readdir(path)).some((entry) => entry.startsWith("previous."))) {
+        kept ??= path
+        continue
+      }
       await rm(path, { recursive: true, force: true })
     } catch {
       // Gone already, or not ours to remove: the next load tries again.
     }
   }
+  return kept
 }

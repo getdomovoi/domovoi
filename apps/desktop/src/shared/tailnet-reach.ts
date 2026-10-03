@@ -25,6 +25,9 @@ export type TailnetReachReport =
       renewalFailed?: { at: string; message: string }
       ignored?: string
       handSet?: string
+      // A pending directory holding previous files a change could not put
+      // back, shortened for display. Never removed for the person.
+      kept?: string
     }
 
 // The step a change stopped at, in the order the card lists them.

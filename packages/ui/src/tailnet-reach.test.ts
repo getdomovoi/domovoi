@@ -18,6 +18,7 @@ describe("the TailnetReach answer", () => {
     { ...on, renewalFailed: { at: "2026-10-02T12:00:00.000Z", message: "Tailscale did not renew the certificate." } },
     { ...on, ignored: "DOMOVOI_HOST is set to 0.0.0.0 in this app's environment." },
     { ...on, state: "off", handSet: "The tailnet listener comes from DOMOVOI_TAILNET_ADDRESS set by hand in this app's environment, and the switch cannot clear it." },
+    { ...on, kept: "~/.domovoi/tls/.pending-Ab3xYz" },
   ])("reads a report: %j", (report) => {
     expect(parseTailnetReachReport(report)).toEqual(report)
   })

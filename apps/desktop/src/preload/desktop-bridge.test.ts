@@ -316,7 +316,7 @@ describe("createDesktopWindowBridge", () => {
   // deep; the renderer parses its exact shape (packages/ui tailnet-reach.ts).
   it("asks the main process for one of three tailnet actions and passes a plain answer on", async () => {
     const target = ipc()
-    const report = { state: "on", name: "studio.tail4c2e.ts.net", address: "100.101.102.103", stored: "~/.domovoi/tls/studio.tail4c2e.ts.net.crt, .key", httpsCertificates: true, renewalFailed: { at: "2026-10-02T12:00:00.000Z", message: "x" }, handSet: "x" }
+    const report = { state: "on", name: "studio.tail4c2e.ts.net", address: "100.101.102.103", stored: "~/.domovoi/tls/studio.tail4c2e.ts.net.crt, .key", httpsCertificates: true, renewalFailed: { at: "2026-10-02T12:00:00.000Z", message: "x" }, handSet: "x", kept: "~/.domovoi/tls/.pending-Ab3xYz" }
     target.invoke.mockImplementation(async () => report)
     const bridge = createDesktopWindowBridge(target, "darwin")
     for (const action of ["status", "on", "off"] as const) {

@@ -139,9 +139,11 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     const tls = join(home, ".domovoi", "tls")
     await mkdir(join(tls, ".pending-Kept12"), { recursive: true })
     await writeFile(join(tls, ".pending-Kept12", "previous.key"), "the only copy")
-    assemble()
+    const { reach } = assemble()
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(await readFile(join(tls, ".pending-Kept12", "previous.key"), "utf8")).toBe("the only copy")
+    // Round 3 re-review (P3-3): and the switch says where it is.
+    await expect(reach.status()).resolves.toMatchObject({ state: "off", kept: "~/.domovoi/tls/.pending-Kept12" })
   })
 
   // index.ts loads the module at startup only when the switch is on, and the

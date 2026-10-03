@@ -267,6 +267,8 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
       {running ? <span aria-hidden className="relative block h-[3px] w-[60px] overflow-hidden rounded-[3px] bg-muted"><span className="sweep-bar absolute inset-y-0 left-0 block w-[30%] rounded-[3px] bg-primary" /></span> : null}
 
       {named?.ignored && !running ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">{named.ignored}</p> : null}
+      {/* Round 3 re-review (P3-3): kept until someone moves them; never removed for them. */}
+      {named?.kept ? <p role="alert" className="m-0 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground">{`The previous certificate and key could not be put back and are in ${named.kept}.`}</p> : null}
 
       {report?.state === "none" || (!report && readError) ? (
         <div className="flex flex-wrap items-center gap-2.5">

@@ -59,6 +59,9 @@ export type TailnetReachDependencies = {
   // Why the switch cannot clear the tailnet listener of the daemon this app
   // runs (DOMOVOI_TAILNET_* set by hand in its environment), or undefined.
   handSet?(): string | undefined
+  // A pending directory, shortened for display, that the sweep at load left
+  // because it holds previous files a change could not put back.
+  keptPending?(): Promise<string | undefined>
   // Renewal's timers and clock. Defaults: setTimeout, unref'd, and Date.now.
   timers?: { set(run: () => void, ms: number): unknown; clear(handle: unknown): void }
   now?(): number
@@ -139,6 +142,8 @@ export class TailnetReach {
   #busy = false
   #renewalTimer: unknown
   #renewalFailure: { at: string; message: string } | undefined
+  // Where a change in this session left previous files it could not put back.
+  #keptPending: string | undefined
 
   constructor(private readonly deps: TailnetReachDependencies) {}
 
@@ -252,6 +257,7 @@ export class TailnetReach {
         }
       } catch {
         stranded = true
+        this.#keptPending = this.deps.display(pending)
         return `The previous certificate and key could not be put back and are in ${this.deps.display(pending)}.`
       }
       return kept.length ? "The previous certificate was put back." : ""
@@ -304,15 +310,18 @@ export class TailnetReach {
       state: "on", name: record.name, address: record.address, stored: this.#stored(record.name), httpsCertificates: true,
       ...(expiresAt ? { certificateExpiresAt: expiresAt } : {}),
       ...(this.#renewalFailure ? { renewalFailed: { ...this.#renewalFailure } } : {}),
-      ...this.#notes(),
+      ...await this.#notes(),
     }
   }
 
-  // What the switch alone does not say about the daemon inside this app.
-  #notes(): { ignored?: string; handSet?: string } {
+  // What the switch alone does not say: about the daemon inside this app, and
+  // about previous files a change left in a pending directory (round 3
+  // re-review, P3-3), found by this change or by the sweep at load.
+  async #notes(): Promise<{ ignored?: string; handSet?: string; kept?: string }> {
     const ignored = this.deps.conflict?.()
     const handSet = this.deps.handSet?.()
-    return { ...(ignored ? { ignored } : {}), ...(handSet ? { handSet } : {}) }
+    const kept = this.#keptPending ?? await this.deps.keptPending?.()
+    return { ...(ignored ? { ignored } : {}), ...(handSet ? { handSet } : {}), ...(kept ? { kept } : {}) }
   }
 
   async status(): Promise<TailnetReachReport> {
@@ -323,7 +332,7 @@ export class TailnetReach {
     if ("none" in tailnet) return { state: "none", detail: tailnet.none }
     return {
       state: "off", name: tailnet.name, address: tailnet.address, stored: this.#stored(tailnet.name), httpsCertificates: tailnet.httpsCertificates,
-      ...this.#notes(),
+      ...await this.#notes(),
     }
   }
 

@@ -313,6 +313,8 @@ describe("turning TailnetReach on", () => {
     })
     expect(files.get(`${tls}/.pending-1/previous.crt`)).toBe("old certificate")
     expect(calls).not.toContain(`remove directory ${tls}/.pending-1`)
+    // Round 3 re-review (P3-3): the switch keeps saying where they are.
+    await expect(reach.status()).resolves.toMatchObject({ state: "on", kept: "~/.domovoi/tls/.pending-1" })
   })
 
   // Round 3 re-review (P2): a throw that is not a failed answer must not skip

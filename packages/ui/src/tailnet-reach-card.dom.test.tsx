@@ -210,6 +210,13 @@ it("says the daemon still answers on the tailnet while the switch is off, and tu
   expect(view.getByText("Turning off")).toBeTruthy()
 })
 
+// Round 3 re-review (P3-3): previous files a change could not put back stay
+// in a pending directory, and the card says where until someone moves them.
+it.each([["off", off], ["on", on]] as const)("says where kept previous files are with the switch %s", async (_state, report) => {
+  await card({ status: { ...report, kept: "~/.domovoi/tls/.pending-Ab3xYz" } }, { listener: listening })
+  expect(within(region()).getByText("The previous certificate and key could not be put back and are in ~/.domovoi/tls/.pending-Ab3xYz.")).toBeTruthy()
+})
+
 // Round 3 re-review (P3-2): when the listener comes from DOMOVOI_TAILNET_*
 // set by hand in this app's environment, turning off does not clear it, so
 // the card says where it comes from instead of offering that.
