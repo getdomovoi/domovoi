@@ -13,6 +13,8 @@ import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
 import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import type { DesktopDaemonService } from "./daemon-service.js"
+import type { TailnetReach } from "./tailnet-reach.js"
+import { savedTailnetReachEnvironment } from "./tailnet-reach-record.js"
 import { loadDaemonModule } from "./daemon-module.js"
 import { withServiceMismatch } from "./service-mismatch.js"
 import { daemonErrorLogSink, recordStartupFailure } from "./startup-failure.js"
@@ -151,8 +153,9 @@ const desktopDaemon = new DesktopDaemon(daemonSeam, () => ({
   // The window resolves its renderer target before the first acquisition, so a
   // development daemon is told the origin its renderer is actually served from,
   // as an override on top of process.env so the inherited bearer stays bound.
+  // TailnetReach (Q404 A): the tailnet listener the switch saved, if any.
   environment: process.env,
-  ...(mainRendererTarget ? { environmentOverrides: developmentDaemonOverrides(process.env, mainRendererTarget) } : {}),
+  environmentOverrides: { ...savedTailnetReachEnvironment(app.getPath("userData")), ...mainRendererTarget && developmentDaemonOverrides(process.env, mainRendererTarget) },
   homeDirectory: homedir(),
   machineLabel: hostname(),
   errorSink: daemonErrorLogSink(domovoiMainLogPath(), appendDomovoiMainLog),
@@ -177,6 +180,12 @@ const daemonService = (): Promise<DesktopDaemonService> => {
   )
   return desktopDaemonService
 }
+// TailnetReach (Q404 A), loaded on first use like the service above.
+let tailnetReach: Promise<TailnetReach> | undefined
+const reach = (): Promise<TailnetReach> => tailnetReach ??= import("./tailnet-reach-assembly.js").then(
+  (assembly) => assembly.createTailnetReach({ desktopDaemon, daemon: daemonModule.module, service: daemonService, dataDirectory: app.getPath("userData") }),
+  (error: unknown) => { tailnetReach = undefined; throw error },
+)
 const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
   console.error("Local daemon failed to release during desktop shutdown", error)
 })
@@ -375,6 +384,7 @@ registerDesktopIpc(ipcMain, {
     remove: async () => (await daemonService()).remove(),
     update: async () => (await daemonService()).update(),
   },
+  tailnetReach: async (action) => (await reach()).act(action),
   // The one address the renderer may ask the browser to open, fixed here.
   releasePage: { open: () => shell.openExternal("https://github.com/getdomovoi/domovoi/releases").then(() => true, () => false) },
   // Q336 A: loads when Settings first asks, like the login service.

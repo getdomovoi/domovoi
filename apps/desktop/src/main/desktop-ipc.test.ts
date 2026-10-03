@@ -78,6 +78,7 @@ const channels: readonly ChannelSpec[] = [
   { channel: "domovoi:daemon-service-install", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   { channel: "domovoi:daemon-service-remove", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   { channel: "domovoi:daemon-service-update", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
+  { channel: "domovoi:tailnet-reach", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized }, argument: "status" },
   { channel: "domovoi:open-release-page", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized } },
   // Q336 A: link domovoid and domovoi into ~/.local/bin, or read or undo that.
   { channel: "domovoi:command-links", via: "handle", guard: "authorized", unauthorized: { rejects: notAuthorized }, argument: "link" },
@@ -163,6 +164,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     "daemonService.update": vi.fn(async () => ({ ok: true, kind: "file", target: "/p", configurationPath: "/c", daemonRunning: true })),
     "releasePage.open": vi.fn(async () => true),
     commandLinks: vi.fn(async (_action: unknown) => ({ report: { available: false, reason: "Domovoi links no commands on Windows." } })),
+    "tailnetReach": vi.fn(async (_action: unknown) => ({ state: "none", detail: "Domovoi found no tailscale command on this computer." })),
     "notifications.notify": vi.fn((_input: unknown, _activate: (sessionId: string) => void) => true),
     "deepLinks.enqueue": vi.fn(),
     "deepLinks.ready": vi.fn(),
@@ -195,6 +197,7 @@ function harness(options: { authorized?: boolean; launchSmoke?: boolean; withWin
     daemonService: { status: effects["daemonService.status"], install: effects["daemonService.install"], remove: effects["daemonService.remove"], update: effects["daemonService.update"] },
     releasePage: { open: effects["releasePage.open"] },
     commandLinks: effects.commandLinks,
+    tailnetReach: effects["tailnetReach"],
     notifications: { notify: effects["notifications.notify"] },
     deepLinks: {
       enqueue: effects["deepLinks.enqueue"],
@@ -335,6 +338,10 @@ describe("registerDesktopIpc", () => {
     // decides every path.
     expect(await target.listener("handle", "domovoi:command-links")(target.event, "status")).toMatchObject({ report: { available: false } })
     expect(target.effects.commandLinks).toHaveBeenCalledWith("status")
+    // TailnetReach (Q404 A): the action goes to the lazily loaded module,
+    // which refuses anything but its three (tailnet-reach.test.ts).
+    expect(await target.listener("handle", "domovoi:tailnet-reach")(target.event, "status")).toMatchObject({ state: "none" })
+    expect(target.effects["tailnetReach"]).toHaveBeenCalledWith("status")
 
     const capture = await target.listener("handle", "domovoi:capture-annotation")(target.event, rect)
     expect(target.effects["webContents.capturePage"]).toHaveBeenCalledWith(rect)
