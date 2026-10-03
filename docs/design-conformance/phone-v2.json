@@ -231,23 +231,16 @@
     {
       "id": "sessions.list",
       "name": "Sessions, needs-you first",
-      "where": "frame 01: NEEDS YOU first and never collapsed, then RUNNING and UNREACHABLE; header count N need you",
+      "where": "frame 01: NEEDS YOU first and never collapsed, then RUNNING and UNREACHABLE; header count N need you. Ruling Q358 A: QUIET for idle sessions, plus an UNREACHABLE line for fleet machines that do not answer",
       "copy": [
         "2 need you"
       ],
       "evidence": [
         "NEEDS YOU",
         "need you",
-        "UNREACHABLE"
-      ],
-      "presence": [
-        "NEEDS YOU",
-        "need you"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "open gap, no ruling: the design's third group is UNREACHABLE, and the phone draws QUIET for idle sessions instead (decision D1 in the 2026-10-02 cross-check). The card also differs: the need-you count is a meta line, not a warning pill; group counts are plain, not tinted pills; NEEDS YOU cards sit on the card colour, not warn-bg; the gate shows as runtime and mode badges with an uppercase approval label, not a gate pill"
-      }
+        "label=\"UNREACHABLE\"",
+        "<UnreachableMachines fleet={fleet} now={now} />"
+      ]
     },
     {
       "id": "sessions.gates-while-open",
@@ -824,12 +817,12 @@
     {
       "id": "sessions.list",
       "since": "2026-10-02",
-      "note": "open gap, not approved: the design's third group is UNREACHABLE, sessions on a machine that does not answer; the phone draws QUIET for idle sessions instead. The phone holds one daemon's snapshot, so it has no sessions from a machine that is not answering, and what to draw there is decision D1 of the 2026-10-02 cross-check. Single-word labels are outside the script reading, so the partial entry's evidence names UNREACHABLE"
+      "note": "ruling Q358 A: idle sessions stay under QUIET, and fleet machines that do not answer get an UNREACHABLE line naming the machine and when it was last seen, because the phone holds no sessions from them. Still open, arrangement rather than copy: the need-you count is a meta line, not a warning pill; group counts are plain, not tinted pills; NEEDS YOU cards sit on the card colour, not warn-bg; the gate shows as runtime and mode badges with an uppercase approval label, not a gate pill"
     },
     {
       "id": "sessions.idle",
       "since": "2026-10-02",
-      "note": "open, not approved: the design's sentence says two machines answer and neither has work in flight. The phone counts the answering machines from the fleet's health, and vouches for no work in flight only on the machine whose snapshot it holds, because fleet.list carries no other machine's sessions. The card shows when that machine holds no sessions at all; idle sessions are listed under QUIET (see D1)"
+      "note": "difference accepted in the 2026-10-02 review: the design's sentence says two machines answer and neither has work in flight. The phone counts the answering machines from the fleet's health and vouches for no work in flight only on the machine whose snapshot it holds, because fleet.list carries no other machine's sessions. The card shows when that machine holds no sessions; idle sessions are listed under QUIET by ruling Q358 A"
     },
     {
       "id": "shell.tab-bar",

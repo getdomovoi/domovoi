@@ -12,7 +12,7 @@ import type { ConnectionNotice } from "../connection-notice"
 import { sessionsGateReach } from "../gate-reach"
 import { cn } from "../lib/cn"
 import { machineRows, type MachineRow } from "../machine-rows"
-import { elapsedLabel, sessionGroups, sessionsHeaderLine, waitingCount, type SessionGroup, type SessionRow } from "../session-rows"
+import { elapsedLabel, sessionGroups, sessionsHeaderLine, waitingCount, type SessionRow } from "../session-rows"
 import { useTheme } from "../theme/theme-provider"
 
 const dotColour: Record<SessionRow["dot"], string> = {
@@ -31,13 +31,45 @@ const attentionColour: Record<NonNullable<SessionRow["attention"]>, string> = {
 
 // A heading is a label and a count, the way the design draws it. The count is
 // the group's own size, so a heading never says more than the cards under it.
-function GroupHeading({ group }: { group: SessionGroup }) {
+function GroupHeading({ label, count }: { label: string, count: number }) {
   return (
     <View className="mt-1 flex-row items-center px-1">
       <Text className="flex-1 font-sans-medium text-label uppercase tracking-[0.08em] text-faint">
-        {group.label}
+        {label}
       </Text>
-      <Text variant="machine" className="text-faint">{group.rows.length}</Text>
+      <Text variant="machine" className="text-faint">{count}</Text>
+    </View>
+  )
+}
+
+// When a machine was last heard from, in the design's words (frame 10).
+function lastSeen(iso: string, now: number): string | undefined {
+  const age = elapsedLabel(iso, now)
+  if (age === undefined) return undefined
+  return age === "now" ? "last seen just now" : `last seen ${age} ago`
+}
+
+// Ruling Q358 A: the design's UNREACHABLE group, drawn as the machines that do
+// not answer. The phone holds no sessions from them, so it names the machine
+// and when it was last seen rather than inventing session cards.
+function UnreachableMachines({ fleet, now }: { fleet: FleetEntry[], now: number }) {
+  const silent = fleet.flatMap((entry) =>
+    entry.kind === "machine" && (entry.machine.health === "unreachable" || entry.machine.health === "degraded")
+      ? [entry.machine]
+      : [])
+  if (silent.length === 0) return null
+  return (
+    <View className="gap-[9px]">
+      <GroupHeading label="UNREACHABLE" count={silent.length} />
+      {silent.map((machine) => (
+        <Card key={machine.id} className="flex-row items-center gap-2.5 opacity-55">
+          <View className="h-[7px] w-[7px] rounded-full bg-faint" />
+          <Text className="flex-1 font-mono text-[12.5px] text-strong" numberOfLines={1}>{machine.label}</Text>
+          <Text className="shrink font-sans text-[11.5px] text-faint" numberOfLines={1}>
+            {lastSeen(machine.heartbeat.lastSeenAt, now) ?? "not answering"}
+          </Text>
+        </Card>
+      ))}
     </View>
   )
 }
@@ -214,7 +246,7 @@ export function SessionsScreen({
 
         {groups.map((group) => (
           <View key={group.id} className="gap-[9px]">
-            <GroupHeading group={group} />
+            <GroupHeading label={group.label} count={group.rows.length} />
             {group.rows.map((row) => (
               <SessionCard
                 key={row.id}
@@ -227,6 +259,10 @@ export function SessionsScreen({
             ))}
           </View>
         ))}
+
+        {/* With nothing listed, the idle card's fleet rows already name the
+            machines that do not answer. */}
+        {!empty && fleet ? <UnreachableMachines fleet={fleet} now={now} /> : null}
       </PageScroller>
     </View>
   )

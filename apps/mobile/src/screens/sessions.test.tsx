@@ -61,6 +61,25 @@ describe("SessionsScreen", () => {
     expect(screen.getAllByText(new RegExp(`^${snapshot.machine.name} · `))).toHaveLength(1)
   })
 
+  // Ruling Q358 A: idle sessions stay under QUIET, and fleet machines that do
+  // not answer get an UNREACHABLE line of their own. The phone holds no
+  // sessions from them, so the line names the machine and when it was last
+  // seen.
+  it("lists fleet machines that do not answer under UNREACHABLE", async () => {
+    const now = Date.parse("2026-09-20T00:00:00.000Z")
+    await draw({ now, fleet: [entry("mac-mini", "healthy", true), entry("wsl", "unreachable")] })
+
+    expect(screen.getByText("UNREACHABLE")).toBeOnTheScreen()
+    expect(screen.getByText("wsl")).toBeOnTheScreen()
+    expect(screen.getByText("last seen 2d ago")).toBeOnTheScreen()
+    expect(screen.queryByText("mac-mini")).toBeNull()
+  })
+
+  it("draws no UNREACHABLE line when every machine answers", async () => {
+    await draw({ fleet: [entry("mac-mini", "healthy", true), entry("hetzner", "healthy")] })
+    expect(screen.queryByText("UNREACHABLE")).toBeNull()
+  })
+
   // Phone v2 frames 01 and 10 put the Domovoi mark beside the title.
   it("marks the Sessions title with the Domovoi mark", async () => {
     await draw()
