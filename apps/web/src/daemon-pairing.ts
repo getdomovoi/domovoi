@@ -149,7 +149,8 @@ function olderSide(cause: DaemonRpcError): "page" | "daemon" | undefined {
 // What the daemon said, as the page draws it. Every bad code gets one uniform
 // refusal from the daemon on purpose, so the page cannot say whether a code
 // expired, was spent, or came from another machine, and does not guess.
-export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOutcome, "action"> {
+// label: the device label this page sent with the code, when it sent one.
+export function pairingOutcomeFor(cause: unknown, host: string, label?: string): Omit<PairingOutcome, "action"> {
   if (cause instanceof DeviceKindMismatchError) return kindMismatchOutcome(cause, host)
   if (cause instanceof DaemonRpcError) {
     if (cause.code === protocolVersionMismatchErrorCode) {
@@ -179,16 +180,22 @@ export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOut
   }
   // Both of these come after the daemon answered with a credential or
   // something like one, so the code is spent and a device may be enrolled.
+  // Only the machine's own desktop app manages devices (a device credential
+  // is refused), and its control is Revoke, so the card says where and names
+  // the device by the label this page sent.
+  const device = label ?? "this browser's device"
+  const pairedAs = label ? ` as ${label}` : ""
+  const where = `the desktop app on ${host}, under Machines, revoke ${device}.`
   if (cause instanceof BrowserCapabilityError) {
-    return { tone: "danger", pill: "not kept", title: "This tab cannot keep the credential", mono: `pair.paired · ${cause.reason}`, body: `${cause.message} The daemon paired this browser, so unpair the extra device under Machines.` }
+    return { tone: "danger", pill: "not kept", title: "This tab cannot keep the credential", mono: `pair.paired · ${cause.reason}`, body: `${cause.message} The daemon paired this browser${pairedAs}. In ${where}` }
   }
   if (cause instanceof PairingReplyError) {
-    return { tone: "danger", pill: "unconfirmed", title: `${host} answered, but its reply could not be read`, mono: "pair · reply unreadable", body: "It may have paired this browser. If it did, unpair the extra device under Machines." }
+    return { tone: "danger", pill: "unconfirmed", title: `${host} answered, but its reply could not be read`, mono: "pair · reply unreadable", body: `It may have paired this browser${pairedAs}. If it did, in ${where}` }
   }
   if (cause instanceof PairingTransportError) {
     return { tone: "plain", pill: "unconfirmed", title: `${host} did not answer, so pairing is unconfirmed`, mono: `pair · no reply · ${host}`, body: "The daemon may have stopped or left the tailnet. If the machine lists this browser under Machines, it paired." }
   }
-  return { tone: "plain", pill: "unconfirmed", title: `Pairing with ${host} did not finish`, mono: "pair · unconfirmed", body: "If the machine lists this browser under Machines, it paired; unpair it there before you pair again." }
+  return { tone: "plain", pill: "unconfirmed", title: `Pairing with ${host} did not finish`, mono: "pair · unconfirmed", body: `If ${host} lists ${device} under Machines, it paired. Before you pair again, revoke it there, in the desktop app on ${host}.` }
 }
 
 // What cures a refusal. A page older than the daemon needs a reload. A daemon

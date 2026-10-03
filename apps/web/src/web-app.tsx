@@ -105,11 +105,14 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
   function redeem(code: string) {
     setPairing(true)
     setOutcome(undefined)
+    // The label the daemon enrols this browser under, so a card can name the
+    // device to revoke.
+    const label = browserDeviceLabel(clientKind, labelSuffix())
     void redeemBrowserCode({
       url: rpcUrl,
       client: clientKind,
       code,
-      label: browserDeviceLabel(clientKind, labelSuffix()),
+      label,
       createClient,
       onConnected: () => setReached(true),
     }).then((next) => {
@@ -126,7 +129,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
         action: { label: "Open sessions", run: () => setSession(next) },
       })
     }).catch((cause: unknown) => {
-      const refusal = pairingOutcomeFor(cause, host)
+      const refusal = pairingOutcomeFor(cause, host, label)
       const reloadPage = environment.reloadPage
       const next = pairingNextStep(cause)
       // A host with no page to reload gets no button: another code would

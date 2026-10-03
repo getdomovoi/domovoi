@@ -412,7 +412,10 @@ describe("WebApp", () => {
     await draw(storage, vi.fn(() => client))
     await submitCode("hearth-quiet-ember-42")
     expect(text()).toContain("This browser blocked session storage, so Domovoi cannot hold a daemon credential for this tab.")
-    expect(text()).toContain("The daemon paired this browser, so unpair the extra device under Machines.")
+    // Only the machine's own desktop app manages devices, the control is
+    // Revoke, and the card names the device it enrolled.
+    expect(text()).toContain("The daemon paired this browser as Web browser 1234. In the desktop app on 127.0.0.1:47831, under Machines, revoke Web browser 1234.")
+    expect(text()).not.toContain("unpair the extra device")
     expect(text()).not.toContain("did not answer")
     expect(() => button("Try again")).toThrow()
     expect(() => button("Type a new code")).toThrow()
@@ -424,7 +427,7 @@ describe("WebApp", () => {
     await draw(memoryStorage(), vi.fn(() => client))
     await submitCode("hearth-quiet-ember-42")
     expect(text()).toContain("answered, but its reply could not be read")
-    expect(text()).toContain("It may have paired this browser. If it did, unpair the extra device under Machines.")
+    expect(text()).toContain("It may have paired this browser as Web browser 1234. If it did, in the desktop app on 127.0.0.1:47831, under Machines, revoke Web browser 1234.")
     expect(() => button("Try again")).toThrow()
     expect(() => button("Type a new code")).toThrow()
   })

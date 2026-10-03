@@ -256,7 +256,12 @@ describe("redeeming a web code", () => {
     expect(pairingNextStep(new PairingReplyError())).toBe("none")
     expect(pairingNextStep(new Error("The daemon did not return a device credential for this browser"))).toBe("new-code")
     expect(pairingNextStep("socket closed")).toBe("new-code")
-    expect(pairingOutcomeFor(new Error("anything else"), "host")).toMatchObject({ pill: "unconfirmed", title: "Pairing with host did not finish" })
+    expect(pairingOutcomeFor(new Error("anything else"), "host", "Web browser 4f2a1c9d")).toEqual({
+      tone: "plain", pill: "unconfirmed", title: "Pairing with host did not finish", mono: "pair · unconfirmed",
+      body: "If host lists Web browser 4f2a1c9d under Machines, it paired. Before you pair again, revoke it there, in the desktop app on host.",
+    })
+    // Without a label the card still names no control a browser cannot reach.
+    expect(pairingOutcomeFor(new PairingReplyError(), "host").body).toBe("It may have paired this browser. If it did, in the desktop app on host, under Machines, revoke this browser's device.")
     expect(pairingNextStep(new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused"))).toBe("new-code")
     expect(pairingNextStep(new CodeShapeError("web"))).toBe("new-code")
     expect(pairingNextStep(new DeviceKindMismatchError("web", "phone"))).toBe("new-code")
