@@ -1,5 +1,6 @@
+import { randomInt } from "node:crypto"
 import { constants, type Stats } from "node:fs"
-import { access, lstat, mkdir, readlink, symlink, unlink } from "node:fs/promises"
+import { access, lstat, lutimes, mkdir, readlink, symlink, unlink } from "node:fs/promises"
 import { delimiter, dirname, join, resolve } from "node:path"
 
 import { readPrivateFile, writePrivateFile } from "@getdomovoi/credential-store"
@@ -64,11 +65,25 @@ async function entry(path: string) {
 // Device and inode of an entry as lstat read it, never through a link.
 const identityOf = (found: Stats) => `${found.dev}:${found.ino}`
 
+// A link this app made, told apart from any replacement: its device and
+// inode, and the modification time the app set on the link itself
+// (lutimes) when it made it. Device and inode alone are not enough: ext4
+// hands a freed inode straight to the next file made (CI on #712), so a
+// link made in place of this one can carry its inode. A new link takes the
+// current time, never the mark, unless whoever made it copied the mark on
+// purpose, which only a process of this user could do.
+const linkIdentityOf = (found: Stats) => `${identityOf(found)}:${found.mtimeMs}`
+
+// A random whole-second time in 2000 to 2019, set as a made link's mark, so
+// two links the app makes do not share one either.
+const markSeconds = () => randomInt(946_684_800, 1_577_836_800)
+
 // PR #712 security review round 1 (P3): a target shaped like a launcher is
 // no proof this app made a link; a person's own link into a checkout has one
-// too. The app records each link it makes, by path, target and device and
-// inode, in a private file in its userData, and a link is its own, linked or
-// stale, only while all four still match. Anything else is "other": never
+// too. The app records each link it makes, by path, target and identity
+// (device, inode and the mark it set, linkIdentityOf), in a private file in
+// its userData, and a link is its own, linked or stale, only while all of
+// them still match. Anything else is "other": never
 // replaced or removed. A record that cannot be read owns nothing.
 type LinkRecord = { name: CommandName; path: string; target: string; identity: string }
 const recordLimit = 16 * 1024
@@ -102,7 +117,7 @@ async function stateOf(name: CommandName, path: string, launcher: string, record
   const found = await entry(path)
   if (!found) return { state: "absent" }
   if (!found.isSymbolicLink()) return { state: "other" }
-  const identity = identityOf(found)
+  const identity = linkIdentityOf(found)
   const target = await readlink(path)
   if (!records.some((record) => record.name === name && record.path === path && record.target === target && record.identity === identity)) return { state: "other" }
   if (target === launcher) return { state: "linked", target, identity }
@@ -119,7 +134,7 @@ async function stateOf(name: CommandName, path: string, launcher: string, record
 async function stillLink(path: string, target: string | undefined, identity: string | undefined): Promise<boolean> {
   try {
     const found = await lstat(path)
-    return found.isSymbolicLink() && identityOf(found) === identity && target !== undefined && await readlink(path) === target
+    return found.isSymbolicLink() && linkIdentityOf(found) === identity && target !== undefined && await readlink(path) === target
   } catch {
     return false
   }
@@ -336,10 +351,13 @@ export async function commandLinks(action: unknown, environment: CommandLinkEnvi
       continue
     }
     await symlink(command.launcher, path)
-    // Recorded as made: this path, the target written, and the new link's
-    // device and inode, read back without following it.
+    // Marked on the link itself, not its target, then recorded as made: this
+    // path, the target written, and the new link's identity with the mark,
+    // read back without following it.
+    const mark = markSeconds()
+    await lutimes(path, mark, mark)
     const made = await lstat(path)
-    records = [...records.filter((record) => record.name !== command.name), { name: command.name, path, target: command.launcher, identity: identityOf(made) }]
+    records = [...records.filter((record) => record.name !== command.name), { name: command.name, path, target: command.launcher, identity: linkIdentityOf(made) }]
     await writeRecords(environment.recordPath, records)
   }
   return { report: await report(environment, await directoryState(environment.home)), ...(refused ? { refused } : {}) }

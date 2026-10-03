@@ -12,6 +12,9 @@ const race = vi.hoisted(() => ({
   afterRead: undefined as ((call: "lstat" | "readlink", path: string) => Promise<void>) | undefined,
   // Volumes mounted read only, as a disk image is.
   readOnly: ["/Volumes/Domovoi 0.9.4"],
+  // What lstat reports instead, as a file system that reuses a freed inode
+  // at once (ext4) would.
+  rewrite: undefined as ((path: string, found: import("node:fs").Stats) => import("node:fs").Stats) | undefined,
 }))
 vi.mock("node:fs/promises", async (original) => {
   const actual = await original<typeof import("node:fs/promises")>()
@@ -33,11 +36,14 @@ vi.mock("node:fs/promises", async (original) => {
       }
       return actual.access(path, mode)
     }) as typeof actual.access,
-    lstat: ((path: string) => hooked("lstat", path, () => actual.lstat(path))) as typeof actual.lstat,
+    lstat: ((path: string) => hooked("lstat", path, async () => {
+      const found = await actual.lstat(path)
+      return race.rewrite ? race.rewrite(path, found) : found
+    })) as typeof actual.lstat,
     readlink: ((path: string) => hooked("readlink", path, () => actual.readlink(path))) as typeof actual.readlink,
   }
 })
-afterEach(() => { race.afterRead = undefined })
+afterEach(() => { race.afterRead = undefined; race.rewrite = undefined })
 
 // Every test runs against a temporary home and a temporary resources
 // directory. The real ~/.local/bin is never read or written.
@@ -214,6 +220,23 @@ describe("command links", () => {
     await symlink(launcher, join(bin(), "domovoid"))
     expect((await commandLinks("status", environment())).report).toMatchObject({ commands: [{ state: "other" }] })
     expect(await readlink(join(bin(), "domovoid"))).toBe(launcher)
+  })
+
+  // CI on ubuntu-latest: ext4 hands the freed inode straight to the
+  // replacement, so device and inode alone still matched the record. The
+  // replacement here is given the made link's device and inode outright.
+  it("forgets a link it made once that link is replaced, even when the replacement gets its inode", async () => {
+    const command = join(bin(), "domovoid")
+    await commandLinks("link", environment())
+    const made = await lstat(command)
+    await rm(command)
+    await symlink(launcher, command)
+    race.rewrite = (path, found) => path === command ? Object.assign(Object.create(Object.getPrototypeOf(found) as object) as typeof found, found, { dev: made.dev, ino: made.ino }) : found
+    expect((await lstat(command)).ino).toBe(made.ino)
+    expect((await commandLinks("status", environment())).report).toMatchObject({ commands: [{ state: "other" }] })
+    expect((await commandLinks("unlink", environment())).refused).toBe("~/.local/bin/domovoid is not a link Domovoi made, so it was left as it is.")
+    race.rewrite = undefined
+    expect(await readlink(command)).toBe(launcher)
   })
 
   // Review P3-1: a link to another Domovoi install that still exists is that
