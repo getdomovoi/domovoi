@@ -23,7 +23,7 @@ import {
 } from "./identifiers.js"
 import { skillEnablementReviewsSchema } from "./skills.js"
 import { approvalToolServerSchema } from "./tool-inventory.js"
-import { sessionTurnIdSchema } from "./usage-accounting.js"
+import { sessionTurnIdSchema, snapshotTurnSchema } from "./usage-accounting.js"
 import { compatibleProtocolVersionSchema } from "./protocol-version.js"
 
 export { clientIdentityIdSchema, clientKindSchema }
@@ -1026,6 +1026,10 @@ export const workspaceSnapshotObjectSchema = z.object({
   skillEnablements: skillEnablementReviewsSchema.default([]),
   queuedSends: z.array(queuedSessionSendSchema).optional(),
   historyTruncated: z.boolean().optional(),
+  // Start, end and status of the turns this snapshot's thread links (ruling
+  // Q401). The daemon derives it from its usage ledger for each snapshot it
+  // sends and never stores it; absent when it has none to give.
+  turns: z.array(snapshotTurnSchema).optional(),
 }).superRefine((snapshot, context) => {
   const aggregates = [
     ["sessions", snapshot.sessions],
@@ -1034,6 +1038,7 @@ export const workspaceSnapshotObjectSchema = z.object({
     ["thread", snapshot.thread],
     ["artifacts", snapshot.artifacts],
     ["annotations", snapshot.annotations],
+    ["turns", snapshot.turns ?? []],
   ] as const
   for (const [field, records] of aggregates) {
     const ids = new Set<string>()

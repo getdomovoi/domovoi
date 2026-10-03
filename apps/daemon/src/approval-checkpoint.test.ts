@@ -104,7 +104,7 @@ describe("a checkpoint before an approved write", () => {
     expect(workspaceService.snapshot).toHaveBeenCalledWith("/worktrees/session-billing", "before approved command", expect.any(AbortSignal))
     expect(workspaceService.snapshot.mock.invocationCallOrder[0]!).toBeLessThan(provider.resolveApproval.mock.invocationCallOrder[0]!)
     const state = await snapshot()
-    expect(state.thread).toContainEqual(expect.objectContaining({ kind: "checkpoint", label: `${checkpointCommit.slice(0, 8)} · before an approved command`, commit: checkpointCommit, sessionId: "session-billing" }))
+    expect(state.thread).toContainEqual(expect.objectContaining({ kind: "checkpoint", reason: "before-approved-command", label: `${checkpointCommit.slice(0, 8)} · before an approved command`, commit: checkpointCommit, sessionId: "session-billing" }))
     expect(state.thread).toContainEqual(expect.objectContaining({ kind: "receipt", decision: "allow-once", checkpoint: checkpointCommit }))
   })
 

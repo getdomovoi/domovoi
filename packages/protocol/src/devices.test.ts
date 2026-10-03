@@ -4,6 +4,7 @@ import { protocolVersion } from "./schema.js"
 import {
   clientAccessSchema,
   deviceClaimParamsSchema,
+  deviceCodeOutcomeNotificationSchema,
   deviceCurrentResultSchema,
   deviceIssueCodeParamsSchema,
   deviceIssueCodeResultSchema,
@@ -148,8 +149,23 @@ describe("devicePairParamsSchema", () => {
       .toBe("watching")
   })
 
+  it("names each issued code, so its outcome can say which code it was", () => {
+    const issued = {
+      pairingId: `pairing-${"c".repeat(32)}`,
+      code: "hearth-quiet-ember-42",
+      expiresAt: "2026-08-31T12:03:00.000Z",
+      pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true },
+    }
+    expect(deviceIssueCodeResultSchema.parse(issued)).toEqual(issued)
+    const { pairingId: _pairingId, ...unnamed } = issued
+    expect(deviceIssueCodeResultSchema.safeParse(unnamed).success).toBe(false)
+    for (const pairingId of ["", "pairing-", `pairing-${"C".repeat(32)}`, `pairing-${"c".repeat(31)}`, `device-${"c".repeat(32)}`, "hearth-quiet-ember-42"]) {
+      expect(deviceIssueCodeResultSchema.safeParse({ ...issued, pairingId }).success, pairingId).toBe(false)
+    }
+  })
+
   it("issues a code with the address a device dials, or the problem that leaves none", () => {
-    const issued = { code: "hearth-quiet-ember-42", expiresAt: "2026-08-31T12:03:00.000Z" }
+    const issued = { pairingId: `pairing-${"c".repeat(32)}`, code: "hearth-quiet-ember-42", expiresAt: "2026-08-31T12:03:00.000Z" }
     const tailnet = { url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", label: "djs-macbook-pro-1.raptor-pompano.ts.net", loopback: false }
     expect(deviceIssueCodeResultSchema.parse({ ...issued, pairingAddress: tailnet })).toEqual({ ...issued, pairingAddress: tailnet })
     const loopback = { url: "ws://127.0.0.1:47831/rpc", loopback: true }
@@ -166,6 +182,7 @@ describe("devicePairParamsSchema", () => {
 
   it("names the web app address a code can be opened at, when the daemon has one", () => {
     const issued = {
+      pairingId: `pairing-${"c".repeat(32)}`,
       code: "hearth-quiet-ember-42",
       expiresAt: "2026-08-31T12:03:00.000Z",
       pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true },
@@ -222,6 +239,75 @@ describe("devicePairResultSchema", () => {
 
   it("rejects a credential that is not the issued shape", () => {
     expect(devicePairResultSchema.safeParse({ device, token: "short" }).success).toBe(false)
+  })
+})
+
+describe("deviceCodeOutcomeNotificationSchema", () => {
+  const pairingId = `pairing-${"c".repeat(32)}`
+
+  it("tells the issuer which device a code paired, and never its credential", () => {
+    const redeemed = { pairingId, outcome: "redeemed", device }
+    expect(deviceCodeOutcomeNotificationSchema.parse(redeemed)).toEqual(redeemed)
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ ...redeemed, token: "n".repeat(43) }).success).toBe(false)
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ ...redeemed, device: { ...device, token: "n".repeat(43) } }).success).toBe(false)
+    // A redeemed client code pairs a live client device, never a machine or a
+    // revoked row.
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({
+      ...redeemed, device: { ...device, binding: { kind: "machine", machineId: `machine-${"b".repeat(32)}` } },
+    }).success).toBe(false)
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({
+      ...redeemed, device: { ...device, revokedAt: "2026-08-31T13:00:00.000Z" },
+    }).success).toBe(false)
+  })
+
+  it("names the protocol versions of a refused redemption, with the device's own label", () => {
+    const refused = {
+      pairingId,
+      outcome: "refused",
+      reason: "protocol-mismatch",
+      label: "iPhone 16 Pro",
+      daemonProtocolVersion: "0.8.0",
+      clientProtocolVersion: "0.7.0",
+      compatibility: "machine-ahead",
+    }
+    expect(deviceCodeOutcomeNotificationSchema.parse(refused)).toEqual(refused)
+    expect(deviceCodeOutcomeNotificationSchema.parse({ ...refused, clientProtocolVersion: "0.9.0", compatibility: "machine-behind" }))
+      .toMatchObject({ compatibility: "machine-behind" })
+    // A compatible pair is not a refusal.
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ ...refused, compatibility: "compatible" }).success).toBe(false)
+    for (const field of ["label", "daemonProtocolVersion", "clientProtocolVersion", "compatibility"] as const) {
+      const { [field]: _omitted, ...missing } = refused
+      expect(deviceCodeOutcomeNotificationSchema.safeParse(missing).success, field).toBe(false)
+    }
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ ...refused, clientProtocolVersion: "0.7" }).success).toBe(false)
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ ...refused, label: " " }).success).toBe(false)
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ ...refused, label: "n".repeat(maximumPairedDeviceLabelLength + 1) }).success).toBe(false)
+  })
+
+  it("refuses for a full device list or a code shown for another kind", () => {
+    const full = { pairingId, outcome: "refused", reason: "device-limit", label: "iPad Pro" }
+    expect(deviceCodeOutcomeNotificationSchema.parse(full)).toEqual(full)
+    const wrongKind = { pairingId, outcome: "refused", reason: "wrong-kind" }
+    expect(deviceCodeOutcomeNotificationSchema.parse(wrongKind)).toEqual(wrongKind)
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ ...full, label: undefined }).success).toBe(false)
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ ...full, reason: "expired" }).success).toBe(false)
+  })
+
+  it("says when a code closed without a redemption", () => {
+    for (const reason of ["attempts-exhausted", "replaced"]) {
+      expect(deviceCodeOutcomeNotificationSchema.parse({ pairingId, outcome: "closed", reason }))
+        .toEqual({ pairingId, outcome: "closed", reason })
+    }
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ pairingId, outcome: "closed", reason: "device-limit" }).success).toBe(false)
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ pairingId, outcome: "closed", reason: "replaced", label: "iPad" }).success).toBe(false)
+  })
+
+  it("never carries the code itself", () => {
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({
+      pairingId, outcome: "closed", reason: "replaced", code: "hearth-quiet-ember-42",
+    }).success).toBe(false)
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ outcome: "closed", reason: "replaced" }).success).toBe(false)
+    expect(deviceCodeOutcomeNotificationSchema.safeParse({ pairingId: "hearth-quiet-ember-42", outcome: "closed", reason: "replaced" }).success).toBe(false)
   })
 })
 

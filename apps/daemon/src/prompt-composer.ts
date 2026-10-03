@@ -5,6 +5,7 @@ import {
   type ProviderPromptDelivery,
   type ProviderPromptHandoffDelivery,
   type ProviderPromptSkillDelivery,
+  type SessionSendReview,
   type TurnSkillSelection,
   type WorkingPlan,
   type WorkspaceSnapshot,
@@ -15,6 +16,7 @@ import type { AnnotationVisualContextReader } from "./annotation-visual-context.
 import {
   prepareAnnotationContext,
   renderAnnotationContext,
+  resolveAnnotationReview,
 } from "./annotation-context.js"
 import { prepareAnnotationVisuals } from "./annotation-visual-turn.js"
 import {
@@ -40,6 +42,9 @@ export type ProviderPromptInput = {
   skillCatalog: SkillCatalog
   requireTrustedSkills: boolean
   skillSelection?: TurnSkillSelection
+  // The preview comments and build basis the message sends. Absent, the turn
+  // takes legacyOpenCommentReview's default (ruling Q402).
+  review?: SessionSendReview
   budgetCodeUnits?: number
 }
 
@@ -186,7 +191,12 @@ export async function composeProviderPrompt(
 ): Promise<ComposedProviderPrompt> {
   const budgetCodeUnits = input.budgetCodeUnits ?? maximumProviderPromptCodeUnits
   validateProviderPromptBudget(budgetCodeUnits)
-  const handoff = prepareHandoffContext(input.snapshot, input.sessionId)
+  // Checked first: a review naming a comment that is no longer open refuses
+  // the message before anything else is prepared.
+  const review = resolveAnnotationReview(input.snapshot, input.sessionId, input.review)
+  // With a review, current comments reach the provider only through the
+  // review section; the handoff carries none (security review r1 P2).
+  const handoff = prepareHandoffContext(input.snapshot, input.sessionId, input.review ? "none" : "all")
   const renderRequired = (inclusion: HandoffInclusion) => {
     const handoffTurn = renderHandoffContext(handoff, inclusion, input.userPrompt)
     return {
@@ -203,12 +213,14 @@ export async function composeProviderPrompt(
   const annotationVisuals = await prepareAnnotationVisuals(
     input.snapshot,
     input.sessionId,
+    review.annotationIds,
     input.capabilities,
     input.annotationVisualContext,
   )
   const annotations = prepareAnnotationContext(
     input.snapshot,
     input.sessionId,
+    review,
     annotationVisuals.deliveries,
   )
   const skills = await prepareTurnSkillContext(

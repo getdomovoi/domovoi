@@ -65,9 +65,17 @@ export type PreparedHandoffContext =
   | { status: "not-required" }
   | { status: "delivered"; context: HandoffContext; omitted: HandoffOmissions }
 
+// openAnnotations "none": the message carries a review, which alone decides
+// which current comments reach the provider (rulings Q348 A, Q402; security
+// review r1 P2). The handoff then carries none, so a comment the review left
+// out cannot travel here. "all" keeps every open comment, as a message without
+// a review has always had it.
+export type HandoffCommentScope = "all" | "none"
+
 export function prepareHandoffContext(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
+  openAnnotationScope: HandoffCommentScope = "all",
 ): PreparedHandoffContext {
   const sessionThread = snapshot.thread.filter((item) => item.sessionId === sessionId)
   const handoffIndex = sessionThread.findLastIndex(
@@ -103,7 +111,9 @@ export function prepareHandoffContext(
       content: truncate(artifact.content, 6_000),
     }))
   const openAnnotations = snapshot.annotations
-    .filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")
+    .filter((annotation) => openAnnotationScope === "all"
+      && annotation.sessionId === sessionId
+      && annotation.status === "open")
     .map((annotation) => ({
       id: annotation.id,
       artifactId: annotation.artifactId,
