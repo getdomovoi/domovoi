@@ -394,20 +394,49 @@ describe("WebApp", () => {
   })
 
   it("says nothing about the certificate when the daemon never answered", async () => {
-    const client = { ...pairingClient("pairs"), connect: vi.fn(() => Promise.reject(new Error("socket closed"))) }
+    const { PairingTransportError } = await import("@/browser-pairing-client")
+    const client = { ...pairingClient("pairs"), connect: vi.fn(() => Promise.reject(new PairingTransportError("Daemon connection failed"))) }
     await draw(memoryStorage(), vi.fn(() => client), { rpcUrl: "wss://mac-mini-m4.tail4c2e.ts.net:47831/rpc" })
     await submitCode("hearth-quiet-ember-42")
     expect(text()).toContain("did not answer, so pairing is unconfirmed")
     expect(text()).not.toContain("The certificate is the one the browser checked")
   })
 
+  // Once the daemon spent the code, sending it again would only pair another
+  // device. A tab that cannot keep the credential, or a reply it cannot read,
+  // gets no Try again, and is told to unpair the extra device.
+  it("offers no retry when the tab cannot keep the credential the daemon returned", async () => {
+    const storage = memoryStorage()
+    storage.setItem = () => { throw new Error("blocked") }
+    const client = pairingClient("pairs")
+    await draw(storage, vi.fn(() => client))
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("This browser blocked session storage, so Domovoi cannot hold a daemon credential for this tab.")
+    expect(text()).toContain("The daemon paired this browser, so unpair the extra device under Machines.")
+    expect(text()).not.toContain("did not answer")
+    expect(() => button("Try again")).toThrow()
+    expect(() => button("Type a new code")).toThrow()
+    expect(client.request).toHaveBeenCalledTimes(1)
+  })
+
+  it("offers no retry when the daemon's reply cannot be read", async () => {
+    const client = { ...pairingClient("pairs"), request: vi.fn(async () => ({ token: "not a credential" })) }
+    await draw(memoryStorage(), vi.fn(() => client))
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("answered, but its reply could not be read")
+    expect(text()).toContain("It may have paired this browser. If it did, unpair the extra device under Machines.")
+    expect(() => button("Try again")).toThrow()
+    expect(() => button("Type a new code")).toThrow()
+  })
+
   // Q366 A: no answer offers Try again, which sends the same code again. If
   // the daemon spent it the first time, its uniform refusal follows.
   it("offers Try again when the daemon did not answer, and resends the same code", async () => {
     const { DaemonRpcError } = await import("@/client")
+    const { PairingTransportError } = await import("@/browser-pairing-client")
     const { daemonAuthenticationErrorCode } = await import("@getdomovoi/protocol")
     const request = vi.fn()
-      .mockRejectedValueOnce(new Error("socket closed"))
+      .mockRejectedValueOnce(new PairingTransportError("Daemon connection closed"))
       .mockRejectedValueOnce(new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused"))
     const client = { ...pairingClient("pairs"), request }
     await draw(memoryStorage(), vi.fn(() => client))

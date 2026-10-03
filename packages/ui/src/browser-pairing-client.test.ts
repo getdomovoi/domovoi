@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { daemonAuthenticationErrorCode, protocolVersion } from "@getdomovoi/protocol"
 
-import { CodeRedemptionClient, createBrowserPairingClient } from "./browser-pairing-client"
+import { CodeRedemptionClient, createBrowserPairingClient, PairingTransportError } from "./browser-pairing-client"
 import { DaemonRpcError, DomovoiClient } from "./client"
 import { installFakeWebSocket, type FakeWebSocketHarness } from "./test-support/fake-websocket"
 
@@ -95,6 +95,37 @@ describe("code redemption client", () => {
     await expect(reply).rejects.toThrow("Daemon connection closed")
   })
 
+  // The page sends the same code again only after a transport failure, so
+  // every one of them carries its own class and nothing else does.
+  it("marks every transport failure as a PairingTransportError", async () => {
+    vi.useFakeTimers()
+    const neverOpened = new CodeRedemptionClient(url, 1_000).connect()
+    vi.advanceTimersByTime(1_000)
+    await expect(neverOpened).rejects.toBeInstanceOf(PairingTransportError)
+
+    const failing = new CodeRedemptionClient(url, 1_000).connect()
+    harness.socket(harness.sockets.length - 1).dispatchEvent(new Event("error"))
+    await expect(failing).rejects.toBeInstanceOf(PairingTransportError)
+
+    const { client: silent } = await opened()
+    const unanswered = silent.request("device.redeemCode", params)
+    vi.advanceTimersByTime(1_000)
+    await expect(unanswered).rejects.toBeInstanceOf(PairingTransportError)
+
+    const { client: closing, socket: closingSocket } = await opened()
+    const dropped = closing.request("device.redeemCode", params)
+    closingSocket.drop()
+    await expect(dropped).rejects.toBeInstanceOf(PairingTransportError)
+
+    const { client: refusing, socket: refusingSocket } = await opened()
+    const refused = refusing.request("device.redeemCode", params)
+    refusingSocket.receive({ jsonrpc: "2.0", id: 1, error: { code: -32001, message: "Pairing was refused" } })
+    await expect(refused).rejects.not.toBeInstanceOf(PairingTransportError)
+
+    const { client: twice } = await opened()
+    await expect(twice.connect()).rejects.not.toBeInstanceOf(PairingTransportError)
+  })
+
   it("rejects a pending call when the page disconnects", async () => {
     const { client } = await opened()
     const reply = client.request("device.redeemCode", params)
@@ -110,7 +141,9 @@ describe("code redemption client", () => {
     const { client, socket } = await opened()
     await expect(client.connect()).rejects.toThrow("A code redemption client opens one connection")
     void client.request("device.redeemCode", params).catch(() => undefined)
-    await expect(client.request("device.redeemCode", params)).rejects.toThrow("Daemon connection closed")
+    // A second code on one client is a misuse, not a dropped connection, so it
+    // is not a transport failure the page would retry.
+    await expect(client.request("device.redeemCode", params)).rejects.toThrow("A code redemption client sends one code")
     expect(socket.sent).toHaveLength(1)
 
     const { client: dropped, socket: droppedSocket } = await opened()

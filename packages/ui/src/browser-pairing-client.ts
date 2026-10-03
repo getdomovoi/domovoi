@@ -11,6 +11,16 @@ type Waiting = {
   timer: ReturnType<typeof setTimeout>
 }
 
+// The socket failed, closed or timed out before the daemon answered, so it is
+// not known whether the code was spent. Only this failure lets the page send
+// the same code again; a refusal, a misuse or an unreadable reply does not.
+export class PairingTransportError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "PairingTransportError"
+  }
+}
+
 // A tab that holds no credential cannot greet the daemon: it refuses a
 // system.hello without one, and DomovoiClient greets before anything else, so a
 // code sent through it never arrives. Spending a code is the one call the
@@ -41,15 +51,17 @@ export class CodeRedemptionClient {
       const { signal } = listeners
       socket.addEventListener("open", () => this.#settle({ value: undefined }), { signal })
       socket.addEventListener("message", (event) => this.#receive(event.data), { signal })
-      socket.addEventListener("error", () => this.#settle({ error: new Error("Daemon connection failed") }), { signal })
-      socket.addEventListener("close", () => this.#settle({ error: new Error("Daemon connection closed") }), { signal })
+      socket.addEventListener("error", () => this.#settle({ error: new PairingTransportError("Daemon connection failed") }), { signal })
+      socket.addEventListener("close", () => this.#settle({ error: new PairingTransportError("Daemon connection closed") }), { signal })
     })
   }
 
   request(method: "device.redeemCode", params: RpcParams<"device.redeemCode">): Promise<unknown> {
     const socket = this.#socket
-    if (!socket || socket.readyState !== WebSocket.OPEN || this.#sent) {
-      return Promise.reject(new Error("Daemon connection closed"))
+    // A second call on this client is a misuse, not a dropped connection.
+    if (this.#sent) return Promise.reject(new Error("A code redemption client sends one code"))
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new PairingTransportError("Daemon connection closed"))
     }
     return this.#wait(`Daemon did not answer ${method} within ${this.#budgetMs} ms`, () => {
       this.#sent = true
@@ -58,17 +70,17 @@ export class CodeRedemptionClient {
   }
 
   disconnect(): void {
-    this.#settle({ error: new Error("Daemon connection closed") })
+    this.#settle({ error: new PairingTransportError("Daemon connection closed") })
     this.#listeners?.abort()
     this.#socket?.close(1000, "client closed")
   }
 
   #wait(timeoutMessage: string, start: () => void): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.#settle({ error: new Error(timeoutMessage) }), this.#budgetMs)
+      const timer = setTimeout(() => this.#settle({ error: new PairingTransportError(timeoutMessage) }), this.#budgetMs)
       this.#waiting = { resolve, reject, timer }
       try { start() } catch (cause) {
-        this.#settle({ error: cause instanceof Error ? cause : new Error("Daemon socket could not be created") })
+        this.#settle({ error: new PairingTransportError(cause instanceof Error ? cause.message : "Daemon socket could not be created") })
       }
     })
   }

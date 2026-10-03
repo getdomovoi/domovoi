@@ -119,7 +119,8 @@ describe("redeeming a web code", () => {
     expect(pairingOutcomeFor(new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused"), host)).toMatchObject({ pill: "refused", title: "That code was refused", body: "It may have expired or been used already. Show another on mac-mini-m4.tail4c2e.ts.net, under Settings, Phone and tablet." })
     expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x", { kind: "protocol-mismatch", daemonProtocolVersion: "0.9.0", clientProtocolVersion: "0.8.0", compatibility: "machine-ahead" }), host)).toMatchObject({ pill: "refused", title: "This page is older than the daemon on mac-mini-m4.tail4c2e.ts.net", mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.9.0" })
     expect(pairingOutcomeFor(new DaemonRpcError(devicePairingLimitErrorCode, "The paired device limit is reached"), host)).toMatchObject({ pill: "refused", title: "mac-mini-m4.tail4c2e.ts.net has no room for another device" })
-    expect(pairingOutcomeFor(new Error("socket closed"), host)).toMatchObject({ pill: "unconfirmed", title: "mac-mini-m4.tail4c2e.ts.net did not answer, so pairing is unconfirmed" })
+    const { PairingTransportError } = await import("@/browser-pairing-client")
+    expect(pairingOutcomeFor(new PairingTransportError("Daemon connection closed"), host)).toMatchObject({ pill: "unconfirmed", title: "mac-mini-m4.tail4c2e.ts.net did not answer, so pairing is unconfirmed" })
   })
 
   it("draws a refusal it has no card for with the daemon's own words", async () => {
@@ -240,13 +241,20 @@ describe("redeeming a web code", () => {
     expect(pairingNextStep(mismatch("compatible"))).toBe("none")
   })
 
-  // Q366 A: only an unanswered request is retried with the same code.
+  // Q366 A: only a transport failure is retried with the same code. After
+  // the daemon answered, a resend would only pair another device.
   it("retries only when the daemon did not answer", async () => {
-    const { pairingNextStep, CodeShapeError, DeviceKindMismatchError } = await import("./daemon-pairing")
+    const { pairingNextStep, pairingOutcomeFor, CodeShapeError, DeviceKindMismatchError, PairingReplyError } = await import("./daemon-pairing")
     const { DaemonRpcError } = await import("@/client")
+    const { PairingTransportError } = await import("@/browser-pairing-client")
+    const { BrowserCapabilityError } = await import("./platform-refusals")
     const { daemonAuthenticationErrorCode } = await import("@getdomovoi/protocol")
-    expect(pairingNextStep(new Error("socket closed"))).toBe("retry")
-    expect(pairingNextStep("socket closed")).toBe("retry")
+    expect(pairingNextStep(new PairingTransportError("Daemon connection closed"))).toBe("retry")
+    expect(pairingNextStep(new BrowserCapabilityError("credentials-unavailable"))).toBe("none")
+    expect(pairingNextStep(new PairingReplyError())).toBe("none")
+    expect(pairingNextStep(new Error("The daemon did not return a device credential for this browser"))).toBe("new-code")
+    expect(pairingNextStep("socket closed")).toBe("new-code")
+    expect(pairingOutcomeFor(new Error("anything else"), "host")).toMatchObject({ pill: "unconfirmed", title: "Pairing with host did not finish" })
     expect(pairingNextStep(new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused"))).toBe("new-code")
     expect(pairingNextStep(new CodeShapeError("web"))).toBe("new-code")
     expect(pairingNextStep(new DeviceKindMismatchError("web", "phone"))).toBe("new-code")
