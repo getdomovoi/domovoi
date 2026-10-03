@@ -897,4 +897,154 @@ describe("working plan RPC", () => {
     }))
     context.socket.close()
   })
+
+  // The artifact watcher names a plan file in the worktree
+  // plan-<sessionId>-<hash>. Restructuring the working plan must not read it
+  // as a turn-scoped working plan and fold it, and its comments, away.
+  it("keeps a watched plan file and its comments through every plan change", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.workspacePath = "/worktrees/plan-file"
+    session.providerThreadId = "thread-plan-file"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.workingPlans = [{
+      sessionId: session.id,
+      revision: 1,
+      structureRevision: 1,
+      steps: [{ id: "step-inspect", text: "Inspect", status: "pending" }],
+      createdAt: "2026-09-03T19:00:00.000Z",
+      updatedAt: "2026-09-03T19:00:00.000Z",
+    }]
+    const watched = {
+      id: `plan-${session.id}-0123456789abcdef`,
+      sessionId: session.id,
+      title: "Plan",
+      type: "plan" as const,
+      revision: 1,
+      path: "PLAN.md",
+      mimeType: "text/markdown",
+      content: "# Agent plan\n",
+    }
+    snapshot.artifacts = snapshot.artifacts.filter((artifact) => artifact.sessionId !== session.id)
+    snapshot.artifacts.push(
+      {
+        id: `plan-${session.id}`,
+        sessionId: session.id,
+        title: "Working plan",
+        type: "plan",
+        revision: 1,
+        mimeType: "text/markdown",
+        content: "# Working plan\n\n1. Inspect\n",
+      },
+      structuredClone(watched),
+    )
+    snapshot.annotations = snapshot.annotations.filter(
+      (annotation) => annotation.sessionId !== session.id,
+    )
+    snapshot.annotations.push({
+      id: "annotation-plan-file",
+      sessionId: session.id,
+      artifactId: watched.id,
+      anchor: { textQuote: "Agent plan" },
+      body: "Comment on the file",
+      status: "open",
+      origin: "desktop",
+      thread: [],
+      createdAt: "2026-09-03T19:00:00.000Z",
+      updatedAt: "2026-09-03T19:00:00.000Z",
+    })
+    let emit: ((event: AgentEvent) => void) | undefined
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "turn-plan-file"),
+      steerTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        emit = listener
+        return () => { emit = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const context = await startedDaemon(snapshot, { "claude-code": agent })
+    const expectFileKept = () => {
+      const durable = context.durable()
+      expect(durable.artifacts.find((artifact) => artifact.id === watched.id)).toEqual(watched)
+      expect(durable.annotations.find(
+        (annotation) => annotation.id === "annotation-plan-file",
+      )?.artifactId).toBe(watched.id)
+    }
+
+    // A person edits the plan while the session is idle.
+    const edited = await context.rpc("plan.edit", {
+      sessionId: session.id,
+      basedOnStructureRevision: 1,
+      baseSteps: [{ id: "step-inspect", text: "Inspect" }],
+      draftSteps: [{ id: "step-inspect", text: "Inspect" }, { text: "Implement" }],
+      client: "desktop",
+    })
+    expect(edited.result.receipt.disposition).toBe("applied")
+    expect(context.durable().artifacts.find(
+      (artifact) => artifact.id === `plan-${session.id}`,
+    )?.content).toContain("Implement")
+    expectFileKept()
+
+    // The provider restructures the plan during a turn.
+    await context.rpc("session.send", { sessionId: session.id, prompt: "Go", client: "desktop" })
+    emit!({
+      type: "plan-updated",
+      threadId: "thread-plan-file",
+      turnId: "turn-plan-file",
+      steps: [
+        { text: "Inspect", status: "completed" },
+        { text: "Implement", status: "in-progress" },
+        { text: "Verify", status: "pending" },
+      ],
+    })
+    await waitForDaemon(() => expect(context.durable().artifacts.find(
+      (artifact) => artifact.id === `plan-${session.id}`,
+    )?.content).toContain("Verify"))
+    expectFileKept()
+
+    // An edit queued during the turn lands at the next turn boundary.
+    const plan = context.durable().workingPlans.find(
+      (candidate) => candidate.sessionId === session.id,
+    )!
+    const queued = await context.rpc("plan.edit", {
+      sessionId: session.id,
+      basedOnStructureRevision: plan.structureRevision,
+      baseSteps: plan.steps.map(({ id, text }) => ({ id, text })),
+      draftSteps: [...plan.steps.map(({ id, text }) => ({ id, text })), { text: "Ship" }],
+      client: "desktop",
+    })
+    expect(queued.result.receipt.disposition).toBe("queued")
+    emit!({
+      type: "turn-completed",
+      params: {
+        threadId: "thread-plan-file",
+        turnId: "turn-plan-file",
+        turn: { id: "turn-plan-file", status: "completed" },
+      },
+    })
+    await waitForDaemon(() => expect(context.durable().sessions.find(
+      (candidate) => candidate.id === session.id,
+    )?.state).toBe("idle"))
+    const next = await context.rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Continue",
+      client: "desktop",
+    })
+    expect(next).not.toHaveProperty("error")
+    expect(context.durable().artifacts.find(
+      (artifact) => artifact.id === `plan-${session.id}`,
+    )?.content).toContain("Ship")
+    expectFileKept()
+    context.socket.close()
+  })
 })

@@ -160,6 +160,20 @@ export function updateWorkingPlanFromProvider(
   return { plan, changed: true, structureChanged }
 }
 
+// Whether an artifact is the session's working plan or a turn-scoped working
+// plan stored before the stable id existed. Those were named
+// plan-<sessionId>-<provider turn id, or "current"> and never had a path.
+// The artifact watcher names plan files found in the worktree
+// plan-<sessionId>-<hash> and always records their path, so the id alone
+// cannot tell the two apart: an artifact with a path is never a working plan.
+export function isWorkingPlanArtifact(artifact: Artifact, sessionId: string): boolean {
+  const artifactId = `plan-${sessionId}`
+  return artifact.sessionId === sessionId
+    && artifact.type === "plan"
+    && artifact.path === undefined
+    && (artifact.id === artifactId || artifact.id.startsWith(`${artifactId}-`))
+}
+
 export function syncWorkingPlanArtifact(
   artifacts: Artifact[],
   annotations: Annotation[],
@@ -167,12 +181,7 @@ export function syncWorkingPlanArtifact(
   structureChanged: boolean,
 ): { artifact: Artifact, changed: boolean } {
   const artifactId = `plan-${plan.sessionId}`
-  const legacyPrefix = `${artifactId}-`
-  const matching = artifacts.filter((artifact) =>
-    artifact.sessionId === plan.sessionId
-    && artifact.type === "plan"
-    && (artifact.id === artifactId || artifact.id.startsWith(legacyPrefix)),
-  )
+  const matching = artifacts.filter((artifact) => isWorkingPlanArtifact(artifact, plan.sessionId))
   const stable = matching.find((artifact) => artifact.id === artifactId)
   if (!structureChanged && stable) return { artifact: stable, changed: false }
 
@@ -199,7 +208,6 @@ export function syncWorkingPlanArtifact(
   artifact.revision = matching.reduce((total, candidate) => total + candidate.revision, 0) + 1
   artifact.mimeType = "text/markdown"
   artifact.content = content
-  delete artifact.path
   delete artifact.variant
 
   for (let index = artifacts.length - 1; index >= 0; index -= 1) {

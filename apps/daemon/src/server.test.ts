@@ -4230,6 +4230,55 @@ describe("DomovoiDaemon", () => {
     expect(annotations[0]!.artifactId).toBe("plan-session-a")
   })
 
+  it("keeps watched plan files out of the plan delta merge", () => {
+    const watched = {
+      id: "plan-session-a-0123456789abcdef",
+      sessionId: "session-a",
+      title: "Plan",
+      type: "plan" as const,
+      revision: 3,
+      path: "PLAN.md",
+      mimeType: "text/markdown",
+      content: "# Agent plan\n",
+    }
+    const artifacts = [
+      { ...watched },
+      {
+        id: "plan-session-a-provider-turn-1",
+        sessionId: "session-a",
+        title: "Working plan",
+        type: "plan" as const,
+        revision: 1,
+        mimeType: "text/markdown",
+        content: "1. Inspect.\n",
+      },
+    ]
+    const annotations = [{
+      id: "annotation-file",
+      sessionId: "session-a",
+      artifactId: watched.id,
+      anchor: { textQuote: "Agent plan" },
+      body: "Comment on the file.",
+      status: "open" as const,
+      origin: "desktop" as const,
+      thread: [],
+      createdAt: "2026-08-26T20:00:00.000Z",
+      updatedAt: "2026-08-26T20:00:00.000Z",
+    }]
+
+    expect(appendPlanDelta(artifacts, annotations, "session-a", "2. Verify.")).toMatchObject({
+      id: "plan-session-a",
+      revision: 2,
+      content: "1. Inspect.\n2. Verify.",
+    })
+    expect(artifacts.map(({ id }) => id).sort()).toEqual([
+      "plan-session-a",
+      "plan-session-a-0123456789abcdef",
+    ])
+    expect(artifacts.find(({ id }) => id === watched.id)).toEqual(watched)
+    expect(annotations[0]!.artifactId).toBe(watched.id)
+  })
+
   it("scopes artifact access to id, bridge channel, parent origin, and expiry", () => {
     const scope = { sessionId: "session-1", artifactId: "preview-1", revision: 2, purpose: "preview" as const, bridgeChannel: "preview_channel_123456", parentOrigin: "https://app.domovoi.sh", expiresAt: 1_800_000_000 }
     const signature = signArtifactAccess("artifact-secret", scope)

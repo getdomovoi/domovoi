@@ -325,6 +325,7 @@ import {
   clearWorkingPlanApprovalBlockers,
   discardPendingWorkingPlanEdit,
   finalizePendingWorkingPlanEdit,
+  isWorkingPlanArtifact,
   markWorkingPlanDelivered,
   submitWorkingPlanEdit,
   syncWorkingPlanArtifact,
@@ -759,12 +760,7 @@ function writePlanArtifact(
   append: boolean,
 ): Artifact {
   const artifactId = `plan-${sessionId}`
-  const legacyPrefix = `${artifactId}-`
-  const matching = artifacts.filter((artifact) =>
-    artifact.sessionId === sessionId
-    && artifact.type === "plan"
-    && (artifact.id === artifactId || artifact.id.startsWith(legacyPrefix)),
-  )
+  const matching = artifacts.filter((artifact) => isWorkingPlanArtifact(artifact, sessionId))
 
   if (matching.length === 0) {
     const artifact: Artifact = {
