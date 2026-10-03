@@ -61,6 +61,7 @@ describe("desktop daemon assembly", () => {
       "readDaemonServiceRuntimeVersion",
       "readDaemonServiceStatus",
       "readLocalServiceHandoffRefusal",
+      "readLocalTailnetStatus",
       "removeDaemonService",
       "removeUnusedDaemonRuntimes",
       "serviceProfileMismatch",

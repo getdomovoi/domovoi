@@ -1,4 +1,4 @@
-import type { DaemonServiceInstallResult, DaemonServiceOptions, DaemonServiceRemovalResult, DaemonServiceRuntime, DaemonServiceRuntimeCopy, DaemonServiceStagedRuntime, DaemonServiceStatus, PreparedDaemonRuntime } from "@getdomovoi/daemon"
+import type { DaemonServiceInstallResult, DaemonServiceOptions, DaemonServiceRemovalResult, DaemonServiceRuntime, DaemonServiceRuntimeCopy, DaemonServiceStagedRuntime, DaemonServiceStatus, DaemonServiceTailnetChange, PreparedDaemonRuntime } from "@getdomovoi/daemon"
 
 import type { DesktopDaemonAcquisition } from "../shared/daemon-acquisition.js"
 
@@ -67,7 +67,9 @@ export type DesktopDaemonServiceDependencies = {
   remove: () => Promise<DaemonServiceRemovalResult>
   // Moves the installed service to the staged runtime in place (ruled
   // 2026-09-23, B). Throws the daemon's DaemonServiceUpdateError on failure.
-  update: (options: { runtime: DaemonServiceRuntime; staged: DaemonServiceStagedRuntime }) => Promise<DaemonServiceInstallResult>
+  // tailnet: TailnetReach's change to the saved settings, applied by the same
+  // update (Q404 A).
+  update: (options: { runtime: DaemonServiceRuntime; staged: DaemonServiceStagedRuntime; tailnet?: DaemonServiceTailnetChange }) => Promise<DaemonServiceInstallResult>
   // Security review of #577 (P1): the profile this app's daemon runs against
   // the one the login service runs, both directories when they differ. The
   // turn check and the fence below reach only this app's daemon, so they bind
@@ -244,7 +246,7 @@ export class DesktopDaemonService {
 
   // The app is attached to the service, so there is no daemon of its own to
   // stop. Reconnects are held while the service restarts on the new runtime.
-  async update(): Promise<DaemonServiceOutcome> {
+  async update(tailnet?: DaemonServiceTailnetChange): Promise<DaemonServiceOutcome> {
     if (this.#busy) return { ok: false, reason: "busy", message: "A service change is already in progress." }
     this.#busy = true
     let held = false
@@ -267,7 +269,7 @@ export class DesktopDaemonService {
         prepared = await this.deps.stageRuntime("update")
         held = true
         this.deps.daemon.beginHandoff()
-        updated = await this.deps.update({ runtime: prepared.runtime, staged: { runtime: prepared.staged, publish: this.#publishNoting(prepared, noted) } })
+        updated = await this.deps.update({ runtime: prepared.runtime, staged: { runtime: prepared.staged, publish: this.#publishNoting(prepared, noted) }, ...(tailnet ? { tailnet } : {}) })
       } catch (cause) {
         const missing = runtimeMissing(cause)
         if (missing) return { ok: false, reason: "runtime-missing", ...missing }

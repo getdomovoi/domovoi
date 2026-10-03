@@ -42,8 +42,44 @@ describe("service configuration", () => {
     expect(text).not.toContain("authToken")
   })
 
+  // TailnetReach (Q404 A): the switch saves the tailnet listener with the
+  // service, so the service answers on the tailnet as the in-app daemon does.
+  it.each(["linux", "darwin", "win32"])("round trips the tailnet listener on %s", (platform) => {
+    const root = platform === "win32" ? "C:\\Users\\Jean Doe" : "/home/Jean Doe"
+    const tls = platform === "win32" ? `${root}\\.domovoi\\tls\\studio.tail4c2e.ts.net` : `${root}/.domovoi/tls/studio.tail4c2e.ts.net`
+    const config = createServiceConfiguration({
+      DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+      DOMOVOI_TAILNET_ADDRESS: "100.101.102.103",
+      DOMOVOI_TAILNET_TLS_CERT_PATH: `${tls}.crt`,
+      DOMOVOI_TAILNET_TLS_KEY_PATH: `${tls}.key`,
+      DOMOVOI_TAILNET_HOST: "studio.tail4c2e.ts.net",
+    }, { platform, homeDirectory: root, workingDirectory: root })
+    const decoded = parseServiceConfiguration(serializeServiceConfiguration(config))
+    expect(decoded).toEqual(config)
+    expect(decoded).toMatchObject({ host: "127.0.0.1", tailnetHost: "studio.tail4c2e.ts.net",
+      tailnetListener: { address: "100.101.102.103", tls: { certPath: `${tls}.crt`, keyPath: `${tls}.key` } } })
+    expect(serviceEnvironment(decoded)).toMatchObject({
+      DOMOVOI_HOST: "127.0.0.1",
+      DOMOVOI_ALLOW_REMOTE_TRANSPORT: "1",
+      DOMOVOI_TAILNET_ADDRESS: "100.101.102.103",
+      DOMOVOI_TAILNET_TLS_CERT_PATH: `${tls}.crt`,
+      DOMOVOI_TAILNET_TLS_KEY_PATH: `${tls}.key`,
+    })
+  })
+
   const defaults = createServiceConfiguration({}, {
     platform: "linux", homeDirectory: "/home/test", workingDirectory: "/home/test",
+  })
+  const tailnetListener = { address: "100.101.102.103", tls: { certPath: "/home/test/.domovoi/tls/a.crt", keyPath: "/home/test/.domovoi/tls/a.key" } }
+  it.each([
+    { tailnetListener },
+    { allowRemoteTransport: true, tailnetListener: { ...tailnetListener, address: "192.168.1.20" } },
+    { allowRemoteTransport: true, tailnetListener: { ...tailnetListener, tls: { certPath: "tls/a.crt", keyPath: "/home/test/.domovoi/tls/a.key" } } },
+    { allowRemoteTransport: true, tailnetListener: { address: "100.101.102.103" } },
+    { allowRemoteTransport: true, tailnetListener: { ...tailnetListener, port: 443 } },
+  ])("refuses a saved tailnet listener the daemon would refuse: %j", (override) => {
+    expect(() => parseServiceConfiguration(JSON.stringify({ ...defaults, ...override })))
+      .toThrow(/^Invalid service configuration\. Reinstall with valid non-secret daemon settings\.$/)
   })
   // Decided 2026-09-17 (SHIP-PLAN S1.1): whether Domovoi turned lingering on
   // is saved with the service, so removal turns off only its own.

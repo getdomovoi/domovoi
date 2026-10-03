@@ -8,7 +8,8 @@ import { isLoginServiceRuntimeVersion, loginServiceHomePaths, loginServiceTaskNa
 import type { DaemonEnvironment } from "../config.js"
 import { profileDirectory, profileLocation } from "../profile-directory.js"
 import { OperationDeadline } from "../operation-deadline.js"
-import { assertServiceProfile, callerProfile, createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
+import { assertServiceProfile, callerProfile, createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
+import { isLoopbackHost } from "../transport-config.js"
 import type { ServiceConfiguration } from "./configuration.js"
 import {
   installService,
@@ -200,6 +201,32 @@ export type DaemonServiceUpdateOptions = {
   // Round 4 (P2): the staged runtime, published under the lease after the
   // profile check and before any manager action.
   staged?: DaemonServiceStagedRuntime
+  // TailnetReach (Q404 A): the desktop switch turns the tailnet listener on or
+  // off in the saved configuration, written and restarted by this update.
+  tailnet?: DaemonServiceTailnetChange
+}
+
+export type DaemonServiceTailnetChange =
+  | { set: { address: string; name: string; certPath: string; keyPath: string } }
+  | { clear: true }
+
+// The saved settings with the tailnet listener set or cleared, checked as the
+// daemon checks them. Refused (nothing changed) for a service that already
+// listens beyond loopback, and for a WSL guest, which Tailscale on Windows
+// does not reach.
+function withTailnetChange(saved: ServiceConfiguration, change: DaemonServiceTailnetChange): ServiceConfiguration {
+  if (saved.wsl) throw new DaemonServiceUpdateError("nothing-changed", new Error("a WSL service cannot be reached from the tailnet this way"))
+  const { tailnetListener: _listener, tailnetHost: _host, ...rest } = saved
+  const next: ServiceConfiguration = "set" in change
+    ? { ...rest, allowRemoteTransport: true, tailnetHost: change.set.name,
+        tailnetListener: { address: change.set.address, tls: { certPath: change.set.certPath, keyPath: change.set.keyPath } } }
+    // Only the tailnet listener needed the opt-in beside a loopback listener.
+    : { ...rest, allowRemoteTransport: isLoopbackHost(saved.host) ? false : saved.allowRemoteTransport }
+  try {
+    return parseServiceConfiguration(serializeServiceConfiguration(next))
+  } catch (cause) {
+    throw new DaemonServiceUpdateError("nothing-changed", cause)
+  }
 }
 
 // Ruled 2026-09-23: "Update the service" moves the installed service to the
@@ -239,6 +266,7 @@ export async function updateDaemonService(
     if (options.environment !== undefined) {
       assertServiceProfile(profileLocation(saved.homeDirectory, saved.profileDirectory, dependencies.platform), callerProfile(options.environment, dependencies.home, dependencies.platform), dependencies.platform)
     }
+    if (options.tailnet !== undefined) saved = withTailnetChange(saved, options.tailnet)
     // Security review rounds 4 and 5 of #577: the staged runtime goes into
     // place only once every step that can refuse with nothing changed has
     // passed, right before the new definition is written (launchd, systemd),

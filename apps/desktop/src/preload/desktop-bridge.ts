@@ -174,6 +174,16 @@ function boundedString(value: unknown, maximum: number): value is string {
   return typeof value === "string" && value.length > 0 && value.length <= maximum
 }
 
+// TailnetReach: known keys only, two levels, booleans and bounded strings.
+// The renderer parses the exact shape (packages/ui tailnet-reach.ts).
+const tailnetKeys = new Set("state detail name address stored httpsCertificates certificateExpiresAt renewalFailed at message ignored handSet kept setAside undeleted ok report reason step".split(" "))
+function tailnetAnswer(value: unknown, depth = 0): unknown {
+  if (depth && (typeof value === "boolean" || boundedString(value, 4_096))) return value
+  if (depth > 2 || !value || typeof value !== "object" || Array.isArray(value)) throw new Error("Desktop returned an invalid tailnet answer")
+  for (const [key, entry] of Object.entries(value)) if (!tailnetKeys.has(key)) throw new Error("Desktop returned an invalid tailnet answer"); else tailnetAnswer(entry, depth + 1)
+  return value
+}
+
 function websocketUrl(value: unknown): value is string {
   return typeof value === "string" && URL.canParse(value) && ["ws:", "wss:"].includes(new URL(value).protocol)
 }
@@ -265,6 +275,10 @@ export function createDesktopWindowBridge(
     },
     openReleasePage: async () => booleanResult(await ipc.invoke("domovoi:open-release-page"), "release page"),
     commandLinks: (action) => ipc.invoke("domovoi:command-links", action),
+    tailnetReach: async (action) => {
+      if (action !== "status" && action !== "on" && action !== "off") throw new Error("Desktop received an invalid tailnet action")
+      return tailnetAnswer(await ipc.invoke("domovoi:tailnet-reach", action))
+    },
     onDeepLink: (listener) => {
       const handler = (_event: unknown, sessionId: unknown) => {
         if (typeof sessionId === "string" && sessionIdPattern.test(sessionId)) listener(sessionId)
