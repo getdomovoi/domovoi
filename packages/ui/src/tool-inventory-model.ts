@@ -147,8 +147,19 @@ export function unreadableFiles(files: readonly ToolInventoryFile[]): Extract<To
 // any repository file counts all of its omissions here.
 export type RepositoryRuns = {
   runs: ToolRow[]
+  filters: FilterRun[]
   unreadable: number
   omitted: number
+}
+
+// A Git filter command the daemon runs, not held back: under a grant that
+// reviewed it, Git runs it whenever it checks out or stages a file (#688).
+export type FilterRun = {
+  key: string
+  driver: string
+  operation: ToolInventoryGitFilterEntry["operation"]
+  command: string
+  file: string
 }
 
 export function repositoryRuns(inventory: ToolInventory): RepositoryRuns {
@@ -162,7 +173,13 @@ export function repositoryRuns(inventory: ToolInventory): RepositoryRuns {
     omitted += provider.omittedEntries
     runs.push(...providerRows(provider).filter((row) => fromRepository(row.file.source) && row.start === "runs"))
   }
-  return { runs, unreadable, omitted }
+  // A filter that runs counts as running too, so the summary never says
+  // nothing runs while one does (bot finding 4151622860). A held-back,
+  // omitted or unreadable filter block runs nothing: the gate refuses it.
+  const filters = (inventory.repository?.gitFilters?.entries ?? []).flatMap((entry, index): FilterRun[] => entry.heldBack
+    ? []
+    : [{ key: `git:${index}`, driver: entry.driver, operation: entry.operation, command: entry.command, file: entry.file }])
+  return { runs, filters, unreadable, omitted }
 }
 
 // Why the repository's list may not be whole, or undefined when it is.

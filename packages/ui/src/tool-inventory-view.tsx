@@ -3,6 +3,7 @@ import {
   BotIcon,
   EyeIcon,
   FileTextIcon,
+  FilterIcon,
   FolderGit2Icon,
   FolderOpenIcon,
   SearchXIcon,
@@ -239,11 +240,12 @@ function readMeta(inventory: ToolInventory, readAt: Date): string {
 function RepositoryRunsPanel({ inventory, meta }: { inventory: ToolInventory; meta: string }) {
   const titleId = useId()
   const summary = repositoryRuns(inventory)
-  const { runs } = summary
+  const { runs, filters } = summary
   // A file not read or entries left out may hold more, so the list never
   // claims to be whole then.
   const incomplete = incompleteReason(summary)
-  if (runs.length === 0) {
+  const count = runs.length + filters.length
+  if (count === 0) {
     return (
       <div className="flex flex-wrap items-center gap-2.5 rounded-xl border border-dashed px-[15px] py-3 text-[12px] text-muted-foreground">
         <FolderGit2Icon className="size-4 shrink-0" aria-hidden />
@@ -252,7 +254,9 @@ function RepositoryRunsPanel({ inventory, meta }: { inventory: ToolInventory; me
       </div>
     )
   }
-  const title = `${plural(runs.length, "entry", "entries")} from this repository ${runs.length === 1 ? "runs" : "run"} when a session starts`
+  // A Git filter runs whenever Git checks out or stages a file, not only when
+  // a session starts, so the title says both once one is listed.
+  const title = `${plural(count, "entry", "entries")} from this repository ${count === 1 ? "runs" : "run"} when a session starts${filters.length > 0 ? " or Git checks out or stages a file" : ""}`
   return (
     <section aria-labelledby={titleId} className="overflow-hidden rounded-xl border border-info-border bg-info-background text-info-foreground">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-[15px] py-3">
@@ -274,6 +278,18 @@ function RepositoryRunsPanel({ inventory, meta }: { inventory: ToolInventory; me
             </li>
           )
         })}
+        {filters.map((filter) => (
+          <li key={filter.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-info-border px-[15px] py-[9px]">
+            <FilterIcon className="size-4 shrink-0 text-info-dim" aria-hidden />
+            <span className="w-[84px] shrink-0 text-[11.5px]">Filter driver</span>
+            <span className={cn(mono, "w-40 shrink-0 text-[11px] break-all")}>{filter.driver}</span>
+            <span className={cn(mono, "min-w-0 flex-1 basis-64 text-[10.5px] break-all text-info-dim")}>
+              <span>{filter.operation}</span>{" "}
+              <span className={commandWhitespace}>{filter.command}</span>
+            </span>
+            <span className={cn(mono, "text-[10.5px] text-info-dim")}>{filter.file}</span>
+          </li>
+        ))}
       </ul>
       {incomplete ? <p className="m-0 border-t border-info-border px-[15px] py-[9px] text-[11.5px]">This list is not complete: {incomplete}.</p> : null}
       <p className="m-0 border-t border-info-border px-[15px] pt-[9px] pb-[11px] text-[11.5px] text-info-dim">Listed before any session opens. Reading them does not start them.</p>

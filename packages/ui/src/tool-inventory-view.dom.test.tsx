@@ -278,6 +278,32 @@ describe("trust states", () => {
     expect(screen.queryByText(/until you trust this repository/)).toBeNull()
   })
 
+  // Under a grant that reviewed them, the daemon runs the repository's Git
+  // filters (#688), and the inventory marks them not held back. The runs panel
+  // lists them, and never says nothing runs while one does (bot finding
+  // 4151622860).
+  it("lists git filters that run, and does not say nothing runs", () => {
+    const filters = {
+      files: [{ path: ".git/config", scope: "local" as const }],
+      entries: [
+        { driver: "sops", operation: "smudge" as const, command: "sops -d", required: "true" as const, file: ".git/config", scope: "local" as const, heldBack: false },
+        { driver: "sops", operation: "clean" as const, command: "sops -e", required: "true" as const, file: ".git/config", scope: "local" as const, heldBack: false },
+      ],
+      omittedEntries: 0,
+      reviewDigest: `sha256:${"c".repeat(64)}`,
+    }
+    const trusted = inventory([claude({}, { heldBack: true })])
+    show(toolInventorySchema.parse({ ...trusted, repository: { ...trusted.repository, gitFilters: filters } }))
+
+    expect(screen.queryByText("Nothing from this repository can run when a session starts.")).toBeNull()
+    const runs = screen.getByRole("region", { name: "2 entries from this repository run when a session starts or Git checks out or stages a file" })
+    const rows = within(runs).getAllByRole("listitem")
+    expect(rows.map((row) => row.textContent)).toEqual([
+      "Filter driversopssmudge sops -d.git/config",
+      "Filter driversopsclean sops -e.git/config",
+    ])
+  })
+
   it("does not promise trust to a repository that cannot be trusted", () => {
     show(inventory([claude({}, { heldBack: true })], {
       state: "untrusted",
