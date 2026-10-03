@@ -17,7 +17,7 @@ import {
   tailnetReachRecordFile,
   type TailnetReachRecord,
 } from "./tailnet-reach-record.js"
-import { TailnetReach, type TailscaleRun } from "./tailnet-reach.js"
+import { TailnetReach, type TailnetReachDependencies, type TailscaleRun } from "./tailnet-reach.js"
 
 // TailnetReach (Q404 A), assembled on first use: index.ts loads this module
 // with import() only when Settings first asks, so none of it counts toward the
@@ -83,6 +83,7 @@ export function createTailnetReach(input: {
   // index.ts keeps these for the in-app daemon's next acquisition. They are
   // handed over whenever the record changes, before any restart.
   applySettings?: (settings: Record<string, string>) => void
+  timers?: TailnetReachDependencies["timers"]
 }): TailnetReach {
   const home = input.home ?? homedir()
   const environment = input.environment ?? process.env
@@ -102,7 +103,8 @@ export function createTailnetReach(input: {
     return { refusal: "this window reaches a daemon started outside this app, which only whoever started it can restart." }
   }
 
-  return new TailnetReach({
+  const reach = new TailnetReach({
+    ...(input.timers ? { timers: input.timers } : {}),
     tailscale: tailscaleRunner(environment, platform, input.tailscaleLocations ?? tailscaleLocations(platform)),
     tlsDirectory,
     display: (path) => path === home || path.startsWith(`${home}${sep}`) ? `~${path.slice(home.length)}` : path,
@@ -187,4 +189,7 @@ export function createTailnetReach(input: {
       await input.desktopDaemon.restart().catch(() => {})
     },
   })
+  // Renewal runs while the switch is on, from whenever this module loads.
+  void reach.startRenewal()
+  return reach
 }

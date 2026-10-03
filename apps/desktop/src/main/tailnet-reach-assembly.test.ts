@@ -111,6 +111,26 @@ describe.skipIf(process.platform === "win32")("TailnetReach on this machine's fi
     await expect(reach.status()).resolves.toEqual({ state: "none", detail: "Domovoi found no tailscale command on this computer." })
   })
 
+  // index.ts loads the module at startup only when the switch is on, and the
+  // module starts its own renewal checks, so main carries none of that.
+  it("starts its renewal checks when created with the switch on, and none when off", async () => {
+    const scheduled: number[] = []
+    const timers = { set: (_run: () => void, ms: number) => { scheduled.push(ms); return ms }, clear: () => {} }
+    const create = () => createTailnetReach({
+      desktopDaemon: { current: () => undefined, stopOwned: async () => {}, restart: async () => ({ kind: "refused", reason: "port-in-use", message: "x" }), endHandoff: () => {} },
+      daemon: { readLocalServiceHandoffRefusal: async () => undefined, holdServiceHandoffFence: async () => ({ refusal: "x" }) },
+      service: async () => { throw new Error("unused") },
+      dataDirectory: data, home, environment: { PATH: bin }, platform: "darwin", tailscaleLocations: [], timers,
+    })
+    create()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(scheduled).toEqual([])
+    await writeFile(join(data, "tailnet-reach.json"), JSON.stringify({ version: 1, name, address: "100.101.102.103", certPath: join(home, ".domovoi", "tls", `${name}.crt`), keyPath: join(home, ".domovoi", "tls", `${name}.key`) }))
+    create()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(scheduled).toEqual([60_000])
+  })
+
   it("stores a private certificate and key in the profile, records them for the in-app daemon, and restarts it", async () => {
     const { reach, stopOwned, restart, endHandoff, release, restartedWith } = assemble()
     await expect(reach.turnOn()).resolves.toMatchObject({ ok: true, report: { state: "on", name, certificateExpiresAt: "2025-01-02T00:00:00.000Z" } })

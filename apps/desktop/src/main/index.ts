@@ -150,9 +150,10 @@ const daemonSeam = developmentLoopModule
 // TailnetReach (Q404 A): the tailnet listener the switch saved. The module that
 // reads the record loads only when one exists or the switch is used, so a
 // machine that never turned it on loads nothing new at startup.
-const tailnetReachSaved = existsSync(join(app.getPath("userData"), "tailnet-reach.json"))
+const tailnetData = app.getPath("userData")
+const tailnetReachSaved = existsSync(join(tailnetData, "tailnet-reach.json"))
 let tailnetSettings: Record<string, string> = tailnetReachSaved
-  ? (await import("./tailnet-reach-record.js")).savedTailnetReachEnvironment(app.getPath("userData"), process.env)
+  ? (await import("./tailnet-reach-record.js")).savedTailnetReachEnvironment(tailnetData, process.env)
   : {}
 
 // Attach to the profile's owner, or own a daemon only when the profile is free.
@@ -187,13 +188,12 @@ const daemonService = (): Promise<DesktopDaemonService> => {
   return desktopDaemonService
 }
 // TailnetReach (Q404 A), loaded on first use like the service above, or after
-// startup when the switch is on, to renew its certificate.
+// startup when the switch is on; loaded, it renews its certificate on its own.
 let tailnetReach: Promise<TailnetReach> | undefined
-const reach = (): Promise<TailnetReach> => tailnetReach ??= import("./tailnet-reach-assembly.js").then((assembly) => {
-  const created = assembly.createTailnetReach({ desktopDaemon, daemon: daemonModule.module, service: daemonService, dataDirectory: app.getPath("userData"), applySettings: (next) => { tailnetSettings = next } })
-  void created.startRenewal()
-  return created
-}, (error: unknown) => { tailnetReach = undefined; throw error })
+const reach = (): Promise<TailnetReach> => tailnetReach ??= import("./tailnet-reach-assembly.js").then(
+  (assembly) => assembly.createTailnetReach({ desktopDaemon, daemon: daemonModule.module, service: daemonService, dataDirectory: tailnetData, applySettings: (next) => { tailnetSettings = next } }),
+  (error: unknown) => { tailnetReach = undefined; throw error },
+)
 const daemonLifecycle = new DesktopDaemonLifecycle(() => desktopDaemon.release(), (error) => {
   console.error("Local daemon failed to release during desktop shutdown", error)
 })
