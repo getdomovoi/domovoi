@@ -8,6 +8,7 @@ export {
   type DaemonServiceStatusReport,
   type WorkspaceWindowDecoration,
 } from "./desktop-platform"
+export { FirstRunServiceContext, installMovesDaemon, type FirstRunService } from "./desktop-first-run-service"
 export { applyStoredAppearanceTheme } from "./workspace-persistence"
 export { isWorkspaceTheme, type WorkspaceTheme } from "./appearance"
 export { PairMachineDialog } from "./pair-machine-dialog"

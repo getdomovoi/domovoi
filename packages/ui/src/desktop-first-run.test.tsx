@@ -1,22 +1,13 @@
 import type { ProviderFailure, ProviderRuntime, SessionSummary } from "@getdomovoi/protocol"
-import { Children, isValidElement, type ReactNode } from "react"
 import { renderToStaticMarkup } from "react-dom/server"
 import { describe, expect, it, vi } from "vitest"
 
 import {
   desktopFirstRunAvailable,
-  DesktopFirstRunDialog,
   firstRunFailureForProvider,
-  FirstRunSetupSteps,
+  FirstRunAgents,
   providerFirstRunRecovery,
 } from "./desktop-first-run.js"
-import {
-  Dialog,
-  DialogClose,
-  DialogContent,
-  DialogDescription,
-  DialogTitle,
-} from "./components/ui/dialog.js"
 
 const ready: ProviderRuntime = {
   id: "codex",
@@ -71,11 +62,14 @@ describe("desktop first-run provider diagnostics", () => {
   })
 
   it("provides a bounded action for every non-ready state", () => {
-    expect(providerFirstRunRecovery({ ...ready, status: "missing" })).toMatchObject({
-      description: expect.stringContaining("provider's platform instructions"),
-      copyGuidance: "codex",
-      copyLabel: "Copy CLI name",
+    // Q353 A: a missing CLI gets install guidance, never an installer and
+    // nothing to copy that would pass for one.
+    const missing = providerFirstRunRecovery({ ...ready, status: "missing" })
+    expect(missing).toMatchObject({
+      title: "Not installed here",
+      description: "Install it with the provider's own instructions so that codex is on the PATH the daemon searches, then press Retry diagnostics.",
     })
+    expect(missing.copyGuidance).toBeUndefined()
     expect(providerFirstRunRecovery({ ...ready, status: "auth-required" })).toMatchObject({
       description: expect.stringContaining("provider-owned sign-in command"),
       copyGuidance: "codex login",
@@ -125,33 +119,25 @@ describe("desktop first-run provider diagnostics", () => {
     expect(firstRunFailureForProvider("codex", sessions)?.kind).toBe("rate-limit")
   })
 
-  it("renders the signed three-step layout with provider selection and Build manual default", () => {
+  it("renders one card per agent and no permission-mode step", () => {
     const markup = renderToStaticMarkup(
-      <FirstRunSetupSteps
+      <FirstRunAgents
         connected
         machine={{ name: "devbox", platform: "linux", version: "0.0.1" }}
         providers={[ready, { ...ready, id: "claude-code", command: "claude" }]}
         sessions={[]}
-        selectedProviderId="codex"
-        permissionMode="build"
         refreshing={false}
         recoveryError=""
-        onProviderChange={vi.fn()}
-        onPermissionModeChange={vi.fn()}
         onRetry={vi.fn()}
         onCopyGuidance={vi.fn()}
       />,
     )
 
-    expect(markup).toContain("Local daemon running")
-    expect(markup).toContain("Connect a coding agent")
-    expect(markup).toContain("Choose a permission mode for new projects")
-    expect(markup.match(/data-first-run-step=/g)).toHaveLength(3)
-    expect(markup).toContain('role="radiogroup"')
-    expect(markup).toContain("Codex")
-    expect(markup).toContain("Claude Code")
-    expect(markup).toContain("Build manual")
-    expect(markup).toContain("reads run free; mutations ask")
+    expect(markup).toContain("Connect an agent on devbox")
+    expect(markup.match(/data-agent-name=/g)).toHaveLength(2)
+    expect(markup).toContain("codex")
+    expect(markup).toContain("claude-code")
+    expect(markup).not.toContain("Choose a permission mode for new projects")
     expect(markup).not.toMatch(/password|api key|credential input|sudo|brew install|apt install/i)
   })
 
@@ -164,77 +150,22 @@ describe("desktop first-run provider diagnostics", () => {
   })
 
   it("uses scoped provider credential copy without absolute locality claims", () => {
-    const element = DesktopFirstRunDialog({
-      open: true,
-      connected: true,
-      machine: { name: "devbox", platform: "linux", version: "0.0.1" },
-      providers: [ready],
-      sessions: [],
-      selectedProviderId: "codex",
-      permissionMode: "build",
-      refreshing: false,
-      recoveryError: "",
-      onProviderChange: vi.fn(),
-      onPermissionModeChange: vi.fn(),
-      onRetry: vi.fn(),
-      onCopyGuidance: vi.fn(),
-      onSkip: vi.fn(),
-      onComplete: vi.fn(),
-    })
-    const text: string[] = []
-    const visit = (node: ReactNode): void => {
-      Children.forEach(node, (child) => {
-        if (typeof child === "string" || typeof child === "number") {
-          text.push(String(child))
-          return
-        }
-        if (!isValidElement(child)) return
-        visit((child.props as { children?: ReactNode }).children)
-      })
-    }
-    visit(element)
-    const copy = text.join(" ")
+    const copy = renderToStaticMarkup(
+      <FirstRunAgents
+        connected
+        machine={{ name: "devbox", platform: "linux", version: "0.0.1" }}
+        providers={[ready]}
+        sessions={[]}
+        refreshing={false}
+        recoveryError=""
+        onRetry={vi.fn()}
+        onCopyGuidance={vi.fn()}
+      />,
+    )
 
-    expect.soft(copy).toContain("Three local setup steps. Provider credentials stay with their CLIs.")
+    expect.soft(copy).toContain("Each agent signs in through its own CLI on this machine")
     expect.soft(copy).not.toMatch(
       /\b(?:nothing leaves|everything (?:stays|remains) (?:on|within)|all (?:data|traffic|requests) (?:stays|remain) (?:on|within)|(?:fully|entirely|completely) local)\b/i,
     )
-  })
-
-  it("composes the installed Radix Dialog with title, description, and close semantics", () => {
-    const element = DesktopFirstRunDialog({
-      open: true,
-      connected: true,
-      machine: { name: "devbox", platform: "linux", version: "0.0.1" },
-      providers: [ready],
-      sessions: [],
-      selectedProviderId: "codex",
-      permissionMode: "build",
-      refreshing: false,
-      recoveryError: "",
-      onProviderChange: vi.fn(),
-      onPermissionModeChange: vi.fn(),
-      onRetry: vi.fn(),
-      onCopyGuidance: vi.fn(),
-      onSkip: vi.fn(),
-      onComplete: vi.fn(),
-    })
-    const types: unknown[] = []
-    const visit = (node: ReactNode): void => {
-      Children.forEach(node, (child) => {
-        if (!isValidElement(child)) return
-        types.push(child.type)
-        visit((child.props as { children?: ReactNode }).children)
-      })
-    }
-    visit(element)
-
-    expect(element.type).toBe(Dialog)
-    expect(types).toEqual(expect.arrayContaining([
-      DialogContent,
-      DialogTitle,
-      DialogDescription,
-      DialogClose,
-    ]))
   })
 })

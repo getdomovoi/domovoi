@@ -1,4 +1,4 @@
-import { localOwnerRequiredErrorCode, loginServiceHomePaths, loginServiceTaskName, type ApprovalRule, type ClientKind, type PairedDeviceSummary, type ProviderRuntime, type UpdateStatus } from "@getdomovoi/protocol"
+import { localOwnerRequiredErrorCode, type ApprovalRule, type ClientKind, type PairedDeviceSummary, type ProviderRuntime, type UpdateStatus } from "@getdomovoi/protocol"
 import { ChevronRightIcon, ExternalLinkIcon, TerminalIcon } from "lucide-react"
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react"
 
@@ -18,6 +18,7 @@ import { AppearanceSettings, ExternalEditorSettings, ProviderSettings, type Prov
 import type { WorkspaceTheme } from "./appearance.js"
 import { DaemonRpcError } from "./client.js"
 import type { DaemonServiceOutcome, DaemonServiceStatusReport, DesktopExternalEditor, WorkspaceWindowDecoration } from "./desktop-platform.js"
+import { failedStill, loginServices, readBackFact, type FailedServiceOutcome } from "./login-service-copy.js"
 import { NotificationSettings } from "./notification-settings.js"
 import type { NotificationPreferences } from "./notification-preferences.js"
 import type { WorkspaceClientCapabilities } from "./workspace-platform.js"
@@ -72,19 +73,6 @@ export type LocalDaemonDescription = {
   inApp?: boolean | undefined
 }
 
-// J24 (2026-09-23). What each platform's login service is. The names come from
-// the daemon's installer through login-service; this window only names them.
-// Native Windows runs the logon task without the crash supervisor, which only
-// the WSL task has (Phase 1 decided to supervise it like WSL). Installing and
-// removing from this window are not built: the app ships no daemon runtime a
-// service could point at (ND9), so both controls stay locked with the
-// command that does the job beside them.
-const loginServices = {
-  darwin: { kind: "LaunchAgent", manager: "launchd", definition: `~/${loginServiceHomePaths.darwin}`, removeLabel: "Unload and delete the LaunchAgent", crash: "launchd starts it again." },
-  linux: { kind: "systemd user unit", manager: "systemd", definition: `~/${loginServiceHomePaths.linux}`, removeLabel: "Stop, disable and delete the user unit", crash: "systemd starts it again." },
-  win32: { kind: "logon task", manager: "Task Scheduler", definition: `Task Scheduler task "${loginServiceTaskName}"`, removeLabel: "Delete the logon task", crash: "Nothing restarts it until you next sign in." },
-} as const
-
 type ServicePhase =
   | { kind: "idle" }
   | { kind: "installing" }
@@ -116,24 +104,7 @@ function olderRelease(version: string, than: string): boolean {
   return false
 }
 
-// Security review round 1 of #576, lines approved by fetzy on 2026-09-25: a
-// failed install or removal the service manager left half done, a read-back
-// that could not be taken, or a daemon this app did not start.
-
-type FailedOutcome = Extract<DaemonServiceOutcome, { ok: false; reason: "failed" }>
-
-function readBackFact(kind: string, action: "install" | "remove", service: FailedOutcome["service"]): string {
-  if (!service || service.installed === null) return `Whether the ${kind} is installed is not known from here.`
-  if (action === "install") return service.installed ? `The ${kind} is installed${service.running ? " and running" : " but not running"}.` : "Nothing was installed."
-  return service.installed ? `The ${kind} is still installed ${service.running ? "and running" : "but not running"}.` : `The ${kind} is gone, but the removal did not finish.`
-}
-
-function daemonFact(daemon: FailedOutcome["daemon"]): string {
-  if (daemon === "restarted") return "The daemon is running inside this app again."
-  if (daemon === "attached") return "This app is connected to a daemon it did not start."
-  if (daemon === "stopped") return "No daemon is running for this app, so no session is running. Quit and reopen Domovoi to start it."
-  return "The daemon inside this app was not stopped."
-}
+type FailedOutcome = FailedServiceOutcome
 
 async function readServiceBack(status: (() => Promise<DaemonServiceStatusReport>) | undefined): Promise<FailedOutcome["service"]> {
   if (!status) return null
@@ -163,23 +134,6 @@ function unknownAnswerHeader(action: "install" | "remove", service: FailedOutcom
   const happened = action === "install" ? service.installed : !(service.installed && service.running)
   if (!happened) return undefined
   return action === "install" ? "Could not confirm the install" : "Could not confirm the removal"
-}
-
-// What is still true after a failed install or removal. The approved lines
-// hold only when the service read back afterwards shows nothing changed.
-function failedStill(kind: string, action: "install" | "remove", outcome: FailedOutcome): string {
-  const service = outcome.service
-  if (action === "install" && service?.installed === false && outcome.daemon !== "attached") {
-    return outcome.daemon === "restarted"
-      ? "The daemon is back inside this app. Nothing else was touched."
-      : outcome.daemon === "stopped"
-        ? "Nothing was installed. The daemon inside this app stopped and did not start again, so no session is running. Quit and reopen Domovoi to start it."
-        : "Nothing was installed."
-  }
-  if (action === "remove" && service?.installed === true && service.running && outcome.daemon === "untouched") {
-    return `Nothing was removed. The ${kind} still holds the daemon, and every session keeps running.`
-  }
-  return `${readBackFact(kind, action, service)} ${daemonFact(outcome.daemon)}`
 }
 
 // The daemon installer's own words for a removal that leaves the profile owner
@@ -216,7 +170,7 @@ function RemoveServiceDialog({ open, platform, onOpenChange, onConfirm }: {
   const kept = ["Sessions, worktrees and checkpoints", "Pairings, and the tokens in your keychain", "This app and the daemon inside it"]
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
-      <AlertDialogContent>
+      <AlertDialogContent className="data-[size=default]:sm:max-w-[560px]">
         <AlertDialogHeader>
           <AlertDialogTitle className="flex flex-wrap items-baseline gap-2.5">
             Remove the login service?

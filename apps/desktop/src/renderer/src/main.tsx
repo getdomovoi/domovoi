@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client"
 import {
   applyStoredAppearanceTheme,
   bridgeRelayPinStorage,
+  FirstRunServiceContext,
   StartupError,
   WorkspaceErrorBoundary,
   WorkspaceShell,
@@ -13,6 +14,7 @@ import "@getdomovoi/ui/styles.css"
 import { daemonConnectionCopy } from "./desktop-daemon-copy.js"
 import { DesktopDaemonRefused } from "./desktop-daemon-refused.js"
 import { desktopRpcEndpointResolver, resolveDesktopStartup, type DesktopStartup } from "./desktop-startup.js"
+import { desktopFirstRunService, type ServiceFacts } from "./first-run-service.js"
 import { verifyLaunchSmokeDaemon } from "./launch-smoke.js"
 
 applyStoredAppearanceTheme()
@@ -66,6 +68,20 @@ function DesktopApp() {
     () => workspace ? desktopRpcEndpointResolver(workspace, window.domovoiDesktop) : undefined,
     [workspace],
   )
+  // The service as read back after first-run setup installed it. The shell's
+  // own service changes clear it, and its own reads take over.
+  const [serviceFacts, setServiceFacts] = useState<ServiceFacts>({})
+  const firstRunService = useMemo(
+    () => workspace ? desktopFirstRunService({
+      bridge: window.domovoiDesktop,
+      owner: daemonConnectionCopy(workspace.daemon).owner,
+      onDaemonMoved: (facts) => {
+        setServiceFacts(facts)
+        retry()
+      },
+    }) : undefined,
+    [workspace],
+  )
 
   if (state.kind === "resolving") return null
   if (state.kind === "failed") return <StartupError message={state.message} />
@@ -76,16 +92,21 @@ function DesktopApp() {
   return (
     <StrictMode>
       <WorkspaceErrorBoundary>
-        <WorkspaceShell
-          clientKind="desktop"
-          rpcUrl={state.rpcUrl}
-          rpcToken={state.rpcToken}
-          {...(resolveRpcEndpoint ? { resolveRpcEndpoint } : {})}
-          localDaemon={daemonConnectionCopy(state.daemon)}
-          onLocalDaemonChanged={retry}
-          windowBridge={window.domovoiDesktop}
-          {...(relayPinStorage ? { relayPinStorage } : {})}
-        />
+        <FirstRunServiceContext.Provider value={firstRunService}>
+          <WorkspaceShell
+            clientKind="desktop"
+            rpcUrl={state.rpcUrl}
+            rpcToken={state.rpcToken}
+            {...(resolveRpcEndpoint ? { resolveRpcEndpoint } : {})}
+            localDaemon={{ ...daemonConnectionCopy(state.daemon), ...serviceFacts }}
+            onLocalDaemonChanged={() => {
+              setServiceFacts({})
+              retry()
+            }}
+            windowBridge={window.domovoiDesktop}
+            {...(relayPinStorage ? { relayPinStorage } : {})}
+          />
+        </FirstRunServiceContext.Provider>
       </WorkspaceErrorBoundary>
     </StrictMode>
   )

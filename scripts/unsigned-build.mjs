@@ -15,6 +15,12 @@ const settingsFile = "packages/ui/src/settings-shell.tsx"
 // then, so the copy changes with the fact rather than after it.
 export const unsignedBuildLine = "This build is not signed and does not update itself. Get new versions from the release page."
 
+// Desktop first-run setup says the same under its install step (the v2
+// Onboarding build line, built 2026-10-02 with the ND6 wording), so both lines
+// are held to the same workflows and to each other.
+const onboardingFile = "packages/ui/src/desktop-first-run.tsx"
+export const unsignedOnboardingLine = "This build is not signed and does not update itself."
+
 const requiresSigning = /DOMOVOI_DESKTOP_REQUIRE_SIGNING:\s*['"]?true['"]?/
 const automaticTriggers = ["push", "pull_request", "pull_request_target", "release", "schedule", "workflow_call", "workflow_run"]
 
@@ -42,15 +48,22 @@ export function workflowTriggers(content) {
   return triggers
 }
 
-export function evaluateUnsignedBuild(files, settingsSource) {
+export function evaluateUnsignedBuild(files, settingsSource, onboardingSource) {
   const failures = []
   const saysUnsigned = settingsSource.includes(unsignedBuildLine)
+  const onboardingSaysUnsigned = onboardingSource?.includes(unsignedOnboardingLine)
   for (const file of files) {
     if (!requiresSigning.test(file.content)) continue
     const automatic = workflowTriggers(file.content).filter((trigger) => automaticTriggers.includes(trigger))
     if (automatic.length && saysUnsigned) {
       failures.push(`${file.path}: requires signing on ${automatic.join(", ")}, but ${settingsFile} still says "${unsignedBuildLine}"`)
     }
+    if (automatic.length && onboardingSaysUnsigned) {
+      failures.push(`${file.path}: requires signing on ${automatic.join(", ")}, but ${onboardingFile} still says "${unsignedOnboardingLine}"`)
+    }
+  }
+  if (onboardingSource !== undefined && saysUnsigned && !onboardingSaysUnsigned) {
+    failures.push(`${onboardingFile} no longer says the build is not signed, but ${settingsFile} does; the two lines move together`)
   }
   if (!saysUnsigned && files.every((file) => !requiresSigning.test(file.content) || workflowTriggers(file.content).every((trigger) => !automaticTriggers.includes(trigger)))) {
     failures.push(`${settingsFile} no longer says the build is unsigned, but no workflow requires signing on an automatic trigger`)
@@ -65,7 +78,8 @@ export async function checkUnsignedBuild(root = repositoryRoot) {
     content: await readFile(join(root, workflowDirectory, name), "utf8"),
   })))
   const settingsSource = await readFile(join(root, settingsFile), "utf8")
-  return evaluateUnsignedBuild(files, settingsSource)
+  const onboardingSource = await readFile(join(root, onboardingFile), "utf8")
+  return evaluateUnsignedBuild(files, settingsSource, onboardingSource)
 }
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
