@@ -26,6 +26,7 @@ import type { NotificationPreferences } from "./notification-preferences.js"
 import type { WorkspaceClientCapabilities } from "./workspace-platform.js"
 import { PermissionRuleSettings } from "./permission-settings.js"
 import { PairingCard, type IssuedPairingCode } from "./pairing-card.js"
+import { TailnetReachCard, useTailnetReach, type TailnetReachController, type TailnetReachSource } from "./tailnet-reach-card.js"
 
 
 type DesktopCapability = {
@@ -426,9 +427,12 @@ export type PairingSettings = {
   onCopy: (text: string) => Promise<void>
   onListDevices: () => Promise<{ devices: PairedDeviceSummary[] }>
   inAppDaemon?: boolean | undefined
+  // TailnetReach (Q404 A): the desktop's tailnet switch, drawn in the daemon
+  // card and reached from the pairing card.
+  tailnet?: TailnetReachSource | undefined
 }
 
-function PairingSection({ pairing, readOnly, onOpenFleet }: { pairing: PairingSettings; readOnly: boolean; onOpenFleet: () => void }) {
+function PairingSection({ pairing, readOnly, onOpenFleet, tailnet }: { pairing: PairingSettings; readOnly: boolean; onOpenFleet: () => void; tailnet?: TailnetReachController | undefined }) {
   const [count, setCount] = useState<number | null>(null)
   const { onListDevices } = pairing
   useEffect(() => {
@@ -445,7 +449,7 @@ function PairingSection({ pairing, readOnly, onOpenFleet }: { pairing: PairingSe
         <h2 id="settings-pairing" className="m-0 text-[13px] font-medium">Phone and tablet</h2>
         <p className="m-0 text-[11.5px] text-muted-foreground">Pair a device to watch sessions and answer gates while away from the desk.</p>
       </div>
-      <PairingCard connected={pairing.connected} readOnly={readOnly} inAppDaemon={pairing.inAppDaemon ?? false} onIssueCode={pairing.onIssueCode} onCopy={pairing.onCopy} />
+      <PairingCard connected={pairing.connected} readOnly={readOnly} inAppDaemon={pairing.inAppDaemon ?? false} onIssueCode={pairing.onIssueCode} onCopy={pairing.onCopy} {...(tailnet ? { tailnet } : {})} />
       <Button variant="ghost" className="h-auto justify-between rounded-lg border px-[15px] py-3 text-left" onClick={onOpenFleet}>
         <span className="flex flex-col items-start gap-0.5">
           <span>{count === null ? "Paired devices" : `${count} ${count === 1 ? "client" : "clients"} paired with this daemon`}</span>
@@ -632,6 +636,7 @@ export function SettingsShell({
     && onWindowDecorationChange !== undefined
     ? { decoration: windowDecoration, active: activeWindowDecoration, onChange: onWindowDecorationChange }
     : undefined
+  const tailnet = useTailnetReach(pairing?.tailnet)
 
   return (
     <ScrollArea className="min-h-0 min-w-0 flex-1">
@@ -644,7 +649,8 @@ export function SettingsShell({
         </header>
 
         <fieldset disabled={readOnly} className="contents">
-          {daemonSection ? <DaemonSection daemon={daemonSection} footer={about ? <AboutBuildSection about={about} inCard /> : undefined} /> : null}
+          {daemonSection ? <DaemonSection daemon={daemonSection} footer={about || tailnet ? <>{tailnet ? <TailnetReachCard controller={tailnet} inCard /> : null}{about ? <AboutBuildSection about={about} inCard /> : null}</> : undefined} /> : null}
+          {tailnet && !daemonSection ? <TailnetReachCard controller={tailnet} /> : null}
 
           <section aria-label="Providers and tokens">
             <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
@@ -652,7 +658,7 @@ export function SettingsShell({
 
           {about && !daemonSection ? <AboutBuildSection about={about} /> : null}
 
-          {pairing ? <PairingSection pairing={pairing} readOnly={readOnly} onOpenFleet={onOpenFleet} /> : null}
+          {pairing ? <PairingSection pairing={pairing} readOnly={readOnly} onOpenFleet={onOpenFleet} tailnet={tailnet} /> : null}
 
           <section aria-label="Notifications">
             <NotificationSettings

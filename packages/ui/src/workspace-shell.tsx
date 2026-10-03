@@ -325,7 +325,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     access ? { state: "client", admission: access,
       resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline }),
     } : { state: "disabled" }, relayPinStorage)
-  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, revokeDevice, rotateDevice, renameDevice } = home
+  const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, tailnetStatus, revokeDevice, rotateDevice, renameDevice } = home
   const homeSkillInventory = home.getSkillInventory
   const homeVersion = home.snapshot?.machine.version
   const openReleasePage = windowBridge?.openReleasePage
@@ -1528,6 +1528,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 onCopy: (text: string) => platform ? platform.clipboard.writeText(text) : Promise.reject(new Error("This client has no clipboard")),
                 onListDevices: listDevices,
                 inAppDaemon: localDaemon?.inApp ?? false,
+                // TailnetReach (Q404 A): the desktop's switch and the daemon's listener.
+                ...(windowBridge?.tailnetReach ? { tailnet: { act: windowBridge.tailnetReach, listener: tailnetStatus, inApp: localDaemon?.inApp ?? false } } : {}),
               },
             })}
             approvalRules={snapshot.approvalRules}
