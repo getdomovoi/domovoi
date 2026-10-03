@@ -165,6 +165,42 @@ it("revokes for the project only and leaves the machine review in place", async 
   expect(onReviewSkill).not.toHaveBeenCalled()
 })
 
+// The dialog's action closes it in the same click, while the button that opened
+// it is disabled for the pending RPCs, so the dialog's focus return has nowhere
+// to land. Once the promise settles, focus goes to the result: the failure
+// alert, or the control the decision leaves offered.
+it("moves focus to the failure alert when the trust decision settles", async () => {
+  const user = userEvent.setup()
+  const onReviewSkill = vi.fn(async () => { throw new Error("Manual skill review is unavailable") })
+  render(<SkillBrowser {...props({ onReviewSkill })} />)
+
+  await user.click(screen.getByRole("button", { name: "Trust it for acme-api" }))
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Trust it for acme-api" }))
+
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  expect(document.activeElement).toBe(screen.getByRole("alert"))
+})
+
+it("moves focus back to the decision when the trust dialog settles", async () => {
+  const user = userEvent.setup()
+  render(<SkillBrowser {...props()} />)
+
+  await user.click(screen.getByRole("button", { name: "Trust it for acme-api" }))
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Trust it for acme-api" }))
+
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Trust it for acme-api" }))
+})
+
+it("keeps focus on Revoke when revoking settles", async () => {
+  const user = userEvent.setup()
+  render(<SkillBrowser {...props({ skills: [trusted], enablements: [enabled] })} />)
+
+  await user.click(screen.getByRole("button", { name: "Revoke" }))
+
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "Revoke" }))
+})
+
 it("names the revoke in the title when revoking fails", async () => {
   const user = userEvent.setup()
   const onSetSkillEnabled = vi.fn(async () => { throw new Error("Skill content changed; review it again") })

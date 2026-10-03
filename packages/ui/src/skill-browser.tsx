@@ -249,6 +249,13 @@ export function SkillBrowser({
     step: "enable" | "review" | "revoke"
     message: string
   }>()
+  // The trust dialog's action closes it in the same click, and the button that
+  // opened it is disabled while the RPCs run, so the dialog's focus return has
+  // nowhere to land. Each settled decision moves focus to its result instead.
+  const [reviewSettled, setReviewSettled] = useState(0)
+  const reviewErrorRef = useRef<HTMLDivElement>(null)
+  const trustButtonRef = useRef<HTMLButtonElement>(null)
+  const revokeButtonRef = useRef<HTMLButtonElement>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [addPath, setAddPath] = useState("")
   const [addPreview, setAddPreview] = useState<SkillInstallPreview>()
@@ -303,6 +310,15 @@ export function SkillBrowser({
     if (!selectedId && skills[0]) setSelectedId(skills[0].id)
   }, [selectedId, skills])
 
+  // Runs after the render that shows the result, so the alert is in the DOM
+  // when it is the target. With no failure, the control the decision leaves
+  // offered takes focus: Revoke where the enablement exists, else Trust.
+  useEffect(() => {
+    if (reviewSettled === 0) return
+    const target = reviewErrorRef.current ?? revokeButtonRef.current ?? trustButtonRef.current
+    target?.focus()
+  }, [reviewSettled])
+
   const readSource = (skill: SkillSummary) => {
     const generation = ++sourceRequestGeneration.current
     setSourceSkill(skill)
@@ -350,7 +366,10 @@ export function SkillBrowser({
           : setTrustOpen(false)
       ),
       failed("enable"),
-    ).finally(() => setReviewPending(false))
+    ).finally(() => {
+      setReviewPending(false)
+      setReviewSettled((count) => count + 1)
+    })
   }
 
   const submitRevoke = () => {
@@ -364,7 +383,10 @@ export function SkillBrowser({
       manifest: selected.manifest,
     }).catch((cause: unknown) => {
       setReviewError({ step: "revoke", message: cause instanceof Error ? cause.message : "Skill review failed" })
-    }).finally(() => setReviewPending(false))
+    }).finally(() => {
+      setReviewPending(false)
+      setReviewSettled((count) => count + 1)
+    })
   }
 
   const addTarget = addPreview?.targets.find((target) => target.scope === addScope)
@@ -610,7 +632,7 @@ export function SkillBrowser({
                 </AlertDescription>
               </Alert>
               {reviewError ? (
-                <Alert variant="destructive" className="mt-4">
+                <Alert ref={reviewErrorRef} tabIndex={-1} variant="destructive" className="mt-4">
                   <AlertTitle>{reviewError.step === "revoke" ? "Revoke failed" : "Review failed"}</AlertTitle>
                   <AlertDescription className="flex flex-col gap-1">
                     <span>{reviewError.message}</span>
@@ -639,6 +661,7 @@ export function SkillBrowser({
                     refusal is named beside it. */}
                 {projectId && trustOffered ? (
                   <Button
+                    ref={trustButtonRef}
                     disabled={readOnly || reviewPending || selected.trust.state === "blocked"}
                     onClick={() => setTrustOpen(true)}
                   >
@@ -646,7 +669,7 @@ export function SkillBrowser({
                   </Button>
                 ) : null}
                 {projectId && revokeOffered ? (
-                  <Button variant="outline" disabled={readOnly || reviewPending} onClick={submitRevoke}>
+                  <Button ref={revokeButtonRef} variant="outline" disabled={readOnly || reviewPending} onClick={submitRevoke}>
                     Revoke
                   </Button>
                 ) : null}
