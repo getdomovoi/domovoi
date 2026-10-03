@@ -2,7 +2,7 @@ import { decodePairingPayload, phoneAndTabletPromise, type PairingPayload } from
 import { CameraView, useCameraPermissions, type PermissionResponse } from "expo-camera"
 import * as Clipboard from "expo-clipboard"
 import { useCallback, useEffect, useRef, useState, type ComponentType } from "react"
-import { TextInput, View } from "react-native"
+import { Pressable, TextInput, View } from "react-native"
 
 import { gateReach } from "../gate-reach"
 import { route } from "../launch-state"
@@ -11,6 +11,7 @@ import { redeemPairingCode, type PairedCredential } from "../lib/redeem-pairing-
 import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
+import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import { useTheme } from "../theme/theme-provider"
 
@@ -43,6 +44,41 @@ function CameraScanner({ onScanned }: { onScanned: (text: string) => void }) {
       barcodeScannerSettings={{ barcodeTypes: ["qr"] }}
       onBarcodeScanned={(result) => onScanned(result.data)}
     />
+  )
+}
+
+// The pairing screens are a sheet over the shell: a close control and the
+// screen's name, rather than a page heading. Before pairing it cancels; once
+// paired there is nothing left to cancel, so it closes.
+function NavRow({ label, onPress }: { label: "Cancel" | "Close", onPress: () => void }) {
+  return (
+    <View className="flex-row items-center gap-2.5 px-4 pb-2.5 pt-1.5">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        onPress={onPress}
+        className="min-h-tap min-w-tap -ml-3 items-center justify-center active:opacity-70"
+      >
+        <Icon name="x" tone="muted" />
+      </Pressable>
+      <Text className="font-sans text-[13px] text-muted-foreground">Pair with a machine</Text>
+    </View>
+  )
+}
+
+// The viewfinder's four corners, drawn over the camera so it says where the
+// code goes without covering it.
+function Reticle() {
+  const corner = "absolute h-[46px] w-[46px] border-primary"
+  return (
+    <View pointerEvents="none" className="absolute inset-0 items-center justify-center">
+      <View className="h-[208px] w-[208px]">
+        <View className={`${corner} left-0 top-0 rounded-tl-[20px] border-l-[3px] border-t-[3px]`} />
+        <View className={`${corner} right-0 top-0 rounded-tr-[20px] border-r-[3px] border-t-[3px]`} />
+        <View className={`${corner} bottom-0 left-0 rounded-bl-[20px] border-b-[3px] border-l-[3px]`} />
+        <View className={`${corner} bottom-0 right-0 rounded-br-[20px] border-b-[3px] border-r-[3px]`} />
+      </View>
+    </View>
   )
 }
 
@@ -158,9 +194,7 @@ export function PairScanScreen({
   if (paired) {
     return (
       <View className="flex-1 bg-background">
-        <View className="px-4 pb-3 pt-2">
-          <Text variant="heading">Pair a machine</Text>
-        </View>
+        <NavRow label="Close" onPress={onDone} />
         <PairedCard paired={paired} device={device} onDone={onDone} />
       </View>
     )
@@ -168,11 +202,8 @@ export function PairScanScreen({
 
   return (
     <View className="flex-1 bg-background">
-      <View className="px-4 pb-3 pt-2">
-        <Text variant="heading">Pair a machine</Text>
-        <Text variant="meta" className="mt-[3px]">Scan the code the machine shows, or paste it.</Text>
-      </View>
-      <PageScroller contentContainerClassName="gap-[14px] px-3" bottomInset={bottomInset} keyboardShouldPersistTaps="handled">
+      <NavRow label="Cancel" onPress={() => { attempt.current += 1; onCancel() }} />
+      <PageScroller contentContainerClassName="grow gap-[14px] px-4" bottomInset={bottomInset} keyboardShouldPersistTaps="handled">
         {found ? (
           <Card className="gap-3">
             <Text variant="label">Machine</Text>
@@ -240,10 +271,11 @@ export function PairScanScreen({
             <Button title="Scan again" variant="ghost" shape="block" disabled={pairing} onPress={() => { attempt.current += 1; setRead(undefined); setPasted(""); setRefusal("") }} />
           </Card>
         ) : mode === "type" ? null : cameraReady && !cameraRefused ? (
-          <View className="h-[300px] overflow-hidden rounded-xl border border-border">
+          <View className="min-h-[300px] flex-1 overflow-hidden rounded-[20px] bg-code">
             <Scanner onScanned={onScanned} />
-            <View pointerEvents="none" className="absolute inset-x-3 bottom-3 rounded-lg bg-desk/80 px-3 py-2.5">
-              <Text className="text-center text-[12px] text-foreground">
+            <Reticle />
+            <View pointerEvents="none" className="absolute inset-x-[18px] bottom-[18px]">
+              <Text className="text-center font-sans text-[12.5px] leading-[19px] text-muted-foreground">
                 Point at the pairing code that domovoid pair prints on the machine.
               </Text>
             </View>
@@ -263,8 +295,8 @@ export function PairScanScreen({
           <Text className="px-1 font-sans-medium text-[11.5px] text-destructive">{read.reason}</Text>
         ) : null}
         {found ? null : (
-          <Card className="gap-1.5">
-            <Text variant="label">Or type the code</Text>
+          <View className="gap-[9px] rounded-[16px] border border-border px-[15px] py-[13px]">
+            <Text className="font-sans text-[12.5px] text-strong">Or type the code</Text>
             <View className="flex-row items-center gap-2">
               <TextInput
                 accessibilityLabel="Pairing code"
@@ -278,19 +310,19 @@ export function PairScanScreen({
                 placeholder="domovoi-pair:1:…"
                 placeholderTextColor={palette.faint}
                 selectionColor={palette.primary}
-                className="min-h-tap flex-1 rounded-md border border-border bg-code px-3 font-mono text-[11px] text-foreground"
+                className="min-h-tap flex-1 rounded-[14px] bg-accent px-3.5 font-mono text-[11px] text-foreground"
               />
               <Button
                 title="Paste"
+                variant="quiet"
                 onPress={() => void readClipboard().then((text) => {
                   setPasted(text)
                   setRead(text.trim() ? readPairingScan(text) : undefined)
                 })}
               />
             </View>
-          </Card>
+          </View>
         )}
-        <Button title="Cancel" variant="ghost" shape="block" onPress={() => { attempt.current += 1; onCancel() }} />
       </PageScroller>
     </View>
   )

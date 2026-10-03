@@ -70,6 +70,34 @@ describe("pairing by camera", () => {
     expect(screen.queryByRole("button", { name: "Pair with this machine" })).toBeNull()
   })
 
+  // Phone v2 frames 09 and 09b: a close control and the screen's name in a
+  // nav row, rather than a page heading over a Cancel at the foot.
+  it("heads pairing with a close control and the screen's name", async () => {
+    const onCancel = jest.fn()
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("")} onPaired={jest.fn()} onCancel={onCancel} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
+    )
+
+    expect(screen.getByText("Pair with a machine")).toBeTruthy()
+    expect(screen.queryByText("Pair a machine")).toBeNull()
+    expect(screen.getAllByRole("button", { name: "Cancel" })).toHaveLength(1)
+    await fireEvent.press(screen.getByRole("button", { name: "Cancel" }))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it("closes from the same control once paired", async () => {
+    const onDone = jest.fn()
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onDone={onDone} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" device="phone" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(screen.getByText("Paired with djs-macbook-pro-1")).toBeOnTheScreen())
+
+    expect(screen.getByText("Pair with a machine")).toBeTruthy()
+    await fireEvent.press(screen.getByRole("button", { name: "Close" }))
+    expect(onDone).toHaveBeenCalledTimes(1)
+  })
+
   it("keeps the typed fallback explicit beside the camera", async () => {
     await render(
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("")} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
