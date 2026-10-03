@@ -499,6 +499,22 @@ it("asks before removing the login service, naming what goes and what stays", as
   expect(await within(section).findByText("Removed. Quitting Domovoi now stops the daemon and every session on it.")).toBeTruthy()
 })
 
+// Review P3-8: a confirmation closed because Remove locked (a turn started)
+// does not come back on its own when the lock lifts.
+it("drops an open removal confirmation when Remove locks", async () => {
+  const user = userEvent.setup()
+  const daemon = { title: "Connected to the installed Domovoi service", detail: "", owner: "outside" as const, serviceInstalled: true, serviceRunning: true, platform: "darwin" as const }
+  const remove = vi.fn()
+  const { rerender } = render(<SettingsShell {...shellProps()} localDaemon={{ ...daemon, service: { install: vi.fn(), remove } }} />)
+  await user.click(within(screen.getByRole("region", { name: "Daemon on this machine" })).getByRole("button", { name: "Remove" }))
+  expect(screen.getByRole("alertdialog")).toBeTruthy()
+  rerender(<SettingsShell {...shellProps()} localDaemon={{ ...daemon, service: { install: vi.fn(), remove, refusal: "1 turn is running (Migrate billing webhooks)." } }} />)
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  rerender(<SettingsShell {...shellProps()} localDaemon={{ ...daemon, service: { install: vi.fn(), remove } }} />)
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  expect(remove).not.toHaveBeenCalled()
+})
+
 it("names lingering in the Linux removal, since the installer turns off only what it turned on", async () => {
   const user = userEvent.setup()
   render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "linux", service: { install: vi.fn(), remove: vi.fn() } }} />)

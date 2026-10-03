@@ -279,6 +279,11 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
       : unknown ? "Install and Remove are off: this app did not start that daemon." : "Remove is off: nothing is installed."
   const installLocked = !live || installed || unknown || busy || updating || Boolean(live.refusal)
   const removeLocked = !live || !installed || busy || updating || Boolean(live.refusal)
+  // Review P3-8: a confirmation that Remove locking closed stays closed when
+  // the lock lifts; the person asks again.
+  useEffect(() => {
+    if (removeLocked) setConfirmingRemove(false)
+  }, [removeLocked])
   return (
     <section aria-labelledby="settings-daemon" className="flex flex-col gap-3 rounded-lg border bg-card p-4">
       <div className="flex flex-col gap-1">
