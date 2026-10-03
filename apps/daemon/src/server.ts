@@ -302,7 +302,7 @@ import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { TerminalReplayBuffer, type TerminalReplayRecord } from "./terminal-replay.js"
-import { pairingAddressFor } from "./pairing-address.js"
+import { certificateHostNames, pairingAddressFor } from "./pairing-address.js"
 import { searchSessions } from "./session-search.js"
 import {
   type RpcOutboundBackpressureOptions,
@@ -2939,7 +2939,7 @@ export class DomovoiDaemon {
         requestHandler,
       )
       : (requestHandler: Parameters<typeof createServer>[1]) => createServer(requestHandler)
-    this.#http = listen(this.#requestHandler(() => this.address))
+    this.#http = listen(this.#requestHandler(() => this.address && { hosts: [this.address.host], port: this.address.port }))
     this.#rpcServer(this.#http)
 
     await new Promise<void>((resolve, reject) => {
@@ -2961,9 +2961,9 @@ export class DomovoiDaemon {
     return this.address!
   }
 
-  // Shared by the loopback and tailnet listeners. listener: the address and
-  // port the request arrived on, which an artifact request's Host must name.
-  #requestHandler(listener: () => { host: string; port: number } | undefined): Parameters<typeof createServer>[1] {
+  // Shared by the loopback and tailnet listeners. listener: the hosts an
+  // artifact request's Host may name on the listener it arrived on, and its port.
+  #requestHandler(listener: () => { hosts: readonly string[]; port: number } | undefined): Parameters<typeof createServer>[1] {
     return (request, response) => {
       if (request.url === "/healthz") {
         response.writeHead(200, { "content-type": "application/json" })
@@ -3095,8 +3095,13 @@ export class DomovoiDaemon {
     if ("refused" in certificate) return refuse(certificate.refused!, false, "notAfter" in certificate ? certificate.notAfter : undefined)
     const { notAfter } = certificate
     let server: HttpServer
+    // Review of 049b1383 (P2-4): a phone dials the certificate's name, not
+    // the address, and builds preview URLs from it, so an artifact request may
+    // name the address, a name on the certificate or the advertised tailnet
+    // name. TLS has already held the connection to this certificate.
+    const hosts = [address, ...certificateHostNames(options.tls.cert.toString("utf8")), ...(this.#tailnetHost ? [this.#tailnetHost] : [])]
     try {
-      server = createSecureServer({ cert: options.tls.cert, key: options.tls.key }, this.#requestHandler(() => ({ host: address, port })))
+      server = createSecureServer({ cert: options.tls.cert, key: options.tls.key }, this.#requestHandler(() => ({ hosts, port })))
     } catch {
       // Node names only "key values mismatch" or a parse failure here.
       return refuse("The tailnet certificate and key do not belong together, so the daemon answers on this computer only.", false, notAfter)
@@ -5350,9 +5355,9 @@ export class DomovoiDaemon {
     }
   }
 
-  #acceptsHost(host: string | undefined, address: { host: string; port: number } | undefined): boolean {
-    if (!host || !address) return false
-    return hostAuthorityMatches(host, address.host, address.port)
+  #acceptsHost(host: string | undefined, listener: { hosts: readonly string[]; port: number } | undefined): boolean {
+    if (!host || !listener) return false
+    return listener.hosts.some((name) => hostAuthorityMatches(host, name, listener.port))
   }
 
   #enqueueMutation(task: () => Promise<void>): Promise<void> {

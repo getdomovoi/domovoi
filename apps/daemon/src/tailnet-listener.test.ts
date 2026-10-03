@@ -2,16 +2,18 @@ import { execFile } from "node:child_process"
 import { X509Certificate } from "node:crypto"
 import { once } from "node:events"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { request as httpsRequest } from "node:https"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
-import { deviceIssueCodeResultSchema, protocolVersion, tailnetListenerStatusSchema } from "@getdomovoi/protocol"
+import { demoWorkspace, deviceIssueCodeResultSchema, protocolVersion, tailnetListenerStatusSchema } from "@getdomovoi/protocol"
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
 import { DomovoiDaemon, type DaemonErrorEntry } from "./server.js"
+import { SqliteWorkspaceStore } from "./store.js"
 import { tailnetCertificateCheck, type DaemonTailnetListenerOptions } from "./tailnet-listener.js"
 
 // TailnetReach (Q404 A): a second listener, TLS only, on this machine's
@@ -162,6 +164,49 @@ describe("the tailnet listener", () => {
     expect((await hello(socket, served.authToken)).error).toBeUndefined()
     const issued = deviceIssueCodeResultSchema.parse((await call(socket, "device.issueCode", { targetClient: "phone" })).result)
     expect(issued.pairingAddress).toMatchObject({ url: `wss://${name}:${port}/rpc`, label: name })
+  })
+
+  // Review of 049b1383 (P2-4): a phone dials wss://<certificate name>:port and
+  // builds preview URLs from that name, so the tailnet listener serves an
+  // artifact to a Host naming the certificate, and still to no other.
+  it("serves a signed preview to the certificate's name on the tailnet", async (context) => {
+    if (!ipv6) context.skip()
+    const workspace = await mkdtemp(join(tmpdir(), "domovoi-tailnet-artifact-"))
+    try {
+      await writeFile(join(workspace, "preview.html"), "<h1>Tailnet preview</h1>")
+      const snapshot = structuredClone(demoWorkspace)
+      snapshot.sessions.find((candidate) => candidate.id === "session-billing")!.workspacePath = workspace
+      const artifact = snapshot.artifacts.find((candidate) => candidate.id === "artifact-preview")!
+      artifact.path = "preview.html"
+      artifact.mimeType = "text/html"
+      const served = new DomovoiDaemon({
+        port: 0, allowRemoteTransport: true, store: new SqliteWorkspaceStore(":memory:", snapshot),
+        tailnetListener: { address: "::1", tls: { cert: certificate, key } },
+      })
+      daemons.push(served)
+      const { port } = await served.start()
+      const socket = await open(`ws://127.0.0.1:${port}/rpc`)
+      expect((await hello(socket, served.authToken)).error).toBeUndefined()
+      const access = (await call(socket, "artifact.authorize", {
+        sessionId: artifact.sessionId, artifactId: artifact.id, revision: artifact.revision, purpose: "preview", client: "desktop",
+      })).result as { sessionId: string; revision: number; purpose: string; expiresAt: number; signature: string }
+      const path = `/artifacts/${artifact.id}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&expires=${access.expiresAt}&signature=${access.signature}`
+      const fetched = (host: string) => new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const request = httpsRequest({ host: "::1", port, path, ca: certificate, servername: name, headers: { host } }, (response) => {
+          let body = ""
+          response.on("data", (chunk) => { body += String(chunk) })
+          response.on("end", () => resolve({ status: response.statusCode ?? 0, body }))
+        })
+        request.on("error", reject)
+        request.end()
+      })
+      expect(await fetched(`${name}:${port}`)).toEqual({ status: 200, body: "<h1>Tailnet preview</h1>" })
+      expect(await fetched(`[::1]:${port}`)).toMatchObject({ status: 200 })
+      expect(await fetched(`other.tail4c2e.ts.net:${port}`)).toMatchObject({ status: 404 })
+      expect(await fetched(`${name}:${port + 1}`)).toMatchObject({ status: 404 })
+    } finally {
+      await rm(workspace, { recursive: true, force: true })
+    }
   })
 
   it("closes with the daemon", async (context) => {
