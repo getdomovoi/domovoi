@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest"
 import { heldBackView, trustSummary } from "./held-back"
 
 const digest = `sha256:${"a".repeat(64)}`
+// tool.inventory's digest over the git filter block it lists.
+const reviewDigest = `sha256:${"b".repeat(64)}`
 const home = "/Users/ada"
 
 // The Skills design's Tools sample (J45), as the protocol tests carry it: two
@@ -198,6 +200,77 @@ describe("heldBackView", () => {
     const view = loaded(heldBackView(trusted))
     expect(view.reason).toBe("Held back, although this repository is trusted.")
     expect(view.awaitsTrust).toBe(false)
+  })
+
+  // A filter the repository's own Git config sets is held back for every
+  // agent, so its file names no agent.
+  it("lists the repository's git filter drivers under their git config file", () => {
+    const filtered = toolInventorySchema.parse({
+      ...inventory(),
+      repository: {
+        ...inventory().repository,
+        gitFilters: {
+          files: [{ path: ".git/config", scope: "local" }],
+          entries: [
+            { driver: "sops", operation: "smudge", command: "sops -d", required: "true", file: ".git/config", scope: "local", heldBack: true },
+            { driver: "sops", operation: "clean", command: "sops -e", required: "true", file: ".git/config", scope: "local", heldBack: true },
+          ],
+          omittedEntries: 0,
+          reviewDigest,
+        },
+      },
+    })
+    const view = loaded(heldBackView(filtered))
+    const git = view.files.at(-1)!
+    expect(git).toEqual({
+      key: "git\u0000local\u0000.git/config",
+      path: ".git/config",
+      source: "local git config",
+      providers: [],
+      counts: "1 filter driver",
+      rows: [{ key: "local\u0000.git/config\u0000sops", provider: "", kind: "Filter driver", name: "sops", detail: "smudge sops -d · clean sops -e" }],
+    })
+    // Each command is an entry, as the daemon lists it.
+    expect(view.held).toBe(9)
+    expect(view.lead).toBe("None of it loads for any agent.")
+  })
+
+  // One included file can be read from the repository's config and from a
+  // worktree's config.worktree: it is one group per scope, and each group has
+  // its own identity, so the screen keeps both (bot finding 4151622854).
+  it("keeps one group per git config file and scope, each with its own key", () => {
+    const shared = toolInventorySchema.parse({
+      ...inventory(),
+      repository: {
+        ...inventory().repository,
+        gitFilters: {
+          files: [{ path: "shared.gitconfig", scope: "local" }, { path: "shared.gitconfig", scope: "worktree" }],
+          entries: [
+            { driver: "sops", operation: "smudge", command: "sops -d", required: "true", file: "shared.gitconfig", scope: "local", heldBack: true },
+            { driver: "sops", operation: "smudge", command: "sops -d", required: "true", file: "shared.gitconfig", scope: "worktree", heldBack: true },
+          ],
+          omittedEntries: 0,
+          reviewDigest,
+        },
+      },
+    })
+    const groups = loaded(heldBackView(shared)).files.filter((file) => file.path === "shared.gitconfig")
+    expect(groups.map((file) => file.source)).toEqual(["local git config", "worktree git config"])
+    const keys = loaded(heldBackView(shared)).files.map((file) => file.key)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it("does not call the list whole when the git config could not be read", () => {
+    const unread = toolInventorySchema.parse({
+      ...inventory(),
+      repository: { ...inventory().repository, gitFilters: { files: [], entries: [], omittedEntries: 0, unreadable: { reason: "too-large" }, reviewDigest } },
+    })
+    expect(loaded(heldBackView(unread)).incomplete).toBe("the Git config could not be read")
+    const cut = toolInventorySchema.parse({
+      ...inventory(),
+      repository: { ...inventory().repository, gitFilters: { files: [], entries: [], omittedEntries: 2, reviewDigest } },
+    })
+    expect(loaded(heldBackView(cut)).incomplete).toBe("2 entries were left out")
   })
 
   it("has nothing to hold back when no project is open", () => {

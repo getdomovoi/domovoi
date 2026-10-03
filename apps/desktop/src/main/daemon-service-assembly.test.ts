@@ -1,3 +1,4 @@
+import { nodeRuntimeFileSystem, prepareDaemonRuntime } from "@getdomovoi/daemon"
 import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
@@ -6,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { createDesktopDaemonService } from "./daemon-service-assembly.js"
 import type { DaemonModule } from "./daemon-module.js"
-import { daemonRuntimeLayout } from "./daemon-service.js"
 import type { DesktopDaemon } from "./desktop-daemon.js"
 
 // Security review round 2 of #577 (P1): the service calls act for the profile
@@ -20,7 +20,8 @@ describe("the login service assembled for this app's profile", () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-assembly-")))
     roots.push(root)
     const resourcesPath = join(root, "Resources")
-    const shipped = daemonRuntimeLayout(resourcesPath, process.platform)
+    // The runtime the app ships, in <resources>/daemon-runtime.
+    const shipped = daemonRuntimeLayoutUnder(join(resourcesPath, "daemon-runtime"))
     await mkdir(dirname(shipped.nodePath), { recursive: true })
     await mkdir(dirname(shipped.daemonEntryPath), { recursive: true })
     await writeFile(shipped.nodePath, "node")
@@ -45,6 +46,10 @@ describe("the login service assembled for this app's profile", () => {
       readDaemonServiceStatus: vi.fn(async () => ({ installed: true, running: true, detail: "" })),
       readDaemonServiceRuntimeCopy: vi.fn(async () => ({ installed: false as const })),
       removeUnusedDaemonRuntimes: vi.fn(async () => ({ removed: [] })),
+      // The daemon's own copy routine, run for real against the scratch
+      // directories.
+      prepareDaemonRuntime,
+      nodeRuntimeFileSystem,
     }
   }
 

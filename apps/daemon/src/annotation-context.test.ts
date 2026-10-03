@@ -2,8 +2,20 @@ import { describe, expect, it, vi } from "vitest"
 
 import { demoWorkspace, type Annotation } from "@getdomovoi/protocol"
 
-import { agentPromptWithAnnotations } from "./annotation-context.js"
+import {
+  agentPromptWithAnnotations,
+  legacyOpenCommentReview,
+  noAnnotationReview,
+  resolveAnnotationReview,
+  type AnnotationReview,
+} from "./annotation-context.js"
 import { prepareAnnotationTurn } from "./annotation-visual-turn.js"
+
+// Names every comment in the snapshot, whatever its session or status, so the
+// session and open filters below are tested on comments a message did name.
+function namingEvery(snapshot: { annotations: Annotation[] }): AnnotationReview {
+  return { annotationIds: new Set(snapshot.annotations.map((annotation) => annotation.id)) }
+}
 
 function availableAnnotation(options: {
   id: string
@@ -62,7 +74,7 @@ describe("agentPromptWithAnnotations", () => {
     snapshot.annotations[0]!.body = "Keep <review> staging-only."
     snapshot.annotations[1]!.status = "resolved"
 
-    const prompt = agentPromptWithAnnotations(snapshot, "session-billing", "Revise the plan.")
+    const prompt = agentPromptWithAnnotations(snapshot, "session-billing", namingEvery(snapshot), "Revise the plan.")
 
     expect(prompt).toContain("<domovoi_review_context>")
     expect(prompt).toContain('"annotationId":"annotation-migration-machine"')
@@ -74,9 +86,43 @@ describe("agentPromptWithAnnotations", () => {
   })
 
   it("leaves the user prompt unchanged without unresolved annotations", () => {
-    expect(agentPromptWithAnnotations(demoWorkspace, "session-onboarding", "Continue.")).toBe(
+    expect(agentPromptWithAnnotations(demoWorkspace, "session-onboarding", namingEvery(demoWorkspace), "Continue.")).toBe(
       "Continue.",
     )
+  })
+
+  it("leaves the user prompt unchanged when the message names no comment, however many are open", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    expect(snapshot.annotations.some((annotation) => annotation.sessionId === "session-billing" && annotation.status === "open")).toBe(true)
+    expect(agentPromptWithAnnotations(snapshot, "session-billing", noAnnotationReview, "Continue.")).toBe("Continue.")
+  })
+
+  // Ruling Q402: the one place a message without a review gets comments.
+  it("resolves a message without a review to every open comment of its session, and no build basis", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.annotations[1]!.status = "open"
+    snapshot.annotations.push({ ...structuredClone(snapshot.annotations[1]!), id: "annotation-closed", status: "resolved" })
+    snapshot.annotations.push({ ...structuredClone(snapshot.annotations[1]!), id: "annotation-elsewhere", sessionId: "session-onboarding" })
+    const legacy = resolveAnnotationReview(snapshot, "session-billing", undefined)
+    expect(legacy).toEqual(legacyOpenCommentReview(snapshot, "session-billing"))
+    expect([...legacy.annotationIds].sort()).toEqual(["annotation-migration-machine", "annotation-replay-copy"])
+    expect(legacy).not.toHaveProperty("buildBasis")
+    // A review, even one naming a single comment, never widens to the default.
+    expect([...resolveAnnotationReview(snapshot, "session-billing", { annotationIds: ["annotation-replay-copy"] }).annotationIds])
+      .toEqual(["annotation-replay-copy"])
+  })
+
+  it("leaves out an open comment the message did not name", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.annotations[1]!.status = "open"
+    const prompt = agentPromptWithAnnotations(
+      snapshot,
+      "session-billing",
+      { annotationIds: new Set(["annotation-replay-copy"]) },
+      "Revise.",
+    )
+    expect(unresolvedAnnotations(prompt).map((annotation) => annotation.annotationId)).toEqual(["annotation-replay-copy"])
+    expect(prompt).not.toContain("annotation-migration-machine")
   })
 
   it("bounds annotation context before sending it to a provider", () => {
@@ -88,7 +134,7 @@ describe("agentPromptWithAnnotations", () => {
       updatedAt: new Date(Date.UTC(2026, 7, 25, 22, index)).toISOString(),
     }))
 
-    const prompt = agentPromptWithAnnotations(snapshot, "session-billing", "Continue.")
+    const prompt = agentPromptWithAnnotations(snapshot, "session-billing", namingEvery(snapshot), "Continue.")
 
     expect(prompt.length).toBeLessThan(25_000)
     expect(prompt).toContain('"omittedAnnotationCount":')
@@ -111,6 +157,7 @@ describe("agentPromptWithAnnotations", () => {
     const vision = await prepareAnnotationTurn(
       snapshot,
       "session-billing",
+      namingEvery(snapshot),
       "Revise.",
       { vision: true },
       { read },
@@ -125,6 +172,7 @@ describe("agentPromptWithAnnotations", () => {
     const textOnly = await prepareAnnotationTurn(
       snapshot,
       "session-billing",
+      namingEvery(snapshot),
       "Revise.",
       { vision: false },
       { read },
@@ -152,6 +200,7 @@ describe("agentPromptWithAnnotations", () => {
     const prepared = await prepareAnnotationTurn(
       snapshot,
       "session-billing",
+      namingEvery(snapshot),
       "Revise.",
       { vision: true },
       { read },
@@ -218,6 +267,7 @@ describe("agentPromptWithAnnotations", () => {
     const prepared = await prepareAnnotationTurn(
       snapshot,
       "session-billing",
+      namingEvery(snapshot),
       "Revise.",
       { vision: true },
       { read },
@@ -271,6 +321,7 @@ describe("agentPromptWithAnnotations", () => {
     const prepared = await prepareAnnotationTurn(
       snapshot,
       "session-billing",
+      namingEvery(snapshot),
       "Revise.",
       { vision: true },
       { read },
@@ -320,6 +371,7 @@ describe("agentPromptWithAnnotations", () => {
     const prepared = await prepareAnnotationTurn(
       snapshot,
       "session-billing",
+      namingEvery(snapshot),
       "Revise.",
       { vision: true },
       { read },

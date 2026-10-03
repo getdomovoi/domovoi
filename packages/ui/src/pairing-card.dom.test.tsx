@@ -3,6 +3,7 @@ import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
+import { CommandLinksProvider } from "./command-links"
 import { PairingCard, type IssuedPairingCode } from "./pairing-card"
 
 beforeEach(() => { vi.useFakeTimers({ shouldAdvanceTime: true }) })
@@ -10,6 +11,7 @@ afterEach(() => { cleanup(); vi.useRealTimers() })
 
 const address = { url: "wss://mac-mini-m4.tail4c2e.ts.net:47831/rpc", label: "mac-mini-m4.tail4c2e.ts.net", loopback: false }
 const issued = (overrides: Partial<IssuedPairingCode> = {}): IssuedPairingCode => ({
+  pairingId: `pairing-${"c".repeat(32)}`,
   code: "hearth-quiet-ember-42",
   expiresAt: new Date(Date.now() + 180_000).toISOString(),
   pairingAddress: address,
@@ -31,6 +33,14 @@ it("offers a code for a phone, a tablet or a browser, and lists what a paired de
   const grants = screen.getByRole("list", { name: "A PAIRED DEVICE CAN" })
   for (const line of phoneAndTabletPromise) expect(within(grants).getByText(line.text)).toBeTruthy()
   expect(screen.getByText("While the daemon runs inside this app, quitting the app disconnects every paired device.")).toBeTruthy()
+})
+
+// Q336 A: the command beside the code runs as printed on this machine.
+it("names the shipped launcher by its full path where no link exists", async () => {
+  const launcher = "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/bin/domovoid"
+  const commandLinks = vi.fn(async () => ({ report: { available: true, directory: "~/.local/bin", onPath: true, commands: [{ name: "domovoid", launcher, state: "absent" }] } }))
+  render(<CommandLinksProvider bridge={{ commandLinks }}><PairingCard connected onIssueCode={vi.fn()} onCopy={vi.fn()} /></CommandLinksProvider>)
+  expect(await screen.findByText(`${launcher} pair --client phone`)).toBeTruthy()
 })
 
 it("shows the daemon's code, its address and a countdown, and copies what the device pastes", async () => {
@@ -76,7 +86,10 @@ it("locks the code for a watching window and names the refusal", () => {
   card({ readOnly: true })
   expect(screen.getByRole("button", { name: "Show a pairing code" }).hasAttribute("disabled")).toBe(true)
   expect(screen.getByText("Locked: this window is watching only, and only a full client can ask for a code.")).toBeTruthy()
-  expect(screen.getByText("pair.issue refused · watch_only_client")).toBeTruthy()
+  // Q347 A: the daemon refuses device.issueCode from a watching credential
+  // ("Watching-only credentials may only observe", apps/daemon/src/server.ts).
+  expect(screen.getByText("device.issueCode refused · watching-only credential")).toBeTruthy()
+  expect(screen.queryByText(/pair\.issue|watch_only_client/)).toBeNull()
 })
 
 it("draws no QR when a phone could not reach or trust the daemon, and says which", async () => {

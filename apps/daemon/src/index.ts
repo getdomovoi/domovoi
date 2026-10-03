@@ -124,6 +124,14 @@ Environment:
   DOMOVOI_WINDOWS_POWERSHELL      Guest path to powershell.exe for WSL service install
 `
 
+// The version in this package's manifest, beside dist/.
+function ownVersion(): string {
+  const manifest = JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ) as { version: string }
+  return manifest.version
+}
+
 async function main() {
   const args = process.argv.slice(2)
   if (args.length === 1 && ["-h", "--help"].includes(args[0]!)) {
@@ -131,10 +139,7 @@ async function main() {
     return
   }
   if (args.length === 1 && ["-v", "--version"].includes(args[0]!)) {
-    const manifest = JSON.parse(
-      readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-    ) as { version: string }
-    process.stdout.write(`${manifest.version}\n`)
+    process.stdout.write(`${ownVersion()}\n`)
     return
   }
   if (args[0] === "secret") {
@@ -190,6 +195,9 @@ async function main() {
       user: username,
       environment: process.env,
       workingDirectory: process.cwd(),
+      // Q408 A: names the runtime copy an install from an app's runtime
+      // makes. Unread, only that install refuses.
+      ...(() => { try { return { version: ownVersion() } } catch { return {} } })(),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
     })

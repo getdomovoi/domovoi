@@ -607,6 +607,14 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Add print/share-safe plan rendering without weakening the preview sandbox
 </li>
+<li>[ ] Remove the legacy comment default before protocol 0.8.0 ships (ruling Q402)
+<ul>
+<li><code>session.send</code> carries <code>review</code>, the comments and build basis a message sends (rulings Q348 A and Q342 A). Until every client sends it, a message without one still attaches every open comment of its session: <code>legacyOpenCommentReview</code> in <code>apps/daemon/src/annotation-context.ts</code>.
+</li>
+<li>Remove that function, so a message without a review sends no comment, once desktop, web, phone, tablet and the command line send <code>review</code>. Protocol 0.8.0 does not ship before then.
+</li>
+</ul>
+</li>
 </ul>
 <h4 id="skills">Skills</h4>
 <ul>
@@ -878,7 +886,7 @@ td { color: var(--ink2); }
 </li>
 <li>Building that probe found the divergence the vector work is for: Hermes has no WebCrypto, so a pure JS codec calling <code>crypto.getRandomValues</code> throws on a phone while passing under Node. The probe takes its randomness from the platform key service instead. Vectors run by two Node runners cannot catch this class of defect.
 </li>
-<li>Still unproven: iOS. Secure Enclave needs an Xcode 26 build, Expo SDK 57 is written in Swift 6.2, and Xcode 26 requires Apple Silicon, so the Intel Mac available here cannot build the app at all. One Android device is also not a fleet.
+<li>iOS, 2026-10-02: a development build from Xcode 27 on an Apple Silicon Mac ran the same probe on an iPhone 17 Pro Max. It reported <code>secure-enclave</code> custody, a 65 byte public point, a handle that survived a reopen, a 32 byte shared secret identical on both sides, and the probe key deleted. The iPhone 17 Pro simulator on iOS 26.5 passes the same steps and also reports <code>secure-enclave</code>, which shows nothing about custody on phone hardware. One iPhone and one Android device are still not a fleet, and neither run measured key-service latency.
 </li>
 <li>Node 22 measurements compare option A's X25519/ChaChaPoly with option C's P-256/AES-GCM using built-in crypto, published A/B fixtures and explicitly derived P-256 fixtures. Full IK, daemon responder and established-frame costs are recorded for one Intel Linux host in <code>docs/relay-node-benchmarks.md</code>. Phone costs and protected key-service latency remain open; this does not freeze a suite or supply real phone-runtime evidence.
 </li>

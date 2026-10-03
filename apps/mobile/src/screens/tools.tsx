@@ -2,6 +2,7 @@ import { useState } from "react"
 import { Pressable, View } from "react-native"
 import type { ToolInventory } from "@getdomovoi/protocol"
 
+import { BlurBackdrop } from "../components/blur-backdrop"
 import { ConnectionBanner } from "../components/connection-banner"
 import { FloatingBar } from "../components/floating-bar"
 import { PageScroller } from "../components/page-scroller"
@@ -64,73 +65,76 @@ export function ToolsScreen({
         <Button title="Refresh" onPress={onRefresh} disabled={load.state === "loading" || !connected} />
       </View>
 
-      <PageScroller contentContainerClassName="gap-3 px-3.5" bottomInset={footprint}>
-        <ConnectionBanner notice={notice} />
+      {/* What the footer card blurs on Android. The card stays outside it. */}
+      <BlurBackdrop style={{ flex: 1 }}>
+        <PageScroller contentContainerClassName="gap-3 px-3.5" bottomInset={footprint}>
+          <ConnectionBanner notice={notice} />
 
-        {load.state === "loading" ? (
-          <Text variant="meta">Reading the agents' files on {machine}.</Text>
-        ) : null}
+          {load.state === "loading" ? (
+            <Text variant="meta">Reading the agents' files on {machine}.</Text>
+          ) : null}
 
-        {load.state === "error" ? (
-          <Card className="gap-2 border-destructive">
-            <Text className="font-sans-medium text-[13px] text-destructive">Tools could not be read</Text>
-            <Text variant="meta">{load.message}</Text>
-            <Button title="Try again" className="self-start" onPress={onRefresh} disabled={!connected} />
-          </Card>
-        ) : null}
-
-        {view?.kind === "no-project" ? (
-          <Card className="gap-1.5">
-            <Text variant="section">No project is open</Text>
-            <Text variant="meta">Open a project, and Domovoi reads the files its agents would load there.</Text>
-          </Card>
-        ) : null}
-
-        {view?.kind === "repository" ? (
-          <>
-            <Card className="gap-1.5">
-              <Text variant="section">{view.heading}</Text>
-              <Text variant="meta">{view.lead}</Text>
-              {view.instructionFiles ? (
-                <View className="flex-row flex-wrap items-baseline gap-x-1.5">
-                  <Text variant="meta">Instruction files load either way:</Text>
-                  <Text variant="machine" className="text-strong">{view.instructionFiles}</Text>
-                </View>
-              ) : null}
-              <Text variant="machine">{view.root} · {view.trust}</Text>
+          {load.state === "error" ? (
+            <Card className="gap-2 border-destructive">
+              <Text className="font-sans-medium text-[13px] text-destructive">Tools could not be read</Text>
+              <Text variant="meta">{load.message}</Text>
+              <Button title="Try again" className="self-start" onPress={onRefresh} disabled={!connected} />
             </Card>
+          ) : null}
 
-            {view.refusals.length > 0 ? (
-              <Card flush className="border-warn-border">
-                <View className="gap-1 px-[13px] py-3">
-                  <Text className="font-sans-medium text-[13px] text-warn-fg">{view.name} cannot be trusted on this machine</Text>
-                  <Text variant="meta">Its agents would also load what is listed here, and trust cannot cover it.</Text>
-                </View>
-                {view.refusals.map((refusal) => (
-                  <View key={refusal.key} className="gap-0.5 border-t border-border px-[13px] py-2.5">
-                    <Text variant="machine" className="text-strong">{refusal.provider}</Text>
-                    <Text variant="meta">{refusal.label}</Text>
-                    <Text variant="machine" className="text-faint">{refusal.path}</Text>
+          {view?.kind === "no-project" ? (
+            <Card className="gap-1.5">
+              <Text variant="section">No project is open</Text>
+              <Text variant="meta">Open a project, and Domovoi reads the files its agents would load there.</Text>
+            </Card>
+          ) : null}
+
+          {view?.kind === "repository" ? (
+            <>
+              <Card className="gap-1.5">
+                <Text variant="section">{view.heading}</Text>
+                <Text variant="meta">{view.lead}</Text>
+                {view.instructionFiles ? (
+                  <View className="flex-row flex-wrap items-baseline gap-x-1.5">
+                    <Text variant="meta">Instruction files load either way:</Text>
+                    <Text variant="machine" className="text-strong">{view.instructionFiles}</Text>
                   </View>
-                ))}
-                {view.omittedRefusals > 0 ? (
-                  <Text variant="meta" className="border-t border-border px-[13px] py-2.5">
-                    {view.omittedRefusals} more {view.omittedRefusals === 1 ? "reason is" : "reasons are"} not listed.
-                  </Text>
                 ) : null}
+                <Text variant="machine">{view.root} · {view.trust}</Text>
               </Card>
-            ) : null}
 
-            {view.files.map((file) => <FileCard key={file.path} file={file} reason={view.reason} />)}
+              {view.refusals.length > 0 ? (
+                <Card flush className="border-warn-border">
+                  <View className="gap-1 px-[13px] py-3">
+                    <Text className="font-sans-medium text-[13px] text-warn-fg">{view.name} cannot be trusted on this machine</Text>
+                    <Text variant="meta">Its agents would also load what is listed here, and trust cannot cover it.</Text>
+                  </View>
+                  {view.refusals.map((refusal) => (
+                    <View key={refusal.key} className="gap-0.5 border-t border-border px-[13px] py-2.5">
+                      <Text variant="machine" className="text-strong">{refusal.provider}</Text>
+                      <Text variant="meta">{refusal.label}</Text>
+                      <Text variant="machine" className="text-faint">{refusal.path}</Text>
+                    </View>
+                  ))}
+                  {view.omittedRefusals > 0 ? (
+                    <Text variant="meta" className="border-t border-border px-[13px] py-2.5">
+                      {view.omittedRefusals} more {view.omittedRefusals === 1 ? "reason is" : "reasons are"} not listed.
+                    </Text>
+                  ) : null}
+                </Card>
+              ) : null}
 
-            {view.unread.map((file) => <UnreadCard key={`${file.provider}:${file.path}`} file={file} />)}
+              {view.files.map((file) => <FileCard key={file.key} file={file} reason={view.reason} />)}
 
-            {view.incomplete ? (
-              <Text variant="meta">This list is not complete: {view.incomplete}.</Text>
-            ) : null}
-          </>
-        ) : null}
-      </PageScroller>
+              {view.unread.map((file) => <UnreadCard key={`${file.provider}:${file.path}`} file={file} />)}
+
+              {view.incomplete ? (
+                <Text variant="meta">This list is not complete: {view.incomplete}.</Text>
+              ) : null}
+            </>
+          ) : null}
+        </PageScroller>
+      </BlurBackdrop>
 
       <FloatingBar shape="card" padding="stack" onFootprint={setFootprint}>
         <View className="gap-0.5 px-1.5 py-1">

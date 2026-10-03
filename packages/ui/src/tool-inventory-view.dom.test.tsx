@@ -278,6 +278,80 @@ describe("trust states", () => {
     expect(screen.queryByText(/until you trust this repository/)).toBeNull()
   })
 
+  // Under a grant that reviewed them, the inventory marks the repository's Git
+  // filter settings not held back (#688). They are settings the grant covers,
+  // not commands that each run: an empty process turns clean and smudge off,
+  // process takes precedence over them, a later value overrides an earlier
+  // one, and a Git LFS transfer agent's path, arguments and selection are one
+  // agent. So they are listed as reviewed settings apart from what runs when a
+  // session starts, every one of them, and the tab never says nothing runs
+  // while they are covered (bot finding 4151622860, ruling Q400).
+  function withFilters(entries: Array<Record<string, unknown>>) {
+    const trusted = inventory([claude({}, { heldBack: true })])
+    return toolInventorySchema.parse({
+      ...trusted,
+      repository: {
+        ...trusted.repository,
+        gitFilters: {
+          files: [{ path: ".git/config", scope: "local" }],
+          entries: entries.map((entry) => ({ file: ".git/config", scope: "local", heldBack: false, ...entry })),
+          omittedEntries: 0,
+          reviewDigest: `sha256:${"c".repeat(64)}`,
+        },
+      },
+    })
+  }
+  const settingRows = (region: HTMLElement) => within(region).getAllByRole("listitem").map((row) => [
+    row.querySelector("[data-slot='setting-kind']")?.textContent,
+    row.querySelector("[data-slot='setting-name']")?.textContent,
+    row.querySelector("[data-slot='setting-field']")?.textContent,
+    row.querySelector("code")?.textContent,
+  ])
+
+  it("lists the git filter settings the grant covers apart from what runs, and does not say nothing runs", () => {
+    show(withFilters([
+      { driver: "sops", operation: "process", command: "sops filter-process", required: "true" },
+      { driver: "sops", operation: "smudge", command: "sops -d", required: "true" },
+      { driver: "sops", operation: "clean", command: "sops -e", required: "true" },
+    ]))
+
+    expect(screen.queryByText("Nothing from this repository can run when a session starts.")).toBeNull()
+    expect(screen.getByText("No agent entry from this repository runs when a session starts.")).toBeTruthy()
+    expect(screen.queryByRole("region", { name: /run when a session starts/u })).toBeNull()
+    const settings = screen.getByRole("region", { name: "3 reviewed Git filter settings are covered by this repository's trust" })
+    expect(within(settings).getByText("Git may run the filters these settings define during checkout, staging and other Git operations on files the repository's .gitattributes select. Not every setting listed runs: an empty process turns a driver's clean and smudge off, process is used before clean and smudge, and a later value replaces an earlier one.")).toBeTruthy()
+    expect(settingRows(settings)).toEqual([
+      ["Filter driver", "sops", "process", "sops filter-process"],
+      ["Filter driver", "sops", "smudge", "sops -d"],
+      ["Filter driver", "sops", "clean", "sops -e"],
+    ])
+  })
+
+  it("labels Git LFS settings as the parts of one transfer agent, not as commands", () => {
+    show(withFilters([
+      { driver: "review", operation: "lfs-transfer-path", command: "/opt/review-agent" },
+      { driver: "review", operation: "lfs-transfer-args", command: "--review-only" },
+      { driver: "review", operation: "lfs-standalone-agent", command: "review" },
+      { driver: "crypt", operation: "lfs-extension-clean", command: "crypt --clean %f" },
+    ]))
+
+    const settings = screen.getByRole("region", { name: "4 reviewed Git filter settings are covered by this repository's trust" })
+    expect(settingRows(settings)).toEqual([
+      ["Git LFS transfer agent", "review", "program", "/opt/review-agent"],
+      ["Git LFS transfer agent", "review", "arguments", "--review-only"],
+      ["Git LFS standalone agent", "review", "selects", "review"],
+      ["Git LFS extension", "crypt", "clean", "crypt --clean %f"],
+    ])
+  })
+
+  it("keeps the runs list for agent entries apart from the reviewed git filter settings", () => {
+    const value = withFilters([{ driver: "sops", operation: "smudge", command: "sops -d", required: "true" }])
+    show(toolInventorySchema.parse({ ...value, providers: [claude()] }))
+
+    expect(screen.getByRole("region", { name: "5 entries from this repository run when a session starts" })).toBeTruthy()
+    expect(screen.getByRole("region", { name: "1 reviewed Git filter setting is covered by this repository's trust" })).toBeTruthy()
+  })
+
   it("does not promise trust to a repository that cannot be trusted", () => {
     show(inventory([claude({}, { heldBack: true })], {
       state: "untrusted",

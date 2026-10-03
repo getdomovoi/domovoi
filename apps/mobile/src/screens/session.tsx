@@ -8,6 +8,7 @@ import type { ConnectionNotice } from "../connection-notice"
 
 import { AgentMarkdown } from "../components/agent-markdown"
 import { AttachSheet } from "../components/attach-sheet"
+import { BlurBackdrop } from "../components/blur-backdrop"
 import { StartLikeSheet } from "../components/start-like-sheet"
 import { Composer } from "../components/composer"
 import { ConnectionBanner } from "../components/connection-banner"
@@ -23,6 +24,7 @@ import type { ArtifactRow } from "../artifact-rows"
 import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
 import type { Attachment } from "../attachments"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
+import type { PhoneRefusal } from "../session-refusal"
 import { useTheme } from "../theme/theme-provider"
 
 // The handoff tints a step's mark with the state it is in rather than outlining
@@ -450,6 +452,8 @@ export function SessionScreen({
   onRemoveAttachment,
   starting,
   startProblem,
+  startRefusal,
+  onSeeHeldBack,
   onStartLike,
 }: {
   detail: SessionDetail
@@ -497,6 +501,10 @@ export function SessionScreen({
   // and model, with words from the person and a mode, Plan by default.
   starting: boolean
   startProblem: string
+  // A start refused over a repository git filter, and the way to the phone
+  // Tools screen that shows what is held back.
+  startRefusal?: PhoneRefusal | undefined
+  onSeeHeldBack?: (() => void) | undefined
   onStartLike: (prompt: string, mode: PermissionMode) => void
 }) {
   const [startOpen, setStartOpen] = useState(false)
@@ -560,97 +568,106 @@ export function SessionScreen({
         {access === "watching" ? <Badge label="watching" tone="outline" /> : <Badge label={detail.mode} tone="outline" />}
       </View>
 
-      <PageScroller
-        ref={thread}
-        contentContainerClassName="gap-3 px-3.5"
-        bottomInset={composerFootprint}
-        followEnd
-        onAtEndChange={(next) => { setAtEnd(next); if (next) setUnseen(0) }}
-        testID="thread"
-      >
-        <ConnectionBanner notice={notice} />
-        {detail.policyRefusal ? <PolicyRefusal refusal={detail.policyRefusal} /> : <>
-        {/* The reason the phone was picked up goes above the reading, because
-            scrolling a thread to find the decision is the slow path. */}
-        {approvalId ? (
-          <PressableCard
-            className="border-warn-border bg-warn-bg"
-            accessibilityLabel="Open the waiting approval"
-            onPress={() => onOpenApproval(approvalId)}
-          >
-            <View className="flex-row items-center gap-2">
-              <Text className="flex-1 font-sans-medium text-[12.5px] text-warn-fg">
-                {access === "full" ? "An approval is waiting" : "An approval is waiting on a full-access device"}
-              </Text>
-              <Icon name="chevron-right" tone="warn-fg" size={16} />
-            </View>
-          </PressableCard>
-        ) : null}
+      {/* What the composer and the tab bar blur on Android. Both stay outside
+          it: the composer below, the tab bar beside this screen in app.tsx. */}
+      <BlurBackdrop style={{ flex: 1 }}>
+        <PageScroller
+          ref={thread}
+          contentContainerClassName="gap-3 px-3.5"
+          bottomInset={composerFootprint}
+          followEnd
+          onAtEndChange={(next) => { setAtEnd(next); if (next) setUnseen(0) }}
+          testID="thread"
+        >
+          <ConnectionBanner notice={notice} />
+          {detail.policyRefusal ? <PolicyRefusal refusal={detail.policyRefusal} /> : <>
+          {/* The reason the phone was picked up goes above the reading, because
+              scrolling a thread to find the decision is the slow path. */}
+          {approvalId ? (
+            <PressableCard
+              className="border-warn-border bg-warn-bg"
+              accessibilityLabel="Open the waiting approval"
+              onPress={() => onOpenApproval(approvalId)}
+            >
+              <View className="flex-row items-center gap-2">
+                <Text className="flex-1 font-sans-medium text-[12.5px] text-warn-fg">
+                  {access === "full" ? "An approval is waiting" : "An approval is waiting on a full-access device"}
+                </Text>
+                <Icon name="chevron-right" tone="warn-fg" size={16} />
+              </View>
+            </PressableCard>
+          ) : null}
 
-        {plan && planPinned ? <PlanStrip plan={plan} onOpen={() => setPlanOpen(true)} /> : null}
-        {plan && !planPinned ? <PlanCard plan={plan} onEditStep={access === "full" ? onEditStep : undefined} onPin={() => onPinPlan(true)} /> : null}
+          {plan && planPinned ? <PlanStrip plan={plan} onOpen={() => setPlanOpen(true)} /> : null}
+          {plan && !planPinned ? <PlanCard plan={plan} onEditStep={access === "full" ? onEditStep : undefined} onPin={() => onPinPlan(true)} /> : null}
 
-        {artifacts.length > 0 ? <ArtifactList rows={artifacts} onOpen={onOpenArtifact} /> : null}
+          {artifacts.length > 0 ? <ArtifactList rows={artifacts} onOpen={onOpenArtifact} /> : null}
 
-        {detail.omitted > 0 ? (
-          <Text variant="note" className="text-center">
-            {detail.omitted} earlier item{detail.omitted === 1 ? "" : "s"} are not on this phone.
-          </Text>
-        ) : null}
+          {detail.omitted > 0 ? (
+            <Text variant="note" className="text-center">
+              {detail.omitted} earlier item{detail.omitted === 1 ? "" : "s"} are not on this phone.
+            </Text>
+          ) : null}
 
-        {/* A fresh session is a readiness, not an absence: the worktree is
-            cut and the agent has not been given a turn. The first message is
-            what starts it, so the line says that rather than "nothing". */}
-        {detail.entries.length === 0
-          ? (
-            <View className="gap-1">
-              <Text className="font-sans-medium text-[13px] text-foreground">Nothing has run yet</Text>
-              <Text variant="meta">
-                {detail.sending.can
-                  ? "The session exists, the worktree is cut, and the agent has not been given a turn. Your first message is what starts it."
-                  : "The session exists and the agent has not been given a turn."}
-              </Text>
-            </View>
-          )
-          : null}
-        {detail.queuedSend ? (
-          <QueuedSendCard
-            queued={detail.queuedSend}
-            canCancel={access === "full"}
-            onCancel={onCancelQueuedSend}
-          />
-        ) : null}
-        {detail.entries.map((entry) => (
-          <Entry key={entry.id} entry={entry} onWatch={watchReceipt} />
-        ))}
+          {/* A fresh session is a readiness, not an absence: the worktree is
+              cut and the agent has not been given a turn. The first message is
+              what starts it, so the line says that rather than "nothing". */}
+          {detail.entries.length === 0
+            ? (
+              <View className="gap-1">
+                <Text className="font-sans-medium text-[13px] text-foreground">Nothing has run yet</Text>
+                <Text variant="meta">
+                  {detail.sending.can
+                    ? "The session exists, the worktree is cut, and the agent has not been given a turn. Your first message is what starts it."
+                    : "The session exists and the agent has not been given a turn."}
+                </Text>
+              </View>
+            )
+            : null}
+          {detail.queuedSend ? (
+            <QueuedSendCard
+              queued={detail.queuedSend}
+              canCancel={access === "full"}
+              onCancel={onCancelQueuedSend}
+            />
+          ) : null}
+          {detail.entries.map((entry) => (
+            <Entry key={entry.id} entry={entry} onWatch={watchReceipt} />
+          ))}
 
-        {access === "full" ? <Card className="gap-2">
-          <Text variant="label">Session control</Text>
-          <Text variant="note">
-            {detail.pausable
-              ? "Stops the turn this session is running. Work already done is kept."
-              : `Nothing is running to pause. This session is ${detail.state}.`}
-          </Text>
-          <Button
-            title="Pause this session"
-            shape="block"
-            disabled={!detail.pausable || pausing}
-            onPress={onPause}
-          />
-          <Text variant="note">
-            Or start another session on the same machine and repository, with this one's
-            provider and model.
-          </Text>
-          <Button title="Start another like this one" shape="block" onPress={() => setStartOpen(true)} />
-        </Card> : null}
-        </>}
-      </PageScroller>
+          {access === "full" ? <Card className="gap-2">
+            <Text variant="label">Session control</Text>
+            <Text variant="note">
+              {detail.pausable
+                ? "Stops the turn this session is running. Work already done is kept."
+                : `Nothing is running to pause. This session is ${detail.state}.`}
+            </Text>
+            <Button
+              title="Pause this session"
+              shape="block"
+              disabled={!detail.pausable || pausing}
+              onPress={onPause}
+            />
+            <Text variant="note">
+              Or start another session on the same machine and repository, with this one's
+              provider and model.
+            </Text>
+            <Button title="Start another like this one" shape="block" onPress={() => setStartOpen(true)} />
+          </Card> : null}
+          </>}
+        </PageScroller>
+      </BlurBackdrop>
 
       <StartLikeSheet
         open={startOpen}
         like={{ title: detail.title, machine, runtime: detail.runtime }}
         starting={starting}
         problem={startProblem}
+        refusal={startRefusal}
+        onSeeHeldBack={onSeeHeldBack ? () => {
+          setStartOpen(false)
+          onSeeHeldBack()
+        } : undefined}
         onStart={(prompt, mode) => onStartLike(prompt, mode)}
         onClose={() => setStartOpen(false)}
       />

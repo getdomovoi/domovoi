@@ -9,7 +9,8 @@
     "icon": "./assets/icon.png",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.getdomovoi.domovoi"
+      "bundleIdentifier": "com.getdomovoi.domovoi",
+      "appleTeamId": "ZARRDB8J32"
     },
     "android": {
       "package": "com.getdomovoi.domovoi",

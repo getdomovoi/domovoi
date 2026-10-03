@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { FirstRunSetupSteps } from "./desktop-first-run.js"
+import { FirstRunAgents } from "./desktop-first-run.js"
 
 afterEach(cleanup)
 
@@ -15,22 +15,18 @@ const provider: ProviderRuntime = {
   sessionCapable: true,
 }
 
-const renderSteps = (
-  overrides: Partial<Parameters<typeof FirstRunSetupSteps>[0]> = {},
+const renderAgents = (
+  overrides: Partial<Parameters<typeof FirstRunAgents>[0]> = {},
 ) => {
   const handlers = {
-    onProviderChange: vi.fn(),
-    onPermissionModeChange: vi.fn(),
     onRetry: vi.fn(),
     onCopyGuidance: vi.fn(),
   }
   render(
-    <FirstRunSetupSteps
+    <FirstRunAgents
       connected={false}
       providers={[provider]}
       sessions={[] as readonly SessionSummary[]}
-      selectedProviderId="codex"
-      permissionMode="build"
       refreshing={false}
       recoveryError=""
       {...handlers}
@@ -40,23 +36,22 @@ const renderSteps = (
   return handlers
 }
 
-const retryButton = () => screen.getByRole("button", { name: /^retry$/i }) as HTMLButtonElement
-
-describe("FirstRunSetupSteps recovery interaction", () => {
-  it("retries daemon diagnostics when the operator clicks Retry", async () => {
+describe("FirstRunAgents recovery interaction", () => {
+  it("says the daemon has not answered and retries when the operator asks", async () => {
     const user = userEvent.setup()
-    const handlers = renderSteps()
+    const handlers = renderAgents()
 
-    await user.click(retryButton())
+    expect(screen.getByText("Waiting for a verified response from the local daemon.")).toBeTruthy()
+    await user.click(screen.getByRole("button", { name: "Retry diagnostics" }))
 
     expect(handlers.onRetry).toHaveBeenCalledTimes(1)
   })
 
   it("blocks a second retry while a refresh is already in flight", async () => {
     const user = userEvent.setup()
-    const handlers = renderSteps({ refreshing: true })
+    const handlers = renderAgents({ refreshing: true })
 
-    const retrying = screen.getByRole("button", { name: /retrying/i }) as HTMLButtonElement
+    const retrying = screen.getByRole("button", { name: "Refreshing" }) as HTMLButtonElement
     expect(retrying.disabled).toBe(true)
 
     await user.click(retrying)
@@ -65,14 +60,19 @@ describe("FirstRunSetupSteps recovery interaction", () => {
 
   it("hands the provider sign-in command to the copy handler", async () => {
     const user = userEvent.setup()
-    const handlers = renderSteps({
+    const handlers = renderAgents({
       connected: true,
       providers: [{ ...provider, status: "auth-required" }],
     })
 
     await user.click(screen.getByRole("button", { name: /copy sign-in command/i }))
 
-    expect(handlers.onCopyGuidance).toHaveBeenCalledTimes(1)
-    expect(handlers.onCopyGuidance.mock.calls[0]?.[0]).toContain("codex")
+    expect(handlers.onCopyGuidance).toHaveBeenCalledWith("codex login")
+  })
+
+  it("names a diagnostics refresh that failed", () => {
+    renderAgents({ connected: true, recoveryError: "connect ECONNREFUSED 127.0.0.1:47831" })
+    expect(screen.getByText("Diagnostics could not be refreshed")).toBeTruthy()
+    expect(screen.getByText("connect ECONNREFUSED 127.0.0.1:47831")).toBeTruthy()
   })
 })

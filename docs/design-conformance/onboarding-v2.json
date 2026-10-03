@@ -52,11 +52,16 @@
       ],
       "evidence": [
         "For your user only. Nothing is system-wide.",
+        "WHAT STILL WORKS",
+        "The system refused lingering, so the daemon stops when you log out."
+      ],
+      "presence": [
+        "For your user only. Nothing is system-wide.",
         "WHAT STILL WORKS"
       ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J24; no client installs the daemon as a login service, and the desktop only reports whether an installed service answered"
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "desktop first run starts here (Q351 A) and installs through the desktop bridge, with WHAT FAILED and WHAT STILL WORKS from the outcome; the rows are what installing does, not live per-action progress, there is no Show the log, and a refused lingering shows the daemon's own warning (Q307) rather than the drawn line and command, because the desktop IPC reports only the final outcome"
       }
     },
     {
@@ -198,7 +203,18 @@
     "hetzner-cx42",
     "2 machines"
   ],
-  "humanRead": [],
+  "humanRead": [
+    {
+      "id": "onboarding.service-install",
+      "since": "2026-10-02",
+      "note": "Q389 A substitutions in packages/ui/src/desktop-first-run.tsx, read against the design's installModel: no made-up command or port is drawn (the log with $ domovoi daemon install is not built, and 127.0.0.1:7717 reads the address of the daemon this window reached, 127.0.0.1:47831 by default, or loopback when none is known, because DOMOVOI_HOST and DOMOVOI_PORT move the service with the app); the rows follow the real installer, adding Copy this app's daemon runtime and naming the handover without launchctl bootstrap gui/501; the done line ends It answers on loopback only, because pairing does not change where the daemon listens; the foot reads domovoid <version> and uses the ND6 wording This build is not signed and does not update itself, held to Settings by scripts/unsigned-build.mjs."
+    },
+    {
+      "id": "onboarding.account",
+      "since": "2026-10-02",
+      "note": "The providers screen (Connect an agent on <machine>) is built for the desktop under Q353 A, though this element stays blocked for the account flow. Substitutions: the subtitle says each agent signs in through its own CLI on this machine instead of tokens in this machine's keychain, which is not true of every provider CLI; Sign in and Paste a key become Copy sign-in command with the CLI's own command (claude auth login, codex login); a missing CLI gets the Install guide text and no install command (pipx install aider-chat is not drawn). Add another machine is not drawn: the setup dialog has no route to Machines yet."
+    }
+  ],
   "scriptBacklog": {
     "since": "2026-09-26",
     "reason": "Copy the design builds in its data script, collected by the gate since audit G23 and not yet read against the implementation. Classify each string as an element's copy, sample or annotations, and remove it here.",

@@ -494,6 +494,12 @@ Every ledger entry is now merged.
 - [x] Add variant metadata, thumbnail filmstrip, device-width presets, and optional compare layouts
 - [x] Add chat-inline Markdown quick views while keeping generated HTML canonical
 - [x] Add print/share-safe plan rendering without weakening the preview sandbox
+- [ ] Remove the legacy comment default before protocol 0.8.0 ships (ruling Q402)
+  - `session.send` carries `review`, the comments and build basis a message sends (rulings Q348 A
+    and Q342 A). Until every client sends it, a message without one still attaches every open
+    comment of its session: `legacyOpenCommentReview` in `apps/daemon/src/annotation-context.ts`.
+  - Remove that function, so a message without a review sends no comment, once desktop, web,
+    phone, tablet and the command line send `review`. Protocol 0.8.0 does not ship before then.
 
 #### Skills
 
@@ -818,9 +824,12 @@ Every ledger entry is now merged.
     pure JS codec calling `crypto.getRandomValues` throws on a phone while passing under Node. The
     probe takes its randomness from the platform key service instead. Vectors run by two Node
     runners cannot catch this class of defect.
-  - Still unproven: iOS. Secure Enclave needs an Xcode 26 build, Expo SDK 57 is written in Swift
-    6.2, and Xcode 26 requires Apple Silicon, so the Intel Mac available here cannot build the app
-    at all. One Android device is also not a fleet.
+  - iOS, 2026-10-02: a development build from Xcode 27 on an Apple Silicon Mac ran the same probe
+    on an iPhone 17 Pro Max. It reported `secure-enclave` custody, a 65 byte public point, a
+    handle that survived a reopen, a 32 byte shared secret identical on both sides, and the probe
+    key deleted. The iPhone 17 Pro simulator on iOS 26.5 passes the same steps and also reports
+    `secure-enclave`, which shows nothing about custody on phone hardware. One iPhone and
+    one Android device are still not a fleet, and neither run measured key-service latency.
   - Node 22 measurements compare option A's X25519/ChaChaPoly with option C's P-256/AES-GCM
     using built-in crypto, published A/B fixtures and explicitly derived P-256 fixtures. Full IK,
     daemon responder and established-frame costs are recorded for one Intel Linux host in

@@ -2,6 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { isStartOpener } from "./start-handoff"
 import { CheckpointFork, HistoryPanel } from "./workspace-shell"
 
 afterEach(cleanup)
@@ -31,6 +32,19 @@ it("forks from the checkpoint the row names", async () => {
   await user.click(screen.getByRole("button", { name: "Fork session" }))
 
   expect(onFork).toHaveBeenCalledWith("checkpoint-7f23")
+})
+
+// A fork is a session start, and its trigger is where the confirm gives focus
+// back, so a refusal of the fork may take focus from it (ruling Q410).
+it("registers the fork controls as openers of a session start", async () => {
+  const user = userEvent.setup()
+  render(<CheckpointFork checkpointId="checkpoint-7f23" label="before migration" disabled={false} onFork={vi.fn()} />)
+
+  const trigger = screen.getByRole("button", { name: "Fork from here" })
+  expect(isStartOpener(trigger)).toBe(true)
+  await user.click(trigger)
+  expect(isStartOpener(screen.getByRole("button", { name: "Fork session" }))).toBe(true)
+  expect(isStartOpener(screen.getByRole("button", { name: "Cancel" }))).toBe(false)
 })
 
 it("offers nothing to click while forking is held shut", async () => {

@@ -114,6 +114,12 @@ describe("createDesktopWindowBridge", () => {
     await expect(bridge.daemonService?.remove()).rejects.toThrow("invalid service outcome")
     await expect(bridge.openReleasePage?.()).resolves.toBe(true)
     expect(target.invoke).toHaveBeenCalledWith("domovoi:open-release-page")
+    // Q336 A: the action is all the renderer names; the renderer validates
+    // the answer (packages/ui/src/printed-command.ts), keeping the preload
+    // inside its budget.
+    target.invoke.mockImplementationOnce(async () => ({ report: { available: false, reason: "r" } }))
+    await expect(bridge.commandLinks?.("status")).resolves.toEqual({ report: { available: false, reason: "r" } })
+    expect(target.invoke).toHaveBeenLastCalledWith("domovoi:command-links", "status")
     expect(bridge).not.toHaveProperty("ipcRenderer")
     expect(bridge).not.toHaveProperty("shell")
     expect(bridge).not.toHaveProperty("clipboard")

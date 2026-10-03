@@ -2,6 +2,7 @@ import { useState } from "react"
 import { Pressable, TextInput, View } from "react-native"
 import type { ApprovalRequest } from "@getdomovoi/protocol"
 
+import { BlurBackdrop } from "../components/blur-backdrop"
 import { FloatingBar } from "../components/floating-bar"
 import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
@@ -70,77 +71,80 @@ export function DenyExplainScreen({
         </View>
       </View>
 
-      <PageScroller
-        contentContainerClassName="gap-3 px-3.5"
-        bottomInset={footprint}
-      >
-        {/* Struck through, because the point of this screen is that nothing
-            ran and nothing is going to. */}
-        <Card className="bg-code px-[13px] py-[11px]">
-          <Text
-            variant="machine"
-            className="text-[11.5px] leading-[17px] text-danger-fg line-through"
-          >
-            {approval.command}
-          </Text>
-          <Text variant="note" className="mt-1.5 text-faint">
-            Will not run. The daemon holds the turn until this reply lands.
-          </Text>
-        </Card>
+      {/* What the denial bar blurs on Android. The bar stays outside it. */}
+      <BlurBackdrop style={{ flex: 1 }}>
+        <PageScroller
+          contentContainerClassName="gap-3 px-3.5"
+          bottomInset={footprint}
+        >
+          {/* Struck through, because the point of this screen is that nothing
+              ran and nothing is going to. */}
+          <Card className="bg-code px-[13px] py-[11px]">
+            <Text
+              variant="machine"
+              className="text-[11.5px] leading-[17px] text-danger-fg line-through"
+            >
+              {approval.command}
+            </Text>
+            <Text variant="note" className="mt-1.5 text-faint">
+              Will not run. The daemon holds the turn until this reply lands.
+            </Text>
+          </Card>
 
-        <Card className="border-primary/35">
-          <Text variant="label">Reason sent to the agent</Text>
-          <TextInput
-            multiline
-            editable={!pending}
-            value={explanation}
-            onChangeText={write}
-            placeholder="Why this is not running, and what to do instead."
-            placeholderTextColor={palette.faint}
-            selectionColor={palette.primary}
-            accessibilityLabel="Reason sent to the agent"
-            className="mt-[7px] max-h-40 min-h-tap font-sans text-[12.5px] leading-[20px] text-foreground"
-          />
-        </Card>
+          <Card className="border-primary/35">
+            <Text variant="label">Reason sent to the agent</Text>
+            <TextInput
+              multiline
+              editable={!pending}
+              value={explanation}
+              onChangeText={write}
+              placeholder="Why this is not running, and what to do instead."
+              placeholderTextColor={palette.faint}
+              selectionColor={palette.primary}
+              accessibilityLabel="Reason sent to the agent"
+              className="mt-[7px] max-h-40 min-h-tap font-sans text-[12.5px] leading-[20px] text-foreground"
+            />
+          </Card>
 
-        {problem ? <Text className="text-[11px] text-destructive">{problem}</Text> : null}
+          {problem ? <Text className="text-[11px] text-destructive">{problem}</Text> : null}
 
-        <View className="flex-row flex-wrap gap-1.5">
-          {denyReasons.map((reason) => {
-            const chosen = reasonChosen(explanation, reason)
-            return (
-              <Pressable
-                key={reason}
-                accessibilityRole="button"
-                accessibilityState={{ selected: chosen }}
-                accessibilityLabel={reason}
-                onPress={() => write(chosen
-                  ? withoutReason(explanation, reason)
-                  : withReason(explanation, reason))}
-                className={cn(
-                  "rounded-full border px-3 py-[7px] active:opacity-70",
-                  chosen ? "border-primary/45 bg-primary/15" : "border-border",
-                )}
-              >
-                <Text className={cn(
-                  "text-[11.5px]",
-                  chosen ? "text-primary" : "text-muted-foreground",
-                )}>
-                  {reason}
-                </Text>
-              </Pressable>
-            )
-          })}
-        </View>
+          <View className="flex-row flex-wrap gap-1.5">
+            {denyReasons.map((reason) => {
+              const chosen = reasonChosen(explanation, reason)
+              return (
+                <Pressable
+                  key={reason}
+                  accessibilityRole="button"
+                  accessibilityState={{ selected: chosen }}
+                  accessibilityLabel={reason}
+                  onPress={() => write(chosen
+                    ? withoutReason(explanation, reason)
+                    : withReason(explanation, reason))}
+                  className={cn(
+                    "rounded-full border px-3 py-[7px] active:opacity-70",
+                    chosen ? "border-primary/45 bg-primary/15" : "border-border",
+                  )}
+                >
+                  <Text className={cn(
+                    "text-[11.5px]",
+                    chosen ? "text-primary" : "text-muted-foreground",
+                  )}>
+                    {reason}
+                  </Text>
+                </Pressable>
+              )
+            })}
+          </View>
 
-        <Card className="flex-row items-start gap-2.5">
-          <Icon name="ban" tone="faint" size={24} />
-          <Text variant="meta" className="flex-1 leading-[19px]">
-            The agent keeps the thread, the plan and the worktree. It gets the denial and this
-            text, nothing else.
-          </Text>
-        </Card>
-      </PageScroller>
+          <Card className="flex-row items-start gap-2.5">
+            <Icon name="ban" tone="faint" size={24} />
+            <Text variant="meta" className="flex-1 leading-[19px]">
+              The agent keeps the thread, the plan and the worktree. It gets the denial and this
+              text, nothing else.
+            </Text>
+          </Card>
+        </PageScroller>
+      </BlurBackdrop>
 
       <FloatingBar shape="decision" padding="stack" lifted onFootprint={setFootprint}>
         <Button

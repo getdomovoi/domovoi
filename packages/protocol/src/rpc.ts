@@ -74,6 +74,7 @@ import {
 import {
   clientAccessSchema,
   deviceClaimParamsSchema,
+  deviceCodeOutcomeNotificationSchema,
   deviceCurrentResultSchema,
   deviceClaimResultSchema,
   deviceConfirmClaimParamsSchema,
@@ -111,7 +112,7 @@ import {
   toolStatusSchema,
 } from "./identifiers.js"
 import { previewBridgeChannelSchema, previewParentOriginSchema } from "./preview-bridge.js"
-import { maximumProviderPromptCodeUnits } from "./prompt-delivery.js"
+import { maximumProviderPromptCodeUnits, sessionSendReviewSchema } from "./prompt-delivery.js"
 import {
   repositoryRevokeTrustParamsSchema,
   repositoryRevokeTrustResultSchema,
@@ -1321,6 +1322,10 @@ export const sessionSendParamsSchema = z.object({
   skillSelection: turnSkillSelectionSchema.optional(),
   attachments: z.array(sessionAttachmentSchema).max(maximumSessionAttachments).optional(),
   delivery: z.literal("next-turn-replace").optional(),
+  // The preview comments and build basis this message sends; with it, only
+  // those reach the agent. Absent, every open comment of the session still
+  // attaches, a legacy default removed before 0.8.0 ships (ruling Q402).
+  review: sessionSendReviewSchema.optional(),
 }).strict()
 
 export const sessionCancelQueuedSendParamsSchema = z.object({
@@ -1785,6 +1790,8 @@ export const notificationMethods = {
   "terminal.ownership": terminalOwnershipNotificationSchema,
   "fleet.changed": fleetChangedNotificationSchema,
   "system.emergencyStopped": systemEmergencyStoppedNotificationSchema,
+  // Sent only to the connection that issued the code it names.
+  "device.codeOutcome": deviceCodeOutcomeNotificationSchema,
 } as const
 
 export type NotificationMethod = keyof typeof notificationMethods
