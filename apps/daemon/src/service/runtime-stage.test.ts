@@ -395,6 +395,41 @@ describe("staging the shipped runtime under the profile", () => {
     })
   })
 
+  // PR #712 security review round 1 (P2): the copy is moved into
+  // <profile>/runtime/<version>, so that directory is pinned too, apart from
+  // the runtime directory above it, and checked again with the destination's
+  // absence right before the rename.
+  it("refuses to publish when the version directory alone is swapped for a link during the copy", async () => {
+    await withScratch(async ({ root, resources, home }) => {
+      const versions = join(home, ".domovoi", "runtime", "0.9.4")
+      const elsewhere = join(root, "elsewhere")
+      await mkdir(elsewhere)
+      const copy = async (from: string, to: string) => {
+        await nodeRuntimeFileSystem().copy(from, to)
+        await rename(versions, join(root, "moved-version"))
+        await symlink(elsewhere, versions, directoryLink)
+      }
+      await expect(stage({ resources, home, version: "0.9.4", copy }))
+        .rejects.toThrow(`${versions} changed while the runtime was copied, so it was not published.`)
+      expect(await readdir(elsewhere)).toEqual([])
+      expect(await readdir(join(root, "moved-version"))).toEqual([])
+    })
+  })
+
+  it("refuses to publish when the version directory is replaced by another directory during the copy", async () => {
+    await withScratch(async ({ root, resources, home }) => {
+      const versions = join(home, ".domovoi", "runtime", "0.9.4")
+      const copy = async (from: string, to: string) => {
+        await nodeRuntimeFileSystem().copy(from, to)
+        await rename(versions, join(root, "moved-version"))
+        await mkdir(versions)
+      }
+      await expect(stage({ resources, home, version: "0.9.4", copy }))
+        .rejects.toThrow(`${versions} changed while the runtime was copied, so it was not published.`)
+      expect(await readdir(versions)).toEqual([])
+    })
+  })
+
   // The daemon's approved words for an update (update-outcome, 2026-09-23).
   it("says the service was not updated when the shipped part is missing for an update", async () => {
     await expect(stageDaemonRuntime({

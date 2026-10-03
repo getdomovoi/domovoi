@@ -322,6 +322,11 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
   const root = pathApi.join(input.profileDirectory, "runtime")
   const pin = async () => ({ identity: await fs.identity(root), realpath: await fs.realpath(root) })
   let pinned = await runtimeRoot(fs, pathApi, input.profileDirectory, false) ? await pin() : undefined
+  // The version directory when it is already there, a real directory, so a
+  // publish can tell it was not replaced since.
+  const versionPrepared = pinned !== undefined && await fs.entry(versionDirectory) === "directory"
+    ? { identity: await fs.identity(versionDirectory), realpath: await fs.realpath(versionDirectory) }
+    : undefined
   const samePath = (left: string, right: string) => input.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right
   const unchanged = async () => {
     const intact = pinned !== undefined
@@ -454,10 +459,37 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
         throw new Error(`${path} is not a directory (it may be a link), so no runtime was copied there.`)
       }
     }
+    // PR #712 security review round 1 (P2): the rename's destination parent
+    // is <profile>/runtime/<version>, not the runtime directory pinned
+    // above, so it is pinned too: a real directory whose real path is the
+    // pinned runtime directory's plus the version, and, when it was there
+    // when preparing, the same directory as then.
+    const versionPin = { identity: await fs.identity(versionDirectory), realpath: await fs.realpath(versionDirectory) }
+    if (!samePath(versionPin.realpath, pathApi.join(pinned.realpath, input.version))
+      || (versionPrepared !== undefined && (versionPrepared.identity !== versionPin.identity || !samePath(versionPrepared.realpath, versionPin.realpath)))) {
+      throw new Error(`${versionDirectory} does not resolve inside the profile directory, so no runtime was copied there.`)
+    }
+    const versionUnchanged = async () => {
+      const intact = await fs.entry(versionDirectory) === "directory"
+        && await fs.identity(versionDirectory) === versionPin.identity
+        && samePath(await fs.realpath(versionDirectory), versionPin.realpath)
+      if (!intact) throw new Error(`${versionDirectory} changed while the runtime was copied, so it was not published.`)
+      if (await fs.entry(destination) !== "missing") throw new Error(`${destination} appeared while the runtime was copied, so it was not published.`)
+    }
     const holder = await fs.makePrivateDirectory(pathApi.join(stagingParent, `.domovoi-runtime-${input.version}.staging-`))
     const staging = pathApi.join(holder, "copy")
     await fs.copy(shippedRoot, staging)
     await unchanged()
+    // Right before the rename. The instant between these checks and the
+    // rename is not covered: Node has no rename relative to an open
+    // directory, so the rename resolves <profile>/runtime/<version> by path
+    // again. A process of the same user that swaps it for a link in that
+    // instant moves this one copy of the shipped runtime, which holds no
+    // secrets, into the link's target on the same volume, under its fresh
+    // name; nothing is replaced or removed. That user can already write the
+    // profile. The same residual race round 8 of #577 accepted for the
+    // staging directory.
+    await versionUnchanged()
     await fs.rename(staging, destination)
     // Round 8 (P2): the staging directory, empty now, is left where it is.
     // Node cannot remove a directory relative to one it holds open, so a
