@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { demoWorkspace } from "@getdomovoi/protocol"
 import { afterEach, expect, it, vi } from "vitest"
@@ -45,6 +45,43 @@ it("shows the daemon's refusal of a decision inside the gate card", async () => 
   await user.click(screen.getByRole("button", { name: "Allow once" }))
   expect(within(card).queryByRole("alert")).toBeNull()
   expect(onResolve).toHaveBeenCalledTimes(2)
+})
+
+// A refusal can arrive after the gate has left the snapshot: the agent stopped
+// waiting, the request was withdrawn or answered outside Domovoi. With no
+// card to hold it, it shows with the composer's alerts, as it did before.
+it("shows a refusal for a gate that has gone with the composer's alerts", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const refusal = "The agent is no longer waiting for this approval, so it was not allowed"
+  let reject: (cause: unknown) => void = () => {}
+  const onResolve = vi.fn(() => new Promise<void>((_, fail) => { reject = fail }))
+  const thread = (current: typeof snapshot) => (
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={current}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />
+  )
+  const { rerender } = render(thread(snapshot))
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+
+  const gone = structuredClone(snapshot)
+  gone.approvals = []
+  rerender(thread(gone))
+  await act(async () => { reject(new DaemonRpcError(-32602, refusal)) })
+
+  expect(screen.getByText(refusal)).toBeTruthy()
+  expect(screen.getByText("Agent request failed")).toBeTruthy()
 })
 
 it("sends the selected approval-card decision", async () => {

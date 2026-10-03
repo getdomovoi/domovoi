@@ -898,6 +898,12 @@ export function Thread({
     }
   }
 
+  // The card holds a refusal only while its gate is on screen. A refusal for a
+  // gate that has gone (the agent stopped waiting, the request was withdrawn
+  // or answered outside Domovoi) shows with the composer's alerts instead.
+  const cardShowsRefusal = Boolean(approval && !archiveReadOnly && approvalRefusal?.approvalId === approval.id)
+  const strayRefusal = approvalRefusal && !cardShowsRefusal ? approvalRefusal.message : ""
+
   const resolveCurrentApproval = (
     approval: ApprovalRequest,
     decision: ApprovalDecision,
@@ -1027,7 +1033,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} connected={connected} refusal={approvalRefusal?.approvalId === approval.id ? approvalRefusal.message : undefined} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} connected={connected} refusal={cardShowsRefusal ? approvalRefusal?.message : undefined} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (
@@ -1049,6 +1055,7 @@ export function Thread({
       <div className="relative z-[1] -mt-5 bg-[linear-gradient(to_bottom,transparent_0,color-mix(in_oklab,var(--background)_58%,transparent)_9px,var(--background)_20px)] px-6 py-5">
         {runtimeError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Runtime update failed</AlertTitle><AlertDescription>{runtimeError}</AlertDescription></Alert> : null}
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
+        {strayRefusal ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{strayRefusal}</AlertDescription></Alert> : null}
         {recoveryError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Session could not be released</AlertTitle><AlertDescription>{recoveryError}</AlertDescription></Alert> : null}
         {planStrip}
         <ThreadComposer
