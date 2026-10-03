@@ -333,7 +333,7 @@ it("does not claim the tab holds the gate while disconnected", () => {
       onPauseSession={vi.fn(async () => {})}
     />,
   )
-  expect(screen.getByRole("alert").textContent).toContain("Cannot answer this gate, the daemon is not answering.")
+  expect(screen.getByRole("alert").textContent).toContain("Cannot answer this gate while this client is disconnected from the daemon.")
   expect(screen.queryByText("This tab holds the gate")).toBeNull()
 })
 
