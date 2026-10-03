@@ -7,8 +7,10 @@ type Receipt = Extract<ThreadItem, { kind: "receipt" }>
 
 // What a receipt has to answer: what was decided, whether the work is
 // revertible, and whether the decision outlives this moment. The design also
-// shows how long the command took; no receipt or run record carries a duration,
-// so this does not invent one.
+// shows how long the command took. Since 5ee18251 the daemon sets ranForMs on
+// an allow's receipt once the agent reports the allowed command's item
+// complete: wall-clock time from the decision to that report. It stays absent
+// when the turn ends or the daemon restarts first, and on older receipts.
 export function decisionSummary(receipt: Receipt): { verdict: string, rule: string } {
   switch (receipt.decision) {
     case "allow-once":
@@ -34,9 +36,12 @@ export function decisionSummary(receipt: Receipt): { verdict: string, rule: stri
   }
 }
 
-// The daemon puts the session's base commit here, or the string "unavailable".
-// It does not take a checkpoint per operation, and restoring only ever touches
-// files in the worktree, so the note names the reference and stops there.
+// Since 5ee18251 a person's allow takes a checkpoint before the command runs,
+// and the receipt carries that checkpoint's commit; the same commit appears as
+// a checkpoint row in the thread. An allow in a session with no worktree
+// records "unavailable". A denial, and an allow written before that change,
+// carry the session's base commit or "unavailable". Restoring only ever
+// touches files in the worktree, so the note says so.
 export function recoveryNote(receipt: Receipt): string {
   if (receipt.checkpoint === "unavailable") {
     return "No reference was recorded for this session, so Domovoi has nothing to compare this against."
