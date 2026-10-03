@@ -60,8 +60,17 @@ export function CommandLinksRow() {
   if (!state) return null
   const { result, error, busy, act } = state
   const report = result?.report
-  const names = report?.available ? report.commands.map((command) => command.name).join(" and ") : ""
-  const linked = report?.available === true && report.commands.length > 0 && report.commands.every((command) => command.state === "linked")
+  const commands = report?.available ? report.commands : []
+  const nameList = (list: typeof commands) => list.map((command) => command.name).join(" and ")
+  const names = nameList(commands)
+  const linkedOnes = commands.filter((command) => command.state === "linked")
+  const unlinked = commands.filter((command) => command.state !== "linked")
+  const linked = linkedOnes.length > 0 && unlinked.length === 0
+  // Review P3-A: Remove the links is offered whenever anything is linked, so
+  // a command that is not Domovoi's never strands the link beside it. Link
+  // the commands is offered while something can be linked, or nothing is.
+  const canUnlink = linkedOnes.length > 0
+  const canLink = commands.some((command) => command.state === "absent" || command.state === "stale") || !canUnlink
   const others = report?.available && !result?.refused ? report.commands.filter((command) => command.state === "other") : []
   return (
     <section aria-labelledby="settings-command-links" className="flex flex-col gap-1.5 rounded-md border px-3 py-2.5">
@@ -71,7 +80,10 @@ export function CommandLinksRow() {
       {report?.available && linked ? (
         <p className={line}>{`${names} ${report.commands.length === 1 ? "is" : "are"} linked in ~/.local/bin.${report.onPath ? "" : " That directory is not on this app's PATH, so commands here name the links by their path."}`}</p>
       ) : null}
-      {report?.available && !linked ? (
+      {report?.available && canUnlink && !linked ? (
+        <p className={line}>{`${nameList(linkedOnes)} ${linkedOnes.length === 1 ? "is" : "are"} linked in ~/.local/bin. Commands here name ${unlinked.length === 1 ? "the copy" : "the copies"} of ${nameList(unlinked)} inside this app by ${unlinked.length === 1 ? "its" : "their"} full path.`}</p>
+      ) : null}
+      {report?.available && !canUnlink ? (
         <p className={line}>{`Commands here name the copies inside this app by their full path. Linking puts ${names} in ~/.local/bin, for your user only.`}</p>
       ) : null}
       {others.map((command) => (
@@ -79,10 +91,9 @@ export function CommandLinksRow() {
       ))}
       {result?.refused ? <p role="status" className="m-0 text-[11.5px] text-warning">{result.refused}</p> : null}
       {report?.available ? (
-        <div>
-          <Button size="sm" variant="outline" disabled={busy} onClick={() => act(linked ? "unlink" : "link")}>
-            {linked ? "Remove the links" : "Link the commands"}
-          </Button>
+        <div className="flex flex-wrap gap-2">
+          {canLink ? <Button size="sm" variant="outline" disabled={busy} onClick={() => act("link")}>Link the commands</Button> : null}
+          {canUnlink ? <Button size="sm" variant="outline" disabled={busy} onClick={() => act("unlink")}>Remove the links</Button> : null}
         </div>
       ) : null}
     </section>

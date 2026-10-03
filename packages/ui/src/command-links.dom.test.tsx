@@ -60,6 +60,34 @@ describe("terminal commands in Settings", () => {
     expect(await screen.findByText(refused)).toBeTruthy()
   })
 
+  // Review P3-A: a domovoid that is not Domovoi's link must not strand the
+  // domovoi link beside it. Linking would only refuse, so removing is what
+  // is offered.
+  it("offers to remove a link while another command is not Domovoi's", async () => {
+    const partly = { report: { available: true, directory: "~/.local/bin", onPath: true, commands: [{ name: "domovoid", launcher: daemon, state: "other" }, { name: "domovoi", launcher: cli, state: "linked" }] } }
+    const removed = { report: { available: true, directory: "~/.local/bin", onPath: true, commands: [{ name: "domovoid", launcher: daemon, state: "other" }, { name: "domovoi", launcher: cli, state: "absent" }] } }
+    const { commandLinks, user } = await mount([partly, removed])
+    expect(screen.getByText("domovoi is linked in ~/.local/bin. Commands here name the copy of domovoid inside this app by its full path.")).toBeTruthy()
+    expect(screen.getByText("~/.local/bin/domovoid is not a link Domovoi made, so it was left as it is.")).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Link the commands" })).toBeNull()
+    await user.click(screen.getByRole("button", { name: "Remove the links" }))
+    expect(commandLinks).toHaveBeenLastCalledWith("unlink")
+    expect(await screen.findByRole("button", { name: "Link the commands" })).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Remove the links" })).toBeNull()
+  })
+
+  // A command the runtime added since linking can be linked, and the one
+  // already linked can still be removed.
+  it("offers both actions while one command is linked and another is not", async () => {
+    const partly = { report: { available: true, directory: "~/.local/bin", onPath: false, commands: [{ name: "domovoid", launcher: daemon, state: "linked" }, { name: "domovoi", launcher: cli, state: "absent" }] } }
+    const { commandLinks, user } = await mount([partly, report("linked")])
+    expect(screen.getByText("domovoid is linked in ~/.local/bin. Commands here name the copy of domovoi inside this app by its full path.")).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Remove the links" })).toBeTruthy()
+    await user.click(screen.getByRole("button", { name: "Link the commands" }))
+    expect(commandLinks).toHaveBeenLastCalledWith("link")
+    expect(await screen.findByText("domovoid and domovoi are linked in ~/.local/bin. That directory is not on this app's PATH, so commands here name the links by their path.")).toBeTruthy()
+  })
+
   it("says when the desktop's answer could not be read, and prints the plain command", async () => {
     await mount([{ nonsense: true }])
     expect(screen.getByText("Could not read the command links: Desktop returned an invalid command link answer")).toBeTruthy()
