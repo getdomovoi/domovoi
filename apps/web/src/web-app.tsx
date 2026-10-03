@@ -44,7 +44,8 @@ function hostOf(rpcUrl: string): { host: string; secure: boolean } {
 }
 
 // What a browser tab shows first: the connect page until this tab holds a
-// paired device credential, then the limits, then the session. The code the
+// paired device credential, then the limits unless the person already read
+// them from the connect page, then the session. The code the
 // machine shows is the way in; the daemon's root credential stays reachable
 // for a machine with no desktop to show a code on.
 export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeFromUrl, createClient, labelSuffix, workspace }: WebAppProps) {
@@ -60,6 +61,9 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
   // of it. A tab that cannot keep session storage sees them every time,
   // which is itself one of the rows.
   const [limitsSeen, setLimitsSeen] = useState(() => browserLimitsSeen(storage))
+  // The same limits, asked for from the connect page before this tab pairs.
+  // Read there, they count as stated, so pairing goes on to the session.
+  const [limitsOpen, setLimitsOpen] = useState(false)
   const { host, secure } = hostOf(rpcUrl)
 
   const keep = (next: DaemonSession) => {
@@ -90,7 +94,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
         }}
       />
     }
-    return <WebConnectPage
+    const connect = <WebConnectPage
       host={host}
       codeName={codeNameFor(clientKind)}
       secure={secure}
@@ -129,9 +133,22 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
           setPairing(false)
         })
       }}
-      onOpenLimits={() => setLimitsSeen(false)}
+      onOpenLimits={() => {
+        setLimitsOpen(true)
+        setLimitsSeen(true)
+      }}
       onUseCredential={() => setPath("credential")}
     />
+    // The connect page stays mounted under the limits, so a typed code and a
+    // drawn outcome are still there on the way back.
+    return <>
+      {limitsOpen ? <BrowserLimitsPanel
+        rows={browserLimits(environment, rpcUrl, markBrowserLimitsSeen(storage))}
+        continueLabel="Back to pairing"
+        onContinue={() => setLimitsOpen(false)}
+      /> : null}
+      <div hidden={limitsOpen}>{connect}</div>
+    </>
   }
 
   if (!limitsSeen) {

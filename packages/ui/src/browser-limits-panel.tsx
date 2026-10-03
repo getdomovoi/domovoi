@@ -39,9 +39,12 @@ const stateTone: Record<BrowserLimitTone, string> = {
 // The web design's third step. Everything a browser tab cannot do is stated
 // here, once, before the person hits it inside the session. The rows are
 // measured by the caller against this browser; this panel only says them.
-export function BrowserLimitsPanel({ rows, onContinue }: {
+// Opened from the connect page, before there is a session, the one way on is
+// back to pairing, so the caller names it.
+export function BrowserLimitsPanel({ rows, onContinue, continueLabel = "Continue to the session" }: {
   rows: BrowserLimit[]
   onContinue: () => void
+  continueLabel?: string
 }) {
   return (
     <main className="flex min-h-dvh items-center justify-center bg-background p-6 text-foreground">
@@ -68,7 +71,7 @@ export function BrowserLimitsPanel({ rows, onContinue }: {
           </ul>
         </CardContent>
         <CardFooter className="justify-end">
-          <Button type="button" onClick={onContinue}>Continue to the session</Button>
+          <Button type="button" onClick={onContinue}>{continueLabel}</Button>
         </CardFooter>
       </Card>
     </main>

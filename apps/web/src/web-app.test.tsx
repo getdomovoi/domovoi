@@ -308,17 +308,42 @@ describe("WebApp", () => {
     expect(client.request).toHaveBeenCalledWith("device.redeemCode", expect.objectContaining({ code: "hearth-quiet-ember-42" }))
   })
 
-  it("states the limits again after the person asks for them from the connect page", async () => {
+  // The link on the connect page opens the limits before this tab is paired,
+  // and the way back keeps what the person typed.
+  it("opens the limits from the connect page before pairing, then goes back with the code kept", async () => {
     const storage = memoryStorage()
     await draw(storage, vi.fn(() => pairingClient("pairs")))
+    const input = container.querySelector<HTMLInputElement>("#web-code")!
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set
+      setter?.call(input, "hearth-quiet-ember-42")
+      input.dispatchEvent(new Event("input", { bubbles: true }))
+    })
+    await act(async () => { button("What a browser tab can and cannot do").click() })
+    expect(container.querySelector("[aria-label='Browser limits']")).not.toBeNull()
+    expect(text()).not.toContain("Continue to the session")
+
+    await act(async () => { button("Back to pairing").click() })
+    expect(container.querySelector("[aria-label='Browser limits']")).toBeNull()
+    expect(container.querySelector<HTMLInputElement>("#web-code")?.value).toBe("hearth-quiet-ember-42")
+
+    // Read once on request, the limits are not stated a second time between
+    // pairing and the session.
     await submitCode("hearth-quiet-ember-42")
     await act(async () => { button("Open sessions").click() })
-    await act(async () => { button("Continue to the session").click() })
-    await act(async () => { button("Change credential").click() })
+    expect(text()).toContain("Workspace open with the device credential")
+  })
+
+  it("opens the limits from a refusal card before pairing", async () => {
+    const { DaemonRpcError } = await import("@/client")
+    const { daemonAuthenticationErrorCode } = await import("@getdomovoi/protocol")
+    const client = { ...pairingClient("pairs"), request: vi.fn(async () => { throw new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused") }) }
+    await draw(memoryStorage(), vi.fn(() => client))
+    await submitCode("hearth-quiet-ember-42")
     await act(async () => { button("What a browser tab can and cannot do").click() })
-    await submitCode("amber-still-river-07")
-    await act(async () => { button("Open sessions").click() })
-    expect(text()).toContain("Continue to the session")
+    expect(container.querySelector("[aria-label='Browser limits']")).not.toBeNull()
+    await act(async () => { button("Back to pairing").click() })
+    expect(text()).toContain("That code was refused")
   })
 
   it("returns to the prompt when the person changes the credential", async () => {
