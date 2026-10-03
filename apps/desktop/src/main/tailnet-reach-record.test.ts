@@ -77,6 +77,19 @@ describe("the TailnetReach record", () => {
     expect(parseTailnetReachRecord(value, tls)).toBeUndefined()
   })
 
+  // Re-review of 10dba4a2 (P2): names the URL parser reads as another host.
+  // The first three stopped the in-app daemon; 1.0x0 advertised 1.0.0.0.
+  it.each(["0.0x0", "127.0x1", "a.0x7f000001", "1.0x0", "0x7f.0.0.1", "studio.0x10"])("refuses the rewritten name %s, as the daemon does", (probe) => {
+    expect(parseTailnetReachRecord(text({ name: probe, certPath: `${tls}/${probe}.crt`, keyPath: `${tls}/${probe}.key` }), tls)).toBeUndefined()
+    expect(() => parseDaemonEnvironment({ ...tailnetReachEnvironment(record), DOMOVOI_TAILNET_HOST: probe }, home)).toThrow("DOMOVOI_TAILNET_HOST")
+  })
+
+  // Every name the parser accepts is one the daemon's settings accept.
+  it.each([name, "a.b", "x-1.tail4c2e.ts.net", "studio.0x1g", "0a.b1c"])("accepts %s only if the daemon does", (candidate) => {
+    const parsed = parseTailnetReachRecord(text({ name: candidate, certPath: `${tls}/${candidate}.crt`, keyPath: `${tls}/${candidate}.key` }), tls)
+    if (parsed) expect(() => parseDaemonEnvironment(tailnetReachEnvironment(parsed), home)).not.toThrow()
+  })
+
   it("accepts a Tailscale IPv6 address", () => {
     expect(parseTailnetReachRecord(text({ address: "fd7a:115c:a1e0::1" }), tls)?.address).toBe("fd7a:115c:a1e0::1")
   })

@@ -20,6 +20,9 @@ describe("parseDaemonEnvironment", () => {
 
   it.each(["", "0.0.0.0", "::", "[::]", "localhost", "localhost.", "127.1", "::1", "[::ffff:127.0.0.1]", "127%2e0%2e0%2e1",
     "studio/rpc", "studio?secret", "studio#fragment", "user@studio", "studio:443", " studio", "x".repeat(254),
+    // Re-review of 10dba4a2 (P2): names the URL parser rewrites into another
+    // host, checked on what it parses to: 0.0.0.0, 127.0.0.1, 1.0.0.0.
+    "0.0x0", "127.0x1", "a.0x7f000001", "1.0x0", "0x7f.0.0.1", "studio.0x10",
   ])("refuses invalid or non-routable tailnet hosts: %s", (tailnetHost) => {
     expect(() => parseDaemonEnvironment({ ...encryptedRemote, DOMOVOI_TAILNET_HOST: tailnetHost }, "/home/tester"))
       .toThrow("DOMOVOI_TAILNET_HOST")

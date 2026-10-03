@@ -140,6 +140,13 @@ describe("TailnetReach status", () => {
     expect(calls).toEqual(["tailscale status --json"])
   })
 
+  // Re-review of 10dba4a2 (P2): a name the URL parser would rewrite is not one
+  // the switch records, so it never writes a record its own parser refuses.
+  it.each(["1.0x0", "127.0x1"])("takes no tailnet name %s that the URL parser rewrites", async (dnsName) => {
+    const { reach } = harness({ status: JSON.stringify({ BackendState: "Running", Self: { DNSName: `${dnsName}.`, TailscaleIPs: ["100.101.102.103"] }, CertDomains: [dnsName] }) })
+    await expect(reach.status()).resolves.toEqual({ state: "none", detail: "Tailscale gives this computer no tailnet name and address." })
+  })
+
   it("says when the tailnet has HTTPS certificates off", async () => {
     const { reach } = harness({ status: JSON.stringify({ BackendState: "Running", Self: { DNSName: `${name}.`, TailscaleIPs: ["100.101.102.103"] }, CertDomains: null }) })
     await expect(reach.status()).resolves.toMatchObject({ state: "off", httpsCertificates: false })

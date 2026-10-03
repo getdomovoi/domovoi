@@ -4,7 +4,7 @@ import { isIPv4, isIPv6 } from "node:net"
 import type { DaemonServiceTailnetChange } from "@getdomovoi/daemon"
 
 import type { TailnetReachOutcome, TailnetReachReport, TailnetReachStep } from "../shared/tailnet-reach.js"
-import { tailnetFiles, type TailnetReachRecord } from "./tailnet-reach-record.js"
+import { tailnetFiles, tailnetName, type TailnetReachRecord } from "./tailnet-reach-record.js"
 
 // TailnetReach (Q404 A, J25): "Reach this machine from my tailnet". Domovoi
 // reads the tailnet status and changes nothing until the switch is turned on.
@@ -105,7 +105,6 @@ function tailscaleAddress(addresses: unknown): string | undefined {
     ?? strings.find((value) => isIPv6(value) && value.toLowerCase().startsWith("fd7a:115c:a1e0:"))
 }
 
-const hostName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u
 
 // What `tailscale status --json` says about this machine, or why there is no
 // tailnet to reach.
@@ -124,7 +123,7 @@ function readTailnet(result: TailscaleResult | "missing"): Tailnet | { none: str
   }
   const name = typeof self.DNSName === "string" ? self.DNSName.replace(/\.$/u, "").toLowerCase() : ""
   const address = tailscaleAddress(self.TailscaleIPs)
-  if (!hostName.test(name) || address === undefined) return { none: "Tailscale gives this computer no tailnet name and address." }
+  if (!tailnetName(name) || address === undefined) return { none: "Tailscale gives this computer no tailnet name and address." }
   return { name, address, httpsCertificates: Array.isArray(status.CertDomains) && status.CertDomains.includes(name) }
 }
 

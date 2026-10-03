@@ -23,7 +23,20 @@ export type TailnetReachRecord = {
 // A DNS name of lower-case labels whose last label holds a letter, so it is
 // never an IP literal: the daemon refuses a loopback or wildcard address as
 // DOMOVOI_TAILNET_HOST (transport-config.ts tailnetHostSchema).
-const hostName = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?=[a-z0-9-]*[a-z])[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u
+const hostLabels = /^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?=[a-z0-9-]*[a-z])[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u
+
+// Re-review of 10dba4a2 (P2): and one the URL parser keeps as it is. It reads
+// 1.0x0 as 1.0.0.0 and 127.0x1 as 127.0.0.1; the daemon refuses any name it
+// rewrites, and so does this. The switch takes Tailscale's name by this rule
+// too, so it never writes a record the parser would refuse.
+export function tailnetName(name: string): boolean {
+  if (!hostLabels.test(name)) return false
+  try {
+    return new URL(`wss://${name}:1/`).hostname === name
+  } catch {
+    return false
+  }
+}
 
 // The ranges the daemon accepts, checked as it checks them (config.ts
 // isTailscaleAddress): 100.64.0.0/10, or fd7a:115c:a1e0::/48 written without
@@ -66,7 +79,7 @@ export function parseTailnetReachRecord(text: string, tlsDirectory: string): Tai
     if (typeof value !== "object" || value === null) return undefined
     const { version, name, address: bound, certPath, keyPath, ...rest } = value as Record<string, unknown>
     if (version !== 1 || Object.keys(rest).length > 0) return undefined
-    if (typeof name !== "string" || !hostName.test(name) || typeof bound !== "string" || !tailscaleAddress(bound)) return undefined
+    if (typeof name !== "string" || !tailnetName(name) || typeof bound !== "string" || !tailscaleAddress(bound)) return undefined
     const files = tailnetFiles(tlsDirectory, name)
     if (certPath !== files.certPath || keyPath !== files.keyPath) return undefined
     return { version, name, address: bound, ...files }
