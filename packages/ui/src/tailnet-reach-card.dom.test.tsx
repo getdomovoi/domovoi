@@ -1,5 +1,5 @@
 import type { TailnetListenerStatus } from "@getdomovoi/protocol"
-import { act, cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { StrictMode } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -542,6 +542,51 @@ describe("reading again while Settings stays open", () => {
     await settle()
     expect(reads).toHaveLength(2)
     expect(listener).toHaveBeenCalledTimes(4)
+  })
+
+  // Codex review round 8 (P3): an explicit check runs its own desktop call
+  // beside the automatic one still pending, and must not make the automatic
+  // reads lose track of it: past the next deadline the listener is read again
+  // and the old call is still shared, so no third call starts. The explicit
+  // check's answer is the newer one; the old call's late answer does not
+  // replace it.
+  it("keeps sharing the pending automatic desktop call across an explicit check", async () => {
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval", "setTimeout", "clearTimeout"] })
+    const reads: { resolve(value: unknown): void }[] = []
+    const ask = vi.fn((action: "status" | "on" | "off"): Promise<unknown> => {
+      if (action !== "status") return Promise.resolve({ ok: true, report: off })
+      return new Promise((resolve) => { reads.push({ resolve }) })
+    })
+    const listener = vi.fn(async () => ({ state: "off" as const }))
+    render(<Harness source={{ act: ask, listener, inApp: true }} />)
+    await settle()
+    expect(reads).toHaveLength(1)
+    await act(async () => { vi.advanceTimersByTime(tailnetReachDesktopDeadlineMs) })
+    await settle()
+    expect(listener).toHaveBeenCalledTimes(2)
+    expect(reads).toHaveLength(1)
+    await act(async () => { fireEvent.click(within(region()).getByRole("button", { name: "Check again" })) })
+    await settle()
+    expect(reads).toHaveLength(2)
+    expect(listener).toHaveBeenCalledTimes(3)
+    reads[1]!.resolve(on)
+    await settle()
+    expect(toggle().getAttribute("aria-checked")).toBe("true")
+    await act(async () => { vi.advanceTimersByTime(tailnetReachDesktopDeadlineMs) })
+    await settle()
+    expect(listener).toHaveBeenCalledTimes(4)
+    expect(reads).toHaveLength(2)
+    expect(toggle().getAttribute("aria-checked")).toBe("true")
+    // The first call's late answer is older than the check's, so it is not drawn.
+    reads[0]!.resolve(off)
+    await settle()
+    expect(toggle().getAttribute("aria-checked")).toBe("true")
+    expect(within(region()).queryByText("Off")).toBeNull()
+    // Once it has settled, the next trigger asks the desktop again.
+    await act(async () => { window.dispatchEvent(new Event("focus")) })
+    await settle()
+    expect(reads).toHaveLength(3)
+    expect(listener).toHaveBeenCalledTimes(5)
   })
 
   // Codex review round 7 (P3): a read queued while Settings was open starts

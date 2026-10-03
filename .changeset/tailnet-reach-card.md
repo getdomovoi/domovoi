@@ -18,7 +18,10 @@ drawn without a click. Automatic reads run one at a time while Settings is
 open. Triggers received during a read queue one follow-up, which runs if
 Settings is still open and visible and no change is running. An automatic read
 waits at most 120 seconds for the desktop's status before the next may run;
-the desktop is not asked again until that answer is in.
+an automatic read does not ask the desktop again until the earlier automatic
+answer is in. "Check again" and a change ask the desktop on their own, beside
+that pending answer, and an older call's late answer does not replace a newer
+one's.
 
 When the daemon still answers on the tailnet with the switch off because
 `DOMOVOI_TAILNET_*` was set by hand, the row says the switch cannot clear it

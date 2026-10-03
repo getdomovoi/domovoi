@@ -70,18 +70,28 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
   const [running, setRunning] = useState<TailnetReachController["running"]>()
   const [failure, setFailure] = useState<TailnetReachController["failure"]>()
   const [revealed, setRevealed] = useState(0)
-  const reading = useRef(0)
-  // The desktop's status call still pending, if any. Off, each one runs
-  // tailscale status, so an automatic read shares a pending one instead of
-  // starting another; an explicit check starts its own.
-  const pending = useRef<Promise<unknown>>(undefined)
-  const status = useCallback((current: TailnetReachSource, shared: boolean): Promise<unknown> => {
-    if (shared && pending.current) return pending.current
-    const call = attempt(() => current.act("status"))
-    pending.current = call
-    const settled = () => { if (pending.current === call) pending.current = undefined }
-    call.then(settled, settled)
-    return call
+  // Each half of a read is numbered on its own, so only the latest answer of
+  // each is drawn: a late tailnet.status answer, or a late desktop answer, does
+  // not replace a newer one.
+  const listening = useRef(0)
+  const asking = useRef(0)
+  type DesktopCall = { call: Promise<unknown>; request: number }
+  // The automatic read's desktop status call still pending, if any. Off, each
+  // one runs tailscale status, so an automatic read shares a pending one
+  // instead of starting another, and shares its number: a desktop call that
+  // came after it, from an explicit check or a change, stays the newer one.
+  // Only automatic reads set and clear this; an explicit check or a change
+  // runs its own call (Codex review round 8, P3), which leaves it untouched.
+  const pendingAutomatic = useRef<DesktopCall>(undefined)
+  const status = useCallback((current: TailnetReachSource, automatic: boolean): DesktopCall => {
+    if (automatic && pendingAutomatic.current) return pendingAutomatic.current
+    const started = { call: attempt(() => current.act("status")), request: ++asking.current }
+    if (automatic) {
+      pendingAutomatic.current = started
+      const settled = () => { if (pendingAutomatic.current === started) pendingAutomatic.current = undefined }
+      started.call.then(settled, settled)
+    }
+    return started
   }, [])
 
   // Each answer is drawn as it arrives: a daemon slow to answer tailnet.status
@@ -93,13 +103,14 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
   const read = useCallback((automatic = false): { desktop: Promise<void>; listened: Promise<void> } => {
     const current = sourceRef.current
     if (!current) return { desktop: Promise.resolve(), listened: Promise.resolve() }
-    const request = ++reading.current
+    const request = ++listening.current
     const listened = current.listener
-      ? attempt(current.listener).then((value) => { if (request === reading.current) setListener(value) }, () => { if (request === reading.current) setListener(undefined) })
+      ? attempt(current.listener).then((value) => { if (request === listening.current) setListener(value) }, () => { if (request === listening.current) setListener(undefined) })
       : Promise.resolve()
-    const failed = (cause: unknown) => { if (request === reading.current) setReadError(cause instanceof Error ? cause.message : "The desktop did not answer.") }
-    const answered = status(current, automatic).then(parseTailnetReachReport).then(
-      (answer) => { if (request === reading.current) { setReport(answer); setReadError(undefined) } },
+    const { call, request: asked } = status(current, automatic)
+    const failed = (cause: unknown) => { if (asked === asking.current) setReadError(cause instanceof Error ? cause.message : "The desktop did not answer.") }
+    const answered = call.then(parseTailnetReachReport).then(
+      (answer) => { if (asked === asking.current) { setReport(answer); setReadError(undefined) } },
       failed,
     )
     const desktop = automatic
