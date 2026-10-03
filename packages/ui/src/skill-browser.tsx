@@ -242,7 +242,13 @@ export function SkillBrowser({
   const sourceRequestGeneration = useRef(0)
   const [trustOpen, setTrustOpen] = useState(false)
   const [reviewPending, setReviewPending] = useState(false)
-  const [reviewError, setReviewError] = useState("")
+  // Which step of the one decision failed. Trust is two RPCs, and a rejection
+  // after the first has recorded the project enablement, an approval fact the
+  // cause alone would hide.
+  const [reviewError, setReviewError] = useState<{
+    step: "enable" | "review" | "revoke"
+    message: string
+  }>()
   const [addOpen, setAddOpen] = useState(false)
   const [addPath, setAddPath] = useState("")
   const [addPreview, setAddPreview] = useState<SkillInstallPreview>()
@@ -325,33 +331,39 @@ export function SkillBrowser({
     if (readOnly || !selected) return
     const skill = selected
     setReviewPending(true)
-    setReviewError("")
+    setReviewError(undefined)
+    const failed = (step: "enable" | "review") => (cause: unknown) => {
+      setReviewError({ step, message: cause instanceof Error ? cause.message : "Skill review failed" })
+    }
     void onSetSkillEnabled({
       id: skill.id,
       enabled: true,
       contentDigest: skill.contentDigest,
       manifest: skill.manifest,
-    }).then(() => (
-      skill.trust.state === "untrusted"
-        ? onReviewSkill({ id: skill.id, contentDigest: skill.contentDigest, decision: "trust" })
-        : undefined
-    )).then(
-      () => setTrustOpen(false),
-      (cause: unknown) => setReviewError(cause instanceof Error ? cause.message : "Skill review failed"),
+    }).then(
+      () => (
+        skill.trust.state === "untrusted"
+          ? onReviewSkill({ id: skill.id, contentDigest: skill.contentDigest, decision: "trust" }).then(
+              () => setTrustOpen(false),
+              failed("review"),
+            )
+          : setTrustOpen(false)
+      ),
+      failed("enable"),
     ).finally(() => setReviewPending(false))
   }
 
   const submitRevoke = () => {
     if (readOnly || !selected) return
     setReviewPending(true)
-    setReviewError("")
+    setReviewError(undefined)
     void onSetSkillEnabled({
       id: selected.id,
       enabled: false,
       contentDigest: selected.contentDigest,
       manifest: selected.manifest,
     }).catch((cause: unknown) => {
-      setReviewError(cause instanceof Error ? cause.message : "Skill review failed")
+      setReviewError({ step: "revoke", message: cause instanceof Error ? cause.message : "Skill review failed" })
     }).finally(() => setReviewPending(false))
   }
 
@@ -597,7 +609,24 @@ export function SkillBrowser({
                   </span>
                 </AlertDescription>
               </Alert>
-              {reviewError ? <Alert variant="destructive" className="mt-4"><AlertTitle>Review failed</AlertTitle><AlertDescription>{reviewError}</AlertDescription></Alert> : null}
+              {reviewError ? (
+                <Alert variant="destructive" className="mt-4">
+                  <AlertTitle>Review failed</AlertTitle>
+                  <AlertDescription className="flex flex-col gap-1">
+                    <span>{reviewError.message}</span>
+                    {/* The first RPC succeeded, so the skill is enabled for the
+                        project without the trust the button promised. Both
+                        facts are stated, and what each remaining control does
+                        about them. */}
+                    {reviewError.step === "review" ? (
+                      <>
+                        <span>{`Enablement for ${projectName ?? "this project"} was recorded. The machine review was not, so Build auto still excludes it.`}</span>
+                        <span>{`${trustLabel} again repeats both steps. Revoke takes back the enablement for ${projectName ?? "this project"}.`}</span>
+                      </>
+                    ) : null}
+                  </AlertDescription>
+                </Alert>
+              ) : null}
               <div className="mt-4 flex flex-wrap items-center gap-2">
                 <Button variant="outline" onClick={() => readSource(selected)}>
                   <FileTextIcon data-icon="inline-start" />

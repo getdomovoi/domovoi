@@ -106,6 +106,26 @@ it("stops at the project grant when enabling fails, and names the failure", asyn
   expect(screen.getByText("Skill content changed; review it again")).toBeTruthy()
 })
 
+// The project grant succeeded and the machine review did not, so the skill is
+// now enabled for the project without the trust the button promised. The cause
+// alone would hide the approval fact that was recorded.
+it("states the recorded enablement when only the machine review fails", async () => {
+  const user = userEvent.setup()
+  const onSetSkillEnabled = vi.fn(async () => {})
+  const onReviewSkill = vi.fn(async () => { throw new Error("Manual skill review is unavailable") })
+  render(<SkillBrowser {...props({ onSetSkillEnabled, onReviewSkill })} />)
+
+  await user.click(screen.getByRole("button", { name: "Trust it for acme-api" }))
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Trust it for acme-api" }))
+
+  expect(onSetSkillEnabled).toHaveBeenCalledOnce()
+  expect(onReviewSkill).toHaveBeenCalledOnce()
+  const alert = screen.getByRole("alert")
+  expect(alert.textContent).toContain("Manual skill review is unavailable")
+  expect(alert.textContent).toContain("Enablement for acme-api was recorded. The machine review was not, so Build auto still excludes it.")
+  expect(alert.textContent).toContain("Trust it for acme-api again repeats both steps. Revoke takes back the enablement for acme-api.")
+})
+
 it("does not record a second machine review for a digest already trusted", async () => {
   const user = userEvent.setup()
   const onSetSkillEnabled = vi.fn(async () => {})
