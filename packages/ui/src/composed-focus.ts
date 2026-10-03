@@ -1,6 +1,7 @@
-// Focus as a person meets it, across shadow roots. document.activeElement and
-// a document focus listener's event target name only the outermost shadow
-// host; the element that holds focus may sit inside it.
+// Focus as a person meets it, across shadow roots and slots.
+// document.activeElement and a document focus listener's event target name
+// only the outermost shadow host; the element that holds focus may sit inside
+// it, and a slotted element renders inside the shadow tree it is assigned to.
 
 // The element that holds focus, walking open shadow roots down from
 // document.activeElement. It stops at a host whose root is closed or holds no
@@ -20,44 +21,32 @@ export function focusEventElement(event: FocusEvent): Element | null {
   return event.target instanceof Element ? event.target : null
 }
 
-// Element.closest across shadow boundaries: an element inside a shadow root
-// is also inside whatever holds its host.
+// The element an element renders inside: the slot it is assigned to, else its
+// parent, else, at the top of a shadow root, that root's host. A slotted
+// element is a child of the host in the DOM but renders in the shadow tree
+// at its slot, so the slot comes first. A closed root reports no slot.
+function composedParent(element: Element): Element | null {
+  if (element.assignedSlot) return element.assignedSlot
+  if (element.parentElement) return element.parentElement
+  const root = element.getRootNode()
+  return root instanceof ShadowRoot ? root.host : null
+}
+
+// Element.closest across shadow boundaries and slots: the nearest of the
+// element and the elements it renders inside that matches. Element.closest
+// is not used even for a first step, since it would pass over a slot on any
+// ancestor on its way up.
 export function closestComposed(element: Element, selector: string): Element | null {
-  for (let current: Element | null = element; current;) {
-    const found = current.closest(selector)
-    if (found) return found
-    const root = current.getRootNode()
-    current = root instanceof ShadowRoot ? root.host : null
+  for (let current: Element | null = element; current; current = composedParent(current)) {
+    if (current.matches(selector)) return current
   }
   return null
 }
 
-// Node.contains across shadow boundaries, the same way.
+// Node.contains along the same composed ancestry.
 export function containsComposed(container: Element, element: Element): boolean {
-  for (let current: Element | null = element; current;) {
-    if (container.contains(current)) return true
-    const root = current.getRootNode()
-    current = root instanceof ShadowRoot ? root.host : null
+  for (let current: Element | null = element; current; current = composedParent(current)) {
+    if (current === container) return true
   }
   return false
 }
-
-// Whether focus sits somewhere this document cannot see into: a frame, which
-// holds focus of its own, or a shadow host focusedElement stopped at. A host
-// with an open root that holds no focus is answered directly. A closed root
-// cannot be detected, so an element that holds focus without being focusable
-// by itself (a custom element, or an element that may host a shadow root and
-// has no tabindex) is taken to be a host that passed focus inside.
-export function focusIsOpaque(element: Element): boolean {
-  if (element instanceof HTMLIFrameElement || element instanceof HTMLObjectElement || element instanceof HTMLEmbedElement) return true
-  if (element.shadowRoot) return true
-  if (element.localName.includes("-")) return true
-  return shadowHostNames.has(element.localName) && !element.hasAttribute("tabindex")
-}
-
-// The standard elements that may host a shadow root (DOM Standard,
-// attachShadow). None of them takes focus without a tabindex or editing.
-const shadowHostNames = new Set([
-  "article", "aside", "blockquote", "body", "div", "footer", "h1", "h2", "h3", "h4", "h5", "h6",
-  "header", "main", "nav", "p", "section", "span",
-])

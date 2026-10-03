@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   repositoryGitFilterErrorCode,
@@ -16,6 +16,7 @@ import {
 import { DaemonRpcError } from "./client.js"
 import { SessionRefusalCard } from "./session-refusal-card.js"
 import { gitFilterRefusalFrom } from "./session-refusal.js"
+import { assignSlotsLikeABrowser } from "./test-support/assigned-slot.js"
 
 afterEach(cleanup)
 
@@ -101,8 +102,9 @@ function show(options: {
 
 // The card moves focus to its heading one frame after it appears, and only
 // while the person is still where the refused start left them: the document,
-// the loading line, or the control that opened the start. Focus they moved
-// anywhere else, an input above all, stays there (ruling Q400).
+// Domovoi's loading line, or the Domovoi control marked as the opener of the
+// start that opened this one. Focus anywhere else stays there (rulings Q400,
+// Q410).
 describe("focus when the refusal appears", () => {
   function frames() {
     const pending: FrameRequestCallback[] = []
@@ -110,37 +112,60 @@ describe("focus when the refusal appears", () => {
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {})
     return () => { for (const callback of pending.splice(0)) act(() => callback(0)) }
   }
+  let restoreSlots = () => {}
+  beforeEach(() => { restoreSlots = assignSlotsLikeABrowser() })
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    restoreSlots()
     document.body.replaceChildren()
   })
+  const heading = () => screen.getByRole("heading", { name: "Domovoi did not start this session" })
+  // A control Domovoi marks as one that opens a session start.
+  function opener(element: HTMLElement = document.createElement("button")) {
+    element.setAttribute("data-domovoi-opener", "")
+    return element
+  }
+  function loadingLine() {
+    const line = Object.assign(document.createElement("p"), { tabIndex: -1 })
+    line.setAttribute("data-surface-loading", "")
+    return line
+  }
 
   it("takes focus from the document", () => {
     const run = frames()
     show()
     ;(document.activeElement as HTMLElement | null)?.blur()
     run()
-    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Domovoi did not start this session" }))
+    expect(document.activeElement).toBe(heading())
   })
 
-  it("takes focus from the control that opened the start", () => {
+  it("takes focus from the loading line its code loaded behind", () => {
     const run = frames()
-    const trigger = document.body.appendChild(document.createElement("button"))
+    const line = document.body.appendChild(loadingLine())
+    line.focus()
+    show()
+    run()
+    expect(document.activeElement).toBe(heading())
+  })
+
+  it("takes focus from the marked control that opened the start", () => {
+    const run = frames()
+    const trigger = document.body.appendChild(opener())
     trigger.focus()
     show({ focusFrom: { trigger, within: null } })
     run()
-    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Domovoi did not start this session" }))
+    expect(document.activeElement).toBe(heading())
   })
 
   // The card can appear while the launcher the start came from is still
   // closing: it waits for focus to leave that dialog, then decides.
   it("waits while focus is still in the dialog the start came from", () => {
     const run = frames()
-    const trigger = document.body.appendChild(document.createElement("button"))
+    const trigger = document.body.appendChild(opener())
     const launcher = document.body.appendChild(document.createElement("div"))
     launcher.setAttribute("role", "dialog")
-    const submit = launcher.appendChild(document.createElement("button"))
+    const submit = launcher.appendChild(opener())
     submit.focus()
     show({ focusFrom: { trigger, within: submit } })
     run()
@@ -149,7 +174,28 @@ describe("focus when the refusal appears", () => {
     launcher.remove()
     trigger.focus()
     run()
-    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Domovoi did not start this session" }))
+    expect(document.activeElement).toBe(heading())
+  })
+
+  // The dialog is drawn inside a widget's open shadow root around a slot, and
+  // the control the start came from is the page's own, assigned to that slot.
+  // It renders in the dialog, so the card waits for that dialog to close.
+  it("waits while focus is still in a dialog the start's control is slotted into", () => {
+    const run = frames()
+    const trigger = document.body.appendChild(opener())
+    const widget = document.body.appendChild(document.createElement("div"))
+    const dialog = widget.attachShadow({ mode: "open" }).appendChild(document.createElement("div"))
+    dialog.setAttribute("role", "dialog")
+    dialog.appendChild(document.createElement("slot"))
+    const submit = widget.appendChild(opener())
+    submit.focus()
+    show({ focusFrom: { trigger, within: submit } })
+    run()
+    expect(document.activeElement).toBe(submit)
+    widget.remove()
+    trigger.focus()
+    run()
+    expect(document.activeElement).toBe(heading())
   })
 
   it.each([
@@ -157,9 +203,10 @@ describe("focus when the refusal appears", () => {
     ["a text area", () => document.createElement("textarea")],
     ["an editable region", () => Object.assign(document.createElement("div"), { contentEditable: "true", tabIndex: 0 })],
     ["another control", () => document.createElement("button")],
+    ["another marked control", () => opener()],
   ])("leaves focus in %s the person moved to before the frame", (_label, make) => {
     const run = frames()
-    const trigger = document.body.appendChild(document.createElement("button"))
+    const trigger = document.body.appendChild(opener())
     show({ focusFrom: { trigger, within: null } })
     const elsewhere = document.body.appendChild(make())
     elsewhere.focus()
@@ -180,12 +227,25 @@ describe("focus when the refusal appears", () => {
 
   // document.activeElement names only the outermost shadow host, and a frame
   // holds focus of its own. The saved trigger can be that host or frame while
-  // the person types inside it, so the card judges the element that holds
-  // focus, and never takes it from a host or frame it cannot see into.
+  // the person types inside it. Whether a closed root holds focus cannot be
+  // seen at all, tabindex or not, so the card takes focus only from a control
+  // Domovoi marked as the start's opener, and from nothing a page or widget
+  // drew (ruling Q410).
   function shadowInput(host: HTMLElement, mode: ShadowRootMode) {
     return host.attachShadow({ mode }).appendChild(document.createElement("input"))
   }
+  function slottedInDialog(control: HTMLElement) {
+    const widget = document.body.appendChild(document.createElement("div"))
+    const dialog = widget.attachShadow({ mode: "open" }).appendChild(document.createElement("div"))
+    dialog.setAttribute("role", "dialog")
+    dialog.appendChild(document.createElement("slot"))
+    return widget.appendChild(control)
+  }
   it.each([
+    ["an unmarked control that opened the start", () => {
+      const button = document.body.appendChild(document.createElement("button"))
+      return { trigger: button, focus: button }
+    }],
     ["an input in an open shadow root", () => {
       const host = document.body.appendChild(document.createElement("div"))
       return { trigger: host, focus: shadowInput(host, "open") }
@@ -199,10 +259,38 @@ describe("focus when the refusal appears", () => {
       const host = document.body.appendChild(document.createElement("div"))
       return { trigger: host, focus: shadowInput(host, "closed") }
     }],
+    ["an input in a closed shadow root whose host has tabindex 0", () => {
+      const host = document.body.appendChild(Object.assign(document.createElement("div"), { tabIndex: 0 }))
+      return { trigger: host, focus: shadowInput(host, "closed") }
+    }],
+    ["an input in a closed shadow root whose host has tabindex -1", () => {
+      const host = document.body.appendChild(Object.assign(document.createElement("div"), { tabIndex: -1 }))
+      return { trigger: host, focus: shadowInput(host, "closed") }
+    }],
+    ["an input in a closed shadow root inside an open one, whose host has tabindex 0", () => {
+      const outer = document.body.appendChild(document.createElement("div"))
+      const host = outer.attachShadow({ mode: "open" }).appendChild(Object.assign(document.createElement("div"), { tabIndex: 0 }))
+      return { trigger: outer, focus: shadowInput(host, "closed") }
+    }],
     ["a shadow host whose open root holds no focus", () => {
       const host = document.body.appendChild(Object.assign(document.createElement("div"), { tabIndex: 0 }))
       host.attachShadow({ mode: "open" }).appendChild(document.createElement("span"))
       return { trigger: host, focus: host }
+    }],
+    ["a control in an open shadow root", () => {
+      const host = document.body.appendChild(document.createElement("div"))
+      const button = host.attachShadow({ mode: "open" }).appendChild(document.createElement("button"))
+      return { trigger: button, focus: button }
+    }],
+    ["a marked control in an open shadow root", () => {
+      const host = document.body.appendChild(document.createElement("div"))
+      const button = host.attachShadow({ mode: "open" }).appendChild(opener())
+      return { trigger: button, focus: button }
+    }],
+    ["a loading line in an open shadow root", () => {
+      const host = document.body.appendChild(document.createElement("div"))
+      const line = host.attachShadow({ mode: "open" }).appendChild(loadingLine())
+      return { trigger: null, focus: line }
     }],
     ["a frame", () => {
       const frame = document.body.appendChild(document.createElement("iframe"))
@@ -212,7 +300,15 @@ describe("focus when the refusal appears", () => {
       const dialog = document.body.appendChild(document.createElement("div"))
       dialog.setAttribute("role", "dialog")
       const host = dialog.appendChild(document.createElement("div"))
-      const button = host.attachShadow({ mode: "open" }).appendChild(document.createElement("button"))
+      const button = host.attachShadow({ mode: "open" }).appendChild(opener())
+      return { trigger: button, focus: button }
+    }],
+    ["a control slotted into a dialog in an open shadow root", () => {
+      const button = slottedInDialog(document.createElement("button"))
+      return { trigger: button, focus: button }
+    }],
+    ["a marked control slotted into a dialog in an open shadow root", () => {
+      const button = slottedInDialog(opener())
       return { trigger: button, focus: button }
     }],
   ])("leaves focus in %s, even when it is the saved trigger", (_label, make) => {

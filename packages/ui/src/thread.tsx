@@ -903,7 +903,10 @@ export function Thread({
             </EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
-            <Button disabled={watching} onClick={onNewSession}>
+            {/* data-domovoi-opener marks a control that opens a session
+                start: a refusal of that start may take focus from it (ruling
+                Q410). */}
+            <Button data-domovoi-opener="" disabled={watching} onClick={onNewSession}>
               {hasProject ? <BotIcon data-icon="inline-start" /> : <FolderOpenIcon data-icon="inline-start" />}
               {hasProject ? "New session" : "Open project"}
             </Button>

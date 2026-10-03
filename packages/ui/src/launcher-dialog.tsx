@@ -471,7 +471,9 @@ export function LauncherDialog({
           ) : null}
           <DialogFooter>
             <Button type="button" variant="ghost" disabled={pending} onClick={() => onOpenChange(false)}>Cancel</Button>
-            <Button type="submit" disabled={!value.trim() || pending || (!isProject && !runtimeReady)}>
+            {/* data-domovoi-opener marks a control that opens a session
+                start (ruling Q410). */}
+            <Button type="submit" data-domovoi-opener="" disabled={!value.trim() || pending || (!isProject && !runtimeReady)}>
               {isProject ? <FolderOpenIcon data-icon="inline-start" /> : <BotIcon data-icon="inline-start" />}
               {pending ? "Working" : isProject ? "Open project" : "Create session"}
             </Button>

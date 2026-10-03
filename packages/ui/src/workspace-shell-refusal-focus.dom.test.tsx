@@ -6,6 +6,7 @@ import { repositoryGitFilterErrorCode, type ProviderRuntime } from "@getdomovoi/
 
 import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
+import { assignSlotsLikeABrowser } from "./test-support/assigned-slot"
 import {
   completeHandshake,
   fail,
@@ -20,8 +21,14 @@ import {
 // would, so the person can move on while it loads. The card suspends inside
 // the surface's own boundary, which shows its loading line meanwhile. Each
 // test arms a chunk of its own, since a loaded chunk never suspends again.
+// It also keeps where the shell said the start came from, as the card read it.
 const chunk = vi.hoisted(() => {
-  const chunk = { ready: Promise.resolve(), release: () => {}, arm: () => {} }
+  const chunk = {
+    ready: Promise.resolve(),
+    release: () => {},
+    arm: () => {},
+    focusFrom: undefined as { trigger: Element | null; within: Element | null } | undefined,
+  }
   chunk.arm = () => {
     chunk.ready = new Promise<void>((resolve) => { chunk.release = resolve })
   }
@@ -33,6 +40,7 @@ vi.mock("./session-refusal-card", async (importOriginal) => {
   type Card = typeof actual.SessionRefusalCard
   const cards = new WeakMap<Promise<void>, ReturnType<typeof lazy<Card>>>()
   const SessionRefusalCard = (props: Parameters<Card>[0]) => {
+    chunk.focusFrom = props.focusFrom
     const ready = chunk.ready
     let card = cards.get(ready)
     if (!card) {
@@ -53,6 +61,7 @@ beforeEach(() => {
   try { localStorage.removeItem(workspaceUiStorageKey) } catch { /* a browser with site data blocked still runs the test */ }
   harness = installFakeWebSocket()
   chunk.arm()
+  chunk.focusFrom = undefined
 })
 
 afterEach(() => {
@@ -120,20 +129,100 @@ it("leaves focus in a field the person moved to while the refusal's code loaded"
   expect(field.value).toBe("review note more")
 })
 
+// The card takes focus only from a control Domovoi marked as a start's opener
+// (ruling Q410): the New session button, the palette's New session row and
+// the launcher's submit. A row that opens nothing is not marked.
+it("marks the controls that open a session start, and no others", async () => {
+  const { user } = await connectedShell()
+  const opener = "data-domovoi-opener"
+  expect(screen.getByRole("button", { name: "New session" }).hasAttribute(opener)).toBe(true)
+
+  await user.keyboard("{Control>}k{/Control}")
+  expect(screen.getByRole("option", { name: /New session/ }).hasAttribute(opener)).toBe(true)
+  expect(screen.getByRole("option", { name: /Open project/ }).hasAttribute(opener)).toBe(false)
+  await user.type(screen.getByRole("combobox"), "New session")
+  await user.keyboard("{Enter}")
+  await settle()
+  expect(screen.getByRole("button", { name: "Create session" }).hasAttribute(opener)).toBe(true)
+  expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute(opener)).toBe(false)
+})
+
 // A browser hands a document focusin listener the event retargeted to the
-// outermost shadow host, as document.activeElement names that host too.
-// happy-dom hands it the element inside, so the test retargets as a browser
-// would, for every listener after the window's capture phase.
+// outermost shadow host, as document.activeElement names that host too, and
+// its composed path leaves out every node inside a closed root. happy-dom
+// hands it the element inside, so the test retargets as a browser would, for
+// every listener after the window's capture phase.
 function retargetFocusLikeABrowser() {
+  const insideClosedRoot = (node: EventTarget) => {
+    if (!(node instanceof Node)) return false
+    for (let root = node.getRootNode(); root instanceof ShadowRoot; root = root.host.getRootNode()) {
+      if (root.mode === "closed") return true
+    }
+    return false
+  }
   const retarget = (event: FocusEvent) => {
-    let root = (event.composedPath()[0] as Node | undefined)?.getRootNode()
+    const path = event.composedPath()
+    let root = (path[0] as Node | undefined)?.getRootNode()
     if (!(root instanceof ShadowRoot)) return
     let host = root.host
     while ((root = host.getRootNode()) instanceof ShadowRoot) host = root.host
+    const visible = path.filter((node) => !insideClosedRoot(node))
     Object.defineProperty(event, "target", { configurable: true, get: () => host })
+    Object.defineProperty(event, "composedPath", { configurable: true, value: () => visible })
   }
   window.addEventListener("focusin", retarget, true)
   return () => window.removeEventListener("focusin", retarget, true)
+}
+
+async function connectedShell() {
+  const base = workspaceSnapshot()
+  const snapshot = workspaceSnapshot({ machine: { ...base.machine, providers: [codex] } })
+  render(<WorkspaceShell />)
+  const socket = harness.socket(0)
+  await act(async () => { completeHandshake(socket, snapshot) })
+  await settle()
+  return { socket, snapshot, user: userEvent.setup() }
+}
+
+// From wherever focus is, open the command palette, start a new session and
+// have the daemon refuse it. The refusal's code is still loading afterwards.
+async function refusedFromPalette({ socket, snapshot, user }: Awaited<ReturnType<typeof connectedShell>>) {
+  await user.keyboard("{Control>}k{/Control}")
+  await user.type(screen.getByRole("combobox"), "New session")
+  await user.keyboard("{Enter}")
+  await settle()
+  const models = [{
+    provider: "codex", id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", description: "",
+    supportedReasoningEfforts: ["medium" as const], defaultReasoningEffort: "medium" as const, isDefault: true,
+  }]
+  await act(async () => {
+    while (sentRequests(socket, "runtime.models").some((request) => !socket.answered.has(request.id))) respond(socket, "runtime.models", models)
+  })
+  await settle()
+  await user.type(screen.getByLabelText("Session goal"), "Rotate the staging keys")
+  await user.click(screen.getByRole("button", { name: "Create session" }))
+  await settle()
+  await act(async () => {
+    fail(socket, "session.create", {
+      code: repositoryGitFilterErrorCode,
+      message: "This repository's own Git config sets the filter \"sops\".",
+      data: {
+        kind: "repository-git-filter", projectId: snapshot.project!.id, configDigest: `sha256:${"a".repeat(64)}`,
+        trust: { state: "untrusted", reason: "not-trusted" }, drivers: [{ name: "sops", scope: "local" }], omittedDrivers: 0,
+      },
+    })
+  })
+  await settle()
+  expect(await screen.findByText("Opening the refusal")).toBeTruthy()
+}
+
+// The card's code arrives, and several frames pass, enough for the card's
+// move to have happened.
+async function cardArrives() {
+  await act(async () => { chunk.release() })
+  const heading = await screen.findByRole("heading", { name: "Domovoi did not start this session" })
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 120)) })
+  return heading
 }
 
 // The person is typing in a field inside an open shadow root, opens the
@@ -143,57 +232,80 @@ function retargetFocusLikeABrowser() {
 it("leaves focus in a shadow root field the start was launched from", async () => {
   const restore = retargetFocusLikeABrowser()
   try {
-    const base = workspaceSnapshot()
-    const snapshot = workspaceSnapshot({ machine: { ...base.machine, providers: [codex] } })
-    render(<WorkspaceShell />)
-    const socket = harness.socket(0)
-    await act(async () => { completeHandshake(socket, snapshot) })
-    await settle()
-    const user = userEvent.setup()
+    const shell = await connectedShell()
+    const { user } = shell
     const host = document.body.appendChild(document.createElement("div"))
     const field = host.attachShadow({ mode: "open" }).appendChild(Object.assign(document.createElement("input"), { "aria-label": "Review note" }))
     await user.click(field)
     await user.keyboard("review note")
     expect(document.activeElement).toBe(host)
 
-    await user.keyboard("{Control>}k{/Control}")
-    await user.type(screen.getByRole("combobox"), "New session")
-    await user.keyboard("{Enter}")
-    await settle()
-    const models = [{
-      provider: "codex", id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", description: "",
-      supportedReasoningEfforts: ["medium" as const], defaultReasoningEffort: "medium" as const, isDefault: true,
-    }]
-    await act(async () => {
-      while (sentRequests(socket, "runtime.models").some((request) => !socket.answered.has(request.id))) respond(socket, "runtime.models", models)
-    })
-    await settle()
-    await user.type(screen.getByLabelText("Session goal"), "Rotate the staging keys")
-    await user.click(screen.getByRole("button", { name: "Create session" }))
-    await settle()
-    await act(async () => {
-      fail(socket, "session.create", {
-        code: repositoryGitFilterErrorCode,
-        message: "This repository's own Git config sets the filter \"sops\".",
-        data: {
-          kind: "repository-git-filter", projectId: snapshot.project!.id, configDigest: `sha256:${"a".repeat(64)}`,
-          trust: { state: "untrusted", reason: "not-trusted" }, drivers: [{ name: "sops", scope: "local" }], omittedDrivers: 0,
-        },
-      })
-    })
-    await settle()
-    expect(await screen.findByText("Opening the refusal")).toBeTruthy()
-
+    await refusedFromPalette(shell)
     await user.click(field)
-    await act(async () => { chunk.release() })
-    const heading = await screen.findByRole("heading", { name: "Domovoi did not start this session" })
-    // Several frames pass, enough for the card's move to have happened.
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 120)) })
+    const heading = await cardArrives()
 
     expect(document.activeElement).not.toBe(heading)
     expect(host.shadowRoot?.activeElement).toBe(field)
     await user.keyboard(" more")
     expect(field.value).toBe("review note more")
+  } finally {
+    restore()
+  }
+})
+
+// The same flow from a field inside a closed shadow root whose host takes
+// focus by tabindex. Nothing outside the root can see whether the host or
+// the field holds focus, and the host is where focus was before the start,
+// so the card leaves focus where it is (ruling Q410).
+it.each([0, -1])("leaves focus in a closed shadow root whose host has tabindex %i", async (tabIndex) => {
+  const restore = retargetFocusLikeABrowser()
+  try {
+    const shell = await connectedShell()
+    const { user } = shell
+    const host = document.body.appendChild(Object.assign(document.createElement("div"), { tabIndex }))
+    const root = host.attachShadow({ mode: "closed" })
+    const field = root.appendChild(Object.assign(document.createElement("input"), { "aria-label": "Review note" }))
+    await user.click(field)
+    expect(document.activeElement).toBe(host)
+    expect(root.activeElement).toBe(field)
+
+    await refusedFromPalette(shell)
+    await user.click(field)
+    expect(root.activeElement).toBe(field)
+    const heading = await cardArrives()
+
+    expect(document.activeElement).not.toBe(heading)
+    expect(document.activeElement).toBe(host)
+    expect(root.activeElement).toBe(field)
+  } finally {
+    restore()
+  }
+})
+
+// A widget draws a dialog in its open shadow root around a slot, and the
+// page's own button is assigned to that slot. The button renders inside the
+// dialog, so the shell does not record it as the control a start came from,
+// and when the person returns to it the card leaves focus there.
+it("does not take a control slotted into another dialog as the start's opener", async () => {
+  const restore = assignSlotsLikeABrowser()
+  try {
+    const shell = await connectedShell()
+    const { user } = shell
+    const widget = document.body.appendChild(document.createElement("div"))
+    const dialog = widget.attachShadow({ mode: "open" }).appendChild(document.createElement("div"))
+    dialog.setAttribute("role", "dialog")
+    dialog.appendChild(document.createElement("slot"))
+    const button = widget.appendChild(Object.assign(document.createElement("button"), { textContent: "Widget action" }))
+    await user.click(button)
+    expect(document.activeElement).toBe(button)
+
+    await refusedFromPalette(shell)
+    expect(chunk.focusFrom?.trigger).not.toBe(button)
+    await user.click(button)
+    const heading = await cardArrives()
+
+    expect(document.activeElement).not.toBe(heading)
+    expect(document.activeElement).toBe(button)
   } finally {
     restore()
   }

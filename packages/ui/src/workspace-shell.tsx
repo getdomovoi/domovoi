@@ -635,10 +635,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }, [refusalScope])
   // The last control focused outside any dialog: the one that opened the
   // launcher or fork dialog a start came from, which that dialog restores
-  // focus to when it closes. A refusal card may take focus from it, and from
-  // nothing else the person moved to (ruling Q400). A focus inside an open
-  // shadow root reaches this listener retargeted to its host, so the element
-  // recorded is the first in the event's composed path.
+  // focus to when it closes. A refusal card may take focus from it when it is
+  // a control Domovoi marked as a start's opener, and from nothing else the
+  // person moved to (rulings Q400, Q410). A focus inside an open shadow root
+  // reaches this listener retargeted to its host, so the element recorded is
+  // the first in the event's composed path. A control slotted into a dialog
+  // drawn in a shadow root is inside that dialog.
   const focusOutsideDialogs = useRef<Element | null>(null)
   useEffect(() => {
     const track = (event: FocusEvent) => {

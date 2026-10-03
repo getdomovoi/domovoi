@@ -110,7 +110,9 @@ export function AppBar({
       {sessionsDrawer ? <span className="electron-no-drag inline-flex items-center">{sessionsDrawer}</span> : null}
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label="New session" disabled={watching || !onNewSession} onClick={onNewSession}>
+          {/* data-domovoi-opener marks a control that opens a session start:
+              a refusal of that start may take focus from it (ruling Q410). */}
+          <Button variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label="New session" data-domovoi-opener="" disabled={watching || !onNewSession} onClick={onNewSession}>
             <PlusIcon className="size-4" />
           </Button>
         </TooltipTrigger>

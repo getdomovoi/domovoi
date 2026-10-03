@@ -89,6 +89,9 @@ export type WorkspaceCommand = {
   elsewhereTargets?: readonly WorkspaceCommand[] | undefined
   tone?: StatusMeaning | undefined
   restoreFocus?: boolean
+  // Whether this row opens a session start. Its item is marked
+  // data-domovoi-opener, as Domovoi's other start controls are (ruling Q410).
+  opensStart?: boolean
   disabled?: boolean
   run: () => void
 }
@@ -246,7 +249,7 @@ export function buildWorkspaceCommands({
 }): WorkspaceCommand[] {
   return [
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, restoreFocus: false, run: openProject },
-    { id: "new-session", label: "New session", section: "Session", keywords: ["create", "agent"], icon: MessageSquarePlusIcon, disabled: !connected || !hasProject, restoreFocus: false, run: newSession },
+    { id: "new-session", label: "New session", section: "Session", keywords: ["create", "agent"], icon: MessageSquarePlusIcon, disabled: !connected || !hasProject, restoreFocus: false, opensStart: true, run: newSession },
     ...(activeWorkspacePath && openInEditor ? [
       { id: "open-in-editor", label: desktopExternalActionLabel(externalEditor ?? "system"), section: "Session" as const, keywords: ["worktree", "file", "external"], icon: ExternalLinkIcon, run: openInEditor },
     ] : []),
@@ -605,6 +608,7 @@ export function CommandPalette({
                     <CommandItem
                       key={command.id}
                       {...(command.disabled === undefined ? {} : { disabled: command.disabled })}
+                      {...(command.opensStart ? { "data-domovoi-opener": "" } : {})}
                       value={command.id}
                       onSelect={() => {
                         if (command.disabled) return

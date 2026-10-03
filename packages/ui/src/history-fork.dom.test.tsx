@@ -33,6 +33,19 @@ it("forks from the checkpoint the row names", async () => {
   expect(onFork).toHaveBeenCalledWith("checkpoint-7f23")
 })
 
+// A fork is a session start, and its trigger is where the confirm gives focus
+// back, so a refusal of the fork may take focus from it (ruling Q410).
+it("marks the fork controls as openers of a session start", async () => {
+  const user = userEvent.setup()
+  render(<CheckpointFork checkpointId="checkpoint-7f23" label="before migration" disabled={false} onFork={vi.fn()} />)
+
+  const trigger = screen.getByRole("button", { name: "Fork from here" })
+  expect(trigger.hasAttribute("data-domovoi-opener")).toBe(true)
+  await user.click(trigger)
+  expect(screen.getByRole("button", { name: "Fork session" }).hasAttribute("data-domovoi-opener")).toBe(true)
+  expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("data-domovoi-opener")).toBe(false)
+})
+
 it("offers nothing to click while forking is held shut", async () => {
   render(<CheckpointFork checkpointId="checkpoint-7f23" label="before migration" disabled onFork={vi.fn()} />)
 
