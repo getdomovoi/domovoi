@@ -71,6 +71,10 @@ describe("pairing by camera", () => {
     expect(screen.getByText(/domovoid pair --client tablet/)).toBeTruthy()
     expect(screen.getByText(/stays in this tablet's keychain/)).toBeTruthy()
     expect(screen.queryByText(/--client phone|this phone's keychain/)).toBeNull()
+    // The field the machine's device list will show names the tablet too.
+    expect(screen.getByText("Name this tablet")).toBeTruthy()
+    expect(screen.getByLabelText("Tablet name")).toBeTruthy()
+    expect(screen.queryByText("Name this phone")).toBeNull()
   }, cold)
 
   it("says what a wrong code is and keeps scanning", async () => {

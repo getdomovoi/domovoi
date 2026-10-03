@@ -230,13 +230,13 @@ export function PairScanScreen({
             <Text variant="note">
               {`That is the scope of a credential the machine minted with domovoid pair --client ${device}; the daemon refuses everything else to it. The ${device} cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this ${device}'s keychain.`}
             </Text>
-            <Text variant="label">Name this phone</Text>
+            <Text variant="label">{device === "tablet" ? "Name this tablet" : "Name this phone"}</Text>
             <TextInput
-              accessibilityLabel="Phone name"
+              accessibilityLabel={device === "tablet" ? "Tablet name" : "Phone name"}
               value={name}
               onChangeText={setName}
               autoCorrect={false}
-              placeholder="iPhone"
+              placeholder={device === "tablet" ? "iPad" : "iPhone"}
               placeholderTextColor={palette.faint}
               selectionColor={palette.primary}
               editable={!pairing}
