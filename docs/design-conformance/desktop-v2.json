@@ -232,10 +232,22 @@
         "Light appearance",
         "Dark appearance"
       ],
-      "evidence": [
+      "presence": [
         "Light appearance",
         "Dark appearance"
-      ]
+      ],
+      "evidence": [
+        "Light appearance",
+        "Dark appearance",
+        {
+          "absent": "disabled={watching || !onToggleTheme}",
+          "in": "packages/ui/src/app-bar.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the toggle and its tooltips are built; it is disabled while the client is watching, though the theme is a client preference that never reaches the daemon, where the design keeps it live. Q362 A (2026-10-02) unlocks client-only preferences (theme, Appearance and Notifications)"
+      }
     },
     {
       "id": "titlebar.window-controls",
@@ -272,10 +284,7 @@
       ],
       "evidence": [
         "aria-label={`Actions for",
-        {
-          "absent": "note: \"running\"",
-          "in": "packages/ui/src/session-groups.ts"
-        }
+        "re:note: `running \\$\\{"
       ],
       "partial": {
         "since": "2026-10-02",
@@ -663,7 +672,10 @@
       ],
       "evidence": [
         "Providers and tokens",
-        "Authenticate there",
+        {
+          "absent": ">SUBSCRIPTION CLIS</h2>",
+          "in": "packages/ui/src/provider-settings.tsx"
+        },
         {
           "absent": "data-provider-account-action=\"\"\n                    aria-describedby={`provider-account-${provider.id}`}\n                    disabled",
           "in": "packages/ui/src/provider-settings.tsx"
@@ -877,7 +889,7 @@
         "aria-label=\"Execution provider\"",
         "aria-label=\"Model\"",
         "MODEL ON",
-        "takes image input",
+        "\"no image input\"",
         "Locked for this model"
       ],
       "presence": [
@@ -886,7 +898,7 @@
       ],
       "partial": {
         "since": "2026-09-23",
-        "reason": "the launcher has provider and model dropdowns (launcher-dialog); the design's one MODEL ON <machine> menu grouped per agent, its image-input tags and its per-model lock reasons are not drawn. The image tags are client-buildable now (runtime.models reports ProviderModel.imageInput per model); the key lock reasons stay with api-keys, which is blocked"
+        "reason": "the launcher has provider and model dropdowns (launcher-dialog); the design's one MODEL ON <machine> menu grouped per agent, its image-input tags and its per-model lock reasons are not drawn. The image tags (the design tags a text-only model no image input) are client-buildable now (runtime.models reports ProviderModel.imageInput per model); the key lock reasons stay with api-keys, which is blocked"
       }
     },
     {
@@ -1299,7 +1311,7 @@
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "the drawn reason names a Free plan and a reads-only route, which are relay tiers (M2 or later); nothing on the wire says why a client is watching (no route capability or plan tier), so the composer says This device was paired to watch only. until the daemon reports a reason"
+        "reason": "the drawn reason names a Free plan and a reads-only route, which is a plan tier (M3) on a relay route (M2); nothing on the wire says why a client is watching (no route capability or plan tier), so the composer says This device was paired to watch only. until the daemon reports a reason"
       }
     },
     {
@@ -2123,7 +2135,7 @@
       ],
       "partial": {
         "since": "2026-09-26",
-        "reason": "the effort menu from PR #622 lists the levels the model reports, the value sent in mono beside each word, and a level with no word as its value; it uses the 2026-09-23 scales, so the claude-code effort and codex none to xhigh words and lines, Model's own, the Model default marker, the No word yet tag and the neutral clamp note are not built. effort-scales.ts still names claude-code levels think, think-hard and ultrathink, which the daemon never reports (it reports the SDK's supported effort levels), so claude-code rows get shared words and no lines; the clamp note is amber where the design is neutral. Rulings Q31, Q34, Q35 and Q36 (2026-09-25) already settle the copy"
+        "reason": "the effort menu from PR #622 lists the levels the model reports, the value sent in mono beside each word, and a level with no word as its value; it uses the 2026-09-23 scales, so the claude-code effort and codex none to xhigh words and lines, Model's own, the Model default marker, the No word yet tag and the neutral clamp note are not built. effort-scales.ts still names claude-code levels think, think-hard and ultrathink, which the daemon never reports (it reports the SDK's supported effort levels), so claude-code rows get shared words and no lines; the clamp note is amber where the design is neutral. Rulings Q31, Q34, Q35 and Q36 (2026-09-26) already settle the copy"
       }
     },
     {
@@ -2241,7 +2253,7 @@
     {
       "id": "titlebar.theme",
       "since": "2026-10-02",
-      "note": "Open gap, ruled: the toggle is disabled while the client is watching (app-bar), though theme never reaches the daemon; the design keeps it live, and Q362 A unlocks client-only preferences. Open gap, unruled: the aria-label says Use light theme while the tooltip says Light appearance."
+      "note": "Open gap, no ruling: the aria-label says Use light theme while the tooltip says Light appearance. The watching lock is the partial entry's gap (Q362 A)."
     },
     {
       "id": "drawer.row",
