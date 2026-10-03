@@ -8,7 +8,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
-import { demoWorkspace, deviceIssueCodeResultSchema, protocolVersion, tailnetListenerStatusSchema } from "@getdomovoi/protocol"
+import { auditQueryPageSchema, demoWorkspace, deviceIssueCodeResultSchema, protocolVersion, tailnetListenerStatusSchema } from "@getdomovoi/protocol"
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
@@ -272,6 +272,47 @@ describe("the tailnet listener", () => {
       vi.useRealTimers()
     }
     expect(errors).toContainEqual({ context: "Domovoi stopped the tailnet listener", detail: expect.stringContaining("expired") })
+  })
+
+  // Codex review round 2 (P3): a graceful close leaves the connection open
+  // for up to 30 seconds while the client answers it. This client never
+  // answers and keeps sending; nothing it sends after expiry is handled, and
+  // its connection ends at once. Each handled request leaves an audit entry.
+  it("handles nothing from a tailnet connection after expiry, and ends it", async (context) => {
+    if (!ipv6) context.skip()
+    const served = daemon({ address: "::1", tls: { cert: certificate, key } })
+    const { port } = await served.start()
+    const socket = await open(`ws://127.0.0.1:${port}/rpc`)
+    expect((await hello(socket, served.authToken)).error).toBeUndefined()
+    const remote = await open(`wss://[::1]:${port}/rpc`, trusting())
+    expect((await hello(remote, served.authToken)).error).toBeUndefined()
+    remote.close = () => {}
+    const closed = once(remote, "close", { signal: AbortSignal.timeout(3_000) })
+    closed.catch(() => {})
+    // The newest entry for the method only the tailnet client asks.
+    const lastHandled = async () => auditQueryPageSchema.parse((await call(socket, "audit.query", { action: "device.current", limit: 1 })).result).entries[0]?.id
+    const sending = setInterval(() => {
+      try { remote.send(JSON.stringify({ jsonrpc: "2.0", id: ++nextId, method: "device.current", params: {} })) } catch { /* ended */ }
+    }, 5)
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      expect(await lastHandled()).toBeDefined()
+      const notAfter = new Date(new X509Certificate(certificate).validTo)
+      vi.useFakeTimers({ toFake: ["Date"] })
+      try {
+        vi.setSystemTime(notAfter.getTime() + 1_000)
+        expect(tailnetListenerStatusSchema.parse((await call(socket, "tailnet.status")).result)).toMatchObject({ state: "refused" })
+      } finally {
+        vi.useRealTimers()
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const atExpiry = await lastHandled()
+      await new Promise((resolve) => setTimeout(resolve, 300))
+      expect(await lastHandled()).toBe(atExpiry)
+      await closed
+    } finally {
+      clearInterval(sending)
+    }
   })
 
   it("refuses the listener, says why and keeps loopback when the certificate could not be read", async () => {

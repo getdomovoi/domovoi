@@ -1707,6 +1707,9 @@ export class DomovoiDaemon {
   #closedTerminals = new Map<string, ClosedTerminal>()
   #authToken: string
   #authenticatedClients = new WeakSet<RpcOutboundSocket>()
+  // Tailnet connections open when its certificate expired. Nothing more
+  // they send is handled; see #expireTailnetIfDue.
+  #expiredTailnetClients = new WeakSet<RpcOutboundSocket>()
   #deviceCredentials = new WeakMap<RpcOutboundSocket, {
     token: string
     verified: VerifiedDeviceCredential
@@ -3066,6 +3069,7 @@ export class DomovoiDaemon {
         socket.once("close", () => clearTimeout(deadline))
       }
       socket.on("message", (data) => {
+        if (this.#expiredTailnetClients.has(socket)) return
         if (
           !this.#authenticatedClients.has(socket)
           && webSocketPayloadByteLength(data) > maximumAuthenticationPayloadBytes
@@ -3170,7 +3174,14 @@ export class DomovoiDaemon {
     this.#tailnet = { state: "refused", address: state.address, reason, retrying: false, notAfter: state.notAfter }
     if (this.#tailnetExpiryCheck) clearTimeout(this.#tailnetExpiryCheck)
     this.#tailnetExpiryCheck = undefined
-    for (const client of this.#tailnetRpc?.clients ?? []) client.close(1001, "tailnet certificate expired")
+    // Codex review round 2 (P3): a graceful close keeps the connection open,
+    // and its messages arriving, while the client answers it, up to 30 seconds.
+    // The fence drops what arrives from now on, and what was queued but has
+    // not started; terminate ends the transport at once. Loopback is untouched.
+    for (const client of this.#tailnetRpc?.clients ?? []) {
+      this.#expiredTailnetClients.add(client)
+      client.terminate()
+    }
     this.#tailnetHttp?.close()
     this.#tailnetHttp = undefined
     this.#tailnetRpc = undefined
@@ -5849,6 +5860,8 @@ export class DomovoiDaemon {
   }
 
   async #handle(socket: RpcOutboundSocket, raw: string, signal?: AbortSignal): Promise<void> {
+    // Queued before the tailnet certificate expired, started after: dropped.
+    if (this.#expiredTailnetClients.has(socket)) return
     let input: unknown
     try {
       input = JSON.parse(raw)
