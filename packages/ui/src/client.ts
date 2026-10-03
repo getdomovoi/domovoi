@@ -960,6 +960,12 @@ export class DomovoiClient extends EventTarget {
     return this.request("update.status", {}, options)
   }
 
+  // TailnetReach (Q404 A): whether the daemon answers on the tailnet now, and
+  // until when its certificate is valid.
+  tailnetStatus(options?: DomovoiRequestOptions): Promise<RpcResult<"tailnet.status">> {
+    return this.request("tailnet.status", {}, options)
+  }
+
   // The same code `domovoid pair --client` prints, for the kind named and no
   // other. A watching client is refused before the request leaves.
   issueDeviceCode(targetClient: ClientKind, options?: DomovoiRequestOptions): Promise<RpcResult<"device.issueCode">> {

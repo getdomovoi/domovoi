@@ -310,4 +310,43 @@ describe("createDesktopWindowBridge", () => {
     expect(target.send).toHaveBeenCalledWith("domovoi:deep-link-paused")
     expect(target.removeListener).toHaveBeenCalledWith("domovoi:deep-link", expect.any(Function))
   })
+
+  // TailnetReach (Q404 A). The preload passes the main process's answer on
+  // only when it holds known keys, booleans and bounded strings, two levels
+  // deep; the renderer parses its exact shape (packages/ui tailnet-reach.ts).
+  it("asks the main process for one of three tailnet actions and passes a plain answer on", async () => {
+    const target = ipc()
+    const report = { state: "on", name: "studio.tail4c2e.ts.net", address: "100.101.102.103", stored: "~/.domovoi/tls/studio.tail4c2e.ts.net.crt, .key", httpsCertificates: true, renewalFailed: { at: "2026-10-02T12:00:00.000Z", message: "x" } }
+    target.invoke.mockImplementation(async () => report)
+    const bridge = createDesktopWindowBridge(target, "darwin")
+    for (const action of ["status", "on", "off"] as const) {
+      await expect(bridge.tailnetReach?.(action)).resolves.toEqual(report)
+      expect(target.invoke).toHaveBeenLastCalledWith("domovoi:tailnet-reach", action)
+    }
+    const outcome = { ok: false, reason: "failed", step: "certificate", message: "Tailscale did not issue a certificate.", detail: "x" }
+    target.invoke.mockImplementation(async () => outcome)
+    await expect(bridge.tailnetReach?.("on")).resolves.toEqual(outcome)
+  })
+
+  it.each([
+    ["an unknown key", { state: "off", path: "/etc" }],
+    ["an empty string", { state: "" }],
+    ["an oversized string", { state: "off", detail: "x".repeat(4_097) }],
+    ["a number", { state: "off", port: 443 }],
+    ["an array", { state: "off", name: ["a"] }],
+    ["a third level", { ok: true, report: { renewalFailed: { at: { deep: "x" } } } }],
+    ["no object", "on"],
+    ["null", null],
+  ])("refuses an answer with %s", async (_label, answer) => {
+    const target = ipc()
+    target.invoke.mockImplementation(async () => answer)
+    await expect(createDesktopWindowBridge(target, "darwin").tailnetReach?.("status")).rejects.toThrow("Desktop returned an invalid tailnet answer")
+  })
+
+  it("asks nothing for an action it does not know", async () => {
+    const target = ipc()
+    const bridge = createDesktopWindowBridge(target, "darwin")
+    await expect(bridge.tailnetReach?.("renew" as "on")).rejects.toThrow("Desktop received an invalid tailnet action")
+    expect(target.invoke).not.toHaveBeenCalled()
+  })
 })

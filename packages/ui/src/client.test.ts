@@ -1118,6 +1118,27 @@ describe("DomovoiClient", () => {
     expect(FakeWebSocket.instances).toHaveLength(1)
   })
 
+  // TailnetReach (Q404 A): the daemon's own account of its tailnet listener,
+  // validated as tailnet.status's result.
+  it("asks the daemon for its tailnet listener and refuses an answer outside the schema", async () => {
+    const scheduler = new ManualScheduler()
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", { budgets, scheduler })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const listening = client.tailnetStatus()
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({ id: 2, method: "tailnet.status", params: {} })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: { state: "listening", address: "100.101.102.103", port: 47831, certificateExpiresAt: "2026-12-20T04:12:00.000Z" } })
+    await expect(listening).resolves.toEqual({ state: "listening", address: "100.101.102.103", port: 47831, certificateExpiresAt: "2026-12-20T04:12:00.000Z" })
+
+    const odd = client.tailnetStatus()
+    socket.receive({ jsonrpc: "2.0", id: 3, result: { state: "on" } })
+    await expect(odd).rejects.toBeDefined()
+  })
+
   it("does not let stale socket callbacks create or revive a connection", async () => {
     const scheduler = new ManualScheduler()
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets, scheduler })
