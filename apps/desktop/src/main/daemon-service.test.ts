@@ -442,6 +442,17 @@ describe("updating the service in place", () => {
     expect(deps.daemon.restart).not.toHaveBeenCalled()
   })
 
+  // TailnetReach (Q404 A): the switch's change rides the same update, so the
+  // service restarts on it with the update's checks, fence and restore.
+  it("passes a tailnet change through to the service update", async () => {
+    const { service, deps } = harness()
+    const tailnet = { set: { address: "100.101.102.103", name: "studio.tail4c2e.ts.net", certPath: "/Users/dana/.domovoi/tls/studio.tail4c2e.ts.net.crt", keyPath: "/Users/dana/.domovoi/tls/studio.tail4c2e.ts.net.key" } }
+    await expect(service.update(tailnet)).resolves.toMatchObject({ ok: true })
+    expect(deps.update).toHaveBeenCalledWith({ runtime, staged: { runtime: stagedRuntime, publish: expect.any(Function) }, tailnet })
+    await expect(service.update({ clear: true })).resolves.toMatchObject({ ok: true })
+    expect(deps.update).toHaveBeenLastCalledWith({ runtime, staged: { runtime: stagedRuntime, publish: expect.any(Function) }, tailnet: { clear: true } })
+  })
+
   it("refuses while a turn runs or a gate waits, and when that cannot be read, before touching anything", async () => {
     const refused = harness({ refusal: vi.fn(async () => "1 gate is waiting (Fix login).") })
     await expect(refused.service.update()).resolves.toEqual({ ok: false, reason: "refused", message: "1 gate is waiting (Fix login)." })

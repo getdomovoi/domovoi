@@ -275,6 +275,14 @@ import { UsageLedger, type TurnUsage } from "./usage.js"
 import { usageIdentity } from "./usage-accounting.js"
 import { StoredMachineIdentityMismatchError, type MachineIdentity } from "./machine-identity.js"
 import type { TlsMaterial } from "./tls-material.js"
+import {
+  defaultTailnetRetryMs,
+  tailnetExpiryDelay,
+  tailnetCertificateCheck,
+  tailnetStatusOf,
+  type DaemonTailnetListenerOptions,
+  type TailnetListenerState,
+} from "./tailnet-listener.js"
 import { wslSharePath } from "./wsl-open-target.js"
 import { PairingCodeError, PairingCodeService, PairingDeviceLimitError, pairingCodeTtlMs } from "./pairing-codes.js"
 import { PairingIssuerSlot } from "./pairing-issuer.js"
@@ -298,7 +306,7 @@ import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { TerminalReplayBuffer, type TerminalReplayRecord } from "./terminal-replay.js"
-import { pairingAddressFor } from "./pairing-address.js"
+import { certificateHostNames, pairingAddressFor } from "./pairing-address.js"
 import { searchSessions } from "./session-search.js"
 import {
   type RpcOutboundBackpressureOptions,
@@ -1549,6 +1557,10 @@ export type DaemonServerOptions = {
   annotationVisualContext?: AnnotationVisualContextStore
   machineIdentity?: MachineIdentity
   tls?: TlsMaterial
+  // TailnetReach (Q404 A): a second listener, TLS only, on this machine's
+  // Tailscale address and the loopback listener's port. It needs
+  // allowRemoteTransport, as any listener off this machine does.
+  tailnetListener?: DaemonTailnetListenerOptions
   advertiseHost?: string
   tailnetHost?: string
   sshTunnels?: readonly ConfiguredSshTunnel[]
@@ -1663,7 +1675,12 @@ export class DomovoiDaemon {
   readonly allowedOrigins: ReadonlySet<string>
   readonly #webAppUrl: string | undefined
   #http: HttpServer | undefined
-  #websocket: WebSocketServer | undefined
+  readonly #tailnetOptions: DaemonTailnetListenerOptions | undefined
+  #tailnet: TailnetListenerState = { state: "off" }
+  #tailnetHttp: HttpServer | undefined
+  #tailnetRpc: WebSocketServer | undefined
+  #tailnetRetry: ReturnType<typeof setTimeout> | undefined
+  #tailnetExpiryCheck: ReturnType<typeof setTimeout> | undefined
   #rpcClients = new Set<RpcOutboundSocket>()
   #relaySockets = new Set<DaemonRelaySocket>()
   #relayStaticKey: Uint8Array | undefined
@@ -1734,6 +1751,10 @@ export class DomovoiDaemon {
   #closedTerminals = new Map<string, ClosedTerminal>()
   #authToken: string
   #authenticatedClients = new WeakSet<RpcOutboundSocket>()
+  // Tailnet connections open when its certificate expired, or upgraded once
+  // their listener stopped admitting. Nothing more they send is handled; see
+  // #expireTailnetIfDue and #rpcServer.
+  #expiredTailnetClients = new WeakSet<RpcOutboundSocket>()
   #deviceCredentials = new WeakMap<RpcOutboundSocket, {
     token: string
     verified: VerifiedDeviceCredential
@@ -1988,9 +2009,10 @@ export class DomovoiDaemon {
         ...(signal ? { signal } : {}),
       }),
     })
-    if (!isLoopbackHost(this.host) && !options.allowRemoteTransport) {
+    if ((!isLoopbackHost(this.host) || options.tailnetListener) && !options.allowRemoteTransport) {
       throw new Error("Non-loopback listeners require explicit protected-transport opt-in")
     }
+    this.#tailnetOptions = options.tailnetListener
     this.#webAppUrl = options.webAppUrl
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://", "domovoi-app://desktop"],
@@ -2197,6 +2219,15 @@ export class DomovoiDaemon {
   // that draws a code.
   #pairingAddress(): PairingAddress {
     const port = this.address?.port ?? this.requestedPort
+    // While the tailnet listener answers, a code names the host on its
+    // certificate: that is the address a phone off this machine can dial.
+    const tailnet = this.#tailnetOptions?.tls
+    if (this.#tailnet.state === "listening" && tailnet && "cert" in tailnet) {
+      return pairingAddressFor(
+        { host: this.#tailnet.address, port: this.#tailnet.port, tls: { certPath: "the tailnet certificate this daemon serves" } },
+        () => tailnet.cert.toString("utf8"),
+      )
+    }
     const tls = this.#tls
     return pairingAddressFor(
       { host: this.host, port, ...(tls ? { tls: { certPath: "the certificate this daemon serves" } } : {}) },
@@ -2222,6 +2253,7 @@ export class DomovoiDaemon {
         ...(this.#tls ? { tls: true } : {}),
         ...(this.#advertiseHost ? { advertiseHost: this.#advertiseHost } : {}),
         ...(this.#tailnetHost ? { tailnetHost: this.#tailnetHost } : {}),
+        ...(this.#tailnet.state === "listening" ? { tailnetListener: true } : {}),
       }),
       ...(this.#wsl ? { wsl: this.#wsl } : {}),
     })
@@ -3001,7 +3033,32 @@ export class DomovoiDaemon {
         requestHandler,
       )
       : (requestHandler: Parameters<typeof createServer>[1]) => createServer(requestHandler)
-    this.#http = listen((request, response) => {
+    this.#http = listen(this.#requestHandler(() => this.address && { hosts: [this.address.host], port: this.address.port }))
+    this.#rpcServer(this.#http)
+
+    await new Promise<void>((resolve, reject) => {
+      this.#http!.once("error", reject)
+      this.#http!.listen(this.requestedPort, this.host, () => resolve())
+    })
+    signal?.throwIfAborted()
+    // Beside loopback, on the same port. Its failure never stops the daemon:
+    // the desktop and the CLI attach on loopback, which already answers.
+    await this.#openTailnetListener(this.address!.port)
+
+    // A dead target must not hold daemon startup hostage. Each frozen source
+    // remains read-only while its own resource queue reconciles in background.
+    this.#scheduleSessionTransferRecovery()
+    this.#scheduleRecoveredOwnershipChecks()
+    this.#fleetEnrollment.start()
+    if (this.#providerProbe) this.#queueProviderRefresh(true)
+
+    return this.address!
+  }
+
+  // Shared by the loopback and tailnet listeners. listener: the hosts an
+  // artifact request's Host may name on the listener it arrived on, and its port.
+  #requestHandler(listener: () => { hosts: readonly string[]; port: number } | undefined): Parameters<typeof createServer>[1] {
+    return (request, response) => {
       if (request.url === "/healthz") {
         response.writeHead(200, { "content-type": "application/json" })
         response.end(JSON.stringify({ status: "ok", protocolVersion: this.#advertisedProtocolVersion }))
@@ -3009,7 +3066,7 @@ export class DomovoiDaemon {
       }
 
       if (request.method === "GET" && request.url?.startsWith("/artifacts/")) {
-        if (!this.#acceptsHost(request.headers.host)) {
+        if (!this.#acceptsHost(request.headers.host, listener())) {
           response.writeHead(404, { "content-type": "application/json" })
           response.end(JSON.stringify({ error: "not_found" }))
           return
@@ -3020,14 +3077,20 @@ export class DomovoiDaemon {
 
       response.writeHead(404, { "content-type": "application/json" })
       response.end(JSON.stringify({ error: "not_found" }))
-    })
+    }
+  }
 
+  // The RPC endpoint on one listener. Every listener admits, authenticates and
+  // budgets a connection the same way; nothing here depends on which one,
+  // except that a listener may stop admitting while the daemon runs:
+  // listening is false from then on, for that listener only.
+  #rpcServer(server: HttpServer, listening: () => boolean = () => true): WebSocketServer {
     const verifyClient: VerifyClientCallbackSync = ({ origin, req }) =>
-      !this.#stopping && !this.#stopped
+      !this.#stopping && !this.#stopped && listening()
       && (!origin || this.allowedOrigins.has(origin) || namesThisDaemon(origin, req))
 
-    this.#websocket = new WebSocketServer({
-      server: this.#http,
+    const websocket = new WebSocketServer({
+      server,
       path: "/rpc",
       verifyClient,
       maxPayload: maximumWebSocketPayloadBytes,
@@ -3035,11 +3098,11 @@ export class DomovoiDaemon {
     // The WebSocket server re-emits its HTTP server's errors. A listen failure
     // such as a port in use is answered by start() below; without a listener
     // here the re-emitted copy throws first and start() never settles.
-    this.#websocket.on("error", (error) => {
+    websocket.on("error", (error) => {
       // Before listening, start() answers the listen failure itself.
-      if (this.#http?.listening) this.#reportError("Domovoi WebSocket server failed", error)
+      if (server.listening) this.#reportError("Domovoi WebSocket server failed", error)
     })
-    this.#websocket.on("headers", (headers, request) => {
+    websocket.on("headers", (headers, request) => {
       const nonce = request.headers["x-domovoi-owner-nonce"]
       const peer = request.socket.remoteAddress
       const local = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1"
@@ -3050,7 +3113,15 @@ export class DomovoiDaemon {
         headers.push(`X-Domovoi-Owner-Proof: ${localOwnerProof(this.#localOwner.secret, this.#localOwner.identity, nonce)}`)
       }
     })
-    this.#websocket.on("connection", (socket, request) => {
+    websocket.on("connection", (socket, request) => {
+      // Codex review round 3 (P3): an upgrade verified as its listener
+      // stopped. Fenced and ended before anything it sends is read.
+      if (!listening()) {
+        this.#expiredTailnetClients.add(socket)
+        socket.on("error", () => {})
+        socket.terminate()
+        return
+      }
       this.#rpcClients.add(socket)
       // Use the socket peer, never caller-authored forwarding headers. NAT or
       // proxy peers share a budget; neither a reconnect nor hello resets it.
@@ -3100,6 +3171,7 @@ export class DomovoiDaemon {
         socket.once("close", () => clearTimeout(deadline))
       }
       socket.on("message", (data) => {
+        if (this.#expiredTailnetClients.has(socket)) return
         if (
           !this.#authenticatedClients.has(socket)
           && webSocketPayloadByteLength(data) > maximumAuthenticationPayloadBytes
@@ -3111,21 +3183,120 @@ export class DomovoiDaemon {
         this.#dispatch(socket, raw)
       })
     })
+    return websocket
+  }
 
-    await new Promise<void>((resolve, reject) => {
-      this.#http!.once("error", reject)
-      this.#http!.listen(this.requestedPort, this.host, () => resolve())
+  // TailnetReach (Q404 A). Opens the second listener, or records why not and
+  // says so in the daemon log. Never throws: loopback already answers.
+  async #openTailnetListener(port: number): Promise<void> {
+    const options = this.#tailnetOptions
+    if (!options || this.#stopping || this.#stopped) return
+    const { address } = options
+    const refuse = (reason: string, retrying: boolean, notAfter?: Date) => {
+      this.#tailnet = { state: "refused", address, reason, retrying, ...(notAfter ? { notAfter } : {}) }
+      this.#reportError("Domovoi did not start the tailnet listener", reason)
+    }
+    if (!("cert" in options.tls)) return refuse(options.tls.refused, false)
+    const certificate = tailnetCertificateCheck(options.tls.cert, Date.now())
+    if ("refused" in certificate) return refuse(certificate.refused!, false, "notAfter" in certificate ? certificate.notAfter : undefined)
+    const { notAfter } = certificate
+    let server: HttpServer
+    // Review of 049b1383 (P2-4): a phone dials the certificate's name, not
+    // the address, and builds preview URLs from it, so an artifact request may
+    // name the address, a name on the certificate or the advertised tailnet
+    // name. TLS has already held the connection to this certificate.
+    const hosts = [address, ...certificateHostNames(options.tls.cert.toString("utf8")), ...(this.#tailnetHost ? [this.#tailnetHost] : [])]
+    try {
+      server = createSecureServer({ cert: options.tls.cert, key: options.tls.key }, this.#requestHandler(() => ({ hosts, port })))
+    } catch {
+      // Node names only "key values mismatch" or a parse failure here.
+      return refuse("The tailnet certificate and key do not belong together, so the daemon answers on this computer only.", false, notAfter)
+    }
+    // Admits only while this server is the tailnet listener: not before it
+    // listens, and not once expiry, a refusal or the daemon's stop let it go.
+    const rpc = this.#rpcServer(server, () => this.#tailnetHttp === server && this.#tailnet.state === "listening")
+    let listened = false
+    return new Promise<void>((settle) => {
+      server.once("error", (error: NodeJS.ErrnoException) => {
+        // After listening, the RPC server's own handler reports errors.
+        if (listened) return
+        rpc.close()
+        server.close()
+        settle()
+        if (this.#stopping || this.#stopped) return
+        // Tailscale assigns the address once it is up, which at login can be
+        // after the service starts. Only that is tried again.
+        const retrying = error.code === "EADDRNOTAVAIL"
+        refuse(retrying
+          ? `The tailnet address ${address} is not on this machine (${error.code}). Tailscale may not be up yet; the daemon tries again every ${Math.max(1, Math.round((options.retryMs ?? defaultTailnetRetryMs) / 1_000))} seconds and answers on this computer meanwhile.`
+          : `The daemon could not listen on ${address} port ${port} (${error.code ?? "unknown error"}), so it answers on this computer only.`,
+        retrying, notAfter)
+        if (retrying) {
+          this.#tailnetRetry = setTimeout(() => {
+            this.#tailnetRetry = undefined
+            void this.#openTailnetListener(port)
+          }, options.retryMs ?? defaultTailnetRetryMs)
+          this.#tailnetRetry.unref?.()
+        }
+      })
+      server.listen(port, address, () => {
+        listened = true
+        settle()
+        if (this.#stopping || this.#stopped) {
+          rpc.close()
+          server.close()
+          return
+        }
+        this.#tailnetHttp = server
+        this.#tailnetRpc = rpc
+        this.#tailnet = { state: "listening", address, port, notAfter }
+        this.#armTailnetExpiry(notAfter, options.expiryRecheckMs)
+      })
     })
-    signal?.throwIfAborted()
+  }
 
-    // A dead target must not hold daemon startup hostage. Each frozen source
-    // remains read-only while its own resource queue reconciles in background.
-    this.#scheduleSessionTransferRecovery()
-    this.#scheduleRecoveredOwnershipChecks()
-    this.#fleetEnrollment.start()
-    if (this.#providerProbe) this.#queueProviderRefresh(true)
+  // Codex review round 1 (P3-7): a timer armed for notAfter itself, checked
+  // against the clock when it fires and armed again while the listener is up.
+  #armTailnetExpiry(notAfter: Date, recheckMs: number | undefined): void {
+    this.#tailnetExpiryCheck = setTimeout(() => {
+      this.#tailnetExpiryCheck = undefined
+      this.#expireTailnetIfDue()
+      if (this.#tailnet.state === "listening") this.#armTailnetExpiry(notAfter, recheckMs)
+    }, tailnetExpiryDelay(notAfter.getTime(), Date.now(), recheckMs))
+    this.#tailnetExpiryCheck.unref?.()
+  }
 
-    return this.address!
+  // An expired certificate is refused by every device, so the tailnet
+  // listener closes at notAfter, with every connection it carried, and the
+  // daemon answers on this computer only until a restart serves a renewed one.
+  // Checked when the timer armed for notAfter fires and whenever
+  // tailnet.status is asked.
+  #expireTailnetIfDue(): void {
+    const state = this.#tailnet
+    const tls = this.#tailnetOptions?.tls
+    if (state.state !== "listening" || !tls || !("cert" in tls) || Date.now() < state.notAfter.getTime()) return
+    const checked = tailnetCertificateCheck(tls.cert, Date.now())
+    const reason = "refused" in checked && checked.refused ? checked.refused : "The tailnet certificate expired, so the daemon answers on this computer only."
+    this.#tailnet = { state: "refused", address: state.address, reason, retrying: false, notAfter: state.notAfter }
+    if (this.#tailnetExpiryCheck) clearTimeout(this.#tailnetExpiryCheck)
+    this.#tailnetExpiryCheck = undefined
+    // Codex review round 2 (P3): a graceful close keeps the connection open,
+    // and its messages arriving, while the client answers it, up to 30 seconds.
+    // The fence drops what arrives from now on, and what was queued but has
+    // not started; terminate ends the transport at once. Loopback is untouched.
+    // Codex review round 3 (P3): an upgrade still in flight on a transport
+    // accepted before expiry is not in the sweep. Closing the WebSocket
+    // server detaches its upgrade handler first, and the listener's
+    // admission check (#rpcServer) refuses and ends any socket it still makes.
+    this.#tailnetRpc?.close()
+    for (const client of this.#tailnetRpc?.clients ?? []) {
+      this.#expiredTailnetClients.add(client)
+      client.terminate()
+    }
+    this.#tailnetHttp?.close()
+    this.#tailnetHttp = undefined
+    this.#tailnetRpc = undefined
+    this.#reportError("Domovoi stopped the tailnet listener", reason)
   }
 
   stop(): Promise<void> {
@@ -3183,8 +3354,24 @@ export class DomovoiDaemon {
     } catch (error) {
       failures.push(error)
     }
+    if (this.#tailnetRetry) clearTimeout(this.#tailnetRetry)
+    this.#tailnetRetry = undefined
+    if (this.#tailnetExpiryCheck) clearTimeout(this.#tailnetExpiryCheck)
+    this.#tailnetExpiryCheck = undefined
+    this.#tailnetRpc?.close()
+    this.#tailnetRpc = undefined
+    try {
+      await new Promise<void>((resolve, reject) => {
+        if (!this.#tailnetHttp) return resolve()
+        this.#tailnetHttp.close((error) => (
+          error && (error as NodeJS.ErrnoException).code !== "ERR_SERVER_NOT_RUNNING" ? reject(error) : resolve()
+        ))
+      })
+    } catch (error) {
+      failures.push(error)
+    }
+    this.#tailnetHttp = undefined
 
-    this.#websocket = undefined
     this.#rpcClients.clear()
     this.#relayStaticKey?.fill(0)
     this.#relayStaticKey = undefined
@@ -5330,10 +5517,9 @@ export class DomovoiDaemon {
     }
   }
 
-  #acceptsHost(host: string | undefined): boolean {
-    const address = this.address
-    if (!host || !address) return false
-    return hostAuthorityMatches(host, address.host, address.port)
+  #acceptsHost(host: string | undefined, listener: { hosts: readonly string[]; port: number } | undefined): boolean {
+    if (!host || !listener) return false
+    return listener.hosts.some((name) => hostAuthorityMatches(host, name, listener.port))
   }
 
   #enqueueMutation(task: () => Promise<void>): Promise<void> {
@@ -5425,6 +5611,7 @@ export class DomovoiDaemon {
       return request.method === "runtime.models"
         || request.method === "permission.hardGates"
         || request.method === "update.status"
+        || request.method === "tailnet.status"
         || request.method === "update.check"
         || request.method === "update.activate"
         || request.method === "relay.recovery"
@@ -5813,6 +6000,8 @@ export class DomovoiDaemon {
   }
 
   async #handle(socket: RpcOutboundSocket, raw: string, signal?: AbortSignal): Promise<void> {
+    // Queued before the tailnet certificate expired, started after: dropped.
+    if (this.#expiredTailnetClients.has(socket)) return
     let input: unknown
     try {
       input = JSON.parse(raw)
@@ -6305,6 +6494,11 @@ export class DomovoiDaemon {
           : method === "update.check" ? await this.#updates.check(paramsResult.data as RpcParams<"update.check">)
             : this.#updates.activate(paramsResult.data as RpcParams<"update.activate">)
         this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(result) })
+        return
+      }
+      if (method === "tailnet.status") {
+        this.#expireTailnetIfDue()
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse(tailnetStatusOf(this.#tailnet)) })
         return
       }
       if (method === "device.current") {

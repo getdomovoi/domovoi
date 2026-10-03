@@ -24,6 +24,23 @@ describe("advertisedTransports", () => {
     ])
   })
 
+  // TailnetReach (Q404 A): loopback plaintext stays the local route, and the
+  // tailnet listener beside it adds its named route while it listens.
+  it("adds the tailnet listener's route beside a loopback listener", () => {
+    const input = { host: "127.0.0.1", port: 47831, tailnetHost: "studio.tail4c2e.ts.net", tailnetListener: true }
+    expect(advertisedTransports(input)).toEqual([
+      { kind: "local", endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true },
+      { kind: "tailnet", endpoint: "wss://studio.tail4c2e.ts.net:47831/rpc", authenticated: true },
+    ])
+    expect(advertisedTransports({ ...input, tailnetListener: false })).toEqual([
+      { kind: "local", endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true },
+    ])
+    const { tailnetHost: _name, ...unnamed } = input
+    expect(advertisedTransports(unnamed)).toEqual([
+      { kind: "local", endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true },
+    ])
+  })
+
   it("produces a tailnet-only route for a wildcard listener without a LAN name", () => {
     const input = { host: "::", port: 47831, tls: true, tailnetHost: "fd7a:115c:a1e0::7" }
     expect(advertisedTransports(input)).toEqual([

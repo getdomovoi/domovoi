@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs"
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -53,5 +53,32 @@ describe("launch smoke profile", () => {
     const setPath = vi.fn()
     expect(() => configureLaunchSmokeProfile({ setPath }, profile, profile)).toThrow("own empty profile")
     expect(setPath).not.toHaveBeenCalled()
+  })
+})
+
+// index.ts reads userData once, as userDataDirectory, and every later use
+// takes that value. It can only go stale if userData is set after the read,
+// so the main process sets it in one place, the smoke profile above, and
+// index.ts calls that before the read. --user-data-dir is Electron's own
+// switch and is applied before the main script runs.
+describe("the userData read in the main process", () => {
+  const main = import.meta.dirname
+
+  it("happens once, after the only place that sets userData", () => {
+    const index = readFileSync(join(main, "index.ts"), "utf8")
+    expect(index.match(/getPath\("userData"\)/gu)).toHaveLength(1)
+    const read = index.indexOf('const userDataDirectory = app.getPath("userData")')
+    const configured = index.indexOf("configureLaunchSmokeProfile(app,")
+    expect(read).toBeGreaterThan(-1)
+    expect(configured).toBeGreaterThan(-1)
+    expect(configured).toBeLessThan(read)
+    expect(index).not.toMatch(/\bsetPath\(|\bsetName\(/u)
+  })
+
+  it("has no other writer in the main process sources", () => {
+    const writers = readdirSync(main)
+      .filter((name) => /\.ts$/u.test(name) && !/\.test\.ts$/u.test(name))
+      .filter((name) => /setPath\(\s*"userData"|\bsetName\(/u.test(readFileSync(join(main, name), "utf8")))
+    expect(writers).toEqual(["launch-smoke-profile.ts"])
   })
 })

@@ -12,7 +12,7 @@ import WebSocket from "ws"
 import type { AgentEvent } from "./agents.js"
 import type { AgentAdapter } from "./codex.js"
 import { emergencyStopRecoveryRounds, emergencyStopRowsPerPass } from "./emergency-stop-intents.js"
-import { holdServiceHandoffFence, readLocalServiceHandoffRefusal } from "./local-service-handoff.js"
+import { holdServiceHandoffFence, readLocalServiceHandoffRefusal, readLocalTailnetStatus } from "./local-service-handoff.js"
 import { DomovoiDaemon, serviceHandoffFencedMessage, serviceHandoffStopRefusal, type DaemonErrorSink } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import type { TerminalProcess } from "./terminal.js"
@@ -204,6 +204,21 @@ describe("the desktop's own check before a service handoff", () => {
     const endpoint = await daemonWith(quiet())
     await expect(readLocalServiceHandoffRefusal({ endpoint: { ...endpoint, token: "x".repeat(43) }, timeoutMs: 5_000 })).rejects.toThrow()
     await expect(readLocalServiceHandoffRefusal({ endpoint: { url: "http://127.0.0.1:1/rpc", token: endpoint.token }, timeoutMs: 5_000 })).rejects.toThrow()
+  })
+})
+
+// Codex review round 1 of #713 (P2-5): after TailnetReach restarts the daemon
+// on a new certificate, the desktop asks the daemon itself whether it serves
+// it on the tailnet before it lets go of the previous one.
+describe("the desktop's read of the tailnet listener", () => {
+  it("answers the daemon's own tailnet.status", async () => {
+    const endpoint = await daemonWith(quiet())
+    await expect(readLocalTailnetStatus({ endpoint, timeoutMs: 5_000 })).resolves.toEqual({ state: "off" })
+  })
+
+  it("throws when the daemon cannot be read", async () => {
+    const endpoint = await daemonWith(quiet())
+    await expect(readLocalTailnetStatus({ endpoint: { ...endpoint, token: "x".repeat(43) }, timeoutMs: 5_000 })).rejects.toThrow()
   })
 })
 

@@ -1,4 +1,5 @@
-import { isAbsolute, join } from "node:path"
+import { isIPv4, isIPv6 } from "node:net"
+import { isAbsolute, join, posix, win32 } from "node:path"
 
 import { credentialSchema, maximumWebAppUrlLength, webAppUrlSchema } from "@getdomovoi/protocol"
 import { relayIdentityPublicKeyIsValid } from "@getdomovoi/protocol/relay-admission"
@@ -13,11 +14,20 @@ export type DaemonTlsMaterial = {
   keyPath: string
 }
 
+// TailnetReach (Q404 A): a second listener, TLS only, bound to this machine's
+// Tailscale address beside the loopback one. It shares the loopback listener's
+// port and every authentication rule of a non-loopback listener.
+export type DaemonTailnetListener = {
+  address: string
+  tls: DaemonTlsMaterial
+}
+
 export type DaemonEnvironmentConfig = {
   profileDirectory?: string
   host: string
   port: number
   tls?: DaemonTlsMaterial
+  tailnetListener?: DaemonTailnetListener
   advertiseHost?: string
   tailnetHost?: string
   sshTunnels?: ConfiguredSshTunnel[]
@@ -79,8 +89,12 @@ export function parseDaemonEnvironment(
   const authToken = parseAuthToken(environment.DOMOVOI_AUTH_TOKEN)
   const allowedOrigins = parseAllowedOrigins(environment.DOMOVOI_ALLOWED_ORIGINS)
   const webAppUrl = parseWebAppUrl(environment.DOMOVOI_WEB_APP_URL)
+  const tailnetListener = parseTailnetListener(environment, host, allowRemoteTransport)
   const tailnetHost = environment.DOMOVOI_TAILNET_HOST
-  if (tailnetHost !== undefined && (!tailnetHostSchema.safeParse(tailnetHost).success || !tls || isLoopbackHost(host))) {
+  // The name is advertised for an encrypted listener off this machine: the
+  // main one, or the tailnet listener beside a loopback one.
+  if (tailnetHost !== undefined && (!tailnetHostSchema.safeParse(tailnetHost).success
+    || (!tailnetListener && (!tls || isLoopbackHost(host))))) {
     throw new DaemonConfigurationError("DOMOVOI_TAILNET_HOST requires a routable host without a port or URL components and a non-loopback TLS listener")
   }
   const sshTunnels = parseSshTunnels(environment.DOMOVOI_SSH_TUNNELS)
@@ -98,6 +112,7 @@ export function parseDaemonEnvironment(
     host,
     port,
     ...(tls ? { tls } : {}),
+    ...(tailnetListener ? { tailnetListener } : {}),
     ...(advertiseHost ? { advertiseHost } : {}),
     ...(tailnetHost !== undefined ? { tailnetHost } : {}),
     ...(sshTunnels !== undefined ? { sshTunnels } : {}),
@@ -174,6 +189,62 @@ function parseTlsMaterial(
     certPath: parseStatePath(certPath, "DOMOVOI_TLS_CERT_PATH", ""),
     keyPath: parseStatePath(keyPath, "DOMOVOI_TLS_KEY_PATH", ""),
   }
+}
+
+const tailnetVariables = "DOMOVOI_TAILNET_ADDRESS, DOMOVOI_TAILNET_TLS_CERT_PATH and DOMOVOI_TAILNET_TLS_KEY_PATH"
+
+function parseTailnetListener(
+  environment: DaemonEnvironment,
+  host: string,
+  allowRemoteTransport: boolean,
+): DaemonTailnetListener | undefined {
+  const address = environment.DOMOVOI_TAILNET_ADDRESS
+  const certPath = environment.DOMOVOI_TAILNET_TLS_CERT_PATH
+  const keyPath = environment.DOMOVOI_TAILNET_TLS_KEY_PATH
+  if (address === undefined && certPath === undefined && keyPath === undefined) return undefined
+  if (address === undefined || certPath === undefined || keyPath === undefined) {
+    throw new DaemonConfigurationError(`${tailnetVariables} must be set together`)
+  }
+  if (!isTailscaleAddress(address)) {
+    throw new DaemonConfigurationError("DOMOVOI_TAILNET_ADDRESS must be this machine's Tailscale address: an IPv4 address in 100.64.0.0/10 or an IPv6 address in fd7a:115c:a1e0::/48, with no port or brackets")
+  }
+  // Either platform's form: a saved service configuration is checked on the
+  // machine that reads it, which may not be the one it runs on.
+  if (![certPath, keyPath].every((path) => path.length <= 4_096 && (posix.isAbsolute(path) || win32.isAbsolute(path))
+    && path.trim() === path && !/[\0\r\n]/u.test(path))) {
+    throw new DaemonConfigurationError("DOMOVOI_TAILNET_TLS_CERT_PATH and DOMOVOI_TAILNET_TLS_KEY_PATH must be absolute file paths")
+  }
+  // The same opt-in every listener that leaves this machine needs.
+  if (!allowRemoteTransport) {
+    throw new DaemonConfigurationError("DOMOVOI_TAILNET_ADDRESS requires DOMOVOI_ALLOW_REMOTE_TRANSPORT=1")
+  }
+  if (!loopbackHosts.has(host)) {
+    throw new DaemonConfigurationError("DOMOVOI_TAILNET_ADDRESS adds a listener beside a loopback DOMOVOI_HOST; unset it, or set DOMOVOI_HOST to 127.0.0.1")
+  }
+  return { address, tls: { certPath, keyPath } }
+}
+
+// Tailscale assigns each node one address from 100.64.0.0/10 and one from
+// fd7a:115c:a1e0::/48. Only those are accepted, so a mistyped setting cannot
+// put the listener on a LAN or public address.
+function isTailscaleAddress(address: string): boolean {
+  if (isIPv4(address)) {
+    const [first, second] = address.split(".").map(Number)
+    return first === 100 && second !== undefined && second >= 64 && second <= 127
+  }
+  if (!isIPv6(address)) return false
+  const groups = expandIPv6(address)
+  return groups !== undefined && groups[0] === 0xfd7a && groups[1] === 0x115c && groups[2] === 0xa1e0
+}
+
+function expandIPv6(address: string): number[] | undefined {
+  if (address.includes(".") || address.includes("%")) return undefined
+  const [head = "", tail] = address.split("::")
+  const left = head ? head.split(":") : []
+  const right = tail ? tail.split(":") : []
+  const missing = 8 - left.length - right.length
+  if (tail === undefined ? missing !== 0 : missing < 1) return undefined
+  return [...left, ...Array<string>(tail === undefined ? 0 : missing).fill("0"), ...right].map((group) => Number.parseInt(group, 16))
 }
 
 function parseCredentialPath(value: string | undefined, homeDirectory: string, profile = join(homeDirectory, ".domovoi")): string {
