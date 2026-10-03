@@ -6,6 +6,7 @@ const gate = {
   id: "apr_7f2c", risk: "normal" as const, operation: "prisma migrate", command: "pnpm -w prisma migrate deploy",
   machine: "mac-mini-m4", agent: "claude-code", mode: "build" as const, directory: "~/src/acme-api",
   affects: "dev database acme_dev · 1 migration", network: "localhost:5432 only", estimatedDuration: "~40s",
+  execution: { state: "resolved" as const },
 }
 
 describe("renderGate (ruling Q394 A: facts one per line)", () => {
@@ -53,6 +54,16 @@ describe("renderGate (ruling Q394 A: facts one per line)", () => {
     expect(text).toMatch(/^ {2}claude-code · build$/m)
     expect(text).toMatch(/^ {2}a {2}Allow once/m)
     expect(text).toMatch(/^ {2}d {2}Deny/m)
+  })
+
+  it("offers Allow once and Deny only when the daemon could not resolve the command (ruled 2026-09-24)", () => {
+    const unresolved = { ...gate, execution: { state: "unresolved" as const } }
+    const text = renderGate(unresolved, { columns: 80 })
+    expect(text).not.toContain("Always here")
+    expect(text).toMatch(/^ {2}a {2}Allow once {3}$/m)
+    expect(text).toMatch(/^ {2}d {2}Deny {9}$/m)
+    expect(renderGate(unresolved, { columns: 80, prompt: false })).toMatch(/^ {2}offered {10}Allow once · Deny$/m)
+    expect(renderGate.ask(unresolved)).toBe("choose a or d: ")
   })
 
   it("asks for the keys it offers", () => {

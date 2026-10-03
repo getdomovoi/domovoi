@@ -207,7 +207,7 @@
     {
       "id": "cli.gate-prompt",
       "since": "2026-10-03",
-      "note": "Built for Q394 A as a renderer in apps/cli/src/transcript.ts; no command prints it yet (cli.session-commands is missing). Facts come one per line from the approval on the wire: machine, working dir, affects, network, estimated. The design's machine fact also names the transport (mac-mini-m4 · loopback); the approval carries the machine only, so the transport is not drawn. The step line prints step n of m or asked by the agent, not in the plan only when the caller knows which; otherwise agent · mode alone, because the approval does not say. A tool-server call offers Allow once and Deny only (ruled 2026-09-26), which the design does not draw."
+      "note": "Built for Q394 A as a renderer in apps/cli/src/transcript.ts; no command prints it yet (cli.session-commands is missing). Facts come one per line from the approval on the wire: machine, working dir, affects, network, estimated. The design's machine fact also names the transport (mac-mini-m4 · loopback); the approval carries the machine only, so the transport is not drawn. The step line prints step n of m or asked by the agent, not in the plan only when the caller knows which; otherwise agent · mode alone, because the approval does not say. A tool-server call offers Allow once and Deny only (ruled 2026-09-26), which the design does not draw. So does a gate whose command the daemon could not resolve (execution.state unresolved): the daemon refuses a standing rule for it (ruled 2026-09-24) and the web and desktop cards hide the button; the design does not draw that case either."
     },
     {
       "id": "cli.receipt",

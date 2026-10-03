@@ -37,15 +37,17 @@ function placed(step: GateStep | undefined, rest: string): string {
 export type GateStep = { n: number; of: number } | "not-in-plan"
 
 export type GateView = Pick<ApprovalRequest, "id" | "risk" | "operation" | "command" | "machine" | "agent" | "mode" | "directory" | "affects" | "network" | "estimatedDuration">
-  & { toolServer?: Pick<NonNullable<ApprovalRequest["toolServer"]>, "name">; step?: GateStep }
+  & { execution: Pick<ApprovalRequest["execution"], "state">; toolServer?: Pick<NonNullable<ApprovalRequest["toolServer"]>, "name">; step?: GateStep }
 
 type Choice = { key: "a" | "r" | "d"; label: string; hint: string }
 
-// Allow once and Deny always; Always here only for an ordinary gate that is
-// not a tool-server call. A hard gate asks every time, and a tool's arguments
-// fit no execution record (ruled 2026-09-26).
+// Allow once and Deny always; Always here only for an ordinary gate whose
+// command the daemon resolved and that is not a tool-server call. A hard gate
+// asks every time, the daemon refuses a standing rule for a command it could
+// not resolve (ruled 2026-09-24), and a tool's arguments fit no execution
+// record (ruled 2026-09-26).
 function choices(gate: GateView): Choice[] {
-  const always = gate.risk === "normal" && gate.toolServer === undefined
+  const always = gate.risk === "normal" && gate.execution.state === "resolved" && gate.toolServer === undefined
   return [
     { key: "a", label: "Allow once", hint: "" },
     ...(always ? [{ key: "r" as const, label: "Always here", hint: `${gate.operation} in ${gate.directory} on ${gate.machine}` }] : []),
