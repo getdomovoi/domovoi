@@ -1687,6 +1687,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               onReadSkill: readSkill,
               requestedSkillId,
               projectId: snapshot.project?.id,
+              projectName: snapshot.project?.name,
               enablements: snapshot.skillEnablements,
               onSetSkillEnabled: setSkillEnabled,
               onReviewSkill: async (input) => {

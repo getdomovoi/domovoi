@@ -57,6 +57,7 @@ describe("skill browser", () => {
         onOpenAudit={vi.fn()}
         onReadSkill={vi.fn()}
         projectId="project-acme-api"
+        projectName="acme-api"
         enablements={[]}
         onSetSkillEnabled={vi.fn()}
         onReviewSkill={vi.fn()}
@@ -76,16 +77,18 @@ describe("skill browser", () => {
     expect(markup).toContain("/home/dev/.agents/skills/design-studio/SKILL.md")
     expect(markup).toContain("Unsigned")
     expect(markup).toContain("Excluded from Build auto")
-    expect(markup).toContain("Review and enable this exact skill to use it in Ask, Plan, and Build manual")
-    expect(markup).not.toContain("This skill is used in Ask, Plan, and Build manual")
+    expect(markup).toContain("Enablement is a review, and it is per project")
+    expect(markup).toContain("Manual review also grants trust.")
     expect(markup).toContain("View SKILL.md")
-    expect(markup).toContain("Review &amp; enable")
+    expect(markup).toContain("Trust it for acme-api")
+    expect(markup).not.toContain("Revoke")
+    expect(markup).toContain("Trust and revoke are the only two decisions.")
     expect(markup).toContain("sha256:")
     expect(markup).toContain("No declared capabilities")
     expect(markup).not.toContain("Settings navigation")
   })
 
-  it("shows project-scoped reviewed state without granting trust", () => {
+  it("shows project-scoped reviewed state and offers revoke", () => {
     const markup = renderToStaticMarkup(
       <SkillBrowser
         skills={skills}
@@ -94,6 +97,7 @@ describe("skill browser", () => {
         onOpenAudit={vi.fn()}
         onReadSkill={vi.fn()}
         projectId="project-acme-api"
+        projectName="acme-api"
         enablements={[{
           projectId: "project-acme-api",
           skillId: skills[0]!.id,
@@ -112,10 +116,10 @@ describe("skill browser", () => {
     )
 
     expect(markup).toContain("Enabled for this project")
-    expect(markup).toContain("Review &amp; disable")
-    expect(markup).toContain("Enablement does not change signature or trust state")
-    expect(markup).not.toContain("Review and enable this exact skill to use it")
-    expect(markup).toContain("Build auto runs without this skill")
+    expect(markup).toContain(">Revoke<")
+    expect(markup).toMatch(/acme-api · reviewed \d{2} Aug \d{2}:\d{2} by desktop/)
+    expect(markup).not.toContain("Enablement does not change signature or trust state")
+    expect(markup).not.toContain("does not grant trust")
   })
 
   it("labels declared signatures as unverified instead of trusted", () => {

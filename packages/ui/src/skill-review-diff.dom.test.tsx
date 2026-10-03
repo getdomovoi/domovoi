@@ -58,7 +58,7 @@ function props(overrides: Record<string, unknown> = {}) {
 async function openReview(overrides: Record<string, unknown>) {
   const user = userEvent.setup()
   render(<SkillBrowser {...props(overrides)} />)
-  await user.click(screen.getByRole("button", { name: /Review & (enable|disable)/ }))
+  await user.click(screen.getByRole("button", { name: "Trust it for this project" }))
   return screen.getByRole("alertdialog")
 }
 
