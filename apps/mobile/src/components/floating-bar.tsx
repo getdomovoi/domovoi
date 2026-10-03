@@ -8,12 +8,11 @@ import { responsiveGeometry } from "../responsive-geometry"
 import { shadows } from "../theme/tokens.generated"
 import { useTheme } from "../theme/theme-provider"
 
-// The handoff draws the bottom chrome as a floating slab inset from both
-// edges, hairline border, a 60% wash of --sidebar over whatever is behind it,
-// a 14px blur and a soft drop shadow. Phone v2 keeps that for the composer and
-// the decision bar and draws the tab bar as a solid card, which is the one
-// exception (solid). Otherwise only the corner radius and the padding change,
-// so those are the props and everything else is fixed here.
+// The handoff draws the bottom chrome eight times and draws it the same way
+// every time: a floating slab inset from both edges, hairline border, a 60%
+// wash of --sidebar over whatever is behind it, a 14px blur and a soft drop
+// shadow. Only the corner radius and the padding change between the eight, so
+// those are the props and everything else is fixed here.
 //
 // React Native has no backdrop-filter, so the blur is expo-blur's BlurView and
 // the wash is painted on top of it.
@@ -41,7 +40,6 @@ export function FloatingBar({
   shape = "pill",
   padding = "composer",
   lifted = false,
-  solid = false,
   bottomInset,
   onFootprint,
   className,
@@ -54,9 +52,6 @@ export function FloatingBar({
   // dropped one, because they sit over a scrolling wall of diff rather than
   // over a list and have to read as a separate plane.
   lifted?: boolean
-  // Phone v2 draws the tab bar as a solid card over the list, and keeps the
-  // wash and the blur for the composer and the decision bar.
-  solid?: boolean
   bottomInset?: number | undefined
   // A bar floats over the scroller, so the scroller has to be told how much of
   // its own bottom the bar is covering. This reports the drawn height plus the
@@ -103,7 +98,7 @@ export function FloatingBar({
       }}
     >
       <View className={cn("overflow-hidden border border-border", shapes[shape])}>
-        {solid ? null : <BlurView
+        <BlurView
           intensity={30}
           tint={resolved}
           // Android draws nothing for a blur unless this method is asked for by
@@ -112,8 +107,8 @@ export function FloatingBar({
           blurMethod="dimezisBlurView"
           {...(blurTarget ? { blurTarget } : {})}
           style={{ position: "absolute", top: 0, right: 0, bottom: 0, left: 0 }}
-        />}
-        <View className={cn(solid ? "bg-card" : "bg-sidebar/60", paddings[padding], className)}>
+        />
+        <View className={cn("bg-sidebar/60", paddings[padding], className)}>
           {children}
         </View>
       </View>

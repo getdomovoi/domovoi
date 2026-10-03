@@ -35,7 +35,7 @@ export function TabBar({
   onFootprint?: (footprint: number) => void
 }) {
   return (
-    <FloatingBar testID="tab-bar" padding="tabs" solid onFootprint={onFootprint}>
+    <FloatingBar testID="tab-bar" padding="tabs" onFootprint={onFootprint}>
       {tabs.map((tab) => {
         const selected = tab.id === active
         return (

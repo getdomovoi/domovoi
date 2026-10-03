@@ -4,12 +4,6 @@ import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
 import { normalizeTab, TabBar, type Tab } from "./tab-bar"
 
-// A stand-in that a test can find, as blur-backdrop.test.tsx draws it.
-jest.mock("expo-blur", () => {
-  const { View: HostView } = jest.requireActual<typeof import("react-native")>("react-native")
-  return { BlurView: (props: object) => <HostView testID="blur" {...props} /> }
-})
-
 // A notched iPhone reserves room under the bar for the home indicator. The bar
 // floats above that room rather than filling it, and reports the whole
 // footprint so the list behind it can pad by exactly that much.
@@ -45,12 +39,6 @@ async function layOut(height: number) {
 }
 
 describe("TabBar", () => {
-  // Phone v2 frames 01, 07 and 09c draw the tab bar as a solid card.
-  it("is a solid card rather than a blurred wash", async () => {
-    await draw()
-    expect(screen.queryByTestId("blur")).toBeNull()
-  })
-
   it("draws the three v2 tabs in their signed order", async () => {
     await draw()
     expect(screen.getAllByRole("tab").map((node) => node.props.accessibilityLabel))
