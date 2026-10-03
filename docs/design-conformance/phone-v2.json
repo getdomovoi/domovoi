@@ -833,6 +833,11 @@
       "id": "policy.screen",
       "since": "2026-10-02",
       "note": "ruling Q356 A: Tell the agent sends the refusal's one remedy to the agent as a steer, from the refusal itself. Still open, and waiting on a protocol change the ruling defers: frame 05 draws WHAT YOU CAN DO as several alternatives, each with a green or amber dot, and the policy-refusal item carries a single remedy string with no list, tones or per-alternative steer"
+    },
+    {
+      "id": "launch.screen",
+      "since": "2026-10-02",
+      "note": "ruling Q386 A: the mark is one SVG component (apps/mobile/src/components/mark.tsx) shared by the phone and the tablet. Frame 06 draws its working variant, mark-working.svg, which design/assets does not carry (it holds mark.svg and mark-reduced.svg), so by the same ruling the reduced mark stands in on the splash and the launch notice. Where a heading or the wordmark names the screen, the mark is not announced to a screen reader"
     }
   ],
   "scriptBacklog": {
