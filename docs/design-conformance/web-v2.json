@@ -43,11 +43,19 @@
         {
           "absent": "<DomovoiMark reduced className=\"size-5 text-primary\" />",
           "in": "packages/ui/src/web-connect-page.tsx"
+        },
+        {
+          "absent": "<DomovoiMark className=",
+          "in": "packages/ui/src/web-page-header.tsx"
+        },
+        {
+          "absent": "<DomovoiMark reduced className=\"size-5\" />",
+          "in": "packages/ui/src/browser-limits-panel.tsx"
         }
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "inside the workspace the web draws the desktop v2 bar (the 2026-09-18 inheritance ruling); the pre-session pages draw no bar at all. WebConnectPage, BrowserLimitsPanel and DaemonCredentialPrompt put a 20px mark beside their heading with no Domovoi wordmark, app label or theme toggle, so the theme cannot be changed before pairing. Q382 A (2026-10-02) keeps the desktop bar in the workspace and draws the Web v2 bar on the pre-session pages. The Domovoi copy claim matches only the palette title fallback in app-bar, not a drawn wordmark"
+        "reason": "the pre-session pages draw the Web v2 bar now (WebPageHeader: mark, Domovoi, the page's label, the theme toggle), and inside the workspace the web keeps the desktop v2 bar (Q382 A). Two marks are still not as drawn. The bar draws the full mark, mouth included, where the design's markStyle draws mark-reduced.svg at 22px, as the workspace bar does; the evidence holds that as no unreduced DomovoiMark in web-page-header.tsx. BrowserLimitsPanel and DaemonCredentialPrompt still put their own 20px mark tile above the heading, under the bar, so the mark shows twice; the design's limits page draws the mark only in the bar, and the evidence holds the tile's absence from browser-limits-panel.tsx. The route chip is appbar.route-chip"
       },
       "notes": [
         "2026-10-01 (S3.10 slice 1): the shared app bar draws the mark at 22px, which the Web v2 markStyle also draws."
@@ -285,11 +293,15 @@
         {
           "absent": "onOpenLimits={() => setLimitsSeen(false)}",
           "in": "apps/web/src/web-app.tsx"
+        },
+        {
+          "absent": "workspace: (session: { token: string, onChangeCredential: () => void }) => ReactNode",
+          "in": "apps/web/src/web-app.tsx"
         }
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the panel reports real browser state; one row is false and the page cannot be reached as drawn. Attach a local file says not yet ... that path is not built, while the shared composer attaches an image or file from this device as a payload, which is the design's always a payload row (Q383 A, 2026-10-02: fix that row to the design's wording). The page is an interstitial shown once per tab: the connect page's link only queues it for after pairing, so it does nothing before pairing, and nothing in the workspace reopens it. Q367 A (2026-10-02) keeps the interstitial, makes the connect link navigate with a Back, and adds the page to the palette or Settings"
+        "reason": "the panel reports real browser state, and before pairing the connect page's link opens it with a way back. One part of Q367 A (2026-10-02) is not built: nothing in the workspace reopens the page. Neither the palette nor Settings has an entry for it, and WebApp hands the workspace only its token and onChangeCredential, so once a tab is in its session it cannot get back to the page. The evidence holds that hand-off: its signature in web-app.tsx changes when the workspace is given a way to open the page"
       }
     },
     {
@@ -373,6 +385,16 @@
       "id": "appbar",
       "since": "2026-10-02",
       "note": "Inside the workspace the web draws the desktop v2 bar, not the Web v2 bar (2026-09-18 inheritance ruling, kept by Q382 A); only the pre-session pages take the Web v2 bar."
+    },
+    {
+      "id": "appbar",
+      "since": "2026-10-03",
+      "note": "Landed with #704 (merge 0595a1bd): WebPageHeader draws the Web v2 bar on the connect page, the daemon credential prompt and the limits page, with the mark, the Domovoi wordmark, the page's label (Connect this browser, or What a tab can do) and a theme toggle that follows the system appearance and keeps the choice in the store the workspace reads. The connect page lost its own 20px mark. Still open, held by the entry's evidence: the bar's mark is the full mark, not the reduced one, and the limits and credential pages keep a second mark tile."
+    },
+    {
+      "id": "limits",
+      "since": "2026-10-03",
+      "note": "Landed with #704 (merge 0595a1bd): the Attach a local file row reads always a payload with the image and text limits (Q383 A), and the connect page's link opens the page before pairing, with Back to pairing, or Back once the tab is paired (Q367 A, first half). Still open, held by the entry's evidence: a way back to the page from the workspace."
     },
     {
       "id": "gate",
