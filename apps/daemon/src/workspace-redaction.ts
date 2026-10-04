@@ -44,8 +44,14 @@ type ThreadItem = WorkspaceSnapshot["thread"][number]
 
 export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
   const sanitized = redactWorkspaceRecords(snapshot)
-  sanitized.thread = snapshot.thread.map((item) => redactThreadItem(structuredClone(item)))
+  sanitized.thread = redactThreadCopies(snapshot.thread)
   return sanitized
+}
+
+// Redacted copies of thread items, as redactWorkspaceCopies writes them, for
+// items that arrive from elsewhere before they join a snapshot.
+export function redactThreadCopies(items: readonly ThreadItem[]): ThreadItem[] {
+  return items.map((item) => redactThreadItem(structuredClone(item)))
 }
 
 export type WorkspaceRedactor = (snapshot: WorkspaceSnapshot) => WorkspaceSnapshot
