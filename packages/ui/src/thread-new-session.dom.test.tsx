@@ -1,0 +1,208 @@
+import { demoWorkspace, maximumEffectiveClientThreadItems, type PermissionMode, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { cleanup, render, screen, within } from "@testing-library/react"
+import { afterEach, expect, it, vi } from "vitest"
+
+import { isLoadingLine } from "./start-handoff"
+import { Thread } from "./workspace-shell.js"
+
+// The panel's code loads on first use. The first test holds its chunk back
+// until it has seen the loading line; the module is then cached, so every
+// later test gets it at once.
+const chunk = vi.hoisted(() => {
+  let release = () => {}
+  const open = new Promise<void>((resolve) => { release = resolve })
+  return { open, release, held: false }
+})
+vi.mock("./thread-new-session", async (importOriginal) => {
+  if (chunk.held) await chunk.open
+  return importOriginal()
+})
+
+afterEach(() => {
+  cleanup()
+  // A held chunk is let go even when the holding test failed first.
+  chunk.release()
+})
+
+function freshSession(permissionMode: PermissionMode = "ask", auto = false): WorkspaceSnapshot {
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals = []
+  snapshot.workingPlans = []
+  const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+  // What session.create writes: a session-start checkpoint and a system row
+  // naming the worktree. Nothing has run until a user or agent row appears.
+  snapshot.thread = [
+    ...snapshot.thread.filter((item) => item.sessionId !== snapshot.activeSessionId),
+    {
+      id: "checkpoint-start",
+      sessionId: active.id,
+      kind: "checkpoint",
+      reason: "session-start",
+      label: "Worktree created off main",
+      commit: `8f3c1de${"0".repeat(33)}`,
+      createdAt: "2026-10-02T12:00:00.000Z",
+    },
+    {
+      id: "system-created",
+      sessionId: active.id,
+      kind: "system",
+      body: "Created isolated worktree domovoi/wt-search-index.",
+      detail: "/Users/dev/.domovoi/worktrees/wt-search-index",
+      createdAt: "2026-10-02T12:00:00.000Z",
+    },
+  ]
+  delete (active as { activeTurnId?: string }).activeTurnId
+  active.state = "idle"
+  active.workspacePath = "/Users/dev/.domovoi/worktrees/wt-search-index"
+  active.baseCommit = `8f3c1de${"0".repeat(33)}`
+  active.runtime = { ...active.runtime, permissionMode, auto }
+  return snapshot
+}
+
+function renderThread(snapshot: WorkspaceSnapshot, surface: "desktop" | "web" = "desktop") {
+  return render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected
+      surface={surface}
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />,
+  )
+}
+
+// The panel is drawn only on a session nothing has run in, so its code loads
+// on first use behind the registered loading line, as a surface's does. The
+// line takes no focus of its own: the start flow decides where focus is.
+it("loads the panel's code on first use behind the registered loading line", async () => {
+  chunk.held = true
+  renderThread(freshSession())
+
+  const line = screen.getByText("Opening the fresh-start panel")
+  expect(line.getAttribute("role")).toBe("status")
+  expect(isLoadingLine(line)).toBe(true)
+  expect(document.activeElement).not.toBe(line)
+  expect(screen.queryByRole("heading", { name: "Nothing has run yet" })).toBeNull()
+  expect(screen.queryByRole("status", { name: "Worktree ready" })).toBeNull()
+
+  chunk.release()
+  expect(await screen.findByRole("heading", { name: "Nothing has run yet" })).toBeTruthy()
+  expect(screen.getByRole("status", { name: "Worktree ready" })).toBeTruthy()
+  expect(screen.queryByText("Opening the fresh-start panel")).toBeNull()
+  expect(isLoadingLine(line)).toBe(false)
+})
+
+// Ruled Q368 A: the header, title, body and placeholder as drawn; the rows
+// only from the session's permission mode and checkpoint policy; no starters,
+// which need a suggestion source.
+it.each(["desktop", "web"] as const)("draws Nothing has run yet on a %s session with an empty thread", async (surface) => {
+  renderThread(freshSession(), surface)
+
+  // The panel's code loads on first use.
+  const header = await screen.findByRole("status", { name: "Worktree ready" })
+  expect(header.textContent).toContain("Worktree ready")
+  expect(header.textContent).toContain("wt-search-index at 8f3c1de")
+  expect(screen.getByRole("heading", { name: "Nothing has run yet" })).toBeTruthy()
+  expect(screen.getByText("The session exists, the worktree is cut, and the agent has not been given a turn. Your first message is what starts it.")).toBeTruthy()
+  expect(screen.queryByText(/OR START FROM SOMETHING IT ALREADY KNOWS/iu)).toBeNull()
+  expect((screen.getByLabelText("Message") as HTMLTextAreaElement).placeholder).toBe("Say what you want done in acme-api")
+})
+
+// What Plan and Ask hold a provider to is what the daemon configures for
+// that provider. Claude, opencode and kilo refuse in Ask rather than ask, so
+// they have no gate to allow and no checkpoint to take. Codex Ask runs with
+// approvalPolicy on-request in its read-only sandbox, and every approval
+// request becomes a Domovoi gate, so an Allow there takes a checkpoint.
+it.each([
+  ["claude-code", "plan", ["Read the repository and propose a plan. Claude's own plan mode makes no changes."]],
+  ["codex", "plan", ["Read the repository and propose a plan. Commands run in a read-only sandbox, so nothing is written."]],
+  ["claude-code", "ask", ["Read the repository. Edits are refused; only read-only shell commands inside the worktree run."]],
+  ["codex", "ask", [
+    "Read the repository. Commands run in a read-only sandbox. A command that needs more asks you first. One a standing rule allows runs without asking.",
+    "Take a checkpoint before any command you allow at a gate, so the worktree can go back to it.",
+  ]],
+  ["opencode", "ask", ["Read the repository. Edits and shell commands are refused."]],
+] as const)("says what %s in %s will do first, from what the daemon enforces", async (provider, mode, rows) => {
+  const snapshot = freshSession(mode)
+  const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+  active.runtime = { ...active.runtime, provider }
+  renderThread(snapshot)
+
+  const list = await screen.findByRole("list", { name: "What it will do first" })
+  expect(within(list).getAllByRole("listitem").map((row) => row.textContent)).toEqual([...rows])
+})
+
+it.each([
+  // A standing rule allows without a person, and J34 checkpoints only a
+  // person's allow, so the row says so in Build as it does with Auto.
+  ["build", false, [
+    "Write and run inside the worktree. Gates still stop it for your decision.",
+    "Take a checkpoint before any command you allow at a gate. A command a rule allows runs without one.",
+  ]],
+  // Auto allows only commands its safe patterns or a bounded resolution
+  // clear, or a standing rule matches (permission-policy.ts); any other
+  // command raises a normal gate and the turn waits on it.
+  ["build", true, [
+    "Write and run inside the worktree, step after step. Commands Auto or a rule allows run without stopping. Any other command still stops it at a gate, as do hard gates and policy refusals.",
+    "Take a checkpoint before any command you allow at a gate. Commands that Auto or a rule allows run without one.",
+  ]],
+] as const)("says what %s (auto %s) will do first, and nothing it will not", async (mode, auto, rows) => {
+  renderThread(freshSession(mode, auto))
+
+  const list = await screen.findByRole("list", { name: "What it will do first" })
+  expect(within(list).getAllByRole("listitem").map((row) => row.textContent)).toEqual([...rows])
+})
+
+it("draws nothing of it once the thread has a turn, or while one is running", () => {
+  const withItem = freshSession()
+  withItem.thread = [{ id: "user-1", sessionId: withItem.activeSessionId!, kind: "user", body: "Start", createdAt: "2026-10-02T12:00:00.000Z" }]
+  const { unmount } = renderThread(withItem)
+  expect(screen.queryByRole("heading", { name: "Nothing has run yet" })).toBeNull()
+  expect(screen.queryByRole("status", { name: "Worktree ready" })).toBeNull()
+  unmount()
+
+  const running = freshSession()
+  running.sessions.find((session) => session.id === running.activeSessionId)!.activeTurnId = "turn-1"
+  renderThread(running)
+  expect(screen.queryByRole("heading", { name: "Nothing has run yet" })).toBeNull()
+})
+
+// The client thread is bounded to the newest rows of the active session, so
+// an old session whose retained tail is all checkpoints and system rows has
+// no message, tool call or receipt left to prove it ran. Fewer rows than the
+// bound means the whole thread is here; at the bound it may not be, and a
+// session with that many rows has run something anyway.
+it("draws nothing of it for a session whose bounded tail holds only checkpoints and system rows", () => {
+  const snapshot = freshSession()
+  const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+  snapshot.thread = Array.from({ length: maximumEffectiveClientThreadItems }, (_, index) => ({
+    id: `checkpoint-${index}`,
+    sessionId: active.id,
+    kind: "checkpoint" as const,
+    reason: "manual" as const,
+    label: `Checkpoint ${index}`,
+    commit: `${index.toString(16).padStart(7, "0")}${"0".repeat(33)}`,
+    createdAt: "2026-10-02T12:00:00.000Z",
+  }))
+  snapshot.historyTruncated = true
+  renderThread(snapshot)
+  expect(screen.queryByRole("heading", { name: "Nothing has run yet" })).toBeNull()
+  expect(screen.queryByRole("status", { name: "Worktree ready" })).toBeNull()
+})
+
+// The body says the worktree is cut. A session with no worktree has not cut
+// one, so it does not get the state.
+it("draws nothing of it for a session with no worktree", () => {
+  const snapshot = freshSession()
+  delete (snapshot.sessions.find((session) => session.id === snapshot.activeSessionId) as { workspacePath?: string }).workspacePath
+  renderThread(snapshot)
+  expect(screen.queryByRole("heading", { name: "Nothing has run yet" })).toBeNull()
+})

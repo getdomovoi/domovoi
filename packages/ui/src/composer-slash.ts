@@ -14,12 +14,18 @@ export const slashCommands: readonly SlashCommand[] = [
   {
     name: "/run",
     placeholder: "<command>",
-    note: "Runs it now, in the worktree. Still gated if no rule covers it, and the gate says the request came from you.",
+    // The composer sends the agent a request; the agent runs the command, so
+    // it is gated like any other. No gate field says the request came from
+    // the composer, so the note does not claim the gate says so.
+    note: "Asks the agent to run it in the worktree. Gates and rules apply as to any command the agent runs.",
   },
   {
     name: "/revert",
     placeholder: "<checkpoint-id>",
-    note: "Rewinds the worktree and the thread together to that checkpoint. Nothing merged is touched.",
+    // Ruled Q341 A: revert is worktree-only. checkpoint.restore resets the
+    // files, records a checkpoint of the state before it and a system row,
+    // and leaves every turn in the thread.
+    note: "Resets the worktree to that checkpoint and keeps a checkpoint of the state before it. The thread keeps every turn.",
     live: (context) => context.checkpointIds.at(-1),
   },
   {
@@ -35,7 +41,9 @@ export const slashCommands: readonly SlashCommand[] = [
   {
     name: "/skill",
     placeholder: "<reviewed-skill>",
-    note: "Loads a skill for this turn only. Unsigned skills stay blocked in auto modes.",
+    // In Build with Auto the daemon requires a trusted skill and refuses the
+    // turn otherwise (apps/daemon/src/skill-context.ts, requireTrusted).
+    note: "Loads a skill for this turn only. With Auto on, the daemon refuses a skill that is not trusted.",
     live: (context) => context.skills[0]?.name,
   },
   {

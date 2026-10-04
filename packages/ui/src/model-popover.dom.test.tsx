@@ -87,7 +87,8 @@ it("narrows by typed text and by a harness chip, and says when nothing matches",
   await user.click(screen.getByRole("button", { name: "codex", pressed: false }))
   expect(screen.getAllByRole("option").map((row) => row.getAttribute("aria-label"))).toEqual(["gpt-5.3-codex, codex"])
   await user.type(screen.getByRole("searchbox", { name: "Search models on this machine" }), "kimi")
-  expect(screen.getByText(/Nothing on this machine matches/)).toBeTruthy()
+  // Ruled Q373 A: the design's words, since the list is this machine's only.
+  expect(screen.getByText("Nothing on this machine matches. Models come from what each harness reports, so a name you expect may live on another machine.")).toBeTruthy()
 })
 
 it("asks the agents again through discovery and shows what each one reported", async () => {
