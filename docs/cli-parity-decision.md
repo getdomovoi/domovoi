@@ -19,10 +19,11 @@ rest of its scope: install and service status, and the pairing gap below.
 
 No human command has moved off `domovoid`. Its help (`apps/daemon/src/index.ts`) still lists
 `pair`, `fleet-keychain`, `open`, `wsl list`, `secret`, `service install|status|remove`,
-`skill keygen|sign|trust` and `profile recover`. The two surfaces do not yet meet at pairing:
-`domovoid pair --client cli --label <device label>` prints a one-time pairing code, while
-`domovoi pair` accepts only a client credential and refuses a code. No `domovoid` command prints
-a client credential today; that gap is open.
+`skill keygen|sign|trust` and `profile recover`. On 2026-09-22 the two surfaces did not meet at
+pairing: `domovoid pair --client cli --label <device label>` printed a one-time pairing code,
+while `domovoi pair` accepted only a client credential and refused a code. On 2026-10-03, under
+ruling Q337 A, `domovoi pair` redeems that code with `device.redeemCode`, the phone's path, so
+there is one pairing flow and the daemon did not change.
 
 Not decided yet: whether the separate package replaces the one-package target below, and which
 `domovoid` commands still move to `domovoi`. Until that is recorded, the rest of this document is
