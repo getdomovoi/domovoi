@@ -18,6 +18,10 @@ export const pairedDaemonSchema = z.object({
   machineId: z.string().regex(/^machine-[0-9a-f]{32}$/),
   deviceId: z.string().min(1),
   token: z.string().min(1),
+  // The device label the daemon recorded at pairing, so this client can name
+  // itself the way the daemon's Devices list does (ruling Q392 A). A record
+  // kept before labels were stored has none.
+  label: z.string().min(1).optional(),
   // The daemon's relay identity as this client last trusted it. Public data,
   // but its integrity is what admission rests on, so it lives with the bearer.
   relayPin: relayClientPinSchema.optional(),
