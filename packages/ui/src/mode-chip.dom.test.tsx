@@ -24,9 +24,34 @@ it("names the mode on the chip and offers the three modes with their notes", asy
   expect(within(options[0]!).getByText("plan")).toBeTruthy()
   expect(within(options[1]!).getByText("ask")).toBeTruthy()
   expect(within(options[2]!).getByText("build")).toBeTruthy()
-  expect(within(options[0]!).getByText("Reads and proposes. It cannot write or run anything.")).toBeTruthy()
+  expect(within(options[0]!).getByText("Reads and proposes a plan. The provider's own plan mode decides what it may run.")).toBeTruthy()
   await user.click(options[1]!)
   expect(onSetRuntime).toHaveBeenCalledWith({ ...runtime, permissionMode: "ask", auto: false })
+})
+
+// What Plan and Ask enforce depends on the provider, as the daemon configures
+// it: Claude refuses edits in Ask and runs only its read-only shell commands,
+// opencode and kilo deny edit and bash, and Codex runs in a read-only sandbox
+// that a gate or a standing rule can let a command out of. Codex Plan still
+// runs commands in that sandbox.
+it.each([
+  // Codex Ask is approvalPolicy on-request in the read-only sandbox, and its
+  // approval requests become Domovoi gates, which a standing rule answers
+  // without a prompt; so Ask there is not reads only. Codex Plan never asks.
+  ["codex", "Reads and proposes a plan. Commands run in a read-only sandbox, so nothing is written.", "Reads by default. Commands run in a read-only sandbox. A command that needs more asks you first. One a standing rule allows runs without asking."],
+  // Claude Code approves its own read-only Bash inside the working directory
+  // before Domovoi is asked (claude-read-scope.ts), so cat, ls and read-only
+  // git run in Ask.
+  ["claude-code", "Reads and proposes a plan. Claude's own plan mode makes no changes.", "Reads only. Edits are refused; only read-only shell commands inside the worktree run."],
+  ["opencode", "Reads and proposes a plan. Edits and shell commands are refused.", "Reads only. Edits and shell commands are refused."],
+] as const)("says what %s enforces in Plan and Ask", async (provider, plan, ask) => {
+  const user = userEvent.setup()
+  render(<ModeChip runtime={{ ...runtime, provider }} pending={false} onSetRuntime={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: /^Mode: Build/ }))
+  const options = screen.getAllByRole("option")
+  expect(within(options[0]!).getByText(plan)).toBeTruthy()
+  expect(within(options[1]!).getByText(ask)).toBeTruthy()
+  expect(screen.queryByText("Writes and commands ask first, one at a time.")).toBeNull()
 })
 
 it("offers Auto only in Build, clears it on leaving Build, and says why elsewhere", async () => {
@@ -36,6 +61,9 @@ it("offers Auto only in Build, clears it on leaving Build, and says why elsewher
   await user.click(screen.getByRole("button", { name: /^Mode: Build/ }))
   const auto = screen.getByRole("switch", { name: "Auto" }) as HTMLButtonElement
   expect(auto.disabled).toBe(false)
+  // Auto allows only what its safe patterns, a bounded resolution or a
+  // standing rule clear; any other command still raises a normal gate.
+  expect(screen.getByText("Runs step after step. Commands Auto or a rule allows run without stopping. Any other command still stops it at a gate, as do hard gates and policy refusals.")).toBeTruthy()
   await user.click(auto)
   expect(onSetRuntime).toHaveBeenCalledWith({ ...runtime, auto: true })
 

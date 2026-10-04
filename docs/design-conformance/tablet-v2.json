@@ -140,11 +140,16 @@
         {
           "absent": "was recorded before it ran.",
           "in": "apps/mobile/src/tablet-shell.tsx"
+        },
+        "re:export function TabletReceipt\\([\\s\\S]*?entry\\.explanation[\\s\\S]*?\\nfunction TabletThreadEntry\\(",
+        {
+          "absent": "`decided after ${entry.decidedAfter}`",
+          "in": "apps/mobile/src/tablet-shell.tsx"
         }
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the receipt always prints <operation>. Checkpoint <checkpoint> was recorded before it ran. in success colours, which is false on a deny (nothing ran) and when no checkpoint was taken (it prints Checkpoint no checkpoint was recorded); the deny explanation is dropped and the meta shows the gate wait time, not the design's ckpt · ran for. The design's Ran in 38s. A checkpoint was taken first, so it is revertible. needs the receipt's checkpoint-taken and ran-for facts, which the protocol carries"
+        "reason": "the colours and the checkpoint line are honest now: success colours only for an allow, and the checkpoint sentence only when an allow took one, with the run time when the receipt has it. Two gaps remain. The deny explanation is dropped: the receipt entry carries it and the phone's receipt draws it, but TabletReceipt does not. The meta shows the gate wait (decided after <wait>) or the client, not the design's checkpoint · ran for (ckpt_7f24 · 38s). The evidence holds both: entry.explanation inside TabletReceipt, and no decided-after meta in tablet-shell.tsx"
       }
     },
     {
@@ -246,6 +251,11 @@
       "id": "pairing.success",
       "since": "2026-10-02",
       "note": "Copy and structure match; sizes do not. The title is 11.5px against 17px, the limit line 11.5px against 14px, and Open Sessions a 12px pill against a 44px button; Q338 A leaves tablet type sizes to S3.5. Open gap, no ruling: the card stands alone rather than floating over the shell, because no snapshot exists before pairing."
+    },
+    {
+      "id": "thread.receipt",
+      "since": "2026-10-03",
+      "note": "Landed with #706 (merge a46669d8, fix(mobile): make the tablet receipt honest): a deny draws in card and muted colours with a faint dot, and the checkpoint sentence appears only when an allow took one, as Checkpoint <id> was taken first, then it ran in <duration>. That is the desktop and phone receipt's wording, carrying the same two facts as the design's sample line Ran in 38s. A checkpoint was taken first, so it is revertible. The explanation and the meta are still open; see the entry's reason."
     }
   ],
   "scriptBacklog": {
