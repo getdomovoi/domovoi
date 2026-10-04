@@ -12,8 +12,9 @@ verified on the deciding connection and the label that record has at the decisio
 allows or denies a gate, reverts a file, archives a session or presses the emergency stop; a
 connection on the daemon credential has no paired device and writes none, and an archive resumed
 at startup has no connection and writes none. Renaming the device later does not rewrite a
-receipt. The label is redacted like other durable text before it is written, stored or
-transferred.
+receipt. The label is redacted like other durable text when the daemon writes a receipt and when
+a session arrives by transfer; an unfinished transfer keeps the bytes the sender sent until it
+commits or is pruned, as it does for every other field.
 
 The web and desktop receipt reads the label from the wire, before the client kind, as
 `decided from dana · phone, connection ...`; history rows read `decided on dana · phone`; the
