@@ -190,12 +190,16 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = 
 }
 
 export function TabletReceipt({ entry }: { entry: Extract<ThreadEntry, { kind: "receipt" }> }) {
+  // The meta line reads who decided and then how long it took, joined the
+  // way the design's meta reads (ruling Q424 A). A decision nearly always
+  // carries a duration, so the one must not stand in for the other.
+  const meta = [entry.attribution, entry.duration].filter((part) => part !== undefined).join(" · ")
   return (
     <Card className="gap-1.5 border-ok-border bg-ok-bg">
       <View className="flex-row items-center gap-2">
         <View className="h-2 w-2 rounded-full bg-success" />
         <Text className="flex-1 font-sans-medium text-[14px] text-ok-fg">{entry.decision}</Text>
-        <Text variant="machine" className="text-ok-dim">{entry.duration ?? entry.attribution}</Text>
+        <Text variant="machine" className="text-ok-dim">{meta}</Text>
       </View>
       <Text className="text-[13px] leading-[19px] text-ok-fg">
         {entry.operation}. Checkpoint {entry.checkpoint} was recorded before it ran.

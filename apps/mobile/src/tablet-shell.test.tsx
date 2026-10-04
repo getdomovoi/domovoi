@@ -209,6 +209,27 @@ describe("TabletShell", () => {
     expect(screen.getByText(refusal.remedy)).toBeOnTheScreen()
   })
 
+  // Ruling Q424 A: the receipt names the device that decided. A decision also
+  // carries how long it took, and the one must not hide the other.
+  it("names the deciding device on a receipt that also carries a duration", async () => {
+    await draw("normal", "full", (snapshot) => {
+      snapshot.thread.push({
+        id: "receipt-tablet",
+        sessionId: snapshot.approvals[0]!.sessionId,
+        kind: "receipt",
+        decision: "allow-once",
+        operation: "pnpm -w prisma migrate deploy",
+        checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+        client: "phone",
+        device: { id: "device-fcbd4c3f99c7294586f0c5ca22f9cdf8", label: "dana" },
+        decisionDurationMs: 38_400,
+        createdAt: "2026-08-25T21:52:00.000Z",
+      })
+    })
+
+    expect(screen.getByText(/^dana · phone\b.* · 38s$/)).toBeOnTheScreen()
+  })
+
   it("shows the connection notice, so a tablet hears when the daemon sent something it could not read", async () => {
     await draw("normal", "full", undefined, { notice: {
       tone: "warning",
