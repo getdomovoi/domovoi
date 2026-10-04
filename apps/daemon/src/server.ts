@@ -1186,8 +1186,19 @@ export function sessionHistoryEntries(
         ...(item.reason ? { reason: item.reason } : {}),
         ...(item.commit ? { commit: item.commit } : {}),
       })
-    } else if (item.kind === "user" || item.kind === "assistant") {
-      entries.push({ ...base, category: "messages", role: item.kind, body: item.body })
+    } else if (item.kind === "user") {
+      // The thread notes beside a sent message how many open annotations the
+      // per-turn limit left out; history carries the same count (Q431).
+      const overLimit = item.providerPromptDelivery?.annotations.omitted.limit ?? 0
+      entries.push({
+        ...base,
+        category: "messages",
+        role: "user",
+        body: item.body,
+        ...(overLimit > 0 ? { annotationsOverLimit: overLimit } : {}),
+      })
+    } else if (item.kind === "assistant") {
+      entries.push({ ...base, category: "messages", role: "assistant", body: item.body })
     } else if (item.kind === "system" && item.transfer) {
       entries.push({
         ...base,

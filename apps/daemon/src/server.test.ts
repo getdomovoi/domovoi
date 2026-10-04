@@ -3740,6 +3740,45 @@ describe("DomovoiDaemon", () => {
     })).toBeUndefined()
   })
 
+  // History drew a sent message without the over-limit note the thread shows
+  // beside it (Q431), so the count travels on the message entry.
+  it("carries a sent message's over-limit annotation count, and only when some were left out", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    const createdAt = "2026-08-28T12:00:00.000Z"
+    const delivery = (limit: number) => ({
+      version: 1 as const,
+      budget: { unit: "utf16-code-units" as const, limit: 100_000, used: 1_000 },
+      handoff: { status: "not-required" as const },
+      workingPlan: { status: "not-required" as const },
+      annotations: { availableCount: 1 + limit, deliveredIds: ["annotation-kept"], omitted: { budget: 0, limit } },
+      skills: {
+        selection: "project-default" as const,
+        delivered: [],
+        omitted: { budget: [], limit: [], unavailable: [], reviewChanged: [], policy: [] },
+      },
+    })
+    snapshot.thread = [
+      { id: "message-over", sessionId: session.id, kind: "user", body: "over", providerPromptDelivery: delivery(3), createdAt },
+      { id: "message-within", sessionId: session.id, kind: "user", body: "within", providerPromptDelivery: delivery(0), createdAt },
+      { id: "message-legacy", sessionId: session.id, kind: "user", body: "legacy", createdAt },
+      { id: "message-reply", sessionId: session.id, kind: "assistant", body: "reply", createdAt },
+    ]
+    workspaceSnapshotSchema.parse(snapshot)
+
+    const page = sessionHistoryPageSchema.parse(sessionHistoryPage(snapshot, {
+      sessionId: session.id,
+      categories: ["messages"],
+      limit: 10,
+    }))
+    const entry = (sourceId: string) => page.items.find((item) => item.sourceId === sourceId)
+
+    expect(entry("message-over")).toMatchObject({ role: "user", annotationsOverLimit: 3 })
+    expect(entry("message-within")).not.toHaveProperty("annotationsOverLimit")
+    expect(entry("message-legacy")).not.toHaveProperty("annotationsOverLimit")
+    expect(entry("message-reply")).not.toHaveProperty("annotationsOverLimit")
+  })
+
   it("indexes large mixed history once and bounds repeated filtered pages", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
