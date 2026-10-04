@@ -7,7 +7,33 @@
     "packages/protocol/src/**/*.ts"
   ],
   "note": "J44: transcripts for starting, steering, watching and answering a session from the domovoi command, with an exit code table. The transcripts themselves, the exit codes and the new-strings list live in the design's data; the owner questions are annotations.",
-  "sample": [],
+  "sample": [
+    "step 3 of 4 · claude-code · build",
+    "pnpm -w prisma migrate deploy",
+    "mac-mini-m4 · loopback",
+    "dev database acme_dev · 1 migration",
+    "localhost:5432 only",
+    "prisma migrate in ~/src/acme-api on mac-mini-m4",
+    "asked by the agent, not in the plan · claude-code · build",
+    "rm -rf ~/.cache/prisma",
+    "deletes 38 files · 412 MB",
+    "yes · ~/.cache/prisma",
+    "it deletes files outside the project",
+    "step 3 of 4 · refused by the daemon before it ran",
+    "The agent read PROD_DATABASE_URL and aimed at production. A rule forbids",
+    "it, so the daemon refused before the command ran. No approval or mode can",
+    "permit this.",
+    "no writes to a production database",
+    "dana@acme.dev, as org policy",
+    "every machine on this account",
+    "acme_prod · db.acme.internal:5432",
+    "refusal, actor daemon",
+    "Write the SQL to prisma/migrations and stop.",
+    "Run it against acme_dev, which is a gate you can answer.",
+    "allowed once by dana · cli on mac-mini-m4 · 14:07:11",
+    "denied by dana · cli on mac-mini-m4 · 14:21:03",
+    "denied by dana · cli on ci-runner-03 · 14:21:03"
+  ],
   "annotations": [
     "CLI · SESSION COMMANDS",
     "Starting, steering, watching and answering a session",
@@ -75,15 +101,124 @@
       }
     },
     {
-      "id": "cli.gate-prompt",
-      "name": "Gate prompt in watch",
-      "where": "watch at a gate: waiting on your decision, the facts, Allow once · Always here · Deny with the choose prompt; the hard gate without Always here and its reason; the policy refusal with its rule; --no-prompt printing the facts and exiting",
-      "evidence": [
-        "re:choose a(, r)? or d:"
+      "id": "cli.exit-codes",
+      "name": "Exit codes",
+      "where": "the table: CODE, NAME, WHEN, RETURNED BY",
+      "copy": [
+        "Exit codes",
+        "Stable across releases, so scripts can branch on them. Unconfirmed and failed never share a code. Nothing below 10 is about the session; 10 and up are what happened to it.",
+        "CODE",
+        "NAME",
+        "WHEN",
+        "RETURNED BY",
+        "The command did what it said: session created, message sent, decision recorded, or the watched turn ended done.",
+        "An unexpected error in the CLI. The message and a log path are printed.",
+        "A bad flag, argument or quoting. Nothing was sent.",
+        "Could not reach the daemon before doing anything. Nothing was sent.",
+        "No session or approval with that id on any reachable machine.",
+        "send · watch · approve · deny",
+        "watch --no-prompt reached a gate. The facts and approval id are printed.",
+        "watch --no-prompt",
+        "The agent ended the turn on a failure it reported.",
+        "The turn stopped at a policy refusal.",
+        "watch lost the daemon mid-turn and gave up reconnecting. Calls in flight are unconfirmed, not failed.",
+        "The turn stopped because a tool call has no recorded result.",
+        "Someone already answered this gate. The existing receipt is printed and nothing changes.",
+        "approve · deny",
+        "This device's credential can watch but not decide.",
+        "approve · deny · watch",
+        "approve on a hard gate with no terminal attached. Nothing was approved.",
+        "Ctrl-C in watch. The session keeps running on its machine."
       ],
-      "missing": {
-        "since": "2026-10-02",
-        "reason": "no gate prompt. The approval request carries risk, machine, directory, affects, network, estimate and checkpoint, so the prompt and the policy refusal's local fields are client-only; the hard because and outside project facts have no field on the request (protocol). Its strings are still in the script backlog"
+      "evidence": [
+        "Unconfirmed and failed never share a code",
+        "{ code: 3, name: \"daemon-unreachable\"",
+        "{ code: 22, name: \"stopped-unconfirmed\"",
+        "{ code: 33, name: \"needs-a-person\"",
+        "{ code: 130, name: \"detached\"",
+        "exitCode(\"daemon-unreachable\")"
+      ]
+    },
+    {
+      "id": "cli.gate-prompt",
+      "name": "Gate prompt",
+      "where": "the amber block watch prints at a gate: header with the approval id at the right edge, the plan step and agent and mode, the command, one fact per line, then the choices and the ask line (layout A, ruling Q394 A)",
+      "copy": [
+        "waiting on your decision",
+        "hard gate · waiting on your decision",
+        "asked by the agent, not in the plan",
+        "working dir",
+        "outside project",
+        "hard because",
+        "machine · working dir · affects · network · estimated · outside project · hard because · offered",
+        "Allow once",
+        "Always here",
+        "Allow once · Always here · Deny",
+        "Allow once · Deny",
+        "Always here is not offered. A hard gate asks every time.",
+        "choose a, r or d:",
+        "choose a or d:",
+        "choose a, r or d: · choose a or d:"
+      ],
+      "presence": [
+        "\"waiting on your decision\"",
+        "\"hard gate · waiting on your decision\"",
+        "fact(\"working dir\"",
+        "Always here is not offered. A hard gate asks every time.",
+        "choose ${keys.slice(0, -1).join(\", \")} or ${keys[keys.length - 1]}: "
+      ],
+      "evidence": [
+        "fact(\"outside project\"",
+        "fact(\"hard because\""
+      ],
+      "partial": {
+        "since": "2026-10-03",
+        "reason": "the layout, choices and ask line are in apps/cli/src/transcript.ts for the session commands to print; an approval on the wire carries no outside-project or hard-because fact, so those two lines are not drawn until the protocol names them (0.8.0 is open)"
+      }
+    },
+    {
+      "id": "cli.receipt",
+      "name": "Decision receipt",
+      "where": "the line after a decision: allowed once by or denied by, then who, from which client on which machine, at what time; a denial adds that the agent was told (ruling Q392 A: the person is the paired device's label beside the client kind)",
+      "copy": [
+        "The agent was told and continues without it."
+      ],
+      "evidence": [
+        "allowed once by ${who}",
+        "denied by ${who}",
+        "The agent was told and continues without it.",
+        "decidedBy: { label: string; client: ClientKind }"
+      ]
+    },
+    {
+      "id": "cli.policy-refusal",
+      "name": "Policy refusal",
+      "where": "the red block watch prints when the daemon refused a command before it ran: header with the refusal id, the command and the operation, then rule, set by, applies to and override one per line, then what you can do instead (ruling Q393 A: local fields only, no org-owner line)",
+      "copy": [
+        "refused by policy, there is nothing to approve",
+        "set by",
+        "applies to",
+        "target it saw",
+        "none, not even with approval",
+        "recorded as",
+        "rule · set by · applies to · target it saw · override · recorded as",
+        "what you can do instead",
+        "Only an org owner can change this rule, and a change is not retroactive."
+      ],
+      "presence": [
+        "\"refused by policy, there is nothing to approve\"",
+        "fact(\"set by\", refusal.setBy)",
+        "fact(\"applies to\", refusal.scope)",
+        "fact(\"override\", \"none, not even with approval\")",
+        "\"  what you can do instead\""
+      ],
+      "evidence": [
+        "fact(\"target it saw\"",
+        "fact(\"recorded as\""
+      ],
+      "partial": {
+        "since": "2026-10-03",
+        "reason": "rule, set by, applies to, override and the remedy are drawn from the policy-refusal thread item; it carries no target or record line, so those wait on the protocol. The org-owner note is dropped on purpose under Q393 A and is not evidence"
       }
     },
     {
@@ -110,38 +245,28 @@
         "since": "2026-10-02",
         "reason": "no watch command to reconnect. Replay from a time is client work over the existing snapshot; an unconfirmed tool state (no result seen) does not exist on the wire (roadmap S3.8). Its strings are still in the script backlog"
       }
-    },
-    {
-      "id": "cli.exit-codes",
-      "name": "Exit codes",
-      "where": "the table: CODE, NAME, WHEN, RETURNED BY",
-      "copy": [
-        "Exit codes",
-        "Stable across releases, so scripts can branch on them. Unconfirmed and failed never share a code. Nothing below 10 is about the session; 10 and up are what happened to it.",
-        "CODE",
-        "NAME",
-        "WHEN",
-        "RETURNED BY"
-      ],
-      "evidence": [
-        "re:(?:exitCode = |return )3\\b"
-      ],
-      "missing": {
-        "since": "2026-10-02",
-        "reason": "the CLI exits 0, 1 and 2 only: daemon unreachable, a declined install, a failed doctor probe and every daemon refusal are 1 (the design says 3 for unreachable), and usage and Not paired are 2; domovoid returns 1 for usage where domovoi returns 2. Q391 A (2026-10-02) adopts the design's table now, before 1.0: unreachable becomes 3 and an unpaired client gets a named code. The earlier evidence was design prose no code prints, so it could never prove the element; the evidence now looks for the unreachable code. Exit 31 (already decided) and 22 (unconfirmed) need protocol"
-      }
     }
   ],
   "humanRead": [
     {
-      "id": "cli.session-commands",
-      "since": "2026-10-02",
-      "note": "Open gap in shipped text: the CLI usage says domovoid pair --client cli prints a credential to paste into domovoi pair. domovoid pair accepts --client only with --label and prints a pairing code, which domovoi pair refuses, so the documented path does not work. Q337 A makes domovoi pair redeem a pairing code with device.redeemCode and corrects the usage text."
+      "id": "cli.exit-codes",
+      "since": "2026-10-03",
+      "note": "Built for Q391 A: the whole table, adopted before 1.0, in apps/cli/src/exit-codes.ts, printed by --help and used by every exit. Daemon unreachable moved from 1 to 3; an unpaired client moved from usage (2) to a named code the design does not draw, not-paired (5), placed with the other nothing-was-sent codes (a substitution recorded under Q389). The row for 1 drops the design's clause that a log path is printed, because the CLI keeps no log. Codes 4 and 10 to 130 are reserved for the session commands, which cli.session-commands still lists as missing. A failed doctor probe, a declined or refused skill install and a pairing the daemon refused have no row in the design and exit 1 for M1 (Q423 A, 2026-10-03)."
     },
     {
       "id": "cli.gate-prompt",
-      "since": "2026-10-02",
-      "note": "Q394 A: facts one per line (the design's layout A), not the boxed card. Q393 A: the policy refusal shows only the local fields; the org-owner lines (set by <person>, as org policy; Only an org owner can change this rule) are M4 and are not printed in M1."
+      "since": "2026-10-03",
+      "note": "Built for Q394 A as a renderer in apps/cli/src/transcript.ts; no command prints it yet (cli.session-commands is missing). Facts come one per line from the approval on the wire: machine, working dir, affects, network, estimated. The design's machine fact also names the transport (mac-mini-m4 · loopback); the approval carries the machine only, so the transport is not drawn. The step line prints step n of m or asked by the agent, not in the plan only when the caller knows which; otherwise agent · mode alone, because the approval does not say. A tool-server call offers Allow once and Deny only (ruled 2026-09-26), which the design does not draw. So does a gate whose command the daemon could not resolve (execution.state unresolved): the daemon refuses a standing rule for it (ruled 2026-09-24) and the web and desktop cards hide the button; the design does not draw that case either."
+    },
+    {
+      "id": "cli.receipt",
+      "since": "2026-10-03",
+      "note": "Built for Q392 A: the person is the paired device's label, then the client kind and machine, as in allowed once by dana · cli on mac-mini-m4 · 14:07:11. The receipt thread item carries the client kind but not the device label, so the renderer takes the label from its caller; a receipt made by another client cannot be named this way until the protocol adds the device to the receipt. The design's checkpoint line is not drawn, as its own open question proposes, and an Always decision has no line in the design so it has none here."
+    },
+    {
+      "id": "cli.policy-refusal",
+      "since": "2026-10-03",
+      "note": "Built for Q393 A: set by and applies to print what the daemon put in setBy and scope, which in M1 are the permission mode and the session; the design's org-owner values and its closing note about an org owner are not drawn. The override line keeps the design's constant, none, not even with approval, which the daemon enforces by refusing before the command runs. The body is the operation sentence the daemon sends, printed after the command."
     },
     {
       "id": "cli.approve-deny",
@@ -153,48 +278,6 @@
     "since": "2026-09-26",
     "reason": "Copy the design builds in its data script, collected by the gate since audit G23 and not yet read against the implementation. Classify each string as an element's copy, sample or annotations, and remove it here.",
     "strings": [
-      "waiting on your decision",
-      "step 3 of 4 · claude-code · build",
-      "pnpm -w prisma migrate deploy",
-      "mac-mini-m4 · loopback",
-      "working dir",
-      "dev database acme_dev · 1 migration",
-      "localhost:5432 only",
-      "outside project",
-      "Allow once",
-      "Always here",
-      "prisma migrate in ~/src/acme-api on mac-mini-m4",
-      "Allow once · Always here · Deny",
-      "choose a, r or d:",
-      "hard gate · waiting on your decision",
-      "asked by the agent, not in the plan · claude-code · build",
-      "rm -rf ~/.cache/prisma",
-      "deletes 38 files · 412 MB",
-      "yes · ~/.cache/prisma",
-      "hard because",
-      "it deletes files outside the project",
-      "Always here is not offered. A hard gate asks every time.",
-      "Allow once · Deny",
-      "choose a or d:",
-      "refused by policy, there is nothing to approve",
-      "step 3 of 4 · refused by the daemon before it ran",
-      "The agent read PROD_DATABASE_URL and aimed at production. A rule forbids",
-      "it, so the daemon refused before the command ran. No approval or mode can",
-      "permit this.",
-      "no writes to a production database",
-      "set by",
-      "dana@acme.dev, as org policy",
-      "applies to",
-      "every machine on this account",
-      "target it saw",
-      "acme_prod · db.acme.internal:5432",
-      "none, not even with approval",
-      "recorded as",
-      "refusal, actor daemon",
-      "Write the SQL to prisma/migrations and stop.",
-      "Run it against acme_dev, which is a gate you can answer.",
-      "Only an org owner can change this rule, and a change is not retroactive.",
-      "what you can do instead",
       "cols · longest",
       "Migrate billing webhooks to the new idempotency table",
       "mac-mini-m4 · loopback · claude-code · claude-sonnet-4.6 · build",
@@ -227,11 +310,8 @@
       "ok · +12 −1",
       "WEBHOOKS_LEGACY defaults to on, so production keeps the old",
       "decide from any shell: domovoi approve|deny",
-      "allowed once by dana · cli on mac-mini-m4 · 14:07:11",
       "checkpoint ckpt_7f24 taken before it ran",
       "ok · 38s",
-      "denied by dana · cli on mac-mini-m4 · 14:21:03",
-      "The agent was told and continues without it.",
       "pnpm prisma generate",
       "failed · engine checksum",
       "ok · 9 lines",
@@ -253,7 +333,6 @@
       "apr_8b31 is a hard gate. It needs a person at a terminal, so nothing was",
       "approved. Answer it in domovoi watch, or on desktop, web or phone.",
       "domovoi deny apr_8b31",
-      "denied by dana · cli on ci-runner-03 · 14:21:03",
       "The route drops mid-turn",
       "domovoi watch ses_9d1x",
       "started 14:06:48 by dana from desktop",
@@ -297,24 +376,6 @@
       "Both fit 80 columns. Set the columns tweak to 72 or 60 to see the difference: A only loses right-aligned meta, while B's border wraps into noise. A also stays greppable in a CI log and keeps its meaning without colour, because every state is a word. B reads as a stronger interrupt, which the amber header line already gives A.",
       "The connection drops mid-turn",
       "The client lost the daemon, not the work. A call in flight shows as unconfirmed until the daemon says otherwise. On reconnect watch replays what the daemon recorded. If the daemon has no result either, the turn stops rather than guessing.",
-      "The command did what it said: session created, message sent, decision recorded, or the watched turn ended done.",
-      "An unexpected error in the CLI. The message and a log path are printed.",
-      "A bad flag, argument or quoting. Nothing was sent.",
-      "Could not reach the daemon before doing anything. Nothing was sent.",
-      "No session or approval with that id on any reachable machine.",
-      "send · watch · approve · deny",
-      "watch --no-prompt reached a gate. The facts and approval id are printed.",
-      "watch --no-prompt",
-      "The agent ended the turn on a failure it reported.",
-      "The turn stopped at a policy refusal.",
-      "watch lost the daemon mid-turn and gave up reconnecting. Calls in flight are unconfirmed, not failed.",
-      "The turn stopped because a tool call has no recorded result.",
-      "Someone already answered this gate. The existing receipt is printed and nothing changes.",
-      "approve · deny",
-      "This device's credential can watch but not decide.",
-      "approve · deny · watch",
-      "approve on a hard gate with no terminal attached. Nothing was approved.",
-      "Ctrl-C in watch. The session keeps running on its machine.",
       "domovoi session new",
       "from --provider · from --model · from --mode · machine default",
       "domovoi send",
@@ -322,10 +383,6 @@
       "domovoi watch, turn",
       "agent · you",
       "domovoi watch, gates",
-      "asked by the agent, not in the plan",
-      "machine · working dir · affects · network · estimated · outside project · hard because · offered",
-      "rule · set by · applies to · target it saw · override · recorded as",
-      "choose a, r or d: · choose a or d:",
       "domovoi watch, connection",
       "unconfirmed · no result seen · unconfirmed · no result",
       "domovoi approve · deny"

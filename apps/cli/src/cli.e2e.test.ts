@@ -6,7 +6,7 @@ import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest"
-import { protocolVersion } from "@getdomovoi/protocol"
+import { encodePairingPayload, protocolVersion } from "@getdomovoi/protocol"
 import { WebSocket } from "ws"
 
 // A real production daemon in a child process, on a scratch home, with the
@@ -67,23 +67,28 @@ afterAll(async () => {
   for (const path of [home, control]) if (path !== undefined) await rm(path, { recursive: true, force: true })
 })
 
-// Where a client credential comes from today: device.pair made with the
-// daemon's own token. No `domovoid` command prints one.
-async function mintClientCredential(): Promise<string> {
+// What `domovoid pair --client cli --label <device label>` does on the daemon
+// host: device.issueCode with the daemon's own token, then the payload it
+// prints under "Cannot scan it? Paste this on the device:".
+async function issueCliCode(targetClient: "cli" | "phone" = "cli"): Promise<{ payload: string; code: string }> {
   const socket = new WebSocket(url, { headers: { authorization: `Bearer ${rootToken}` } })
   await once(socket, "open")
-  const reply = await new Promise<{ result?: { token: string }; error?: { message: string } }>((resolve, reject) => {
+  type Issued = { code: string; pairingAddress: { url: string; label?: string } | { problem: string } }
+  const reply = await new Promise<{ result?: Issued; error?: { message: string } }>((resolve, reject) => {
     socket.on("message", (data: { toString(): string }) => {
-      const message = JSON.parse(data.toString()) as { id?: unknown; result?: { token: string }; error?: { message: string } }
+      const message = JSON.parse(data.toString()) as { id?: unknown; result?: Issued; error?: { message: string } }
       if (message.id === 2) resolve(message)
     })
     socket.once("error", reject)
     socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "system.hello", params: { client: "cli", clientVersion: "test", protocolVersion } }))
-    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "device.pair", params: { label: "e2e cli", client: "cli" } }))
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "device.issueCode", params: { targetClient } }))
   })
   socket.terminate()
-  if (!reply.result) throw new Error(reply.error?.message ?? "no credential")
-  return reply.result.token
+  if (!reply.result) throw new Error(reply.error?.message ?? "no code")
+  const address = reply.result.pairingAddress
+  if ("problem" in address) throw new Error(address.problem)
+  const code = reply.result.code
+  return { code, payload: encodePairingPayload({ v: 1, url: address.url, code, ...(address.label === undefined ? {} : { label: address.label }) }) }
 }
 
 function runCli(args: string[], stdinText?: string): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -99,15 +104,25 @@ function runCli(args: string[], stdinText?: string): Promise<{ code: number; std
   })
 }
 
+// The daemon admits three pairing claims per source per minute, counting the
+// ones that succeed, so this file redeems at most twice and the later tests
+// read the credential the first one stored.
+const pairedCredentialFile = () => join(home!, "cli-credentials.json")
+
 describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
-  it("pairs from a pasted credential, stores it in the named file, and reads status back", async () => {
-    const credentialFile = join(home!, "cli-credentials.json")
-    const credential = await mintClientCredential()
-    const paired = await runCli(["pair", "--daemon", url, "--credential-file", credentialFile], `Client credential: ${credential}\n`)
+  it("pairs from a pasted pairing code, stores the credential in the named file, and reads status back", async () => {
+    const credentialFile = pairedCredentialFile()
+    const issued = await issueCliCode()
+    // No --daemon: the payload names the address, as it does for a phone.
+    const paired = await runCli(["pair", "--credential-file", credentialFile, "--label", "e2e cli"], `Cannot scan it? Paste this on the device:\n${issued.payload}\n`)
     expect(paired.stderr).toMatch(/not in an OS keychain/)
     expect(paired).toMatchObject({ code: 0 })
-    expect(paired.stdout).toMatch(/^Paired with machine-[0-9a-f]{32} as device device-[0-9a-f]{32}\. Credential stored in the file\.$/m)
-    expect(paired.stdout + paired.stderr).not.toContain(credential)
+    expect(paired.stdout).toMatch(/^Paired with machine-[0-9a-f]{32} at ws:\/\/\S+\/rpc as e2e cli \(cli\), device device-[0-9a-f]{32}\. Credential stored in the file\.$/m)
+    // The payload's address is the record's key; it is not the default, so
+    // the line says what later commands need (the fixture binds a free port).
+    expect(paired.stdout).toContain(` at ${url} as `)
+    expect(paired.stdout).toMatch(/^The default daemon is ws:\/\/127\.0\.0\.1:47831\/rpc, so later commands need --daemon ws:\/\/\S+\/rpc\.$/m)
+    expect(paired.stdout + paired.stderr).not.toContain(issued.code)
 
     const status = await runCli(["status", "--daemon", url, "--credential-file", credentialFile])
     expect(status).toMatchObject({ code: 0 })
@@ -116,19 +131,25 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
     expect(status.stdout).toMatch(/^sessions\s+\d+/m)
   })
 
-  it("refuses status without a pairing, and refuses a wrong credential without keeping it", async () => {
+  it("refuses status without a pairing, and refuses a code the daemon will not take without keeping anything", async () => {
     const credentialFile = join(home!, "empty-credentials.json")
-    expect(await runCli(["status", "--daemon", url, "--credential-file", credentialFile])).toMatchObject({ code: 2 })
-    const wrong = await runCli(["pair", "--daemon", url, "--credential-file", credentialFile], `${"x".repeat(43)}\n`)
+    const unpaired = await runCli(["status", "--daemon", url, "--credential-file", credentialFile])
+    expect(unpaired).toMatchObject({ code: 5 })
+    expect(unpaired.stderr).toMatch(/^Not paired with ws:\/\//m)
+    const wrong = await runCli(["pair", "--daemon", url, "--credential-file", credentialFile], "hearth-quiet-ember-42\n")
     expect(wrong).toMatchObject({ code: 1 })
-    expect(wrong.stderr).toMatch(/authentication failed/i)
-    expect(await runCli(["status", "--daemon", url, "--credential-file", credentialFile])).toMatchObject({ code: 2 })
+    expect(wrong.stderr).toMatch(/Pairing was refused/)
+    expect(await runCli(["status", "--daemon", url, "--credential-file", credentialFile])).toMatchObject({ code: 5 })
+  })
+
+  it("exits 3 when no daemon answers, before anything is sent", async () => {
+    const unreachable = await runCli(["pair", "--daemon", "ws://127.0.0.1:1/rpc", "--credential-file", join(home!, "unused.json")], "hearth-quiet-ember-42\n")
+    expect(unreachable.code).toBe(3)
+    expect(unreachable.stderr).toMatch(/Could not reach ws:\/\/127\.0\.0\.1:1\/rpc/)
   })
 
   it("doctor reports the daemon, credential and protocol probes against a real daemon", async () => {
-    const credentialFile = join(home!, "doctor-credentials.json")
-    const credential = await mintClientCredential()
-    expect(await runCli(["pair", "--daemon", url, "--credential-file", credentialFile], `${credential}\n`)).toMatchObject({ code: 0 })
+    const credentialFile = pairedCredentialFile()
     const doctor = await runCli(["doctor", "--daemon", url, "--credential-file", credentialFile])
     expect(doctor.stdout).toMatch(/^ok {3}daemon {6}\S/m)
     expect(doctor.stdout).toMatch(/^ok {3}credential {2}accepted as device device-[0-9a-f]{32} \(cli\)$/m)
@@ -138,14 +159,12 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
 
     const logs = await runCli(["logs", "--daemon", url, "--credential-file", credentialFile, "--limit", "5"])
     expect(logs.code).toBe(0)
-    expect(logs.stdout).toMatch(/device\.(pair|claim|current)|system\.hello/)
+    expect(logs.stdout).toMatch(/device\.(redeemCode|claim|current)|system\.hello/)
     expect(logs.stdout).not.toMatch(/follow/)
   })
 
   it("skill install previews a real directory and refuses a relative path", async () => {
-    const credentialFile = join(home!, "skill-credentials.json")
-    const credential = await mintClientCredential()
-    expect(await runCli(["pair", "--daemon", url, "--credential-file", credentialFile], `${credential}\n`)).toMatchObject({ code: 0 })
+    const credentialFile = pairedCredentialFile()
     const skill = join(home!, "skills", "pr-triage")
     const { mkdir, writeFile } = await import("node:fs/promises")
     await mkdir(skill, { recursive: true })
@@ -165,8 +184,16 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
     expect(await runCli(["doctor", "now", "--daemon", "ws://127.0.0.1:1/rpc", "--credential-file", join(home!, "unused.json")])).toMatchObject({ code: 2 })
   })
 
-  it("refuses a credential passed as an argument", async () => {
-    const result = await runCli(["pair", "x".repeat(43), "--daemon", url, "--credential-file", join(home!, "unused.json")])
+  it("refuses a label the daemon would refuse before any connection, so no admission is spent", async () => {
+    // An unreachable address: reaching it would exit 3, so a 2 proves the
+    // label was refused first.
+    const long = await runCli(["pair", "--label", "x".repeat(129), "--daemon", "ws://127.0.0.1:1/rpc", "--credential-file", join(home!, "unused.json")], "hearth-quiet-ember-42\n")
+    expect(long.code).toBe(2)
+    expect(long.stderr).toMatch(/^--label takes at most 128 characters$/m)
+  })
+
+  it("refuses a pairing code passed as an argument", async () => {
+    const result = await runCli(["pair", "hearth-quiet-ember-42", "--daemon", url, "--credential-file", join(home!, "unused.json")])
     expect(result.code).toBe(2)
     expect(result.stderr).toMatch(/stdin, not as an argument/)
   })
