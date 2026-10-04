@@ -300,18 +300,20 @@ const threadClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: 
 
 // The rows the daemon writes when a pause ended a session's turn. A failed
 // interrupt writes "Pause failed for <client>." instead.
-function pauseRows(thread: readonly ThreadItem[], sessionId: string): ThreadItem[] {
-  return thread.filter((item) => item.sessionId === sessionId && item.kind === "system" && /^Paused by .+\.$/u.test(item.body))
+function pauseRows(thread: readonly ThreadItem[], sessionId: string): Extract<ThreadItem, { kind: "system" }>[] {
+  return thread.filter((item): item is Extract<ThreadItem, { kind: "system" }> =>
+    item.sessionId === sessionId && item.kind === "system" && /^Paused by .+\.$/u.test(item.body))
 }
 
 // The design's paused notice, with copy that is true today: the turn ended and
 // the session holds nothing back, so there is nothing to resume (ruled Q361 A).
-// The design's "from this client" is left out: the pause row names a client
-// kind, not a connection, and the daemon answers a pause of an idle session as
-// a success without writing one, so a pause another client made in the same
-// window is the row this client finds. Naming the pausing connection on the
-// row is a protocol change (#710 review).
-function StoppedSessionNotice({ at }: { at: Date }) {
+// The daemon answers a pause of an idle session as a success without writing a
+// row, so a pause another client made in the same window can be the row this
+// client finds. The design's "from this client" is shown only when that row's
+// `connectionId` is the connection this client holds now (ruled Q427 A). A
+// pause from another connection, a row an older daemon wrote without the id,
+// or a client with no connection id gets no suffix.
+function StoppedSessionNotice({ at, fromThisClient }: { at: Date, fromThisClient: boolean }) {
   return (
     <div
       role="status"
@@ -320,7 +322,7 @@ function StoppedSessionNotice({ at }: { at: Date }) {
     >
       <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-info" />
       <span className="text-[12.5px] text-info-foreground">Stopped. The turn ended. The next message you send starts the next turn.</span>
-      <span className="font-machine text-[10.5px] text-info-dim">stopped {threadClock.format(at)}</span>
+      <span className="font-machine text-[10.5px] text-info-dim">stopped {threadClock.format(at)}{fromThisClient ? " · from this client" : null}</span>
     </div>
   )
 }
@@ -410,6 +412,7 @@ export function SessionReadOnlyNotice({
 export function Thread({
   snapshot,
   connected,
+  connectionId = null,
   clientAccess = "full",
   emergencyStopPending = false,
   queued,
@@ -452,6 +455,10 @@ export function Thread({
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
+  // The id the daemon's hello gave the connection this client holds now, from
+  // useWorkspace. A pause row naming it is this client's own; without it the
+  // stopped notice never says "from this client".
+  connectionId?: string | null | undefined
   clientAccess?: ClientAccess
   emergencyStopPending?: boolean | undefined
   // Bound to the session it was typed in: releasing it into whatever session
@@ -950,12 +957,17 @@ export function Thread({
   }
 
   // When the daemon recorded a pause after this client asked for one, if it
-  // has. The row may be another client's (see StoppedSessionNotice), which
-  // still means the turn ended.
-  const stoppedAt = (() => {
+  // has, and whether the row names this client's connection. The row may be
+  // another client's (see StoppedSessionNotice), which still means the turn
+  // ended.
+  const stoppedPause = (() => {
     if (!stopped) return undefined
     const recorded = pauseRows(snapshot.thread, active.id).find((row) => !stopped.earlierPauseRows.has(row.id))
-    return recorded ? new Date(recorded.createdAt) : undefined
+    if (!recorded) return undefined
+    return {
+      at: new Date(recorded.createdAt),
+      fromThisClient: recorded.connectionId !== undefined && recorded.connectionId === connectionId,
+    }
   })()
 
   const pauseSession = async () => {
@@ -1108,7 +1120,7 @@ export function Thread({
     <main className="flex h-full min-w-0 flex-col bg-background">
       {/* Shown once the stopped turn has ended, where the design draws its
           session notice: a strip above the thread. */}
-      {stoppedAt && !active.activeTurnId ? <StoppedSessionNotice at={stoppedAt} /> : null}
+      {stoppedPause && !active.activeTurnId ? <StoppedSessionNotice at={stoppedPause.at} fromThisClient={stoppedPause.fromThisClient} /> : null}
       {freshWorktree ? (
         <Suspense fallback={null}>
           <WorktreeReadyHeader workspacePath={freshWorktree} baseCommit={active.baseCommit} />
