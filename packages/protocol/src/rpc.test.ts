@@ -862,6 +862,27 @@ describe("JSON-RPC envelopes", () => {
     expect(sessionHistoryEntrySchema.safeParse({ ...entry, tool: "invented" }).success).toBe(false)
   })
 
+  describe("a sent message's over-limit annotations in history", () => {
+    const message = {
+      id: "thread:user-1", sourceId: "user-1", sessionId: "session-a", category: "messages",
+      role: "user", body: "Fix the webhook", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+
+    it("carries the count on a user message and parses one written without it", () => {
+      expect(sessionHistoryEntrySchema.parse({ ...message, annotationsOverLimit: 3 }))
+        .toMatchObject({ annotationsOverLimit: 3 })
+      expect(sessionHistoryEntrySchema.parse(message)).not.toHaveProperty("annotationsOverLimit")
+    })
+
+    it.each([0, -1, 1.5, "2", null, Number.POSITIVE_INFINITY])("rejects a count of %s", (annotationsOverLimit) => {
+      expect(sessionHistoryEntrySchema.safeParse({ ...message, annotationsOverLimit }).success).toBe(false)
+    })
+
+    it.each(["assistant", "system"])("rejects the count on a message whose role is %s", (role) => {
+      expect(sessionHistoryEntrySchema.safeParse({ ...message, role, annotationsOverLimit: 1 }).success).toBe(false)
+    })
+  })
+
   it("registers archive as a typed session mutation", () => {
     expect(rpcMethods["session.archive"].params.parse({
       sessionId: "session-billing",
