@@ -5,7 +5,7 @@ import { basename, dirname, join, sep } from "node:path"
 import { promisify } from "node:util"
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonRuntimeLayout, nodeRuntimeFileSystem, parseAccessControlListing, prepareDaemonRuntime, profileRuntimeDirectory, stageDaemonRuntime, unprotectedStagingDirectory, type AccessControlEntry, type RuntimeFileSystem } from "./runtime-stage.js"
+import { DaemonRuntimeStagingRefusedError, daemonRuntimeLayout, nodeRuntimeFileSystem, parseAccessControlListing, prepareDaemonRuntime, profileRuntimeDirectory, stageDaemonRuntime, unprotectedStagingDirectory, type AccessControlEntry, type RuntimeFileSystem } from "./runtime-stage.js"
 
 const run = promisify(execFile)
 
@@ -473,6 +473,69 @@ describe("staging the shipped runtime under the profile", () => {
       })
     })
 
+    // A place on the profile's volume that fails the access gate is refused
+    // for that, and the app's refusal says which check failed instead of a
+    // different volume.
+    it.each([
+      ["group or others can write", 0o40775, () => me, (path: string) => `The runtime could not be copied out of the app: group or others can write ${path}, and Domovoi stages the copy only where no other account can change it. Remove their write access to ${path}, then try again. Nothing was changed.`],
+      ["another account owns", 0o40755, () => me + 1, (path: string) => `The runtime could not be copied out of the app: ${path} belongs to another account, and Domovoi stages the copy only where no other account can change it. Nothing was changed.`],
+    ])("says the staging place failed because %s it, not that it is on a different volume", async (_label, mode, uid, words) => {
+      await withScratch(async ({ root, resources, home }) => {
+        const staging = join(root, "staging")
+        const refused = prepare(resources, home, staging, permissions({ [staging]: { uid: uid(), mode } }))
+        await expect(refused).rejects.toThrow(words(staging))
+        await expect(refused).rejects.not.toThrow("different volume")
+      })
+    })
+
+    // Codex review of PR #722 (P3-3): the system temporary directory is on
+    // the profile's volume and fails the access gate. Checking a fallback on
+    // another volume after it, or having no fallback, does not turn that into
+    // a different-volume refusal.
+    describe("when the system temporary directory fails the access gate", () => {
+      const groupWritableTemporary = async (overrides: Partial<RuntimeFileSystem> = {}) => {
+        const temporary = await realpath(tmpdir())
+        const real = nodeRuntimeFileSystem()
+        const fileSystem = nodeRuntimeFileSystem({
+          permissions: async (path) => path === temporary ? { uid: me, mode: 0o40775 } : real.permissions(path),
+          ...overrides,
+        })
+        return { temporary, fileSystem }
+      }
+      const words = (path: string) => `The runtime could not be copied out of the app: group or others can write ${path}, and Domovoi stages the copy only where no other account can change it. Remove their write access to ${path}, then try again. Nothing was changed.`
+
+      it("says so when the data directory after it is on another volume", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const dataDirectory = join(root, "far")
+          await mkdir(dataDirectory)
+          const identity = nodeRuntimeFileSystem().identity
+          const { temporary, fileSystem } = await groupWritableTemporary({
+            identity: async (path) => path.startsWith(dataDirectory) ? "other-volume:1" : identity(path),
+          })
+          const refused = prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, dataDirectory, fileSystem })
+          await expect(refused).rejects.toThrow(words(temporary))
+          await expect(refused).rejects.not.toThrow("different volume")
+          expect(await readdir(dataDirectory)).toEqual([])
+          expect(await entries(home)).toEqual([])
+        })
+      })
+
+      it("says so when there is no data directory to fall back to", async () => {
+        await withScratch(async ({ resources, home }) => {
+          const { temporary, fileSystem } = await groupWritableTemporary()
+          const refused = prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, fileSystem })
+          await expect(refused).rejects.toThrow(words(temporary))
+          await expect(refused).rejects.not.toThrow("different volume")
+          expect(await entries(home)).toEqual([])
+        })
+      })
+    })
+
+    it("names the directories it made before an access refusal", () => {
+      const refused = new DaemonRuntimeStagingRefusedError("/home/dana/.domovoi", "/home/dana/.local", ["/home/dana/.local/state"], { path: "/home/dana/.local", access: "another-account" }, "linux")
+      expect(refused.message).toBe("The runtime could not be copied out of the app: /home/dana/.local belongs to another account, and Domovoi stages the copy only where no other account can change it. It made /home/dana/.local/state, which hold no files, and changed nothing else.")
+    })
+
     it("accepts a staging directory that is root's and sticky, as /tmp is", async () => {
       await withScratch(async ({ root, resources, home }) => {
         const staging = join(root, "staging")
@@ -609,6 +672,23 @@ describe("staging the shipped runtime under the profile", () => {
         })
       })
 
+      it("says an access control entry failed the place, not a different volume", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          const refused = prepareOnMac(resources, home, staging, listed({ [staging]: [allow("group:staff", ["add_file"])] }))
+          await expect(refused).rejects.toThrow(`The runtime could not be copied out of the app: an access control entry on ${staging} lets another account change it, and Domovoi stages the copy only where no other account can change it. Nothing was changed.`)
+          await expect(refused).rejects.not.toThrow("different volume")
+        })
+      })
+
+      it("says who can change the place could not be confirmed when its list cannot be read", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const staging = join(root, "staging")
+          await expect(prepareOnMac(resources, home, staging, listed({ [root]: new Error("ls failed") })))
+            .rejects.toThrow(`The runtime could not be copied out of the app: Domovoi could not confirm that no other account can change ${staging}, so it did not stage the copy there. Nothing was changed.`)
+        })
+      })
+
       it("refuses a staging directory whose list cannot be read", async () => {
         await withScratch(async ({ root, resources, home }) => {
           const staging = join(root, "staging")
@@ -742,6 +822,14 @@ describe("staging the shipped runtime under the profile", () => {
       const files = fileSystem({ "C:\\Users\\dana": unknown, "C:\\Users\\Dana": unknown, "C:\\Users\\Dana\\Temp": unknown })
       expect(await check("C:\\Users\\Dana\\Temp", files)).toBe("C:\\Users\\Dana\\Temp")
       expect(await check("C:\\Users\\dana\\AppData\\Local\\Temp", files)).toBe("C:\\Users\\dana\\AppData\\Local\\Temp")
+    })
+
+    // Q416 B: Windows access rules are not read, so the refusal says the
+    // place is not shown to be inside the profile, never that it was checked
+    // for who can change it.
+    it("says a place outside the user's profile failed, not a different volume", () => {
+      const refused = new DaemonRuntimeStagingRefusedError("C:\\Users\\dana\\.domovoi", "D:\\shared\\temp", [], { path: "D:\\shared\\temp", access: "unknown" }, "win32")
+      expect(refused.message).toBe("The runtime could not be copied out of the app: Domovoi could not confirm that D:\\shared\\temp is inside your user profile, the only place it stages the copy on Windows, since it does not read Windows access rules. Nothing was changed.")
     })
   })
 

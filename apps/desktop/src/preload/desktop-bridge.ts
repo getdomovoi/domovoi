@@ -176,7 +176,7 @@ function boundedString(value: unknown, maximum: number): value is string {
 
 // TailnetReach: known keys only, two levels, booleans and bounded strings.
 // The renderer parses the exact shape (packages/ui tailnet-reach.ts).
-const tailnetKeys = new Set("state detail name address stored httpsCertificates certificateExpiresAt renewalFailed at message ignored handSet kept setAside undeleted ok report reason step".split(" "))
+const tailnetKeys = new Set("state detail name address stored httpsCertificates certificateExpiresAt renewalFailed at message ignored handSet kept setAside undeleted ok report statusUnanswered statusFailed reason step".split(" "))
 function tailnetAnswer(value: unknown, depth = 0): unknown {
   if (depth && (typeof value === "boolean" || boundedString(value, 4_096))) return value
   if (depth > 2 || !value || typeof value !== "object" || Array.isArray(value)) throw new Error("Desktop returned an invalid tailnet answer")
@@ -277,7 +277,11 @@ export function createDesktopWindowBridge(
     commandLinks: (action) => ipc.invoke("domovoi:command-links", action),
     tailnetReach: async (action) => {
       if (action !== "status" && action !== "on" && action !== "off") throw new Error("Desktop received an invalid tailnet action")
-      return tailnetAnswer(await ipc.invoke("domovoi:tailnet-reach", action))
+      // Q436 B: the card shows a refusal's message, so Electron's prefix
+      // ("Error invoking remote method '<channel>': Error: ") is cut.
+      return tailnetAnswer(await ipc.invoke("domovoi:tailnet-reach", action).catch((cause: unknown) => {
+        throw cause instanceof Error ? new Error(cause.message.replace(/^Error invoking remote method '[^']*': (?:Error: )?/u, "")) : cause
+      }))
     },
     onDeepLink: (listener) => {
       const handler = (_event: unknown, sessionId: unknown) => {

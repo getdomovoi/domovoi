@@ -239,6 +239,204 @@ describe("TailnetReach status", () => {
   })
 })
 
+// Review of PR #713 (P3): the whole status read has one deadline in the main
+// process, past the tailscale status subprocess's own timeout, so a stalled
+// record read or executable lookup cannot hold the renderer's read open.
+// Q436 B: a stall is not known, not no tailnet, so the read refuses at the
+// deadline as the renderer's own deadline does, and the card keeps its last
+// known report or says Not known.
+describe("TailnetReach status deadline", () => {
+  const unanswered = "The desktop did not answer."
+  // A dependency that answers only when the test says so.
+  function held<T>() {
+    let settle!: (value: T) => void
+    const promise = new Promise<T>((resolve) => { settle = resolve })
+    return { promise, settle }
+  }
+  // Runs a recorded timer as it fires: once fired, it is no longer pending.
+  function fire(timer: { run: () => void; cleared: boolean } | undefined) {
+    timer!.cleared = true
+    timer!.run()
+  }
+
+  it("refuses at the deadline when the record read never settles", async () => {
+    const { reach, deps, timers } = harness()
+    deps.record.read = () => new Promise(() => {})
+    const answer = reach.status()
+    const [deadline] = timers()
+    expect(deadline?.ms).toBe(15_000)
+    fire(deadline)
+    await expect(answer).rejects.toThrow(unanswered)
+  })
+
+  it("refuses at the deadline when finding tailscale never settles", async () => {
+    const { reach, deps, timers } = harness()
+    deps.tailscale = () => new Promise(() => {})
+    const answer = reach.status()
+    fire(timers().find((timer) => timer.ms === 15_000))
+    await expect(answer).rejects.toThrow(unanswered)
+  })
+
+  // Codex review of PR #722 (P3-2), Q439 B: a turn-off that has happened is
+  // not reported as failed because the status read after it is slow, and it
+  // does not hold the switch while that read stalls. Past the deadline it is
+  // answered as done without a status, with the files it could not delete
+  // still named, and the switch can change again.
+  it("finishes a turn-off whose status read stalls past the deadline, releasing the switch and naming the files left", async () => {
+    const { reach, deps, timers } = harness({
+      record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, removeDirectoryThrows: new Error("EIO: rmdir"),
+    })
+    const answer = deps.tailscale
+    const status = held<"missing">()
+    const stalled = vi.fn(() => status.promise)
+    deps.tailscale = stalled
+    const outcome = reach.turnOff()
+    await vi.waitFor(() => expect(timers().filter((timer) => timer.ms === 15_000)).toHaveLength(1))
+    expect(deps.restart).toHaveBeenCalledWith({ clear: true })
+    fire(timers().find((timer) => timer.ms === 15_000))
+    await expect(outcome).resolves.toEqual({ ok: true, statusUnanswered: true, undeleted: "~/.domovoi/tls/.pending-1" })
+    // The card's own read after the change joins the stalled one.
+    const after = reach.status()
+    expect(stalled).toHaveBeenCalledTimes(1)
+    // A turn-on is its own change, not refused as busy, and a read after it
+    // starts its own instead of taking the stalled one's answer.
+    deps.tailscale = answer
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true, report: { state: "on" } })
+    await expect(reach.status()).resolves.toMatchObject({ state: "on", name })
+    status.settle("missing")
+    await expect(after).resolves.toMatchObject({ state: "none" })
+  })
+
+  // Codex review of PR #722, round 2 (P3-R2-2), Q441 A: a status read after a
+  // completed turn-off that fails, not past its deadline, is not the turn-off
+  // failing. It answers done with the read's own words and the files it could
+  // not delete, and the switch can change again.
+  it("finishes a turn-off whose status read fails, with the read's words and the files left", async () => {
+    const { reach, deps, record, timers } = harness({
+      record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, removeDirectoryThrows: new Error("EIO: rmdir"),
+    })
+    const answer = deps.tailscale
+    deps.tailscale = vi.fn(async () => { throw new Error("spawn tailscale EACCES") })
+    await expect(reach.turnOff()).resolves.toEqual({ ok: true, statusFailed: "spawn tailscale EACCES", undeleted: "~/.domovoi/tls/.pending-1" })
+    expect(record()).toBeUndefined()
+    expect(deps.restart).toHaveBeenCalledWith({ clear: true })
+    expect(timers()).toEqual([])
+    deps.tailscale = answer
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true, report: { state: "on" } })
+  })
+
+  it("answers a failed status read after a turn-off without the files when it deleted them", async () => {
+    const { reach, deps } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
+    deps.tailscale = vi.fn(async () => { throw new Error("spawn tailscale EACCES") })
+    await expect(reach.turnOff()).resolves.toEqual({ ok: true, statusFailed: "spawn tailscale EACCES" })
+  })
+
+  // A restart that throws, or a deletion that fails, is still the turn-off
+  // failing, not a status read.
+  it("still fails a turn-off whose restart throws or whose deletion fails", async () => {
+    const thrown = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, restartThrows: new Error("Cannot find module './daemon-service-assembly.js'") })
+    await expect(thrown.reach.turnOff()).rejects.toThrow("Cannot find module './daemon-service-assembly.js'")
+    const unread = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
+    unread.deps.record.read = async () => { throw new Error("EACCES: permission denied, open") }
+    await expect(unread.reach.turnOff()).rejects.toThrow("EACCES: permission denied, open")
+    expect(unread.deps.restart).not.toHaveBeenCalled()
+    const stays = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, recordRemoveThrows: new Error("EACCES: permission denied") })
+    await expect(stays.reach.turnOff()).resolves.toMatchObject({ ok: false, reason: "failed", step: "delete" })
+  })
+
+  it("reports a turn-off with the status read after it when that answers by the deadline", async () => {
+    const { reach, deps, timers } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
+    const status = held<"missing">()
+    deps.tailscale = () => status.promise
+    const outcome = reach.turnOff()
+    await vi.waitFor(() => expect(timers().filter((timer) => timer.ms === 15_000)).toHaveLength(1))
+    status.settle("missing")
+    await expect(outcome).resolves.toEqual({ ok: true, report: { state: "none", detail: "Domovoi found no tailscale command on this computer." } })
+    expect(timers()).toEqual([])
+  })
+
+  it("leaves a read that settles in time as it was, and clears its deadline", async () => {
+    const { reach, timers } = harness()
+    await expect(reach.status()).resolves.toMatchObject({ state: "off", name })
+    expect(timers()).toEqual([])
+  })
+
+  it("ignores a read that settles after the deadline, and starts no second read while it is held", async () => {
+    const { reach, deps, timers } = harness()
+    const record = held<TailnetReachRecord | undefined>()
+    const read = vi.fn(() => record.promise)
+    deps.record.read = read
+    const first = reach.status()
+    fire(timers()[0])
+    await expect(first).rejects.toThrow(unanswered)
+    // The next read waits on the one still held, under its own deadline.
+    const second = reach.status()
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(timers()).toHaveLength(1)
+    record.settle(undefined)
+    await expect(second).resolves.toMatchObject({ state: "off", name })
+    await expect(first).rejects.toThrow(unanswered)
+    expect(timers()).toEqual([])
+    // Once it has settled, a read reads again.
+    deps.record.read = async () => undefined
+    await expect(reach.status()).resolves.toMatchObject({ state: "off" })
+  })
+
+  // Codex review of PR #722 (P3-1): a read is shared from when it starts, not
+  // only once a deadline fires, so reads that overlap before any deadline do
+  // not each start their own, and one settling frees nothing still pending.
+  it("starts one read for a burst of reads before the first deadline, each under its own deadline", async () => {
+    const { reach, deps, timers } = harness()
+    const record = held<TailnetReachRecord | undefined>()
+    const read = vi.fn(() => record.promise)
+    deps.record.read = read
+    const answers = [reach.status(), reach.status(), reach.status()]
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(timers().filter((timer) => timer.ms === 15_000)).toHaveLength(3)
+    record.settle(undefined)
+    for (const answer of answers) await expect(answer).resolves.toMatchObject({ state: "off", name })
+    expect(timers()).toEqual([])
+  })
+
+  it("starts no third read when two overlapping reads are refused at their deadlines and the newer settles first", async () => {
+    const { reach, deps, timers } = harness()
+    const reads: { settle: (value: TailnetReachRecord | undefined) => void }[] = []
+    const read = vi.fn(() => {
+      const record = held<TailnetReachRecord | undefined>()
+      reads.push(record)
+      return record.promise
+    })
+    deps.record.read = read
+    const automatic = reach.status()
+    const explicit = reach.status()
+    const [first, second] = timers()
+    fire(first)
+    fire(second)
+    await expect(automatic).rejects.toThrow(unanswered)
+    await expect(explicit).rejects.toThrow(unanswered)
+    reads.at(-1)!.settle(undefined)
+    await new Promise((resolve) => setImmediate(resolve))
+    const next = reach.status()
+    expect(read).toHaveBeenCalledTimes(2)
+    for (const record of reads) record.settle(undefined)
+    await expect(next).resolves.toMatchObject({ state: "off", name })
+  })
+
+  it("does not hand a read held from before a change to a read after it", async () => {
+    const { reach, deps, timers } = harness({ status: "missing" })
+    const record = held<TailnetReachRecord | undefined>()
+    const read = vi.fn((): Promise<TailnetReachRecord | undefined> => record.promise)
+    deps.record.read = read
+    const first = reach.status()
+    fire(timers()[0])
+    await expect(first).rejects.toThrow(unanswered)
+    read.mockImplementation(async () => undefined)
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: false, reason: "none" })
+    await expect(reach.status()).resolves.toEqual({ state: "none", detail: "Domovoi found no tailscale command on this computer." })
+    record.settle(ours)
+  })
+})
+
 describe("turning TailnetReach on", () => {
   it("reads the status, asks for the certificate, stores it, records it, then restarts once", async () => {
     const { reach, deps, calls, files, record } = harness()

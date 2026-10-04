@@ -104,6 +104,24 @@ const defaultTimers = {
 }
 
 const statusTimeoutMs = 10_000
+// Review of PR #713 (P3): the whole status read, from the record and the
+// executable lookup to the notes, answers within the subprocess's own timeout
+// plus the 5 seconds the assembly gives each daemon read, so a subprocess
+// timeout still answers in its own words and only a stall outside it reaches
+// this. The renderer's 120 second deadline for automatic reads stays above it.
+const statusDeadlineMs = statusTimeoutMs + 5_000
+// Q436 B: past the deadline the switch is not known, not off and not without a
+// tailnet, so the read refuses in the words the card's own deadline uses.
+const statusUnanswered = "The desktop did not answer."
+// The refusal at that deadline, told apart from a read that failed. Its name
+// stays Error, so the bridge cuts Electron's prefix from it as from any other.
+class StatusUnanswered extends Error {
+  constructor() {
+    super(statusUnanswered)
+  }
+}
+// Q441 A: what a turn-off answers for a status read that failed without words.
+const statusFailedUnsaid = "it gave no reason"
 // tailscale cert waits on the ACME exchange, which takes tens of seconds.
 const certificateTimeoutMs = 120_000
 const maximumDetailLength = 1_024
@@ -202,6 +220,13 @@ export class TailnetReach {
   // Where a turn-off in this session set the files aside, deleted the record,
   // and then could not delete them (Q417 A).
   #undeletedPending: string | undefined
+  // Counts each start and end of a change or renewal, so a status read in
+  // flight is shared only with reads from the same stretch.
+  #generation = 0
+  // The status read in flight, from when it starts until it settles. Later
+  // reads of the same generation wait on it, each under its own deadline,
+  // instead of starting another that stalls on the same dependency.
+  #inFlight: { generation: number; work: Promise<TailnetReachReport> } | undefined
 
   constructor(private readonly deps: TailnetReachDependencies) {}
 
@@ -238,14 +263,14 @@ export class TailnetReach {
       this.#schedule(renewalRetryMs)
       return "busy"
     }
-    this.#busy = true
+    this.#changing(true)
     let result: TailnetRenewal = "failed"
     try {
       result = await this.#renew()
       if (result === "unchanged" || result === "renewed" || result === "off") this.#renewalFailure = undefined
       return result
     } finally {
-      this.#busy = false
+      this.#changing(false)
       this.#schedule(result === "off" ? undefined : result === "failed" ? renewalRetryMs : renewalCheckMs)
     }
   }
@@ -484,7 +509,36 @@ export class TailnetReach {
     return false
   }
 
-  async status(): Promise<TailnetReachReport> {
+  // Review of PR #713 (P3): answers by statusDeadlineMs, or refuses when the
+  // read has not settled by then (Q436 B). What the read answers later goes
+  // nowhere for this call. The deadline cancels nothing: the executable
+  // lookup, the file reads and the tailscale process, which keeps its own
+  // timeout, run on until they settle.
+  status(): Promise<TailnetReachReport> {
+    const generation = this.#generation
+    const work = this.#inFlight?.generation === generation ? this.#inFlight.work : this.#started(generation)
+    return new Promise((resolve, reject) => {
+      const deadline = this.#timers.set(() => reject(new StatusUnanswered()), statusDeadlineMs)
+      work.then(
+        (report) => { this.#timers.clear(deadline); resolve(report) },
+        (cause: unknown) => { this.#timers.clear(deadline); reject(cause) },
+      )
+    })
+  }
+
+  // Codex review of PR #722 (P3-1): a read is registered when it starts, so a
+  // read that overlaps it joins it before any deadline fires, and only its own
+  // settling frees the slot. A read from an earlier generation is replaced in
+  // the slot, not shared, and its settling leaves the newer one in place.
+  #started(generation: number): Promise<TailnetReachReport> {
+    const entry = { generation, work: this.#status() }
+    this.#inFlight = entry
+    const release = () => { if (this.#inFlight === entry) this.#inFlight = undefined }
+    entry.work.then(release, release)
+    return entry.work
+  }
+
+  async #status(): Promise<TailnetReachReport> {
     const record = await this.deps.record.read()
     // On, the record answers: turning it off must not depend on Tailscale.
     if (record) return this.#onReport(record)
@@ -509,18 +563,50 @@ export class TailnetReach {
     return this.#exclusive("status", () => this.#turnOn())
   }
 
-  turnOff(): Promise<TailnetReachOutcome> {
-    return this.#exclusive("status", () => this.#turnOff())
+  // Codex review of PR #722 (P3-2), Q439 B: the status after a turn-off is
+  // read once the change has ended and released the switch, as a public read
+  // under the deadline in the generation after the change, so the card's own
+  // read after the change joins it instead of starting a second one that
+  // stalls on the same dependency. Past the deadline the turn-off is still
+  // done: it answers so, with the files it could not delete, and no state it
+  // did not read. Trade-off: a turn-on can start while that read is pending.
+  // It is its own change: it starts a new generation, so no read after it is
+  // handed this one, and its own answer comes from its own record. This
+  // turn-off's answer is then the state as read just after the turn-off.
+  //
+  // Codex review of PR #722, round 2 (P3-R2-2), Q441 A: a read that fails
+  // before the deadline is not the turn-off failing either. The turn-off is
+  // answered as done with the read's own words, bounded as a detail is. A
+  // deletion or restart that fails is still the turn-off failing: #turnOff
+  // answers or throws it before this read starts.
+  async turnOff(): Promise<TailnetReachOutcome> {
+    const changed = await this.#exclusive("status", () => this.#turnOff())
+    if (!("done" in changed)) return changed
+    const undeleted = changed.undeleted === undefined ? {} : { undeleted: this.deps.display(changed.undeleted) }
+    try {
+      return { ok: true, report: await this.status() }
+    } catch (cause) {
+      if (cause instanceof StatusUnanswered) return { ok: true, statusUnanswered: true, ...undeleted }
+      const said = detail(cause instanceof Error ? cause.message : String(cause))
+      return { ok: true, statusFailed: said || statusFailedUnsaid, ...undeleted }
+    }
   }
 
-  async #exclusive(step: TailnetReachStep, run: () => Promise<TailnetReachOutcome>): Promise<TailnetReachOutcome> {
+  async #exclusive<T>(step: TailnetReachStep, run: () => Promise<T>): Promise<T | TailnetReachOutcome> {
     if (this.#busy) return { ok: false, reason: "busy", step, message: "The switch is already changing." }
-    this.#busy = true
+    this.#changing(true)
     try {
       return await run()
     } finally {
-      this.#busy = false
+      this.#changing(false)
     }
+  }
+
+  // A status read in flight from before a change, or from during one, is not
+  // shared with a read after it.
+  #changing(busy: boolean): void {
+    this.#busy = busy
+    this.#generation += 1
   }
 
   async #refusal(step: TailnetReachStep): Promise<TailnetReachOutcome | undefined> {
@@ -659,7 +745,9 @@ export class TailnetReach {
     }
   }
 
-  async #turnOff(): Promise<TailnetReachOutcome> {
+  // A refusal or failure, or done: the record is gone and the daemon
+  // restarted, with the pending directory holding files it could not delete.
+  async #turnOff(): Promise<TailnetReachOutcome | { done: true; undeleted?: string }> {
     const refused = await this.#refusal("delete")
     if (refused) return refused
     const record = await this.deps.record.read()
@@ -706,7 +794,8 @@ export class TailnetReach {
         message: restartFailedWithRetainedFiles(this.deps.display(undeleted), restarted.message),
       }
     }
-    return { ok: true, report: await this.status() }
+    // Done; turnOff reads the status once the switch is released.
+    return { done: true, ...(undeleted === undefined ? {} : { undeleted }) }
   }
 
   // Review of PR #713 (P2): turning off sets the switch's files aside in a

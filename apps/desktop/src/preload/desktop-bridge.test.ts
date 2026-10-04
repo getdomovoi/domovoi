@@ -329,7 +329,16 @@ describe("createDesktopWindowBridge", () => {
     const retained = { ok: false, reason: "failed", step: "restart", message: "The daemon did not restart.", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
     target.invoke.mockImplementation(async () => retained)
     await expect(bridge.tailnetReach?.("off")).resolves.toEqual(retained)
-    const none = { state: "none", detail: "Tailscale is not running on this computer (Stopped).", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+    // Q439 B: a turn-off done whose status read did not answer by its deadline.
+    const unanswered = { ok: true, statusUnanswered: true, undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+    target.invoke.mockImplementation(async () => unanswered)
+    await expect(bridge.tailnetReach?.("off")).resolves.toEqual(unanswered)
+    // Q441 A: a turn-off done whose status read failed, in the read's words.
+    // An answer, not a rejection, so Electron puts no prefix on them.
+    const failedRead = { ok: true, statusFailed: "spawn tailscale EACCES", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+    target.invoke.mockImplementation(async () => failedRead)
+    await expect(bridge.tailnetReach?.("off")).resolves.toEqual(failedRead)
+    const none ={ state: "none", detail: "Tailscale is not running on this computer (Stopped).", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
     target.invoke.mockImplementation(async () => none)
     await expect(bridge.tailnetReach?.("status")).resolves.toEqual(none)
   })
@@ -347,6 +356,14 @@ describe("createDesktopWindowBridge", () => {
     const target = ipc()
     target.invoke.mockImplementation(async () => answer)
     await expect(createDesktopWindowBridge(target, "darwin").tailnetReach?.("status")).rejects.toThrow("Desktop returned an invalid tailnet answer")
+  })
+
+  // Q436 B: the card shows a refusal's words when it knows no report, so a
+  // refusal from the main process reaches it without Electron's prefix.
+  it("passes on a refusal from the main process in its own words", async () => {
+    const target = ipc()
+    target.invoke.mockImplementation(async () => { throw new Error("Error invoking remote method 'domovoi:tailnet-reach': Error: The desktop did not answer.") })
+    await expect(createDesktopWindowBridge(target, "darwin").tailnetReach?.("status")).rejects.toThrow(/^The desktop did not answer\.$/u)
   })
 
   it("asks nothing for an action it does not know", async () => {

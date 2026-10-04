@@ -174,7 +174,7 @@ it("draws no QR when a phone could not reach or trust the daemon, and says which
 function controller(overrides: Partial<TailnetReachController> = {}): TailnetReachController {
   return {
     report: { state: "off", name: "mac-mini-m4.tail4c2e.ts.net", address: "100.101.102.103", stored: "~/.domovoi/tls/mac-mini-m4.tail4c2e.ts.net.crt, .key", httpsCertificates: true },
-    readError: undefined, listener: undefined, running: undefined, failure: undefined, inApp: true,
+    readError: undefined, listener: undefined, running: undefined, failure: undefined, turnedOffUnread: undefined, inApp: true,
     check: vi.fn(), turnOn: vi.fn(async () => undefined), turnOff: vi.fn(async () => undefined), revealed: 0, reveal: vi.fn(),
     ...overrides,
   }
@@ -274,6 +274,23 @@ it("says what runs while Tailscale is asked, and keeps the code button until it 
   expect(screen.getByText("The daemon restarts once the certificate is stored.")).toBeTruthy()
   expect(screen.getByText("The code button comes back when the certificate arrives.")).toBeTruthy()
   expect((screen.getByRole("button", { name: "Show another" }) as HTMLButtonElement).disabled).toBe(true)
+})
+
+// Codex review of PR #722, round 2 (P3-R2-1): no change starts from the
+// pairing card while the switch is changing, turning off included.
+it("does not ask Tailscale while the switch is turning off", async () => {
+  const onIssueCode = vi.fn(async () => issued({ pairingAddress: { problem: "No certificate." } }))
+  const props = { connected: true, onIssueCode, onCopy: vi.fn(async () => {}) }
+  const { rerender } = render(<PairingCard {...props} tailnet={controller()} />)
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await screen.findByRole("button", { name: "Get it from Tailscale" })
+  const turningOff = controller({ running: { direction: "off", renew: false } })
+  rerender(<PairingCard {...props} tailnet={turningOff} />)
+  const action = screen.getByRole("button", { name: "Get it from Tailscale" }) as HTMLButtonElement
+  expect(action.disabled).toBe(true)
+  await user.click(action)
+  expect(turningOff.turnOn).not.toHaveBeenCalled()
 })
 
 it("says HTTPS certificates are off when Tailscale's status lists none", async () => {
