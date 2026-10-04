@@ -124,6 +124,31 @@ it("does not say this client when the pause row names another connection", async
   expect(notice.textContent).not.toContain("from this client")
 })
 
+// Two clients that pause the same turn at once can both join one abort, so the
+// daemon writes two pause rows. The notice reads this client's row, whichever
+// came first.
+it("says the stop came from this client when another client's pause row came first", async () => {
+  const user = userEvent.setup()
+  const { rerender } = renderStoppable(vi.fn(async () => {}), thisConnection)
+  await user.click(screen.getByRole("button", { name: "Stop the agent" }))
+
+  const snapshot = withTurn(undefined, "paused", "web", otherConnection)
+  const thisClientAt = "2026-10-02T14:09:00.000Z"
+  snapshot.thread.push({
+    id: "system-pause-paused-this-client",
+    sessionId: snapshot.thread.at(-1)!.sessionId,
+    kind: "system",
+    body: "Paused by desktop.",
+    createdAt: thisClientAt,
+    connectionId: thisConnection,
+  })
+  rerender(snapshot)
+
+  const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+  const notice = screen.getByRole("status", { name: "Session stopped" })
+  expect(notice.textContent).toMatch(new RegExp(`stopped ${clock.format(new Date(thisClientAt))} · from this client$`, "u"))
+})
+
 it("does not say this client when the pause row names no connection, as an older daemon writes it", async () => {
   const notice = await stopThenRecord(thisConnection, undefined)
   expect(notice.textContent).toMatch(/stopped \d{2}:\d{2}$/u)
