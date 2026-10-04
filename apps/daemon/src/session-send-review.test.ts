@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 import {
   demoWorkspace,
+  maximumReviewAnnotations,
+  openCommentReviewFor,
   protocolVersion,
   workspaceSnapshotSchema,
   type Annotation,
@@ -17,9 +19,9 @@ import { waitForDaemon } from "./test-wait-for.js"
 
 // Rulings Q348 A and Q342 A: a message that carries a review sends only the
 // comments it names, and the variant chosen as the build basis travels with
-// it, so a half-written comment no longer steers that turn. Ruling Q402: until
-// every client sends a review, a message without one still attaches every
-// open comment of its session.
+// it, so a half-written comment no longer steers that turn. Ruling Q402: a
+// message without a review sends no comment and no build basis; the legacy
+// default that attached every open comment of its session is gone.
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -45,7 +47,7 @@ function comment(id: string, overrides: Partial<Annotation> = {}): Annotation {
   }
 }
 
-function reviewWorkspace(): WorkspaceSnapshot {
+function reviewWorkspace(extraAnnotations: Annotation[] = []): WorkspaceSnapshot {
   const snapshot = structuredClone(demoWorkspace)
   const session = snapshot.sessions.find((candidate) => candidate.id === sessionId)!
   session.runtime = { ...session.runtime, provider: "codex", model: "gpt-5.6-sol", permissionMode: "build", auto: false }
@@ -72,11 +74,12 @@ function reviewWorkspace(): WorkspaceSnapshot {
     comment("comment-older", { updatedAt: "2026-09-30T11:00:00.000Z" }),
     comment("comment-resolved", { status: "resolved" }),
     comment("comment-elsewhere", { sessionId: "session-onboarding", artifactId: "artifact-preview-elsewhere" }),
+    ...extraAnnotations,
   ]
   return workspaceSnapshotSchema.parse(snapshot)
 }
 
-async function start() {
+async function start(extraAnnotations: Annotation[] = []) {
   let emit: (event: AgentEvent) => void = () => {}
   const provider = {
     connect: vi.fn(async () => {}), listModels: vi.fn(async () => []),
@@ -89,7 +92,7 @@ async function start() {
     close: vi.fn(async () => {}),
   } satisfies AgentAdapter
   const daemon = new DomovoiDaemon({
-    port: 0, store: new SqliteWorkspaceStore(":memory:", reviewWorkspace()),
+    port: 0, store: new SqliteWorkspaceStore(":memory:", reviewWorkspace(extraAnnotations)),
     agents: { codex: provider }, errorSink: vi.fn(),
   })
   daemons.push(daemon)
@@ -115,28 +118,39 @@ async function start() {
   return { provider, rpc, send, snapshot, lastUserItem, emit: (event: AgentEvent) => emit(event) }
 }
 
-function reviewContext(prompt: string): { unresolvedAnnotations: Array<{ annotationId: string, comment: { body: string } }>, buildBasis?: unknown } | undefined {
+function reviewContext(prompt: string): { unresolvedAnnotations: Array<{ annotationId: string, comment: { body: string } }>, omittedAnnotationCount?: number, buildBasis?: unknown } | undefined {
   const match = /<domovoi_review_context>\n(.+)\n<\/domovoi_review_context>/.exec(prompt)
   return match ? JSON.parse(match[1]!) : undefined
 }
 
 describe("a message with no review", () => {
-  // Ruling Q402: until every client sends `review`, a message without one
-  // keeps the behaviour clients were built against: every open comment of the
-  // session attaches, and no build basis. Removed before 0.8.0 ships.
-  it("still attaches every open comment of its session, and no build basis", async () => {
-    const { provider, send, lastUserItem } = await start()
+  // Ruling Q402: a message without a review sends no comment and no build
+  // basis, while three comments are open on the session. The legacy default
+  // that attached every open comment is gone; nothing attaches a comment the
+  // message did not name.
+  it("sends no comment and no build basis while open ones exist", async () => {
+    const { provider, send, snapshot, lastUserItem } = await start()
+    expect((await snapshot()).annotations.filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")).toHaveLength(3)
     expect((await send("Carry on")).error).toBeUndefined()
-    const context = reviewContext(provider.startTurn.mock.calls[0]![0].prompt)
-    expect(context?.unresolvedAnnotations.map((item) => item.annotationId))
-      .toEqual(["comment-half-written", "comment-ready", "comment-older"])
-    expect(context).not.toHaveProperty("buildBasis")
+    const prompt = provider.startTurn.mock.calls[0]![0].prompt
+    expect(reviewContext(prompt)).toBeUndefined()
+    expect(prompt).not.toContain("comment-half-written")
+    expect(prompt).not.toContain("maybe make the")
+    expect(prompt).not.toContain("buildBasis")
     expect(((await lastUserItem()) as { providerPromptDelivery?: { annotations: unknown } }).providerPromptDelivery?.annotations).toEqual({
-      availableCount: 3, deliveredIds: ["comment-half-written", "comment-ready", "comment-older"], omitted: { budget: 0, limit: 0 },
+      availableCount: 0, deliveredIds: [], omitted: { budget: 0, limit: 0 },
     })
   })
 
-  it("is the only path that attaches a comment the message did not name", async () => {
+  it("is read the same as an empty review", async () => {
+    const unreviewed = await start()
+    expect((await unreviewed.send("Carry on")).error).toBeUndefined()
+    const explicit = await start()
+    expect((await explicit.send("Carry on", { review: { annotationIds: [] } })).error).toBeUndefined()
+    expect(unreviewed.provider.startTurn.mock.calls[0]![0].prompt).toBe(explicit.provider.startTurn.mock.calls[0]![0].prompt)
+  })
+
+  it("delivers only what a review names, never the rest", async () => {
     const { provider, send } = await start()
     expect((await send("Only this", { review: { annotationIds: ["comment-older"] } })).error).toBeUndefined()
     expect(reviewContext(provider.startTurn.mock.calls[0]![0].prompt)?.unresolvedAnnotations.map((item) => item.annotationId))
@@ -145,7 +159,7 @@ describe("a message with no review", () => {
 })
 
 describe("a message with an empty review", () => {
-  it("sends no comment while open ones exist, so a client can opt out of the legacy default", async () => {
+  it("sends no comment while open ones exist", async () => {
     const { provider, send, lastUserItem } = await start()
     expect((await send("Carry on", { review: { annotationIds: [] } })).error).toBeUndefined()
     const prompt = provider.startTurn.mock.calls[0]![0].prompt
@@ -183,6 +197,77 @@ describe("a message that sends comments", () => {
     expect(refused.error?.message).toBe("A comment sent with this message is not open on this session, so the message was not sent. Send it again without that comment.")
     expect(provider.startTurn).not.toHaveBeenCalled()
     expect((await snapshot()).thread).toHaveLength(before)
+  })
+})
+
+// Codex review of PR #717: a client names at most the newest
+// `maximumReviewAnnotations` open comments. The older ones it left out are
+// counted on the review, and the daemon records that count as the turn's limit
+// omission, so the desktop and web note shows them. The count never selects:
+// the daemon composes only the comments the review names.
+describe("a full message that left open comments over the limit", () => {
+  // The fixture's three open comments plus `count` newer ones.
+  function withOpenComments(count: number) {
+    return start(Array.from({ length: count }, (_, index) => comment(
+      `comment-many-${String(index).padStart(2, "0")}`,
+      { updatedAt: `2026-09-30T13:${String(index).padStart(2, "0")}:00.000Z` },
+    )))
+  }
+
+  it("records the count as the limit omission and sends only the named comments", async () => {
+    const { provider, send, snapshot, lastUserItem } = await withOpenComments(maximumReviewAnnotations - 2)
+    const current = await snapshot()
+    const open = current.annotations.filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")
+    expect(open).toHaveLength(maximumReviewAnnotations + 1)
+    const review = openCommentReviewFor(current, sessionId)
+    expect(review.annotationIds).toHaveLength(maximumReviewAnnotations)
+    expect(review.omittedOverLimit).toBe(1)
+    const oldest = open.find((annotation) => !review.annotationIds.includes(annotation.id))!
+    expect(oldest.id).toBe("comment-older")
+
+    expect((await send("Address these", { review })).error).toBeUndefined()
+    const prompt = provider.startTurn.mock.calls[0]![0].prompt
+    const context = reviewContext(prompt)
+    expect(context?.unresolvedAnnotations.map((item) => item.annotationId).sort()).toEqual([...review.annotationIds].sort())
+    expect(context?.omittedAnnotationCount).toBe(1)
+    expect(prompt).not.toContain(oldest.id)
+    expect(((await lastUserItem()) as { providerPromptDelivery?: { annotations: unknown } }).providerPromptDelivery?.annotations).toMatchObject({
+      availableCount: maximumReviewAnnotations + 1,
+      omitted: { budget: 0, limit: 1 },
+    })
+  })
+
+  it("never sends a comment for the count, whatever count the client reports", async () => {
+    const { provider, send, snapshot, lastUserItem } = await withOpenComments(maximumReviewAnnotations - 2)
+    const review = openCommentReviewFor(await snapshot(), sessionId)
+    expect((await send("Address these", { review: { ...review, omittedOverLimit: 7 } })).error).toBeUndefined()
+    const context = reviewContext(provider.startTurn.mock.calls[0]![0].prompt)
+    expect(context?.unresolvedAnnotations.map((item) => item.annotationId).sort()).toEqual([...review.annotationIds].sort())
+    expect(((await lastUserItem()) as { providerPromptDelivery?: { annotations: { omitted: unknown } } }).providerPromptDelivery?.annotations.omitted)
+      .toEqual({ budget: 0, limit: 7 })
+  })
+
+  // History reads the count from the same record (Q431), so its row says
+  // what the thread says beside the message.
+  it("carries the reported count to the message's history entry", async () => {
+    const { send, snapshot, rpc } = await withOpenComments(maximumReviewAnnotations - 2)
+    const review = openCommentReviewFor(await snapshot(), sessionId)
+    expect((await send("Address these", { review: { ...review, omittedOverLimit: 7 } })).error).toBeUndefined()
+    const page = (await rpc("session.history", { sessionId, categories: ["messages"] })).result as { items: Array<{ role?: string; body?: string; annotationsOverLimit?: number }> }
+    expect(page.items.find((item) => item.role === "user" && item.body === "Address these")).toMatchObject({ annotationsOverLimit: 7 })
+  })
+
+  it("keeps the count on a queued message until it is released", async () => {
+    const { provider, send, snapshot, lastUserItem, emit } = await withOpenComments(maximumReviewAnnotations - 2)
+    const review = openCommentReviewFor(await snapshot(), sessionId)
+    expect((await send("First", { review: { annotationIds: [] } })).error).toBeUndefined()
+    expect((await send("Next", { delivery: "next-turn-replace", review })).error).toBeUndefined()
+
+    emit({ type: "turn-completed", params: { threadId: "thread-billing", turn: { id: "turn-1", status: "completed" } } })
+    await waitForDaemon(() => expect(provider.startTurn).toHaveBeenCalledTimes(2))
+    await waitForDaemon(async () => expect(((await lastUserItem()) as { body?: string } | undefined)?.body).toBe("Next"))
+    expect(((await lastUserItem()) as { providerPromptDelivery?: { annotations: { omitted: unknown } } }).providerPromptDelivery?.annotations.omitted)
+      .toEqual({ budget: 0, limit: 1 })
   })
 })
 

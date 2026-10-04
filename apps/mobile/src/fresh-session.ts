@@ -60,6 +60,8 @@ export async function startFreshSession(
   }))
   const sessionId = created.activeSessionId
   if (!sessionId) throw new Error("The daemon created the session but did not say which")
-  await call("session.send", { sessionId, prompt: trimmed, client })
+  // A session made a moment ago has no comment; the review says so, since
+  // the daemon attaches only what a message names (ruling Q402).
+  await call("session.send", { sessionId, prompt: trimmed, client, review: { annotationIds: [] } })
   return sessionId
 }

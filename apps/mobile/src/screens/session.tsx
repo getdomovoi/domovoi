@@ -116,9 +116,16 @@ const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWa
   // Phone v2 frame 11: yours is filled with the primary colour and tails to
   // the right, the agent's is a bordered card that tails to the left.
   if (entry.kind === "message" && entry.voice === "you") {
-    return (
+    const bubble = (
       <View className="max-w-[86%] self-end rounded-[18px] rounded-br-[4px] bg-primary px-3.5 py-[11px]">
         <Text className="font-sans text-[13.5px] leading-[21px] text-primary-foreground">{entry.body}</Text>
+      </View>
+    )
+    if (!entry.omission) return bubble
+    return (
+      <View className="gap-1">
+        {bubble}
+        <Text variant="machine" className="max-w-[86%] self-end text-right text-faint">{entry.omission}</Text>
       </View>
     )
   }

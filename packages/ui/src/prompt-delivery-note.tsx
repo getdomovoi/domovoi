@@ -1,4 +1,4 @@
-import type { ProviderPromptDelivery } from "@getdomovoi/protocol"
+import { annotationsOverLimitLine, type ProviderPromptDelivery } from "@getdomovoi/protocol"
 
 import { formatTokenCount } from "./session-usage"
 
@@ -40,12 +40,6 @@ function verb(total: number): string {
 function joinClauses(clauses: string[]): string {
   if (clauses.length < 3) return clauses.join(" and ")
   return `${clauses.slice(0, -1).join(", ")}, and ${clauses.slice(-1).join("")}`
-}
-
-// The line beside a sent message, in the thread and in history, for the open
-// annotations the per-turn limit left out.
-export function annotationsOverLimitLine(limit: number): string {
-  return `${count(limit, "open annotation")} ${verb(limit)} over the per-turn limit`
 }
 
 // The composer drops open annotations for the total budget only. A handoff's

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react"
 import { CircleStopIcon, HistoryIcon, SearchIcon } from "lucide-react"
-import type { RpcParams, SessionHistoryCategory, SessionHistoryPage } from "@getdomovoi/protocol"
+import { annotationsOverLimitLine, type RpcParams, type SessionHistoryCategory, type SessionHistoryPage } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
@@ -14,7 +14,6 @@ import {
 } from "./components/ui/empty"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { CheckpointFork, CheckpointRestore } from "./checkpoint-actions.js"
-import { annotationsOverLimitLine } from "./prompt-delivery-note"
 import type { SessionHistoryFocus } from "./session-history"
 import { StatusDot } from "./status-dot"
 import {

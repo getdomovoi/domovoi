@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals"
-import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumReviewAnnotations, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { act, fireEvent, render, screen } from "@testing-library/react-native"
 
 import { App } from "./app"
@@ -227,12 +227,18 @@ describe("App", () => {
 
   // Ruling Q356 A: Tell the agent on a policy refusal sends the refusal's
   // remedy to the session as a steer, through the same session.send a typed
-  // message uses.
+  // message uses. Like a typed message it names the session's open comments
+  // (ruling Q402), since the daemon attaches only the comments a message names.
   it("sends a policy refusal's remedy to the agent", async () => {
     const snapshot = workspace()
     const session = snapshot.sessions.find((candidate) => candidate.id === audit.id)!
     session.workspacePath = "/worktrees/repo-audit"
     session.providerThreadId = "provider-thread-audit"
+    // A comment sits on an artifact of its own session.
+    const comment = snapshot.annotations.find((annotation) => annotation.sessionId === billing.id)!
+    const artifact = snapshot.artifacts.find((candidate) => candidate.id === comment.artifactId)!
+    snapshot.artifacts.push({ ...structuredClone(artifact), id: "artifact-audit", sessionId: audit.id })
+    snapshot.annotations.push({ ...structuredClone(comment), id: "annotation-audit-open", sessionId: audit.id, artifactId: "artifact-audit", status: "open" })
     snapshot.thread.push({
       id: "refusal-audit",
       sessionId: audit.id,
@@ -252,7 +258,12 @@ describe("App", () => {
 
     const sent = socket.requests("session.send")
     expect(sent).toHaveLength(1)
-    expect(sent[0]?.params).toMatchObject({ sessionId: audit.id, prompt: "Run it against acme_dev instead.", client: "phone" })
+    expect(sent[0]?.params).toMatchObject({
+      sessionId: audit.id,
+      prompt: "Run it against acme_dev instead.",
+      client: "phone",
+      review: { annotationIds: ["annotation-audit-open"] },
+    })
   })
 
   // The turn can end between the phone's snapshot and the send. The daemon
@@ -348,7 +359,83 @@ describe("App", () => {
 
     const sent = socket.requests("session.send")
     expect(sent).toHaveLength(1)
-    expect(sent[0]?.params).toMatchObject({ sessionId: audit.id, prompt: "Check the lockfile too", client: "phone" })
+    // A session with no open comment sends an explicit empty review.
+    expect(sent[0]?.params).toEqual({ sessionId: audit.id, prompt: "Check the lockfile too", client: "phone", review: { annotationIds: [] } })
+  })
+
+  // Rulings Q348 A and Q402: the daemon attaches only the comments a message
+  // names. A comment the phone sent to the agent is an open comment of the
+  // session, so a send names every open comment of that session, newest
+  // first, and nothing resolved or from another session.
+  it("names the session's open comments in the review it sends", async () => {
+    const snapshot = workspace()
+    snapshot.approvals = []
+    const session = snapshot.sessions.find((candidate) => candidate.id === billing.id)!
+    session.workspacePath = "/worktrees/billing"
+    session.providerThreadId = "provider-thread-billing"
+    const open = snapshot.annotations.filter((annotation) => annotation.sessionId === billing.id && annotation.status === "open")
+    expect(open.map((annotation) => annotation.id)).toEqual(["annotation-migration-machine", "annotation-replay-copy"])
+    snapshot.annotations.push({ ...structuredClone(open[1]!), id: "annotation-resolved", status: "resolved" })
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    await fireEvent.changeText(screen.getByLabelText("Reply to this session"), "Address the comments")
+    await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+    await settle()
+
+    expect(socket.requests("session.send").map((frame) => frame.params)).toEqual([
+      expect.objectContaining({
+        sessionId: billing.id,
+        prompt: "Address the comments",
+        client: "phone",
+        review: { annotationIds: ["annotation-migration-machine", "annotation-replay-copy"] },
+      }),
+    ])
+  })
+
+  // Codex review of PR #717: a message carries at most the newest
+  // maximumReviewAnnotations open comments. The phone counts the rest on the
+  // review, the daemon records them as the turn's limit omission, and the
+  // phone shows that line under the message it sent.
+  it("counts the open comments over the limit and shows them under the sent message", async () => {
+    const snapshot = workspace()
+    snapshot.approvals = []
+    const session = snapshot.sessions.find((candidate) => candidate.id === billing.id)!
+    session.workspacePath = "/worktrees/billing"
+    session.providerThreadId = "provider-thread-billing"
+    const comment = snapshot.annotations.find((annotation) => annotation.sessionId === billing.id)!
+    snapshot.annotations = Array.from({ length: maximumReviewAnnotations + 1 }, (_, index) => ({
+      ...structuredClone(comment),
+      id: `comment-${String(index).padStart(2, "0")}`,
+      status: "open" as const,
+      updatedAt: `2026-09-30T13:${String(index).padStart(2, "0")}:00.000Z`,
+    }))
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    await fireEvent.changeText(screen.getByLabelText("Reply to this session"), "Address every comment")
+    await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+    await settle()
+
+    const annotationIds = snapshot.annotations.slice(1).map((annotation) => annotation.id).reverse()
+    expect(socket.requests("session.send").map((frame) => frame.params.review)).toEqual([
+      { annotationIds, omittedOverLimit: 1 },
+    ])
+    expect(screen.queryByText("1 open annotation was over the per-turn limit")).toBeNull()
+
+    const delivered = structuredClone(snapshot)
+    delivered.thread.push({
+      id: "thread-user-over-limit", sessionId: billing.id, kind: "user", body: "Address every comment", createdAt: "2026-09-30T14:00:00.000Z",
+      providerPromptDelivery: {
+        version: 1,
+        budget: { unit: "utf16-code-units", limit: 262_144, used: 9_000 },
+        handoff: { status: "not-required" },
+        workingPlan: { status: "not-required" },
+        annotations: { availableCount: maximumReviewAnnotations + 1, deliveredIds: annotationIds, omitted: { budget: 0, limit: 1 } },
+        skills: { selection: "project-default", delivered: [], omitted: { budget: [], limit: [], unavailable: [], reviewChanged: [], policy: [] } },
+      },
+    })
+    await act(async () => { socket.push("workspace.changed", delivered) })
+    await settle()
+    expect(screen.getByText("1 open annotation was over the per-turn limit")).toBeOnTheScreen()
   })
 
   // Ruling Q211: the phone Tools screen reads tool.inventory for the machine

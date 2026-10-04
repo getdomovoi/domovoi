@@ -607,11 +607,11 @@ td { color: var(--ink2); }
 </li>
 <li>[x] Add print/share-safe plan rendering without weakening the preview sandbox
 </li>
-<li>[ ] Remove the legacy comment default before protocol 0.8.0 ships (ruling Q402)
+<li>[x] Remove the legacy comment default before protocol 0.8.0 ships (ruling Q402) (7c37fec0)
 <ul>
-<li><code>session.send</code> carries <code>review</code>, the comments and build basis a message sends (rulings Q348 A and Q342 A). Until every client sends it, a message without one still attaches every open comment of its session: <code>legacyOpenCommentReview</code> in <code>apps/daemon/src/annotation-context.ts</code>.
+<li><code>session.send</code> carries <code>review</code>, the comments and build basis a message sends (rulings Q348 A and Q342 A). A message without one sends no comment and no build basis; <code>review</code> stays optional, and absent reads as <code>{ annotationIds: [] }</code>. The daemon never fills in a review.
 </li>
-<li>Remove that function, so a message without a review sends no comment, once desktop, web, phone, tablet and the command line send <code>review</code>. Protocol 0.8.0 does not ship before then.
+<li>Desktop, web, phone and tablet send the open comments of the session as the review (<code>openCommentReviewFor</code> in <code>packages/protocol</code>), the newest up to the per-message limit, since none of them yet offers the drawn choice (desktop dock <code>dock.preview-comments</code>); the chosen build basis stays a viewer bookmark until that lands. The command line sends no message.
 </li>
 </ul>
 </li>

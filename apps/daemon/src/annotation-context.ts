@@ -45,33 +45,28 @@ export type BuildBasisContext = {
 // The comments and build basis one message sends (rulings Q348 A and Q342 A).
 // When a message carries a review, nothing else reaches the agent: an open
 // comment it does not name stays out of the turn.
+//
+// `omittedOverLimit` is the client's count of open comments it left out of a
+// full review. It is recorded as the turn's limit omission and told to the
+// agent; it never selects a comment.
 export type AnnotationReview = {
   annotationIds: ReadonlySet<string>
+  omittedOverLimit: number
   buildBasis?: BuildBasisContext
 }
 
-export const noAnnotationReview: AnnotationReview = { annotationIds: new Set() }
+export const noAnnotationReview: AnnotationReview = { annotationIds: new Set(), omittedOverLimit: 0 }
 
-// LEGACY DEFAULT, ruling Q402. Until desktop, web, phone, tablet and the CLI
-// send `review`, a message without one keeps the behaviour those clients were
-// built against: every open comment of the session attaches, and no build
-// basis. This is the only path that attaches a comment a message did not name.
-// It is removed before protocol 0.8.0 ships (SHIP-PLAN.md, Preview and review);
-// a message without a review then sends no comment.
-export function legacyOpenCommentReview(snapshot: WorkspaceSnapshot, sessionId: string): AnnotationReview {
-  return {
-    annotationIds: new Set(snapshot.annotations
-      .filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")
-      .map((annotation) => annotation.id)),
-  }
-}
-
+// A message without a review sends no comment and no build basis (ruling
+// Q402). Nothing here attaches a comment the message did not name: the legacy
+// default that attached every open comment of the session went before
+// protocol 0.8.0, once every client sent `review`.
 export function resolveAnnotationReview(
   snapshot: WorkspaceSnapshot,
   sessionId: string,
   review: SessionSendReview | undefined,
 ): AnnotationReview {
-  if (!review) return legacyOpenCommentReview(snapshot, sessionId)
+  if (!review) return noAnnotationReview
   for (const annotationId of review.annotationIds) {
     const annotation = snapshot.annotations.find((candidate) => candidate.id === annotationId)
     if (!annotation || annotation.sessionId !== sessionId || annotation.status !== "open") {
@@ -96,6 +91,7 @@ export function resolveAnnotationReview(
   }
   return {
     annotationIds: new Set(review.annotationIds),
+    omittedOverLimit: review.omittedOverLimit ?? 0,
     ...(buildBasis ? { buildBasis } : {}),
   }
 }
@@ -197,10 +193,12 @@ export function prepareAnnotationContext(
   visualDeliveries: ReadonlyMap<string, "image-attached" | "provider-text-fallback" | "crop-unavailable"> = new Map(),
 ): PreparedAnnotationContext {
   const reviewItems = annotationReviewItems(snapshot, sessionId, review.annotationIds, visualDeliveries)
+  // The comments a full review left out are available but over the limit, so
+  // the record accounts for them alongside any the daemon itself drops.
   return {
-    availableCount: reviewItems.length,
+    availableCount: reviewItems.length + review.omittedOverLimit,
     candidates: reviewItems.slice(0, maxAnnotations),
-    omittedForLimit: Math.max(0, reviewItems.length - maxAnnotations),
+    omittedForLimit: Math.max(0, reviewItems.length - maxAnnotations) + review.omittedOverLimit,
     ...(review.buildBasis ? { buildBasis: review.buildBasis } : {}),
   }
 }
@@ -252,7 +250,7 @@ export function agentPromptWithAnnotations(
   if (!reviewItems.length && !review.buildBasis) return userPrompt
   const annotations: AnnotationReviewItem[] = []
   let used = 0
-  let omittedAnnotationCount = 0
+  let omittedAnnotationCount = review.omittedOverLimit
   for (const item of reviewItems) {
     const size = escapedJson(item).length
     if (annotations.length >= maxAnnotations || used + size > contextBudget) {

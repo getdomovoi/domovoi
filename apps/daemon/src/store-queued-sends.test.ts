@@ -3,7 +3,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumReviewAnnotations } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { DomovoiDaemon } from "./server.js"
@@ -80,6 +80,25 @@ describe("a queued send's review", () => {
     const reader = new SqliteWorkspaceStore(path, demoWorkspace)
     try {
       expect(reader.loadQueuedSessionSends().find((send) => send.id === "queue-none")?.review).toEqual({ annotationIds: [] })
+    } finally { await reader.close() }
+  })
+
+  // The count of open comments a full review left over the limit is recorded
+  // when the send is released, so it has to survive the wait.
+  it("keeps a full review's count of comments left over the limit across a restart", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-queued-over-limit-"))
+    scratchDirectories.push(scratch)
+    const path = join(scratch, "state.sqlite")
+    const review = {
+      annotationIds: Array.from({ length: maximumReviewAnnotations }, (_, index) => `annotation-${index}`),
+      omittedOverLimit: 2,
+    }
+    const writer = new SqliteWorkspaceStore(path, demoWorkspace)
+    writer.replaceQueuedSessionSend({ ...queued("session-billing", "queue-over-limit"), review })
+    await writer.close()
+    const reader = new SqliteWorkspaceStore(path, demoWorkspace)
+    try {
+      expect(reader.loadQueuedSessionSends().find((send) => send.id === "queue-over-limit")?.review).toEqual(review)
     } finally { await reader.close() }
   })
 

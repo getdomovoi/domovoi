@@ -319,6 +319,17 @@ describe("SessionScreen policy and queue states", () => {
     expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()
   })
 
+  // Codex review of PR #717: open comments a sent message left over the
+  // per-turn limit are named under that message, not dropped from view.
+  it("shows the open comments a sent message left over the limit under that message", async () => {
+    const { props } = await draw()
+    const sent = { id: "thread-over-limit", kind: "message" as const, voice: "you" as const, body: "Address every comment", omission: "1 open annotation was over the per-turn limit" }
+    await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, entries: [...props.detail.entries, sent] }} /></SafeAreaProvider>)
+
+    expect(screen.getByText("Address every comment")).toBeOnTheScreen()
+    expect(screen.getByText("1 open annotation was over the per-turn limit")).toBeOnTheScreen()
+  })
+
   // Ruling Q356 A: the refusal's remedy can be sent to the agent as a steer
   // from the refusal itself. A watching phone cannot steer, so it gets no
   // button.
