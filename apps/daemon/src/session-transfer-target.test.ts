@@ -150,7 +150,7 @@ describe("target transfer preflight", () => {
   })
 })
 
-async function preparedTransfer(options: { malformedState?: boolean } = {}) {
+async function preparedTransfer(options: { malformedState?: boolean, annotationId?: string } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "domovoi-target-transfer-"))
   scratchDirectories.push(scratch)
   const source = structuredClone(demoWorkspace)
@@ -202,6 +202,8 @@ async function preparedTransfer(options: { malformedState?: boolean } = {}) {
     readAnnotationCrop: async () => Buffer.from("pngbytes"),
   })
   if (options.malformedState) Reflect.deleteProperty(intent.state, "thread")
+  // A package from a source that held a comment id the wire no longer admits.
+  if (options.annotationId !== undefined) intent.state.annotations[0]!.id = options.annotationId
   const packaged = createSessionTransferPackage(intent, {
     transferId: `transfer-${"1".repeat(32)}`,
     checkpointCommit,
@@ -254,6 +256,43 @@ describe("target transfer commit", () => {
       transferId: packaged.manifest.transferId,
       reason: "state-import-failed",
     })
+  })
+
+  // Ruling Q432 A: a comment id is bounded like the send's review that names
+  // it. A package carrying a longer one is refused at import, rather than
+  // landing a comment that would make every send of the session invalid.
+  it("refuses a comment id longer than a send's review may name", async () => {
+    const commit = async (annotationId: string) => {
+      const { packaged, transactions } = await preparedTransfer({ annotationId })
+      const restoreSessionFromBundle = vi.fn(async () => ({
+        path: "/target/session-billing",
+        branch: "domovoi/session-billing",
+        baseCommit: checkpointCommit,
+      }))
+      const outcome = await commitPreparedSessionTransfer({
+        snapshot: targetWorkspace(),
+        transferId: packaged.manifest.transferId,
+        manifestDigest: packaged.manifestDigest,
+        transactions,
+        projectHasLineage: async () => true,
+        workspace: { restoreSessionFromBundle },
+        annotationVisualContext: { storeUpload: vi.fn() },
+        usageLedger: { replaceTransferredSession: vi.fn() },
+        save: vi.fn(),
+        now: () => "2026-09-03T21:01:00.000Z",
+      }).then(() => "committed", () => "refused")
+      const status = await transactions.status(packaged.manifest.transferId, packaged.manifestDigest)
+      return { outcome, status, restored: restoreSessionFromBundle.mock.calls.length }
+    }
+
+    const refused = await commit("a".repeat(257))
+    expect(refused.outcome).toBe("refused")
+    expect(refused.restored).toBe(0)
+    expect(refused.status).toMatchObject({ state: "failed", reason: "state-import-failed" })
+
+    // The longest id a review may name still crosses, so the refusal is the bound.
+    const accepted = await commit("a".repeat(256))
+    expect(accepted.restored).toBe(1)
   })
 
   it("restores every resource before publishing one runnable target session", async () => {

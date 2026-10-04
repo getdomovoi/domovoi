@@ -13,6 +13,7 @@ import { afterEach, expect, it } from "vitest"
 
 import {
   demoWorkspace,
+  openCommentReviewFor,
   protocolVersion,
   type RpcMethod,
   type RpcResult,
@@ -127,9 +128,10 @@ function snapshotFor(sections: Sections) {
 type PromptRunOptions = {
   prompt?: string
   mutateSnapshot?: (snapshot: ReturnType<typeof snapshotFor>) => void
-  // Send a review naming every comment in the snapshot. Without one, the
-  // message takes the Q402 legacy default: every open comment attaches.
-  sendEveryComment?: boolean
+  // Send the message without a review. The goldens send the review every
+  // client sends, naming each open comment of the session; without one the
+  // message carries no comment (ruling Q402).
+  withoutReview?: boolean
 }
 
 async function sendFor(sections: Sections, options: PromptRunOptions = {}) {
@@ -217,9 +219,9 @@ async function sendFor(sections: Sections, options: PromptRunOptions = {}) {
     sessionId: snapshot.sessions[0]!.id,
     prompt: options.prompt ?? "Replay the duplicate delivery and report what changed.",
     client: "desktop",
-    ...(options.sendEveryComment
-      ? { review: { annotationIds: snapshot.annotations.map((annotation) => annotation.id) } }
-      : {}),
+    ...(options.withoutReview
+      ? {}
+      : { review: openCommentReviewFor(snapshot, snapshot.sessions[0]!.id) }),
   })
   socket.close()
   return { durable, initial, prompts, sent }
@@ -252,22 +254,20 @@ for (const sections of combinations) {
   })
 }
 
-// The snapshots above are messages without a review (the Q402 legacy default).
-// A review naming the same comments composes the same prompt (ruling Q348 A).
-// Without a handoff, that is the whole difference. After a handoff, a review
-// also keeps current comments out of the handoff context (security review r1
-// P2), so the prompts differ there by the handoff's openAnnotations alone.
-it("composes the same prompt when a review sends every open comment", async () => {
-  const sections = { handoff: false, plan: true, annotations: true, skills: true }
-  const reviewed = await sendFor(sections, { sendEveryComment: true })
-  expect(reviewed.sent).not.toHaveProperty("error")
-  expect(reviewed.prompts).toEqual([await promptFor(sections)])
-
-  const afterHandoff = { ...sections, handoff: true }
-  const reviewedHandoff = (await sendFor(afterHandoff, { sendEveryComment: true })).prompts[0]!
-  const handoff = (prompt: string) => JSON.parse(/<domovoi_handoff_context>\n(.+)\n<\/domovoi_handoff_context>/.exec(prompt)![1]!) as { openAnnotations: unknown[] }
-  expect(handoff(reviewedHandoff).openAnnotations).toEqual([])
-  expect(handoff(await promptFor(afterHandoff)).openAnnotations).toHaveLength(1)
+// The snapshots above are messages whose review names every open comment, as
+// every client sends. A message without a review sends no comment (ruling
+// Q402): it composes the prompt of a session with no comment at all, with or
+// without a handoff, whose context then lists no open annotation either
+// (security review r1 P2).
+it("composes the prompt of a session without comments for a message without a review", async () => {
+  for (const handoff of [false, true]) {
+    const sections = { handoff, plan: true, annotations: true, skills: true }
+    const unreviewed = await sendFor(sections, { withoutReview: true })
+    expect(unreviewed.sent).not.toHaveProperty("error")
+    expect(unreviewed.prompts).toEqual([await promptFor({ ...sections, annotations: false })])
+    expect(unreviewed.prompts[0]).not.toContain("domovoi_review_context")
+    expect(unreviewed.prompts[0]).not.toContain("annotation-migration-machine")
+  }
 })
 
 it("keeps the outer-to-inner order the call site produces", async () => {

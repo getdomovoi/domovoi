@@ -10,6 +10,10 @@ export const sha256DigestSchema = z.string().regex(/^sha256:[a-f0-9]{64}$/)
 export const commitShaSchema = z.string().regex(/^[a-f0-9]{40}$/)
 export const credentialSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/)
 export const annotationStatusSchema = z.enum(["open", "resolved"])
+// A preview comment's id, bounded where the comment enters (a snapshot, a
+// transfer import) by the same rule a send's review uses to name it, so every
+// open comment can be named in a review (ruling Q432 A).
+export const annotationIdSchema = z.string().min(1).check(utf16MaxLength(256))
 export const toolKindSchema = z.enum(["command", "file-change"])
 export const toolStatusSchema = z.enum(["running", "completed", "failed", "declined"])
 // A project named in a request: the id the daemon derived from its repository root.

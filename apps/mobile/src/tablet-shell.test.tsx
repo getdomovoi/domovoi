@@ -1,6 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals"
-import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { fireEvent, render, screen } from "@testing-library/react-native"
+import { demoWorkspace, workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { fireEvent, render, screen, within } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
 import { TabletShell } from "./tablet-shell"
@@ -309,6 +309,91 @@ describe("TabletShell", () => {
 
     expect(await screen.findByText("Not posted: The daemon connection is not open")).toBeOnTheScreen()
     expect(screen.getByDisplayValue("The retry window is too long")).toBeOnTheScreen()
+  })
+
+  // Codex review of PR #717, round 2: at tablet widths App draws this shell,
+  // not the phone's SessionScreen. A message that left open comments over the
+  // per-turn limit says so under that message here too, whether it was sent
+  // directly or released from the daemon's queue.
+  describe("open comments left over the per-turn limit", () => {
+    const note = "1 open annotation was over the per-turn limit"
+    const overLimitBody = "Address every open comment"
+    const plainBody = "Then rerun the billing tests"
+
+    // A send that named the newest 20 of 21 open comments, as the daemon
+    // records it.
+    function overLimitSend(sessionId: string, id: string, turnId?: string) {
+      return {
+        id,
+        sessionId,
+        kind: "user" as const,
+        ...(turnId ? { turnId } : {}),
+        body: overLimitBody,
+        providerPromptDelivery: {
+          version: 1 as const,
+          budget: { unit: "utf16-code-units" as const, limit: 262_144, used: 9_000 },
+          handoff: { status: "not-required" as const },
+          workingPlan: { status: "not-required" as const },
+          annotations: {
+            availableCount: 21,
+            deliveredIds: Array.from({ length: 20 }, (_, index) => `annotation-${index + 1}`),
+            omitted: { budget: 0, limit: 1 },
+          },
+          skills: { selection: "project-default" as const, delivered: [], omitted: { budget: [], limit: [], unavailable: [], reviewChanged: [], policy: [] } },
+        },
+        createdAt: "2026-10-03T09:00:00.000Z",
+      }
+    }
+
+    function plainSend(sessionId: string) {
+      return { id: "thread-plain", sessionId, kind: "user" as const, body: plainBody, createdAt: "2026-10-03T09:01:00.000Z" }
+    }
+
+    // The note belongs to the message it describes: the nearest element that
+    // holds both is that message's own, not the thread holding every message.
+    function expectNoteUnder(body: string) {
+      expect(screen.getAllByText(note)).toHaveLength(1)
+      let holder = screen.getByText(note).parent
+      while (holder && !within(holder).queryByText(body)) holder = holder.parent
+      expect(holder).not.toBeNull()
+      if (!holder) return
+      expect(within(holder).queryByText(plainBody)).toBeNull()
+    }
+
+    it("shows it under a message sent directly", async () => {
+      await draw(undefined, "full", (snapshot) => {
+        const sessionId = snapshot.activeSessionId
+        if (!sessionId) throw new Error("fixture needs an active session")
+        snapshot.thread.push(overLimitSend(sessionId, "thread-over-limit"), plainSend(sessionId))
+        workspaceSnapshotSchema.parse(snapshot)
+      })
+
+      expect(screen.getByText(overLimitBody)).toBeOnTheScreen()
+      expect(screen.getByText(note)).toBeOnTheScreen()
+      expectNoteUnder(overLimitBody)
+    })
+
+    it("shows it under a queued message once the daemon delivered it", async () => {
+      await draw(undefined, "full", (snapshot) => {
+        const sessionId = snapshot.activeSessionId
+        if (!sessionId) throw new Error("fixture needs an active session")
+        snapshot.queuedSends = [{
+          id: "queue-over-limit",
+          sessionId,
+          state: "delivered",
+          createdAt: "2026-10-03T08:59:00.000Z",
+          origin: { client: "phone", connectionId: "3f1c2b8e-1d2a-4c5b-9e6f-7a8b9c0d1e2f" },
+          skillIds: [],
+          attachments: [],
+        }]
+        snapshot.thread.push(overLimitSend(sessionId, "thread-queued-over-limit", "a".repeat(64)), plainSend(sessionId))
+        workspaceSnapshotSchema.parse(snapshot)
+      })
+
+      expect(screen.getByText(overLimitBody)).toBeOnTheScreen()
+      expect(screen.getByText(note)).toBeOnTheScreen()
+      expectNoteUnder(overLimitBody)
+    })
   })
 })
 

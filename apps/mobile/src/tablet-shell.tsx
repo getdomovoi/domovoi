@@ -227,11 +227,16 @@ export function TabletReceipt({ entry }: { entry: Extract<ThreadEntry, { kind: "
 function TabletThreadEntry({ entry }: { entry: ThreadEntry }) {
   if (entry.kind === "receipt") return <TabletReceipt entry={entry} />
   if (entry.kind === "message") {
+    // The open comments a sent message left over the per-turn limit sit under
+    // that message, in the phone's sentence and style (Codex review of PR #717).
     return entry.voice === "you" ? (
-      <View className="items-end">
+      <View className="items-end gap-1">
         <View className="max-w-[78%] rounded-2xl rounded-br-md bg-accent px-4 py-3">
           <Text className="text-[14px] leading-[21px]">{entry.body}</Text>
         </View>
+        {entry.omission ? (
+          <Text variant="machine" className="max-w-[78%] text-right text-faint">{entry.omission}</Text>
+        ) : null}
       </View>
     ) : <Text className="text-[14px] leading-[22px]">{entry.body}</Text>
   }

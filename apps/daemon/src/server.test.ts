@@ -8276,8 +8276,8 @@ describe("DomovoiDaemon", () => {
           sessionId: session.id,
           prompt,
           client: "desktop",
-          // An explicit review of every open comment (ruling Q348 A), so the
-          // order holds on the review path as well as the Q402 default.
+          // A review of every open comment (ruling Q348 A), as every client
+          // sends; without one the message carries no comment (ruling Q402).
           review: {
             annotationIds: snapshot.annotations
               .filter((annotation) => annotation.sessionId === session.id && annotation.status === "open")

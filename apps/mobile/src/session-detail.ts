@@ -1,4 +1,5 @@
 import {
+  annotationsOverLimitLine,
   boundedClientThread,
   maximumSessionPromptCharacters,
   type ApprovalDecision,
@@ -18,6 +19,8 @@ export type ThreadEntry =
     kind: "message"
     voice: "you" | "agent"
     body: string
+    // On a sent message, the open comments it left over the per-turn limit.
+    omission?: string
   }
   | {
     id: string
@@ -117,10 +120,23 @@ function clientReference(clientId: string): string {
   return `${normalized.slice(0, 11)}…${normalized.slice(-4)}`
 }
 
+// The daemon records the open comments a sent message left over the per-turn
+// limit on that message (Codex review of PR #717). The phone says so in the
+// sentence desktop and web use (`annotationsOverLimitLine` in
+// @getdomovoi/protocol), so a comment that missed the turn is never dropped
+// from view.
+function limitOmission(item: Extract<ThreadItem, { kind: "user" }>): string | undefined {
+  const limit = item.providerPromptDelivery?.annotations.omitted.limit ?? 0
+  if (limit <= 0) return undefined
+  return annotationsOverLimitLine(limit)
+}
+
 function entryFor(item: ThreadItem): ThreadEntry {
   switch (item.kind) {
-    case "user":
-      return { id: item.id, kind: "message", voice: "you", body: item.body }
+    case "user": {
+      const omission = limitOmission(item)
+      return { id: item.id, kind: "message", voice: "you", body: item.body, ...(omission ? { omission } : {}) }
+    }
     case "assistant":
       return { id: item.id, kind: "message", voice: "agent", body: item.body }
     case "system":

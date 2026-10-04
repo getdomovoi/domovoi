@@ -54,10 +54,13 @@ describe("fresh session start", () => {
     ])
     expect(call).not.toHaveBeenCalledWith("project.open", expect.anything())
     expect(call.mock.calls[1]?.[1]).toMatchObject({ runtime: discovery.defaultRuntime, client: "phone" })
+    // A session made a moment ago has no comment, and the send says so
+    // (ruling Q402: the daemon attaches only what a message names).
     expect(call.mock.calls[2]?.[1]).toEqual({
       sessionId: "session-new",
       prompt: "Cover the claim-expiry case",
       client: "phone",
+      review: { annotationIds: [] },
     })
 
     // A credential paired from a tablet code greets as a tablet, and the

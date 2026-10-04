@@ -4,6 +4,7 @@ import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context"
 import {
   artifactAuthorizeResultSchema,
   enabledSkillsMissingFromCatalog,
+  openCommentReviewFor,
   selectableTurnSkills,
   skillSummariesSchema,
   toolInventorySchema,
@@ -561,7 +562,8 @@ export function App() {
       }))
       const startedId = created.activeSessionId
       if (!startedId) throw new Error("The daemon created the session but did not say which")
-      await mutate("session.send", { sessionId: startedId, prompt: request.prompt, client })
+      // A session made a moment ago has no comment; the review says so.
+      await mutate("session.send", { sessionId: startedId, prompt: request.prompt, client, review: { annotationIds: [] } })
       setOpenSessionId(startedId)
       setOpenArtifactId(undefined)
       setDraft("")
@@ -659,6 +661,10 @@ export function App() {
         sessionId,
         prompt: draft.trim(),
         client,
+        // The daemon attaches only the comments a message names (ruling
+        // Q402). A comment sent to the agent from the render is an open
+        // comment of the session, so the send names every open one.
+        review: snapshot ? openCommentReviewFor(snapshot, sessionId) : { annotationIds: [] },
         ...(session ? sendDelivery(session) : {}),
         ...(selection ? { skillSelection: selection } : {}),
         ...(attachments.length > 0
@@ -698,6 +704,9 @@ export function App() {
         sessionId,
         prompt: text,
         client,
+        // Named like a typed message's (ruling Q402): the daemon attaches
+        // only the comments a message names.
+        review: snapshot ? openCommentReviewFor(snapshot, sessionId) : { annotationIds: [] },
         ...delivery,
       }))
       if (delivery.delivery !== "next-turn-replace") return "direct"

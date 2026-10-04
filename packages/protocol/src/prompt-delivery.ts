@@ -1,7 +1,8 @@
 import { z } from "zod"
 
-import { utf16MaxLength } from "./validation.js"
+import { utf16MaxLength, wireRule } from "./validation.js"
 
+import { annotationIdSchema } from "./identifiers.js"
 import {
   maximumTurnSkillSelections,
   skillContentDigestSchema,
@@ -61,6 +62,9 @@ export const providerPromptWorkingPlanDeliverySchema = z.discriminatedUnion("sta
 // The most preview comments one message can send, and so the most one turn
 // can deliver.
 export const maximumReviewAnnotations = 20
+// A bound on the count of open comments a full message left out, far above
+// any session a person reviews; it keeps the field a bounded number.
+export const maximumReviewOverLimitCount = 1_000_000
 
 // Request identifiers are read as sent: an id is never trimmed into another.
 const reviewIdSchema = z.string().min(1).check(utf16MaxLength(256))
@@ -73,18 +77,28 @@ const reviewBuildBasisSchema = z.object({
 
 // What a person sends with one message from the preview (rulings Q348 A and
 // Q342 A): the open comments they chose and the variant they chose as the
-// build basis. Only these reach the agent. Until every client sends a review
-// (ruling Q402), a message without one still attaches every open comment of
-// its session and no build basis; that default goes before 0.8.0 ships.
-// `{ annotationIds: [] }` is the explicit send of nothing: no comment and no
-// build basis, whatever comments are open.
-export const sessionSendReviewSchema = z.object({
-  annotationIds: z.array(reviewIdSchema).max(maximumReviewAnnotations).refine(
+// build basis. Only these reach the agent. A message without a review sends
+// no comment and no build basis, whatever comments are open (ruling Q402: the
+// legacy default that attached every open comment went before 0.8.0).
+// `{ annotationIds: [] }` says the same thing explicitly, and is what a client
+// sends when its surface attaches nothing.
+//
+// `omittedOverLimit` is how many more open comments the client left out
+// because the message was full: present only on a full review, absent when it
+// left none out. The daemon records it as the turn's limit omission, so the
+// person sees the comments that missed the turn. It is a count, never a
+// selection: the daemon still sends only the comments the review names.
+export const sessionSendReviewSchema = wireRule(z.object({
+  annotationIds: z.array(annotationIdSchema).max(maximumReviewAnnotations).refine(
     (ids) => new Set(ids).size === ids.length,
     "Each comment is sent once",
   ),
   buildBasis: reviewBuildBasisSchema.optional(),
-}).strict()
+  omittedOverLimit: z.number().int().positive().max(maximumReviewOverLimitCount).optional(),
+}).strict().refine(
+  (review) => review.omittedOverLimit === undefined || review.annotationIds.length === maximumReviewAnnotations,
+  { path: ["omittedOverLimit"], message: "Comments are left over the limit only when the message is full" },
+), { rule: "review-over-limit-only-when-full", maximumReviewAnnotations })
 
 // The error data on a review the daemon refused: a named comment is not open
 // on the session, or the build basis is not one of its previews. The whole
@@ -97,7 +111,10 @@ export const sessionReviewRefusalSchema = z.object({
 
 export const providerPromptAnnotationDeliverySchema = z.object({
   availableCount: nonnegativeCountSchema,
-  deliveredIds: z.array(z.string().trim().min(1).check(utf16MaxLength(256))).max(maximumReviewAnnotations).refine(
+  // Each id exactly as stored, never trimmed (ruling Q432 A): every id a
+  // review can name is one the record can hold. Records written while this
+  // trimmed hold trimmed ids, which still read.
+  deliveredIds: z.array(annotationIdSchema).max(maximumReviewAnnotations).refine(
     (ids) => new Set(ids).size === ids.length,
     "Delivered annotation IDs must be unique",
   ),
@@ -119,6 +136,17 @@ export const providerPromptAnnotationDeliverySchema = z.object({
     })
   }
 })
+
+// The sentence for `omitted.limit`, the open annotations the per-turn limit
+// left out of a sent message, and for a history entry's
+// `annotationsOverLimit`, which carries the same count. Desktop and web
+// (`packages/ui`) and the phone and tablet (`apps/mobile`) share no other
+// package, so the sentence is derived here once and cannot drift.
+export function annotationsOverLimitLine(limit: number): string {
+  return limit === 1
+    ? "1 open annotation was over the per-turn limit"
+    : `${limit} open annotations were over the per-turn limit`
+}
 
 export const deliveredPromptSkillSchema = z.object({
   id: skillIdSchema,

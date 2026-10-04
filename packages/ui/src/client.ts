@@ -47,6 +47,7 @@ import {
   type Runtime,
   type SessionEvidence,
   type SessionHistoryPage,
+  type SessionSendReview,
   type SessionTransferParams,
   type SessionTransferResult,
   type SkillDocument,
@@ -642,11 +643,15 @@ export class DomovoiClient extends EventTarget {
     })
   }
 
+  // Every send states its review on the wire: the daemon attaches only the
+  // comments a message names (ruling Q402), and a send given none says so
+  // with an empty review rather than leaving the field out.
   sendMessage(
     sessionId: string,
     prompt: string,
     skillSelection?: RpcParams<"session.send">["skillSelection"],
     attachments?: RpcParams<"session.send">["attachments"],
+    review: SessionSendReview = { annotationIds: [] },
   ): Promise<WorkspaceSnapshot> {
     return this.request("session.send", {
       sessionId,
@@ -654,6 +659,7 @@ export class DomovoiClient extends EventTarget {
       client: this.kind,
       ...(skillSelection ? { skillSelection } : {}),
       ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      review,
     })
   }
 

@@ -793,6 +793,40 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  // Ruling Q402: the daemon attaches only the comments a message names, so
+  // every send states its review on the wire. A send given none says so
+  // explicitly rather than leaving the field out.
+  it("sends the review it was given, and an empty one when given none", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
+    const initial = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await initial
+
+    const review = { annotationIds: ["annotation-migration-machine", "annotation-replay-copy"] }
+    const reviewed = client.sendMessage("session-billing", "Address these", undefined, undefined, review)
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "session.send",
+      params: { sessionId: "session-billing", prompt: "Address these", client: "web", review },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: demoWorkspace })
+    await expect(reviewed).resolves.toEqual(demoWorkspace)
+
+    const bare = client.sendMessage("session-billing", "Carry on")
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "session.send",
+      params: { sessionId: "session-billing", prompt: "Carry on", client: "web", review: { annotationIds: [] } },
+    })
+    socket.receive({ jsonrpc: "2.0", id: 3, result: demoWorkspace })
+    await expect(bare).resolves.toEqual(demoWorkspace)
+    client.disconnect()
+  })
+
   it("attributes provider restart requests to the client", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const initial = client.connect()

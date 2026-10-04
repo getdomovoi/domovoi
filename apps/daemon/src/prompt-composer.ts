@@ -43,7 +43,7 @@ export type ProviderPromptInput = {
   requireTrustedSkills: boolean
   skillSelection?: TurnSkillSelection
   // The preview comments and build basis the message sends. Absent, the turn
-  // takes legacyOpenCommentReview's default (ruling Q402).
+  // carries no comment and no build basis (ruling Q402).
   review?: SessionSendReview
   budgetCodeUnits?: number
 }
@@ -194,9 +194,10 @@ export async function composeProviderPrompt(
   // Checked first: a review naming a comment that is no longer open refuses
   // the message before anything else is prepared.
   const review = resolveAnnotationReview(input.snapshot, input.sessionId, input.review)
-  // With a review, current comments reach the provider only through the
-  // review section; the handoff carries none (security review r1 P2).
-  const handoff = prepareHandoffContext(input.snapshot, input.sessionId, input.review ? "none" : "all")
+  // Current comments reach the provider only through the review section; the
+  // handoff carries none (security review r1 P2), so a message without a
+  // review sends no comment by any path (ruling Q402).
+  const handoff = prepareHandoffContext(input.snapshot, input.sessionId, "none")
   const renderRequired = (inclusion: HandoffInclusion) => {
     const handoffTurn = renderHandoffContext(handoff, inclusion, input.userPrompt)
     return {

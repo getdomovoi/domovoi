@@ -17,11 +17,10 @@ is never dropped for the payload budget; comments still are, oldest first, as be
 delivery record names the build basis it carried. A queued message keeps its review across a
 restart.
 
-Ruling Q402: until desktop, web, phone, tablet and the command line send `review`, a message
-without one keeps today's behaviour: every open comment of its session attaches, and no build
-basis. That legacy default lives in one function, `legacyOpenCommentReview`, and is removed before
-protocol 0.8.0 ships, when a message without a review will send no comment. Phone and tablet keep
-the same methods: `review` rides on `session.send`, which they already hold. The first message
-after a cross-provider handoff follows the same rule: with a review, the handoff context carries
-no current comment and only the review's comments reach the provider; without one, the handoff
-still carries every open comment, as before.
+Ruling Q402: a message without a review sends no comment and no build basis. A legacy default
+that attached every open comment of the session to such a message was carried for one
+pre-release step and removed before protocol 0.8.0 shipped; the release note "A message without
+a `review` sends no comment" describes what every client now sends. Phone and tablet keep the
+same methods: `review` rides on `session.send`, which they already hold. The first message after
+a cross-provider handoff follows the same rule: the handoff context carries no current comment,
+and only the review's comments reach the provider.
