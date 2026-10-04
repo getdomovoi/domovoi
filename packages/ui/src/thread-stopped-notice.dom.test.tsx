@@ -124,9 +124,8 @@ it("does not say this client when the pause row names another connection", async
   expect(notice.textContent).not.toContain("from this client")
 })
 
-// Two clients that pause the same turn at once can both join one abort, so the
-// daemon writes two pause rows. The notice reads this client's row, whichever
-// came first.
+// When the snapshot holds several pause rows new since the click, the notice
+// reads this client's row, whichever came first.
 it("says the stop came from this client when another client's pause row came first", async () => {
   const user = userEvent.setup()
   const { rerender } = renderStoppable(vi.fn(async () => {}), thisConnection)

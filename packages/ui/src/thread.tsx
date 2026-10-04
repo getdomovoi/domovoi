@@ -959,8 +959,9 @@ export function Thread({
   // When the daemon recorded a pause after this client asked for one, if it
   // has, and whether the row names this client's connection. The row may be
   // another client's (see StoppedSessionNotice), which still means the turn
-  // ended. Two clients pausing at once can both get a row, so among the rows
-  // new since the click this client's own row wins, and otherwise the first.
+  // ended. The daemon serializes pauses per session, so one turn normally gets
+  // one row, but a snapshot can still hold several new rows; this client's own
+  // row wins among them, and otherwise the first.
   const stoppedPause = (() => {
     if (!stopped) return undefined
     const newRows = pauseRows(snapshot.thread, active.id).filter((row) => !stopped.earlierPauseRows.has(row.id))
