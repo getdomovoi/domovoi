@@ -39,7 +39,7 @@ import {
 import {
   SqliteTransferConflicts,
 } from "./transfer-conflicts.js"
-import { createWorkspaceRedactor, redactWorkspaceCopies } from "./workspace-redaction.js"
+import { createWorkspaceRedactor, redactDeviceLabel, redactWorkspaceCopies } from "./workspace-redaction.js"
 import { SqliteEmergencyStopIntents } from "./emergency-stop-intents.js"
 import { SqliteSessionCreationIntents } from "./session-creation-intents.js"
 
@@ -708,6 +708,58 @@ function salvagePairedDevices(database: DatabaseSync, quarantinedPath: string): 
   }
 }
 
+// A receipt's device label was once stored as the person typed it. The open
+// workspace is redacted whole when it is read, but a project that is not open
+// keeps its history in its own row, which only that project's next save would
+// rewrite. Each saved row's receipt labels are redacted in place here, and
+// nothing else in the row changes: not its id, its time, or any other byte of
+// its state. A second open finds every label already redacted and writes
+// nothing. The cost is bounded: SQLite reads each row's JSON, only rows that
+// mention a device are read, only the labels reach this thread, and no row
+// is parsed whole here. A row this cannot read is left as it is, as the next
+// save of that project replaces it and loadProject redacts what it returns.
+function redactSavedReceiptLabels(database: DatabaseSync): void {
+  const rows = database.prepare(`
+    SELECT project_id FROM workspace_projects
+    WHERE instr(state, '"device"') > 0
+  `).all() as Array<{ project_id: string }>
+  if (rows.length === 0) return
+  const labels = database.prepare(`
+    SELECT item.fullkey AS path,
+      json_extract(item.value, '$.device.label') AS label
+    FROM workspace_projects AS saved, json_each(saved.state, '$.thread') AS item
+    WHERE saved.project_id = ?
+      AND item.type = 'object'
+      AND json_extract(item.value, '$.kind') = 'receipt'
+      AND json_type(item.value, '$.device.label') = 'text'
+  `)
+  // Only the label just read is replaced, and only while it is still there.
+  const replace = database.prepare(`
+    UPDATE workspace_projects SET state = json_set(state, ?, ?)
+    WHERE project_id = ? AND json_extract(state, ?) = ?
+  `)
+  // A repair that cannot run never stops the store from opening.
+  try {
+    database.exec("BEGIN IMMEDIATE")
+    for (const row of rows) {
+      try {
+        const found = labels.all(row.project_id) as Array<{ path: string; label: string }>
+        for (const { path, label } of found) {
+          const redacted = redactDeviceLabel(label)
+          if (redacted === label) continue
+          const labelPath = `${path}.device.label`
+          replace.run(labelPath, redacted, row.project_id, labelPath, label)
+        }
+      } catch {
+        continue
+      }
+    }
+    database.exec("COMMIT")
+  } catch {
+    rollBackIfOpen(database)
+  }
+}
+
 // Damage elsewhere in the file can leave the workspace itself readable. Only a
 // snapshot that passes the same migration and validation as a normal start is
 // kept; project rows for other projects are kept when they validate the way
@@ -1153,6 +1205,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     }
     else if (isLegacySeed) this.save(initial)
     else if (existingSnapshot) this.#seedProjectRow(existingSnapshot)
+    redactSavedReceiptLabels(this.#database)
     if (!recovery && !isLegacySeed && existingSnapshot) this.#migratedAtOpen = existingSnapshot
     this.#restrictFilePermissions()
   }
