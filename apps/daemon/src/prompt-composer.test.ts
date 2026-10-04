@@ -311,6 +311,21 @@ describe("composeProviderPrompt review", () => {
     expect(result.prompt).not.toContain("annotation-2")
   })
 
+  // An id that enters by a transfer import or by hand keeps its exact text in
+  // the record the daemon writes for the send (ruling Q432 A).
+  it("records each named comment by its exact stored id", async () => {
+    const snapshot = baseSnapshot()
+    const ids = [" annotation-1 ", "annotation-1", "   "]
+    snapshot.annotations = ids.map((id, index) => ({ ...annotation(index + 1), id }))
+
+    const result = await composeProviderPrompt({ ...input(snapshot, "Ship it"), review: { annotationIds: ids } })
+
+    // Newest first, as every delivery record lists its comments.
+    expect(result.providerPromptDelivery.annotations).toEqual({
+      availableCount: 3, deliveredIds: ["   ", "annotation-1", " annotation-1 "], omitted: { budget: 0, limit: 0 },
+    })
+  })
+
   // Ruling Q402: no comment attaches without being named. The legacy default
   // that carried every open comment went before 0.8.0 shipped.
   it("carries no comment when the message has no review", async () => {

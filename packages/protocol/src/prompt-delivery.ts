@@ -111,7 +111,10 @@ export const sessionReviewRefusalSchema = z.object({
 
 export const providerPromptAnnotationDeliverySchema = z.object({
   availableCount: nonnegativeCountSchema,
-  deliveredIds: z.array(z.string().trim().min(1).check(utf16MaxLength(256))).max(maximumReviewAnnotations).refine(
+  // Each id exactly as stored, never trimmed (ruling Q432 A): every id a
+  // review can name is one the record can hold. Records written while this
+  // trimmed hold trimmed ids, which still read.
+  deliveredIds: z.array(annotationIdSchema).max(maximumReviewAnnotations).refine(
     (ids) => new Set(ids).size === ids.length,
     "Delivered annotation IDs must be unique",
   ),

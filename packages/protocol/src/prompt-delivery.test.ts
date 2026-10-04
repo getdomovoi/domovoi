@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  annotationSchema,
   maximumProviderPromptCodeUnits,
   providerPromptDeliverySchema,
   threadItemSchema,
@@ -80,6 +81,25 @@ describe("provider prompt delivery", () => {
         omitted: { budget: 1, limit: 0 },
       },
     }).success).toBe(false)
+  })
+
+  it("keeps each delivered comment id exactly as stored", () => {
+    const withIds = (deliveredIds: string[]) => ({
+      ...delivery(),
+      annotations: { availableCount: deliveredIds.length, deliveredIds, omitted: { budget: 0, limit: 0 } },
+    })
+
+    expect(providerPromptDeliverySchema.parse(withIds([" annotation-padded "])).annotations.deliveredIds)
+      .toEqual([" annotation-padded "])
+    expect(providerPromptDeliverySchema.parse(withIds(["annotation-a", " annotation-a "])).annotations.deliveredIds)
+      .toEqual(["annotation-a", " annotation-a "])
+    expect(annotationSchema.shape.id.safeParse("   ").success).toBe(true)
+    expect(providerPromptDeliverySchema.parse(withIds(["   "])).annotations.deliveredIds).toEqual(["   "])
+    // A record stored before ids were kept exact holds trimmed ids; it still reads.
+    expect(providerPromptDeliverySchema.parse(withIds(["annotation-new", "annotation-middle"])).annotations.deliveredIds)
+      .toEqual(["annotation-new", "annotation-middle"])
+    expect(providerPromptDeliverySchema.safeParse(withIds([""])).success).toBe(false)
+    expect(providerPromptDeliverySchema.safeParse(withIds(["annotation-a", "annotation-a"])).success).toBe(false)
   })
 
   it("keeps historic recorded budgets readable after the current limit changes", () => {
