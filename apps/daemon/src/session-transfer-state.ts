@@ -11,7 +11,7 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
-import { redactWorkspaceCopies } from "./workspace-redaction.js"
+import { redactThreadCopies, redactWorkspaceCopies } from "./workspace-redaction.js"
 
 export class SessionTransferStateError extends Error {
   readonly reason: SessionTransferContractRefusal
@@ -177,7 +177,14 @@ export function importSessionTransferState(
     ...(state.session.forkedFrom ? { forkedFrom: state.session.forkedFrom } : {}),
   }
   candidate.sessions.push(importedSession)
-  candidate.thread.push(...state.thread, transferArrivalThreadItem(importedSession, snapshot.machine.id, input.coverage))
+  // A source running older code sends its thread as it was written, so the
+  // arriving items are redacted here, before they become this machine's
+  // state: the store, the clients and history then all read the same copy.
+  // The transferred bytes were already checked against their digest as sent.
+  candidate.thread.push(
+    ...redactThreadCopies(state.thread),
+    transferArrivalThreadItem(importedSession, snapshot.machine.id, input.coverage),
+  )
   candidate.artifacts.push(...state.artifacts)
   if (state.workingPlan) candidate.workingPlans.push(state.workingPlan)
   candidate.annotations.push(...state.annotations)

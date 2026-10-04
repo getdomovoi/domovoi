@@ -273,7 +273,11 @@ export function sessionHistoryEntryDetail(
     const from = entry.connectionId
       ? ` · connection ${entry.connectionId}`
       : entry.clientId ? ` · declared client ${entry.clientId}` : ""
-    return `checkpoint ${entry.checkpoint} · decided on ${entry.client}${from}${decidedIn}${entry.explanation ? ` · ${entry.explanation}` : ""}`
+    // The device is the paired record the daemon verified on the deciding
+    // connection (ruling Q424 A), so its label is named as the decider, before
+    // the client kind. An entry without one names the client alone.
+    const decider = entry.device ? `${entry.device.label} · ${entry.client}` : entry.client
+    return `checkpoint ${entry.checkpoint} · decided on ${decider}${from}${decidedIn}${entry.explanation ? ` · ${entry.explanation}` : ""}`
   }
   if (entry.category === "policy-refusals") return `${entry.rule} · ${entry.setBy} · ${entry.scope}`
   if (entry.category === "handoffs") return entry.detail

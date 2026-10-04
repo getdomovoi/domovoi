@@ -181,6 +181,7 @@ describe("threadEntries receipt", () => {
       operation: "pnpm -w prisma migrate deploy",
       explanation: undefined,
       client: "phone",
+      decidedBy: "phone",
       declaredClient: "device fcbd…cdf8",
       checkpoint: "8f3c1de",
       checkpointTaken: true,
@@ -189,6 +190,54 @@ describe("threadEntries receipt", () => {
       // The fixture's session holds no open turn.
       current: false,
     })
+  })
+
+  // Ruling Q424 A: the paired device's label and id travel on the receipt, so
+  // the decider reads as the design's line does, label first, then the
+  // client and the shortened device id. The daemon writes the device alone,
+  // never a clientId, on these receipts.
+  it("names the paired device's label first and shortens its id, as the daemon writes it", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "pnpm -w prisma migrate deploy",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "phone",
+      device: { id: "device-fcbd4c3f99c7294586f0c5ca22f9cdf8", label: "dana" },
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }]
+
+    const { entries } = threadEntries(snapshot, "session-billing")
+
+    expect(entries[0]).toMatchObject({
+      kind: "receipt",
+      decidedBy: "dana · phone · device fcbd…cdf8",
+      declaredClient: undefined,
+    })
+  })
+
+  // A receipt written before the device field names the client alone as the
+  // decider and keeps its clientId as the declared client.
+  it("names the client alone when a receipt names no device", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "pnpm -w prisma migrate deploy",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "desktop",
+      clientId: "desktop-primary",
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }]
+
+    const { entries } = threadEntries(snapshot, "session-billing")
+
+    expect(entries[0]).toMatchObject({ kind: "receipt", decidedBy: "desktop", declaredClient: "desktop-primary" })
   })
 
   // A current receipt records the id of the connection the decision came
