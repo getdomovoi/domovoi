@@ -34,7 +34,11 @@ function header(label: string, id: string, columns: number): string {
 // knows (\n, \r, \t, \e) where one exists, otherwise \u{XX}, the JavaScript
 // code point form. Each stays visible on the same line and names the character
 // it replaced. Ordinary letters in any script, emoji, and the joiners U+200C
-// and U+200D that spell some words and emoji sequences pass unchanged.
+// and U+200D that spell some words and emoji sequences pass unchanged. Fields
+// are not isolated: right-to-left text in one field can still move a
+// neighbouring number, such as the time, in a viewer that applies bidi
+// ordering. Wrapping each field in renderer-owned isolates is the fix once a
+// command prints this line.
 const namedControls: Record<number, string> = { 0x09: "\\t", 0x0a: "\\n", 0x0d: "\\r", 0x1b: "\\e" }
 
 function shownEscaped(code: number): boolean {
