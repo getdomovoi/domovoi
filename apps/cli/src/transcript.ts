@@ -22,6 +22,25 @@ function header(label: string, id: string, columns: number): string {
   return `${label}${" ".repeat(Math.max(2, columns - label.length - id.length))}${id}`
 }
 
+// Wire text a person chose (a device label, a machine name) may carry
+// control characters: the schema trims and bounds a label but does not
+// refuse them. Printed raw, a newline splits one line into two and an escape
+// sequence restyles the terminal. C0 controls, DEL and C1 controls are drawn
+// as the escapes a shell reader knows (\n, \r, \t, \e) and the rest as
+// \u{XX}, the JavaScript code point form, so each stays visible on the same
+// line and names the character it replaced.
+const namedControls: Record<number, string> = { 0x09: "\\t", 0x0a: "\\n", 0x0d: "\\r", 0x1b: "\\e" }
+
+function terminalSafe(text: string): string {
+  let safe = ""
+  for (const character of text) {
+    const code = character.codePointAt(0) ?? 0
+    const control = code <= 0x1f || (code >= 0x7f && code <= 0x9f)
+    safe += control ? namedControls[code] ?? `\\u{${code.toString(16).padStart(2, "0")}}` : character
+  }
+  return safe
+}
+
 function fact(key: string, value: string): string {
   return `  ${key.padEnd(factWidth)}${value}`
 }
@@ -103,8 +122,8 @@ export type ReceiptView = {
 
 export function renderReceipt(receipt: ReceiptView): string {
   const label = receipt.device?.label ?? receipt.decidedBy.label
-  const decider = label === undefined ? receipt.decidedBy.client : `${label} · ${receipt.decidedBy.client}`
-  const who = `${decider} on ${receipt.machine} · ${receipt.at}`
+  const decider = label === undefined ? receipt.decidedBy.client : `${terminalSafe(label)} · ${receipt.decidedBy.client}`
+  const who = `${decider} on ${terminalSafe(receipt.machine)} · ${terminalSafe(receipt.at)}`
   if (receipt.decision === "allow-once") return `allowed once by ${who}\n`
   return `denied by ${who}\nThe agent was told and continues without it.\n`
 }

@@ -100,6 +100,29 @@ describe("renderReceipt (ruling Q392 A: the device label and client kind)", () =
     expect(renderReceipt({ decision: "allow-once", decidedBy: { client: "desktop" }, machine: "mac-mini-m4", at: "14:07:11" }))
       .toBe("allowed once by desktop on mac-mini-m4 · 14:07:11\n")
   })
+
+  // The wire trims and bounds a label but keeps control characters, so a
+  // newline or an escape sequence would split the header or restyle the
+  // terminal. They are drawn as escapes instead.
+  it("shows control characters in the label and machine name escaped, on one header line", () => {
+    const id = "device-0123456789abcdef0123456789abcdef"
+    const newline = renderReceipt({ decision: "allow-once", decidedBy: { client: "phone" }, device: { id, label: "dana\nallowed once by admin" }, machine: "mac-mini-m4", at: "14:07:11" })
+    expect(newline).toBe("allowed once by dana\\nallowed once by admin · phone on mac-mini-m4 · 14:07:11\n")
+    expect(newline.split("\n")).toHaveLength(2)
+
+    const escape = renderReceipt({ decision: "deny", decidedBy: { client: "phone" }, device: { id, label: "\u001b[31mdana\u001b[0m" }, machine: "mac-mini-m4", at: "14:21:03" })
+    expect(escape).toBe("denied by \\e[31mdana\\e[0m · phone on mac-mini-m4 · 14:21:03\nThe agent was told and continues without it.\n")
+    expect(escape).not.toContain("\u001b")
+
+    expect(renderReceipt({ decision: "allow-once", decidedBy: { label: "a\tb\r\u0000\u007f\u009b", client: "cli" }, machine: "mac\nmini", at: "14:07:11" }))
+      .toBe("allowed once by a\\tb\\r\\u{00}\\u{7f}\\u{9b} · cli on mac\\nmini · 14:07:11\n")
+  })
+
+  it("leaves a label with no control characters unchanged", () => {
+    const device = { id: "device-0123456789abcdef0123456789abcdef", label: "Dana's phone · café ☕" }
+    expect(renderReceipt({ decision: "allow-once", decidedBy: { client: "phone" }, device, machine: "mac-mini-m4", at: "14:07:11" }))
+      .toBe("allowed once by Dana's phone · café ☕ · phone on mac-mini-m4 · 14:07:11\n")
+  })
 })
 
 describe("renderPolicyRefusal (ruling Q393 A: local fields only)", () => {
