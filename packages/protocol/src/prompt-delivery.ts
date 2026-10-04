@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { utf16MaxLength } from "./validation.js"
+import { utf16MaxLength, wireRule } from "./validation.js"
 
 import {
   maximumTurnSkillSelections,
@@ -61,6 +61,9 @@ export const providerPromptWorkingPlanDeliverySchema = z.discriminatedUnion("sta
 // The most preview comments one message can send, and so the most one turn
 // can deliver.
 export const maximumReviewAnnotations = 20
+// A bound on the count of open comments a full message left out, far above
+// any session a person reviews; it keeps the field a bounded number.
+export const maximumReviewOverLimitCount = 1_000_000
 
 // Request identifiers are read as sent: an id is never trimmed into another.
 const reviewIdSchema = z.string().min(1).check(utf16MaxLength(256))
@@ -78,13 +81,23 @@ const reviewBuildBasisSchema = z.object({
 // legacy default that attached every open comment went before 0.8.0).
 // `{ annotationIds: [] }` says the same thing explicitly, and is what a client
 // sends when its surface attaches nothing.
-export const sessionSendReviewSchema = z.object({
+//
+// `omittedOverLimit` is how many more open comments the client left out
+// because the message was full: present only on a full review, absent when it
+// left none out. The daemon records it as the turn's limit omission, so the
+// person sees the comments that missed the turn. It is a count, never a
+// selection: the daemon still sends only the comments the review names.
+export const sessionSendReviewSchema = wireRule(z.object({
   annotationIds: z.array(reviewIdSchema).max(maximumReviewAnnotations).refine(
     (ids) => new Set(ids).size === ids.length,
     "Each comment is sent once",
   ),
   buildBasis: reviewBuildBasisSchema.optional(),
-}).strict()
+  omittedOverLimit: z.number().int().positive().max(maximumReviewOverLimitCount).optional(),
+}).strict().refine(
+  (review) => review.omittedOverLimit === undefined || review.annotationIds.length === maximumReviewAnnotations,
+  { path: ["omittedOverLimit"], message: "Comments are left over the limit only when the message is full" },
+), { rule: "review-over-limit-only-when-full", maximumReviewAnnotations })
 
 // The error data on a review the daemon refused: a named comment is not open
 // on the session, or the build basis is not one of its previews. The whole

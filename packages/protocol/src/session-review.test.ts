@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   demoWorkspace,
   maximumReviewAnnotations,
+  maximumReviewOverLimitCount,
   openCommentReviewFor,
   phoneAndTabletRpcMethods,
   providerPromptAnnotationDeliverySchema,
@@ -64,6 +65,34 @@ describe("the review a person sends with a message", () => {
     expect(sessionSendReviewSchema.safeParse({ buildBasis: { artifactId: "a" } }).success).toBe(false)
   })
 
+  // A full review can say how many more open comments the client left out for
+  // the per-message limit, so the turn's record shows them as omitted rather
+  // than losing them silently. It is a count, never a selection: the daemon
+  // still sends only the comments the review names.
+  describe("the count of open comments left over the per-message limit", () => {
+    const full = Array.from({ length: maximumReviewAnnotations }, (_, index) => `annotation-${index}`)
+
+    it("rides on a full review", () => {
+      expect(sessionSendReviewSchema.parse({ annotationIds: full, omittedOverLimit: 1 })).toEqual({ annotationIds: full, omittedOverLimit: 1 })
+      expect(sessionSendParamsSchema.parse({ ...send, review: { annotationIds: full, omittedOverLimit: 3 } }).review)
+        .toEqual({ annotationIds: full, omittedOverLimit: 3 })
+      expect(sessionSendReviewSchema.parse({ annotationIds: full, omittedOverLimit: maximumReviewOverLimitCount }).omittedOverLimit)
+        .toBe(maximumReviewOverLimitCount)
+    })
+
+    it("is refused on a review with room left, since nothing was over the limit", () => {
+      expect(sessionSendReviewSchema.safeParse({ annotationIds: full.slice(1), omittedOverLimit: 1 }).success).toBe(false)
+      expect(sessionSendReviewSchema.safeParse({ annotationIds: [], omittedOverLimit: 1 }).success).toBe(false)
+    })
+
+    it("is a positive whole count within its bound, absent when nothing was left out", () => {
+      for (const omittedOverLimit of [0, -1, 1.5, maximumReviewOverLimitCount + 1, "1"]) {
+        expect(sessionSendReviewSchema.safeParse({ annotationIds: full, omittedOverLimit }).success).toBe(false)
+      }
+      expect(sessionSendReviewSchema.parse({ annotationIds: full })).not.toHaveProperty("omittedOverLimit")
+    })
+  })
+
   it("rides on session.send, so phone and tablet access is unchanged", () => {
     expect(rpcMethods["session.send"].params).toBe(sessionSendParamsSchema)
     expect(phoneAndTabletRpcMethods.has("session.send")).toBe(true)
@@ -122,7 +151,34 @@ describe("the review for every open comment of a session", () => {
     expect(review.annotationIds).not.toContain("annotation-0")
     expect(review.annotationIds).not.toContain("annotation-2")
     expect(review.annotationIds).toContain("annotation-3")
+    expect(review.omittedOverLimit).toBe(3)
     expect(sessionSendReviewSchema.safeParse(review).success).toBe(true)
+  })
+
+  // Codex review of PR #717: with 21 open comments the oldest stayed open but
+  // missed the turn, and nothing said so. The review now carries the count it
+  // left out, which the daemon records as the turn's limit omission.
+  it("counts the open comments it leaves out for the limit, and only those", () => {
+    const comments = (count: number) => Array.from({ length: count }, (_, index) => annotation(
+      `annotation-${index}`,
+      { updatedAt: `2026-08-25T20:${String(index).padStart(2, "0")}:00.000Z` },
+    ))
+    const over = openCommentReviewFor({
+      ...demoWorkspace,
+      annotations: [
+        ...comments(maximumReviewAnnotations + 1),
+        annotation("annotation-resolved", { status: "resolved" }),
+        annotation("annotation-elsewhere", { sessionId: "session-other" }),
+      ],
+    }, "session-billing")
+    expect(over.annotationIds).toHaveLength(maximumReviewAnnotations)
+    expect(over.annotationIds).not.toContain("annotation-0")
+    expect(over.omittedOverLimit).toBe(1)
+    expect(sessionSendParamsSchema.parse({ ...send, review: over }).review).toEqual(over)
+
+    const exactly = openCommentReviewFor({ ...demoWorkspace, annotations: comments(maximumReviewAnnotations) }, "session-billing")
+    expect(exactly.annotationIds).toHaveLength(maximumReviewAnnotations)
+    expect(exactly).not.toHaveProperty("omittedOverLimit")
   })
 })
 

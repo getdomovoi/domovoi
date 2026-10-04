@@ -9,16 +9,19 @@ import type { WorkspaceSnapshot } from "./schema.js"
  * than leaving them behind.
  *
  * A message carries at most `maximumReviewAnnotations`; the newest fill it, in
- * the order the daemon delivered them before the review existed. No build
+ * the order the daemon delivered them before the review existed. The older
+ * ones left out are counted in `omittedOverLimit`, which the daemon records as
+ * the turn's limit omission, so they do not miss the turn unseen. No build
  * basis: the chosen preview travels only when a surface sends it on purpose
  * (ruling Q342 A).
  */
 export function openCommentReviewFor(snapshot: WorkspaceSnapshot, sessionId: string): SessionSendReview {
+  const open = snapshot.annotations
+    .filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+  const omittedOverLimit = open.length - maximumReviewAnnotations
   return {
-    annotationIds: snapshot.annotations
-      .filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .slice(0, maximumReviewAnnotations)
-      .map((annotation) => annotation.id),
+    annotationIds: open.slice(0, maximumReviewAnnotations).map((annotation) => annotation.id),
+    ...(omittedOverLimit > 0 ? { omittedOverLimit } : {}),
   }
 }
