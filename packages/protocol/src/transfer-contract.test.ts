@@ -199,6 +199,14 @@ describe("session transfer state", () => {
     }).success).toBe(false)
   })
 
+  // Ruling Q432 A: a comment id is bounded like the send's review that names
+  // it, so a package cannot bring in a comment no message could send.
+  it("refuses a comment id longer than a send's review may name", () => {
+    const withId = (id: string) => ({ ...state, annotations: [{ ...state.annotations[0]!, id }] })
+    expect(sessionTransferStateSchema.safeParse(withId("a".repeat(257))).success).toBe(false)
+    expect(sessionTransferStateSchema.parse(withId("a".repeat(256))).annotations[0]!.id).toHaveLength(256)
+  })
+
   it("refuses approval blockers because live approvals never transfer", () => {
     expect(sessionTransferStateSchema.safeParse({
       ...state,

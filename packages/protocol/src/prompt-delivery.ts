@@ -2,6 +2,7 @@ import { z } from "zod"
 
 import { utf16MaxLength, wireRule } from "./validation.js"
 
+import { annotationIdSchema } from "./identifiers.js"
 import {
   maximumTurnSkillSelections,
   skillContentDigestSchema,
@@ -88,7 +89,7 @@ const reviewBuildBasisSchema = z.object({
 // person sees the comments that missed the turn. It is a count, never a
 // selection: the daemon still sends only the comments the review names.
 export const sessionSendReviewSchema = wireRule(z.object({
-  annotationIds: z.array(reviewIdSchema).max(maximumReviewAnnotations).refine(
+  annotationIds: z.array(annotationIdSchema).max(maximumReviewAnnotations).refine(
     (ids) => new Set(ids).size === ids.length,
     "Each comment is sent once",
   ),

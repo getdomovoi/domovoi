@@ -33,3 +33,7 @@ sends no message.
 
 A queued message persisted before this change with no review is released as it was queued and
 sends no comment.
+
+An annotation ID is now at most 256 UTF-16 code units, the same bound a send's review uses for
+the IDs it names (ruling Q432 A), so every open comment can be named in a review. A longer ID is
+refused where it enters, for example a session transfer import.

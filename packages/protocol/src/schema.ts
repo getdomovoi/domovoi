@@ -9,6 +9,7 @@ import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpoin
 import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
 
 import {
+  annotationIdSchema,
   annotationStatusSchema,
   clientIdentityIdSchema,
   clientKindSchema,
@@ -979,7 +980,7 @@ export const annotationVisualContextSchema = z.discriminatedUnion("status", [
 ])
 
 export const annotationSchema = z.object({
-  id: z.string().min(1),
+  id: annotationIdSchema,
   sessionId: z.string().min(1),
   artifactId: z.string().min(1),
   variantId: z.string().min(1).optional(),

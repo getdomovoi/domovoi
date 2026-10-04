@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  annotationSchema,
   demoWorkspace,
   maximumReviewAnnotations,
   maximumReviewOverLimitCount,
@@ -11,6 +12,7 @@ import {
   sessionSendParamsSchema,
   sessionReviewRefusalSchema,
   sessionSendReviewSchema,
+  workspaceSnapshotSchema,
   type WorkspaceSnapshot,
 } from "./index.js"
 
@@ -179,6 +181,43 @@ describe("the review for every open comment of a session", () => {
     const exactly = openCommentReviewFor({ ...demoWorkspace, annotations: comments(maximumReviewAnnotations) }, "session-billing")
     expect(exactly.annotationIds).toHaveLength(maximumReviewAnnotations)
     expect(exactly).not.toHaveProperty("omittedOverLimit")
+  })
+})
+
+// Review of PR #717: a send's review bounds each comment id at 256 UTF-16
+// code units, so one open comment with a longer id made every send of its
+// session invalid until it was resolved. Ruling Q432 A: the comment itself
+// carries the same bound, so a longer id is refused where it enters, such as a
+// transfer import, and the review for every open comment always fits the wire.
+describe("a comment id, bounded like the review that names it", () => {
+  const withId = (id: string) => ({ ...demoWorkspace.annotations[0]!, id })
+  const snapshotWith = (id: string) => ({ ...demoWorkspace, annotations: [withId(id)] })
+
+  it("is refused past 256 UTF-16 code units, alone and in a snapshot", () => {
+    for (const id of ["a".repeat(257), "\u{1F600}".repeat(129)]) {
+      expect(annotationSchema.safeParse(withId(id)).success).toBe(false)
+      expect(workspaceSnapshotSchema.safeParse(snapshotWith(id)).success).toBe(false)
+    }
+  })
+
+  it("is accepted at 256 UTF-16 code units, alone and in a snapshot", () => {
+    for (const id of ["a".repeat(256), "\u{1F600}".repeat(128)]) {
+      expect(annotationSchema.parse(withId(id)).id).toBe(id)
+      expect(workspaceSnapshotSchema.parse(snapshotWith(id)).annotations[0]!.id).toBe(id)
+    }
+    expect(annotationSchema.safeParse(withId("")).success).toBe(false)
+  })
+
+  it("always yields a review the send accepts from a valid snapshot", () => {
+    const longest = "a".repeat(256)
+    const snapshot = workspaceSnapshotSchema.parse({
+      ...demoWorkspace,
+      annotations: [...demoWorkspace.annotations, withId(longest)],
+    })
+    const review = openCommentReviewFor(snapshot, "session-billing")
+    expect(review.annotationIds).toContain(longest)
+    expect(sessionSendReviewSchema.parse(review)).toEqual(review)
+    expect(sessionSendParamsSchema.parse({ ...send, review }).review).toEqual(review)
   })
 })
 
