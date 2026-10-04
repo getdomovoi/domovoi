@@ -117,11 +117,12 @@
       "evidence": [
         "Worktree ready",
         "Nothing has run yet",
-        "Say what you want done in"
+        "Say what you want done in",
+        "OR START FROM SOMETHING IT ALREADY KNOWS"
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "The phone draws Nothing has run yet and its body on an empty session, with no Worktree ready header. Desktop and web draw only the start line (repo, branch, worktree, started HH:MM) and the tablet nothing; no client draws the Worktree ready header or the Say what you want done in <project> placeholder, though baseCommit, branch, workspacePath and the project branch are all in the snapshot. Q368 A (2026-10-02): build the header, title, body and placeholder now; build the What it will do first rows only from the session's permission mode and checkpoint policy, because as drawn they describe Ask-like behaviour in every mode; defer the starters, which need a suggestion source"
+        "reason": "The phone draws Nothing has run yet and its body on an empty session, with no Worktree ready header. Since 2026-10-02 desktop and web draw the Worktree ready header, the title, body, What it will do first and the Say what you want done in <project> placeholder on a fresh session, and the start line (repo, branch, worktree, started HH:MM) otherwise (ruling Q368 A: rows from the session's mode and checkpoint policy). Still open: the starters, deferred by Q368 until a suggestion source exists; the header's off <branch>, since a session does not carry the branch its worktree was cut from; and the tablet, which draws no start state."
       },
       "presence": [
         "Nothing has run yet"

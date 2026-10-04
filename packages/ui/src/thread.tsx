@@ -1,4 +1,4 @@
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArchiveIcon,
   ArrowDownIcon,
@@ -31,7 +31,7 @@ import type {
   ThreadItem,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
-import { selectableTurnSkills, threadFollowPillText, sessionTransferRefusalMessage, toolFileEntries, turnSkillSelectionFor } from "@getdomovoi/protocol"
+import { maximumEffectiveClientThreadItems, selectableTurnSkills, threadFollowPillText, sessionTransferRefusalMessage, toolFileEntries, turnSkillSelectionFor } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
   readOnlySessionNotice,
@@ -59,7 +59,6 @@ import { useThreadFollow } from "./thread-follow"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { fleetMachines } from "./fleet-entries.js"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
-import { TransferSessionDialog } from "./transfer-session-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { cn } from "./lib/utils"
 import { DomovoiMark } from "./domovoi-mark"
@@ -99,7 +98,34 @@ import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
 import { ThreadComposer } from "./thread-composer"
 import { attachmentName, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
-import { startOpenerRef } from "./start-handoff"
+import { loadingLineRef, startOpenerRef } from "./start-handoff"
+
+// The fresh-start panel is drawn only on a session nothing has run in, so its
+// code loads on first use, and at idle once the shell has painted (the shell
+// prefetches it with the surfaces). Both pieces come from one chunk.
+const loadFreshStart = () => import("./thread-new-session")
+export const freshStartPanel = { prefetch: () => { void loadFreshStart().catch(() => undefined) } }
+const WorktreeReadyHeader = lazy(async () => ({ default: (await loadFreshStart()).WorktreeReadyHeader }))
+const NothingHasRunYet = lazy(async () => ({ default: (await loadFreshStart()).NothingHasRunYet }))
+
+// The move dialog is drawn only once a move has been asked for, from the
+// machine menu, the launcher or /handoff, so its code loads the same way.
+const loadMoveDialog = () => import("./transfer-session-dialog.js")
+export const moveDialog = { prefetch: () => { void loadMoveDialog().catch(() => undefined) } }
+const TransferSessionDialog = lazy(async () => ({ default: (await loadMoveDialog()).TransferSessionDialog }))
+
+// The line a piece's code loads behind, registered by identity so the start
+// flow's focus rules hold for it (start-handoff.ts). It takes no focus of its
+// own: the thread is already open and the start flow decides where focus is,
+// or, for the move dialog, the menu's close returns focus to where it was and
+// the dialog takes it once its code lands.
+function ThreadPieceLoading({ children }: { children: string }) {
+  const line = useRef<HTMLParagraphElement>(null)
+  useEffect(() => loadingLineRef(line.current), [])
+  return (
+    <p ref={line} role="status" tabIndex={-1} className="font-machine text-mono-xs text-faint outline-none">{children}</p>
+  )
+}
 
 // The states name a meaning rather than a colour now, so the palette lives in
 // StatusDot alone instead of being restated per surface.
@@ -271,6 +297,33 @@ function ArchivedSessionNotice({ session }: { session: SessionSummary }) {
 }
 
 const threadClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+
+// The rows the daemon writes when a pause ended a session's turn. A failed
+// interrupt writes "Pause failed for <client>." instead.
+function pauseRows(thread: readonly ThreadItem[], sessionId: string): ThreadItem[] {
+  return thread.filter((item) => item.sessionId === sessionId && item.kind === "system" && /^Paused by .+\.$/u.test(item.body))
+}
+
+// The design's paused notice, with copy that is true today: the turn ended and
+// the session holds nothing back, so there is nothing to resume (ruled Q361 A).
+// The design's "from this client" is left out: the pause row names a client
+// kind, not a connection, and the daemon answers a pause of an idle session as
+// a success without writing one, so a pause another client made in the same
+// window is the row this client finds. Naming the pausing connection on the
+// row is a protocol change (#710 review).
+function StoppedSessionNotice({ at }: { at: Date }) {
+  return (
+    <div
+      role="status"
+      aria-label="Session stopped"
+      className="flex flex-none flex-wrap items-center gap-[11px] border-b border-info-border bg-info-background px-4 py-[11px]"
+    >
+      <span aria-hidden className="size-[7px] shrink-0 rounded-full bg-info" />
+      <span className="text-[12.5px] text-info-foreground">Stopped. The turn ended. The next message you send starts the next turn.</span>
+      <span className="font-machine text-[10.5px] text-info-dim">stopped {threadClock.format(at)}</span>
+    </div>
+  )
+}
 
 // v2 opens a conversation with one mono rule naming where the work happens, and
 // lets it scroll away. The session title is already in the command palette pill
@@ -566,6 +619,17 @@ export function Thread({
     onPendingTransferTargetChange?.(machineId)
   }
   const [transferReceipt, setTransferReceipt] = useState<SessionTransferReceipt | null>(null)
+  // The turn this client stopped, and the pause rows the thread held before
+  // the stop. The wire has no paused state: session.pause ends the running
+  // turn and the next send starts another (ruled Q361 A). The daemon answers
+  // the RPC successfully either way and records the outcome as a system row,
+  // so only a new "Paused by <client>." row says the turn ended. Any later
+  // turn retires the notice.
+  const [stopped, setStopped] = useState<{ turnId: string, earlierPauseRows: ReadonlySet<string> }>()
+  const runningTurnId = active?.activeTurnId
+  useEffect(() => {
+    if (runningTurnId && stopped && runningTurnId !== stopped.turnId) setStopped(undefined)
+  }, [runningTurnId, stopped])
   const [pending, setPending] = useState(false)
   // Local only, and never a thread item. The daemon owns the thread, so an
   // in-flight message is shown beside it as a note, not forged into it.
@@ -575,6 +639,8 @@ export function Thread({
   // `arrivedAt` is the pending gates (ids and revisions) when the refusal
   // arrived. It is cleared by the first change to them that keeps the gate.
   const [approvalRefusal, setApprovalRefusal] = useState<{ approvalId: string, message: string, arrivedAt?: string }>()
+  const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(null)
+  const resolvingApproval = useRef<string | null>(null)
   // The gates pending in the latest snapshot, read when a refusal arrives to
   // place it: a refusal can come back after the snapshot has moved on.
   const pendingApprovalIds = useRef(new Set<string>())
@@ -708,6 +774,25 @@ export function Thread({
   }
 
   const providerRestartRequired = active.state === "failed" && !active.providerThreadId
+  // The worktree of a session nothing has run in yet: no turn is running or
+  // being sent, it has a worktree to be ready, and its thread holds only what
+  // session.create writes (a session-start checkpoint and system rows), no
+  // message, tool call, receipt or refusal. Ruled Q368 A.
+  //
+  // The rendered thread is bounded (boundedClientThread) to the newest rows
+  // of the active session, and the bound takes those before any other
+  // session's rows. Fewer rows than the bound means the session's whole
+  // thread is here; at the bound the older rows may be gone, and an old
+  // session whose retained tail is all checkpoints or system rows would pass
+  // for fresh. A session with that many rows has run something anyway.
+  const wholeThreadRendered = renderedThread.length < maximumEffectiveClientThreadItems
+  const nothingHasRun = wholeThreadRendered && !renderedThread.some((item) =>
+    item.kind === "user" || item.kind === "assistant" || item.kind === "tool" || item.kind === "receipt" || item.kind === "policy-refusal"
+  )
+  const freshWorktree = nothingHasRun && !active.activeTurnId && sending === null
+    && !archiveReadOnly && !active.providerFailure && active.state !== "failed"
+    ? active.workspacePath
+    : undefined
   const forkCheckpoint = snapshot.thread.filter((item) =>
     item.sessionId === active.id && item.kind === "checkpoint" && item.commit
   ).at(-1)
@@ -864,6 +949,15 @@ export function Thread({
     }
   }
 
+  // When the daemon recorded a pause after this client asked for one, if it
+  // has. The row may be another client's (see StoppedSessionNotice), which
+  // still means the turn ended.
+  const stoppedAt = (() => {
+    if (!stopped) return undefined
+    const recorded = pauseRows(snapshot.thread, active.id).find((row) => !stopped.earlierPauseRows.has(row.id))
+    return recorded ? new Date(recorded.createdAt) : undefined
+  })()
+
   const pauseSession = async () => {
     if (watching || pending || !active.activeTurnId) return
     setPending(true)
@@ -871,8 +965,11 @@ export function Thread({
     // Stopping is a refusal to run more work in this session. Without this the
     // queue would leave at the boundary the stop itself created.
     if (queued) onQueuedChange(heldAfter(queued, "Held because this session was stopped. Send it when you want it to run."))
+    const turnId = active.activeTurnId
+    const earlierPauseRows = new Set(pauseRows(snapshot.thread, active.id).map((row) => row.id))
     try {
       await onPauseSession(active.id)
+      setStopped({ turnId, earlierPauseRows })
     } catch (cause) {
       setSendError(cause instanceof Error ? cause.message : "The session could not be paused")
     } finally {
@@ -979,10 +1076,18 @@ export function Thread({
     decision: ApprovalDecision,
     explanation?: string,
   ) => {
-    if (watching) return
+    // One decision in flight at a time: until it is answered, no press reaches
+    // this gate again or the next one drawn in its place. The ref holds it
+    // between two clicks that land before a render.
+    if (watching || resolvingApproval.current) return
+    resolvingApproval.current = approval.id
+    setResolvingApprovalId(approval.id)
     setSendError("")
     setApprovalRefusal(undefined)
-    void onResolve(approval.id, decision, explanation, approval.revision).catch((cause: unknown) => {
+    void onResolve(approval.id, decision, explanation, approval.revision).finally(() => {
+      resolvingApproval.current = null
+      setResolvingApprovalId(null)
+    }).catch((cause: unknown) => {
       // The daemon answered and refused, a checkpoint it could not take
       // among the reasons: the gate card shows its words. Anything else,
       // such as a dropped connection, did not reach an answer and stays
@@ -1001,16 +1106,30 @@ export function Thread({
 
   return (
     <main className="flex h-full min-w-0 flex-col bg-background">
+      {/* Shown once the stopped turn has ended, where the design draws its
+          session notice: a strip above the thread. */}
+      {stoppedAt && !active.activeTurnId ? <StoppedSessionNotice at={stoppedAt} /> : null}
+      {freshWorktree ? (
+        <Suspense fallback={null}>
+          <WorktreeReadyHeader workspacePath={freshWorktree} baseCommit={active.baseCommit} />
+        </Suspense>
+      ) : null}
       <ScrollArea className="min-h-0 flex-1" viewportRef={threadViewport} onViewportScroll={follow.onScroll}>
         {/* One column with the composer: 24px of side padding inside the
             maximum leaves the content box at --shell-thread, the composer
             card's width. */}
         <div data-thread-column="" className="mx-auto flex w-full max-w-[calc(var(--shell-thread)+3rem)] flex-col gap-5 px-6 pt-6 pb-14">
-          <ThreadStartLine
-            {...(snapshot.project ? { project: snapshot.project.name, branch: snapshot.project.branch } : {})}
-            {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}
-            {...(threadStartedAt ? { startedAt: threadStartedAt } : {})}
-          />
+          {freshWorktree ? (
+            <Suspense fallback={<ThreadPieceLoading>Opening the fresh-start panel</ThreadPieceLoading>}>
+              <NothingHasRunYet runtime={active.runtime} />
+            </Suspense>
+          ) : (
+            <ThreadStartLine
+              {...(snapshot.project ? { project: snapshot.project.name, branch: snapshot.project.branch } : {})}
+              {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}
+              {...(threadStartedAt ? { startedAt: threadStartedAt } : {})}
+            />
+          )}
           {active.state === "archived" ? <ArchivedSessionNotice session={active} /> : null}
           {providerRestartRequired ? (
             <FailedReadState
@@ -1107,7 +1226,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} connected={connected} refusal={cardShowsRefusal ? approvalRefusal?.message : undefined} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard key={approval.id} deciding={resolvingApprovalId !== null} surface={surface} approval={approval} watching={watching} connected={connected} refusal={cardShowsRefusal ? approvalRefusal?.message : undefined} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (
@@ -1162,6 +1281,7 @@ export function Thread({
           emergencyStopPending={emergencyStopPending}
           providerRestartRequired={providerRestartRequired}
           surface={surface}
+          {...(freshWorktree && snapshot.project ? { freshProject: snapshot.project.name } : {})}
           machineName={snapshot.machine.name}
           prompt={prompt}
           onPromptChange={setPrompt}
@@ -1220,32 +1340,34 @@ export function Thread({
             />
           ) : null}
           {!readOnly && onTransferSession && transferTarget ? (
-            <TransferSessionDialog
-              open
-              onOpenChange={(open) => { if (!open) setTransferTargetId(null) }}
-              session={active}
-              source={sourceMachine}
-              target={transferTarget}
-              onTransfer={onTransferSession}
-              onPreview={onPreviewTransfer!}
-              onTransferred={(machineId) => {
-                setTransferTargetId(null)
-                onSelectMachine?.(machineId)
-              }}
-              onOutcome={(result) => setTransferReceipt({
-                targetLabel: transferTarget.label,
-                sourceLabel: sourceMachine.label,
-                result,
-              })}
-              {...(onReleaseSession ? {
-                onRecoverSource: (transferId: string) => onReleaseSession({
-                  sessionId: active.id,
-                  transferId,
-                  confirmation: "target-does-not-have-session",
-                }).then(() => undefined),
-              } : {})}
-              onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: true })}
-            />
+            <Suspense fallback={<ThreadPieceLoading>Opening the move dialog</ThreadPieceLoading>}>
+              <TransferSessionDialog
+                open
+                onOpenChange={(open) => { if (!open) setTransferTargetId(null) }}
+                session={active}
+                source={sourceMachine}
+                target={transferTarget}
+                onTransfer={onTransferSession}
+                onPreview={onPreviewTransfer!}
+                onTransferred={(machineId) => {
+                  setTransferTargetId(null)
+                  onSelectMachine?.(machineId)
+                }}
+                onOutcome={(result) => setTransferReceipt({
+                  targetLabel: transferTarget.label,
+                  sourceLabel: sourceMachine.label,
+                  result,
+                })}
+                {...(onReleaseSession ? {
+                  onRecoverSource: (transferId: string) => onReleaseSession({
+                    sessionId: active.id,
+                    transferId,
+                    confirmation: "target-does-not-have-session",
+                  }).then(() => undefined),
+                } : {})}
+                onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: true })}
+              />
+            </Suspense>
           ) : null}
         </ThreadComposer>
         {!readOnly ? (

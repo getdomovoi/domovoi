@@ -139,6 +139,35 @@ it("opens from typed slash text and keeps all six design commands while dimming 
   expect(screen.getByText(/to go somewhere$/u)).toBeTruthy()
 })
 
+// /run sends the agent a request to run the command; nothing runs from the
+// composer itself, and no gate field says where a request came from. /skill
+// with Auto on: the daemon requires a trusted skill and refuses the turn
+// otherwise (skill-context.ts, requireTrusted in Build with Auto).
+it("describes /run and /skill by what the daemon does", async () => {
+  const user = userEvent.setup()
+  render(<ThreadWith />)
+
+  await user.type(field(), "/")
+
+  const list = screen.getByRole("listbox", { name: "THIS TURN" })
+  const note = (name: RegExp) => within(list).getByRole("option", { name }).getAttribute("title")
+  expect(note(/^\/run /u)).toBe("Asks the agent to run it in the worktree. Gates and rules apply as to any command the agent runs.")
+  expect(note(/^\/skill /u)).toBe("Loads a skill for this turn only. With Auto on, the daemon refuses a skill that is not trusted.")
+})
+
+// Ruled Q341 A: revert is worktree-only. checkpoint.restore resets the files,
+// records a checkpoint of the state before it and a system row, and leaves
+// every turn in the thread (apps/daemon/src/server.ts, checkpoint.restore).
+it("says /revert resets the worktree and leaves the thread", async () => {
+  const user = userEvent.setup()
+  render(<ThreadWith />)
+
+  await user.type(field(), "/")
+
+  const revert = within(screen.getByRole("listbox", { name: "THIS TURN" })).getByRole("option", { name: /^\/revert /u })
+  expect(revert.getAttribute("title")).toBe("Resets the worktree to that checkpoint and keeps a checkpoint of the state before it. The thread keeps every turn.")
+})
+
 // The design's arguments are its fictional session. A list that showed them
 // would name a checkpoint, a skill and a machine this session does not have.
 it("names only what this session has, and the argument's shape otherwise", async () => {

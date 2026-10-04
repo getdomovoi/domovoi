@@ -44,6 +44,13 @@ it("says when there is no reference at all rather than naming one", () => {
   expect(screen.queryByText(/Recorded against/)).toBeNull()
 })
 
+// Ruled Q339 A: the card calls it a note, and so does its receipt.
+it("calls a denial's words a note, as the card does", () => {
+  render(<ApprovalReceipt receipt={receipt({ decision: "deny-explain", explanation: "Not on production" })} />)
+  expect(screen.getByText("Denied with a note")).toBeTruthy()
+  expect(screen.getByText("Nothing ran. The note is recorded here; the agent was told only that you denied it.")).toBeTruthy()
+})
+
 it("does not claim the agent heard a denial explanation", () => {
   render(<ApprovalReceipt receipt={receipt({ decision: "deny-explain" })} />)
   expect(screen.getByText(/the agent was told only that you denied it/)).toBeTruthy()

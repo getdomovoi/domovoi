@@ -138,7 +138,7 @@ import {
 } from "./workspace-selectors"
 import { LauncherDialog, type LauncherMode, ProjectSwitchConfirmationDialog } from "./launcher-dialog"
 import { AppBar, useUsageToday } from "./app-bar"
-import { ArchiveConfirmBody, Thread, archiveSessionDescription } from "./thread"
+import { ArchiveConfirmBody, Thread, archiveSessionDescription, freshStartPanel, moveDialog } from "./thread"
 
 export { CheckpointThreadItem, SessionReadOnlyNotice, SessionRow, type SessionTransferReceipt, Thread, archiveSessionDescription, providerFailureActionCopy, sessionStatusMeaning, sessionTransferReceiptText } from "./thread"
 
@@ -174,7 +174,10 @@ const auditSurface = lazySurface("Audit log", async () => (await import("./audit
 // A refused start is rare, and its card carries the trust sheet, so it loads
 // like a surface rather than with the shell.
 const refusalSurface = lazySurface("the refusal", async () => (await import("./session-refusal-card")).SessionRefusalCard)
-const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface, refusalSurface]
+// The fresh-start panel is the first thing a new session shows, and the move
+// dialog opens from the machine menu, the launcher or /handoff, so both are
+// prefetched with them (thread.tsx).
+const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface, refusalSurface, freshStartPanel, moveDialog]
 const SettingsShell = settingsSurface.Surface
 const SkillsSurface = skillsSurface.Surface
 const FleetView = machinesSurface.Surface

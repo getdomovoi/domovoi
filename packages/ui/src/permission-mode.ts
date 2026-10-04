@@ -3,26 +3,56 @@ import type { PermissionMode, Runtime } from "@getdomovoi/protocol"
 // The protocol has three modes and a separate auto flag that is only legal with
 // build. The pre-v2 UI offered "Read only / Ask before writes / Auto in
 // worktree", which matched neither, and let auto survive a move out of build.
+// What each mode does depends on what the daemon enforces for the provider,
+// so the notes come from permissionModeNote rather than living here.
 export const permissionModes = [
-  {
-    id: "plan",
-    label: "Plan",
-    meaning: "handoff",
-    note: "Reads and proposes. It cannot write or run anything.",
-  },
-  {
-    id: "ask",
-    label: "Ask",
-    meaning: "waiting",
-    note: "Writes and commands ask first, one at a time.",
-  },
-  {
-    id: "build",
-    label: "Build",
-    meaning: "online",
-    note: "Writes and runs inside the worktree. Gates still apply.",
-  },
-] as const satisfies readonly { id: PermissionMode; label: string; meaning: string; note: string }[]
+  { id: "plan", label: "Plan", meaning: "handoff" },
+  { id: "ask", label: "Ask", meaning: "waiting" },
+  { id: "build", label: "Build", meaning: "online" },
+] as const satisfies readonly { id: PermissionMode; label: string; meaning: string }[]
+
+// What holds the provider in Plan and Ask, as the daemon configures it:
+// - Codex runs both in its read-only sandbox (codexPolicyFor: domovoi-read),
+//   so it can still run commands, and they cannot write. Plan never asks
+//   (approvalPolicy never). Ask is approvalPolicy on-request, and every
+//   commandExecution approval request becomes a Domovoi gate, so a command
+//   that needs more than the sandbox gives asks first. An Allow there runs
+//   it outside the sandbox, and a standing rule whose digest matches answers
+//   the gate without a prompt in any mode (server.ts matchingRule), so Codex
+//   Ask is read-only by default rather than reads only.
+// - opencode and kilo deny edit and bash to the plan and domovoi-ask agents.
+// - Claude in Ask: Claude Code approves its own read-only Bash and file reads
+//   inside the working directory before Domovoi's callback runs
+//   (claude-read-scope.ts), so cat, ls and read-only git run; past that the
+//   callback allows only Read, Glob, Grep, WebFetch and WebSearch and refuses
+//   the rest, edits included. Plan is Claude's own plan permission mode.
+// - Any other provider: Ask is read-only where the daemon allows it at all,
+//   and Plan is the provider's own plan mode, which the daemon does not hold.
+export function readOnlyEnforcement(mode: "plan" | "ask", provider: string): string {
+  if (provider === "codex") {
+    return mode === "plan"
+      ? "Commands run in a read-only sandbox, so nothing is written."
+      : "Commands run in a read-only sandbox. A command that needs more asks you first. One a standing rule allows runs without asking."
+  }
+  if (provider === "opencode" || provider === "kilo") return "Edits and shell commands are refused."
+  if (provider === "claude-code") return mode === "plan" ? "Claude's own plan mode makes no changes." : "Edits are refused; only read-only shell commands inside the worktree run."
+  return mode === "plan" ? "The provider's own plan mode decides what it may run." : "Anything that would write is refused."
+}
+
+// Whether a provider can raise a gate in Ask, which an Allow answers with a
+// checkpoint first. Only Codex asks there; the others refuse.
+export function askRaisesGates(provider: string): boolean {
+  return provider === "codex"
+}
+
+// Ask opens "Reads only" where the provider refuses everything else, and
+// "Reads by default" where it asks instead, since a gate or a standing rule
+// can then let a command write.
+export function permissionModeNote(mode: PermissionMode, provider: string): string {
+  if (mode === "plan") return `Reads and proposes a plan. ${readOnlyEnforcement("plan", provider)}`
+  if (mode === "ask") return `${askRaisesGates(provider) ? "Reads by default." : "Reads only."} ${readOnlyEnforcement("ask", provider)}`
+  return "Writes and runs inside the worktree. Gates still apply."
+}
 
 // `satisfies` proves every entry's id is a real mode. It does not prove the list
 // carries every mode, and the lookup below asserts non-null, so a fourth mode
