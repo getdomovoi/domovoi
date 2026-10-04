@@ -8,6 +8,9 @@ export type ShellState = {
   kind: "restoring" | "unpaired" | "refused" | "reaching" | "ready"
   headline: string
   detail: string
+  // Set on "reaching" when a failure is behind it and the phone is retrying,
+  // as opposed to the first contact of a launch.
+  faulted?: true
 }
 
 export function shellState(input: {
@@ -43,6 +46,7 @@ export function shellState(input: {
     kind: "reaching",
     headline: "Reaching the daemon",
     detail: input.fault?.detail ?? "Nothing has been received from this daemon yet.",
+    ...(input.fault ? { faulted: true as const } : {}),
   }
 }
 

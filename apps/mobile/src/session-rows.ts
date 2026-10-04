@@ -12,6 +12,9 @@ export type SessionRow = {
   // acting rather than watching, so this decides how the row reads.
   attention: "approval" | "preview" | undefined
   dot: "active" | "waiting" | "quiet"
+  // When the approval this session holds was raised, for the clock the row
+  // shows after its machine. Undefined when nothing waits on the person.
+  waitingSince: string | undefined
 }
 
 // How long something has been waiting, in the shortest form that is still true.
@@ -40,9 +43,15 @@ const attentionRank: Record<"approval" | "preview" | "none", number> = {
 export function sessionRows(snapshot: WorkspaceSnapshot): SessionRow[] {
   // The snapshot carries only approvals still waiting on a person; decided ones
   // become receipts in the thread.
-  const awaiting = new Map(
-    snapshot.approvals.map((approval) => [approval.sessionId, approval.requestedAt]),
-  )
+  // A session holding more than one approval has waited since the earliest,
+  // whatever order the snapshot lists them in.
+  const awaiting = new Map<string, string>()
+  for (const approval of snapshot.approvals) {
+    const held = awaiting.get(approval.sessionId)
+    if (held === undefined || Date.parse(approval.requestedAt) < Date.parse(held)) {
+      awaiting.set(approval.sessionId, approval.requestedAt)
+    }
+  }
   const previewable = new Set(
     snapshot.artifacts.filter((artifact) => artifact.type === "plan" || artifact.type === "preview")
       .map((artifact) => artifact.sessionId),
@@ -68,6 +77,7 @@ export function sessionRows(snapshot: WorkspaceSnapshot): SessionRow[] {
           dot: session.state === "active"
             ? "active" as const
             : session.state === "waiting" ? "waiting" as const : "quiet" as const,
+          waitingSince: awaiting.get(session.id),
         },
       }
     })

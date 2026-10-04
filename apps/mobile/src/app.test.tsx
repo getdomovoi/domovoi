@@ -110,6 +110,23 @@ const audit = demoWorkspace.sessions.find((session) => session.id === "session-a
 const approval = demoWorkspace.approvals[0]!
 
 describe("App", () => {
+  // Sessions draws the idle card's fleet rows and the UNREACHABLE line from
+  // the fleet, so opening on Sessions asks for it, without waiting for the
+  // Machines tab.
+  it("asks for the fleet when Sessions opens", async () => {
+    const { socket } = await openApp(workspace())
+    expect(socket.requests("fleet.list").length).toBeGreaterThan(0)
+  })
+
+  it("names the session a gate belongs to above it", async () => {
+    expect(approval.sessionId).toBe(billing.id)
+    await openApp(workspace())
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+
+    expect(screen.getByRole("header", { name: "Waiting on you" })).toBeOnTheScreen()
+    expect(screen.getByText(billing.title)).toBeOnTheScreen()
+  })
+
   it("answers the gate it opened with one approval.resolve carrying that approval's id", async () => {
     const { socket } = await openApp(workspace())
     await fireEvent.press(screen.getByRole("button", { name: billing.title }))
@@ -206,6 +223,112 @@ describe("App", () => {
 
     expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()
     expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeOnTheScreen()
+  })
+
+  // Ruling Q356 A: Tell the agent on a policy refusal sends the refusal's
+  // remedy to the session as a steer, through the same session.send a typed
+  // message uses.
+  it("sends a policy refusal's remedy to the agent", async () => {
+    const snapshot = workspace()
+    const session = snapshot.sessions.find((candidate) => candidate.id === audit.id)!
+    session.workspacePath = "/worktrees/repo-audit"
+    session.providerThreadId = "provider-thread-audit"
+    snapshot.thread.push({
+      id: "refusal-audit",
+      sessionId: audit.id,
+      kind: "policy-refusal",
+      operation: "Apply a production database migration",
+      command: "prisma migrate deploy --url $PROD_DATABASE_URL",
+      rule: "no writes to a production database",
+      setBy: "dana@acme.dev",
+      scope: "every machine on this account",
+      remedy: "Run it against acme_dev instead.",
+      createdAt: "2026-08-25T23:00:00.000Z",
+    })
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))
+    await settle()
+
+    const sent = socket.requests("session.send")
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.params).toMatchObject({ sessionId: audit.id, prompt: "Run it against acme_dev instead.", client: "phone" })
+  })
+
+  // The turn can end between the phone's snapshot and the send. The daemon
+  // then holds the queued remedy with its reason (no boundary can release
+  // it), so the refusal must not promise it reaches the agent at turn end.
+  it("says a remedy the daemon held is held, not on its way", async () => {
+    const snapshot = workspace()
+    const session = snapshot.sessions.find((candidate) => candidate.id === audit.id)!
+    session.workspacePath = "/worktrees/repo-audit"
+    session.providerThreadId = "provider-thread-audit"
+    session.activeTurnId = "provider-turn-audit"
+    snapshot.thread.push({
+      id: "refusal-audit",
+      sessionId: audit.id,
+      kind: "policy-refusal",
+      operation: "Apply a production database migration",
+      command: "prisma migrate deploy --url $PROD_DATABASE_URL",
+      rule: "no writes to a production database",
+      setBy: "dana@acme.dev",
+      scope: "every machine on this account",
+      remedy: "Run it against acme_dev instead.",
+      createdAt: "2026-08-25T23:00:00.000Z",
+    })
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Tell the agent" }))
+    expect(socket.requests("session.send")[0]?.params).toMatchObject({ delivery: "next-turn-replace" })
+
+    const reason = "No provider turn is active, so no successful boundary can release this send."
+    const reply = structuredClone(snapshot)
+    reply.sessions.find((candidate) => candidate.id === audit.id)!.activeTurnId = undefined
+    reply.queuedSends = [{
+      id: "queue-audit",
+      sessionId: audit.id,
+      state: "held",
+      reason,
+      createdAt: "2026-08-25T23:01:00.000Z",
+      origin: { client: "phone", connectionId: "3f1c2b8e-1d2a-4c5b-9e6f-7a8b9c0d1e2f" },
+      skillIds: [],
+      attachments: [],
+    }]
+    await act(async () => { socket.answer("session.send", reply) })
+    await settle()
+
+    expect(screen.getByText("Held. It will not reach the agent on its own.")).toBeOnTheScreen()
+    expect(screen.queryByText("Sent. It will reach the agent when this turn ends.")).toBeNull()
+  })
+
+  // A send's failure belongs to the session it was for. One that lands after
+  // the person has moved to another session must not show there.
+  it("keeps a late send failure on the session it was for", async () => {
+    const snapshot = workspace()
+    snapshot.approvals = []
+    for (const session of snapshot.sessions) {
+      session.workspacePath = `/worktrees/${session.id}`
+      session.providerThreadId = `provider-thread-${session.id}`
+    }
+    const { socket } = await openApp(snapshot)
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    await fireEvent.changeText(screen.getByLabelText("Reply to this session"), "Check the lockfile too")
+    await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+    await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    const request = socket.requests("session.send")[0]!
+    await act(async () => {
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: "The audit session refused the send" } }) })
+    })
+    await settle()
+
+    expect(screen.queryByText(/The audit session refused the send/)).toBeNull()
+
+    // The failure is kept for the session it was for, and shown there when the
+    // person comes back, because the draft it carried is gone.
+    await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+    await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+    expect(screen.getByText(/The audit session refused the send/)).toBeOnTheScreen()
   })
 
   it("sends one turn for a double tap on Send", async () => {

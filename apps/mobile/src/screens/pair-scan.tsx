@@ -2,7 +2,7 @@ import { decodePairingPayload, phoneAndTabletPromise, type PairingPayload } from
 import { CameraView, useCameraPermissions, type PermissionResponse } from "expo-camera"
 import * as Clipboard from "expo-clipboard"
 import { useCallback, useEffect, useRef, useState, type ComponentType } from "react"
-import { TextInput, View } from "react-native"
+import { Pressable, TextInput, View } from "react-native"
 
 import { gateReach } from "../gate-reach"
 import { route } from "../launch-state"
@@ -11,6 +11,7 @@ import { redeemPairingCode, type PairedCredential } from "../lib/redeem-pairing-
 import { PageScroller } from "../components/page-scroller"
 import { Button } from "../components/ui/button"
 import { Card } from "../components/ui/card"
+import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import { useTheme } from "../theme/theme-provider"
 
@@ -46,12 +47,50 @@ function CameraScanner({ onScanned }: { onScanned: (text: string) => void }) {
   )
 }
 
+// The pairing screens are a sheet over the shell: a close control and the
+// screen's name, rather than a page heading. Before pairing it cancels; once
+// paired there is nothing left to cancel, so it closes.
+function NavRow({ label, onPress }: { label: "Cancel" | "Close", onPress: () => void }) {
+  return (
+    <View className="flex-row items-center gap-2.5 px-4 pb-2.5 pt-1.5">
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={label}
+        onPress={onPress}
+        className="min-h-tap min-w-tap -ml-3 items-center justify-center active:opacity-70"
+      >
+        <Icon name="x" tone="muted" />
+      </Pressable>
+      <Text className="font-sans text-[13px] text-muted-foreground">Pair with a machine</Text>
+    </View>
+  )
+}
+
+// The viewfinder's four corners, drawn over the camera so it says where the
+// code goes without covering it.
+function Reticle() {
+  const corner = "absolute h-[46px] w-[46px] border-primary"
+  return (
+    <View pointerEvents="none" className="absolute inset-0 items-center justify-center">
+      <View className="h-[208px] w-[208px]">
+        <View className={`${corner} left-0 top-0 rounded-tl-[20px] border-l-[3px] border-t-[3px]`} />
+        <View className={`${corner} right-0 top-0 rounded-tr-[20px] border-r-[3px] border-t-[3px]`} />
+        <View className={`${corner} bottom-0 left-0 rounded-bl-[20px] border-b-[3px] border-l-[3px]`} />
+        <View className={`${corner} bottom-0 right-0 rounded-br-[20px] border-b-[3px] border-r-[3px]`} />
+      </View>
+    </View>
+  )
+}
+
 function machineName(payload: PairingPayload): string {
   if (payload.label) return payload.label
   try { return new URL(payload.url).hostname } catch { return payload.url }
 }
 
-type Paired = { machine: string, route: string, deviceId: string | undefined }
+// client is the kind of the credential the code minted, which the machine
+// fixed when it issued the code. It can differ from the device: a tablet that
+// spends a phone's code holds a phone credential.
+type Paired = { machine: string, route: string, deviceId: string | undefined, client: HandheldClient }
 
 // The machine's id for this device, shortened the way the design draws it. The
 // token is never shown; this id is not a secret.
@@ -80,6 +119,11 @@ function PairedCard({ paired, device, onDone }: {
           <Text variant="section" className="flex-1">{`Paired with ${paired.machine}`}</Text>
         </View>
         <Text variant="machine" className="pl-[17px] text-faint">{facts}</Text>
+        {paired.client !== device ? (
+          <Text variant="meta" className="pl-[17px]">
+            {`Paired as a ${paired.client}, because the code was issued for one.`}
+          </Text>
+        ) : null}
       </View>
       <View className="flex-row items-start gap-2.5 border-t border-border pt-3">
         <View className="mt-[7px] h-1.5 w-1.5 rounded-full bg-info" />
@@ -125,8 +169,9 @@ export function PairScanScreen({
   // Injected so a test can spend a code without a daemon.
   redeem?: (payload: PairingPayload, label: string) => Promise<PairedCredential & { deviceId?: string }>
   onCancel: () => void
-  // What the floating tab bar covers, so Cancel and the paste field sit
-  // above it and the keyboard can push the field into view.
+  // What a host floats over the foot of the screen, so the scroller pads by
+  // it and the keyboard can push the paste field into view. app.tsx draws
+  // pairing full screen with no tab bar and passes nothing, so it is 0 there.
   bottomInset?: number
   // What the machine's device list will call this phone.
   deviceName?: string
@@ -158,9 +203,7 @@ export function PairScanScreen({
   if (paired) {
     return (
       <View className="flex-1 bg-background">
-        <View className="px-4 pb-3 pt-2">
-          <Text variant="heading">Pair a machine</Text>
-        </View>
+        <NavRow label="Close" onPress={onDone} />
         <PairedCard paired={paired} device={device} onDone={onDone} />
       </View>
     )
@@ -168,11 +211,8 @@ export function PairScanScreen({
 
   return (
     <View className="flex-1 bg-background">
-      <View className="px-4 pb-3 pt-2">
-        <Text variant="heading">Pair a machine</Text>
-        <Text variant="meta" className="mt-[3px]">Scan the code the machine shows, or paste it.</Text>
-      </View>
-      <PageScroller contentContainerClassName="gap-[14px] px-3" bottomInset={bottomInset} keyboardShouldPersistTaps="handled">
+      <NavRow label="Cancel" onPress={() => { attempt.current += 1; onCancel() }} />
+      <PageScroller contentContainerClassName="grow gap-[14px] px-4" bottomInset={bottomInset} keyboardShouldPersistTaps="handled">
         {found ? (
           <Card className="gap-3">
             <Text variant="label">Machine</Text>
@@ -180,27 +220,34 @@ export function PairScanScreen({
             {/* The phone can check the credential's shape, not its scope: a
                 daemon's own credential has the same shape and can do anything
                 on that machine. The promise is conditional and says so. */}
-            <Text variant="label">A paired phone can</Text>
+            <Text variant="label" className="tracking-[0.13em]">
+              {device === "tablet" ? "THIS TABLET WILL BE ABLE TO" : "THIS PHONE WILL BE ABLE TO"}
+            </Text>
             {/* The card's own list, including the line it does not keep yet,
                 read from the protocol so this screen and the machine's card
-                cannot come to say different things. */}
-            {phoneAndTabletPromise.map((line) => (
-              <Text
-                key={line.text}
-                variant="note"
-                className={line.tone === "unbuilt" ? "text-warning" : ""}
-              >{line.text}</Text>
-            ))}
+                cannot come to say different things. A grant wears the success
+                dot and a limit the info dot, as the machine's card draws them. */}
+            <View className="gap-1.5">
+              {phoneAndTabletPromise.map((line) => (
+                <View key={line.text} className="flex-row items-start gap-2">
+                  <View className={line.tone === "granted" ? "mt-[6px] h-1.5 w-1.5 rounded-full bg-success" : "mt-[6px] h-1.5 w-1.5 rounded-full bg-info"} />
+                  <Text className="flex-1 font-sans text-[11.5px] leading-[17px] text-strong">{line.text}</Text>
+                </View>
+              ))}
+            </View>
             <Text variant="note">
-              That is the scope of a credential the machine minted with domovoid pair --client phone; the daemon refuses everything else to it. The phone cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this phone's keychain.
+              {/* The payload names no kind, so before the code is spent the
+                  note cannot say which one it mints; the paired card says so
+                  if the kind is not this device's. */}
+              {`That is the scope of a credential the machine minted with domovoid pair for a phone or a tablet; the daemon refuses everything else to it. The ${device} cannot tell that credential from the machine's own, which can do anything on that machine. Either way it stays in this ${device}'s keychain.`}
             </Text>
-            <Text variant="label">Name this phone</Text>
+            <Text variant="label">{device === "tablet" ? "Name this tablet" : "Name this phone"}</Text>
             <TextInput
-              accessibilityLabel="Phone name"
+              accessibilityLabel={device === "tablet" ? "Tablet name" : "Phone name"}
               value={name}
               onChangeText={setName}
               autoCorrect={false}
-              placeholder="iPhone"
+              placeholder={device === "tablet" ? "iPad" : "iPhone"}
               placeholderTextColor={palette.faint}
               selectionColor={palette.primary}
               editable={!pairing}
@@ -222,7 +269,7 @@ export function PairScanScreen({
                   (result) => {
                     if (attempt.current !== mine) return
                     const { deviceId, ...credential } = result
-                    setPaired({ machine: machineName(found), route: route(found.url).kind, deviceId })
+                    setPaired({ machine: machineName(found), route: route(found.url).kind, deviceId, client: credential.client })
                     onPaired(credential)
                   },
                   (cause: unknown) => {
@@ -236,10 +283,11 @@ export function PairScanScreen({
             <Button title="Scan again" variant="ghost" shape="block" disabled={pairing} onPress={() => { attempt.current += 1; setRead(undefined); setPasted(""); setRefusal("") }} />
           </Card>
         ) : mode === "type" ? null : cameraReady && !cameraRefused ? (
-          <View className="h-[300px] overflow-hidden rounded-xl border border-border">
+          <View className="min-h-[300px] flex-1 overflow-hidden rounded-[20px] bg-code">
             <Scanner onScanned={onScanned} />
-            <View pointerEvents="none" className="absolute inset-x-3 bottom-3 rounded-lg bg-desk/80 px-3 py-2.5">
-              <Text className="text-center text-[12px] text-foreground">
+            <Reticle />
+            <View pointerEvents="none" className="absolute inset-x-[18px] bottom-[18px]">
+              <Text className="text-center font-sans text-[12.5px] leading-[19px] text-muted-foreground">
                 Point at the pairing code that domovoid pair prints on the machine.
               </Text>
             </View>
@@ -259,8 +307,8 @@ export function PairScanScreen({
           <Text className="px-1 font-sans-medium text-[11.5px] text-destructive">{read.reason}</Text>
         ) : null}
         {found ? null : (
-          <Card className="gap-1.5">
-            <Text variant="label">Or type the code</Text>
+          <View className="gap-[9px] rounded-[16px] border border-border px-[15px] py-[13px]">
+            <Text className="font-sans text-[12.5px] text-strong">Or type the code</Text>
             <View className="flex-row items-center gap-2">
               <TextInput
                 accessibilityLabel="Pairing code"
@@ -274,19 +322,19 @@ export function PairScanScreen({
                 placeholder="domovoi-pair:1:…"
                 placeholderTextColor={palette.faint}
                 selectionColor={palette.primary}
-                className="min-h-tap flex-1 rounded-md border border-border bg-code px-3 font-mono text-[11px] text-foreground"
+                className="min-h-tap flex-1 rounded-[14px] bg-accent px-3.5 font-mono text-[11px] text-foreground"
               />
               <Button
                 title="Paste"
+                variant="quiet"
                 onPress={() => void readClipboard().then((text) => {
                   setPasted(text)
                   setRead(text.trim() ? readPairingScan(text) : undefined)
                 })}
               />
             </View>
-          </Card>
+          </View>
         )}
-        <Button title="Cancel" variant="ghost" shape="block" onPress={() => { attempt.current += 1; onCancel() }} />
       </PageScroller>
     </View>
   )

@@ -112,6 +112,9 @@ describe("ArtifactScreen plan", () => {
     expect(screen.getByRole("checkbox", { name: "claims an unseen event id", checked: true })).toBeOnTheScreen()
     expect(screen.getByRole("checkbox", { name: "releases an expired claim", checked: false })).toBeOnTheScreen()
     expect(screen.queryByText("# Idempotent billing webhooks")).toBeNull()
+    // Frame 16 draws a bullet as a dot, not a glyph a screen reader reads out.
+    expect(screen.queryByText("•")).toBeNull()
+    expect(screen.getByText("1.")).toBeOnTheScreen()
     openURL.mockRestore()
   })
 })
@@ -175,8 +178,13 @@ describe("ArtifactScreen preview", () => {
 
     expect(props.onOpenVariant).toHaveBeenCalledWith("artifact-preview-b")
     expect(screen.getByRole("button", { name: "Variant A" }).props.accessibilityState).toEqual({ selected: true })
-    expect(screen.getByText("Viewing a variant does not change the build basis. Choose the build basis on desktop.")).toBeOnTheScreen()
-    expect(screen.getByText("Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment.")).toBeOnTheScreen()
+    // Frame 17 says this once. The second wording said the same thing again.
+    expect(screen.queryByText("Viewing a variant does not change the build basis. Choose the build basis on desktop.")).toBeNull()
+    // Ruling Q342 A: until the chosen variant travels with a comment, a desktop
+    // choice is a bookmark for whoever is viewing and the agent is not told,
+    // so the phone does not say a choice decides what the agent builds on.
+    expect(screen.queryByText(/a choice is a commitment/)).toBeNull()
+    expect(screen.getByText("Marking a variant to build on happens at a desktop, and only as a bookmark for whoever is viewing; the agent is not told which one. To tell the agent, send a comment.")).toBeOnTheScreen()
   })
 
 })
