@@ -488,6 +488,49 @@ describe("staging the shipped runtime under the profile", () => {
       })
     })
 
+    // Codex review of PR #722 (P3-3): the system temporary directory is on
+    // the profile's volume and fails the access gate. Checking a fallback on
+    // another volume after it, or having no fallback, does not turn that into
+    // a different-volume refusal.
+    describe("when the system temporary directory fails the access gate", () => {
+      const groupWritableTemporary = async (overrides: Partial<RuntimeFileSystem> = {}) => {
+        const temporary = await realpath(tmpdir())
+        const real = nodeRuntimeFileSystem()
+        const fileSystem = nodeRuntimeFileSystem({
+          permissions: async (path) => path === temporary ? { uid: me, mode: 0o40775 } : real.permissions(path),
+          ...overrides,
+        })
+        return { temporary, fileSystem }
+      }
+      const words = (path: string) => `The runtime could not be copied out of the app: group or others can write ${path}, and Domovoi stages the copy only where no other account can change it. Remove their write access to ${path}, then try again. Nothing was changed.`
+
+      it("says so when the data directory after it is on another volume", async () => {
+        await withScratch(async ({ root, resources, home }) => {
+          const dataDirectory = join(root, "far")
+          await mkdir(dataDirectory)
+          const identity = nodeRuntimeFileSystem().identity
+          const { temporary, fileSystem } = await groupWritableTemporary({
+            identity: async (path) => path.startsWith(dataDirectory) ? "other-volume:1" : identity(path),
+          })
+          const refused = prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, dataDirectory, fileSystem })
+          await expect(refused).rejects.toThrow(words(temporary))
+          await expect(refused).rejects.not.toThrow("different volume")
+          expect(await readdir(dataDirectory)).toEqual([])
+          expect(await entries(home)).toEqual([])
+        })
+      })
+
+      it("says so when there is no data directory to fall back to", async () => {
+        await withScratch(async ({ resources, home }) => {
+          const { temporary, fileSystem } = await groupWritableTemporary()
+          const refused = prepareDaemonRuntime({ resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4", platform, fileSystem })
+          await expect(refused).rejects.toThrow(words(temporary))
+          await expect(refused).rejects.not.toThrow("different volume")
+          expect(await entries(home)).toEqual([])
+        })
+      })
+    })
+
     it("names the directories it made before an access refusal", () => {
       const refused = new DaemonRuntimeStagingRefusedError("/home/dana/.domovoi", "/home/dana/.local", ["/home/dana/.local/state"], { path: "/home/dana/.local", access: "another-account" }, "linux")
       expect(refused.message).toBe("The runtime could not be copied out of the app: /home/dana/.local belongs to another account, and Domovoi stages the copy only where no other account can change it. It made /home/dana/.local/state, which hold no files, and changed nothing else.")

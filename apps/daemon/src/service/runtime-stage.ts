@@ -559,9 +559,10 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
   }
   // Q413 A: a refusal naming the directory the access gate failed carries
   // why, so the command can say what fixes it. Every refusal follows the
-  // usable() call that decided it.
-  const refusal = (failed: string | undefined, made: readonly string[] = []) =>
-    new DaemonRuntimeStagingRefusedError(input.profileDirectory, failed, made, gate !== undefined && gate.path === failed ? gate : undefined, input.platform)
+  // usable() call that decided it; one when preparing falls back to an
+  // earlier place's reason (earlier) when the last place had none.
+  const refusal = (failed: string | undefined, made: readonly string[] = [], earlier?: StagingAccessFailure) =>
+    new DaemonRuntimeStagingRefusedError(input.profileDirectory, failed, made, (gate !== undefined && gate.path === failed ? gate : undefined) ?? earlier, input.platform)
   // The data directories this staging needs that are not there yet, outermost
   // first: made one at a time, each checked again with usable, at publish.
   // The app's data directory is always there; the one `domovoid service
@@ -616,11 +617,16 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
   let stagingPin: Pin | undefined
   // The staging place by the real path the gate checked (round 3, P2-1).
   let parent: string | undefined
+  // Codex review of PR #722 (P3-3): the system temporary directory's own
+  // access refusal, kept apart from gate, which checking the data directory
+  // after it resets. A place the gate refused is on the profile's volume.
+  let temporary: StagingAccessFailure | undefined
   if (input.stagingParent !== undefined) {
     parent = await usable(input.stagingParent)
     if (parent === undefined) failed = unprotected
   } else {
     parent = await usable(tmpdir())
+    temporary = gate
     const data = parent === undefined && input.dataDirectory !== undefined ? await usableAhead(input.dataDirectory) : undefined
     if (data !== undefined) {
       const candidate = pathApi.join(data, "runtime-staging")
@@ -630,7 +636,11 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
       if (parent === undefined) failed = unprotected ?? candidate
     }
   }
-  if (parent === undefined) throw refusal(failed)
+  // The data directory's access refusal when it had one, else the temporary
+  // directory's, so a place the gate refused is not said to be on a different
+  // volume. Which place failed (failed) is left as it was: the command's own
+  // sentence reads it, and names the temporary directory apart.
+  if (parent === undefined) throw refusal(failed, [], temporary)
   // Pinned to the real path checked, so publish refuses a place that no
   // longer resolves to it.
   if (!missing.includes(parent)) stagingPin = { identity: await fs.identity(parent), realpath: parent }
