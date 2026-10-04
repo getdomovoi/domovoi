@@ -3960,6 +3960,42 @@ describe("DomovoiDaemon", () => {
     })?.items).toEqual([expect.objectContaining({ id: `annotation-reply:${annotation.id}:edited-reply` })])
   })
 
+  it("finds an approval by the label of the device that decided it", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    const createdAt = "2026-08-28T00:00:00.000Z"
+    snapshot.thread = [
+      {
+        id: "receipt-from-phone",
+        sessionId: session.id,
+        kind: "receipt",
+        decision: "allow-once",
+        operation: "Run tests",
+        checkpoint: "checkpoint-one",
+        client: "phone",
+        device: { id: `device-${"a".repeat(32)}`, label: "Dana's phone" },
+        createdAt,
+      },
+      {
+        id: "receipt-without-device",
+        sessionId: session.id,
+        kind: "receipt",
+        decision: "deny",
+        operation: "Push the branch",
+        checkpoint: "checkpoint-one",
+        client: "phone",
+        createdAt,
+      },
+    ]
+    snapshot.annotations = []
+    const index = new SessionHistoryIndex()
+    const search = (query: string) => index.page(snapshot, { sessionId: session.id, query, limit: 50 })?.items.map((item) => item.id)
+
+    expect(search("dana")).toEqual(["thread:receipt-from-phone"])
+    expect(search("push the branch")).toEqual(["thread:receipt-without-device"])
+    expect(search("phone")).toEqual(["thread:receipt-from-phone", "thread:receipt-without-device"])
+  })
+
   it("rejects an aborted history scan before stale work can complete", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
