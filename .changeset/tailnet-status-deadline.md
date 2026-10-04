@@ -16,7 +16,11 @@ turn-off is still answered as done, not as failed, and the switch can change
 again: the card says Not known and "Turned off. The desktop did not answer when
 asked what the switch reads now.", offers "Check again", and still names
 certificate files the turn-off set aside and could not delete, until a read
-answers. Status reads asked for between the same two changes share one: a read
+answers. Since the switch is released before that read, the card keeps its
+changes in order: a change that ends after a newer one has started does not
+replace the newer one's answer, failure or progress, and starts no read of its
+own. The pairing card's "Get it from Tailscale" and "Try again" are disabled
+while the switch is turning on or off, as the switch itself is. Status reads asked for between the same two changes share one: a read
 asked for while another is under way, before or after that one's deadline,
 waits on it under its own deadline instead of starting another. A read asked
 for once a change has started or ended starts its own. A read refused at its

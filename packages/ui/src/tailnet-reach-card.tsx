@@ -182,9 +182,19 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
     }
   }, [present, readOnItsOwn])
 
+  // Codex review of PR #722, round 2 (P3-R2-1): changes are numbered as reads
+  // are. Q439 B releases the desktop's switch before a turn-off's status read,
+  // so a turn-on can start and end while that turn-off waits. An older change
+  // that ends after a newer one has started draws nothing: not its answer,
+  // failure or unread marker, not the end of running, and it starts no read
+  // that would make the newer change's read stale. Every control that starts
+  // a change is disabled while one runs, so only a caller of turnOn or
+  // turnOff directly can overlap two.
+  const changes = useRef(0)
   const change = useCallback(async (direction: Direction): Promise<TailnetReachOutcome | undefined> => {
     const current = sourceRef.current
     if (!current) return undefined
+    const mine = ++changes.current
     changing.current = true
     setFailure(undefined)
     setRunning({ direction, renew: direction === "on" && report?.state === "on" })
@@ -194,6 +204,7 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
     } catch (cause) {
       outcome = { ok: false, reason: "failed", step: direction === "on" ? "status" : "delete", message: cause instanceof Error ? cause.message : "The desktop did not answer." }
     }
+    if (mine !== changes.current) return outcome
     if (outcome.ok && "report" in outcome) {
       setReport(outcome.report)
       setTurnedOffUnread(undefined)
@@ -204,6 +215,7 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
       setTurnedOffUnread(outcome.undeleted === undefined ? {} : { undeleted: outcome.undeleted })
     } else setFailure({ direction, outcome })
     await read().desktop
+    if (mine !== changes.current) return outcome
     changing.current = false
     setRunning(undefined)
     return outcome

@@ -33,7 +33,9 @@ const kinds: Record<Kind, { label: string; noun: string; client: ClientKind; Ico
 
 const browserAddressHow = "Open this address in the browser on that device, then type the code."
 
-type Problem = { title: string; mono: string; still: string; next: string; refusal?: string; action?: { label: string; primary: boolean; run: () => void } }
+// disabled: the action starts a change while one runs. Codex review of PR
+// #722, round 2 (P3-R2-1): a turn-off is a change too.
+type Problem = { title: string; mono: string; still: string; next: string; refusal?: string; action?: { label: string; primary: boolean; run: () => void; disabled?: boolean } }
 
 // The daemon's problem text is shared with `domovoid pair`, which ends it with
 // "then run this again"; the card has its own next step, so the tail goes.
@@ -48,12 +50,12 @@ function problemFor(report: PairingAddressReport, kind: Kind, tailnet: TailnetRe
       return { title: "Asking Tailscale for a certificate", mono: `tailscale cert ${name}`, still: "The daemon restarts once the certificate is stored.", next: "The code button comes back when the certificate arrives." }
     }
     if (tailnet?.failure?.outcome.reason === "https-off") {
-      return { title: "No code: HTTPS certificates are off for this tailnet", mono: name, still: "Domovoi stopped and changed nothing.", next: "A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console.", action: { label: "Try again", primary: false, run: () => void tailnet.turnOn() } }
+      return { title: "No code: HTTPS certificates are off for this tailnet", mono: name, still: "Domovoi stopped and changed nothing.", next: "A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console.", action: { label: "Try again", primary: false, run: () => void tailnet.turnOn(), disabled: tailnet.running !== undefined } }
     }
     return {
       title: `No code: ${noun} would not trust this daemon`, mono: report.problem.replace(/,? then run this again\.$/u, "."), still: "Sessions and this window are unaffected.",
       ...(tailnet
-        ? { next: "Ask Tailscale for one. The key stays on this machine.", action: { label: "Get it from Tailscale", primary: true, run: () => void tailnet.turnOn() } }
+        ? { next: "Ask Tailscale for one. The key stays on this machine.", action: { label: "Get it from Tailscale", primary: true, run: () => void tailnet.turnOn(), disabled: tailnet.running !== undefined } }
         : { next: "Give the daemon a certificate for its tailnet name, then show a code." }),
       // Review of 049b1383 (P3-d): why the last request did not get one.
       ...(tailnet?.failure?.direction === "on" ? { refusal: tailnet.failure.outcome.message } : {}),
@@ -288,7 +290,7 @@ export function PairingCard({
               <span className="text-muted-foreground">{problem ? problem.next : "Show another code to try again."}</span>
               {problem?.refusal ? <span role="alert" className="text-destructive">{problem.refusal}</span> : null}
               {problem?.action ? (
-                <Button type="button" size="sm" variant={problem.action.primary ? "default" : "outline"} className="mt-1 self-start" onClick={problem.action.run}>{problem.action.label}</Button>
+                <Button type="button" size="sm" variant={problem.action.primary ? "default" : "outline"} className="mt-1 self-start" disabled={problem.action.disabled === true} onClick={problem.action.run}>{problem.action.label}</Button>
               ) : null}
             </div>
           ) : null}

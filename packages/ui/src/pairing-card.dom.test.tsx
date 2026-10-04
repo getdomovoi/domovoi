@@ -276,6 +276,23 @@ it("says what runs while Tailscale is asked, and keeps the code button until it 
   expect((screen.getByRole("button", { name: "Show another" }) as HTMLButtonElement).disabled).toBe(true)
 })
 
+// Codex review of PR #722, round 2 (P3-R2-1): no change starts from the
+// pairing card while the switch is changing, turning off included.
+it("does not ask Tailscale while the switch is turning off", async () => {
+  const onIssueCode = vi.fn(async () => issued({ pairingAddress: { problem: "No certificate." } }))
+  const props = { connected: true, onIssueCode, onCopy: vi.fn(async () => {}) }
+  const { rerender } = render(<PairingCard {...props} tailnet={controller()} />)
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await screen.findByRole("button", { name: "Get it from Tailscale" })
+  const turningOff = controller({ running: { direction: "off", renew: false } })
+  rerender(<PairingCard {...props} tailnet={turningOff} />)
+  const action = screen.getByRole("button", { name: "Get it from Tailscale" }) as HTMLButtonElement
+  expect(action.disabled).toBe(true)
+  await user.click(action)
+  expect(turningOff.turnOn).not.toHaveBeenCalled()
+})
+
 it("says HTTPS certificates are off when Tailscale's status lists none", async () => {
   const tailnet = controller({ failure: { direction: "on", outcome: { ok: false, reason: "https-off", step: "certificate", message: "HTTPS certificates are off for tail4c2e.ts.net." } } })
   const { onIssueCode, user } = card({ tailnet })

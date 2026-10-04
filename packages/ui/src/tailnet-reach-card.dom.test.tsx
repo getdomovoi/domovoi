@@ -429,6 +429,47 @@ it("says a turn-off is done and the switch not known when the desktop does not a
   expect(view.getByText(`The certificate and key were set aside in ${undeleted} and could not be deleted.`)).toBeTruthy()
 })
 
+// Codex review of PR #722, round 2 (P3-R2-1): with Q439 B the desktop releases
+// the switch before a turn-off's status read, so a turn-on can start and end
+// while that turn-off is still waiting. The turn-off then answers what the
+// switch read just after it. That older answer does not replace the newer
+// turn-on's, and a failed read after it does not bring it back. The pairing
+// card's "Get it from Tailscale" no longer starts a change while one runs,
+// so this calls what it runs, as it could before.
+it("keeps a newer turn-on's answer when an older turn-off answers after it", async () => {
+  const turningOff = deferred<unknown>()
+  const reads: (() => Promise<unknown>)[] = [() => Promise.resolve(on), () => Promise.resolve(on)]
+  const ask = vi.fn(async (action: "status" | "on" | "off") => {
+    if (action === "off") return turningOff.promise
+    if (action === "on") return { ok: true, report: on }
+    return (reads.shift() ?? (() => Promise.reject(new Error("The desktop did not answer."))))()
+  })
+  let controller: ReturnType<typeof useTailnetReach>
+  function Shared({ source }: { source: TailnetReachSource }) {
+    controller = useTailnetReach(source)
+    return controller ? <TailnetReachCard controller={controller} /> : null
+  }
+  render(<Shared source={{ act: ask, listener: async () => { throw new Error("Daemon connection is not open") }, inApp: true }} />)
+  await settle()
+  const user = userEvent.setup()
+  await user.click(toggle())
+  const view = within(region())
+  expect(view.getByText("Turning off")).toBeTruthy()
+  await act(async () => { await controller!.turnOn() })
+  await settle()
+  expect(view.getByText("On")).toBeTruthy()
+  await act(async () => { turningOff.resolve({ ok: true, report: off }) })
+  await settle()
+  expect(view.getByText("On")).toBeTruthy()
+  expect(view.queryByText("Off")).toBeNull()
+  expect(toggle().getAttribute("aria-checked")).toBe("true")
+  // A read that fails keeps the newer answer.
+  await act(async () => { window.dispatchEvent(new Event("focus")) })
+  await settle()
+  expect(view.getByText("On")).toBeTruthy()
+  expect(toggle().getAttribute("aria-checked")).toBe("true")
+})
+
 // Review of PR #713 (P2): a renewal fails, or the daemon refuses the tailnet
 // listener at the certificate's expiry, with Settings open and nothing
 // clicked. The card reads the switch and tailnet.status again when the window
