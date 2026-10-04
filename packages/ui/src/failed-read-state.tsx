@@ -11,6 +11,7 @@ export function FailedReadState({
   retryError,
   onRetry,
   onOpenMachine,
+  nothingWritten = false,
 }: {
   message: string
   attempts?: readonly string[] | undefined
@@ -20,6 +21,9 @@ export function FailedReadState({
   retryError?: string | undefined
   onRetry: () => void
   onOpenMachine?: (() => void) | undefined
+  // True only for a failure that read and wrote nothing. A provider can write
+  // files before it stops, so the surface makes no such claim by default.
+  nothingWritten?: boolean | undefined
 }) {
   return (
     <section aria-label="Could not read this session" className="mx-auto flex w-full max-w-[620px] flex-col gap-4">
@@ -56,7 +60,7 @@ export function FailedReadState({
       <div className="flex items-center gap-2">
         <Button disabled={retrying || retryDisabled} onClick={onRetry}>{retrying ? "Trying again…" : "Try again"}</Button>
         {onOpenMachine ? <Button variant="outline" onClick={onOpenMachine}>Open the machine</Button> : null}
-        <span className="ml-auto font-machine text-[10.5px] text-faint">nothing was written, nothing was lost</span>
+        {nothingWritten ? <span className="ml-auto font-machine text-[10.5px] text-faint">nothing was written, nothing was lost</span> : null}
       </div>
     </section>
   )

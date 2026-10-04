@@ -1,3 +1,5 @@
+import { maximumImageUploadDimension } from "@getdomovoi/protocol"
+
 import type { BrowserPlatformEnvironment } from "./browser-platform"
 import { browserRefusalMessage } from "./platform-refusals"
 
@@ -85,7 +87,12 @@ export function browserLimits(
     clipboard(environment),
     install(environment),
     { what: "Choose a folder", state: "type the path", tone: "conditional", why: browserRefusalMessage["dialogs-unsupported"] },
-    { what: "Attach a local file", state: "not yet", tone: "conditional", why: "There is no shared filesystem, so a file from this device would have to travel to the machine, and that path is not built." },
+    // The composer reads the file in this tab and sends it with the message.
+    // The limits are the ones attachmentFromBrowserFile and the composer
+    // enforce: maximumImageUploadBytes, maximumImageUploadDimension (through
+    // sessionAttachmentSchema), maximumTextAttachmentBytes and
+    // maximumSessionAttachments.
+    { what: "Attach a local file", state: "always a payload", tone: "conditional", why: `There is no shared filesystem, so a file from your device has to travel to the machine. A PNG or JPEG image up to 1.5 MB and ${maximumImageUploadDimension} pixels on each side, or a text file up to 256 KB, two per message.` },
     { what: "Open the repository", state: "not possible", tone: "never", why: "Nothing is cloned into the browser. Paths are read on the machine, one directory at a time." },
     credentialStorable
       ? { what: "Hold the credential", state: "this tab only", tone: "conditional", why: "The device credential lives in this tab's session storage. Closing the tab forgets it; pairing again mints another." }

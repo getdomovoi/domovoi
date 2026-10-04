@@ -23,3 +23,17 @@ it("renders the v2 failed-read regions in order", () => {
   expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy()
   expect(screen.getByRole("button", { name: "Open the machine" })).toBeTruthy()
 })
+
+// A provider can write files before it stops, so "nothing was written" is a
+// claim only the caller can make, about a failure that only read.
+it("says nothing was written only when the caller says the failure only read", () => {
+  const { rerender } = render(
+    <FailedReadState message="The provider stopped." facts={["The worktree is still on mac-mini-m4"]} retrying={false} onRetry={vi.fn()} />,
+  )
+  expect(screen.queryByText("nothing was written, nothing was lost")).toBeNull()
+
+  rerender(
+    <FailedReadState message="The read stopped." facts={["The worktree is still on mac-mini-m4"]} retrying={false} onRetry={vi.fn()} nothingWritten />,
+  )
+  expect(screen.getByText("nothing was written, nothing was lost")).toBeTruthy()
+})

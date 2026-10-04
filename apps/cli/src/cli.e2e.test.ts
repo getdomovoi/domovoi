@@ -67,8 +67,8 @@ afterAll(async () => {
   for (const path of [home, control]) if (path !== undefined) await rm(path, { recursive: true, force: true })
 })
 
-// What `domovoid pair --client cli` does on the daemon host: device.pair with
-// the daemon's own token, which prints the client credential once.
+// Where a client credential comes from today: device.pair made with the
+// daemon's own token. No `domovoid` command prints one.
 async function mintClientCredential(): Promise<string> {
   const socket = new WebSocket(url, { headers: { authorization: `Bearer ${rootToken}` } })
   await once(socket, "open")

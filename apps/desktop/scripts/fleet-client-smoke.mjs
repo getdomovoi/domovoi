@@ -157,7 +157,7 @@ try {
   console.info("Fleet proof: enrolled row rendered")
   assert.equal(await evaluate(`${buttons}.find(button => button.getAttribute('aria-label') === 'Use Studio').disabled`), true)
   await click("Authorize this client for Studio")
-  await text('domovoid pair --client desktop --label "My desktop"')
+  await text("It comes from a device.pair request made with that daemon's own credential.")
   await capture("authorize", 1280)
   await capture("authorize", 430)
   await command("Emulation.setDeviceMetricsOverride", { width: 1280, height: 900, deviceScaleFactor: 1, mobile: false }, sessionId)
