@@ -184,18 +184,25 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
     }
   }, [present, readOnItsOwn])
 
-  // Codex review of PR #722, round 2 (P3-R2-1): changes are numbered as reads
-  // are. Q439 B releases the desktop's switch before a turn-off's status read,
-  // so a turn-on can start and end while that turn-off waits. An older change
-  // that ends after a newer one has started draws nothing: not its answer,
-  // failure or unread marker, not the end of running, and it starts no read
-  // that would make the newer change's read stale. Every control that starts
-  // a change is disabled while one runs, so only a caller of turnOn or
-  // turnOff directly can overlap two.
+  // Codex review of PR #722, round 3 (P3-R3-1): one change at a time. Q439 B
+  // releases the desktop's switch before a turn-off's status read, so the
+  // desktop alone would admit a turn-on while that turn-off waits. Here a
+  // change runs until the status read after it has ended; turnOn or turnOff
+  // asked for meanwhile is refused as busy, in the desktop's own refusal, and
+  // touches nothing: not the running change's answer, failure, unread marker
+  // or progress, and it starts no read. Every control that starts a change is
+  // disabled while one runs, so only a caller of turnOn or turnOff directly
+  // asks for two at once.
+  //
+  // Round 2 (P3-R2-1): changes are still numbered, so a change that ends
+  // after a newer one has started would draw nothing and start no read. With
+  // the refusal above no newer change starts first; the numbers are kept as a
+  // backstop should that ever be loosened.
   const changes = useRef(0)
   const change = useCallback(async (direction: Direction): Promise<TailnetReachOutcome | undefined> => {
     const current = sourceRef.current
     if (!current) return undefined
+    if (changing.current) return { ok: false, reason: "busy", step: "status", message: "The switch is already changing." }
     const mine = ++changes.current
     changing.current = true
     setFailure(undefined)

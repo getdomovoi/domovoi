@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event"
 import { StrictMode } from "react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { TailnetReachCard, tailnetReachDesktopDeadlineMs, useTailnetReach, type TailnetReachSource } from "./tailnet-reach-card"
+import { TailnetReachCard, tailnetReachDesktopDeadlineMs, useTailnetReach, type TailnetReachController, type TailnetReachSource } from "./tailnet-reach-card"
 
 // TailnetReach (Q404 A), the card in desktop Settings, from TailnetReach in
 // the v2 handoff. Every state is drawn from what the desktop and the daemon
@@ -473,45 +473,147 @@ it.each([
   expect((toggle() as HTMLButtonElement).disabled).toBe(false)
 })
 
-// Codex review of PR #722, round 2 (P3-R2-1): with Q439 B the desktop releases
-// the switch before a turn-off's status read, so a turn-on can start and end
-// while that turn-off is still waiting. The turn-off then answers what the
-// switch read just after it. That older answer does not replace the newer
-// turn-on's, and a failed read after it does not bring it back. The pairing
-// card's "Get it from Tailscale" no longer starts a change while one runs,
-// so this calls what it runs, as it could before.
-it("keeps a newer turn-on's answer when an older turn-off answers after it", async () => {
+// The desktop's refusal of a change while another holds the switch
+// (apps/desktop/src/main/tailnet-reach.ts #exclusive).
+const busy = { ok: false, reason: "busy", step: "status", message: "The switch is already changing." } as const
+
+// A card whose controller the test also calls directly, as a caller of turnOn
+// or turnOff outside the card could. Every control that starts a change is
+// disabled while one runs, so only such a caller can ask for two at once.
+function controlled(source: TailnetReachSource): () => TailnetReachController {
+  let controller: TailnetReachController | undefined
+  function Shared() {
+    controller = useTailnetReach(source)
+    return controller ? <TailnetReachCard controller={controller} /> : null
+  }
+  render(<Shared />)
+  return () => controller!
+}
+
+const statusReads = (ask: { mock: { calls: unknown[][] } }) => ask.mock.calls.filter(([action]) => action === "status").length
+
+// Codex review of PR #722, round 2 (P3-R2-1) and round 3 (P3-R3-1): with
+// Q439 B the desktop releases the switch before a turn-off's status read, so
+// a turn-on asked for while that turn-off waits would reach the desktop. The
+// controller runs one change at a time instead: until the turn-off and the
+// read after it have ended, a turn-on is refused as busy, as the desktop
+// refuses one, and never reaches the desktop. Round 2's scenario, a turn-on
+// that starts and ends while the turn-off waits, is therefore no longer
+// reachable from one controller; this is the one that is. The turn-off's
+// answer stands, and a failed read after it does not bring back the earlier
+// report.
+it("refuses a turn-on while a turn-off is still under way, and keeps the turn-off's answer", async () => {
   const turningOff = deferred<unknown>()
-  const reads: (() => Promise<unknown>)[] = [() => Promise.resolve(on), () => Promise.resolve(on)]
+  const reads: (() => Promise<unknown>)[] = [() => Promise.resolve(on), () => Promise.resolve(off)]
   const ask = vi.fn(async (action: "status" | "on" | "off") => {
     if (action === "off") return turningOff.promise
     if (action === "on") return { ok: true, report: on }
     return (reads.shift() ?? (() => Promise.reject(new Error("The desktop did not answer."))))()
   })
-  let controller: ReturnType<typeof useTailnetReach>
-  function Shared({ source }: { source: TailnetReachSource }) {
-    controller = useTailnetReach(source)
-    return controller ? <TailnetReachCard controller={controller} /> : null
-  }
-  render(<Shared source={{ act: ask, listener: async () => { throw new Error("Daemon connection is not open") }, inApp: true }} />)
+  const controller = controlled({ act: ask, listener: async () => { throw new Error("Daemon connection is not open") }, inApp: true })
   await settle()
   const user = userEvent.setup()
   await user.click(toggle())
   const view = within(region())
   expect(view.getByText("Turning off")).toBeTruthy()
-  await act(async () => { await controller!.turnOn() })
+  const before = statusReads(ask)
+  let refused: unknown
+  await act(async () => { refused = await controller().turnOn() })
   await settle()
-  expect(view.getByText("On")).toBeTruthy()
+  expect(refused).toEqual(busy)
+  expect(ask).not.toHaveBeenCalledWith("on")
+  expect(statusReads(ask)).toBe(before)
+  expect(view.getByText("Turning off")).toBeTruthy()
+  expect(view.queryByRole("alert")).toBeNull()
   await act(async () => { turningOff.resolve({ ok: true, report: off }) })
   await settle()
-  expect(view.getByText("On")).toBeTruthy()
-  expect(view.queryByText("Off")).toBeNull()
-  expect(toggle().getAttribute("aria-checked")).toBe("true")
-  // A read that fails keeps the newer answer.
+  expect(view.getByText("Off")).toBeTruthy()
+  expect(view.queryByText("On")).toBeNull()
+  expect(toggle().getAttribute("aria-checked")).toBe("false")
+  expect(view.queryByRole("alert")).toBeNull()
+  // A read that fails keeps the turn-off's answer.
   await act(async () => { window.dispatchEvent(new Event("focus")) })
   await settle()
+  expect(view.getByText("Off")).toBeTruthy()
+  expect(toggle().getAttribute("aria-checked")).toBe("false")
+})
+
+// Codex review of PR #722, round 3 (P3-R3-1): a change refused as busy does
+// not end the change that is running. It changes nothing on the card, and the
+// running change's answer is drawn when it comes.
+it("refuses a turn-off while a turn-on runs, and draws the turn-on's answer", async () => {
+  const turningOn = deferred<unknown>()
+  let status: unknown = off
+  const ask = vi.fn(async (action: "status" | "on" | "off") => {
+    if (action === "status") return status
+    if (action === "off") return busy
+    const outcome = await turningOn.promise
+    status = on
+    return outcome
+  })
+  const controller = controlled({ act: ask, listener: async () => (status === on ? listening : { state: "off" as const }), inApp: true })
+  await settle()
+  const view = within(region())
+  expect(view.getByText("Off")).toBeTruthy()
+  let first: Promise<unknown> | undefined
+  await act(async () => { first = controller().turnOn() })
+  await settle()
+  expect(view.getByText("Turning on")).toBeTruthy()
+  const before = statusReads(ask)
+  let refused: unknown
+  await act(async () => { refused = await controller().turnOff() })
+  await settle()
+  expect(refused).toEqual(busy)
+  expect(ask).not.toHaveBeenCalledWith("off")
+  expect(statusReads(ask)).toBe(before)
+  expect(view.getByText("Turning on")).toBeTruthy()
+  expect((toggle() as HTMLButtonElement).disabled).toBe(true)
+  expect(view.queryByRole("alert")).toBeNull()
+  await act(async () => { turningOn.resolve({ ok: true, report: on }) })
+  await settle()
+  expect(await first).toEqual({ ok: true, report: on })
   expect(view.getByText("On")).toBeTruthy()
   expect(toggle().getAttribute("aria-checked")).toBe("true")
+  expect((toggle() as HTMLButtonElement).disabled).toBe(false)
+  expect(view.queryByRole("alert")).toBeNull()
+})
+
+// A change runs until the status read after it has ended; the next change is
+// asked of the desktop as usual once it has.
+it("refuses a change until the read after the last one ends, then runs the next one", async () => {
+  const afterOn = deferred<unknown>()
+  const reads: (() => Promise<unknown>)[] = [() => Promise.resolve(off), () => afterOn.promise, () => Promise.resolve(off)]
+  // The daemon follows the switch, as the last change left it.
+  let switched: unknown = off
+  const ask = vi.fn(async (action: "status" | "on" | "off") => {
+    if (action === "on") { switched = on; return { ok: true, report: on } }
+    if (action === "off") { switched = off; return { ok: true, report: off } }
+    return reads.shift()!()
+  })
+  const controller = controlled({ act: ask, listener: async () => (switched === on ? listening : { state: "off" as const }), inApp: true })
+  await settle()
+  const view = within(region())
+  let first: Promise<unknown> | undefined
+  await act(async () => { first = controller().turnOn() })
+  await settle()
+  expect(statusReads(ask)).toBe(2)
+  expect(view.getByText("Turning on")).toBeTruthy()
+  let refused: unknown
+  await act(async () => { refused = await controller().turnOff() })
+  expect(refused).toEqual(busy)
+  expect(ask).not.toHaveBeenCalledWith("off")
+  await act(async () => { afterOn.resolve(on) })
+  await settle()
+  expect(await first).toEqual({ ok: true, report: on })
+  expect(view.getByText("On")).toBeTruthy()
+  let second: unknown
+  await act(async () => { second = await controller().turnOff() })
+  await settle()
+  expect(second).toEqual({ ok: true, report: off })
+  expect(ask).toHaveBeenCalledWith("off")
+  expect(statusReads(ask)).toBe(3)
+  expect(view.getByText("Off")).toBeTruthy()
+  expect(toggle().getAttribute("aria-checked")).toBe("false")
 })
 
 // Review of PR #713 (P2): a renewal fails, or the daemon refuses the tailnet
