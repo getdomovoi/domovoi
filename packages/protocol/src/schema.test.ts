@@ -1860,6 +1860,40 @@ describe("context compaction notice", () => {
   })
 })
 
+describe("pause row attribution", () => {
+  const base = {
+    id: "system-pause",
+    sessionId: "session-1",
+    kind: "system" as const,
+    body: "Paused by desktop.",
+    createdAt: new Date().toISOString(),
+  }
+  const connectionId = "11111111-1111-4111-8111-111111111111"
+
+  it("names the connection and client that asked for the pause", () => {
+    expect(threadItemSchema.parse({ ...base, connectionId, clientId: "desktop-client" })).toMatchObject({
+      connectionId,
+      clientId: "desktop-client",
+    })
+  })
+
+  it("still parses a pause row written before the connection was named", () => {
+    const parsed = threadItemSchema.parse(base)
+    expect(parsed).not.toHaveProperty("connectionId")
+    expect(parsed).not.toHaveProperty("clientId")
+  })
+
+  it.each([
+    { connectionId: "not-a-uuid" },
+    { connectionId: 7 },
+    { connectionId: "" },
+    { connectionId, clientId: 7 },
+    { connectionId, clientId: " " },
+  ])("rejects a malformed attribution %#", (attribution) => {
+    expect(threadItemSchema.safeParse({ ...base, ...attribution }).success).toBe(false)
+  })
+})
+
 describe("session branch and unmerged files", () => {
   it("names the kept branch and how many files never merged", () => {
     const session = demoWorkspace.sessions[0]!
