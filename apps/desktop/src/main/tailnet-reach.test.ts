@@ -242,8 +242,11 @@ describe("TailnetReach status", () => {
 // Review of PR #713 (P3): the whole status read has one deadline in the main
 // process, past the tailscale status subprocess's own timeout, so a stalled
 // record read or executable lookup cannot hold the renderer's read open.
+// Q436 B: a stall is not known, not no tailnet, so the read refuses at the
+// deadline as the renderer's own deadline does, and the card keeps its last
+// known report or says Not known.
 describe("TailnetReach status deadline", () => {
-  const unknown = { state: "none", detail: "Reading the switch and Tailscale's status took longer than 15 seconds, so whether this computer has a tailnet is not known." }
+  const unanswered = "The desktop did not answer."
   // A dependency that answers only when the test says so.
   function held<T>() {
     let settle!: (value: T) => void
@@ -256,22 +259,36 @@ describe("TailnetReach status deadline", () => {
     timer!.run()
   }
 
-  it("answers not known at the deadline when the record read never settles", async () => {
+  it("refuses at the deadline when the record read never settles", async () => {
     const { reach, deps, timers } = harness()
     deps.record.read = () => new Promise(() => {})
     const answer = reach.status()
     const [deadline] = timers()
     expect(deadline?.ms).toBe(15_000)
     fire(deadline)
-    await expect(answer).resolves.toEqual(unknown)
+    await expect(answer).rejects.toThrow(unanswered)
   })
 
-  it("answers not known at the deadline when finding tailscale never settles", async () => {
+  it("refuses at the deadline when finding tailscale never settles", async () => {
     const { reach, deps, timers } = harness()
     deps.tailscale = () => new Promise(() => {})
     const answer = reach.status()
     fire(timers().find((timer) => timer.ms === 15_000))
-    await expect(answer).resolves.toEqual(unknown)
+    await expect(answer).rejects.toThrow(unanswered)
+  })
+
+  // A turn-off that has happened is not reported as failed because the
+  // status read after it is slow: that read waits as it did before.
+  it("reports a turn-off once the status after it answers, however long it takes", async () => {
+    const { reach, deps, timers } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
+    const status = held<"missing">()
+    deps.tailscale = () => status.promise
+    const outcome = reach.turnOff()
+    await vi.waitFor(() => expect(deps.restart).toHaveBeenCalled())
+    await Promise.resolve()
+    expect(timers().filter((timer) => timer.ms === 15_000)).toEqual([])
+    status.settle("missing")
+    await expect(outcome).resolves.toMatchObject({ ok: true, report: { state: "none" } })
   })
 
   it("leaves a read that settles in time as it was, and clears its deadline", async () => {
@@ -287,14 +304,14 @@ describe("TailnetReach status deadline", () => {
     deps.record.read = read
     const first = reach.status()
     fire(timers()[0])
-    await expect(first).resolves.toEqual(unknown)
+    await expect(first).rejects.toThrow(unanswered)
     // The next read waits on the one still held, under its own deadline.
     const second = reach.status()
     expect(read).toHaveBeenCalledTimes(1)
     expect(timers()).toHaveLength(1)
     record.settle(undefined)
     await expect(second).resolves.toMatchObject({ state: "off", name })
-    await expect(first).resolves.toEqual(unknown)
+    await expect(first).rejects.toThrow(unanswered)
     expect(timers()).toEqual([])
     // Once it has settled, a read reads again.
     deps.record.read = async () => undefined
@@ -308,7 +325,7 @@ describe("TailnetReach status deadline", () => {
     deps.record.read = read
     const first = reach.status()
     fire(timers()[0])
-    await expect(first).resolves.toEqual(unknown)
+    await expect(first).rejects.toThrow(unanswered)
     read.mockImplementation(async () => undefined)
     await expect(reach.turnOn()).resolves.toMatchObject({ ok: false, reason: "none" })
     await expect(reach.status()).resolves.toEqual({ state: "none", detail: "Domovoi found no tailscale command on this computer." })

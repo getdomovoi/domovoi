@@ -277,7 +277,11 @@ export function createDesktopWindowBridge(
     commandLinks: (action) => ipc.invoke("domovoi:command-links", action),
     tailnetReach: async (action) => {
       if (action !== "status" && action !== "on" && action !== "off") throw new Error("Desktop received an invalid tailnet action")
-      return tailnetAnswer(await ipc.invoke("domovoi:tailnet-reach", action))
+      // Q436 B: the card shows a refusal's message, so Electron's prefix
+      // ("Error invoking remote method '<channel>': Error: ") is cut.
+      return tailnetAnswer(await ipc.invoke("domovoi:tailnet-reach", action).catch((cause: unknown) => {
+        throw cause instanceof Error ? new Error(cause.message.replace(/^Error invoking remote method '[^']*': (?:Error: )?/u, "")) : cause
+      }))
     },
     onDeepLink: (listener) => {
       const handler = (_event: unknown, sessionId: unknown) => {

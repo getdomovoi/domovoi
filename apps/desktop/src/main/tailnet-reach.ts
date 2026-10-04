@@ -110,10 +110,9 @@ const statusTimeoutMs = 10_000
 // timeout still answers in its own words and only a stall outside it reaches
 // this. The renderer's 120 second deadline for automatic reads stays above it.
 const statusDeadlineMs = statusTimeoutMs + 5_000
-const statusUnknown: TailnetReachReport = {
-  state: "none",
-  detail: `Reading the switch and Tailscale's status took longer than ${statusDeadlineMs / 1_000} seconds, so whether this computer has a tailnet is not known.`,
-}
+// Q436 B: past the deadline the switch is not known, not off and not without a
+// tailnet, so the read refuses in the words the card's own deadline uses.
+const statusUnanswered = "The desktop did not answer."
 // tailscale cert waits on the ACME exchange, which takes tens of seconds.
 const certificateTimeoutMs = 120_000
 const maximumDetailLength = 1_024
@@ -501,10 +500,10 @@ export class TailnetReach {
     return false
   }
 
-  // Review of PR #713 (P3): answers by statusDeadlineMs, with statusUnknown
-  // when the read has not settled by then. What the read answers later goes
-  // nowhere; its tailscale process, if it starts one, still ends at its own
-  // timeout.
+  // Review of PR #713 (P3): answers by statusDeadlineMs, or refuses when the
+  // read has not settled by then (Q436 B). What the read answers later goes
+  // nowhere for this call; its tailscale process, if it starts one, still ends
+  // at its own timeout.
   status(): Promise<TailnetReachReport> {
     const generation = this.#generation
     const held = this.#held?.generation === generation ? this.#held : undefined
@@ -516,7 +515,7 @@ export class TailnetReach {
           const release = () => { if (this.#held === entry) this.#held = undefined }
           work.then(release, release)
         }
-        resolve(statusUnknown)
+        reject(new Error(statusUnanswered))
       }, statusDeadlineMs)
       work.then(
         (report) => { this.#timers.clear(deadline); resolve(report) },
@@ -754,7 +753,9 @@ export class TailnetReach {
         message: restartFailedWithRetainedFiles(this.deps.display(undeleted), restarted.message),
       }
     }
-    return { ok: true, report: await this.status() }
+    // Unbounded, as before the deadline: a turn-off that happened is not
+    // answered as a refusal because the read after it is slow.
+    return { ok: true, report: await this.#status() }
   }
 
   // Review of PR #713 (P2): turning off sets the switch's files aside in a

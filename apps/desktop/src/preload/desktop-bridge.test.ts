@@ -349,6 +349,14 @@ describe("createDesktopWindowBridge", () => {
     await expect(createDesktopWindowBridge(target, "darwin").tailnetReach?.("status")).rejects.toThrow("Desktop returned an invalid tailnet answer")
   })
 
+  // Q436 B: the card shows a refusal's words when it knows no report, so a
+  // refusal from the main process reaches it without Electron's prefix.
+  it("passes on a refusal from the main process in its own words", async () => {
+    const target = ipc()
+    target.invoke.mockImplementation(async () => { throw new Error("Error invoking remote method 'domovoi:tailnet-reach': Error: The desktop did not answer.") })
+    await expect(createDesktopWindowBridge(target, "darwin").tailnetReach?.("status")).rejects.toThrow(/^The desktop did not answer\.$/u)
+  })
+
   it("asks nothing for an action it does not know", async () => {
     const target = ipc()
     const bridge = createDesktopWindowBridge(target, "darwin")

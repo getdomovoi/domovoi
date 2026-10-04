@@ -69,6 +69,38 @@ it("says there is no tailnet in Tailscale's words, and checks again on request",
   expect(ask).toHaveBeenCalledTimes(2)
 })
 
+// Q436 B: past its deadline the desktop refuses the status read instead of
+// answering no tailnet. With no report the card says Not known in the
+// refusal's words, which the desktop bridge passes on without Electron's
+// prefix; with a report it keeps that report and leaves the switch as it was.
+it("says Not known when the desktop refuses the first read, and keeps a known report when a later read is refused", async () => {
+  const reads = [
+    () => Promise.reject(new Error("The desktop did not answer.")),
+    () => Promise.resolve(off),
+    () => Promise.reject(new Error("The desktop did not answer.")),
+  ]
+  const ask = vi.fn(async (action: "status" | "on" | "off") => {
+    if (action !== "status") throw new Error("Nothing changes here")
+    return reads.shift()!()
+  })
+  render(<Harness source={{ act: ask, listener: async () => ({ state: "off" as const }), inApp: true }} />)
+  await settle()
+  expect(within(region()).getByText("Not known")).toBeTruthy()
+  expect(within(region()).getByText("The desktop did not answer.")).toBeTruthy()
+  expect(region().textContent).not.toContain("Error invoking remote method")
+  expect((toggle() as HTMLButtonElement).disabled).toBe(true)
+  await userEvent.setup().click(within(region()).getByRole("button", { name: "Check again" }))
+  await settle()
+  expect(within(region()).getByText("Off")).toBeTruthy()
+  await act(async () => { window.dispatchEvent(new Event("focus")) })
+  await settle()
+  expect(ask).toHaveBeenCalledTimes(3)
+  expect(within(region()).getByText("Off")).toBeTruthy()
+  expect(within(region()).queryByText("Not known")).toBeNull()
+  expect(within(region()).queryByText("The desktop did not answer.")).toBeNull()
+  expect((toggle() as HTMLButtonElement).disabled).toBe(false)
+})
+
 // Codex review round 1 (P3-6): "Only this computer" is said only when it is
 // known: not beside a hand-set DOMOVOI_HOST beyond loopback, and not while
 // the daemon's tailnet listener is not known, set by hand or not.
