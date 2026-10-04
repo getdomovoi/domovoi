@@ -86,6 +86,22 @@ it("names where the decision came from, connection included", () => {
   expect(screen.getByText("decided from desktop, connection conn-42")).toBeTruthy()
 })
 
+// Ruling Q424 A: the paired device's label travels on the receipt, so the line
+// names who decided before the client kind, as the design's receipt line does.
+// A receipt without one, from the daemon credential or an older snapshot,
+// reads as before.
+it("names the paired device that decided, from the wire, before the client", () => {
+  const device = { id: `device-${"a".repeat(32)}`, label: "dana" }
+  render(<ApprovalReceipt receipt={receipt({ connectionId: "conn-42", device })} />)
+  expect(screen.getByText("decided from dana · desktop, connection conn-42")).toBeTruthy()
+  cleanup()
+  render(<ApprovalReceipt receipt={receipt({ device })} />)
+  expect(screen.getByText("decided from dana · desktop")).toBeTruthy()
+  cleanup()
+  render(<ApprovalReceipt receipt={receipt({ clientId: "declared-1", device })} />)
+  expect(screen.getByText("decided from dana · desktop, declared client declared-1")).toBeTruthy()
+})
+
 it("invents no duration when the receipt carries none", () => {
   const { container } = render(<ApprovalReceipt receipt={receipt()} />)
   // The design shows "ran in 38s". ranForMs is absent until the agent reports

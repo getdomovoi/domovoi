@@ -86,6 +86,22 @@ describe("what a row says and what it holds", () => {
     expect(sessionHistoryEntryDetail(approval)).not.toContain("ran 38s")
   })
 
+  // Ruling Q424 A: the paired device that decided travels with the entry, so
+  // the line names it before the client kind; without one it reads as before.
+  it("names the paired device that decided before the client, when the wire carries one", () => {
+    const approval = entry({
+      category: "approvals",
+      decision: "allow-once",
+      operation: "write",
+      checkpoint: "7f23",
+      client: "phone",
+      connectionId: "conn-7",
+      device: { id: `device-${"a".repeat(32)}`, label: "dana" },
+    })
+
+    expect(sessionHistoryEntryDetail(approval)).toBe("checkpoint 7f23 · decided on dana · phone · connection conn-7")
+  })
+
   it("says nothing about duration when the daemon did not measure one", () => {
     const approval = entry({
       category: "approvals",

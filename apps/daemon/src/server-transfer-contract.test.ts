@@ -12,6 +12,7 @@ import {
   protocolVersion,
   workspaceSnapshotSchema,
   type SessionTransferCoverage,
+  type SessionTransferState,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -71,7 +72,13 @@ function targetSnapshot(): WorkspaceSnapshot {
   return snapshot
 }
 
-async function transferFixture(options: { sessionId?: string; transferId?: string } = {}) {
+async function transferFixture(options: {
+  sessionId?: string
+  transferId?: string
+  // Changes the portable state after it is prepared and before it is
+  // packaged, as a source running older code would have sent it.
+  editState?: (state: SessionTransferState) => void
+} = {}) {
   const source = structuredClone(demoWorkspace)
   source.machine.id = sourceMachineId
   source.project!.machineId = sourceMachineId
@@ -113,6 +120,7 @@ async function transferFixture(options: { sessionId?: string; transferId?: strin
     readIgnoredArtifactSource: async () => undefined,
     readAnnotationCrop: async () => { throw new Error("no crops") },
   })
+  options.editState?.(intent.state)
   const packaged = createSessionTransferPackage(intent, {
     transferId: options.transferId ?? `transfer-${"f".repeat(32)}`,
     checkpointCommit,
@@ -122,8 +130,8 @@ async function transferFixture(options: { sessionId?: string; transferId?: strin
   return { source, intent, packaged }
 }
 
-async function packagedTransfer() {
-  return (await transferFixture()).packaged
+async function packagedTransfer(editState?: (state: SessionTransferState) => void) {
+  return (await transferFixture(editState ? { editState } : {})).packaged
 }
 
 async function stagedTransferFixture() {
@@ -210,6 +218,7 @@ async function openClient(
 async function preparedTargetTransfer(options: {
   restoreSessionFromBundle?: NonNullable<WorkspaceService["restoreSessionFromBundle"]>
   repositoryProviderConfig?: RepositoryProviderConfigReader
+  editState?: (state: SessionTransferState) => void
 } = {}) {
   const scratch = await mkdtemp(join(tmpdir(), "domovoi-transfer-rpc-"))
   scratchDirectories.push(scratch)
@@ -245,7 +254,7 @@ async function preparedTargetTransfer(options: {
   await daemon.start()
   const { socket } = await openMachine(daemon, store)
   const call = rpc(socket)
-  const packaged = await packagedTransfer()
+  const packaged = await packagedTransfer(options.editState)
 
   await expect(call("transfer.preflight", {
     contractVersion: packaged.manifest.version,
@@ -1780,6 +1789,56 @@ describe("transactional session transfer RPC", () => {
         },
       }],
     } })
+    client.close()
+    socket.close()
+  })
+
+  // A source that ran before receipt labels were redacted sends the deciding
+  // device's label as it was written. The package's bytes and digest are the
+  // ones that source sent, so the commit still verifies them; the label is
+  // redacted before the session becomes this machine's state, so what is
+  // stored, what clients are sent and what history reads are the same.
+  it("redacts an arriving receipt's device label in storage, the live workspace and history", async () => {
+    const deviceId = `device-${"f".repeat(32)}`
+    const { call, commitParams, daemon, packaged, socket, store } = await preparedTargetTransfer({
+      editState: (state) => {
+        state.thread.push({
+          id: "receipt-device-label",
+          sessionId: state.session.id,
+          kind: "receipt",
+          decision: "allow-once",
+          operation: "Run the migrations",
+          checkpoint: "unavailable",
+          client: "phone",
+          device: { id: deviceId, label: "office NPM_TOKEN=label-secret-1" },
+          createdAt: "2026-09-03T21:00:00.000Z",
+        })
+      },
+    })
+    const stateMember = packaged.members.find((entry) => entry.member.memberId === "state")!
+    expect(stateMember.bytes.toString("utf8")).toContain("label-secret-1")
+    const client = await openClient(daemon)
+    const published: string[] = []
+    client.on("message", (data) => { published.push(data.toString()) })
+
+    await expect(call("transfer.commit", commitParams)).resolves.toMatchObject({
+      result: { state: "committed" },
+    })
+
+    const redacted = { device: { id: deviceId, label: "office NPM_TOKEN=[REDACTED]" } }
+    const stored = store.load()
+    expect(stored.thread.find((item) => item.id === "receipt-device-label")).toMatchObject(redacted)
+    expect(JSON.stringify(stored)).not.toContain("label-secret-1")
+    const live = workspaceSnapshotSchema.parse((await rpc(client)("workspace.get", {})).result)
+    expect(live.thread.find((item) => item.id === "receipt-device-label")).toMatchObject(redacted)
+    expect(JSON.stringify(live)).not.toContain("label-secret-1")
+    const history = await rpc(client)("session.history", {
+      sessionId: packaged.manifest.sessionId,
+      categories: ["approvals"],
+    }) as { result: { items: Array<Record<string, unknown>> } }
+    expect(history.result.items).toEqual([expect.objectContaining(redacted)])
+    expect(published.length).toBeGreaterThan(0)
+    expect(published.join("\n")).not.toContain("label-secret-1")
     client.close()
     socket.close()
   })

@@ -1,6 +1,6 @@
 import { resolve } from "node:path"
 
-import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { maximumPairedDeviceLabelLength, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import {
   affectsLinePaths,
@@ -18,6 +18,16 @@ import {
   redactDurableText,
 } from "./secret-redaction.js"
 
+// A paired device's label is a person's own text, so it can carry a secret
+// the way any durable text can. It is redacted before it enters a receipt or
+// a terminal owner, and again on every stored copy for snapshots written
+// before that. The replacement marker can lengthen the text past the label's
+// schema bound, so the result is cut back to it. The device's id is an
+// identifier, not text, and is never touched.
+export function redactDeviceLabel(label: string): string {
+  return redactDurableText(label).value.slice(0, maximumPairedDeviceLabelLength).trim()
+}
+
 export function executionContainsSecret(
   execution: WorkspaceSnapshot["approvals"][number]["execution"],
 ): boolean {
@@ -34,8 +44,14 @@ type ThreadItem = WorkspaceSnapshot["thread"][number]
 
 export function redactWorkspaceCopies(snapshot: WorkspaceSnapshot): WorkspaceSnapshot {
   const sanitized = redactWorkspaceRecords(snapshot)
-  sanitized.thread = snapshot.thread.map((item) => redactThreadItem(structuredClone(item)))
+  sanitized.thread = redactThreadCopies(snapshot.thread)
   return sanitized
+}
+
+// Redacted copies of thread items, as redactWorkspaceCopies writes them, for
+// items that arrive from elsewhere before they join a snapshot.
+export function redactThreadCopies(items: readonly ThreadItem[]): ThreadItem[] {
+  return items.map((item) => redactThreadItem(structuredClone(item)))
 }
 
 export type WorkspaceRedactor = (snapshot: WorkspaceSnapshot) => WorkspaceSnapshot
@@ -193,6 +209,9 @@ function redactThreadItem(item: ThreadItem): ThreadItem {
       ...(item.explanation === undefined
         ? {}
         : { explanation: redactDurableText(item.explanation).value }),
+      ...(item.device === undefined
+        ? {}
+        : { device: { id: item.device.id, label: redactDeviceLabel(item.device.label) } }),
     }
   }
   if (item.kind === "policy-refusal") {

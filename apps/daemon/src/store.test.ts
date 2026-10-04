@@ -760,6 +760,49 @@ describe("SqliteWorkspaceStore", () => {
     reopened.close()
   })
 
+  // The deciding device's label is a person's own text. A secret in it is
+  // replaced in the stored copy and in the loaded one; the device's id stays.
+  it("redacts a secret in a stored receipt's device label", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-device-label-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seed = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    seed.close()
+    const legacy = structuredClone(demoWorkspace)
+    const deviceId = `device-${"f".repeat(32)}`
+    legacy.thread.push({
+      id: "receipt-device-label",
+      sessionId: legacy.sessions[0]!.id,
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "Run the migrations",
+      checkpoint: "unavailable",
+      client: "phone",
+      device: { id: deviceId, label: "office NPM_TOKEN=label-secret-1" },
+      createdAt: "2026-10-03T00:00:00.000Z",
+    })
+    const injected = new DatabaseSync(databasePath)
+    injected.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1")
+      .run(JSON.stringify(legacy))
+    injected.close()
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    expect(reopened.load().thread.find((item) => item.id === "receipt-device-label"))
+      .toMatchObject({ device: { id: deviceId, label: "office NPM_TOKEN=[REDACTED]" } })
+    const readStored = () => {
+      const database = new DatabaseSync(databasePath)
+      const raw = database.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()
+      database.close()
+      return JSON.stringify(raw)
+    }
+    expect(readStored()).not.toContain("label-secret-1")
+    reopened.save(legacy)
+    expect(readStored()).not.toContain("label-secret-1")
+    await reopened.saveAsync(legacy)
+    expect(readStored()).not.toContain("label-secret-1")
+    reopened.close()
+  })
+
   it("keeps audit receipts across workspace-store reopen", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)
