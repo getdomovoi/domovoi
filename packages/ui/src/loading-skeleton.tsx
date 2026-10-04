@@ -18,20 +18,26 @@ import { cn } from "./lib/utils"
 // motion the shimmer stops outright (styles.css sets animation: none on
 // .skeleton-bar), because shortening an infinite loop would speed it up; the
 // sentence beside the bars carries the state alone.
-function Bar({ className }: { className?: string }) {
-  return <span aria-hidden className={cn("skeleton-bar block rounded-sm", className)} />
+function Bar({ className, still }: { className?: string, still: boolean }) {
+  return <span aria-hidden className={cn(still ? "bg-[var(--skel)]" : "skeleton-bar", "block rounded-sm", className)} />
 }
 
-export function ThreadSkeleton({ reading }: { reading: string }) {
+// Ruled Q344 A: once the first attempt has failed, nothing is being read, so
+// the shimmer stops and the line says so. notConnectedTo names the host the
+// client dialled. The shell's banner keeps saying what it is doing about it.
+export function ThreadSkeleton({ reading, notConnectedTo }: { reading: string, notConnectedTo?: string | undefined }) {
+  const still = notConnectedTo !== undefined
   return (
     <div data-testid="thread-skeleton" className="flex min-h-0 flex-1 flex-col gap-4 p-4">
-      <p role="status" className="font-machine text-mono-xs text-faint">{reading}</p>
+      <p role="status" className="font-machine text-mono-xs text-faint">
+        {still ? `Not connected. Nothing has been read from ${notConnectedTo} yet.` : reading}
+      </p>
       {[0, 1, 2].map((block) => (
         <div key={block} className="flex flex-col gap-2">
-          <Bar className="h-2.5 w-1/3" />
-          <Bar className="h-2 w-full" />
-          <Bar className="h-2 w-11/12" />
-          <Bar className="h-2 w-2/3" />
+          <Bar still={still} className="h-2.5 w-1/3" />
+          <Bar still={still} className="h-2 w-full" />
+          <Bar still={still} className="h-2 w-11/12" />
+          <Bar still={still} className="h-2 w-2/3" />
         </div>
       ))}
     </div>

@@ -1291,11 +1291,7 @@
         "The prompt carries the first 40 lines",
         "re:onPaste=",
         "pasted-text-"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the strings exist but the behaviour does not: the composer has no paste handler, so a 640-line paste stays inline in the field. The Too long to send inline note appears only for a text attachment over 40 lines, drawn in warning amber where the design uses info. The pasted-text-N.txt card with size, line count, Peek and Hide and drop is not drawn. The daemon side holds: it sends the first 40 lines"
-      }
+      ]
     },
     {
       "id": "composer.watching-note",
@@ -1433,11 +1429,13 @@
         "USAGE",
         "usageChipText",
         "Provider window",
-        "Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key."
+        "Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key.",
+        "bills the key's owner",
+        "No window reported, so no dial."
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the subscription ring and the unreported state are built; the api state (price after the separator) and the USAGE connection note are not drawn, because nothing on the wire says what pays for a runtime (subscription, API key or local). The code adds a TODAY row and Cost not shown: the wire does not say yet; Q374 A (2026-10-02) keeps TODAY and rewords the note to Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key."
+        "reason": "the ring (drawn when the provider reports its windows) and the unreported state are built, and the Q374 A reworded cost note is built (#710, 30760c18). Two gaps remain. The api state is not drawn: no price after the separator, no cost in the session row and no BILLED BY row, because nothing on the wire says what pays for a runtime (subscription, API key or local), though it carries the cost each provider reported. The popover draws no connection note under USAGE in any state, where the design draws one per state. The evidence holds both: the api note's bills the key's owner, and the unreported note's No window reported, so no dial."
       }
     },
     {
@@ -1483,11 +1481,13 @@
         "Steer it while it works",
         "Cannot send, the daemon is not answering",
         "max-h-[172px]",
-        "md:text-[13.5px]"
+        "md:text-[13.5px]",
+        "re:max-h-\\[172px\\][^\"]*placeholder:text-faint|placeholder:text-faint[^\"]*max-h-\\[172px\\]",
+        "re:data-workspace-composer=\"\"[^>]*opacity-(?:50|\\[\\.5\\])"
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the field, its three placeholders and the 172px cap are built; it renders at 14px, not 13.5px, because the shared Textarea's md:text-sm beats text-[13.5px] at desktop widths (measured: 14px, line-height 22.4px). The placeholder is muted where the design uses faint, and offline the design dims the whole composer to .5 while the code dims only disabled buttons and leaves the attach, model and mode chips live"
+        "reason": "the field, its three placeholders, the 172px cap and the 13.5px size are built. The placeholder is muted where the design uses faint: the composer's field class does not override the shared Textarea's placeholder:text-muted-foreground. Offline the design dims the whole composer card to .5; the card itself does not dim for a lost connection, only Send and Stop go disabled, and the field and the attach, model and mode chips stay live. The two re: evidence strings hold those gaps: placeholder:text-faint in the field's class beside max-h-[172px], and an opacity of .5 on the data-workspace-composer card"
       },
       "note": "the design carries these strings in its data, not as drawn copy"
     },
@@ -2284,6 +2284,16 @@
       "id": "composer.usage-chip",
       "since": "2026-10-02",
       "note": "Q374 A: the TODAY row is an addition the design does not draw and stays; the cost note is reworded without jargon."
+    },
+    {
+      "id": "composer.paste-converted",
+      "since": "2026-10-03",
+      "note": "Built by #709 (merge 3a599575). The field's onPaste turns a paste past desktopInlineLineLimit (40 lines) into pasted-text-N.txt, numbered after the highest in the draft, and PastedTextCard draws it in info: TXT, the name, size and line count, Peek and Hide over the first 40 lines, drop, and the Too long to send inline note. A paste that cannot become a file (the draft is full, or the text is past the attachment limit) stays in the message with a note saying why. A text file chosen from the attach menu, not pasted, still gets the same sentence as a one-line note in warning amber; the design draws no chosen-file case."
+    },
+    {
+      "id": "composer.input",
+      "since": "2026-10-03",
+      "note": "The 13.5px size landed in #709 (merge 3a599575): the field's class adds md:text-[13.5px], which overrides the shared Textarea's md:text-sm at the same breakpoint. Not re-measured in a browser for this note."
     },
     {
       "id": "palette",
