@@ -494,7 +494,7 @@ Every ledger entry is now merged.
 - [x] Add variant metadata, thumbnail filmstrip, device-width presets, and optional compare layouts
 - [x] Add chat-inline Markdown quick views while keeping generated HTML canonical
 - [x] Add print/share-safe plan rendering without weakening the preview sandbox
-- [x] Remove the legacy comment default before protocol 0.8.0 ships (ruling Q402)
+- [x] Remove the legacy comment default before protocol 0.8.0 ships (ruling Q402) (7c37fec0)
   - `session.send` carries `review`, the comments and build basis a message sends (rulings Q348 A
     and Q342 A). A message without one sends no comment and no build basis; `review` stays
     optional, and absent reads as `{ annotationIds: [] }`. The daemon never fills in a review.
