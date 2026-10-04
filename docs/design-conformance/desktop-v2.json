@@ -2050,6 +2050,14 @@
         {
           "absent": ">Checkpoint</Button>",
           "in": "packages/ui/src/thread.tsx"
+        },
+        {
+          "absent": "<ArchiveSessionAction",
+          "in": "packages/ui/src/thread-composer.tsx"
+        },
+        {
+          "absent": ">Checkpoint</Button>",
+          "in": "packages/ui/src/thread-composer.tsx"
         }
       ],
       "presence": [

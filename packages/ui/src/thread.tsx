@@ -1,24 +1,17 @@
-import { Fragment, memo, useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
+import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   ArchiveIcon,
-  ArrowUpIcon,
   ArrowDownIcon,
   BotIcon,
   CheckIcon,
   CircleStopIcon,
   FolderOpenIcon,
-  Maximize2Icon,
-  PaperclipIcon,
-  SquareIcon,
-  TerminalIcon,
-  XIcon,
 } from "lucide-react"
 import type {
   ApprovalRequest,
   ApprovalDecision,
   ClientAccess,
   ProviderFailure,
-  PermissionMode,
   ProviderModel,
   RpcParams,
   Runtime,
@@ -59,20 +52,10 @@ import {
 } from "./components/ui/alert-dialog"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "./components/ui/dropdown-menu"
-import { Input } from "./components/ui/input"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { sessionDraftStore } from "./session-draft"
 import { useThreadFollow } from "./thread-follow"
-import { composerPlaceholder, composerPlatform, sendHint } from "./composer-keys"
-import { Textarea } from "./components/ui/textarea"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { fleetMachines } from "./fleet-entries.js"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
@@ -80,11 +63,8 @@ import { TransferSessionDialog } from "./transfer-session-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { cn } from "./lib/utils"
 import { DomovoiMark } from "./domovoi-mark"
-import { ApprovalReceipt } from "./approval-receipt"
+import { ApprovalReceipt, receiptCheckpointTaken } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
-import { ModelPopover } from "./model-popover.js"
-import { FloatingSurface } from "./floating-surface"
-import { EffortChip, ModeChip } from "./mode-chip.js"
 import { effortName } from "./effort-scales.js"
 import { permissionModeLabel, withPermissionMode } from "./permission-mode.js"
 import type { WorkingPlanEdit } from "./plan-step-editor.js"
@@ -92,9 +72,7 @@ import { groupThreadActivity, type ThreadRow } from "./thread-activity-groups"
 import { ThreadFileChips } from "./thread-file-chips"
 import { TurnActivity } from "./turn-activity"
 import { CheckpointRestore, checkpointRestoreBlocked } from "./checkpoint-actions.js"
-import { UsageChip } from "./usage-chip.js"
 import {
-  deliveryLabel,
   heldAfter,
   submitFromComposer,
   type FailedAttempt,
@@ -114,136 +92,14 @@ import {
   renderedThreadForActiveSession,
   sessionIsArchiveReadOnly,
 } from "./workspace-selectors"
-import { restoreFocusAfterUpdate } from "./restore-focus"
 import { FailedReadState } from "./failed-read-state"
 import { PolicyRefusalCard } from "./policy-refusal-card"
+import { ApprovalCard } from "./approval-card"
+import { DaemonRpcError } from "./client"
+import { slashIntent, type SlashIntentContext } from "./composer-slash"
+import { ThreadComposer } from "./thread-composer"
+import { attachmentName, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
 import { startOpenerRef } from "./start-handoff"
-import {
-  attachmentFromBrowserFile,
-  attachmentMeta,
-  attachmentName,
-  desktopAttachmentLimit,
-  inlineTextPreview,
-  terminalOutputAttachment,
-  workspacePathAttachment,
-} from "./desktop-attachments"
-
-type SlashCommand = {
-  name: string
-  argument: string
-  note: string
-}
-
-const slashCommands: readonly SlashCommand[] = [
-  {
-    name: "/run",
-    argument: "pnpm prisma migrate deploy",
-    note: "Runs it now, in the worktree. Still gated if no rule covers it, and the gate says the request came from you.",
-  },
-  {
-    name: "/revert",
-    argument: "ckpt_7f24",
-    note: "Rewinds the worktree and the thread together to that checkpoint. Nothing merged is touched.",
-  },
-  {
-    name: "/replan",
-    argument: "from step 3",
-    note: "Keeps the finished steps and asks for a new plan for the rest. The old plan stays readable in the thread.",
-  },
-  {
-    name: "/mode",
-    argument: "plan · ask · build",
-    note: "Applies from the next turn. A turn already in flight keeps the mode it started with, and auto is only legal with build.",
-  },
-  {
-    name: "/skill",
-    argument: "pr-triage",
-    note: "Loads a skill for this turn only. Unsigned skills stay blocked in auto modes.",
-  },
-  {
-    name: "/handoff",
-    argument: "hetzner-cx42",
-    note: "Opens the pre-flight checks first. Nothing moves until they pass and you confirm.",
-  },
-]
-
-type SlashIntent =
-  | { kind: "send", prompt: string }
-  | { kind: "mode", permissionMode: PermissionMode }
-  | { kind: "revert", checkpointId: string }
-  | { kind: "skill", skillId: string }
-  | { kind: "handoff", machineId: string }
-  | { kind: "invalid", message: string }
-
-type SlashIntentContext = {
-  checkpointIds: readonly string[]
-  skills: readonly { id: string, name: string }[]
-  machines: readonly { id: string, label: string, self: boolean }[]
-}
-
-const slashUsage = {
-  run: "Usage: /run <command>",
-  revert: "Usage: /revert <checkpoint-id>. Choose a checkpoint from this active session.",
-  replan: "Usage: /replan [from step N]",
-  mode: "Usage: /mode <plan|ask|build>",
-  skill: "Usage: /skill <reviewed-skill>",
-  handoff: "Usage: /handoff <target-machine>",
-} as const
-
-function oneMatch<T>(items: readonly T[], matches: (item: T) => boolean): T | undefined {
-  const matched = items.filter(matches)
-  return matched.length === 1 ? matched[0] : undefined
-}
-
-function slashIntent(input: string, context: SlashIntentContext): SlashIntent {
-  const trimmed = input.trim()
-  const separator = trimmed.search(/\s/u)
-  const command = (separator < 0 ? trimmed : trimmed.slice(0, separator)).toLowerCase()
-  const argument = separator < 0 ? "" : trimmed.slice(separator).trim()
-  switch (command) {
-    case "/run":
-      return argument
-        ? { kind: "send", prompt: `Run this command in the worktree:\n\n${argument}` }
-        : { kind: "invalid", message: slashUsage.run }
-    case "/replan":
-      return {
-        kind: "send",
-        prompt: argument
-          ? `Replan the remaining work ${argument}${/[.!?]$/u.test(argument) ? "" : "."}`
-          : "Replan the remaining work while preserving completed steps and prior plan history.",
-      }
-    case "/mode":
-      return argument === "plan" || argument === "ask" || argument === "build"
-        ? { kind: "mode", permissionMode: argument }
-        : { kind: "invalid", message: slashUsage.mode }
-    case "/revert": {
-      const checkpoint = oneMatch(context.checkpointIds, (id) => id === argument)
-      return checkpoint
-        ? { kind: "revert", checkpointId: checkpoint }
-        : { kind: "invalid", message: slashUsage.revert }
-    }
-    case "/skill": {
-      const normalized = argument.toLowerCase()
-      const skill = oneMatch(context.skills, (candidate) =>
-        candidate.id.toLowerCase() === normalized || candidate.name.toLowerCase() === normalized
-      )
-      return skill
-        ? { kind: "skill", skillId: skill.id }
-        : { kind: "invalid", message: slashUsage.skill }
-    }
-    case "/handoff": {
-      const normalized = argument.toLowerCase()
-      const machine = oneMatch(context.machines, (candidate) =>
-        !candidate.self && (candidate.id.toLowerCase() === normalized || candidate.label.toLowerCase() === normalized)
-      )
-      return machine
-        ? { kind: "handoff", machineId: machine.id }
-        : { kind: "invalid", message: slashUsage.handoff }
-    }
-    default:
-      return { kind: "invalid", message: "Usage: /run, /revert, /replan, /mode, /skill, or /handoff" }
-  }
-}
 
 // The states name a meaning rather than a colour now, so the palette lives in
 // StatusDot alone instead of being restated per surface.
@@ -335,120 +191,6 @@ export function SessionRow({
         ) : null}
       </span>
     </button>
-  )
-}
-
-
-function ApprovalCard({
-  approval,
-  onResolve,
-  surface,
-  watching = false,
-}: {
-  approval: ApprovalRequest
-  onResolve: (
-    decision: ApprovalDecision,
-    explanation?: string,
-  ) => void
-  surface: "desktop" | "web"
-  // A watching device is shown the gate in full and answers nothing. The
-  // daemon refuses its decisions; the card does not offer them.
-  watching?: boolean
-}) {
-  const explainTriggerRef = useRef<HTMLButtonElement>(null)
-  const [explainOpen, setExplainOpen] = useState(false)
-  const [explanation, setExplanation] = useState("")
-
-  // Agent and mode ride the header line instead of the grid, the way the design
-  // system draws the gate. Nothing is dropped: a desktop shows every fact.
-  const facts = [
-    ["Machine", approval.machine],
-    ["Directory", approval.directory],
-    ["Affects", approval.affects],
-    ["Network", approval.network],
-    ["Est. duration", approval.estimatedDuration],
-  ]
-  const closeExplanation = () => {
-    setExplainOpen(false)
-    setExplanation("")
-    restoreFocusAfterUpdate(explainTriggerRef)
-  }
-
-  return (
-    <Alert variant="warning" className="mx-auto max-w-3xl gap-3 rounded-xl p-4">
-      <CircleStopIcon />
-      <AlertTitle className="flex items-center gap-2 text-[12.5px]">
-        {surface === "web" && approval.risk === "hard-gate" ? "Approval required, hard gate" : "Approval required"}
-        {surface === "desktop" && approval.risk === "hard-gate" ? <Badge variant="warning">Hard gate</Badge> : null}
-        <span className="ml-auto font-machine text-[10.5px] font-normal text-warn-dim">
-          {approval.agent} · {approval.mode}
-        </span>
-      </AlertTitle>
-      <AlertDescription className="col-span-full flex flex-col gap-3">
-        <p className="text-[13px] font-medium text-warn-foreground">{approval.operation}</p>
-        <code className="break-all whitespace-pre-wrap rounded-md bg-warn-deep px-3 py-2 font-machine text-[11px] text-warn-foreground">
-          {approval.command}
-        </code>
-        <dl className="grid grid-cols-[100px_1fr] gap-x-3 gap-y-1.5 text-[11px]">
-          {facts.map(([label, value]) => (
-            <div className="contents" key={label}>
-              <dt className="text-warn-dim">{label}</dt>
-              <dd className="m-0 min-w-0 break-words font-machine text-warn-foreground">{value}</dd>
-            </div>
-          ))}
-        </dl>
-        {watching ? (
-          <p className="text-[11px] text-warn-dim">Watching only. A device paired with full access answers this gate.</p>
-        ) : explainOpen ? (
-          <div className="flex flex-col gap-2 rounded-md border border-warning/30 bg-background/40 p-3">
-            <label htmlFor={`denial-${approval.id}`} className="text-[11px] font-medium text-warn-foreground">
-              Tell the agent why this command was denied
-            </label>
-            <Input
-              id={`denial-${approval.id}`}
-              autoFocus
-              value={explanation}
-              onChange={(event) => setExplanation(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Escape") {
-                  event.preventDefault()
-                  event.stopPropagation()
-                  closeExplanation()
-                  return
-                }
-                if (event.key === "Enter" && explanation.trim()) {
-                  onResolve("deny-explain", explanation.trim())
-                }
-              }}
-              placeholder="Explain what should change before retrying"
-            />
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={closeExplanation}>Cancel</Button>
-              <Button variant="outline" size="sm" onClick={() => onResolve("deny")}>Deny without explanation</Button>
-              <Button
-                variant="warning"
-                size="sm"
-                disabled={!explanation.trim()}
-                onClick={() => onResolve("deny-explain", explanation.trim())}
-              >
-                Deny with explanation
-              </Button>
-            </div>
-          </div>
-        ) : (
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="warning" size="sm" onClick={() => onResolve("allow-once")}>Allow once</Button>
-            {/* Ruled 2026-09-24: the daemon refuses a standing rule on a hard gate
-                and for a request it could not resolve, so the card offers none. */}
-            {approval.execution.state === "resolved" && approval.risk !== "hard-gate" ? (
-              <Button variant="outline" size="sm" onClick={() => onResolve("always-project")}>{surface === "web" ? "Always here" : "Always in this project"}</Button>
-            ) : null}
-            <Button ref={explainTriggerRef} variant="outline" size="sm" onClick={() => setExplainOpen(true)}>Deny</Button>
-            {surface === "web" ? <span className="ml-auto font-machine text-[10.5px] text-warn-dim">This tab holds the gate</span> : null}
-          </div>
-        )}
-      </AlertDescription>
-    </Alert>
   )
 }
 
@@ -743,15 +485,7 @@ export function Thread({
   const draftSessionId = snapshot.activeSessionId
   const [prompt, setPrompt] = useState(() => sessionDraftStore.read(draftSessionId).prompt)
   const [attachments, setAttachments] = useState<SessionAttachment[]>(() => [...sessionDraftStore.read(draftSessionId).attachments])
-  const [attachmentPathMode, setAttachmentPathMode] = useState<"repo" | "machine" | null>(null)
-  const [attachmentPath, setAttachmentPath] = useState("")
-  const [attachmentError, setAttachmentError] = useState("")
-  const attachmentInput = useRef<HTMLInputElement>(null)
   const [slashDismissed, setSlashDismissed] = useState(false)
-  const composerField = useRef<HTMLTextAreaElement>(null)
-  const composerCard = useRef<HTMLDivElement>(null)
-  const slashListId = useId()
-  const slashQuery = prompt.split(/\s/u, 1)[0] ?? ""
   const slashOpen = connected && !watching && prompt.startsWith("/") && !slashDismissed
   const threadViewport = useRef<HTMLDivElement>(null)
   const previousThreadRows = useRef<readonly ThreadRow[]>([])
@@ -783,12 +517,45 @@ export function Thread({
     : threadFollowPillText(follow.state, follow.unseen)
   const [skillSelection, setSkillSelection] = useState<ReadonlySet<string> | undefined>(() => sessionDraftStore.read(draftSessionId).skillSelection)
   const [promptEditorOpen, setPromptEditorOpen] = useState(() => sessionDraftStore.read(draftSessionId).promptEditorOpen)
+  const [editorPasteNote, setEditorPasteNote] = useState("")
   // A send clears the prompt, which writes an empty draft, which the store reads
   // as no draft at all. So nothing has to clear it by hand.
   useEffect(() => {
     sessionDraftStore.write(draftSessionId, { prompt, attachments, skillSelection, promptEditorOpen })
   }, [draftSessionId, prompt, attachments, skillSelection, promptEditorOpen])
   const [pairingMachine, setPairingMachine] = useState(false)
+  // The machine menu's trigger is hidden and inert, so focus cannot go back to
+  // it. Where focus was when the drawer asked for the menu is where it returns
+  // when the menu closes, or a dialog the menu opened closes; failing that,
+  // the message field.
+  const focusBeforeMachineMenu = useRef<Element | null>(null)
+  const seenMachineMenuRequest = useRef(machineMenuRequest)
+  useEffect(() => {
+    if (machineMenuRequest === undefined || machineMenuRequest === seenMachineMenuRequest.current) return
+    seenMachineMenuRequest.current = machineMenuRequest
+    focusBeforeMachineMenu.current = document.activeElement
+  }, [machineMenuRequest])
+  const returnFocusFromMachineMenu = (event: Event, { dialog }: { dialog: boolean }) => {
+    const target = focusBeforeMachineMenu.current
+    const focused = document.activeElement
+    // Focus already somewhere real when the menu finishes closing: a dialog
+    // the menu opened took it, and its own close returns it, or the person
+    // moved it. Either way it stays.
+    if (!dialog && focused && focused !== document.body && !focused.closest("[inert]")) {
+      event.preventDefault()
+      if (!focused.closest("[role=dialog], [role=alertdialog]")) focusBeforeMachineMenu.current = null
+      return
+    }
+    // Opened some other way, such as /handoff: the dialog's own default holds.
+    if (dialog && target === null) return
+    event.preventDefault()
+    focusBeforeMachineMenu.current = null
+    if (target instanceof HTMLElement && target.isConnected && !target.closest("[inert]") && target !== document.body) {
+      target.focus()
+      return
+    }
+    document.querySelector<HTMLTextAreaElement>("[data-workspace-composer] textarea")?.focus()
+  }
   const [ownTransferTargetId, setOwnTransferTargetId] = useState<string | null>(null)
   // The composer's machine menu and the launcher both name a target. The shell
   // owns it when it supplies one, so either route reaches the same dialog.
@@ -805,6 +572,37 @@ export function Thread({
   const [sending, setSending] = useState<string | null>(null)
   const [runtimePending, setRuntimePending] = useState(false)
   const [sendError, setSendError] = useState("")
+  // `arrivedAt` is the pending gates (ids and revisions) when the refusal
+  // arrived. It is cleared by the first change to them that keeps the gate.
+  const [approvalRefusal, setApprovalRefusal] = useState<{ approvalId: string, message: string, arrivedAt?: string }>()
+  // The gates pending in the latest snapshot, read when a refusal arrives to
+  // place it: a refusal can come back after the snapshot has moved on.
+  const pendingApprovalIds = useRef(new Set<string>())
+  // Compared by content, not identity: every snapshot is a new object, and a
+  // thread update that leaves the gates alone is not a change to them.
+  const pendingApprovalsKey = snapshot.approvals.map((pending) => `${pending.id}@${pending.revision}`).join(" ")
+  const latestApprovalsKey = useRef(pendingApprovalsKey)
+  useEffect(() => {
+    pendingApprovalIds.current = new Set(snapshot.approvals.map((pending) => pending.id))
+    latestApprovalsKey.current = pendingApprovalsKey
+    if (!approvalRefusal || pendingApprovalsKey === approvalRefusal.arrivedAt) return
+    if (pendingApprovalIds.current.has(approvalRefusal.approvalId)) {
+      if (approvalRefusal.arrivedAt !== undefined) setApprovalRefusal({ approvalId: approvalRefusal.approvalId, message: approvalRefusal.message })
+      return
+    }
+    // The card held this refusal, and its gate has gone. The daemon answers
+    // a withdrawn or no-longer-waiting gate with the error before the
+    // snapshot that drops it. So a gate that leaves in the first change
+    // after its refusal, with no receipt saying someone decided it (the
+    // daemon names one receipt-<approval id>-...), was withdrawn: the
+    // refusal moves above the composer rather than vanishing. A gate that
+    // outlived a change and then left went for another reason, such as a
+    // pause, a quarantine or an answer outside Domovoi. The refusal is then
+    // about a decision nobody can make now, and it leaves with the card.
+    const decided = snapshot.thread.some((item) => item.kind === "receipt" && item.id.startsWith(`receipt-${approvalRefusal.approvalId}-`))
+    if (approvalRefusal.arrivedAt !== undefined && !decided) setSendError(approvalRefusal.message)
+    setApprovalRefusal(undefined)
+  }, [snapshot.approvals, snapshot.thread, pendingApprovalsKey, approvalRefusal])
   const [recoveryError, setRecoveryError] = useState("")
   const [runtimeError, setRuntimeError] = useState("")
   // A model change that could not carry the effort moved it to the new
@@ -832,32 +630,6 @@ export function Thread({
   const restoreCheckpointFromRow = useCallback((checkpointId: string) => {
     void restoreCheckpoint(checkpointId)
   }, [restoreCheckpoint])
-  const addAttachments = (next: SessionAttachment[]) => {
-    const combined = [...attachments, ...next]
-    if (combined.length > desktopAttachmentLimit) {
-      setAttachmentError(`Attach up to ${desktopAttachmentLimit} items per message.`)
-      return
-    }
-    setAttachmentError("")
-    setAttachments(combined)
-  }
-  const attachWorkspacePath = () => {
-    try {
-      addAttachments([workspacePathAttachment(attachmentPath)])
-      setAttachmentPath("")
-      setAttachmentPathMode(null)
-    } catch (cause) {
-      setAttachmentError(cause instanceof Error ? cause.message : "That path cannot be attached")
-    }
-  }
-  const attachClipboardOutput = async () => {
-    try {
-      const content = await navigator.clipboard.readText()
-      addAttachments([terminalOutputAttachment(content)])
-    } catch (cause) {
-      setAttachmentError(cause instanceof Error ? cause.message : "Terminal output could not be read from the clipboard")
-    }
-  }
   // The effort chip offers what the session's model reports, read once per
   // provider change. Until a read answers, or when it fails, there is no chip.
   // Hooks sit above the no-session return.
@@ -929,6 +701,11 @@ export function Thread({
   const activeCheckpointIds = snapshot.thread.flatMap((item) =>
     item.sessionId === active.id && item.kind === "checkpoint" && item.commit ? [item.id] : []
   )
+  const slashContext: SlashIntentContext = {
+    checkpointIds: activeCheckpointIds,
+    skills: selectableSkills,
+    machines,
+  }
 
   const providerRestartRequired = active.state === "failed" && !active.providerThreadId
   const forkCheckpoint = snapshot.thread.filter((item) =>
@@ -950,18 +727,6 @@ export function Thread({
     />
   )
 
-  const paletteShortcut = composerPlatform() === "darwin" ? "⌘K" : "Ctrl+K"
-  const takeSlashCommand = (command: SlashCommand) => {
-    if (watching) return
-    const accepted = `${command.name} `
-    setPrompt(accepted)
-    setSlashDismissed(true)
-    queueMicrotask(() => {
-      const field = composerField.current
-      field?.focus()
-      field?.setSelectionRange(accepted.length, accepted.length)
-    })
-  }
   const sendPrompt = async (nextPrompt: string, { fromComposer }: { fromComposer: boolean }, sendAttachments = attachments) => {
     if (watching) return
     setPending(true)
@@ -1020,11 +785,7 @@ export function Thread({
     if (pending || providerRestartRequired || emergencyStopPending || readOnly) return
     let submittedText = prompt
     if (prompt.trimStart().startsWith("/")) {
-      const intent = slashIntent(prompt, {
-        checkpointIds: activeCheckpointIds,
-        skills: selectableSkills,
-        machines,
-      })
+      const intent = slashIntent(prompt, slashContext)
       if (intent.kind === "invalid") {
         setSendError(intent.message)
         return
@@ -1205,6 +966,14 @@ export function Thread({
     }
   }
 
+  // Where a refusal goes is decided when it arrives. While its gate is still
+  // pending, its card shows it, and it goes with the card when the gate leaves,
+  // unless the gate was withdrawn in answer to it (the effect that places it
+  // says how that is told apart). A refusal for a gate already gone (the
+  // agent stopped waiting, the request was withdrawn or answered outside
+  // Domovoi) has no card, so it shows with the composer's alerts.
+  const cardShowsRefusal = Boolean(approval && !archiveReadOnly && approvalRefusal?.approvalId === approval.id)
+
   const resolveCurrentApproval = (
     approval: ApprovalRequest,
     decision: ApprovalDecision,
@@ -1212,7 +981,20 @@ export function Thread({
   ) => {
     if (watching) return
     setSendError("")
+    setApprovalRefusal(undefined)
     void onResolve(approval.id, decision, explanation, approval.revision).catch((cause: unknown) => {
+      // The daemon answered and refused, a checkpoint it could not take
+      // among the reasons: the gate card shows its words. Anything else,
+      // such as a dropped connection, did not reach an answer and stays
+      // with the composer's alerts.
+      if (cause instanceof DaemonRpcError) {
+        if (pendingApprovalIds.current.has(approval.id)) {
+          setApprovalRefusal({ approvalId: approval.id, message: cause.message, arrivedAt: latestApprovalsKey.current })
+        } else {
+          setSendError(cause.message)
+        }
+        return
+      }
       setSendError(cause instanceof Error ? cause.message : "The approval could not be resolved")
     })
   }
@@ -1220,7 +1002,10 @@ export function Thread({
   return (
     <main className="flex h-full min-w-0 flex-col bg-background">
       <ScrollArea className="min-h-0 flex-1" viewportRef={threadViewport} onViewportScroll={follow.onScroll}>
-        <div className="mx-auto flex w-full max-w-[668px] flex-col gap-5 px-6 pt-6 pb-14">
+        {/* One column with the composer: 24px of side padding inside the
+            maximum leaves the content box at --shell-thread, the composer
+            card's width. */}
+        <div data-thread-column="" className="mx-auto flex w-full max-w-[calc(var(--shell-thread)+3rem)] flex-col gap-5 px-6 pt-6 pb-14">
           <ThreadStartLine
             {...(snapshot.project ? { project: snapshot.project.name, branch: snapshot.project.branch } : {})}
             {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}
@@ -1303,7 +1088,7 @@ export function Thread({
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>System</AlertTitle><AlertDescription><MarkdownQuickView source={[item.body, item.detail].filter(Boolean).join("\n\n")} /></AlertDescription></Alert>
             }
             if (item.kind === "receipt") {
-              return <ApprovalReceipt key={item.id} receipt={item} />
+              return <ApprovalReceipt key={item.id} receipt={item} checkpointTaken={receiptCheckpointTaken(item, renderedThread)} />
             }
             if (item.kind === "policy-refusal") {
               return <PolicyRefusalCard key={item.id} refusal={item} />
@@ -1322,7 +1107,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard surface={surface} approval={approval} watching={watching} connected={connected} refusal={cardShowsRefusal ? approvalRefusal?.message : undefined} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (
@@ -1346,11 +1131,8 @@ export function Thread({
         {sendError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Agent request failed</AlertTitle><AlertDescription>{sendError}</AlertDescription></Alert> : null}
         {recoveryError ? <Alert variant="destructive" className="mx-auto mb-2 max-w-[var(--shell-thread)]"><CircleStopIcon /><AlertTitle>Session could not be released</AlertTitle><AlertDescription>{recoveryError}</AlertDescription></Alert> : null}
         {planStrip}
-        <div ref={composerCard} data-workspace-composer="" className={cn(
-          "relative mx-auto flex max-w-[var(--shell-thread)] flex-col gap-[11px] rounded-[16px] border bg-card pt-[13px] pr-[15px] pb-[11px] pl-[15px]",
-          readOnly && "[&_button:disabled]:opacity-[.45]",
-        )}>
-          {watching ? (
+        <ThreadComposer
+          notice={watching ? (
             <div className="flex items-start gap-2.5 rounded-[calc(var(--radius)-2px)] border border-info-border bg-info-background px-3 py-[11px]">
               <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-info" />
               <div className="min-w-0 flex-1">
@@ -1367,322 +1149,57 @@ export function Thread({
               onRelease={(offer) => void releaseSession(offer)}
             />
           ) : null}
-          {(failures ?? []).filter((attempt) => attempt.sessionId === active.id).map((attempt) => (
-            <div key={attempt.id} className="flex items-center gap-2 rounded-lg border border-danger-border bg-danger-background px-3 py-2">
-              <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-danger-foreground" />
-              <span className="min-w-0 flex-1 truncate text-[12px] text-danger-foreground">{attempt.text}</span>
-              <span className="text-[10.5px] whitespace-nowrap text-danger-dim">{deliveryLabel(attempt)}</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={readOnly}
-                  onClick={() => {
-                  // Queueing it again replaces whatever is waiting, which the
-                  // person can see beside it before they press.
-                  onQueuedChange({
-                    sessionId: attempt.sessionId,
-                    text: attempt.text,
-                    state: "waiting",
-                    ...(attempt.skillIds ? { skillIds: attempt.skillIds } : {}),
-                  })
-                  onDismissFailure?.(attempt.id)
-                }}
-              >
-                {attempt.delivery === "refused" ? "Queue again" : "Send anyway"}
-              </Button>
-              <Button variant="ghost" size="sm" disabled={readOnly} onClick={() => onDismissFailure?.(attempt.id)}>Dismiss</Button>
-            </div>
-          ))}
-          {sending !== null ? (
-            <div role="status" aria-label="Sending" className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
-              <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-faint" />
-              <span className="min-w-0 flex-1 truncate text-[12px] text-strong">{sending}</span>
-              <span className="font-machine text-[10.5px] whitespace-nowrap text-faint">sending</span>
-            </div>
-          ) : null}
-          {queued?.sessionId === active.id ? (
-            <div className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2">
-              <span aria-hidden className="size-[5px] shrink-0 rounded-full bg-faint" />
-              <span className="min-w-0 flex-1 truncate text-[12px] text-strong">{queued.text}</span>
-              <span className="font-machine text-[10.5px] whitespace-nowrap text-faint">
-                {queued.state === "held"
-                  ? queued.reason ?? "held"
-                  : active.activeTurnId ? "queued, sends when this turn ends" : "queued"}
-              </span>
-              {queued.state === "held" ? (
-                <Button variant="ghost" size="sm" disabled={readOnly || Boolean(active.activeTurnId) || pending || emergencyStopPending || providerRestartRequired} onClick={() => onQueuedChange({ ...queued, state: "waiting" })}>Send</Button>
-              ) : null}
-              <Button variant="ghost" size="icon-sm" aria-label="Unqueue the message" className="size-6 flex-none text-faint" disabled={readOnly} onClick={() => onQueuedChange(undefined)}><XIcon className="size-3" /></Button>
-            </div>
-          ) : null}
-          {attachments.length > 0 ? (
-            <div role="region" className="flex min-w-0 items-center gap-[7px] overflow-hidden" aria-label="Attachments">
-              {attachments.map((attachment, index) => {
-                return (
-                  <div key={`${attachmentName(attachment)}-${index}`} className="flex min-w-0 max-w-[260px] items-center gap-[7px] rounded-md border bg-background px-2 py-1">
-                    <span className="font-machine text-[10.5px] text-primary">{"kind" in attachment && attachment.kind === "text" ? "TXT" : "FILE"}</span>
-                    <span className="min-w-0 truncate font-machine text-[10.5px] text-strong">{attachmentName(attachment)}</span>
-                    <span className="font-machine text-[10px] text-faint">{attachmentMeta(attachment)}</span>
-                    <Button variant="ghost" size="icon-sm" className="size-5 flex-none text-faint" aria-label={`Remove ${attachmentName(attachment)}`} onClick={() => setAttachments((current) => current.filter((_, candidate) => candidate !== index))}><XIcon className="size-3" /></Button>
-                  </div>
-                )
-              })}
-            </div>
-          ) : null}
-          {attachments.some((attachment) => Boolean(inlineTextPreview(attachment))) ? (
-            <p className="m-0 text-[10.5px] leading-[1.45] text-warning">Too long to send inline. The prompt carries the first 40 lines, the agent reads the rest on request.</p>
-          ) : null}
-          {attachmentPathMode ? (
-            <div className="flex items-center gap-2">
-              <Input
-                autoFocus
-                aria-label={attachmentPathMode === "repo" ? "File in this repo" : `Path on ${snapshot.machine.name}`}
-                value={attachmentPath}
-                onChange={(event) => setAttachmentPath(event.target.value)}
-                placeholder={attachmentPathMode === "repo" ? "src/path/to/file.ts" : "relative/path/on/machine"}
-                onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); attachWorkspacePath() } }}
-              />
-              <Button type="button" size="sm" disabled={!attachmentPath.trim()} onClick={attachWorkspacePath}>Attach</Button>
-              <Button type="button" variant="ghost" size="sm" onClick={() => setAttachmentPathMode(null)}>Cancel</Button>
-            </div>
-          ) : null}
-          <input
-            ref={attachmentInput}
-            type="file"
-            accept="image/png,image/jpeg,text/plain,.md,.json,.csv,.log"
-            className="sr-only"
-            aria-label="Choose an image or file"
-            onChange={(event) => {
-              const files = [...(event.target.files ?? [])]
-              event.currentTarget.value = ""
-              void Promise.all(files.map(attachmentFromBrowserFile)).then(addAttachments, (cause: unknown) => {
-                setAttachmentError(cause instanceof Error ? cause.message : "The file could not be attached")
-              })
-            }}
-          />
-          {attachmentError ? <p role="alert" className="m-0 text-[11px] text-destructive">{attachmentError}</p> : null}
-          {slashOpen ? (
-            <div aria-hidden className="flex min-h-[22px] items-center gap-px">
-              <span className="font-machine text-[13.5px] text-foreground">{prompt}</span>
-              <span className="h-[15px] w-[1.5px] bg-primary animate-[dv-composer-caret_1.1s_steps(1)_infinite]" />
-            </div>
-          ) : null}
-          <Textarea
-            ref={composerField}
-            aria-label="Message"
-            aria-expanded={slashOpen}
-            aria-controls={slashOpen ? slashListId : undefined}
-            rows={2}
-            disabled={readOnly}
-            // v2 draws the field with no box of its own: it sits straight on
-            // the card. The dark variant on the shared Textarea has to be
-            // turned off by name, or it paints a panel the design never draws.
-            className={slashOpen
-              ? "sr-only"
-              : "max-h-[172px] min-h-[22px] resize-none overflow-y-auto border-0 bg-transparent p-0 text-[13.5px] leading-[1.6] shadow-none [field-sizing:content] focus-visible:ring-0 dark:bg-transparent"}
-            placeholder={surface === "web" && connected
-              ? "Steer it, or queue the next message"
-              : composerPlaceholder({ offline: !connected, working: Boolean(active.activeTurnId) })}
-            value={prompt}
-            onChange={(event) => {
-              const next = event.target.value
-              setPrompt(next)
-              if (!next.startsWith("/")) setSlashDismissed(false)
-            }}
-            onKeyDown={(event) => {
-              // Enter sends, as the hint beside the send control says. Shift
-              // keeps the newline, and the old modifier still sends so a hand
-              // trained on it is not left pressing a dead key.
-              if (event.key !== "Enter" || event.shiftKey) return
-              event.preventDefault()
-              void submitPrompt()
-            }}
-          />
-          <FloatingSurface
-            open={slashOpen}
-            onClose={() => setSlashDismissed(true)}
-            label="Slash commands"
-            placement="above"
-            trigger={composerCard}
-            className="w-[380px] overflow-hidden rounded-[calc(var(--radius)-2px)] p-0"
-          >
-            <div
-              id={slashListId}
-              role="listbox"
-              aria-labelledby={`${slashListId}-label`}
-            >
-              <div className="flex items-center gap-2 border-b px-3 py-2">
-                <span id={`${slashListId}-label`} className="text-[10.5px] font-medium tracking-[.13em] text-faint">THIS TURN</span>
-                <span className="flex-1" />
-                <span className="text-[11px] text-faint">{paletteShortcut} to go somewhere</span>
-              </div>
-              <div className="max-h-[216px] overflow-y-auto">
-                {slashCommands.map((command) => {
-                  const match = command.name.startsWith(slashQuery)
-                  return (
-                    <button
-                      key={command.name}
-                      type="button"
-                      role="option"
-                      aria-label={`${command.name} ${command.argument}`}
-                      aria-selected={false}
-                      data-match={match}
-                      title={command.note}
-                      onClick={() => takeSlashCommand(command)}
-                      className={cn(
-                        "flex h-8 w-full cursor-pointer items-center gap-2.5 border-t px-3 text-left first:border-t-0",
-                        !match && "opacity-50",
-                      )}
-                    >
-                      <span className={cn(
-                        "w-[70px] flex-none font-machine text-[11.5px]",
-                        match ? "text-primary" : "text-muted-foreground",
-                      )}>{command.name}</span>
-                      <span className="min-w-0 flex-1 truncate font-machine text-[10.5px] text-faint">{command.argument}</span>
-                    </button>
-                  )
-                })}
-              </div>
-            </div>
-          </FloatingSurface>
-          <div data-workspace-composer-actions="" className="flex flex-wrap items-center justify-between gap-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon-sm" aria-label="Attach" className="size-7 rounded-full" disabled={readOnly || attachments.length >= desktopAttachmentLimit}>
-                    <PaperclipIcon className="size-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="start" side="top" sideOffset={8} className="w-[400px] p-0">
-                  <DropdownMenuItem aria-label="File in this repo" className="items-start gap-[11px] rounded-none px-[13px] py-[11px]" onSelect={() => setAttachmentPathMode("repo")}>
-                    <span className="mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">TS</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[12.5px] text-foreground">File in this repo</span>
-                      <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">A path in the worktree. Nothing is copied, the agent reads it where it is.</span>
-                    </span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem aria-label={`Path on ${snapshot.machine.name}`} className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px]" onSelect={() => setAttachmentPathMode("machine")}>
-                    <span className="mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">DIR</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[12.5px] text-foreground">Path on {snapshot.machine.name}</span>
-                      <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">Anything else on that machine, including files outside the project. Reading outside the project asks first.</span>
-                    </span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem aria-label="Image or file from this device" className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px]" onSelect={() => attachmentInput.current?.click()}>
-                    <span className="mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">FILE</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[12.5px] text-foreground">Image or file from this device</span>
-                      <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">The selected file is copied to {snapshot.machine.name} with the next message.</span>
-                    </span>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem aria-label="Paste terminal output" className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px]" onSelect={() => void attachClipboardOutput()}>
-                    <span className="mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">LOG</span>
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[12.5px] text-foreground">Paste terminal output</span>
-                      <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">Pasted text, kept as a file in the session rather than inline in the message.</span>
-                    </span>
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              {/* v2's model chip follows the attachment control and opens the flat,
-                  searchable list of what every harness here reports. */}
-              <ModelPopover
-                runtime={active.runtime}
-                providers={snapshot.machine.providers}
-                machineName={snapshot.machine.name}
-                pending={runtimePending || readOnly}
-                turnRunning={Boolean(active.activeTurnId)}
-                {...(forkCheckpoint ? { forkCheckpointId: forkCheckpoint.id } : {})}
-                {...(forkReason ? { forkBlockedReason: forkReason } : {})}
-                onListModels={onListModels}
-                onDiscoverRuntime={onDiscoverRuntime}
-                onChange={(runtime) => void updateRuntime(runtime)}
-                onFork={forkRuntime}
-              />
-              {/* v2's mode chip sits beside the model, and the effort chip
-                  after it. */}
-              <ModeChip runtime={active.runtime} pending={runtimePending || readOnly} onSetRuntime={(runtime) => void updateRuntime(runtime)} />
-              <EffortChip
-                runtime={active.runtime}
-                model={effortModel}
-                dropped={effortDroppedHere}
-                pending={runtimePending || readOnly}
-                onSetRuntime={(runtime) => void updateRuntime(runtime)}
-              />
-              {/* v2 opens the machine surfaces from the row itself, on Changes.
-                  It is the only control here that looks at the machine rather
-                  than at what the next turn sends. */}
-              {onOpenSheet ? (
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Open the sheet"
-                  className="size-7 flex-none rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
-                  onClick={onOpenSheet}
-                >
-                  <TerminalIcon className="size-4" />
-                </Button>
-              ) : null}
-              {/* The editor is the same draft in a larger field. v2 draws its
-                  control here, beside the surfaces it runs against, not out at
-                  the send end of the row. */}
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="Expand prompt editor"
-                className="size-7 flex-none rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
-                disabled={readOnly}
-                onClick={() => setPromptEditorOpen(true)}
-              >
-                <Maximize2Icon className="size-4" />
-              </Button>
-              {/* v2 draws no checkpoint control in the composer. /revert
-                  rewinds to one, and the Checkpoints sheet tab lists them. */}
-              {/* Archiving lives on the session's own row in the drawer, which
-                  asks with these same words. v2 draws no archive control in
-                  the composer, so this row no longer carries a second one. */}
-            </div>
-            <div className="ml-auto flex items-center gap-2">
-              {/* v2's usage chip belongs to the composer, at the right of its
-                  action row. The sidebar reorganisation moves the row with it. */}
-              <UsageChip usage={usage} today={usageToday} loadLatestTurn={loadLatestTurn} />
-              <span role="status" className="flex flex-col items-end font-machine text-mono-xs leading-[1.35] text-faint">
-                {providerRestartRequired
-                  ? <span>Restart the provider before sending</span>
-                  : sendHint(composerPlatform()).split(" · ").map((line) => (
-                      <span key={line} className="whitespace-nowrap">{line}</span>
-                    ))}
-              </span>
-              {/* v2 draws stop as a 28px round bordered control beside send,
-                  not as a labelled button out among the chips. */}
-              {active.activeTurnId ? (
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="outline"
-                        size="icon-sm"
-                        aria-label="Stop the agent"
-                        className="size-7 flex-none rounded-full"
-                        disabled={readOnly || pending || !connected}
-                        onClick={() => void pauseSession()}
-                      >
-                        <SquareIcon className="size-2.5 fill-current" />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent side="top" sideOffset={8} className="block w-[220px] bg-card px-[11px] py-[9px] text-foreground ring-1 ring-border">
-                      <span className="block text-[11.5px]">Stop the agent</span>
-                      <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">Ends this turn at its next tool boundary. The session, plan and worktree stay as they are.</span>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              ) : null}<Button size="icon-sm" className="rounded-full" aria-label="Send message" disabled={readOnly || !prompt.trim() || pending || !connected || providerRestartRequired || emergencyStopPending} onClick={() => void submitPrompt()}><ArrowUpIcon /></Button></div>
-          </div>
+          failures={(failures ?? []).filter((attempt) => attempt.sessionId === active.id)}
+          onQueuedChange={onQueuedChange}
+          onDismissFailure={onDismissFailure}
+          sending={sending}
+          queued={queued?.sessionId === active.id ? queued : undefined}
+          turnRunning={Boolean(active.activeTurnId)}
+          pending={pending}
+          connected={connected}
+          readOnly={readOnly}
+          watching={watching}
+          emergencyStopPending={emergencyStopPending}
+          providerRestartRequired={providerRestartRequired}
+          surface={surface}
+          machineName={snapshot.machine.name}
+          prompt={prompt}
+          onPromptChange={setPrompt}
+          attachments={attachments}
+          onAttachmentsChange={setAttachments}
+          slashOpen={slashOpen}
+          slashContext={slashContext}
+          onSlashDismissedChange={setSlashDismissed}
+          onSubmit={() => void submitPrompt()}
+          runtime={active.runtime}
+          providers={snapshot.machine.providers}
+          runtimePending={runtimePending}
+          {...(forkCheckpoint ? { forkCheckpointId: forkCheckpoint.id } : {})}
+          {...(forkReason ? { forkBlockedReason: forkReason } : {})}
+          onListModels={onListModels}
+          onDiscoverRuntime={onDiscoverRuntime}
+          onRuntimeChange={(runtime) => void updateRuntime(runtime)}
+          onFork={forkRuntime}
+          effortModel={effortModel}
+          effortDropped={effortDroppedHere}
+          onOpenSheet={onOpenSheet}
+          onOpenPromptEditor={() => setPromptEditorOpen(true)}
+          usage={usage}
+          usageToday={usageToday}
+          loadLatestTurn={loadLatestTurn}
+          onStop={() => void pauseSession()}
+        >
+          {/* v2 draws no machine control in the composer. The sessions
+              drawer's "Move to another machine" opens this menu through
+              openRequest, so its trigger stays mounted as the menu's anchor,
+              inert and hidden from Tab and from assistive technology. */}
           {!readOnly ? (
-            <div className="sr-only">
+            <div className="sr-only" aria-hidden inert>
               <MachineSwitcher
                 entries={entries}
                 openRequest={machineMenuRequest}
+                triggerHidden
+                onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: false })}
                 transferEntries={transferFleet}
                 admittedMachines={admittedMachines}
                 currentMachineId={currentMachineId ?? snapshot.machine.id}
@@ -1699,6 +1216,7 @@ export function Thread({
               onOpenChange={setPairingMachine}
               onClaim={onPairMachine}
               onPaired={() => setPairingMachine(false)}
+              onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: true })}
             />
           ) : null}
           {!readOnly && onTransferSession && transferTarget ? (
@@ -1726,16 +1244,20 @@ export function Thread({
                   confirmation: "target-does-not-have-session",
                 }).then(() => undefined),
               } : {})}
+              onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: true })}
             />
           ) : null}
-        </div>
+        </ThreadComposer>
         {!readOnly ? (
           <PromptEditorDialog
             open={promptEditorOpen}
             draft={prompt}
             pending={pending}
             sendDisabled={!prompt.trim() || providerRestartRequired || emergencyStopPending}
-            onOpenChange={setPromptEditorOpen}
+            onOpenChange={(open) => {
+              setPromptEditorOpen(open)
+              setEditorPasteNote("")
+            }}
             onDraftChange={setPrompt}
             onSend={() => {
               setPromptEditorOpen(false)
@@ -1748,6 +1270,24 @@ export function Thread({
             machineReachable={snapshot.machine.reachable}
             modelLabel={active.runtime.model}
             modeLabel={permissionModeLabel(active.runtime.permissionMode, active.runtime.auto).toLowerCase()}
+            onPaste={(event) => {
+              // The same draft as the composer, so the same conversion. The
+              // file is drawn in the composer; the editor says where it went.
+              const field = event.currentTarget
+              const outcome = pasteOutcome(
+                event.clipboardData.getData("text/plain"),
+                attachments,
+                field.value.length - (field.selectionEnd - field.selectionStart),
+              )
+              if (outcome.kind === "inline") {
+                setEditorPasteNote(outcome.note ?? "")
+                return
+              }
+              event.preventDefault()
+              setAttachments((current) => [...current, outcome.attachment])
+              setEditorPasteNote(`${attachmentName(outcome.attachment)} goes with the message as a file. The prompt carries its first ${desktopInlineLineLimit} lines.`)
+            }}
+            pasteNote={editorPasteNote || undefined}
           />
         ) : null}
       </div>

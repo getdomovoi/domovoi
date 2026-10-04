@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useRef, useState, type ClipboardEvent } from "react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 import { XIcon } from "lucide-react"
 
@@ -55,6 +55,8 @@ export function PromptEditorDialog({
   machineReachable,
   modelLabel,
   modeLabel,
+  onPaste,
+  pasteNote,
 }: {
   open: boolean
   draft: string
@@ -63,6 +65,10 @@ export function PromptEditorDialog({
   onOpenChange: (open: boolean) => void
   onDraftChange: (draft: string) => void
   onSend: () => void
+  // The composer's paste handling, so a long paste here becomes the same
+  // file, and the line saying what became of the last paste.
+  onPaste?: ((event: ClipboardEvent<HTMLTextAreaElement>) => void) | undefined
+  pasteNote?: string | undefined
   projectLabel: string
   worktreeLabel?: string | undefined
   turnRunning: boolean
@@ -163,6 +169,7 @@ export function PromptEditorDialog({
               aria-label="Prompt editor message"
               value={draft}
               onChange={(event) => onDraftChange(event.target.value)}
+              {...(onPaste ? { onPaste } : {})}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                   event.preventDefault()
@@ -177,6 +184,7 @@ export function PromptEditorDialog({
                 ? "Markdown, ## headings, - lists, ``` fences for code and logs. Rendered as written when the agent reads it."
                 : "Describe the change in as much detail as you need. Plain prose; @file attaches context and /skill runs one."}
             />
+            {pasteNote ? <p role="status" className="m-0 flex-none text-[11.5px] text-muted-foreground">{pasteNote}</p> : null}
             <div className="flex flex-none flex-wrap items-center gap-2">
               {promptEditorInserts[mode].map((insert) => (
                 <button

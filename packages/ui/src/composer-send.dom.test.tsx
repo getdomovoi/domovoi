@@ -63,6 +63,18 @@ it("stacks the send and new-line hints in the action row", async () => {
   expect(within(hint).getByText(/for a new line$/u)).toBeTruthy()
 })
 
+// The design sets the field at 13.5px. The shared Textarea steps up to
+// text-sm at the md breakpoint, which is every desktop width, so the field
+// has to set its size at that breakpoint too or it renders at 14px.
+it("keeps the message field at 13.5px at desktop widths", () => {
+  render(<ThreadWith snapshot={withActiveTurn(false)} onSend={vi.fn<SendSpy>(async () => {})} />)
+
+  const classes = field().className.split(" ")
+  expect(classes).toContain("text-[13.5px]")
+  expect(classes).toContain("md:text-[13.5px]")
+  expect(classes).not.toContain("md:text-sm")
+})
+
 it("keeps provider readiness out of the signed action row", async () => {
   render(<ThreadWith snapshot={withActiveTurn(false)} onSend={vi.fn<SendSpy>(async () => {})} />)
 

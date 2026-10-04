@@ -22,11 +22,15 @@ export function PairMachineDialog({
   onOpenChange,
   onClaim,
   onPaired,
+  onCloseAutoFocus,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   onClaim: (request: PairMachineRequest) => Promise<PairedMachine>
   onPaired: (paired: PairedMachine) => void
+  // Where focus goes when the dialog closes, for an opener that cannot take
+  // it back.
+  onCloseAutoFocus?: ((event: Event) => void) | undefined
 }) {
   const [endpoint, setEndpoint] = useState("")
   const [code, setCode] = useState("")
@@ -87,7 +91,7 @@ export function PairMachineDialog({
         onOpenChange(next)
       }}
     >
-      <DialogContent>
+      <DialogContent {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})}>
         <form onSubmit={(event) => void submit(event)}>
           <DialogHeader>
             <DialogTitle>Pair a machine</DialogTitle>
