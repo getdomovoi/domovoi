@@ -206,7 +206,7 @@ export function ModelPopover({
         </div>
         {!loading && shown.length === 0 ? (
           <p className="m-0 px-3 py-4 text-[12px] leading-relaxed text-muted-foreground">
-            Nothing on this machine matches. Models come from what each harness reports, so a name you expect may live under another harness or need a sign-in first.
+            Nothing on this machine matches. Models come from what each harness reports, so a name you expect may live on another machine.
           </p>
         ) : null}
         <div role="listbox" aria-label="Models" className="max-h-[268px] overflow-y-auto">

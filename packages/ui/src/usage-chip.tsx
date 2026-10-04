@@ -33,7 +33,8 @@ export type UsageChipRow = {
 // money. A provider reports a dollar figure for a subscription turn too, and
 // that is money nobody is charged. The priced state and the ring wait on the
 // connection kind and the provider window (asks 5 and 6).
-export const unreportedCostNote = "Cost not shown: the wire does not say yet whether these turns ran on a subscription or an API key."
+// Ruled Q374 A: TODAY stays, and the note says this without jargon.
+export const unreportedCostNote = "Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key."
 
 // The chip names the context the next turn runs in, because that is the
 // number that decides whether the work continues. The session's own total is

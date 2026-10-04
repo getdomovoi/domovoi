@@ -252,18 +252,18 @@ export function sessionHistoryEntryDetail(
   // not give it a state, and only a checkpoint names one. Checkpoint-only is the
   // rule, not a narrowing of the drawing.
   //
-  // One thing here is still unfilled, and it is the daemon's:
-  //
-  // 1. Execution duration for an approved operation. `decided in` below is not
-  //    that field. Decision latency says how long the agent sat blocked;
-  //    execution duration says what the approval cost. Both belong; only the
-  //    first can be measured today. That is CX3.
+  // Execution duration for an approved operation is no longer the daemon's
+  // gap. Since 5ee18251 an approval entry carries ranForMs: wall-clock time
+  // from the decision to the agent reporting the allowed command's item
+  // complete, absent when no completion was seen. `decided in` below is not
+  // that field: decision latency says how long the agent sat blocked, run time
+  // says what the approval cost. This meta line shows only the first today.
   if (entry.category === "messages") return turnMeta(entry) ?? entry.role
   if (entry.category === "tools" || entry.category === "tests") return `${entry.tool} · ${entry.status}`
   if (entry.category === "approvals") {
     // decisionDurationMs measures how long the decision took, not how long the
     // approved operation ran. Those are different quantities, so the copy names
-    // this one. The other is unfilled field 4 above.
+    // this one. The other is ranForMs, described above.
     const decidedIn = entry.decisionDurationMs === undefined
       ? ""
       : ` · decided in ${Math.round(entry.decisionDurationMs / 1_000)}s`

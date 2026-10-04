@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { demoWorkspace } from "@getdomovoi/protocol"
 import type { ComponentProps } from "react"
@@ -206,6 +206,85 @@ it("shows a refusal for a gate that has gone with the composer's alerts", async 
   expect(screen.getByText("Agent request failed")).toBeTruthy()
 })
 
+// While the answer is out, the card says so, so locked buttons are not a
+// mystery, and says nothing once the daemon has answered.
+it("says the decision is being sent while it is in flight", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  let settle: () => void = () => {}
+  const onResolve = vi.fn(() => new Promise<void>((done) => { settle = done }))
+  render(refusalThread(onResolve)(snapshot))
+
+  expect(screen.queryByText("Sending your decision")).toBeNull()
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+  expect(screen.getByRole("alert").textContent).toContain("Sending your decision")
+  await act(async () => { settle() })
+  expect(screen.queryByText("Sending your decision")).toBeNull()
+})
+
+// Two presses can land before React renders the first one's lock, as a held
+// key repeating does. The second must not send another decision.
+it("sends one decision for two presses that land before a render", async () => {
+  const snapshot = structuredClone(demoWorkspace)
+  const onResolve = vi.fn(() => new Promise<void>(() => {}))
+  render(refusalThread(onResolve)(snapshot))
+  const allow = screen.getByRole("button", { name: "Allow once" })
+
+  await act(async () => {
+    allow.click()
+    allow.click()
+  })
+
+  expect(onResolve).toHaveBeenCalledTimes(1)
+})
+
+// Deny decides on the first press. A second press, or a double click, must
+// not send a second decision, and must never land on the next gate when it
+// takes the same place on screen before the first answer is back.
+it("sends one decision per gate, and none to the next gate while one is in flight", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const first = snapshot.approvals[0]!
+  first.risk = "normal"
+  const second = { ...structuredClone(first), id: "approval-second", command: "rm -rf build", operation: "Remove the build directory" }
+  let settle: () => void = () => {}
+  const onResolve = vi.fn(() => new Promise<void>((done) => { settle = done }))
+  const thread = (current: typeof snapshot) => (
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={current}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />
+  )
+  const { rerender } = render(thread(snapshot))
+
+  await user.dblClick(screen.getByRole("button", { name: "Deny" }))
+  expect(onResolve).toHaveBeenCalledTimes(1)
+  expect(onResolve).toHaveBeenCalledWith(first.id, "deny", undefined, first.revision)
+
+  // The next gate arrives before the first answer is back.
+  const next = structuredClone(snapshot)
+  next.approvals = [second]
+  rerender(thread(next))
+  expect(screen.getByText("rm -rf build")).toBeTruthy()
+  const deny = screen.getByRole("button", { name: "Deny" }) as HTMLButtonElement
+  expect(deny.disabled).toBe(true)
+  fireEvent.click(deny)
+  expect(onResolve).toHaveBeenCalledTimes(1)
+
+  await act(async () => { settle() })
+  expect((screen.getByRole("button", { name: "Deny" }) as HTMLButtonElement).disabled).toBe(false)
+})
+
 it("sends the selected approval-card decision", async () => {
   const user = userEvent.setup()
   const snapshot = structuredClone(demoWorkspace)
@@ -276,13 +355,17 @@ it.each(["desktop", "web"] as const)("shows the rewritten file target on the %s 
   expect(affects()).toBe("The file two/file in the session worktree.")
 
   await user.click(screen.getByRole("button", { name: "Allow once" }))
-  await user.click(screen.getByRole("button", { name: surface === "web" ? "Always here" : "Always in this project" }))
+  // Ruled Q371 A: one label on desktop and web. A rule matches the execution
+  // record, not a command family, so it names "this command".
+  await user.click(screen.getByRole("button", { name: "Always for this command here" }))
   await user.click(screen.getByRole("button", { name: "Deny" }))
-  await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "Not that file")
-  await user.click(screen.getByRole("button", { name: "Deny with explanation" }))
+  await user.click(screen.getByRole("button", { name: "Deny with a note" }))
+  await user.type(screen.getByLabelText("Note on this denial"), "Not that file")
+  await user.click(screen.getByRole("button", { name: "Deny with this note" }))
   expect(onResolve.mock.calls).toEqual([
     [raised.id, "allow-once", undefined, 1],
     [raised.id, "always-project", undefined, 1],
+    [raised.id, "deny", undefined, 1],
     [raised.id, "deny-explain", "Not that file", 1],
   ])
 })
@@ -310,12 +393,35 @@ function renderThread(surface: "desktop" | "web" = "desktop", risk?: "normal" | 
   return snapshot.approvals[0]!
 }
 
+// A tab with no daemon connection holds nothing, so it does not say it does.
+it("does not claim the tab holds the gate while disconnected", () => {
+  render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={structuredClone(demoWorkspace)}
+      connected={false}
+      surface="web"
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />,
+  )
+  expect(screen.getByRole("alert").textContent).toContain("Cannot answer this gate while this client is disconnected from the daemon.")
+  expect(screen.queryByText("This tab holds the gate")).toBeNull()
+})
+
 it("uses the signed web gate wording and names the holder", () => {
   renderThread("web")
   const card = screen.getByRole("alert")
   expect(card.textContent).toContain("Approval required, hard gate")
   expect(card.textContent).toContain("This tab holds the gate")
-  expect(screen.queryByRole("button", { name: "Always in this project" })).toBeNull()
+  expect(screen.queryByRole("button", { name: /^Always/u })).toBeNull()
 })
 
 // Ruled by fetzy 2026-09-24, against the signed web design on this one point:
@@ -325,24 +431,47 @@ it.each(["desktop", "web"] as const)("offers no Always on a %s hard-gate card", 
   expect(approval.risk).toBe("hard-gate")
   expect(approval.execution.state).toBe("resolved")
   expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy()
-  expect(screen.queryByRole("button", { name: "Always here" })).toBeNull()
-  expect(screen.queryByRole("button", { name: "Always in this project" })).toBeNull()
+  expect(screen.queryByRole("button", { name: /^Always/u })).toBeNull()
 })
 
-it("keeps optional explanation behind Deny instead of a fourth peer action", async () => {
+// Ruled Q339 A: Deny decides at once, as drawn. No adapter passes a denial's
+// words to the provider, so the note is a quiet secondary whose copy says the
+// agent is told only that it was denied.
+it("denies at once, and keeps a note as a quiet secondary that promises the agent nothing", async () => {
   const user = userEvent.setup()
-  renderThread("desktop", "normal")
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals[0]!.risk = "normal"
+  const onResolve = vi.fn(async () => {})
+  render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />,
+  )
   const weight = (name: string) => screen.getByRole("button", { name }).className
   expect(weight("Allow once")).toContain("bg-warning")
-  expect(weight("Always in this project")).toContain("border-border")
+  expect(weight("Always for this command here")).toContain("border-border")
   expect(weight("Deny")).toContain("border-border")
-  expect(screen.queryByRole("button", { name: "Deny and explain" })).toBeNull()
+  expect(weight("Deny with a note")).not.toContain("border-border")
 
   await user.click(screen.getByRole("button", { name: "Deny" }))
+  expect(onResolve).toHaveBeenCalledWith(snapshot.approvals[0]!.id, "deny", undefined, 0)
+  expect(screen.queryByLabelText("Note on this denial")).toBeNull()
 
-  expect(screen.getByLabelText("Tell the agent why this command was denied")).toBeTruthy()
-  expect(screen.getByRole("button", { name: "Deny without explanation" })).toBeTruthy()
-  expect(screen.getByRole("button", { name: "Deny with explanation" })).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Deny with a note" }))
+  const card = screen.getByRole("alert")
+  expect(card.textContent).toContain("Kept on the receipt. The agent is told only that you denied it.")
+  expect(card.textContent).not.toMatch(/tell the agent why/iu)
 })
 
 // A decision made while the daemon is gone reaches nothing, so the card says
@@ -373,21 +502,20 @@ it("holds every decision while the daemon is disconnected, and says why", async 
   // The client knows it is disconnected, not why: an auth refusal and a lost
   // network look the same from here, so the line names no cause.
   expect(card.textContent).toContain("Cannot answer this gate while this client is disconnected from the daemon.")
-  for (const name of ["Allow once", "Always in this project", "Deny"]) {
+  for (const name of ["Allow once", "Always for this command here", "Deny"]) {
     expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true)
   }
 
   // A denial already being written is held too, and the words stay.
   rerender(thread(true))
   expect(screen.getByRole("alert").textContent).not.toContain("disconnected from the daemon")
-  await user.click(screen.getByRole("button", { name: "Deny" }))
-  await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "Not now")
+  await user.click(screen.getByRole("button", { name: "Deny with a note" }))
+  await user.type(screen.getByLabelText("Note on this denial"), "Not now")
   rerender(thread(false))
-  expect((screen.getByRole("button", { name: "Deny without explanation" }) as HTMLButtonElement).disabled).toBe(true)
-  expect((screen.getByRole("button", { name: "Deny with explanation" }) as HTMLButtonElement).disabled).toBe(true)
-  await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "{Enter}")
+  expect((screen.getByRole("button", { name: "Deny with this note" }) as HTMLButtonElement).disabled).toBe(true)
+  await user.type(screen.getByLabelText("Note on this denial"), "{Enter}")
   expect(onResolve).not.toHaveBeenCalled()
-  expect((screen.getByLabelText("Tell the agent why this command was denied") as HTMLInputElement).value).toBe("Not now")
+  expect((screen.getByLabelText("Note on this denial") as HTMLInputElement).value).toBe("Not now")
 })
 
 it("cancels denial explanation without deciding", async () => {
@@ -411,11 +539,11 @@ it("cancels denial explanation without deciding", async () => {
     />,
   )
 
-  await user.click(screen.getByRole("button", { name: "Deny" }))
+  await user.click(screen.getByRole("button", { name: "Deny with a note" }))
   await user.click(screen.getByRole("button", { name: "Cancel" }))
 
   expect(onResolve).not.toHaveBeenCalled()
-  expect(screen.queryByLabelText("Tell the agent why this command was denied")).toBeNull()
+  expect(screen.queryByLabelText("Note on this denial")).toBeNull()
   expect(screen.getByRole("button", { name: "Deny" })).toBeTruthy()
 })
 
@@ -463,7 +591,6 @@ it.each(["desktop", "web"] as const)("offers no Always on the %s card for a requ
   )
   expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy()
   expect(screen.getByRole("button", { name: "Deny" })).toBeTruthy()
-  expect(screen.queryByRole("button", { name: "Always in this project" })).toBeNull()
-  expect(screen.queryByRole("button", { name: "Always here" })).toBeNull()
+  expect(screen.queryByRole("button", { name: /^Always/u })).toBeNull()
 })
 

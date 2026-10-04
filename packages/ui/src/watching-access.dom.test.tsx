@@ -74,7 +74,7 @@ it("keeps observation surfaces and provider failure visible while locking compos
   expect(screen.queryByText(/plan:/iu)).toBeNull()
   expect(screen.getByText("No sends, approvals, terminal or writes. Reads stream as normal.")).toBeTruthy()
   expect(screen.getByText("Provider connection failed")).toBeTruthy()
-  expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()
+  expect((screen.getByRole("button", { name: "Allow once" }) as HTMLButtonElement).disabled).toBe(true)
   expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(true)
   expect(screen.queryByRole("button", { name: "Open slash commands" })).toBeNull()
   expect((screen.getByRole("button", { name: /^Mode:/u }) as HTMLButtonElement).disabled).toBe(true)
@@ -109,16 +109,27 @@ it("blocks stale mutation handlers after access changes to watching", async () =
   expect(onPauseSession).not.toHaveBeenCalled()
 })
 
-it("shows a watching device every approval fact without decision controls", () => {
-  render(<WatchingThread />)
+// Ruled Q372 A: as the design draws it, a watching device sees the decisions
+// locked, with "Locked, this client is watching only." beside them.
+it.each(["desktop", "web"] as const)("shows a watching %s device every approval fact with the decisions locked", (surface) => {
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals[0]!.risk = "normal"
+  const onResolve = vi.fn(async () => {})
+  render(<WatchingThread snapshot={snapshot} surface={surface} onResolve={onResolve} />)
 
   expect(screen.getByText("Apply a production database migration")).toBeTruthy()
   expect(screen.getByText("pnpm prisma migrate deploy")).toBeTruthy()
   expect(screen.getByText("macbook-pro-m3")).toBeTruthy()
   expect(screen.getByText("Production database schema: replay_events and webhook idempotency index.")).toBeTruthy()
   expect(screen.getByText("api.stripe.com and production PostgreSQL")).toBeTruthy()
-  expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeTruthy()
-  expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()
-  expect(screen.queryByRole("button", { name: "Deny" })).toBeNull()
-  expect(screen.queryByRole("button", { name: /^Always/u })).toBeNull()
+  expect(screen.getByText("Locked, this client is watching only.")).toBeTruthy()
+  for (const name of ["Allow once", "Always for this command here", "Deny"]) {
+    const button = screen.getByRole("button", { name }) as HTMLButtonElement
+    expect(button.disabled).toBe(true)
+    fireEvent.click(button)
+  }
+  expect(screen.queryByRole("button", { name: "Deny with a note" })).toBeNull()
+  // A watching tab does not hold the gate.
+  expect(screen.queryByText("This tab holds the gate")).toBeNull()
+  expect(onResolve).not.toHaveBeenCalled()
 })

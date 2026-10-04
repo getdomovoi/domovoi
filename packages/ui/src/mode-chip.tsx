@@ -11,7 +11,7 @@ import {
 } from "./components/ui/dropdown-menu"
 import { Switch } from "./components/ui/switch"
 import { effortLevel, effortName, effortScaleKind } from "./effort-scales"
-import { autoIsOffered, permissionModeLabel, permissionModes, withAuto, withPermissionMode } from "./permission-mode"
+import { autoIsOffered, permissionModeLabel, permissionModeNote, permissionModes, withAuto, withPermissionMode } from "./permission-mode"
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { cn } from "./lib/utils"
 
@@ -94,7 +94,7 @@ export function ModeChip({
                     <span className="text-[12.5px] text-foreground">{mode.label}</span>
                     <span className="font-machine text-[10px] text-faint">{mode.id}</span>
                   </div>
-                  <p className="m-0 mt-0.5 text-[11px] leading-snug text-muted-foreground">{mode.note}</p>
+                  <p className="m-0 mt-0.5 text-[11px] leading-snug text-muted-foreground">{permissionModeNote(mode.id, runtime.provider)}</p>
                 </div>
                 <CheckIcon className={cn("size-3.5 self-center", selected ? "text-primary" : "text-transparent")} />
               </div>
@@ -111,7 +111,7 @@ export function ModeChip({
             <div className={cn("text-[12.5px]", autoOffered ? "text-foreground" : "text-faint")}>{runtime.auto ? "Auto, on" : "Auto"}</div>
             <p className="m-0 mt-0.5 text-[11px] leading-snug text-muted-foreground">
               {autoOffered
-                ? "Runs step after step without stopping between them. Hard gates and policy refusals still stop it."
+                ? "Runs step after step. Commands Auto or a rule allows run without stopping. Any other command still stops it at a gate, as do hard gates and policy refusals."
                 : "Only legal with Build, because Plan and Ask stop on every step by definition."}
             </p>
           </div>
