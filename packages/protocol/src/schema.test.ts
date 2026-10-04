@@ -1450,6 +1450,43 @@ describe("workspace protocol", () => {
     }).success).toBe(false)
   })
 
+  it("keeps preview bridge annotation ids exactly as stored", () => {
+    const channel = "preview_channel_123456"
+    const requestId = "request_channel_123456"
+    const resolveAnchors = (annotationIds: string[]) => previewBridgeResolveAnchorsMessageSchema.safeParse({
+      type: "domovoi.preview.resolve-anchors",
+      channel,
+      artifactId: "artifact-preview",
+      requestId,
+      annotations: annotationIds.map((annotationId) => ({ annotationId, anchor: { textQuote: "Exact" } })),
+    })
+    const anchorResolutions = (annotationIds: string[]) => previewBridgeAnchorResolutionsMessageSchema.safeParse({
+      type: "domovoi.preview.anchor-resolutions",
+      channel,
+      artifactId: "artifact-preview",
+      requestId,
+      resolutions: annotationIds.map((annotationId, index) => index % 2 === 0
+        ? { annotationId, status: "resolved", strategy: "text-quote" }
+        : { annotationId, status: "unresolved" }),
+    })
+
+    // Both resolution shapes see every id: even indexes resolve, odd ones do not.
+    const exactIds = [" annotation-1 ", "   ", "annotation-1", "\tannotation-1\n"]
+    expect(resolveAnchors(exactIds).data?.annotations.map((item) => item.annotationId)).toEqual(exactIds)
+    expect(anchorResolutions(exactIds).data?.resolutions.map((item) => item.annotationId)).toEqual(exactIds)
+    expect(anchorResolutions([...exactIds].reverse()).data?.resolutions.map((item) => item.annotationId))
+      .toEqual([...exactIds].reverse())
+
+    const longest = "a".repeat(256)
+    expect(resolveAnchors([longest]).data?.annotations[0]?.annotationId).toBe(longest)
+    expect(anchorResolutions(["annotation-0", longest]).data?.resolutions[1]?.annotationId).toBe(longest)
+    for (const refused of ["", "a".repeat(257), `${"a".repeat(255)}\u{1F600}`]) {
+      expect(resolveAnchors([refused]).success).toBe(false)
+      expect(anchorResolutions([refused]).success).toBe(false)
+      expect(anchorResolutions(["annotation-0", refused]).success).toBe(false)
+    }
+  })
+
   it("validates discovered provider models", () => {
     expect(runtimeModelsParamsSchema.parse({
       provider: "codex",

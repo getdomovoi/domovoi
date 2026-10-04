@@ -108,6 +108,47 @@ describe("previewSelectionFor", () => {
     )).toBeUndefined()
   })
 
+  it("accepts a frame answer that names a padded annotation ID exactly", () => {
+    const annotations = [
+      { annotationId: " annotation-padded ", anchor: { textQuote: "Padded" } },
+      { annotationId: "annotation-padded", anchor: { textQuote: "Plain" } },
+      { annotationId: "   ", anchor: { textQuote: "Blank" } },
+    ]
+    const [request] = previewResolveAnchorMessages(
+      "preview_channel_123456",
+      "artifact-preview",
+      annotations,
+      () => "request_channel_0000000000000000",
+    )
+    const answer = {
+      type: "domovoi.preview.anchor-resolutions",
+      channel: request!.channel,
+      artifactId: request!.artifactId,
+      requestId: request!.requestId,
+      resolutions: [
+        { annotationId: " annotation-padded ", status: "resolved", strategy: "text-quote" },
+        { annotationId: "annotation-padded", status: "unresolved" },
+        { annotationId: "   ", status: "resolved", strategy: "selector" },
+      ],
+    }
+
+    const accepted = anchorResolutionsFor(
+      answer,
+      request!.channel,
+      request!.artifactId,
+      request!.requestId,
+      request!.annotations.map((item) => item.annotationId),
+    )
+    expect(accepted).toEqual(answer)
+
+    const resolutions = mergeAnchorResolutionBatch(new Map(), accepted?.resolutions ?? [])
+    expect([...resolutions]).toEqual([
+      [" annotation-padded ", "text-quote"],
+      ["annotation-padded", "unresolved"],
+      ["   ", "selector"],
+    ])
+  })
+
   it("merges completed batches without classifying unprocessed IDs", () => {
     const first = mergeAnchorResolutionBatch(new Map(), [
       { annotationId: "annotation-1", status: "resolved", strategy: "selector" },
