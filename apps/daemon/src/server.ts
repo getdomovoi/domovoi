@@ -3923,15 +3923,25 @@ export class DomovoiDaemon {
   }
 
   // The paired device the daemon verified on a connection, as a receipt or a
-  // terminal owner names it (ruling Q424 A): the id and label of the device
-  // record the credential was checked against, read when the connection
-  // acts. A connection on the daemon credential has no paired device and
-  // names none. Nothing the request said of itself is used. The label is a
+  // terminal owner names it (ruling Q424 A): the id of the device record the
+  // credential was checked against at hello, and the label that record has
+  // now, read from the registry when the connection acts, so a rename since
+  // hello names the new label and a receipt written before it keeps the old
+  // one. The registry read is the credential check again: the row by the
+  // credential's hash, unrevoked, with a binding. A credential that no
+  // longer verifies here was already refused at the request, so the label
+  // verified at hello stands in only for the gap inside one request. A
+  // connection on the daemon credential has no paired device and names
+  // none. Nothing the request said of itself is used. The label is a
   // person's own text and is redacted before it enters the snapshot, where
   // history, persistence and transfer copy it from.
   #decidingDevice(socket: RpcOutboundSocket): Pick<TerminalOwner, "device"> {
-    const device = this.#deviceCredentials.get(socket)?.verified.device
-    return device ? { device: { id: device.id, label: redactDeviceLabel(device.label) } } : {}
+    const credential = this.#deviceCredentials.get(socket)
+    if (credential === undefined) return {}
+    const verified = credential.verified.device
+    const current = this.#store.devices?.verify(credential.token)?.device
+    const label = current?.id === verified.id ? current.label : verified.label
+    return { device: { id: verified.id, label: redactDeviceLabel(label) } }
   }
 
   // The claimant as the receipt names a decider: what the connection said of

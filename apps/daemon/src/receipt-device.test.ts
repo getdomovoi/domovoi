@@ -76,8 +76,9 @@ async function start() {
       path, outcome: "restored" as const, baseCommit: "b".repeat(40), recoveryCommit: "d".repeat(40),
     })),
   } satisfies WorkspaceService
+  const store = new SqliteWorkspaceStore(":memory:", pendingApproval())
   const daemon = new DomovoiDaemon({
-    port: 0, store: new SqliteWorkspaceStore(":memory:", pendingApproval()),
+    port: 0, store,
     agents: { codex: provider }, workspaceService, errorSink: vi.fn(),
   })
   daemons.push(daemon)
@@ -100,7 +101,13 @@ async function start() {
   const raiseGate = async (client: ClientKind, rpc = owner) => {
     const sent = await rpc("session.send", { sessionId, prompt: "run the migrations", client })
     expect(sent.error?.message).toBeUndefined()
-    emit({ type: "approval-requested", requestId: 41, threadId, turnId: "turn-billing", itemId: "call_migrate", command: "pnpm migrate" })
+    return raiseAnotherGate(41)
+  }
+
+  // A further gate on the turn the first one opened, with nothing decided
+  // between: the turn is still running, so no second send is needed.
+  const raiseAnotherGate = async (requestId: number) => {
+    emit({ type: "approval-requested", requestId, threadId, turnId: "turn-billing", itemId: `call_migrate_${requestId}`, command: "pnpm migrate" })
     await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(1))
     return (await snapshot()).approvals[0]!
   }
@@ -110,7 +117,7 @@ async function start() {
     const page = await owner("session.history", { sessionId, categories: ["approvals"] })
     return (page.result as { items: Array<Record<string, unknown>> }).items
   }
-  return { provider, owner, snapshot, paired, raiseGate, receipts, history, emit: (event: AgentEvent) => emit(event) }
+  return { provider, owner, store, snapshot, paired, raiseGate, raiseAnotherGate, receipts, history, emit: (event: AgentEvent) => emit(event) }
 }
 
 describe("the deciding device on a receipt", () => {
@@ -136,6 +143,48 @@ describe("the deciding device on a receipt", () => {
     expect(receipt).toMatchObject({ device: { id: phone.device.id, label: "office NPM_TOKEN=[REDACTED]" } })
     expect((await history())[0]).toMatchObject({ device: { id: phone.device.id, label: "office NPM_TOKEN=[REDACTED]" } })
     expect(JSON.stringify(await snapshot())).not.toContain("label-secret-1")
+  })
+
+  // The receipt names the label the device had when it acted, read from the
+  // registry row at the decision, not the label the credential carried at
+  // hello. A receipt written before the rename keeps the earlier label.
+  it("names the label the device has at the decision, not the one it had at hello", async () => {
+    const { owner, paired, raiseGate, raiseAnotherGate, receipts } = await start()
+    const phone = await paired("office", "phone")
+    const first = await raiseGate("phone", phone.rpc)
+    expect((await phone.rpc("approval.resolve", { approvalId: first.id, decision: "allow-once", revision: first.revision, client: "phone" })).error).toBeUndefined()
+    expect((await owner("device.rename", { deviceId: phone.device.id, label: "travel" })).error).toBeUndefined()
+    const second = await raiseAnotherGate(42)
+    expect((await phone.rpc("approval.resolve", { approvalId: second.id, decision: "deny", revision: second.revision, client: "phone" })).error).toBeUndefined()
+    expect(await receipts()).toEqual([
+      expect.objectContaining({ decision: "allow-once", device: { id: phone.device.id, label: "office" } }),
+      expect.objectContaining({ decision: "deny", device: { id: phone.device.id, label: "travel" } }),
+    ])
+  })
+
+  it("names the label the device has when it presses the emergency stop", async () => {
+    const { owner, paired, raiseGate, receipts } = await start()
+    const desktop = await paired("studio-mac", "desktop")
+    await raiseGate("desktop", desktop.rpc)
+    expect((await owner("device.rename", { deviceId: desktop.device.id, label: "kitchen-mac" })).error).toBeUndefined()
+    expect((await desktop.rpc("system.emergencyStop", { client: "desktop" })).error).toBeUndefined()
+    expect(await receipts()).toContainEqual(expect.objectContaining({
+      explanation: "Emergency stop", device: { id: desktop.device.id, label: "kitchen-mac" },
+    }))
+  })
+
+  // A device revoked between hello and the decision is refused at the
+  // request, as every request on a paired credential rechecks that it is
+  // still active, so no receipt is written and the gate stays open.
+  it("refuses a decision from a device revoked since hello and writes no receipt", async () => {
+    const { store, paired, raiseGate, receipts, snapshot } = await start()
+    const phone = await paired("office", "phone")
+    const card = await raiseGate("phone", phone.rpc)
+    store.devices.revoke(phone.device.id)
+    const refused = await phone.rpc("approval.resolve", { approvalId: card.id, decision: "allow-once", revision: card.revision, client: "phone" })
+    expect(refused.error?.message).toBe("Daemon authentication failed")
+    expect(await receipts()).toEqual([])
+    expect((await snapshot()).approvals).toHaveLength(1)
   })
 
   it("writes no device for a decision made on the daemon credential", async () => {
