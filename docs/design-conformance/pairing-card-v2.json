@@ -32,11 +32,21 @@
         "The previous code no longer works.",
         "The QR holds this address and the code, never a credential:"
       ],
-      "evidence": [
+      "presence": [
         "Show a pairing code",
         "A code lasts 180 seconds. Showing another cancels it.",
         "The QR holds this address and the code, never a credential"
-      ]
+      ],
+      "evidence": [
+        "Show a pairing code",
+        "A code lasts 180 seconds. Showing another cancels it.",
+        "The QR holds this address and the code, never a credential",
+        "issuedKind !== \"browser\""
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the phone and tablet paths are built; the Web browser path is not right. It draws the same domovoi-pair QR and Copy payload as a phone, which the web connect page refuses (it parses only the word code), and a phone camera scanning that QR opens the phone's own pairing, greets as a phone and spends the web code. Q398 and Q399 (picked 2026-10-02, confirmed by fetzy the same day), draw no QR on the Web browser tab, say to type the code there, and show webAppUrl as text when the daemon has one. Copy follows the design's own instruction for a browser (Open the address in the browser and type the code.) and hands over the code alone. That branch is built on open PR #704 (fix/v2-web), not on main. The evidence names the branch on the issued kind that #704 adds"
+      }
     },
     {
       "id": "pairing-card.grants",
@@ -67,7 +77,7 @@
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "nothing tells the window that issued a code that a device redeemed it or was refused (protocol mismatch, device list full), so the paired receipt and the refusals cannot be drawn"
+        "reason": "nothing tells the window that issued a code that a device redeemed it or was refused (protocol mismatch, device list full): device.issueCode returns the code, expiry and address only, so the paired receipt and the refusals cannot be drawn. Q354 A (2026-10-02): the daemon sends a notification or an issueCode follow-up saying redeemed, or refused with a reason (protocol); inferring it from device.list could name the wrong device and is ruled out"
       }
     },
     {
@@ -159,7 +169,27 @@
     {
       "id": "pairing-card.code",
       "since": "2026-09-23",
-      "note": "Phase titles, reach lines and outcome lines are in the component's data; read them against the component. The design's own open question: the unbuilt grant line reads \"Terminal output is not on a phone yet.\" here and \"... Everything else here works.\" in phoneAndTabletPromise."
+      "note": "Phase titles, reach lines and outcome lines are in the component's data; read them against the component."
+    },
+    {
+      "id": "pairing-card.grants",
+      "since": "2026-10-02",
+      "note": "The design's open question on the unbuilt grant line is settled: phoneAndTabletPromise now says Terminal output is not on a phone yet., the design's line, word for word."
+    },
+    {
+      "id": "pairing-card.code",
+      "since": "2026-10-02",
+      "note": "Q347 A: the locked state's mono line pair.issue refused · watch_only_client names a method and code that do not exist; it becomes device.issueCode refused · watching-only credential, a ruled difference from the drawn copy."
+    },
+    {
+      "id": "pairing-card.code",
+      "since": "2026-10-02",
+      "note": "Q398 and Q399 (picked 2026-10-02, confirmed by fetzy the same day), differ from the drawn browser QR: the Web browser tab draws no QR, even when the daemon has a webAppUrl, and says to type the code into the web page, showing webAppUrl as text when there is one. Separately, Copy follows the design's own browser instruction (Open the address in the browser and type the code.) and hands over the code alone. The drawn browser QR would be scanned by a phone camera, whose browser greets as a phone or tablet, so a web-kind code would always end in a kind mismatch and an extra paired device. Built on open PR #704, not on main yet."
+    },
+    {
+      "id": "pairing-card.code",
+      "since": "2026-10-03",
+      "note": "Open gaps in the code slot, apart from the Web browser path (see the Q398 and Q399 note). The card learns of a loopback-only or certificate problem only after spending a code. Its problem box draws the tailnet actions since TailnetReach landed (pairing-card.reach, 2026-10-02); Show another is the code button's own label after a problem or an expiry, not an action inside the box as the design draws it, and Open Machines belongs to the refusal states, which wait on pairing-card.done's protocol block. The line The same code as domovoid pair --client <kind> names a command that prints usage and fails without --label. Q336 A is built: printedCommand draws the linked name, its ~/.local/bin path, or the bundled launcher's full path, so a DMG install no longer names a domovoid that is not on PATH."
     },
     {
       "id": "pairing-card.reach",

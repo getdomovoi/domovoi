@@ -23,9 +23,9 @@
         "A seat is a person who may attach to machines this organisation granted them. Seats are not metered by machine, and a seat alone reaches nothing until a grant exists."
       ],
       "blocked": {
-        "since": "2026-09-20",
+        "since": "2026-10-02",
         "needs": "platform",
-        "reason": "Organisation identity, seats and grants are Phase 5 platform work."
+        "reason": "organisation identity, seats and grants are Phase 5 (S5.2), shipped with teams (M4); M1 excludes teams, and no org, team or seat RPC exists"
       }
     },
     {
@@ -45,9 +45,9 @@
         "Grant to someone"
       ],
       "blocked": {
-        "since": "2026-09-20",
+        "since": "2026-10-02",
         "needs": "platform",
-        "reason": "Team seat and machine grant management is not implemented in the current product surface."
+        "reason": "seats and machine grants are Phase 5 (S5.2, S5.6), shipped with teams (M4); M1 excludes teams, and no seat or grant RPC or surface exists"
       }
     },
     {
@@ -67,9 +67,9 @@
         "It takes effect at the next turn boundary on each machine, and the refusals it already recorded stay in the audit log. A member's machine that is unreachable keeps enforcing the last policy it received."
       ],
       "blocked": {
-        "since": "2026-09-20",
+        "since": "2026-10-02",
         "needs": "platform",
-        "reason": "Organisation-wide audit and policy surfaces require the Phase 5 control service."
+        "reason": "organisation policy enforcement and cross-person history are Phase 5 (S5.4, S5.5), shipped with teams (M4); M1 excludes teams. The per-machine audit log and rules exist, but nothing collects decisions across an organisation or pushes a policy to granted machines"
       }
     },
     {
@@ -85,9 +85,9 @@
         "IF THE CARD FAILS"
       ],
       "blocked": {
-        "since": "2026-09-20",
+        "since": "2026-10-02",
         "needs": "platform",
-        "reason": "Organisation billing and metering are Phase 5 platform work."
+        "reason": "organisation billing is Phase 5 (S5.1, S5.3), shipped with teams (M4); the machine meter it rests on is Phase 2 (M2). M1 excludes billing and teams, and no billing RPC or surface exists"
       }
     }
   ],

@@ -23,9 +23,9 @@
         "DOES NOT WORK"
       ],
       "blocked": {
-        "since": "2026-09-20",
+        "since": "2026-10-02",
         "needs": "platform",
-        "reason": "Cloud identity, relay routes and entitlement are Phase 2 platform work; the current client has no Cloud surface."
+        "reason": "relay routes, machine registration and the connected-time meter are Phase 2, the hosted relay (M2); accounts and paid entitlement are Phase 5 (M3). M1 excludes the relay, billing and teams (SHIP-PLAN milestones), and no client has a Cloud surface: no account, relay or entitlement RPC exists"
       }
     },
     {
@@ -43,10 +43,17 @@
         "A fourteen day Enthusiast trial, no card, once per account. Loopback, WSL, LAN, tailnet and SSH were never gated and do not become gated by a billing state, so a lapse while you are at your desk changes nothing."
       ],
       "blocked": {
-        "since": "2026-09-20",
+        "since": "2026-10-02",
         "needs": "platform",
-        "reason": "Account billing, metering and trials are Phase 5 platform work and are not implemented in M1."
+        "reason": "payment, per-seat billing and trials are Phase 5 (S5.1, S5.3), the paid launch (M3); the machine-hours meter they rest on is Phase 2 (S2.5, M2). M1 excludes billing, and no billing RPC or surface exists"
       }
+    }
+  ],
+  "humanRead": [
+    {
+      "id": "cloud.shell",
+      "since": "2026-10-02",
+      "note": "Design copy a future build must not take as is. The route logs run domovoi machine check <machine>, a command that does not exist (docs/cli-parity-decision.md leaves its target and contract undefined); Q389 A has builds use real commands and record each substitution here, and this one has no real command yet, which is an open gap. Two lines name LAN as a route (one of them is cloud.billing's trial line), and LAN is a later carrier, not M1 (SHIP-PLAN S2.2)."
     }
   ],
   "scriptBacklog": {
