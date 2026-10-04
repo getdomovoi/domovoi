@@ -1,6 +1,7 @@
 import { auditQueryPageSchema } from "@getdomovoi/protocol"
 
 import type { RpcCall } from "./pair.js"
+import { terminalSafe } from "./terminal-text.js"
 
 // One-shot read of the machine's own audit log over the client's channel.
 // Nothing is uploaded: the entries come to this terminal and stop here. There
@@ -17,17 +18,22 @@ export async function readLogs(input: { call: RpcCall; query: LogsQuery }) {
   return auditQueryPageSchema.parse(await input.call("audit.query", params))
 }
 
+// Every text field of an entry was written by the daemon from what a client,
+// a provider or a path supplied, so each is drawn through terminalSafe and an
+// entry stays on one line. The detail first folds whitespace, newlines
+// included, to single spaces, as it always has. The outcome and actor kind
+// are validated enums and are drawn as they are.
 export function renderLogs(page: ReturnType<typeof auditQueryPageSchema.parse>): string {
   const lines = page.entries.map((entry) => {
-    const actor = entry.actor.kind === "client" ? `client ${entry.actor.clientId ? entry.actor.clientId.slice(0, 14) : ""}`.trim()
-      : entry.actor.kind === "machine" ? `machine ${entry.actor.machineId.slice(0, 16)}`
-      : entry.actor.kind === "daemon" ? `daemon${entry.actor.component ? ` ${entry.actor.component}` : ""}`
+    const actor = entry.actor.kind === "client" ? `client ${entry.actor.clientId ? terminalSafe(entry.actor.clientId.slice(0, 14)) : ""}`.trim()
+      : entry.actor.kind === "machine" ? `machine ${terminalSafe(entry.actor.machineId.slice(0, 16))}`
+      : entry.actor.kind === "daemon" ? `daemon${entry.actor.component ? ` ${terminalSafe(entry.actor.component)}` : ""}`
       : entry.actor.kind
-    const where = entry.sessionId ? ` session ${entry.sessionId}` : ""
-    const target = entry.target ? ` ${entry.target}` : ""
-    const detail = entry.detail ? ` ${entry.detail.replace(/\s+/g, " ").slice(0, 160)}` : ""
-    return `${entry.occurredAt} ${entry.outcome.padEnd(9)} ${entry.action}${target} [${actor}]${where}${detail}`
+    const where = entry.sessionId ? ` session ${terminalSafe(entry.sessionId)}` : ""
+    const target = entry.target ? ` ${terminalSafe(entry.target)}` : ""
+    const detail = entry.detail ? ` ${terminalSafe(entry.detail.replace(/\s+/g, " ").slice(0, 160))}` : ""
+    return `${terminalSafe(entry.occurredAt)} ${entry.outcome.padEnd(9)} ${terminalSafe(entry.action)}${target} [${actor}]${where}${detail}`
   })
-  if (page.hasMore && page.nextCursor) lines.push(`more: run again with --before ${page.nextCursor}`)
+  if (page.hasMore && page.nextCursor) lines.push(`more: run again with --before ${terminalSafe(page.nextCursor)}`)
   return lines.length === 0 ? "no entries\n" : `${lines.join("\n")}\n`
 }

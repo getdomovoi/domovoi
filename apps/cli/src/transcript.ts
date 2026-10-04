@@ -1,5 +1,7 @@
 import type { ApprovalRequest, ClientKind, PolicyRefusalThreadItem, ThreadItem } from "@getdomovoi/protocol"
 
+import { terminalSafe } from "./terminal-text.js"
+
 // The lines a session transcript prints for a gate, a receipt and a policy
 // refusal, laid out as the signed CLI transcripts design draws them (J44) and
 // as rulings Q392 to Q394 settle them. The session commands that will print
@@ -22,40 +24,15 @@ function header(label: string, id: string, columns: number): string {
   return `${label}${" ".repeat(Math.max(2, columns - label.length - id.length))}${id}`
 }
 
-// Wire text a person chose (a device label, a machine name) may carry
-// control and formatting characters: the schema trims and bounds a label but
-// does not refuse them. Printed raw, a newline splits one line into two and an
-// escape sequence restyles the terminal. An unmatched bidirectional override
-// or isolate reorders how the client kind, machine and time after it read in a
-// bidi-aware terminal or log viewer, and U+2028 and U+2029 break the line in
-// some viewers. So C0 controls, DEL, C1 controls, every Unicode Bidi_Control
-// code point (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) and
-// the line and paragraph separators are escaped: the shell escapes a reader
-// knows (\n, \r, \t, \e) where one exists, otherwise \u{XX}, the JavaScript
-// code point form. Each stays visible on the same line and names the character
-// it replaced. Ordinary letters in any script, emoji, and the joiners U+200C
-// and U+200D that spell some words and emoji sequences pass unchanged. Fields
+// Every free-text value on these lines comes from the wire, so each is drawn
+// through terminalSafe: a newline, an escape sequence or a directional
+// override in one cannot add a line, restyle the terminal or reorder the
+// facts after it. The permission mode is a validated enum and the step
+// numbers are formatted here, so they are drawn as they are. Receipt fields
 // are not isolated: right-to-left text in one field can still move a
 // neighbouring number, such as the time, in a viewer that applies bidi
 // ordering. Wrapping each field in renderer-owned isolates is the fix once a
 // command prints this line.
-const namedControls: Record<number, string> = { 0x09: "\\t", 0x0a: "\\n", 0x0d: "\\r", 0x1b: "\\e" }
-
-function shownEscaped(code: number): boolean {
-  if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true
-  if (code === 0x061c || code === 0x200e || code === 0x200f) return true
-  if (code >= 0x2028 && code <= 0x202e) return true
-  return code >= 0x2066 && code <= 0x2069
-}
-
-function terminalSafe(text: string): string {
-  let safe = ""
-  for (const character of text) {
-    const code = character.codePointAt(0) ?? 0
-    safe += shownEscaped(code) ? namedControls[code] ?? `\\u{${code.toString(16).padStart(2, "0")}}` : character
-  }
-  return safe
-}
 
 function fact(key: string, value: string): string {
   return `  ${key.padEnd(factWidth)}${value}`
@@ -85,7 +62,7 @@ function choices(gate: GateView): Choice[] {
   const always = gate.risk === "normal" && gate.execution.state === "resolved" && gate.toolServer === undefined
   return [
     { key: "a", label: "Allow once", hint: "" },
-    ...(always ? [{ key: "r" as const, label: "Always here", hint: `${gate.operation} in ${gate.directory} on ${gate.machine}` }] : []),
+    ...(always ? [{ key: "r" as const, label: "Always here", hint: `${terminalSafe(gate.operation)} in ${terminalSafe(gate.directory)} on ${terminalSafe(gate.machine)}` }] : []),
     { key: "d", label: "Deny", hint: "" },
   ]
 }
@@ -95,16 +72,16 @@ export function renderGate(gate: GateView, options: { columns?: number; prompt?:
   const prompt = options.prompt ?? true
   const offered = choices(gate)
   const lines = [
-    header(gate.risk === "hard-gate" ? "hard gate · waiting on your decision" : "waiting on your decision", gate.id, columns),
-    `  ${placed(gate.step, `${gate.agent} · ${gate.mode}`)}`,
+    header(gate.risk === "hard-gate" ? "hard gate · waiting on your decision" : "waiting on your decision", terminalSafe(gate.id), columns),
+    `  ${placed(gate.step, `${terminalSafe(gate.agent)} · ${gate.mode}`)}`,
     "",
-    `  ${gate.command}`,
+    `  ${terminalSafe(gate.command)}`,
     "",
-    fact("machine", gate.machine),
-    fact("working dir", gate.directory),
-    fact("affects", gate.affects),
-    fact("network", gate.network),
-    fact("estimated", gate.estimatedDuration),
+    fact("machine", terminalSafe(gate.machine)),
+    fact("working dir", terminalSafe(gate.directory)),
+    fact("affects", terminalSafe(gate.affects)),
+    fact("network", terminalSafe(gate.network)),
+    fact("estimated", terminalSafe(gate.estimatedDuration)),
   ]
   if (!prompt) lines.push(fact("offered", offered.map((choice) => choice.label).join(" · ")))
   if (prompt) {
@@ -153,19 +130,19 @@ export type PolicyRefusalView = Pick<PolicyRefusalThreadItem, "id" | "operation"
 export function renderPolicyRefusal(refusal: PolicyRefusalView, options: { columns?: number; step?: { n: number; of: number } } = {}): string {
   const columns = options.columns ?? 80
   const lines = [
-    header("refused by policy, there is nothing to approve", refusal.id, columns),
+    header("refused by policy, there is nothing to approve", terminalSafe(refusal.id), columns),
     `  ${placed(options.step, "refused by the daemon before it ran")}`,
     "",
-    `  ${refusal.command}`,
-    `  ${refusal.operation}`,
+    `  ${terminalSafe(refusal.command)}`,
+    `  ${terminalSafe(refusal.operation)}`,
     "",
-    fact("rule", refusal.rule),
-    fact("set by", refusal.setBy),
-    fact("applies to", refusal.scope),
+    fact("rule", terminalSafe(refusal.rule)),
+    fact("set by", terminalSafe(refusal.setBy)),
+    fact("applies to", terminalSafe(refusal.scope)),
     fact("override", "none, not even with approval"),
     "",
     "  what you can do instead",
-    `    ${refusal.remedy}`,
+    `    ${terminalSafe(refusal.remedy)}`,
   ]
   return `${lines.join("\n")}\n`
 }

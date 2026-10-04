@@ -32,3 +32,37 @@ describe("logs, after peer review", () => {
     expect(text).toMatch(/\[client device-1111111\]/)
   })
 })
+
+// A newline, an escape sequence and a right-to-left override, built from code
+// points so the source shows which invisible character each is.
+const hostile = `\nX\u001b[31mY${String.fromCodePoint(0x202e)}Z`
+const shown = "\\nX\\e[31mY\\u{202e}Z"
+
+describe("logs, with entries that carry control characters", () => {
+  it("shows each one escaped and keeps one entry per line; detail still folds whitespace", async () => {
+    const call = async () => ({
+      entries: [entry(`9${hostile}`, { action: `device.claim${hostile}`, target: `device${hostile}`, sessionId: `ses${hostile}`, detail: `line one${hostile}` })],
+      hasMore: true, nextCursor: `9${hostile}`,
+    })
+    const text = renderLogs(await readLogs({ call, query: { limit: 1 } }))
+    expect(text.split("\n")).toEqual([
+      `2026-09-12T12:00:00.000Z succeeded device.claim${shown} device${shown} [daemon rpc] session ses${shown} line one X\\e[31mY\\u{202e}Z`,
+      `more: run again with --before 9${shown}`,
+      "",
+    ])
+  })
+
+  it("escapes the actor and the time, whatever reached the renderer", () => {
+    const text = renderLogs({
+      entries: [{ id: "1", occurredAt: `2026-09-12${hostile}`, actor: { kind: "daemon", component: `rpc${hostile}` }, action: "device.claim", outcome: "succeeded" }],
+      hasMore: false,
+    })
+    expect(text).toBe(`2026-09-12${shown} succeeded device.claim [daemon rpc${shown}]\n`)
+  })
+
+  it("leaves text in any script unchanged", async () => {
+    const call = async () => ({ entries: [entry("1", { target: "מכונה-café", detail: "привет мир" })], hasMore: false })
+    expect(renderLogs(await readLogs({ call, query: { limit: 1 } })))
+      .toBe("2026-09-12T12:00:00.000Z succeeded device.claim מכונה-café [daemon rpc] привет мир\n")
+  })
+})

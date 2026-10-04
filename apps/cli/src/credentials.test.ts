@@ -83,6 +83,18 @@ describe("credential store", () => {
     expect(JSON.parse(await readFile(file, "utf8"))).toMatchObject({ version: 1 })
   })
 
+  // Windows refuses these characters in a file name, so there is nothing to show there.
+  it.skipIf(process.platform === "win32")("names a credential file whose path carries control characters escaped, on one line", async () => {
+    const home = await directory()
+    const rlo = String.fromCodePoint(0x202e)
+    const file = join(home, `a\nb\u001b[31mc${rlo}d.json`)
+    const warnings: string[] = []
+    await openCredentialStore({ keyring: absentKeyring, home, credentialFile: file, warn: (text) => warnings.push(text) })
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain(`kept in ${join(home, "a\\nb\\e[31mc\\u{202e}d.json")}, not in an OS keychain`)
+    for (const raw of ["\n", "\u001b", rlo]) expect(warnings[0]).not.toContain(raw)
+  })
+
   it("loads and forgets from a large file written before this port", async () => {
     const home = await directory()
     const file = join(home, "cli-credentials.json")

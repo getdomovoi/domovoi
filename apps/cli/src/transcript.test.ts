@@ -9,6 +9,12 @@ const gate = {
   execution: { state: "resolved" as const },
 }
 
+// A newline, an escape sequence and a right-to-left override, built from code
+// points so the source shows which invisible character each is, and how each
+// is drawn instead.
+const hostile = `\nX\u001b[31mY${String.fromCodePoint(0x202e)}Z`
+const shown = "\\nX\\e[31mY\\u{202e}Z"
+
 describe("renderGate (ruling Q394 A: facts one per line)", () => {
   it("draws the header, the command, then one fact per line, then the choices", () => {
     const text = renderGate({ ...gate, step: { n: 3, of: 4 } }, { columns: 80 })
@@ -75,6 +81,47 @@ describe("renderGate (ruling Q394 A: facts one per line)", () => {
   it("keeps the id on the header line at any width, with at least two spaces before it", () => {
     const text = renderGate(gate, { columns: 20 })
     expect(text.split("\n")[0]).toBe("waiting on your decision  apr_7f2c")
+  })
+
+  // Every approval fact is free text on the wire. A newline in one would add
+  // a line, an escape sequence would restyle the terminal, and an override
+  // would reorder the facts after it, so each is drawn as its escape.
+  it("shows control and bidirectional characters in every fact escaped, one fact per line", () => {
+    const text = renderGate({
+      ...gate, id: `apr_${hostile}`, operation: `migrate${hostile}`, command: `pnpm${hostile}`, machine: `mini${hostile}`, agent: `claude${hostile}`,
+      directory: `~/src${hostile}`, affects: `db${hostile}`, network: `none${hostile}`, estimatedDuration: `~40s${hostile}`, step: { n: 3, of: 4 },
+    }, { columns: 80 })
+    const id = `apr_${shown}`
+    expect(text.split("\n")).toEqual([
+      "waiting on your decision" + " ".repeat(80 - "waiting on your decision".length - id.length) + id,
+      `  step 3 of 4 · claude${shown} · build`,
+      "",
+      `  pnpm${shown}`,
+      "",
+      `  machine          mini${shown}`,
+      `  working dir      ~/src${shown}`,
+      `  affects          db${shown}`,
+      `  network          none${shown}`,
+      `  estimated        ~40s${shown}`,
+      "",
+      "  a  Allow once   ",
+      `  r  Always here  migrate${shown} in ~/src${shown} on mini${shown}`,
+      "  d  Deny         ",
+      "",
+    ])
+    expect(text).not.toContain("\u001b")
+    expect(text).not.toContain(String.fromCodePoint(0x202e))
+    expect(renderGate({ ...gate, machine: `mini${hostile}` }, { columns: 80, prompt: false }).split("\n")).toHaveLength(12)
+  })
+
+  it("leaves facts in any script unchanged", () => {
+    const local = { ...gate, machine: "מחשב-של-דנה", directory: "~/src/café-ünïcode", command: "echo 'привет 👋'", affects: "ملف واحد" }
+    const text = renderGate(local, { columns: 80 })
+    expect(text).toMatch(/^ {2}machine {10}מחשב-של-דנה$/m)
+    expect(text).toMatch(/^ {2}working dir {6}~\/src\/café-ünïcode$/m)
+    expect(text).toMatch(/^ {2}echo 'привет 👋'$/m)
+    expect(text).toMatch(/^ {2}affects {10}ملف واحد$/m)
+    expect(text).toMatch(/^ {2}r {2}Always here {2}prisma migrate in ~\/src\/café-ünïcode on מחשב-של-דנה$/m)
   })
 })
 
@@ -195,5 +242,37 @@ describe("renderPolicyRefusal (ruling Q393 A: local fields only)", () => {
 
   it("places the refusal in the plan when the step is known", () => {
     expect(renderPolicyRefusal(refusal, { columns: 80, step: { n: 3, of: 4 } })).toMatch(/^ {2}step 3 of 4 · refused by the daemon before it ran$/m)
+  })
+
+  it("shows control and bidirectional characters in every field the daemon sent escaped, one field per line", () => {
+    const text = renderPolicyRefusal({
+      ...refusal, id: `ref_${hostile}`, command: `pnpm${hostile}`, operation: `write${hostile}`, rule: `Ask${hostile}`,
+      setBy: `mode${hostile}`, scope: `session${hostile}`, remedy: `Switch${hostile}`,
+    }, { columns: 80 })
+    const id = `ref_${shown}`
+    expect(text.split("\n")).toEqual([
+      "refused by policy, there is nothing to approve" + " ".repeat(80 - "refused by policy, there is nothing to approve".length - id.length) + id,
+      "  refused by the daemon before it ran",
+      "",
+      `  pnpm${shown}`,
+      `  write${shown}`,
+      "",
+      `  rule             Ask${shown}`,
+      `  set by           mode${shown}`,
+      `  applies to       session${shown}`,
+      "  override         none, not even with approval",
+      "",
+      "  what you can do instead",
+      `    Switch${shown}`,
+      "",
+    ])
+    expect(text).not.toContain("\u001b")
+    expect(text).not.toContain(String.fromCodePoint(0x202e))
+  })
+
+  it("leaves fields in any script unchanged", () => {
+    const text = renderPolicyRefusal({ ...refusal, rule: "Режим Ask только для чтения", remedy: "החלף למצב Build" }, { columns: 80 })
+    expect(text).toMatch(/^ {2}rule {13}Режим Ask только для чтения$/m)
+    expect(text).toMatch(/^ {4}החלף למצב Build$/m)
   })
 })

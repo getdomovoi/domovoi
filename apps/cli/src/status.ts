@@ -1,6 +1,7 @@
 import { fleetClientRouteResultSchema, fleetSnapshotSchema, workspaceSnapshotSchema } from "@getdomovoi/protocol"
 
 import type { RpcCall } from "./pair.js"
+import { terminalSafe } from "./terminal-text.js"
 
 export type StatusReport = {
   endpoint: string
@@ -44,16 +45,19 @@ function describeTransport(transport: { kind: string; endpoint?: unknown }): str
   return typeof transport.endpoint === "string" ? transport.endpoint : ""
 }
 
+// Names, versions, the endpoint and each route come from the daemon, the
+// socket or the command line, so each is drawn through terminalSafe. Session
+// states and fleet health are validated enums and drawn as they are.
 export function renderStatus(report: StatusReport): string {
   const lines = [
-    `daemon    ${report.machine.name} (${report.machine.id})`,
-    `endpoint  ${report.endpoint}`,
-    `version   ${report.machine.version}, protocol ${report.machine.protocolVersion}, ${report.machine.platform}`,
+    `daemon    ${terminalSafe(report.machine.name)} (${terminalSafe(report.machine.id)})`,
+    `endpoint  ${terminalSafe(report.endpoint)}`,
+    `version   ${terminalSafe(report.machine.version)}, protocol ${terminalSafe(report.machine.protocolVersion)}, ${terminalSafe(report.machine.platform)}`,
     `sessions  ${report.sessions.total}${report.sessions.total === 0 ? "" : ` (${Object.entries(report.sessions.byState).map(([state, count]) => `${count} ${state}`).join(", ")})`}`,
   ]
   if (report.fleet.length > 0) {
     lines.push("fleet")
-    for (const machine of report.fleet) lines.push(`  ${machine.label.padEnd(24)} ${machine.health.padEnd(10)} ${machine.route}`)
+    for (const machine of report.fleet) lines.push(`  ${terminalSafe(machine.label).padEnd(24)} ${machine.health.padEnd(10)} ${terminalSafe(machine.route)}`)
   }
   return `${lines.join("\n")}\n`
 }

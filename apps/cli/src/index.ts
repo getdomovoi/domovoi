@@ -9,9 +9,10 @@ import { exitCode, renderExitCodes } from "./exit-codes.js"
 import { readLogs, renderLogs } from "./logs.js"
 import { deviceLabelProblem, pairWithDaemon, PairingError, readPairingCode, redeemPairingCode, renderPaired } from "./pair.js"
 import { readPlainLine, readSecretLine } from "./secret-input.js"
-import { installSkill, previewSkill, renderPreview, SkillInstallError } from "./skill-install.js"
+import { installSkill, previewSkill, renderInstalled, renderPreview, SkillInstallError } from "./skill-install.js"
 import { connectToDaemon, DaemonUnreachableError, defaultEndpoint } from "./rpc.js"
 import { collectStatus, renderStatus } from "./status.js"
+import { errorText } from "./terminal-text.js"
 
 const usage = `Usage:
   domovoi pair   [--daemon <ws-url>] [--credential-file <path>] [--label <device label>]   reads the pairing code from stdin
@@ -191,7 +192,7 @@ async function main(argv: string[]): Promise<number> {
         if (answer !== "y" && answer !== "yes") { process.stdout.write("not installed\n"); return exitCode("internal") }
       }
       const installed = await installSkill({ call: connection.call, path, scope: options.scope, preview })
-      process.stdout.write(`installed ${installed.name} at ${installed.path} (${installed.scope}); enable it on the daemon when you have read it\n`)
+      process.stdout.write(renderInstalled(installed))
       return exitCode("ok")
     } finally {
       connection.close()
@@ -204,28 +205,30 @@ async function main(argv: string[]): Promise<number> {
 
 // Every exit goes through the table in exit-codes.ts (ruling Q391 A). A
 // daemon that never answered is its own code, distinct from a refusal, so a
-// script can tell "nothing was sent" from "the daemon said no".
+// script can tell "nothing was sent" from "the daemon said no". Every message
+// is printed through errorText: it can quote an argument, a path, the socket
+// or the daemon, so a control character in it is shown, not obeyed.
 main(process.argv.slice(2)).then((code) => { process.exitCode = code }, (error: unknown) => {
   if (error instanceof UsageError) {
-    process.stderr.write(`${error.message}\n\n${usage}`)
+    process.stderr.write(`${errorText(error)}\n\n${usage}`)
     process.exitCode = exitCode("usage")
     return
   }
   if (error instanceof NotPairedError) {
-    process.stderr.write(`${error.message}\n`)
+    process.stderr.write(`${errorText(error)}\n`)
     process.exitCode = exitCode("not-paired")
     return
   }
   if (error instanceof DaemonUnreachableError) {
-    process.stderr.write(`${error.message}\n`)
+    process.stderr.write(`${errorText(error)}\n`)
     process.exitCode = exitCode("daemon-unreachable")
     return
   }
   if (error instanceof CredentialStoreError || error instanceof PairingError || error instanceof SkillInstallError) {
-    process.stderr.write(`${error.message}\n`)
+    process.stderr.write(`${errorText(error)}\n`)
     process.exitCode = exitCode("internal")
     return
   }
-  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+  process.stderr.write(`${errorText(error)}\n`)
   process.exitCode = exitCode("internal")
 })

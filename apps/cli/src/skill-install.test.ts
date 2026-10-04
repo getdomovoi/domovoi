@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { installSkill, previewSkill, renderPreview, SkillInstallError } from "./skill-install.js"
+import { installSkill, previewSkill, renderInstalled, renderPreview, SkillInstallError } from "./skill-install.js"
 
 const digest = "sha256:" + "a".repeat(64)
 const preview = (overrides: Record<string, unknown> = {}) => ({
@@ -52,5 +52,38 @@ describe("skill install, after peer review", () => {
     }
     await installSkill({ call, path: "/skills/pr-triage", scope: "user", preview: seen as never })
     expect(pinned).toBe(source)
+  })
+})
+
+// A newline, an escape sequence and a right-to-left override, built from code
+// points so the source shows which invisible character each is.
+const hostile = `\nX\u001b[31mY${String.fromCodePoint(0x202e)}Z`
+const shown = "\\nX\\e[31mY\\u{202e}Z"
+
+describe("skill install, with daemon text that carries control characters", () => {
+  it("shows each one escaped in the preview, one fact per line", () => {
+    const text = renderPreview(preview({
+      description: `Triage${hostile}`,
+      targets: [{ scope: "user", path: `/home/u/skills${hostile}`, state: "available" }],
+      refusals: [{ kind: "skill-install-refused", reason: "symlink-escapes-source", path: `link${hostile}` }],
+    }) as never, "user")
+    expect(text.split("\n")).toEqual([
+      `skill      pr-triage: Triage${shown}`,
+      "files      1 (120 bytes)",
+      `content    ${digest}`,
+      `source     ${digest}`,
+      "signature  unsigned",
+      "trust      untrusted",
+      `target     user: /home/u/skills${shown} (available)`,
+      `refused    symlink-escapes-source link${shown}`,
+      "",
+    ])
+  })
+
+  it("names the installed skill and its path escaped, and leaves any script unchanged", () => {
+    const summary = { name: `pr-triage${hostile}`, path: `/home/u/skills${hostile}`, scope: "user" as const }
+    expect(renderInstalled(summary)).toBe(`installed pr-triage${shown} at /home/u/skills${shown} (user); enable it on the daemon when you have read it\n`)
+    expect(renderInstalled({ name: "pr-triage", path: "/home/דנה/skills/café", scope: "project" }))
+      .toBe("installed pr-triage at /home/דנה/skills/café (project); enable it on the daemon when you have read it\n")
   })
 })

@@ -136,3 +136,52 @@ describe("doctor, after peer review", () => {
     expect(because.some((line) => line.includes("never trusted"))).toBe(false)
   })
 })
+
+// A newline, an escape sequence and a right-to-left override, built from code
+// points so the source shows which invisible character each is.
+const hostile = `\nX\u001b[31mY${String.fromCodePoint(0x202e)}Z`
+const shown = "\\nX\\e[31mY\\u{202e}Z"
+
+describe("doctor, with daemon text that carries control characters", () => {
+  it("shows each one escaped and keeps one probe or reason per line", () => {
+    const text = renderDoctor({
+      endpoint: "ws://127.0.0.1:47831/rpc", failed: true,
+      probes: [{ name: "daemon", ok: true, detail: `studio${hostile} (machine-1) at ws://127.0.0.1:47831/rpc, version 0.9${hostile}` }],
+      machines: [{ machineId, label: `hetzner${hostile}`, health: "healthy", route: `unknown: socket closed${hostile}`, because: [`verified route wss://h/${hostile}: not the route chosen`] }],
+    })
+    expect(text.split("\n")).toEqual([
+      `ok   daemon      studio${shown} (machine-1) at ws://127.0.0.1:47831/rpc, version 0.9${shown}`,
+      `FAIL hetzner${shown} unknown: socket closed${shown}`,
+      `                 verified route wss://h/${shown}: not the route chosen`,
+      "doctor: problems found",
+      "",
+    ])
+    expect(text).not.toContain("\u001b")
+    expect(text).not.toContain(String.fromCodePoint(0x202e))
+  })
+
+  it("escapes what the daemon sent in a diagnosis it ran", async () => {
+    const report = await diagnose({
+      endpoint: "ws://127.0.0.1:47831/rpc", clientProtocolVersion: protocolVersion,
+      call: async (method: string, params: Record<string, unknown>) => {
+        if (method === "workspace.get") return { ...snapshot, machine: { ...snapshot.machine, name: `studio${hostile}` } }
+        if (method === "fleet.list") return { entries: [fleetMachine({ label: `hetzner${hostile}` })] }
+        if (method === "fleet.clientRoute") throw new Error(`socket closed${hostile}`)
+        return daemon({})(method, params)
+      },
+    })
+    const text = renderDoctor(report)
+    expect(text.startsWith(`ok   daemon      studio${shown} (`)).toBe(true)
+    expect(text).toContain(`FAIL hetzner${shown} unknown: socket closed${shown}\n`)
+    expect(text).not.toContain("\u001b")
+    expect(text).not.toContain(String.fromCodePoint(0x202e))
+  })
+
+  it("leaves names in any script unchanged", () => {
+    const text = renderDoctor({
+      endpoint: "ws://127.0.0.1:47831/rpc", failed: false, probes: [],
+      machines: [{ machineId, label: "хетцнер", health: "healthy", route: "this daemon, ws://127.0.0.1:47831/rpc", because: ["tailnet: not advertised"] }],
+    })
+    expect(text).toBe("ok   хетцнер     this daemon, ws://127.0.0.1:47831/rpc\n                 tailnet: not advertised\ndoctor: no problems found\n")
+  })
+})
