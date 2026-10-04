@@ -247,6 +247,16 @@ describe("a full message that left open comments over the limit", () => {
       .toEqual({ budget: 0, limit: 7 })
   })
 
+  // History reads the count from the same record (Q431), so its row says
+  // what the thread says beside the message.
+  it("carries the reported count to the message's history entry", async () => {
+    const { send, snapshot, rpc } = await withOpenComments(maximumReviewAnnotations - 2)
+    const review = openCommentReviewFor(await snapshot(), sessionId)
+    expect((await send("Address these", { review: { ...review, omittedOverLimit: 7 } })).error).toBeUndefined()
+    const page = (await rpc("session.history", { sessionId, categories: ["messages"] })).result as { items: Array<{ role?: string; body?: string; annotationsOverLimit?: number }> }
+    expect(page.items.find((item) => item.role === "user" && item.body === "Address these")).toMatchObject({ annotationsOverLimit: 7 })
+  })
+
   it("keeps the count on a queued message until it is released", async () => {
     const { provider, send, snapshot, lastUserItem, emit } = await withOpenComments(maximumReviewAnnotations - 2)
     const review = openCommentReviewFor(await snapshot(), sessionId)
