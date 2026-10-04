@@ -107,6 +107,10 @@ export function useWorkspace(
   const [connected, setConnected] = useState(false)
   const [clientAccess, setClientAccess] = useState<ClientAccess>("full")
   const [stateRecovery, setStateRecovery] = useState<StateRecovery | null>(null)
+  // The id the daemon gave the connection open now, from its hello. A row the
+  // daemon attributes to a connection is this client's only when it names this
+  // one, so it is null while no connection is open.
+  const [connectionId, setConnectionId] = useState<string | null>(null)
   const [endpointUrl, setEndpointUrl] = useState(url)
   const [reconnecting, setReconnecting] = useState(false)
   const [protocolError, setProtocolError] = useState<string | null>(null)
@@ -153,6 +157,7 @@ export function useWorkspace(
     setEmergencyStopOutcome(null)
     setEmergencyStopError(null)
     setConnected(false)
+    setConnectionId(null)
     setClientAccess("full")
     setReconnecting(false)
     setProtocolError(null)
@@ -192,7 +197,9 @@ export function useWorkspace(
       setEmergencyStopError(null)
     }
     const onDisconnected = () => {
-      if (active) setConnected(false)
+      if (!active) return
+      setConnected(false)
+      setConnectionId(null)
     }
     // The token that opened this connection is what pairing proved, and only
     // the answered hello proves it, so the machine pinned is the one the hello
@@ -218,6 +225,7 @@ export function useWorkspace(
       client.setClientAccess(access)
       setClientAccess(access)
       setStateRecovery(hello?.stateRecovery ?? null)
+      setConnectionId(hello?.connectionId ?? null)
       if (hello) reconcilePin(hello)
       // fleet.changed is not coalesced, so a client that was away may have
       // missed one. Every connection relists rather than trusting what it held.
@@ -882,6 +890,7 @@ export function useWorkspace(
     claimTerminal,
     closeTerminal,
     connected,
+    connectionId,
     clientAccess,
     stateRecovery,
     createCheckpoint,
