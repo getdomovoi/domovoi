@@ -6,5 +6,6 @@ The decision receipt line in `src/transcript.ts` names the decider by the paired
 daemon wrote on the receipt, label before client kind, as the web and desktop receipt reads:
 `allowed once by dana's phone · phone on mac-mini-m4 · 14:07:11`. A receipt without a device (the
 daemon credential, or a row written before the field) keeps the label the caller supplies, and
-with none names the client kind alone. Control characters in the label or machine name are shown
-escaped, so the receipt stays one line per field. No command prints the line yet.
+with none names the client kind alone. Control characters and bidirectional formatting characters
+in the label or machine name are shown escaped, so the receipt stays one line per field and its
+fields keep their written order. No command prints the line yet.

@@ -23,20 +23,32 @@ function header(label: string, id: string, columns: number): string {
 }
 
 // Wire text a person chose (a device label, a machine name) may carry
-// control characters: the schema trims and bounds a label but does not
-// refuse them. Printed raw, a newline splits one line into two and an escape
-// sequence restyles the terminal. C0 controls, DEL and C1 controls are drawn
-// as the escapes a shell reader knows (\n, \r, \t, \e) and the rest as
-// \u{XX}, the JavaScript code point form, so each stays visible on the same
-// line and names the character it replaced.
+// control and formatting characters: the schema trims and bounds a label but
+// does not refuse them. Printed raw, a newline splits one line into two and an
+// escape sequence restyles the terminal. An unmatched bidirectional override
+// or isolate reorders how the client kind, machine and time after it read in a
+// bidi-aware terminal or log viewer, and U+2028 and U+2029 break the line in
+// some viewers. So C0 controls, DEL, C1 controls, every Unicode Bidi_Control
+// code point (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) and
+// the line and paragraph separators are escaped: the shell escapes a reader
+// knows (\n, \r, \t, \e) where one exists, otherwise \u{XX}, the JavaScript
+// code point form. Each stays visible on the same line and names the character
+// it replaced. Ordinary letters in any script, emoji, and the joiners U+200C
+// and U+200D that spell some words and emoji sequences pass unchanged.
 const namedControls: Record<number, string> = { 0x09: "\\t", 0x0a: "\\n", 0x0d: "\\r", 0x1b: "\\e" }
+
+function shownEscaped(code: number): boolean {
+  if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true
+  if (code === 0x061c || code === 0x200e || code === 0x200f) return true
+  if (code >= 0x2028 && code <= 0x202e) return true
+  return code >= 0x2066 && code <= 0x2069
+}
 
 function terminalSafe(text: string): string {
   let safe = ""
   for (const character of text) {
     const code = character.codePointAt(0) ?? 0
-    const control = code <= 0x1f || (code >= 0x7f && code <= 0x9f)
-    safe += control ? namedControls[code] ?? `\\u{${code.toString(16).padStart(2, "0")}}` : character
+    safe += shownEscaped(code) ? namedControls[code] ?? `\\u{${code.toString(16).padStart(2, "0")}}` : character
   }
   return safe
 }
