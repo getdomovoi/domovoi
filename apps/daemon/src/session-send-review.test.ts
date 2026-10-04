@@ -4,6 +4,8 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 import {
   demoWorkspace,
+  maximumReviewAnnotations,
+  openCommentReviewFor,
   protocolVersion,
   workspaceSnapshotSchema,
   type Annotation,
@@ -45,7 +47,7 @@ function comment(id: string, overrides: Partial<Annotation> = {}): Annotation {
   }
 }
 
-function reviewWorkspace(): WorkspaceSnapshot {
+function reviewWorkspace(extraAnnotations: Annotation[] = []): WorkspaceSnapshot {
   const snapshot = structuredClone(demoWorkspace)
   const session = snapshot.sessions.find((candidate) => candidate.id === sessionId)!
   session.runtime = { ...session.runtime, provider: "codex", model: "gpt-5.6-sol", permissionMode: "build", auto: false }
@@ -72,11 +74,12 @@ function reviewWorkspace(): WorkspaceSnapshot {
     comment("comment-older", { updatedAt: "2026-09-30T11:00:00.000Z" }),
     comment("comment-resolved", { status: "resolved" }),
     comment("comment-elsewhere", { sessionId: "session-onboarding", artifactId: "artifact-preview-elsewhere" }),
+    ...extraAnnotations,
   ]
   return workspaceSnapshotSchema.parse(snapshot)
 }
 
-async function start() {
+async function start(extraAnnotations: Annotation[] = []) {
   let emit: (event: AgentEvent) => void = () => {}
   const provider = {
     connect: vi.fn(async () => {}), listModels: vi.fn(async () => []),
@@ -89,7 +92,7 @@ async function start() {
     close: vi.fn(async () => {}),
   } satisfies AgentAdapter
   const daemon = new DomovoiDaemon({
-    port: 0, store: new SqliteWorkspaceStore(":memory:", reviewWorkspace()),
+    port: 0, store: new SqliteWorkspaceStore(":memory:", reviewWorkspace(extraAnnotations)),
     agents: { codex: provider }, errorSink: vi.fn(),
   })
   daemons.push(daemon)
@@ -115,7 +118,7 @@ async function start() {
   return { provider, rpc, send, snapshot, lastUserItem, emit: (event: AgentEvent) => emit(event) }
 }
 
-function reviewContext(prompt: string): { unresolvedAnnotations: Array<{ annotationId: string, comment: { body: string } }>, buildBasis?: unknown } | undefined {
+function reviewContext(prompt: string): { unresolvedAnnotations: Array<{ annotationId: string, comment: { body: string } }>, omittedAnnotationCount?: number, buildBasis?: unknown } | undefined {
   const match = /<domovoi_review_context>\n(.+)\n<\/domovoi_review_context>/.exec(prompt)
   return match ? JSON.parse(match[1]!) : undefined
 }
@@ -194,6 +197,67 @@ describe("a message that sends comments", () => {
     expect(refused.error?.message).toBe("A comment sent with this message is not open on this session, so the message was not sent. Send it again without that comment.")
     expect(provider.startTurn).not.toHaveBeenCalled()
     expect((await snapshot()).thread).toHaveLength(before)
+  })
+})
+
+// Codex review of PR #717: a client names at most the newest
+// `maximumReviewAnnotations` open comments. The older ones it left out are
+// counted on the review, and the daemon records that count as the turn's limit
+// omission, so the desktop and web note shows them. The count never selects:
+// the daemon composes only the comments the review names.
+describe("a full message that left open comments over the limit", () => {
+  // The fixture's three open comments plus `count` newer ones.
+  function withOpenComments(count: number) {
+    return start(Array.from({ length: count }, (_, index) => comment(
+      `comment-many-${String(index).padStart(2, "0")}`,
+      { updatedAt: `2026-09-30T13:${String(index).padStart(2, "0")}:00.000Z` },
+    )))
+  }
+
+  it("records the count as the limit omission and sends only the named comments", async () => {
+    const { provider, send, snapshot, lastUserItem } = await withOpenComments(maximumReviewAnnotations - 2)
+    const current = await snapshot()
+    const open = current.annotations.filter((annotation) => annotation.sessionId === sessionId && annotation.status === "open")
+    expect(open).toHaveLength(maximumReviewAnnotations + 1)
+    const review = openCommentReviewFor(current, sessionId)
+    expect(review.annotationIds).toHaveLength(maximumReviewAnnotations)
+    expect(review.omittedOverLimit).toBe(1)
+    const oldest = open.find((annotation) => !review.annotationIds.includes(annotation.id))!
+    expect(oldest.id).toBe("comment-older")
+
+    expect((await send("Address these", { review })).error).toBeUndefined()
+    const prompt = provider.startTurn.mock.calls[0]![0].prompt
+    const context = reviewContext(prompt)
+    expect(context?.unresolvedAnnotations.map((item) => item.annotationId).sort()).toEqual([...review.annotationIds].sort())
+    expect(context?.omittedAnnotationCount).toBe(1)
+    expect(prompt).not.toContain(oldest.id)
+    expect(((await lastUserItem()) as { providerPromptDelivery?: { annotations: unknown } }).providerPromptDelivery?.annotations).toMatchObject({
+      availableCount: maximumReviewAnnotations + 1,
+      omitted: { budget: 0, limit: 1 },
+    })
+  })
+
+  it("never sends a comment for the count, whatever count the client reports", async () => {
+    const { provider, send, snapshot, lastUserItem } = await withOpenComments(maximumReviewAnnotations - 2)
+    const review = openCommentReviewFor(await snapshot(), sessionId)
+    expect((await send("Address these", { review: { ...review, omittedOverLimit: 7 } })).error).toBeUndefined()
+    const context = reviewContext(provider.startTurn.mock.calls[0]![0].prompt)
+    expect(context?.unresolvedAnnotations.map((item) => item.annotationId).sort()).toEqual([...review.annotationIds].sort())
+    expect(((await lastUserItem()) as { providerPromptDelivery?: { annotations: { omitted: unknown } } }).providerPromptDelivery?.annotations.omitted)
+      .toEqual({ budget: 0, limit: 7 })
+  })
+
+  it("keeps the count on a queued message until it is released", async () => {
+    const { provider, send, snapshot, lastUserItem, emit } = await withOpenComments(maximumReviewAnnotations - 2)
+    const review = openCommentReviewFor(await snapshot(), sessionId)
+    expect((await send("First", { review: { annotationIds: [] } })).error).toBeUndefined()
+    expect((await send("Next", { delivery: "next-turn-replace", review })).error).toBeUndefined()
+
+    emit({ type: "turn-completed", params: { threadId: "thread-billing", turn: { id: "turn-1", status: "completed" } } })
+    await waitForDaemon(() => expect(provider.startTurn).toHaveBeenCalledTimes(2))
+    await waitForDaemon(async () => expect(((await lastUserItem()) as { body?: string } | undefined)?.body).toBe("Next"))
+    expect(((await lastUserItem()) as { providerPromptDelivery?: { annotations: { omitted: unknown } } }).providerPromptDelivery?.annotations.omitted)
+      .toEqual({ budget: 0, limit: 1 })
   })
 })
 

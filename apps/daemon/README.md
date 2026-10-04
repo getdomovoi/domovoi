@@ -540,7 +540,10 @@ bounds payload size only; it is not a provider token-window guarantee.
 
 Each section is shaped by its own limit first: skill content is cut at 12,000 code units per
 skill, a review names at most 20 annotations, and the handoff offers its newest 40 thread items
-inside 24,000 code units. The handoff lists no open annotation of its own: annotations reach the
+inside 24,000 code units. A full review can carry `omittedOverLimit`, the client's count of open
+annotations it left out for that limit. The daemon records the count as
+`annotations.omitted.limit` and tells the provider the count, but composes only the annotations the
+review names. The handoff lists no open annotation of its own: annotations reach the
 provider only through the review. The total budget then applies to the composed prompt. When it
 does not fit, the composer drops one item at a time in this order and stops as soon as the
 prompt fits:

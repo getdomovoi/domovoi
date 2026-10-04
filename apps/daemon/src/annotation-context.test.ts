@@ -1,10 +1,17 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, type Annotation } from "@getdomovoi/protocol"
+import {
+  demoWorkspace,
+  maximumReviewAnnotations,
+  providerPromptAnnotationDeliverySchema,
+  type Annotation,
+} from "@getdomovoi/protocol"
 
 import {
   agentPromptWithAnnotations,
   noAnnotationReview,
+  prepareAnnotationContext,
+  renderAnnotationContext,
   resolveAnnotationReview,
   type AnnotationReview,
 } from "./annotation-context.js"
@@ -13,7 +20,7 @@ import { prepareAnnotationTurn } from "./annotation-visual-turn.js"
 // Names every comment in the snapshot, whatever its session or status, so the
 // session and open filters below are tested on comments a message did name.
 function namingEvery(snapshot: { annotations: Annotation[] }): AnnotationReview {
-  return { annotationIds: new Set(snapshot.annotations.map((annotation) => annotation.id)) }
+  return { annotationIds: new Set(snapshot.annotations.map((annotation) => annotation.id)), omittedOverLimit: 0 }
 }
 
 function availableAnnotation(options: {
@@ -119,7 +126,7 @@ describe("agentPromptWithAnnotations", () => {
     const prompt = agentPromptWithAnnotations(
       snapshot,
       "session-billing",
-      { annotationIds: new Set(["annotation-replay-copy"]) },
+      { annotationIds: new Set(["annotation-replay-copy"]), omittedOverLimit: 0 },
       "Revise.",
     )
     expect(unresolvedAnnotations(prompt).map((annotation) => annotation.annotationId)).toEqual(["annotation-replay-copy"])
@@ -140,6 +147,49 @@ describe("agentPromptWithAnnotations", () => {
     expect(prompt.length).toBeLessThan(25_000)
     expect(prompt).toContain('"omittedAnnotationCount":')
     expect(prompt).toContain('"annotationId":"annotation-29"')
+  })
+
+  // Codex review of PR #717: a full review counts the open comments the client
+  // left over the per-message limit. The daemon records that count as the
+  // turn's limit omission and tells the agent, but it never selects by it:
+  // only the comments the review names are composed.
+  it("records the comments a full review left over the limit, and composes only the named ones", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    snapshot.annotations = Array.from({ length: maximumReviewAnnotations + 2 }, (_, index) => availableAnnotation({
+      id: `annotation-${index}`,
+      sequence: index + 1,
+      updatedAt: new Date(Date.UTC(2026, 7, 25, 21, index)).toISOString(),
+    }))
+    const named = snapshot.annotations.slice(2).map((annotation) => annotation.id)
+    const review = resolveAnnotationReview(snapshot, "session-billing", { annotationIds: named, omittedOverLimit: 2 })
+    expect(review.omittedOverLimit).toBe(2)
+    expect([...review.annotationIds]).toEqual(named)
+
+    const prepared = prepareAnnotationContext(snapshot, "session-billing", review)
+    const rendered = renderAnnotationContext(prepared, prepared.candidates.length, "Continue.")
+    expect(rendered.delivery).toEqual({
+      availableCount: maximumReviewAnnotations + 2,
+      deliveredIds: [...named].reverse(),
+      omitted: { budget: 0, limit: 2 },
+    })
+    expect(providerPromptAnnotationDeliverySchema.parse(rendered.delivery)).toEqual(rendered.delivery)
+    expect(rendered.prompt).toContain('"omittedAnnotationCount":2')
+    expect(rendered.prompt).not.toContain('"annotationId":"annotation-0"')
+    expect(rendered.prompt).not.toContain('"annotationId":"annotation-1"')
+    expect(unresolvedAnnotations(rendered.prompt)).toHaveLength(maximumReviewAnnotations)
+
+    const direct = agentPromptWithAnnotations(snapshot, "session-billing", review, "Continue.")
+    expect(direct).toContain('"omittedAnnotationCount":2')
+    expect(direct).not.toContain('"annotationId":"annotation-1"')
+  })
+
+  it("records no limit omission for a review that left nothing out", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const none = resolveAnnotationReview(snapshot, "session-billing", { annotationIds: ["annotation-migration-machine"] })
+    expect(none.omittedOverLimit).toBe(0)
+    expect(resolveAnnotationReview(snapshot, "session-billing", undefined).omittedOverLimit).toBe(0)
+    const prepared = prepareAnnotationContext(snapshot, "session-billing", none)
+    expect(renderAnnotationContext(prepared, prepared.candidates.length, "Continue.").delivery.omitted).toEqual({ budget: 0, limit: 0 })
   })
 
   it("attaches crop bytes only for declared vision capability", async () => {
