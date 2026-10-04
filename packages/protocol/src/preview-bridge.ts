@@ -2,6 +2,7 @@ import { z } from "zod"
 
 import { utf16MaxLength } from "./validation.js"
 
+import { annotationIdSchema } from "./identifiers.js"
 import { annotationAnchorSchema } from "./schema.js"
 
 export const previewBridgeChannelSchema = z.string().regex(/^[A-Za-z0-9_-]{16,128}$/)
@@ -30,8 +31,11 @@ export const previewBridgeSelectionMessageSchema = z.object({
   label: z.string().trim().min(1).check(utf16MaxLength(240)),
 })
 
+// Annotation ids cross the bridge exactly as stored: the client matches the
+// frame's answer against the ids it sent, so a transformed id would reject a
+// valid batch (ruling Q432 A).
 const previewBridgeAnnotationAnchorSchema = z.object({
-  annotationId: z.string().trim().min(1).check(utf16MaxLength(256)),
+  annotationId: annotationIdSchema,
   anchor: annotationAnchorSchema,
 }).strict()
 
@@ -45,12 +49,12 @@ export const previewBridgeResolveAnchorsMessageSchema = z.object({
 
 const previewBridgeAnchorResolutionSchema = z.discriminatedUnion("status", [
   z.object({
-    annotationId: z.string().trim().min(1).check(utf16MaxLength(256)),
+    annotationId: annotationIdSchema,
     status: z.literal("resolved"),
     strategy: z.enum(["selector", "text-quote", "bounding-box"]),
   }).strict(),
   z.object({
-    annotationId: z.string().trim().min(1).check(utf16MaxLength(256)),
+    annotationId: annotationIdSchema,
     status: z.literal("unresolved"),
   }).strict(),
 ])
