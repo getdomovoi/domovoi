@@ -14,6 +14,7 @@ import {
 } from "./components/ui/empty"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { CheckpointFork, CheckpointRestore } from "./checkpoint-actions.js"
+import { annotationsOverLimitLine } from "./prompt-delivery-note"
 import type { SessionHistoryFocus } from "./session-history"
 import { StatusDot } from "./status-dot"
 import {
@@ -236,6 +237,12 @@ export function HistoryPanel({
                       box grows to its widest child, so a truncated line widens
                       the whole list and the viewport hides the rest. */}
                   {detail ? <p data-testid="history-meta" className="break-words font-machine text-mono-xs text-muted-foreground">{detail}</p> : null}
+                  {/* The thread's note beside a sent message, in the same
+                      words, for the open annotations the per-turn limit left
+                      out. A message recorded without the count draws none. */}
+                  {entry.category === "messages" && entry.annotationsOverLimit ? (
+                    <p className="break-words font-machine text-mono-xs text-warning">{annotationsOverLimitLine(entry.annotationsOverLimit)}</p>
+                  ) : null}
                   {body ? (
                     // The row says what happened in one line. What it produced
                     // is still here, it just stops being the row.

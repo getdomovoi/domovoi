@@ -405,6 +405,15 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     role: z.enum(["user", "assistant", "system"]),
     body: z.string(),
     detail: z.string().optional(),
+    // How many open annotations a sent message left out for the per-turn
+    // limit, from its providerPromptDelivery. Present only when some were;
+    // absent on every other message and on a message sent before delivery
+    // was recorded.
+    annotationsOverLimit: z.number().int().positive().optional(),
+  }).superRefine((entry, context) => {
+    if (entry.annotationsOverLimit !== undefined && entry.role !== "user") {
+      context.addIssue({ code: "custom", path: ["annotationsOverLimit"], message: "Only a sent message leaves annotations out" })
+    }
   }),
   z.object({
     ...historyEntryBase,

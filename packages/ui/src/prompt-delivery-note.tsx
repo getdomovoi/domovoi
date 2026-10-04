@@ -42,6 +42,12 @@ function joinClauses(clauses: string[]): string {
   return `${clauses.slice(0, -1).join(", ")}, and ${clauses.slice(-1).join("")}`
 }
 
+// The line beside a sent message, in the thread and in history, for the open
+// annotations the per-turn limit left out.
+export function annotationsOverLimitLine(limit: number): string {
+  return `${count(limit, "open annotation")} ${verb(limit)} over the per-turn limit`
+}
+
 // The composer drops open annotations for the total budget only. A handoff's
 // counts also cover its own newest-items and size caps, so that line says
 // "the prompt" rather than naming the budget.
@@ -52,7 +58,7 @@ function trimLines(delivery: ProviderPromptDelivery): string[] {
     lines.push(`${count(budget, "open annotation")} ${verb(budget)} trimmed to fit the prompt budget`)
   }
   if (limit > 0) {
-    lines.push(`${count(limit, "open annotation")} ${verb(limit)} over the per-turn limit`)
+    lines.push(annotationsOverLimitLine(limit))
   }
   if (delivery.handoff.status === "delivered") {
     const { threadItems, annotations, artifacts } = delivery.handoff.omitted
