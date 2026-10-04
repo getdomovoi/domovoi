@@ -104,6 +104,16 @@ const defaultTimers = {
 }
 
 const statusTimeoutMs = 10_000
+// Review of PR #713 (P3): the whole status read, from the record and the
+// executable lookup to the notes, answers within the subprocess's own timeout
+// plus the 5 seconds the assembly gives each daemon read, so a subprocess
+// timeout still answers in its own words and only a stall outside it reaches
+// this. The renderer's 120 second deadline for automatic reads stays above it.
+const statusDeadlineMs = statusTimeoutMs + 5_000
+const statusUnknown: TailnetReachReport = {
+  state: "none",
+  detail: `Reading the switch and Tailscale's status took longer than ${statusDeadlineMs / 1_000} seconds, so whether this computer has a tailnet is not known.`,
+}
 // tailscale cert waits on the ACME exchange, which takes tens of seconds.
 const certificateTimeoutMs = 120_000
 const maximumDetailLength = 1_024
@@ -202,6 +212,13 @@ export class TailnetReach {
   // Where a turn-off in this session set the files aside, deleted the record,
   // and then could not delete them (Q417 A).
   #undeletedPending: string | undefined
+  // Counts each start and end of a change or renewal, so a status read held
+  // past its deadline is shared only with reads from the same stretch.
+  #generation = 0
+  // A status read past its deadline and not yet settled. Later reads wait on
+  // it, each under its own deadline, instead of starting another that stalls
+  // on the same dependency.
+  #held: { generation: number; work: Promise<TailnetReachReport> } | undefined
 
   constructor(private readonly deps: TailnetReachDependencies) {}
 
@@ -238,14 +255,14 @@ export class TailnetReach {
       this.#schedule(renewalRetryMs)
       return "busy"
     }
-    this.#busy = true
+    this.#changing(true)
     let result: TailnetRenewal = "failed"
     try {
       result = await this.#renew()
       if (result === "unchanged" || result === "renewed" || result === "off") this.#renewalFailure = undefined
       return result
     } finally {
-      this.#busy = false
+      this.#changing(false)
       this.#schedule(result === "off" ? undefined : result === "failed" ? renewalRetryMs : renewalCheckMs)
     }
   }
@@ -484,7 +501,31 @@ export class TailnetReach {
     return false
   }
 
-  async status(): Promise<TailnetReachReport> {
+  // Review of PR #713 (P3): answers by statusDeadlineMs, with statusUnknown
+  // when the read has not settled by then. What the read answers later goes
+  // nowhere; its tailscale process, if it starts one, still ends at its own
+  // timeout.
+  status(): Promise<TailnetReachReport> {
+    const generation = this.#generation
+    const held = this.#held?.generation === generation ? this.#held : undefined
+    const work = held?.work ?? this.#status()
+    return new Promise((resolve, reject) => {
+      const deadline = this.#timers.set(() => {
+        if (!held) {
+          const entry = this.#held = { generation, work }
+          const release = () => { if (this.#held === entry) this.#held = undefined }
+          work.then(release, release)
+        }
+        resolve(statusUnknown)
+      }, statusDeadlineMs)
+      work.then(
+        (report) => { this.#timers.clear(deadline); resolve(report) },
+        (cause: unknown) => { this.#timers.clear(deadline); reject(cause) },
+      )
+    })
+  }
+
+  async #status(): Promise<TailnetReachReport> {
     const record = await this.deps.record.read()
     // On, the record answers: turning it off must not depend on Tailscale.
     if (record) return this.#onReport(record)
@@ -515,12 +556,19 @@ export class TailnetReach {
 
   async #exclusive(step: TailnetReachStep, run: () => Promise<TailnetReachOutcome>): Promise<TailnetReachOutcome> {
     if (this.#busy) return { ok: false, reason: "busy", step, message: "The switch is already changing." }
-    this.#busy = true
+    this.#changing(true)
     try {
       return await run()
     } finally {
-      this.#busy = false
+      this.#changing(false)
     }
+  }
+
+  // A status read held from before a change, or from during one, is not
+  // shared with a read after it.
+  #changing(busy: boolean): void {
+    this.#busy = busy
+    this.#generation += 1
   }
 
   async #refusal(step: TailnetReachStep): Promise<TailnetReachOutcome | undefined> {
