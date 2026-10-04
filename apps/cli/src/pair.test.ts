@@ -270,6 +270,44 @@ describe("pair", () => {
         + "The default daemon is ws://127.0.0.1:47831/rpc, so later commands need --daemon wss://mini.tail1234.ts.net:47831/rpc.\n")
   })
 
+  it("shows control characters in the label, ids, endpoint and daemon reasons escaped, on one line each", async () => {
+    // A newline, an escape sequence and a right-to-left override, built from
+    // code points so the source shows which invisible character each is.
+    const hostile = `\nX\u001b[31mY${String.fromCodePoint(0x202e)}Z`
+    const shown = "\\nX\\e[31mY\\u{202e}Z"
+    expect(renderPaired({ machineId: `m${hostile}`, deviceId: `d${hostile}`, label: `my shell${hostile}`, where: "keyring", endpoint: `wss://mini/${hostile}`, defaultEndpoint: "ws://127.0.0.1:47831/rpc" }))
+      .toBe(`Paired with m${shown} at wss://mini/${shown} as my shell${shown} (cli), device d${shown}. Credential stored in the keyring.\n`
+        + `The default daemon is ws://127.0.0.1:47831/rpc, so later commands need --daemon wss://mini/${shown}.\n`)
+
+    const refused = fakeDaemon({ helloRejects: `revoked${hostile}` })
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: `my shell${hostile}`, store: memoryStore(), connect: refused.connect }))
+      .rejects.toThrow(new PairingError(`The daemon refused the credential this code minted (revoked${shown}), so nothing was kept. Revoke "my shell${shown}" on the machine, then show a code for the cli.`))
+
+    const full: CredentialStore & { saved: PairedDaemon[] } = { ...memoryStore(), update: async () => { throw new Error(`disk full${hostile}`) } }
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store: full, connect: fakeDaemon().connect }))
+      .rejects.toThrow(new PairingError(`The credential works but could not be stored (disk full${shown}), so nothing was kept. Revoke "my shell" on the machine, then show a code for the cli.`))
+
+    const lost = fakeDaemon({ recoveryThrows: new Error(`reset${hostile}`) })
+    await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store: memoryStore(), connect: lost.connect }))
+      .rejects.toThrow(new PairingError(`The daemon is paired, but its relay identity was not enrolled (reset${shown}). Relay use will need pairing again.`))
+
+    const other = fakeRedeemer({ result: {
+      device: { id: deviceId, label: `my shell${hostile}`, pairedAt: "2026-10-03T10:00:00Z", binding: { kind: "client", client: "phone" } },
+      token,
+    } })
+    await expect(redeemPairingCode({ endpoint: "ws://127.0.0.1:47831/rpc", code, label: "my shell", open: other.open }))
+      .rejects.toThrow(new PairingError(`This code was issued for a phone, so nothing was kept. Revoke "my shell${shown}" on the machine, then show a code for the cli.`))
+
+    const refusing = fakeRedeemer({ refuse: new DaemonRefusedError(`Pairing was refused${hostile}`, -32001) })
+    await expect(redeemPairingCode({ endpoint: "ws://127.0.0.1:47831/rpc", code, label: "my shell", open: refusing.open }))
+      .rejects.toThrow(new PairingError(`Pairing was refused${shown}`))
+  })
+
+  it("leaves a label in any script unchanged", () => {
+    expect(renderPaired({ machineId, deviceId, label: "המחשב של דנה ☕", where: "file", endpoint: "ws://127.0.0.1:47831/rpc", defaultEndpoint: "ws://127.0.0.1:47831/rpc" }))
+      .toBe(`Paired with ${machineId} at ws://127.0.0.1:47831/rpc as המחשב של דנה ☕ (cli), device ${deviceId}. Credential stored in the file.\n`)
+  })
+
   it.each([
     ["a timeout", new DaemonUnreachableError("The daemon did not answer relay.recovery within 100 ms"), /did not answer/],
     ["a socket error passed through raw", Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }), /ECONNRESET/],

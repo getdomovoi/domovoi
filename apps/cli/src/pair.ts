@@ -3,6 +3,7 @@ import { decodePairingPayload, deviceCurrentResultSchema, deviceLabelSchema, dev
 import type { CredentialStore } from "./credentials.js"
 import { reconcileRelayPin } from "./relay-pin.js"
 import { DaemonRefusedError, DaemonUnreachableError } from "./rpc.js"
+import { terminalSafe } from "./terminal-text.js"
 
 export class PairingError extends Error {
   constructor(message: string) {
@@ -14,19 +15,23 @@ export class PairingError extends Error {
 export type RpcCall = (method: string, params: Record<string, unknown>) => Promise<unknown>
 
 // The sentences this flow prints. One place, so a reworded line is one edit.
+// A label, a reason or an error message came from the daemon, the keychain or
+// the socket, so each is drawn through terminalSafe. The client kind is a
+// validated enum.
 const copy = {
   notACode: "That is not a pairing code. Paste the line 'domovoid pair --client cli --label <device label>' printed, or the code alone.",
   issuedForAnother: (client: string, label: string) => `This code was issued for a ${client}, so nothing was kept. ${revoke(label)}`,
   // Both run after the code was spent: the daemon lists the device under its
   // label with nobody holding its token, and it counts toward the device
   // limit, so the person is told to revoke it before showing another code.
-  helloRefused: (reason: string | undefined, label: string) => `The daemon refused the credential this code minted${reason === undefined ? "" : ` (${reason})`}, so nothing was kept. ${revoke(label)}`,
-  notStored: (reason: string, label: string) => `The credential works but could not be stored (${reason}), so nothing was kept. ${revoke(label)}`,
+  helloRefused: (reason: string | undefined, label: string) => `The daemon refused the credential this code minted${reason === undefined ? "" : ` (${terminalSafe(reason)})`}, so nothing was kept. ${revoke(label)}`,
+  notStored: (reason: string, label: string) => `The credential works but could not be stored (${terminalSafe(reason)}), so nothing was kept. ${revoke(label)}`,
+  relayNotEnrolled: (reason: string) => `The daemon is paired, but its relay identity was not enrolled (${terminalSafe(reason)}). Relay use will need pairing again.`,
   unreadableReply: "The daemon answered with something this client could not read.",
 }
 
 function revoke(label: string): string {
-  return `Revoke "${label}" on the machine, then show a code for the cli.`
+  return `Revoke "${terminalSafe(label)}" on the machine, then show a code for the cli.`
 }
 
 // The label is bounded here, before anything is sent: the daemon admits the
@@ -81,7 +86,7 @@ export async function redeemPairingCode(input: {
       // The daemon refuses every bad code the same way on purpose; its words
       // are kept. A transport failure keeps its own class, so the exit code
       // can say the daemon was unreachable rather than that it refused.
-      if (error instanceof DaemonRefusedError) throw new PairingError(error.message)
+      if (error instanceof DaemonRefusedError) throw new PairingError(terminalSafe(error.message))
       throw error
     }
     const parsed = devicePairResultSchema.safeParse(reply)
@@ -148,7 +153,7 @@ export async function pairWithDaemon(input: {
       // is already stored, so exit 3's "nothing was sent" would be false, and
       // a script that re-pairs on 3 would spend another code and leave another
       // device on the daemon. The line below says what stands and what does not.
-      throw new PairingError(`The daemon is paired, but its relay identity was not enrolled (${error instanceof Error ? error.message : String(error)}). Relay use will need pairing again.`)
+      throw new PairingError(copy.relayNotEnrolled(error instanceof Error ? error.message : String(error)))
     }
     return { deviceId: current.deviceId, machineId: current.machineId, relayPin }
   } finally {
@@ -160,8 +165,11 @@ export async function pairWithDaemon(input: {
 // pasted payload chose it and nothing else shows it. Later commands dial the
 // default unless told otherwise, so an endpoint that is not the default comes
 // with the flag they need.
+// The ids and label are the daemon's and the endpoint came from a pasted
+// payload or --daemon, so each is drawn through terminalSafe.
 export function renderPaired(input: { machineId: string; endpoint: string; label: string; deviceId: string; where: CredentialStore["where"]; defaultEndpoint: string }): string {
-  const lines = [`Paired with ${input.machineId} at ${input.endpoint} as ${input.label} (cli), device ${input.deviceId}. Credential stored in the ${input.where}.`]
-  if (input.endpoint !== input.defaultEndpoint) lines.push(`The default daemon is ${input.defaultEndpoint}, so later commands need --daemon ${input.endpoint}.`)
+  const endpoint = terminalSafe(input.endpoint)
+  const lines = [`Paired with ${terminalSafe(input.machineId)} at ${endpoint} as ${terminalSafe(input.label)} (cli), device ${terminalSafe(input.deviceId)}. Credential stored in the ${input.where}.`]
+  if (input.endpoint !== input.defaultEndpoint) lines.push(`The default daemon is ${input.defaultEndpoint}, so later commands need --daemon ${endpoint}.`)
   return `${lines.join("\n")}\n`
 }

@@ -1,6 +1,7 @@
 import { deviceCurrentResultSchema, fleetClientRouteResultSchema, fleetSnapshotSchema, isTransportLoopbackHost, protocolCompatibility, workspaceSnapshotSchema } from "@getdomovoi/protocol"
 
 import type { RpcCall } from "./pair.js"
+import { terminalSafe } from "./terminal-text.js"
 
 export type DoctorProbe = { name: string; ok: boolean; detail: string }
 export type DoctorMachine = { machineId: string; label: string; health: string; route: string; because: string[] }
@@ -119,12 +120,16 @@ export async function diagnose(input: { endpoint: string; clientProtocolVersion:
   return { endpoint: input.endpoint, probes, machines, failed }
 }
 
+// A probe's detail, a machine's label, its route and each reason quote the
+// daemon, the socket or the command line, so each is drawn through
+// terminalSafe. The report keeps the raw values; only the printed lines are
+// escaped. Probe names are this file's own words.
 export function renderDoctor(report: DoctorReport): string {
   const lines: string[] = []
-  for (const probe of report.probes) lines.push(`${probe.ok ? "ok  " : "FAIL"} ${probe.name.padEnd(11)} ${probe.detail}`)
+  for (const probe of report.probes) lines.push(`${probe.ok ? "ok  " : "FAIL"} ${probe.name.padEnd(11)} ${terminalSafe(probe.detail)}`)
   for (const machine of report.machines) {
-    lines.push(`${machine.route.startsWith("refused") || machine.route.startsWith("unknown") ? "FAIL" : "ok  "} ${machine.label.padEnd(11)} ${machine.route}`)
-    for (const reason of machine.because) lines.push(`                 ${reason}`)
+    lines.push(`${machine.route.startsWith("refused") || machine.route.startsWith("unknown") ? "FAIL" : "ok  "} ${terminalSafe(machine.label).padEnd(11)} ${terminalSafe(machine.route)}`)
+    for (const reason of machine.because) lines.push(`                 ${terminalSafe(reason)}`)
   }
   lines.push(report.failed ? "doctor: problems found" : "doctor: no problems found")
   return `${lines.join("\n")}\n`

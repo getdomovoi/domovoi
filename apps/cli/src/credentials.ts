@@ -9,6 +9,8 @@ import {
 import { relayClientPinSchema } from "@getdomovoi/protocol"
 import { z } from "zod"
 
+import { terminalSafe } from "./terminal-text.js"
+
 export { CredentialStoreError, CredentialStoreUnavailableError, type Keyring } from "@getdomovoi/credential-store"
 
 // One record per paired daemon. The endpoint is the key: a CLI on one machine
@@ -49,8 +51,10 @@ export type CredentialStore = {
 
 export const keyringService = "domovoi-cli"
 
+// The path came from --credential-file and can hold any character a file name
+// can, a newline included, so it is drawn through terminalSafe.
 const fileWarning = (path: string) =>
-  `Credentials for this daemon are kept in ${path}, not in an OS keychain. The file is mode 0600 and holds a bearer that grants session sends, approvals and terminals. Anyone who can read it can act as you on that daemon.`
+  `Credentials for this daemon are kept in ${terminalSafe(path)}, not in an OS keychain. The file is mode 0600 and holds a bearer that grants session sends, approvals and terminals. Anyone who can read it can act as you on that daemon.`
 
 const unavailable = (cause?: Error) =>
   (cause
