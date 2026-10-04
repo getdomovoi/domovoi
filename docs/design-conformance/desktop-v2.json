@@ -1429,11 +1429,13 @@
         "USAGE",
         "usageChipText",
         "Provider window",
-        "Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key."
+        "Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key.",
+        "bills the key's owner",
+        "No window reported, so no dial."
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the subscription ring and the unreported state are built; the api state (price after the separator) and the USAGE connection note are not drawn, because nothing on the wire says what pays for a runtime (subscription, API key or local). The code adds a TODAY row and Cost not shown: the wire does not say yet; Q374 A (2026-10-02) keeps TODAY and rewords the note to Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key."
+        "reason": "the ring (drawn when the provider reports its windows) and the unreported state are built, and the Q374 A reworded cost note is built (#710, 30760c18). Two gaps remain. The api state is not drawn: no price after the separator, no cost in the session row and no BILLED BY row, because nothing on the wire says what pays for a runtime (subscription, API key or local), though it carries the cost each provider reported. The popover draws no connection note under USAGE in any state, where the design draws one per state. The evidence holds both: the api note's bills the key's owner, and the unreported note's No window reported, so no dial."
       }
     },
     {
