@@ -6111,6 +6111,81 @@ describe("DomovoiDaemon", () => {
     globalSocket.close()
   })
 
+  // Two clients of one kind write the same "Paused by <client>." body, so the
+  // row names the connection that asked, as a receipt does (Q427).
+  it("names the connection that asked for each pause on its row", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    for (const [index, session] of snapshot.sessions.slice(0, 2).entries()) {
+      session.state = "active"
+      session.runtime.provider = "codex"
+      session.providerThreadId = `thread-${index}`
+      session.activeTurnId = `turn-${index}`
+    }
+    const [first, second] = snapshot.sessions
+    const activateTurns = deferLiveTurns(snapshot)
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+      agent,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    activateTurns()
+    const connect = async () => {
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      const request = (id: number, method: string, params: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve) => {
+        const listener = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", listener)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", listener)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+      const hello = await request(1, "system.hello", {
+        client: "desktop",
+        clientId: "desktop-test-client",
+        clientVersion: "0.0.1", protocolVersion,
+        authToken: daemon.authToken,
+      })
+      const connectionId = (hello.result as { connectionId?: string }).connectionId
+      expect(connectionId).toEqual(expect.any(String))
+      return { socket, request, connectionId: connectionId! }
+    }
+    const asking = await connect()
+    const other = await connect()
+    type Row = { sessionId: string; kind: string; body: string; connectionId?: string }
+    const pauseRow = (response: Record<string, unknown>, sessionId: string) =>
+      (response.result as { thread: Row[] }).thread.find((item) => item.sessionId === sessionId && item.kind === "system" && item.body === "Paused by desktop.")
+
+    const paused = await asking.request(2, "session.pause", { sessionId: first!.id, client: "desktop" })
+    expect(pauseRow(paused, first!.id)).toMatchObject({ connectionId: asking.connectionId, clientId: "desktop-test-client" })
+
+    const pausedAll = await other.request(2, "system.pauseAll", { client: "desktop" })
+    expect(pauseRow(pausedAll, second!.id)).toMatchObject({ connectionId: other.connectionId })
+    expect(pauseRow(pausedAll, first!.id)).toMatchObject({ connectionId: asking.connectionId })
+    asking.socket.close()
+    other.socket.close()
+  })
+
   it("stops a quarantined provider thread when persistence fails", async () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
