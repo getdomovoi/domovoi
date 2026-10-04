@@ -28,11 +28,8 @@ function header(label: string, id: string, columns: number): string {
 // through terminalSafe: a newline, an escape sequence or a directional
 // override in one cannot add a line, restyle the terminal or reorder the
 // facts after it. The permission mode is a validated enum and the step
-// numbers are formatted here, so they are drawn as they are. Receipt fields
-// are not isolated: right-to-left text in one field can still move a
-// neighbouring number, such as the time, in a viewer that applies bidi
-// ordering. Wrapping each field in renderer-owned isolates is the fix once a
-// command prints this line.
+// numbers are formatted here, so they are drawn as they are. The receipt also
+// isolates its fields; see isolated below.
 
 function fact(key: string, value: string): string {
   return `  ${key.padEnd(factWidth)}${value}`
@@ -113,10 +110,28 @@ export type ReceiptView = {
   at: string
 } & Pick<Extract<ThreadItem, { kind: "receipt" }>, "device">
 
+// The receipt runs its fields together on one line, so escaping alone is not
+// enough: ordinary right-to-left text in one field (a Hebrew machine name, say)
+// can still move a neighbouring number, such as the time, in a viewer that
+// applies bidi ordering. Each free-text field is wrapped in a FIRST STRONG
+// ISOLATE (U+2068) and a POP DIRECTIONAL ISOLATE (U+2069) that this renderer
+// owns, so its direction is its own and the text around it treats it as one
+// neutral run. terminalSafe has already turned any isolate the input carried
+// into visible text, so the only isolates on the line are these. The client
+// kind is a validated enum and is not wrapped. No other renderer isolates its
+// fields, and no command prints the receipt yet.
+// Built from code points so the source shows which invisible character each is.
+const firstStrongIsolate = String.fromCodePoint(0x2068)
+const popDirectionalIsolate = String.fromCodePoint(0x2069)
+
+function isolated(text: string): string {
+  return `${firstStrongIsolate}${terminalSafe(text)}${popDirectionalIsolate}`
+}
+
 export function renderReceipt(receipt: ReceiptView): string {
   const label = receipt.device?.label ?? receipt.decidedBy.label
-  const decider = label === undefined ? receipt.decidedBy.client : `${terminalSafe(label)} · ${receipt.decidedBy.client}`
-  const who = `${decider} on ${terminalSafe(receipt.machine)} · ${terminalSafe(receipt.at)}`
+  const decider = label === undefined ? receipt.decidedBy.client : `${isolated(label)} · ${receipt.decidedBy.client}`
+  const who = `${decider} on ${isolated(receipt.machine)} · ${isolated(receipt.at)}`
   if (receipt.decision === "allow-once") return `allowed once by ${who}\n`
   return `denied by ${who}\nThe agent was told and continues without it.\n`
 }
