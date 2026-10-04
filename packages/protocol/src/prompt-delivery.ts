@@ -137,6 +137,17 @@ export const providerPromptAnnotationDeliverySchema = z.object({
   }
 })
 
+// The sentence for `omitted.limit`, the open annotations the per-turn limit
+// left out of a sent message, and for a history entry's
+// `annotationsOverLimit`, which carries the same count. Desktop and web
+// (`packages/ui`) and the phone and tablet (`apps/mobile`) share no other
+// package, so the sentence is derived here once and cannot drift.
+export function annotationsOverLimitLine(limit: number): string {
+  return limit === 1
+    ? "1 open annotation was over the per-turn limit"
+    : `${limit} open annotations were over the per-turn limit`
+}
+
 export const deliveredPromptSkillSchema = z.object({
   id: skillIdSchema,
   name: skillSummarySchema.shape.name,

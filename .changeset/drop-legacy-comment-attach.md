@@ -26,7 +26,10 @@ positive whole number up to 1,000,000. The daemon records it in the sent message
 the count, but composes only the comments the review names; the count never selects a comment. A
 queued message keeps the count until release. Desktop and web show the record with the existing
 delivery note line, and the phone and tablet show the same sentence under the sent message, so a comment
-that missed the turn stays visible after the send succeeds. A message that starts a session the
+that missed the turn stays visible after the send succeeds. The sentence is
+`annotationsOverLimitLine` in `@getdomovoi/protocol`, the one copy every surface and the History
+tab read; the History tab's `annotationsOverLimit` carries the same `omitted.limit` count, so it
+includes the count a review reported. A message that starts a session the
 client just created, and a `DomovoiClient.sendMessage` given no review, send `{ annotationIds: [] }` explicitly rather than leaving the field out. The
 chosen preview stays a viewer bookmark until the dock sends it (ruling Q342 A). The command line
 sends no message.

@@ -9,6 +9,8 @@ surface needs and neither can import from the other lands here. Two kinds are in
 
 - Derivations from wire values are in. `modelDisplayName` (`model-display.ts`) reads a model id
   and a harness id, both of which cross the wire, and is the one place the short name is derived.
+  `annotationsOverLimitLine` (`prompt-delivery.ts`) reads the over-limit count a delivery record
+  and a history entry carry, and is the one place that sentence is written.
 - Cross-surface UI state that every thread must agree on is in, as a stated exception:
   `threadFollowState` and `threadFollowPillText` (`thread-follow.ts`) are presentational and
   do not describe the wire. They are here so the desktop and the phone cannot drift on when a

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest"
 
 import {
   annotationSchema,
+  annotationsOverLimitLine,
   maximumProviderPromptCodeUnits,
   providerPromptDeliverySchema,
   threadItemSchema,
@@ -158,5 +159,12 @@ describe("provider prompt delivery", () => {
       ...delivery(),
       prompt: "secret provider-bound text",
     }).success).toBe(false)
+  })
+
+  // The thread and history on desktop and web, and the phone and tablet, say
+  // the same sentence for the open annotations the per-turn limit left out.
+  it("says how many open annotations were over the per-turn limit", () => {
+    expect(annotationsOverLimitLine(1)).toBe("1 open annotation was over the per-turn limit")
+    expect(annotationsOverLimitLine(3)).toBe("3 open annotations were over the per-turn limit")
   })
 })
