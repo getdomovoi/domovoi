@@ -13,8 +13,10 @@ allows or denies a gate, reverts a file, archives a session or presses the emerg
 connection on the daemon credential has no paired device and writes none, and an archive resumed
 at startup has no connection and writes none. Renaming the device later does not rewrite a
 receipt. The label is redacted like other durable text when the daemon writes a receipt and when
-a session arrives by transfer; an unfinished transfer keeps the bytes the sender sent until it
-commits or is pruned, as it does for every other field.
+a session arrives by transfer. Transfer journals keep the received bytes unchanged, as they do
+for every other field. The daemon tries to remove a transfer's package after commit, and an abort
+also removes its payloads; if cleanup fails, the bytes stay until a later retry or the startup
+pruning of inactive transfers.
 
 The web and desktop receipt reads the label from the wire, before the client kind, as
 `decided from dana · phone, connection ...`; history rows read `decided on dana · phone`; the
