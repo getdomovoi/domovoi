@@ -3740,6 +3740,45 @@ describe("DomovoiDaemon", () => {
     })).toBeUndefined()
   })
 
+  // History drew a sent message without the over-limit note the thread shows
+  // beside it (Q431), so the count travels on the message entry.
+  it("carries a sent message's over-limit annotation count, and only when some were left out", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    const createdAt = "2026-08-28T12:00:00.000Z"
+    const delivery = (limit: number) => ({
+      version: 1 as const,
+      budget: { unit: "utf16-code-units" as const, limit: 100_000, used: 1_000 },
+      handoff: { status: "not-required" as const },
+      workingPlan: { status: "not-required" as const },
+      annotations: { availableCount: 1 + limit, deliveredIds: ["annotation-kept"], omitted: { budget: 0, limit } },
+      skills: {
+        selection: "project-default" as const,
+        delivered: [],
+        omitted: { budget: [], limit: [], unavailable: [], reviewChanged: [], policy: [] },
+      },
+    })
+    snapshot.thread = [
+      { id: "message-over", sessionId: session.id, kind: "user", body: "over", providerPromptDelivery: delivery(3), createdAt },
+      { id: "message-within", sessionId: session.id, kind: "user", body: "within", providerPromptDelivery: delivery(0), createdAt },
+      { id: "message-legacy", sessionId: session.id, kind: "user", body: "legacy", createdAt },
+      { id: "message-reply", sessionId: session.id, kind: "assistant", body: "reply", createdAt },
+    ]
+    workspaceSnapshotSchema.parse(snapshot)
+
+    const page = sessionHistoryPageSchema.parse(sessionHistoryPage(snapshot, {
+      sessionId: session.id,
+      categories: ["messages"],
+      limit: 10,
+    }))
+    const entry = (sourceId: string) => page.items.find((item) => item.sourceId === sourceId)
+
+    expect(entry("message-over")).toMatchObject({ role: "user", annotationsOverLimit: 3 })
+    expect(entry("message-within")).not.toHaveProperty("annotationsOverLimit")
+    expect(entry("message-legacy")).not.toHaveProperty("annotationsOverLimit")
+    expect(entry("message-reply")).not.toHaveProperty("annotationsOverLimit")
+  })
+
   it("indexes large mixed history once and bounds repeated filtered pages", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
@@ -6109,6 +6148,81 @@ describe("DomovoiDaemon", () => {
     await expect(afterLateApproval).resolves.toMatchObject({ result: { approvals: [] } })
     socket.close()
     globalSocket.close()
+  })
+
+  // Two clients of one kind write the same "Paused by <client>." body, so the
+  // row names the connection that asked, as a receipt does (Q427).
+  it("names the connection that asked for each pause on its row", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    for (const [index, session] of snapshot.sessions.slice(0, 2).entries()) {
+      session.state = "active"
+      session.runtime.provider = "codex"
+      session.providerThreadId = `thread-${index}`
+      session.activeTurnId = `turn-${index}`
+    }
+    const [first, second] = snapshot.sessions
+    const activateTurns = deferLiveTurns(snapshot)
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => codexModels()),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const daemon = new DomovoiDaemon({
+      port: 0,
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+      agent,
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    activateTurns()
+    const connect = async () => {
+      const socket = new WebSocket(`ws://${address.host}:${address.port}/rpc`)
+      await new Promise<void>((resolve, reject) => {
+        socket.once("open", resolve)
+        socket.once("error", reject)
+      })
+      const request = (id: number, method: string, params: Record<string, unknown>) => new Promise<Record<string, unknown>>((resolve) => {
+        const listener = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", listener)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", listener)
+        socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+      const hello = await request(1, "system.hello", {
+        client: "desktop",
+        clientId: "desktop-test-client",
+        clientVersion: "0.0.1", protocolVersion,
+        authToken: daemon.authToken,
+      })
+      const connectionId = (hello.result as { connectionId?: string }).connectionId
+      expect(connectionId).toEqual(expect.any(String))
+      return { socket, request, connectionId: connectionId! }
+    }
+    const asking = await connect()
+    const other = await connect()
+    type Row = { sessionId: string; kind: string; body: string; connectionId?: string }
+    const pauseRow = (response: Record<string, unknown>, sessionId: string) =>
+      (response.result as { thread: Row[] }).thread.find((item) => item.sessionId === sessionId && item.kind === "system" && item.body === "Paused by desktop.")
+
+    const paused = await asking.request(2, "session.pause", { sessionId: first!.id, client: "desktop" })
+    expect(pauseRow(paused, first!.id)).toMatchObject({ connectionId: asking.connectionId, clientId: "desktop-test-client" })
+
+    const pausedAll = await other.request(2, "system.pauseAll", { client: "desktop" })
+    expect(pauseRow(pausedAll, second!.id)).toMatchObject({ connectionId: other.connectionId })
+    expect(pauseRow(pausedAll, first!.id)).toMatchObject({ connectionId: asking.connectionId })
+    asking.socket.close()
+    other.socket.close()
   })
 
   it("stops a quarantined provider thread when persistence fails", async () => {
