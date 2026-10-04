@@ -135,6 +135,36 @@ describe("sessionGroups", () => {
     expect(groups[0]?.rows.map((row) => row.id)).toEqual([waiting.id])
     expect(groups.find((group) => group.id === "running")?.rows.map((row) => row.id)).not.toContain(waiting.id)
   })
+
+  // The clock a waiting row shows starts when the approval was raised. A row
+  // that waits on nobody has no such moment.
+  it("carries when a session started waiting on you, and nothing for the rest", () => {
+    const snapshot = workspace()
+    const approval = snapshot.approvals[0]
+    if (!approval) throw new Error("fixture needs a pending approval")
+
+    const rows = sessionGroups(snapshot).flatMap((group) => group.rows)
+
+    expect(rows.find((row) => row.id === approval.sessionId)?.waitingSince).toBe(approval.requestedAt)
+    expect(rows.filter((row) => row.id !== approval.sessionId).map((row) => row.waitingSince)).toEqual(
+      rows.filter((row) => row.id !== approval.sessionId).map(() => undefined),
+    )
+  })
+
+  // A session holding two approvals has waited since the first of them, in
+  // whatever order the snapshot lists them.
+  it("starts a session's clock at its earliest waiting approval", () => {
+    const snapshot = workspace()
+    const first = snapshot.approvals[0]
+    if (!first) throw new Error("fixture needs a pending approval")
+    const earlier = new Date(Date.parse(first.requestedAt) - 10 * 60_000).toISOString()
+    // Listed before the later one, so keeping the last one seen would be wrong.
+    snapshot.approvals.unshift({ ...first, id: `${first.id}-earlier`, requestedAt: earlier })
+
+    const rows = sessionGroups(snapshot).flatMap((group) => group.rows)
+
+    expect(rows.find((row) => row.id === first.sessionId)?.waitingSince).toBe(earlier)
+  })
 })
 
 // The sessions on this screen are one machine's. A running count is a fact

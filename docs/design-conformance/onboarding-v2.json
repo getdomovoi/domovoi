@@ -7,7 +7,7 @@
     "apps/desktop/src/**/*.{ts,tsx}",
     "packages/ui/src/**/*.{ts,tsx}"
   ],
-  "note": "Inventory re-derived 2026-09-23 from the handoff vendored that day. The design gained the login-service install (J24), the unsigned-build line (J10), the tailnet reach card (J25, drawn in TailnetReach and inventoried in tailnet-reach-v2.json), SSH hosts (J41), and the account-free lines replaced (I59). Repository browsing moved into the imported RemoteBrowser (J40, remote-browser-v2.json). Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks.",
+  "note": "Inventory re-derived 2026-09-23 from the handoff vendored that day. The design gained the login-service install (J24), the unsigned-build line (J10), the tailnet reach card (J25, drawn in TailnetReach and inventoried in tailnet-reach-v2.json), SSH hosts (J41), and the account-free lines replaced (I59). Repository browsing moved into the imported RemoteBrowser (J40, remote-browser-v2.json). Statuses record current implementation evidence and platform blockers; layout, visual state and interaction fidelity remain human-read checks. Re-read against the code 2026-10-02 (v2 parity audit, rulings Q336 to Q397): onboarding.account was split, because it held the providers, add-machine, tailnet-node and repository lines, none of them Cloud work; the desktop first run was the v1 dialog until #712 (2026-10-03) rebuilt it from this design under Q351 A and Q353 A, starting at the login-service step.",
   "elements": [
     {
       "id": "onboarding.daemon",
@@ -21,16 +21,12 @@
         "Install it for me",
         "WHAT THE DAEMON DOES",
         "My machine is somewhere else",
-        "Sign in to Domovoi Cloud and connect from here instead.",
-        "Sign in to Domovoi Cloud",
-        "So your machines can find each other off-network. Not where code, tokens or sessions live.",
-        "You probably do not need this. A tailnet is up on this machine and two of its nodes already run a daemon, so they reach each other directly. Domovoi Cloud would only add the phone app when you are off the tailnet.",
-        "Connect over the tailnet",
-        "Use the tailnet directly"
+        "Sign in to Domovoi Cloud and connect from here instead."
       ],
-      "missing": {
-        "since": "2026-09-20",
-        "reason": "The current clients do not implement the signed-in onboarding flow drawn by this design."
+      "blocked": {
+        "since": "2026-10-02",
+        "needs": "design",
+        "reason": "step 1, No daemon is running on this computer, cannot occur on the desktop: the app ships its runtime and attaches to a running daemon or starts its own inside the app (apps/desktop/src/main/index.ts), and a refused start shows DesktopDaemonRefused. Q351 A (2026-10-02) drops this step from the desktop and starts first run at step 2, Keep Domovoi running after you quit, with Not now; refusals keep DesktopDaemonRefused. The Cloud lines here (My machine is somewhere else) are relay work, M2. The design's install line (a Homebrew tap and domovoi daemon install) names commands that do not exist"
       }
     },
     {
@@ -76,14 +72,19 @@
       ],
       "missing": {
         "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J10; no client says the build is unsigned"
+        "reason": "the design's wording is not drawn: the first-run install card's foot (desktop-first-run.tsx) draws domovoid <version> and This build is not signed and does not update itself., the ND6 wording that scripts/unsigned-build.mjs holds to the Settings > About line"
       }
     },
     {
       "id": "onboarding.account",
       "name": "Account sign-in and pairing",
-      "where": "account and pairing flow",
+      "where": "step 3, Domovoi Cloud sign in: the title and line, the tailnet demotion note, EMAIL and the sign-in code, the device code, WHAT THE ACCOUNT DOES AND DOES NOT DO, Skip, use this machine only, and the no-account lines",
       "copy": [
+        "Sign in to Domovoi Cloud",
+        "So your machines can find each other off-network. Not where code, tokens or sessions live.",
+        "You probably do not need this. A tailnet is up on this machine and two of its nodes already run a daemon, so they reach each other directly. Domovoi Cloud would only add the phone app when you are off the tailnet.",
+        "Connect over the tailnet",
+        "Use the tailnet directly",
         "EMAIL",
         "dana@acme.dev",
         "Send a sign-in code",
@@ -94,24 +95,63 @@
         "Simulate approval",
         "WHAT THE ACCOUNT DOES AND DOES NOT DO",
         "Skip, use this machine only",
-        "Connect an agent on mac-mini-m4",
-        "Agents you already have. Tokens stay in this machine's keychain, so each machine authenticates separately.",
-        "Add another machine",
-        "One machine is enough for now",
-        "Add a machine",
-        "Each machine holds its own code and credentials. Pick how this client reaches it.",
-        "NODES ON TAIL9C2F.TS.NET",
-        "Domovoi did not configure this network",
-        "Paste into your ACLs and tag the machines",
-        "tag:domovoi",
-        "Open a repository on mac-mini-m4",
         "Loopback stays on this machine, with no Domovoi server in the path.",
         "Clients here reach the daemon over loopback. Add Domovoi Cloud later from Settings."
       ],
       "blocked": {
-        "since": "2026-09-20",
+        "since": "2026-10-02",
         "needs": "platform",
-        "reason": "Cloud account sign-in and off-network pairing are Phase 2 platform work."
+        "reason": "Domovoi Cloud sign-in, the device code and account facts are relay and account work: machine registration is Phase 2 (M2) and accounts are Phase 5 (M3); M1 excludes the relay. M1 has no account step, which matches. Split 2026-10-02: the providers, add-machine, tailnet-node and repository lines this entry held are not Cloud work and moved to their own elements"
+      }
+    },
+    {
+      "id": "onboarding.providers",
+      "name": "Connect an agent",
+      "where": "step 4: Connect an agent on <machine>, the keychain line, one card per agent with dot, mark, mono name, version and where it was found, a state line and an action (Sign in, Paste a key, Install guide) that opens a detail block",
+      "copy": [
+        "Connect an agent on mac-mini-m4",
+        "Agents you already have. Tokens stay in this machine's keychain, so each machine authenticates separately."
+      ],
+      "evidence": [
+        "Connect an agent on ",
+        "Agents you already have.",
+        "Install guide"
+      ]
+    },
+    {
+      "id": "onboarding.add-machine",
+      "name": "Add a machine",
+      "where": "step 5: Add a machine, the line, transport cards (this machine, the tailnet, SSH, a WSL distribution, Domovoi Cloud), a command block per transport; Add another machine and One machine is enough for now at the end of step 4",
+      "copy": [
+        "Add another machine",
+        "One machine is enough for now",
+        "Add a machine",
+        "Each machine holds its own code and credentials. Pick how this client reaches it."
+      ],
+      "evidence": [
+        "Each machine holds its own code and credentials."
+      ],
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "first run has no add-machine step. Outside first run, Machines > Pair a machine is one dialog with address, code and label (pair-machine-dialog.tsx). The transport cards and per-transport commands are not drawn; the Domovoi Cloud transport is the relay (M2) and a WSL distribution needs a Windows desktop. The design's commands (domovoi machine add, domovoi join, domovoi daemon install --transport wsl) do not exist"
+      }
+    },
+    {
+      "id": "onboarding.tailnet-nodes",
+      "name": "Nodes on the tailnet",
+      "where": "step 5, the tailnet transport: NODES ON <tailnet>, each node with whether it answers a daemon, the not-configured note, and the suggested ACL with its tag",
+      "copy": [
+        "NODES ON TAIL9C2F.TS.NET",
+        "Domovoi did not configure this network",
+        "Paste into your ACLs and tag the machines",
+        "tag:domovoi"
+      ],
+      "evidence": [
+        "Domovoi did not configure this network"
+      ],
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "nothing lists the tailnet's peers: the desktop reads tailscale status --json for this machine's own name only (apps/desktop/src/main/tailnet-reach.ts, for TailnetReach), and listing peers and which of them answer a daemon on the Domovoi port needs a peer read and a probe on the daemon or desktop side"
       }
     },
     {
@@ -126,8 +166,8 @@
         "A phone can pair with this machine only once it is on."
       ],
       "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J25; onboarding does not exist in the clients (see onboarding.daemon)"
+        "since": "2026-10-03",
+        "reason": "the TailnetReach card is built (tailnet-reach-v2.json, 2026-10-02) and imported by Settings only; first run has no Add a machine step (onboarding.add-machine), so nothing draws THIS MACHINE, its optional line or the card there"
       }
     },
     {
@@ -169,14 +209,15 @@
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "no daemon, CLI or RPC path installs a daemon on another host over SSH; J41 was drawn as an owner decision, not settled"
+        "reason": "blocked first on a decision: launching ssh (J41) is listed as not decided in SHIP-PLAN, and docs/clean-machine-setup.md says Domovoi does not launch SSH. Second, no daemon, CLI or RPC path installs a daemon on another host over SSH"
       }
     },
     {
       "id": "onboarding.repository",
       "name": "Repository selection and access",
-      "where": "repository selection flow",
+      "where": "step 6: Open a repository on <machine>, the worktree line, Choose a folder, Browse another machine, Clone from a URL, FOUND ON THIS MACHINE, the dirty-checkout note",
       "copy": [
+        "Open a repository on mac-mini-m4",
         "Sessions run in a worktree, so your checkout is never modified.",
         "Choose a folder on mac-mini-m4",
         "Browse hetzner-cx42",
@@ -185,9 +226,17 @@
         "FOUND ON THIS MACHINE",
         "A dirty checkout is fine: the worktree comes off the last commit."
       ],
-      "missing": {
-        "since": "2026-09-20",
-        "reason": "The current first-run clients do not implement this repository browser and access prompt as drawn."
+      "presence": [
+        "title: \"Open a project\"",
+        "Open a local Git repository before starting an agent session."
+      ],
+      "evidence": [
+        "title: \"Open a project\"",
+        "Sessions run in a worktree, so your checkout is never modified."
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "after first run the empty thread says No project is open and Open a local Git repository before starting an agent session., with Open project opening the desktop folder dialog titled Open a project; that is the design's Choose a folder only. The repository screen, its two true lines (the worktree line and the dirty-checkout note: worktrees come off the head commit) and Browse another machine (blocked in remote-browser-v2.json) are not drawn; FOUND ON THIS MACHINE needs a repository listing RPC, and Clone from a URL has no RPC (and a cloned repository meets the trust gate)"
       }
     }
   ],
@@ -207,12 +256,27 @@
     {
       "id": "onboarding.service-install",
       "since": "2026-10-02",
-      "note": "Q389 A substitutions in packages/ui/src/desktop-first-run.tsx, read against the design's installModel: no made-up command or port is drawn (the log with $ domovoi daemon install is not built, and 127.0.0.1:7717 reads the address of the daemon this window reached, 127.0.0.1:47831 by default, or loopback when none is known, because DOMOVOI_HOST and DOMOVOI_PORT move the service with the app); the rows follow the real installer, adding Copy this app's daemon runtime and naming the handover without launchctl bootstrap gui/501; the done line ends It answers on loopback only, because pairing does not change where the daemon listens; the foot reads domovoid <version> and uses the ND6 wording This build is not signed and does not update itself, held to Settings by scripts/unsigned-build.mjs."
+      "note": "Q389 A substitutions in packages/ui/src/desktop-first-run.tsx, read against the design's installModel: no made-up command or port is drawn (the log with $ domovoi daemon install is not built, and 127.0.0.1:7717 reads the address of the daemon this window reached, 127.0.0.1:47831 by default, or loopback when none is known, because DOMOVOI_HOST and DOMOVOI_PORT move the service with the app); the rows follow the real installer, adding Copy this app's daemon runtime and naming the handover without launchctl bootstrap gui/501; the done line ends It answers on loopback only, because pairing does not change where the daemon listens; the foot reads domovoid <version> and uses the ND6 wording This build is not signed and does not update itself, held to Settings by scripts/unsigned-build.mjs. For the unbuilt log: the design's domovoi daemon install is not a command and its port 7717 is not the daemon's; a build prints domovoid service install and port 47831. The install line's Homebrew tap (getdomovoi/tap) does not exist and has no real substitute, which is an open gap for whoever builds the log. Q336 A: from a DMG install no domovoid is on PATH until a desktop action links Domovoi's own binaries into ~/.local/bin; where the link is absent the text shows the absolute bundled command."
     },
     {
-      "id": "onboarding.account",
+      "id": "onboarding.add-machine",
       "since": "2026-10-02",
-      "note": "The providers screen (Connect an agent on <machine>) is built for the desktop under Q353 A, though this element stays blocked for the account flow. Substitutions: the subtitle says each agent signs in through its own CLI on this machine instead of tokens in this machine's keychain, which is not true of every provider CLI; Sign in and Paste a key become Copy sign-in command with the CLI's own command (claude auth login, codex login); a missing CLI gets the Install guide text and no install command (pipx install aider-chat is not drawn). Add another machine is not drawn: the setup dialog has no route to Machines yet."
+      "note": "Q389 A: domovoi machine add <host> and domovoi join --code become domovoi pair, which Q337 A makes redeem a pairing code with device.redeemCode (today it accepts only a pasted credential). domovoi daemon install --transport wsl has no real equivalent yet; that substitution is an open gap."
+    },
+    {
+      "id": "onboarding.tailnet-nodes",
+      "since": "2026-10-02",
+      "note": "Q389 A: the node line no daemon · port 7717 closed probes port 47831, the daemon's real port."
+    },
+    {
+      "id": "onboarding.ssh-host",
+      "since": "2026-10-02",
+      "note": "Q389 A: the SSH wizard's port 7717 and its domovoi commands are replaced by port 47831 and domovoid service install and domovoi pair when this is built; the wizard's own steps (curl, tar, systemctl) stay as drawn data."
+    },
+    {
+      "id": "onboarding.providers",
+      "since": "2026-10-02",
+      "note": "Built for the desktop under Q353 A (packages/ui/src/desktop-first-run.tsx). Substitutions: the subtitle says each agent signs in through its own CLI on this machine instead of tokens in this machine's keychain, which is not true of every provider CLI; Sign in and Paste a key become Copy sign-in command with the CLI's own command (claude auth login, codex login); a missing CLI gets the Install guide text and no install command (pipx install aider-chat is not drawn). Add another machine is not drawn: the setup dialog has no route to Machines yet. Q352 A: the first-run dialog's Choose a permission mode for new projects step, which the design does not draw, is dropped; new sessions default to Build manual and the mode changes from the composer's mode chip."
     }
   ],
   "scriptBacklog": {

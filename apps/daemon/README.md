@@ -48,6 +48,9 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_TLS_KEY_PATH` | TLS private key, required for a non-loopback listener |
 | `DOMOVOI_ADVERTISE_HOST` | Name an encrypted listener is advertised as reachable by |
 | `DOMOVOI_TAILNET_HOST` | Explicit tailnet host or address for a non-loopback TLS listener |
+| `DOMOVOI_TAILNET_ADDRESS` | This machine's Tailscale address (IPv4 in `100.64.0.0/10` or IPv6 in `fd7a:115c:a1e0::/48`, no port or brackets) for a second TLS listener beside a loopback `DOMOVOI_HOST`. Requires `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1`; set together with the two paths below |
+| `DOMOVOI_TAILNET_TLS_CERT_PATH` | Absolute TLS certificate chain file for that second listener |
+| `DOMOVOI_TAILNET_TLS_KEY_PATH` | Absolute TLS private key file for that second listener |
 | `DOMOVOI_SSH_TUNNELS` | Source-local JSON list of `{machineId, endpoint}` SSH forwards |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
 | `DOMOVOI_WEB_APP_URL` | Web app a pairing code can be opened in. An absolute `http` or `https` URL without whitespace, control characters, credentials or a fragment, at most 2048 characters. When set, `device.issueCode` returns it as `webAppUrl` beside `pairingAddress`, so a pairing card can offer a browser link; when unset, the result has no `webAppUrl`. The service configuration file keeps it as `webAppUrl`. |

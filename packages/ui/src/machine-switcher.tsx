@@ -105,6 +105,8 @@ export function MachineSwitcher({
   admittedMachines = new Set<string>(),
   transferEntries,
   openRequest,
+  triggerHidden = false,
+  onCloseAutoFocus,
 }: {
   entries: FleetEntry[]
   currentMachineId: string
@@ -117,6 +119,13 @@ export function MachineSwitcher({
   // A counter another surface bumps to open this menu, the way the sessions
   // drawer's "Move to another machine" lands the person on the target list.
   openRequest?: number | undefined
+  // Set where nothing draws the trigger and only openRequest opens the menu:
+  // the trigger then stays out of the tab order. The caller hides it from
+  // assistive technology.
+  triggerHidden?: boolean | undefined
+  // Where focus goes when the menu closes. A hidden trigger cannot take it
+  // back, so its caller says where it goes instead.
+  onCloseAutoFocus?: ((event: Event) => void) | undefined
 }) {
   const [open, setOpen] = useState(false)
   const seenRequest = useRef(openRequest)
@@ -137,12 +146,13 @@ export function MachineSwitcher({
           variant="ghost"
           size="sm"
           className="px-1"
+          {...(triggerHidden ? { tabIndex: -1 } : {})}
           aria-label={`Machine ${current?.label ?? "unknown"}, open the device menu`}
         >
           <Badge variant="machine">{current?.label ?? "unknown"}</Badge>
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-72">
+      <DropdownMenuContent align="start" className="w-72" {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})}>
         <DropdownMenuLabel>Machines</DropdownMenuLabel>
         {current ? (
           <DropdownMenuItem disabled className="flex-col items-start gap-0.5">

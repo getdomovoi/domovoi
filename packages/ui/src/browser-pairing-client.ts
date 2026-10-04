@@ -11,6 +11,27 @@ type Waiting = {
   timer: ReturnType<typeof setTimeout>
 }
 
+// The socket failed, closed or timed out before the daemon answered, so it is
+// not known whether the code was spent. Only this failure lets the page send
+// the same code again; a refusal, a misuse or an unreadable reply does not.
+export class PairingTransportError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "PairingTransportError"
+  }
+}
+
+// The daemon answered the code, but not with anything this page can read: a
+// malformed envelope for the request, or a result that is not a device and
+// credential. It may have spent the code and paired the browser, so this is
+// never retried.
+export class PairingReplyError extends Error {
+  constructor() {
+    super("The daemon's reply to the code could not be read")
+    this.name = "PairingReplyError"
+  }
+}
+
 // A tab that holds no credential cannot greet the daemon: it refuses a
 // system.hello without one, and DomovoiClient greets before anything else, so a
 // code sent through it never arrives. Spending a code is the one call the
@@ -41,15 +62,17 @@ export class CodeRedemptionClient {
       const { signal } = listeners
       socket.addEventListener("open", () => this.#settle({ value: undefined }), { signal })
       socket.addEventListener("message", (event) => this.#receive(event.data), { signal })
-      socket.addEventListener("error", () => this.#settle({ error: new Error("Daemon connection failed") }), { signal })
-      socket.addEventListener("close", () => this.#settle({ error: new Error("Daemon connection closed") }), { signal })
+      socket.addEventListener("error", () => this.#settle({ error: new PairingTransportError("Daemon connection failed") }), { signal })
+      socket.addEventListener("close", () => this.#settle({ error: new PairingTransportError("Daemon connection closed") }), { signal })
     })
   }
 
   request(method: "device.redeemCode", params: RpcParams<"device.redeemCode">): Promise<unknown> {
     const socket = this.#socket
-    if (!socket || socket.readyState !== WebSocket.OPEN || this.#sent) {
-      return Promise.reject(new Error("Daemon connection closed"))
+    // A second call on this client is a misuse, not a dropped connection.
+    if (this.#sent) return Promise.reject(new Error("A code redemption client sends one code"))
+    if (!socket || socket.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new PairingTransportError("Daemon connection closed"))
     }
     return this.#wait(`Daemon did not answer ${method} within ${this.#budgetMs} ms`, () => {
       this.#sent = true
@@ -58,17 +81,17 @@ export class CodeRedemptionClient {
   }
 
   disconnect(): void {
-    this.#settle({ error: new Error("Daemon connection closed") })
+    this.#settle({ error: new PairingTransportError("Daemon connection closed") })
     this.#listeners?.abort()
     this.#socket?.close(1000, "client closed")
   }
 
   #wait(timeoutMessage: string, start: () => void): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.#settle({ error: new Error(timeoutMessage) }), this.#budgetMs)
+      const timer = setTimeout(() => this.#settle({ error: new PairingTransportError(timeoutMessage) }), this.#budgetMs)
       this.#waiting = { resolve, reject, timer }
       try { start() } catch (cause) {
-        this.#settle({ error: cause instanceof Error ? cause : new Error("Daemon socket could not be created") })
+        this.#settle({ error: new PairingTransportError(cause instanceof Error ? cause.message : "Daemon socket could not be created") })
       }
     })
   }
@@ -83,13 +106,21 @@ export class CodeRedemptionClient {
   }
 
   // Only the reply to the one request counts. Anything else on this socket is
-  // left for the deadline, which the page reports as no answer.
+  // left for the deadline, which the page reports as no answer. A frame that
+  // carries the request's id is the daemon's answer even when its envelope is
+  // malformed, so it settles as an unreadable reply, not as a timeout. A frame
+  // that is not JSON cannot be tied to the request and is left alone.
   #receive(data: unknown): void {
     if (!this.#sent || typeof data !== "string") return
     let parsed: unknown
     try { parsed = JSON.parse(data) } catch { return }
     const reply = rpcResponseSchema.safeParse(parsed)
-    if (!reply.success || reply.data.id !== redeemRequestId) return
+    if (!reply.success) {
+      const id = typeof parsed === "object" && parsed !== null ? (parsed as { id?: unknown }).id : undefined
+      if (id === redeemRequestId) this.#settle({ error: new PairingReplyError() })
+      return
+    }
+    if (reply.data.id !== redeemRequestId) return
     if (reply.data.error) {
       const { code, message, data: detail } = reply.data.error
       this.#settle({ error: new DaemonRpcError(code, message, detail) })

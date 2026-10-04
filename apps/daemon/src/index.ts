@@ -117,6 +117,9 @@ Environment:
   DOMOVOI_TLS_KEY_PATH            TLS private key, required off loopback
   DOMOVOI_ADVERTISE_HOST          Name an encrypted listener is reachable by
   DOMOVOI_TAILNET_HOST            Explicit tailnet host for a non-loopback TLS listener
+  DOMOVOI_TAILNET_ADDRESS         This machine's Tailscale address for a second TLS listener
+  DOMOVOI_TAILNET_TLS_CERT_PATH   TLS certificate chain for that second listener
+  DOMOVOI_TAILNET_TLS_KEY_PATH    TLS private key for that second listener
   DOMOVOI_SSH_TUNNELS             JSON list of source-local {machineId, endpoint} forwards
   DOMOVOI_TOOL_PATH               Directories searched first for agent CLIs
   DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY  Off-machine signer's relay public key

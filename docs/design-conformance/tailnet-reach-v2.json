@@ -7,19 +7,22 @@
     "packages/protocol/src/**/*.ts",
     "apps/desktop/src/**/*.{ts,tsx}"
   ],
-  "note": "A component, imported by Desktop V2 (Settings) and v2 Onboarding (Add a machine), answering J25. Its title, status line, step labels and platform commands live in the component's data; the template draws only the six strings held here.",
+  "note": "A component, imported by Desktop V2 (Settings) and v2 Onboarding (Add a machine), answering J25. Built 2026-10-02 (Q404 A) as packages/ui tailnet-reach-card.tsx, a row of the daemon card in desktop Settings, drawn from the desktop's switch (domovoi:tailnet-reach) and the daemon's tailnet.status. The Onboarding import is not built. The script's restart commands and its per-step progress are the two places the build draws something else; tailnet-reach.progress and tailnet-reach.restart say why.",
   "sample": [],
   "annotations": [],
   "elements": [
     {
       "id": "tailnet-reach.card",
       "name": "Reach this machine from the tailnet",
-      "where": "Settings and onboarding: title, line, the tailnet name in mono, status with a toggle; TURNING IT ON CHANGES and DOMOVOI NEVER TOUCHES lists; the public-certificate warning; the off line; Check again when Tailscale is down",
+      "where": "Settings: title, line, the tailnet name in mono, status with a toggle; TURNING IT ON CHANGES and DOMOVOI NEVER TOUCHES lists; the public-certificate warning; the off line; Check again when Tailscale is down; the steps after a stop, the HTTPS-certificates alert, the renewal alert and the facts while on",
       "states": [
         "off",
         "turning on",
+        "turning off",
         "on",
+        "renewal failed",
         "Tailscale not running",
+        "HTTPS certificates off",
         "failed"
       ],
       "copy": [
@@ -28,74 +31,137 @@
         "TURNING IT ON CHANGES",
         "DOMOVOI NEVER TOUCHES",
         "Every certificate is recorded in public logs, so this machine's tailnet name becomes public.",
-        "Turning it off deletes those files and restarts the service on 127.0.0.1 only."
+        "Turning it off deletes those files and restarts the service on 127.0.0.1 only.",
+        "the daemon inside this app restarts",
+        "No tailnet",
+        "Turning on",
+        "Turning off",
+        "Renewal failed",
+        "No tailnet interface found on this machine. Domovoi does not set one up for you.",
+        "Off. Only this computer can reach the daemon.",
+        "Devices on your tailnet can reach the daemon. Each one still has to pair.",
+        "Stopped before storing or restarting anything.",
+        "Still on. The certificate did not renew and expires on",
+        "Read the tailnet status",
+        "tailscale status --json · reads only",
+        "Ask Tailscale for a certificate for this machine's own name",
+        "tailscale cert",
+        "Store the certificate and key in the Domovoi profile",
+        "Restart the service so it answers on the tailnet",
+        "Delete the certificate and key from the Domovoi profile",
+        "Restart the service on this computer only",
+        "not run",
+        "HTTPS certificates are off for",
+        "A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console. Domovoi never falls back to plain HTTP or a self-signed certificate.",
+        "Try again",
+        "The switch stays off. Nothing was stored and nothing restarted.",
+        "The certificate did not renew",
+        "paired devices keep connecting and new ones can pair. After that the daemon answers on this computer only until a renewal succeeds.",
+        "Renew now",
+        "Tailnet name",
+        "Stored in",
+        "Answers on",
+        "Reach this machine from my tailnet",
+        "Asks Tailscale for a certificate for this machine's own name",
+        "Stores the certificate and key in the Domovoi profile",
+        "Restarts the service once so it answers on the tailnet",
+        "Tailnet settings, access rules or DNS entries",
+        "Whether Tailscale is up, or who is signed in to it",
+        "Any other machine on the tailnet"
       ],
       "evidence": [
         "TURNING IT ON CHANGES",
-        "DOMOVOI NEVER TOUCHES"
+        "DOMOVOI NEVER TOUCHES",
+        "Reach this machine from my tailnet",
+        "Bring Tailscale up yourself, then check again.",
+        "Every certificate is recorded in public logs, so this machine's tailnet name becomes public.",
+        "Turning it off deletes those files and restarts the service on 127.0.0.1 only.",
+        "Off. Only this computer can reach the daemon.",
+        "Devices on your tailnet can reach the daemon. Each one still has to pair.",
+        "Stopped before storing or restarting anything.",
+        "Still on. The certificate did not renew and expires on",
+        "Restart the service on this computer only",
+        "Domovoi never falls back to plain HTTP or a self-signed certificate.",
+        "The switch stays off. Nothing was stored and nothing restarted.",
+        "paired devices keep connecting and new ones can pair. After that the daemon answers on this computer only until a renewal succeeds.",
+        "Whether Tailscale is up, or who is signed in to it",
+        "--min-validity",
+        "re:\"tailnet\\.status\""
+      ]
+    },
+    {
+      "id": "tailnet-reach.renewal",
+      "name": "Who renews the certificate",
+      "where": "the Certificate fact's note while on, and the line after Renew now when a renewal failed",
+      "copy": [
+        "Renews on its own.",
+        "Renewal failed. Retrying on its own.",
+        "Domovoi also tries again on its own."
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "no RPC or desktop adapter turns tailnet serving on or off (a certificate for the tailnet name and a listen address beyond loopback); J25 was drawn as an owner decision"
+      "presence": [
+        "Renews on its own while this app is open.",
+        "Renewal failed. Retrying on its own while this app is open.",
+        "Domovoi also tries again on its own while this app is open."
+      ],
+      "evidence": [
+        "Renews on its own.",
+        "Renewal failed. Retrying on its own.",
+        "Domovoi also tries again on its own."
+      ],
+      "partial": {
+        "since": "2026-10-03",
+        "reason": "Review of 049b1383 (P3-a): the desktop app runs the renewal checks, so a login service left running after the app quits does not renew. Each line says while this app is open."
+      }
+    },
+    {
+      "id": "tailnet-reach.progress",
+      "name": "What the card says while a change runs, and with no tailnet",
+      "where": "the line under the title while turning on or off, and the mono line when Tailscale is down",
+      "copy": [
+        "Turning on. Each action is listed as it runs.",
+        "Turning off. Each action is listed as it runs.",
+        "tailscale status · no tailnet interface"
+      ],
+      "presence": [
+        "Turning on. The steps run in this order.",
+        "Turning off. The steps run in this order.",
+        "Domovoi found no tailscale command on this computer."
+      ],
+      "evidence": [
+        "Turning on. Each action is listed as it runs.",
+        "Turning off. Each action is listed as it runs.",
+        "tailscale status · no tailnet interface"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "One domovoi:tailnet-reach request runs a whole change, so the window cannot list each action as it runs: the steps are listed in order while it runs and marked done, failed or not run from where the answer says it stopped. With no tailnet, the mono line carries Tailscale's own words (or that no tailscale command was found) rather than a fixed line."
+      }
+    },
+    {
+      "id": "tailnet-reach.restart",
+      "name": "How the service restarts",
+      "where": "the mono line under Restarts the service once and the restart steps, for the login service",
+      "copy": [
+        "launchctl kickstart -k gui/501/sh.domovoi.daemon",
+        "systemctl --user restart domovoid"
+      ],
+      "presence": [
+        "the login service is updated and restarted"
+      ],
+      "evidence": [
+        "launchctl kickstart -k gui/501/sh.domovoi.daemon"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "The switch changes the login service's saved settings through updateDaemonService, which restarts it with the update's readiness check and puts the previous service back on a failure, so the card names that rather than a launchctl or systemctl command Domovoi does not run. The daemon inside this app keeps the design's line."
       }
     }
   ],
   "humanRead": [
     {
       "id": "tailnet-reach.card",
-      "since": "2026-09-23",
-      "note": "Title, status, steps and per-platform commands are in the component's data, so the gate cannot hold them; read them against the component."
+      "since": "2026-10-02",
+      "note": "Read in Chromium against a fixture with no daemon and no Tailscale, light and dark, at 860 and 420 pixels: off, no tailnet, a hand-set DOMOVOI_HOST, turning on and off, HTTPS certificates off, on and listening, renewal failed, and the daemon not answering. The card adds lines the design has no state for: the daemon not answering on the tailnet (tailnet.status refused), the hand-set DOMOVOI_HOST line, Could not turn it on or off with the desktop's words, and 127.0.0.1 only when the daemon does not listen on the tailnet."
     }
-  ],
-  "scriptBacklog": {
-    "since": "2026-09-26",
-    "reason": "Copy the design builds in its data script, collected by the gate since audit G23 and not yet read against the implementation. Classify each string as an element's copy, sample or annotations, and remove it here.",
-    "strings": [
-      "launchctl kickstart -k gui/501/sh.domovoi.daemon",
-      "systemctl --user restart domovoid",
-      "the daemon inside this app restarts",
-      "No tailnet",
-      "Turning on",
-      "Turning off",
-      "Renewal failed",
-      "No tailnet interface found on this machine. Domovoi does not set one up for you.",
-      "Off. Only this computer can reach the daemon.",
-      "Turning on. Each action is listed as it runs.",
-      "Turning off. Each action is listed as it runs.",
-      "Devices on your tailnet can reach the daemon. Each one still has to pair.",
-      "Stopped before storing or restarting anything.",
-      "Still on. The certificate did not renew and expires on",
-      "tailscale status · no tailnet interface",
-      "Read the tailnet status",
-      "tailscale status --json · reads only",
-      "Ask Tailscale for a certificate for this machine's own name",
-      "tailscale cert",
-      "Store the certificate and key in the Domovoi profile",
-      "Restart the service so it answers on the tailnet",
-      "Delete the certificate and key from the Domovoi profile",
-      "Restart the service on this computer only",
-      "not run",
-      "HTTPS certificates are off for",
-      "A tailnet admin turns on HTTPS Certificates on the DNS page of the Tailscale admin console. Domovoi never falls back to plain HTTP or a self-signed certificate.",
-      "Try again",
-      "The switch stays off. Nothing was stored and nothing restarted.",
-      "The certificate did not renew",
-      "paired devices keep connecting and new ones can pair. After that the daemon answers on this computer only until a renewal succeeds.",
-      "Renew now",
-      "Domovoi also tries again on its own.",
-      "Tailnet name",
-      "Renewal failed. Retrying on its own.",
-      "Renews on its own.",
-      "Stored in",
-      "Answers on",
-      "Reach this machine from my tailnet",
-      "Asks Tailscale for a certificate for this machine's own name",
-      "Stores the certificate and key in the Domovoi profile",
-      "Restarts the service once so it answers on the tailnet",
-      "Tailnet settings, access rules or DNS entries",
-      "Whether Tailscale is up, or who is signed in to it",
-      "Any other machine on the tailnet"
-    ]
-  }
+  ]
 }

@@ -1,11 +1,210 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { demoWorkspace } from "@getdomovoi/protocol"
+import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { DaemonRpcError } from "./client"
 import { Thread } from "./workspace-shell.js"
 
 afterEach(cleanup)
+
+// J34: an allow takes a checkpoint first, and when it cannot the daemon
+// refuses the decision and the gate stays. The refusal belongs on the gate it
+// refused, in the daemon's words, not in a generic alert above the composer.
+it("shows the daemon's refusal of a decision inside the gate card", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const refusal = "Domovoi could not take a checkpoint, so the command did not run; decide again"
+  const onResolve = vi.fn()
+    .mockRejectedValueOnce(new DaemonRpcError(-32603, refusal))
+    .mockResolvedValueOnce(undefined)
+  render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />,
+  )
+
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+
+  const card = screen.getByText(snapshot.approvals[0]!.command).closest("[role=alert]") as HTMLElement
+  expect(within(card).getByRole("alert").textContent).toBe(refusal)
+  expect(screen.queryByText("Agent request failed")).toBeNull()
+
+  // Deciding again clears it.
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+  expect(within(card).queryByRole("alert")).toBeNull()
+  expect(onResolve).toHaveBeenCalledTimes(2)
+})
+
+function refusalThread(onResolve: ComponentProps<typeof Thread>["onResolve"]) {
+  return (current: typeof demoWorkspace) => (
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={current}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />
+  )
+}
+
+// The daemon answers a withdrawn or no-longer-waiting gate with an error
+// before it broadcasts the snapshot that removes the gate, so the refusal
+// lands in the card first. When the gate then leaves with no receipt, nobody
+// decided it: the refusal moves above the composer rather than vanishing.
+it("moves a card's refusal above the composer when its gate leaves without a receipt", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const refusal = "The approval was withdrawn before it could be allowed"
+  const thread = refusalThread(vi.fn(async () => { throw new DaemonRpcError(-32602, refusal) }))
+  const { rerender } = render(thread(snapshot))
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+  expect(screen.getByText(refusal)).toBeTruthy()
+
+  const withdrawn = structuredClone(snapshot)
+  withdrawn.approvals = []
+  rerender(thread(withdrawn))
+
+  expect(screen.getByText(refusal)).toBeTruthy()
+  expect(screen.getByText("Agent request failed")).toBeTruthy()
+})
+
+// A refusal shown in its card belongs to that card. When the gate then leaves
+// because another device answered it, the receipt says what was decided, so
+// the refusal goes with the card rather than reappearing above the composer.
+it("drops a card's refusal when its gate is answered elsewhere", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const refusal = "Domovoi could not take a checkpoint, so the command did not run; decide again"
+  const onResolve = vi.fn().mockRejectedValueOnce(new DaemonRpcError(-32603, refusal))
+  const thread = (current: typeof snapshot) => (
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={current}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />
+  )
+  const { rerender } = render(thread(snapshot))
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+  expect(screen.getByText(refusal)).toBeTruthy()
+
+  const answeredElsewhere = structuredClone(snapshot)
+  const approval = answeredElsewhere.approvals[0]!
+  answeredElsewhere.approvals = []
+  answeredElsewhere.thread.push({
+    id: `receipt-${approval.id}-phone`,
+    sessionId: approval.sessionId,
+    kind: "receipt",
+    decision: "allow-once",
+    operation: approval.operation,
+    checkpoint: "unavailable",
+    client: "phone",
+    createdAt: "2026-10-02T12:00:00.000Z",
+  })
+  rerender(thread(answeredElsewhere))
+
+  expect(screen.queryByText(refusal)).toBeNull()
+  expect(screen.queryByText("Agent request failed")).toBeNull()
+})
+
+// Only a gate that leaves in the first approvals change after the refusal
+// was withdrawn in answer to it. A gate that outlived a later change and
+// then left with no receipt went for another reason, a pause here, and the
+// refusal is about a decision nobody can make now: it goes with the card.
+it("drops a card's refusal when its gate leaves later without a receipt", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const refusal = "Domovoi could not take a checkpoint, so the command did not run; decide again"
+  const thread = refusalThread(vi.fn(async () => { throw new DaemonRpcError(-32603, refusal) }))
+  const { rerender } = render(thread(snapshot))
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+  expect(screen.getByText(refusal)).toBeTruthy()
+
+  const approval = snapshot.approvals[0]!
+  const anotherGate = structuredClone(snapshot)
+  anotherGate.approvals.push({ ...structuredClone(approval), id: "approval-onboarding", sessionId: "session-onboarding" })
+  rerender(thread(anotherGate))
+  expect(screen.getByText(refusal)).toBeTruthy()
+
+  const paused = structuredClone(anotherGate)
+  paused.approvals = paused.approvals.filter((pending) => pending.id !== approval.id)
+  paused.thread.push({
+    id: "thread-paused-phone",
+    sessionId: approval.sessionId,
+    kind: "system",
+    body: "Paused by phone.",
+    createdAt: "2026-10-02T12:00:00.000Z",
+  })
+  rerender(thread(paused))
+
+  expect(screen.queryByText(refusal)).toBeNull()
+  expect(screen.queryByText("Agent request failed")).toBeNull()
+})
+
+// A refusal can arrive after the gate has left the snapshot: the agent stopped
+// waiting, the request was withdrawn or answered outside Domovoi. With no
+// card to hold it, it shows with the composer's alerts, as it did before.
+it("shows a refusal for a gate that has gone with the composer's alerts", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const refusal = "The agent is no longer waiting for this approval, so it was not allowed"
+  let reject: (cause: unknown) => void = () => {}
+  const onResolve = vi.fn(() => new Promise<void>((_, fail) => { reject = fail }))
+  const thread = (current: typeof snapshot) => (
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={current}
+      connected
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />
+  )
+  const { rerender } = render(thread(snapshot))
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+
+  const gone = structuredClone(snapshot)
+  gone.approvals = []
+  rerender(thread(gone))
+  await act(async () => { reject(new DaemonRpcError(-32602, refusal)) })
+
+  expect(screen.getByText(refusal)).toBeTruthy()
+  expect(screen.getByText("Agent request failed")).toBeTruthy()
+})
 
 it("sends the selected approval-card decision", async () => {
   const user = userEvent.setup()
@@ -144,6 +343,51 @@ it("keeps optional explanation behind Deny instead of a fourth peer action", asy
   expect(screen.getByLabelText("Tell the agent why this command was denied")).toBeTruthy()
   expect(screen.getByRole("button", { name: "Deny without explanation" })).toBeTruthy()
   expect(screen.getByRole("button", { name: "Deny with explanation" })).toBeTruthy()
+})
+
+// A decision made while the daemon is gone reaches nothing, so the card says
+// why and offers none until the connection is back.
+it("holds every decision while the daemon is disconnected, and says why", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals[0]!.risk = "normal"
+  const onResolve = vi.fn(async () => {})
+  const thread = (connected: boolean) => (
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected={connected}
+      onResolve={onResolve}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />
+  )
+  const { rerender } = render(thread(false))
+  const card = screen.getByRole("alert")
+  // The client knows it is disconnected, not why: an auth refusal and a lost
+  // network look the same from here, so the line names no cause.
+  expect(card.textContent).toContain("Cannot answer this gate while this client is disconnected from the daemon.")
+  for (const name of ["Allow once", "Always in this project", "Deny"]) {
+    expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true)
+  }
+
+  // A denial already being written is held too, and the words stay.
+  rerender(thread(true))
+  expect(screen.getByRole("alert").textContent).not.toContain("disconnected from the daemon")
+  await user.click(screen.getByRole("button", { name: "Deny" }))
+  await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "Not now")
+  rerender(thread(false))
+  expect((screen.getByRole("button", { name: "Deny without explanation" }) as HTMLButtonElement).disabled).toBe(true)
+  expect((screen.getByRole("button", { name: "Deny with explanation" }) as HTMLButtonElement).disabled).toBe(true)
+  await user.type(screen.getByLabelText("Tell the agent why this command was denied"), "{Enter}")
+  expect(onResolve).not.toHaveBeenCalled()
+  expect((screen.getByLabelText("Tell the agent why this command was denied") as HTMLInputElement).value).toBe("Not now")
 })
 
 it("cancels denial explanation without deciding", async () => {

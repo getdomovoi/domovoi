@@ -49,7 +49,7 @@ import { freshSessionReadiness, startFreshSession } from "./fresh-session"
 import { phoneRefusalFrom, type PhoneRefusal } from "./session-refusal"
 import { MachinesScreen } from "./screens/fleet"
 import { annotationRows } from "./review-rows"
-import { SessionScreen } from "./screens/session"
+import { SessionScreen, type TellDelivery } from "./screens/session"
 import { SessionsScreen } from "./screens/sessions"
 import { PairScanScreen, usePairCameraPermission } from "./screens/pair-scan"
 import { SettingsScreen } from "./screens/settings"
@@ -92,7 +92,20 @@ export function App() {
   const [confirmPauseSession, setConfirmPauseSession] = useState(false)
   const [draft, setDraft] = useState("")
   const [sending, setSending] = useState(false)
-  const [sendProblem, setSendProblem] = useState("")
+  // A send's problem belongs to the session it was sent to, one per session.
+  // A send can fail after the person has moved to another session, and the
+  // draft it carried is gone by then, so the problem is kept for its session
+  // and shown when the person comes back. Moving between sessions does not
+  // clear it; typing, sending again or changing the skills for that session
+  // does.
+  const [sendProblems, setSendProblems] = useState<ReadonlyMap<string, string>>(new Map())
+  const setSendProblem = (sessionId: string, text: string) => setSendProblems((current) => {
+    if ((current.get(sessionId) ?? "") === text) return current
+    const next = new Map(current)
+    if (text) next.set(sessionId, text)
+    else next.delete(sessionId)
+    return next
+  })
   const [decideProblem, setDecideProblem] = useState("")
   // Frames 13 and 14: what the next turn carries besides words. Held here
   // and sent with the turn; nothing is kept once the send is answered.
@@ -424,12 +437,13 @@ export function App() {
     void loadSkills()
   }, [catalogIncomplete, loadSkills, skillCatalog, skillsLoading, skillsOpen, status])
 
-  // The list is asked for when the tab is opened rather than polled. After that
-  // the daemon pushes every change on its own, so nothing here has to ask again
-  // to stay current. Depending on the status is what makes it ask once more
-  // when the connection comes back.
+  // The list is asked for when a tab that draws it is opened rather than
+  // polled: Machines, and Sessions for its idle card's fleet rows and its
+  // UNREACHABLE line. After that the daemon pushes every change on its own, so
+  // nothing here has to ask again to stay current. Depending on the status is
+  // what makes it ask once more when the connection comes back.
   useEffect(() => {
-    if (tab === "machines" && status === "open") void loadFleet()
+    if ((tab === "machines" || tab === "sessions") && status === "open") void loadFleet()
   }, [loadFleet, status, tab])
 
   // Sessions measures how long an approval has waited and Fleet measures how
@@ -551,7 +565,7 @@ export function App() {
       setOpenSessionId(startedId)
       setOpenArtifactId(undefined)
       setDraft("")
-      setSendProblem("")
+      setSendProblem(startedId, "")
       setAttachments([])
       setAttachProblem("")
     } catch (cause) {
@@ -617,7 +631,7 @@ export function App() {
     if (inFlightSend.current) return
     const problem = promptProblem(draft)
     if (problem) {
-      setSendProblem(problem)
+      setSendProblem(sessionId, problem)
       return
     }
     const { selection, missing } = turnSkillSelectionFor(chosenSkills, offeredSkills)
@@ -626,19 +640,19 @@ export function App() {
     // a request for two, and the daemon would accept it without complaint.
     const dropped = missingSkillProblem(missing)
     if (dropped) {
-      setSendProblem(dropped)
+      setSendProblem(sessionId, dropped)
       return
     }
     // The plus was offered on a hello that said yes; the connection may have
     // been replaced since by one that did not. The daemon would refuse the
     // whole send, so say so here rather than after the bytes went.
     if (attachments.length > 0 && !imageAttachments) {
-      setSendProblem("This daemon does not take images. Remove them to send the words.")
+      setSendProblem(sessionId, "This daemon does not take images. Remove them to send the words.")
       return
     }
     inFlightSend.current = true
     setSending(true)
-    setSendProblem("")
+    setSendProblem(sessionId, "")
     try {
       const session = snapshot?.sessions.find((candidate) => candidate.id === sessionId)
       await mutate("session.send", {
@@ -656,9 +670,47 @@ export function App() {
     } catch (cause) {
       const refusal = turnSkillRefusalFrom(cause)
       const refusedImage = attachmentRefusalMessage(cause)
-      if (refusal) setSendProblem(refusalMessage(refusal))
-      else if (refusedImage) setSendProblem(refusedImage)
-      else setSendProblem(cause instanceof Error ? cause.message : "The message was not sent")
+      if (refusal) setSendProblem(sessionId, refusalMessage(refusal))
+      else if (refusedImage) setSendProblem(sessionId, refusedImage)
+      else setSendProblem(sessionId, cause instanceof Error ? cause.message : "The message was not sent")
+    } finally {
+      inFlightSend.current = false
+      setSending(false)
+    }
+  }
+
+  // Ruling Q356 A: a policy refusal's remedy sent to the agent as a steer. It
+  // is a message like any other, so it goes through the same send and the
+  // same guard against a second tap, without the draft or its attachments.
+  // Resolves to the delivery the send used, read at the tap, so the refusal
+  // says where the message went even if the turn ends before it redraws.
+  // Undefined when the daemon did not take it.
+  const tellAgent = async (sessionId: string, text: string): Promise<TellDelivery | undefined> => {
+    if (inFlightSend.current) return undefined
+    inFlightSend.current = true
+    setSending(true)
+    setSendProblem(sessionId, "")
+    try {
+      const session = snapshot?.sessions.find((candidate) => candidate.id === sessionId)
+      const delivery = session ? sendDelivery(session) : {}
+      // The daemon answers with the workspace it now holds.
+      const reply = workspaceSnapshotSchema.safeParse(await mutate("session.send", {
+        sessionId,
+        prompt: text,
+        client,
+        ...delivery,
+      }))
+      if (delivery.delivery !== "next-turn-replace") return "direct"
+      // The turn can end between the phone's snapshot and the send. The
+      // daemon then holds the queued message, because no boundary can release
+      // it (server.ts, session.send), and it will not reach the agent.
+      const queued = reply.success
+        ? reply.data.queuedSends?.find((candidate) => candidate.sessionId === sessionId)
+        : undefined
+      return queued?.state === "held" ? "held" : "next-turn"
+    } catch (cause) {
+      setSendProblem(sessionId, cause instanceof Error ? cause.message : "The message was not sent")
+      return undefined
     } finally {
       inFlightSend.current = false
       setSending(false)
@@ -681,6 +733,7 @@ export function App() {
           ) : (
             <ApprovalScreen
               approval={openApproval}
+              sessionTitle={snapshot?.sessions.find((session) => session.id === openApproval.sessionId)?.title}
               pending={deciding}
               notice={notice}
               problem={decideProblem}
@@ -752,7 +805,6 @@ export function App() {
               setOpenSessionId(sessionId)
               setOpenApprovalId(undefined)
               setDraft("")
-              setSendProblem("")
             }}
             onNewSession={() => {
               setFreshProblem("")
@@ -762,7 +814,8 @@ export function App() {
             onOpenMachines={() => selectTab("machines")}
             onChangeDraft={(next) => {
               setDraft(next)
-              if (sendProblem) setSendProblem("")
+              const selected = openSessionId ?? snapshot.activeSessionId
+              if (selected) setSendProblem(selected, "")
             }}
             onSend={(sessionId) => void sendMessage(sessionId)}
             onResolve={(approvalId, decision, revision) => {
@@ -802,7 +855,7 @@ export function App() {
             pausing={pausing}
             draft={draft}
             sending={sending}
-            sendProblem={sendProblem}
+            sendProblem={sendProblems.get(openSession.id) ?? ""}
             skillLabel={skillSelectionLabel(chosenSkills)}
             access={clientAccess}
             onWatchReceipt={watchReceipt}
@@ -812,7 +865,6 @@ export function App() {
             onBack={() => {
               setOpenSessionId(undefined)
               setOpenArtifactId(undefined)
-              setSendProblem("")
               setAttachments([])
               setAttachProblem("")
             }}
@@ -821,7 +873,7 @@ export function App() {
             onPause={() => setConfirmPauseSession(true)}
             onChangeDraft={(next) => {
               setDraft(next)
-              if (sendProblem) setSendProblem("")
+              setSendProblem(openSession.id, "")
             }}
             onSend={() => void sendMessage(openSession.id)}
             onOpenSkills={() => setSkillsOpen(true)}
@@ -841,6 +893,7 @@ export function App() {
             startRefusal={startRefusal}
             onSeeHeldBack={() => setToolsOpen(true)}
             onStartLike={(prompt, mode) => void startLike(openSession.id, prompt, mode)}
+            onTellAgent={(text) => tellAgent(openSession.id, text)}
           />
           <SkillSheet
             open={skillsOpen}
@@ -855,11 +908,11 @@ export function App() {
                 else next.add(skillId)
                 return next
               })
-              if (sendProblem) setSendProblem("")
+              setSendProblem(openSession.id, "")
             }}
             onUseDefault={() => {
               setChosenSkills(undefined)
-              if (sendProblem) setSendProblem("")
+              setSendProblem(openSession.id, "")
             }}
             onClose={() => setSkillsOpen(false)}
           />
@@ -956,8 +1009,8 @@ export function App() {
                   // turn on a different one.
                   if (sessionId !== openSessionId) {
                     setDraft("")
-                    setSendProblem("")
-                    // Same for what was picked to go with it.
+                    // Same for what was picked to go with it. A send problem
+                    // stays: it is kept per session and shown there.
                     setAttachments([])
                     setAttachProblem("")
                   }

@@ -2,6 +2,7 @@ import { RefreshControl, View } from "react-native"
 import type { FleetEntry, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { ConnectionBanner } from "../components/connection-banner"
+import { Mark } from "../components/mark"
 import { PageScroller } from "../components/page-scroller"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
@@ -10,7 +11,8 @@ import { Text } from "../components/ui/text"
 import type { ConnectionNotice } from "../connection-notice"
 import { sessionsGateReach } from "../gate-reach"
 import { cn } from "../lib/cn"
-import { sessionGroups, sessionsHeaderLine, waitingCount, type SessionGroup, type SessionRow } from "../session-rows"
+import { machineRows, type MachineRow } from "../machine-rows"
+import { elapsedLabel, sessionGroups, sessionsHeaderLine, waitingCount, type SessionRow } from "../session-rows"
 import { useTheme } from "../theme/theme-provider"
 
 const dotColour: Record<SessionRow["dot"], string> = {
@@ -29,20 +31,117 @@ const attentionColour: Record<NonNullable<SessionRow["attention"]>, string> = {
 
 // A heading is a label and a count, the way the design draws it. The count is
 // the group's own size, so a heading never says more than the cards under it.
-function GroupHeading({ group }: { group: SessionGroup }) {
+function GroupHeading({ label, count }: { label: string, count: number }) {
   return (
     <View className="mt-1 flex-row items-center px-1">
       <Text className="flex-1 font-sans-medium text-label uppercase tracking-[0.08em] text-faint">
-        {group.label}
+        {label}
       </Text>
-      <Text variant="machine" className="text-faint">{group.rows.length}</Text>
+      <Text variant="machine" className="text-faint">{count}</Text>
     </View>
   )
 }
 
-function SessionCard({ row, approvalId, onOpen, onOpenApproval }: {
+// When a machine was last heard from, in the design's words (frame 10).
+function lastSeen(iso: string, now: number): string | undefined {
+  const age = elapsedLabel(iso, now)
+  if (age === undefined) return undefined
+  return age === "now" ? "last seen just now" : `last seen ${age} ago`
+}
+
+// Ruling Q358 A: the design's UNREACHABLE group, drawn as the machines that do
+// not answer. The phone holds no sessions from them, so it names the machine
+// and when it was last seen rather than inventing session cards.
+function UnreachableMachines({ fleet, now }: { fleet: FleetEntry[], now: number }) {
+  const silent = fleet.flatMap((entry) =>
+    entry.kind === "machine" && (entry.machine.health === "unreachable" || entry.machine.health === "degraded")
+      ? [entry.machine]
+      : [])
+  if (silent.length === 0) return null
+  return (
+    <View className="gap-[9px]">
+      <GroupHeading label="UNREACHABLE" count={silent.length} />
+      {silent.map((machine) => (
+        <Card key={machine.id} className="flex-row items-center gap-2.5 opacity-55">
+          <View className="h-[7px] w-[7px] rounded-full bg-faint" />
+          <Text className="flex-1 font-mono text-[12.5px] text-strong" numberOfLines={1}>{machine.label}</Text>
+          <Text className="shrink font-sans text-[11.5px] text-faint" numberOfLines={1}>
+            {lastSeen(machine.heartbeat.lastSeenAt, now) ?? "not answering"}
+          </Text>
+        </Card>
+      ))}
+    </View>
+  )
+}
+
+// The idle card's sentence, from what the phone was given. The count comes
+// from the fleet's health; with no fleet read yet it is the one machine the
+// phone talks to. Idleness is vouched for only for that machine, because
+// fleet.list carries no other machine's sessions. While a connection notice is
+// up, what was read may no longer hold, so the count goes and the sentence
+// speaks of the last read.
+function idleSentence(machine: string, fleet: FleetEntry[] | undefined, stale: boolean): string {
+  if (stale) return `${machine} had no work in flight when last read.`
+  const answering = fleet
+    ? fleet.filter((entry) => entry.kind === "machine" && entry.machine.health === "healthy").length
+    : 1
+  const lead = answering <= 1
+    ? `${machine} is answering and has no work in flight.`
+    : `${answering} machines are answering. ${machine}, the one this phone reads, has no work in flight.`
+  return `${lead} Empty here is a healthy state, not a failure.`
+}
+
+const fleetDot: Record<MachineRow["health"], string> = {
+  ok: "bg-success",
+  busy: "bg-warning",
+  gone: "bg-faint",
+}
+
+// Frame 10's fleet rows: each machine, its light, and how it is reached or
+// when it was last seen. A machine that has stopped answering is dimmed. The
+// state is a few words on one line that gives way to the name, because the
+// row's note is a sentence that repeats the name and crowded it out.
+//
+// A green light says a machine answers now. While the connection is down the
+// fleet was read before the drop, so every light goes faint.
+function IdleFleet({ fleet, now, stale }: { fleet: FleetEntry[], now: number, stale: boolean }) {
+  const rows = machineRows(fleet, now)
+  if (rows.length === 0) return null
+  return (
+    <View className="overflow-hidden rounded-2xl border border-border">
+      {rows.map((row, index) => {
+        const entry = fleet[index]
+        // Only a machine that does not answer is described by when it was
+        // last seen. One that answered with a demand (pair again, update)
+        // says the demand.
+        const silent = entry?.kind === "machine"
+          && (entry.machine.health === "unreachable" || entry.machine.health === "degraded")
+        const state = silent
+          ? lastSeen(entry.machine.heartbeat.lastSeenAt, now) ?? row.badge
+          : row.badge
+        return (
+          <View
+            key={row.id}
+            className={cn(
+              "min-h-[52px] flex-row items-center gap-[11px] bg-card px-[15px] py-3",
+              index > 0 && "border-t border-border",
+              row.health === "gone" && "opacity-55",
+            )}
+          >
+            <View testID="fleet-dot" className={cn("h-[7px] w-[7px] rounded-full", stale ? "bg-faint" : fleetDot[row.health])} />
+            <Text className="flex-1 font-mono text-[12.5px] text-strong" numberOfLines={1}>{row.label}</Text>
+            <Text className="max-w-[50%] shrink font-sans text-[11.5px] text-faint" numberOfLines={1}>{state}</Text>
+          </View>
+        )
+      })}
+    </View>
+  )
+}
+
+function SessionCard({ row, approvalId, now, onOpen, onOpenApproval }: {
   row: SessionRow
   approvalId: string | undefined
+  now: number
   onOpen: (id: string) => void
   onOpenApproval: (id: string) => void
 }) {
@@ -70,7 +169,9 @@ function SessionCard({ row, approvalId, onOpen, onOpenApproval }: {
         ) : null}
       </View>
       <Text variant="machine" className="mt-[5px] pl-[17px] text-faint">
-        {row.machine}
+        {[row.machine, row.waitingSince ? elapsedLabel(row.waitingSince, now) : undefined]
+          .filter((part) => part !== undefined)
+          .join(" · ")}
       </Text>
     </PressableCard>
   )
@@ -108,7 +209,6 @@ export function SessionsScreen({
   // last row is only readable if the scroller pads by what the bar reports.
   bottomInset: number
 }) {
-  void now
   const { palette } = useTheme()
   const groups = sessionGroups(snapshot)
   const needed = waitingCount(snapshot)
@@ -119,7 +219,10 @@ export function SessionsScreen({
     <View className="flex-1 bg-background">
       <View className="flex-row items-center gap-2.5 px-4 pb-3 pt-2">
         <View className="flex-1">
-          <Text variant="heading">Sessions</Text>
+          <View className="flex-row items-center gap-[11px]">
+            <Mark size={24} />
+            <Text variant="heading">Sessions</Text>
+          </View>
           <Text variant="meta" className="mt-[3px]">
             {needed > 0 ? `${needed} need you · ${countLabel}` : countLabel}
           </Text>
@@ -145,9 +248,10 @@ export function SessionsScreen({
             <Card className="gap-2 border-ok-border bg-ok-bg">
               <Text variant="title" className="text-ok-fg">Everything is idle</Text>
               <Text variant="meta" className="text-ok-dim">
-                Two machines are answering and neither has work in flight. Empty here is a healthy state, not a failure.
+                {idleSentence(snapshot.machine.name, fleet, notice !== undefined)}
               </Text>
             </Card>
+            {fleet ? <IdleFleet fleet={fleet} now={now} stale={notice !== undefined} /> : null}
             <Button
               title="Start a session"
               variant="primary"
@@ -161,18 +265,23 @@ export function SessionsScreen({
 
         {groups.map((group) => (
           <View key={group.id} className="gap-[9px]">
-            <GroupHeading group={group} />
+            <GroupHeading label={group.label} count={group.rows.length} />
             {group.rows.map((row) => (
               <SessionCard
                 key={row.id}
                 row={row}
-                approvalId={snapshot.approvals.find((approval) => approval.sessionId === row.id)?.id}
+                approvalId={snapshot.approvals.find((approval) => approval.sessionId === row.id && approval.requestedAt === row.waitingSince)?.id}
+                now={now}
                 onOpen={onOpenSession}
                 onOpenApproval={onOpenApproval}
               />
             ))}
           </View>
         ))}
+
+        {/* With nothing listed, the idle card's fleet rows already name the
+            machines that do not answer. */}
+        {!empty && fleet ? <UnreachableMachines fleet={fleet} now={now} /> : null}
       </PageScroller>
     </View>
   )

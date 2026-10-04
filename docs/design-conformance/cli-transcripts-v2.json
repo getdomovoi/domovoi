@@ -67,13 +67,37 @@
         "domovoi approve|deny <approval-id>"
       ],
       "evidence": [
-        "session new",
+        "command === \"session\"",
         "--no-prompt",
         "approve|deny"
       ],
       "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J44; the CLI has pair, status, doctor, logs and skill install only"
+        "since": "2026-10-02",
+        "reason": "drawn 2026-09-23 for J44; the CLI (apps/cli) has pair, status, doctor, logs and skill install only, and neither binary has session new, send, watch, approve or deny. The protocol already has what they need (session.create, session.send, workspace.get with the workspace broadcasts, approval.resolve), so this is client work; CLI control is next in the Q126 order. The evidence now names the dispatch shape (command === \"session\"), because the bare words session new also sit in a daemon comment"
+      }
+    },
+    {
+      "id": "cli.send",
+      "name": "domovoi send",
+      "where": "the send transcript: the message, sent from cli on <machine> · read at <time>, the note that it lands when the current tool call returns",
+      "evidence": [
+        "command === \"send\""
+      ],
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "no send command; session.send exists on the wire, so this is client-only. Its strings are still in the script backlog"
+      }
+    },
+    {
+      "id": "cli.watch-stream",
+      "name": "domovoi watch, the turn stream",
+      "where": "the watch transcript: started by whom from where, tool rows with outcome and size, agent and you lines, the turn's end",
+      "evidence": [
+        "command === \"watch\""
+      ],
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "no watch command, and nothing can stream yet: apps/cli/src/rpc.ts drops every daemon notification. workspace.get and the workspace.changed and workspace.delta broadcasts give what it needs. Its strings are still in the script backlog"
       }
     },
     {
@@ -196,6 +220,31 @@
         "since": "2026-10-03",
         "reason": "rule, set by, applies to, override and the remedy are drawn from the policy-refusal thread item; it carries no target or record line, so those wait on the protocol. The org-owner note is dropped on purpose under Q393 A and is not evidence"
       }
+    },
+    {
+      "id": "cli.approve-deny",
+      "name": "domovoi approve and deny from another shell",
+      "where": "approve and deny by approval id: the receipt line, already decided with the receipt on record, a hard gate refused without a terminal",
+      "evidence": [
+        "command === \"approve\"",
+        "command === \"deny\""
+      ],
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "no approve or deny command; approval.resolve exists, so deciding is client-only. Already decided needs a distinct refusal and the approval id on the receipt: today a settled approval answers invalidParams with Approval does not exist (protocol and daemon). Its strings are still in the script backlog"
+      }
+    },
+    {
+      "id": "cli.reconnect",
+      "name": "watch losing and regaining the daemon",
+      "where": "lost the daemon mid-turn, reconnecting attempts, unconfirmed calls, reconnected and replaying from <time>, back with and without the daemon's result",
+      "evidence": [
+        "replaying from"
+      ],
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "no watch command to reconnect. Replay from a time is client work over the existing snapshot; an unconfirmed tool state (no result seen) does not exist on the wire (roadmap S3.8). Its strings are still in the script backlog"
+      }
     }
   ],
   "humanRead": [
@@ -218,6 +267,11 @@
       "id": "cli.policy-refusal",
       "since": "2026-10-03",
       "note": "Built for Q393 A: set by and applies to print what the daemon put in setBy and scope, which in M1 are the permission mode and the session; the design's org-owner values and its closing note about an org owner are not drawn. The override line keeps the design's constant, none, not even with approval, which the daemon enforces by refusing before the command runs. The body is the operation sentence the daemon sends, printed after the command."
+    },
+    {
+      "id": "cli.approve-deny",
+      "since": "2026-10-02",
+      "note": "Q392 A: M1 has no accounts, so the <person> in receipts and watch lines (allowed once by dana) is the device label and client kind."
     }
   ],
   "scriptBacklog": {

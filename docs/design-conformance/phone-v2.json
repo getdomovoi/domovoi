@@ -1,12 +1,12 @@
 {
   "design": "design/design_handoff_domovoi_v2/designs/Domovoi Phone v2.dc.html",
   "sha256": "c894360f2ea65280fb00bc18e88dd2e6a1a3b363d56150322c7da5bfe4c4dca8",
-  "derivedOn": "2026-09-23",
+  "derivedOn": "2026-10-02",
   "sources": [
     "apps/mobile/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
   ],
-  "note": "Frames in five sections plus the read-only terminal (04, 04e to 04g), pairing success (09b), notifications not yet (09c), images per model (13b, 14b) and the lock-screen study (20a to 20c). Frame names, section eyebrows, step captions, the A/B comparisons and the FOR THE OWNER block are annotations; the fictional session is sample. Re-derived 2026-09-23 from the handoff vendored that day: frame 04 is now the read-only terminal (J38), the receipt names the checkpoint by id, 01 and 09b carry the gates-only-while-open line (J28), 13b and 14b lock images per model (J42), 20a to 20c replace frame 20 (J30). The design's OPEN_QUESTIONS and NEW_STRINGS live in its data and are not held here.",
+  "note": "Frames in five sections plus the read-only terminal (04, 04e to 04g), pairing success (09b), notifications not yet (09c), images per model (13b, 14b) and the lock-screen study (20a to 20c). Frame names, section eyebrows, step captions, the A/B comparisons and the FOR THE OWNER block are annotations; the fictional session is sample. Re-derived 2026-09-23 from the handoff vendored that day: frame 04 is now the read-only terminal (J38), the receipt names the checkpoint by id, 01 and 09b carry the gates-only-while-open line (J28), 13b and 14b lock images per model (J42), 20a to 20c replace frame 20 (J30). Re-read 2026-10-02 against the same digest and the code: the read-only terminal methods (terminal.list, terminal.watch, terminal.unwatch) and runtime.models with per-model image input are on the phone allow-list, so the elements that waited on them are missing rather than blocked; PLAN.md has rendered as a document since 2026-09-20; the phone has drawn the grant list before it pairs since pairing by code. The design's OPEN_QUESTIONS and NEW_STRINGS live in its data and are not held here.",
   "sample": [
     "Migrate billing webhooks",
     "pnpm -w prisma migrate deploy",
@@ -218,12 +218,12 @@
       "name": "Tab bar",
       "where": "bottom of every screen: Sessions, Machines, Settings; hidden while the composer has the keyboard",
       "copy": [
-        "Domovoi",
         "Sessions",
         "Machines",
         "Settings"
       ],
       "evidence": [
+        "label: \"Sessions\"",
         "label: \"Machines\"",
         "label: \"Settings\""
       ]
@@ -231,14 +231,27 @@
     {
       "id": "sessions.list",
       "name": "Sessions, needs-you first",
-      "where": "frame 01: NEEDS YOU first and never collapsed, then RUNNING and QUIET; header count N need you",
+      "where": "frame 01: NEEDS YOU first and never collapsed, then RUNNING and UNREACHABLE; header count N need you. Ruling Q358 A: QUIET for idle sessions, plus an UNREACHABLE line for fleet machines that do not answer",
       "copy": [
         "2 need you"
       ],
       "evidence": [
         "NEEDS YOU",
-        "need you"
-      ]
+        "need you",
+        "label=\"UNREACHABLE\"",
+        "<UnreachableMachines fleet={fleet} now={now} />",
+        "re:<Badge[^\\n]*need you"
+      ],
+      "presence": [
+        "NEEDS YOU",
+        "need you",
+        "label=\"UNREACHABLE\"",
+        "<UnreachableMachines fleet={fleet} now={now} />"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "ruling Q358 A settles the third group: QUIET for idle sessions, plus the UNREACHABLE line for fleet machines that do not answer. Not ruled and not built: the header's need-you count is a meta line, not frame 01's warning pill; group counts are plain, not tinted pills; NEEDS YOU cards sit on the card colour, not warn-bg with warn-border; the gate shows as runtime and mode badges with an uppercase approval label, not a gate pill. The evidence for the pill is the count drawn as a Badge"
+      }
     },
     {
       "id": "sessions.gates-while-open",
@@ -282,17 +295,10 @@
         "Deny"
       ],
       "evidence": [
-        "Waiting on you</Text>",
+        ": \"Waiting on you\"}",
         "Always allow this",
-        "Nothing has run yet"
-      ],
-      "presence": [
-        "Always allow this"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "the gate screen decides; its title reads Approval, not the design's Waiting on you. The earlier evidence for that line matched the protocol's follow pill text, not the phone"
-      }
+        "Nothing has run yet."
+      ]
     },
     {
       "id": "receipt.screen",
@@ -312,7 +318,9 @@
         "RECORDED AS",
         "Watch the rest of the turn",
         "Reverting happens on a desktop",
-        "was taken first, then it ran in"
+        "was taken first, then it ran in",
+        "Renaming the device later does not rewrite the record.",
+        "allow once"
       ],
       "presence": [
         "Allowed once",
@@ -321,8 +329,8 @@
         "Reverting happens on a desktop"
       ],
       "partial": {
-        "since": "2026-09-23",
-        "reason": "the 2026-09-23 design names the checkpoint by id before the duration; the screen still says it finished with a checkpoint taken"
+        "since": "2026-10-02",
+        "reason": "RECORDED AS differs from frame 03: the Decision row shows the recorded value (allow-once) rather than the words allow once; Decided on shows the client kind (phone) rather than the device's label; the checkpoint is named by its commit because the receipt carries no short checkpoint id (kept by ruling Q357 A). By the same ruling the record, the notes and Watch appear only on the latest receipt of the open turn, every other receipt is its headline and checkpoint line, and the phone draws no Decided after row. The design's Credential row (device 9c41…a7e) is not drawn: current receipts record a verified connection id, not a credential, and a legacy receipt's clientId is a value the hello declared, so the phone lists it as Declared client. The note that the audit row names this phone's verified credential is not drawn: a receipt records a client kind and a connection id, and a daemon bearer typed into Settings can declare phone over a recorded connection too, so the phone cannot show the claim is true for a given receipt"
       }
     },
     {
@@ -345,10 +353,9 @@
         "Follow output",
         "Only the claimant can type or resize"
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "the phone allow-list (phoneAndTabletRpcMethods) carries no terminal method, so a phone receives no terminal output to read; J38 and the design's open questions on buffer size and redaction point need a protocol decision first"
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "not built on the phone. The protocol no longer blocks it: terminal.list, terminal.watch and terminal.unwatch are on phoneAndTabletRpcMethods since 9266302f, the watch result carries a buffer redacted before it is kept with its start time and the claimant's device label, and apps/daemon/src/terminal-watch.test.ts serves it to a phone. The phone calls none of them"
       },
       "states": [
         "live",
@@ -370,7 +377,7 @@
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "Read the output opens the read-only terminal, which a phone cannot receive (see watching.screen)"
+        "reason": "the phone can now read a terminal (see watching.screen), but an approval request carries no reference to the failed command or terminal it follows, so the gate has nothing to name or link to (re-read 2026-10-02)"
       }
     },
     {
@@ -384,10 +391,9 @@
       "evidence": [
         "Open beside the thread"
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "same as watching.screen: no terminal method on the phone and tablet allow-list"
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "not built on the tablet; the read-only terminal methods it needs are on the phone and tablet allow-list (see watching.screen)"
       }
     },
     {
@@ -402,12 +408,9 @@
         "THIS PHONE WILL BE ABLE TO"
       ],
       "evidence": [
-        "THIS PHONE WILL BE ABLE TO"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "the phone draws no grant list before it pairs; the shared list is phoneAndTabletPromise in packages/protocol, whose unbuilt line still reads with Everything else here works (design open question 6)"
-      }
+        "THIS PHONE WILL BE ABLE TO",
+        "{phoneAndTabletPromise.map((line) => ("
+      ]
     },
     {
       "id": "policy.screen",
@@ -425,18 +428,37 @@
         "Nothing to approve",
         "Refused by policy",
         "THE RULE IT BROKE",
-        "WHAT YOU CAN DO"
-      ]
+        "WHAT YOU CAN DO",
+        "There is no approve button here, because no decision of yours can permit it.",
+        "title=\"Tell the agent\"",
+        "refusal.alternatives"
+      ],
+      "presence": [
+        "Nothing to approve",
+        "Refused by policy",
+        "THE RULE IT BROKE",
+        "WHAT YOU CAN DO",
+        "There is no approve button here, because no decision of yours can permit it.",
+        "title=\"Tell the agent\""
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "ruling Q356 A: Tell the agent sends the refusal's one remedy to the agent as a steer, from the refusal itself, and the structured alternatives come later. Frame 05 draws WHAT YOU CAN DO as several alternatives, each with a green or amber dot; the policy-refusal item carries a single remedy string with no list, tones or per-alternative steer, so the phone draws one paragraph. The evidence names the field a protocol change would add"
+      }
     },
     {
       "id": "launch.screen",
       "name": "Launch",
-      "where": "frame 06: the mark in its working variant, the phase named rather than a spinner",
+      "where": "frame 06: the mark in its working variant over the Domovoi wordmark, the phase named rather than a spinner",
       "copy": [
+        "Domovoi",
         "Reaching your machines over the routes you configured. No spinner, because the phase is knowable."
       ],
       "evidence": [
-        "Reaching your machines over the routes you configured"
+        "Reaching your machines over the routes you configured",
+        "<Mark size={62} variant=\"working\" />",
+        "re:text-\\[25px\\][^>]*>\\s*Domovoi\\s*</Text>",
+        "working: \"M38.2 31a3.8 3.8"
       ]
     },
     {
@@ -459,24 +481,26 @@
     {
       "id": "machines.unpaired",
       "name": "Machines, unpaired",
-      "where": "frame 08: Pair this phone, Scan a code, Type it, WHAT STAYS UNAVAILABLE, device settings still work",
+      "where": "frame 08: Pair this phone, Scan a code, Type it, WHAT STAYS UNAVAILABLE with a reason per row (Sessions, Machines, Machine settings by ruling Q387 A), device settings still work",
       "copy": [
         "Pair this phone",
         "Pairing exchanges keys with one machine directly, over your tailnet. Nothing passes through a server, and the phone stores no code.",
         "Scan a code",
         "Type it",
         "WHAT STAYS UNAVAILABLE",
-        "Device settings still work while unpaired. Machine-scoped settings stay visible and marked unavailable rather than disappearing."
+        "Device settings still work while unpaired. Machine-scoped settings stay visible and marked unavailable rather than disappearing.",
+        "Nothing to list, and nothing hidden from you.",
+        "This is the screen that owns pairing.",
+        "No approvals are sitting somewhere unseen."
       ],
       "evidence": [
         "Pair this phone",
         "Scan a code",
         "Type it",
         "WHAT STAYS UNAVAILABLE",
-        "Nothing passes through a server"
-      ],
-      "presence": [
-        "WHAT STAYS UNAVAILABLE"
+        "Nothing passes through a server",
+        "Nothing to list, and nothing hidden from you.",
+        "This is the screen that owns pairing."
       ]
     },
     {
@@ -491,7 +515,7 @@
       "evidence": [
         "Point at the pairing code",
         "Or type the code",
-        "Paste"
+        "title=\"Paste\""
       ]
     },
     {
@@ -527,7 +551,7 @@
     {
       "id": "sessions.idle",
       "name": "Nothing running, everything is idle",
-      "where": "frame 10: two machines answering and idle, Start a session is the only action (clone cut 2026-09-18)",
+      "where": "frame 10: the machines answering and idle, the fleet rows, Start a session is the only action (clone cut 2026-09-18)",
       "copy": [
         "Everything is idle",
         "Two machines are answering and neither has work in flight. Empty here is a healthy state, not a failure.",
@@ -535,11 +559,21 @@
       ],
       "evidence": [
         "Everything is idle",
-        "Start a session"
+        "Start a session",
+        "{idleSentence(snapshot.machine.name, fleet, ",
+        "<IdleFleet fleet={fleet} now={now}",
+        "neither has work in flight"
       ],
       "presence": [
-        "Everything is idle"
-      ]
+        "Everything is idle",
+        "Start a session",
+        "{idleSentence(snapshot.machine.name, fleet, ",
+        "<IdleFleet fleet={fleet} now={now}"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the card, its fleet rows and Start a session are drawn; the sentence is derived per the 2026-10-02 cross-check fix, with no ruling. The design's sentence says two machines answer and neither has work in flight. The phone counts answering machines from the fleet's health and vouches for no work in flight only on the machine whose snapshot it holds, because fleet.list carries no other machine's sessions, so it never draws the design's claim about the others"
+      }
     },
     {
       "id": "thread.screen",
@@ -623,10 +657,9 @@
         "attach.image.model_no_input",
         "as its harness reports"
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "image input is one machine-wide flag (sessionImageAttachments on system.hello); nothing reports it per model, and no attach.image.model_no_input refusal exists"
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "not built on the phone. The protocol no longer blocks it: providerModelSchema carries imageInput per model since d5bdbe60, runtime.models is on the phone allow-list, the daemon refuses with image-input-unsupported, and modelImageInputRefusalCode is the client constant frame 13b draws. The phone reads the refusal (attachments.ts) but never asks runtime.models, so it cannot lock a source or name the model before send"
       }
     },
     {
@@ -653,12 +686,9 @@
         "Acceptance"
       ],
       "evidence": [
-        "PLAN.md"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "no screen renders PLAN.md as a document; AgentMarkdown renders agent replies and the plan sheet renders step rows"
-      }
+        "artifact.type === \"plan\" ? (",
+        "<PlanMarkdown source="
+      ]
     },
     {
       "id": "artifact.render",
@@ -670,8 +700,17 @@
       ],
       "evidence": [
         "The render stays on",
-        "builds on"
-      ]
+        "only as a bookmark for whoever is viewing; the agent is not told which one.",
+        "is the one the agent builds on"
+      ],
+      "presence": [
+        "The render stays on",
+        "only as a bookmark for whoever is viewing; the agent is not told which one."
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "frame 17 names which variant the agent builds on and checks its tab, and says a choice is a commitment. Under ruling Q342 A a desktop's choice is a bookmark for whoever is viewing until the chosen variant travels with a comment (Q348, protocol), so the phone says the agent is not told which one and does not draw the build-basis line (previewBuildBasis in packages/ui/src/workspace-persistence.ts is per-client state; artifactVariantSchema has no such field). The variant switch, its note and Comment also sit at the top of the screen rather than in the floating card at the foot"
+      }
     },
     {
       "id": "artifact.comment",
@@ -714,7 +753,7 @@
       ],
       "evidence": [
         "expo-notifications",
-        "Open"
+        "A gate is waiting"
       ],
       "blocked": {
         "since": "2026-09-23",
@@ -800,6 +839,26 @@
       "id": "sessions.list",
       "since": "2026-09-18",
       "note": "NEEDS YOU never collapses: behaviour, not copy"
+    },
+    {
+      "id": "shell.tab-bar",
+      "since": "2026-10-02",
+      "note": "approved difference, ruling Q330 A: the design draws the tab bar as a solid card; the phone keeps the floating bar's wash and blur (FloatingBar in floating-bar.tsx), because fetzy asked for the Android blur to match iOS. A solid bar was built in c5361d0c and reverted in 6547a654"
+    },
+    {
+      "id": "pairing.camera",
+      "since": "2026-10-02",
+      "note": "approved difference, ruling Q331 A: the viewfinder hint says Point at the pairing code that domovoid pair prints on the machine., not the design's shown in Settings on the machine, because the camera path the phone documents is domovoid pair --client phone (apps/mobile/README.md). The evidence holds the shared opening, Point at the pairing code"
+    },
+    {
+      "id": "machines.unpaired",
+      "since": "2026-10-02",
+      "note": "approved difference, ruling Q387 A: WHAT STAYS UNAVAILABLE lists Sessions, Machines and Machine settings, each with its reason. The design's Review row, No approvals are sitting somewhere unseen., is not drawn because the phone has no Review tab. Machine settings carries a reason the design does not draw: They live on a machine, so they wait until one is paired."
+    },
+    {
+      "id": "launch.screen",
+      "since": "2026-10-02",
+      "note": "the mark is one SVG component (apps/mobile/src/components/mark.tsx) shared by the phone and the tablet, per ruling Q386 A. Frame 06 draws mark-working.svg, which is not vendored: design/assets holds mark.svg and mark-reduced.svg only. The working variant that ruling also asks for is therefore built from the brand handoff (design/design_handoff_domovoi_brand/README.md, Working state: the eyes widen to r 3.8), keeping mark.svg's eye centres and mustache, and drawn on the splash and the launch notice while daemons answer. The state's 34% primary glow is a field behind the mark, never on it, and is not drawn. The same handoff's Where state is allowed table marks in-product chrome as no place for state; frame 06 draws the working mark at launch anyway, and the phone follows the frame, per ruling Q407 A (2026-10-03). If a mark-working.svg is vendored, its paths replace the built ones. The wordmark evidence is anchored to the splash by its 25px class, because the gate's only file-scoped evidence form checks absence. Where a heading or the wordmark names the screen, the mark is not announced to a screen reader"
     }
   ],
   "scriptBacklog": {
@@ -925,9 +984,6 @@
       "Cover the claim-expiry case too",
       "Option B. The image sources stay open and say what follows. A photo attaches, its thumb is flagged, and send locks until it goes.",
       "Option A. A model that takes no images locks both image sources with the daemon's reason. They stay listed, and the header names the model.",
-      "Nothing to list, and nothing hidden from you.",
-      "No approvals are sitting somewhere unseen.",
-      "This is the screen that owns pairing.",
       "idle · loopback",
       "idle · tailnet",
       "last seen 2d ago",
