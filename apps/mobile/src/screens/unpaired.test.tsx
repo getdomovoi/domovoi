@@ -30,16 +30,48 @@ describe("UnpairedScreen", () => {
     expect(screen.getByText(/nothing to list, and nothing is being hidden from you/)).toBeOnTheScreen()
 
     await draw({ tab: "machines" })
-    expect(screen.getByText("Machines")).toBeOnTheScreen()
+    expect(screen.getByRole("header", { name: "Machines" })).toBeOnTheScreen()
     expect(screen.getByText("Pair this phone")).toBeOnTheScreen()
     expect(screen.getByText("WHAT STAYS UNAVAILABLE")).toBeOnTheScreen()
   })
 
+  // Phone v2 frame 07 marks the Sessions title; frame 08 draws Machines bare.
+  it("marks the unpaired Sessions title, and not Machines", async () => {
+    await draw({ tab: "sessions" })
+    expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
+    // The Sessions heading names the screen; the mark is not announced.
+    expect(screen.queryByRole("image", { name: "Domovoi" })).toBeNull()
+    await draw({ tab: "machines" })
+    expect(screen.queryByTestId("domovoi-mark", { includeHiddenElements: true })).toBeNull()
+  })
+
+  // Ruling Q387 A: WHAT STAYS UNAVAILABLE lists Sessions, Machines and Machine
+  // settings, each with why. The design's Review row names a tab the phone
+  // does not have.
+  it("says why each unavailable thing is unavailable", async () => {
+    await draw({ tab: "machines" })
+    for (const [label, why] of [
+      ["Sessions", "Nothing to list, and nothing hidden from you."],
+      ["Machines", "This is the screen that owns pairing."],
+      ["Machine settings", "They live on a machine, so they wait until one is paired."],
+    ]) {
+      expect(screen.getByLabelText(`${label}. ${why}`)).toBeOnTheScreen()
+    }
+  })
+
   it("keeps each tab's own title above its reason", async () => {
     await draw({ tab: "machines" })
-    expect(screen.getByText("Machines")).toBeOnTheScreen()
+    // Machines is now also a row, so the title is found as the heading.
+    expect(screen.getByRole("header", { name: "Machines" })).toBeOnTheScreen()
     expect(screen.getByText("Sessions")).toBeOnTheScreen()
     expect(screen.queryByText("Review")).toBeNull()
+  })
+
+  // Phone v2 frame 07 ends at the pairing action, and ruling Q332 A removed
+  // the line the first handoff drew under it.
+  it("ends the Sessions empty state at the pairing action", async () => {
+    await draw({ tab: "sessions" })
+    expect(screen.queryByText("The phone is a client. It never runs an agent itself.")).toBeNull()
   })
 
   it("keeps pairing on Machines instead of duplicating it on Sessions", async () => {

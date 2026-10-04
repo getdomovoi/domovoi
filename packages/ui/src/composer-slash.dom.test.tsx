@@ -133,10 +133,67 @@ it("opens from typed slash text and keeps all six design commands while dimming 
 
   const list = screen.getByRole("listbox", { name: "THIS TURN" })
   expect(within(list).getAllByRole("option")).toHaveLength(6)
-  expect(within(list).getByRole("option", { name: "/run pnpm prisma migrate deploy" }).getAttribute("data-match")).toBe("true")
+  expect(within(list).getByRole("option", { name: "/run <command>" }).getAttribute("data-match")).toBe("true")
   expect(within(list).getByRole("option", { name: "/mode plan · ask · build" }).getAttribute("data-match")).toBe("false")
   expect(screen.getByText("THIS TURN")).toBeTruthy()
   expect(screen.getByText(/to go somewhere$/u)).toBeTruthy()
+})
+
+// The design's arguments are its fictional session. A list that showed them
+// would name a checkpoint, a skill and a machine this session does not have.
+it("names only what this session has, and the argument's shape otherwise", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.thread = snapshot.thread.filter((item) => item.kind !== "checkpoint")
+  render(<ThreadWith snapshot={snapshot} />)
+
+  await user.type(field(), "/")
+
+  const options = within(screen.getByRole("listbox", { name: "THIS TURN" })).getAllByRole("option")
+  expect(options.map((option) => option.getAttribute("aria-label"))).toEqual([
+    "/run <command>",
+    "/revert <checkpoint-id>",
+    "/replan [from step N]",
+    "/mode plan · ask · build",
+    "/skill <reviewed-skill>",
+    "/handoff <target-machine>",
+  ])
+  const text = options.map((option) => option.textContent).join(" ")
+  for (const sample of ["prisma", "ckpt_7f24", "from step 3", "pr-triage", "hetzner-cx42"]) {
+    expect(text).not.toContain(sample)
+  }
+})
+
+it("fills slash arguments from this session's checkpoints, skills and machines", async () => {
+  const user = userEvent.setup()
+  const skill = reviewedSkill("d", "release-notes")
+  const snapshot = withSkills([skill])
+  snapshot.thread = [
+    ...snapshot.thread.filter((item) => item.kind !== "checkpoint"),
+    {
+      id: "checkpoint-live-1",
+      sessionId: snapshot.activeSessionId!,
+      kind: "checkpoint",
+      label: "1234abcd · before an approved command",
+      commit: "1".repeat(40),
+      createdAt: "2026-10-02T12:00:00.000Z",
+    },
+  ]
+  const [local, target] = fleetFor(snapshot)
+  const workshop = { ...target, label: "workshop" }
+  render(<ThreadWith
+    snapshot={snapshot}
+    skillCatalog={[skill]}
+    fleet={[local, workshop].map((machine) => ({ kind: "machine" as const, machine }))}
+    currentMachineId={local.id}
+  />)
+
+  await user.type(field(), "/")
+
+  const list = screen.getByRole("listbox", { name: "THIS TURN" })
+  expect(within(list).getByRole("option", { name: "/revert checkpoint-live-1" })).toBeTruthy()
+  expect(within(list).getByRole("option", { name: "/skill release-notes" })).toBeTruthy()
+  expect(within(list).getByRole("option", { name: "/handoff workshop" })).toBeTruthy()
 })
 
 it("renders the slash list outside the composer so upward opening cannot be clipped", async () => {
@@ -155,7 +212,7 @@ it("only fills a picked command until explicit submit", async () => {
   render(<ThreadWith onSend={onSend} />)
 
   await user.type(field(), "/r")
-  await user.click(screen.getByRole("option", { name: "/replan from step 3" }))
+  await user.click(screen.getByRole("option", { name: "/replan [from step N]" }))
 
   expect(field().value).toBe("/replan ")
   expect(onSend).not.toHaveBeenCalled()

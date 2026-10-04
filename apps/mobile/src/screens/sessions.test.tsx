@@ -4,14 +4,14 @@ import { fireEvent, render, screen, within } from "@testing-library/react-native
 
 import { SessionsScreen } from "./sessions"
 
-function entry(label: string, health: FleetMachine["health"]): FleetEntry {
+function entry(label: string, health: FleetMachine["health"], self = false): FleetEntry {
   return {
     kind: "machine",
     machine: {
       id: `machine-${label.padEnd(32, "0")}`, label, platform: "linux", arch: "x64", version: "0.0.1",
       connection: "tailnet", capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
       heartbeat: { state: health === "unreachable" ? "offline" : "online", lastSeenAt: "2026-09-18T00:00:00.000Z" },
-      health, self: false,
+      health, self,
     },
   }
 }
@@ -49,6 +49,62 @@ function tappable(): string[] {
 }
 
 describe("SessionsScreen", () => {
+  // Phone v2 frame 01: a session waiting on you says how long it has waited,
+  // after its machine. Rows that wait on nobody carry no clock.
+  it("says how long a waiting session has waited on you", async () => {
+    const snapshot = workspace()
+    const approval = snapshot.approvals[0]
+    if (!approval) throw new Error("fixture needs a pending approval")
+    await draw({ snapshot, now: Date.parse(approval.requestedAt) + 4 * 60_000 })
+
+    expect(screen.getByText(`${snapshot.machine.name} · 4m`)).toBeOnTheScreen()
+    expect(screen.getAllByText(new RegExp(`^${snapshot.machine.name} · `))).toHaveLength(1)
+  })
+
+  // The card opens the approval its clock counts from: the earliest one the
+  // session holds, whatever order the snapshot lists them in.
+  it("opens the approval the session has waited on longest", async () => {
+    const snapshot = workspace()
+    const later = snapshot.approvals[0]
+    if (!later) throw new Error("fixture needs a pending approval")
+    const earlier = { ...later, id: `${later.id}-earlier`, requestedAt: new Date(Date.parse(later.requestedAt) - 10 * 60_000).toISOString() }
+    snapshot.approvals.push(earlier)
+    const session = snapshot.sessions.find((candidate) => candidate.id === later.sessionId)
+    if (!session) throw new Error("fixture needs the approval's session")
+    const { onOpenApproval } = await draw({ snapshot, now: Date.parse(later.requestedAt) })
+
+    await fireEvent.press(screen.getByRole("button", { name: session.title }))
+
+    expect(onOpenApproval).toHaveBeenCalledWith(earlier.id)
+  })
+
+  // Ruling Q358 A: idle sessions stay under QUIET, and fleet machines that do
+  // not answer get an UNREACHABLE line of their own. The phone holds no
+  // sessions from them, so the line names the machine and when it was last
+  // seen.
+  it("lists fleet machines that do not answer under UNREACHABLE", async () => {
+    const now = Date.parse("2026-09-20T00:00:00.000Z")
+    await draw({ now, fleet: [entry("mac-mini", "healthy", true), entry("wsl", "unreachable")] })
+
+    expect(screen.getByText("UNREACHABLE")).toBeOnTheScreen()
+    expect(screen.getByText("wsl")).toBeOnTheScreen()
+    expect(screen.getByText("last seen 2d ago")).toBeOnTheScreen()
+    expect(screen.queryByText("mac-mini")).toBeNull()
+  })
+
+  it("draws no UNREACHABLE line when every machine answers", async () => {
+    await draw({ fleet: [entry("mac-mini", "healthy", true), entry("hetzner", "healthy")] })
+    expect(screen.queryByText("UNREACHABLE")).toBeNull()
+  })
+
+  // Phone v2 frames 01 and 10 put the Domovoi mark beside the title.
+  it("marks the Sessions title with the Domovoi mark", async () => {
+    await draw()
+    expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
+    // The Sessions heading names the screen; the mark is not announced.
+    expect(screen.queryByRole("image", { name: "Domovoi" })).toBeNull()
+  })
+
   it("has no global stop control in its header", async () => {
     await draw()
     expect(screen.queryByRole("button", { name: "Stop everything" })).toBeNull()
@@ -146,8 +202,99 @@ describe("SessionsScreen", () => {
     await draw({ snapshot: idle, fleet: [entry("a", "healthy"), entry("b", "healthy")] })
 
     expect(screen.getByText("Everything is idle")).toBeOnTheScreen()
-    expect(screen.getByText("Two machines are answering and neither has work in flight. Empty here is a healthy state, not a failure.")).toBeOnTheScreen()
     expect(tappable()).toEqual(["Start a session"])
+  })
+
+  // The sentence is a fact about the fleet the phone was given. One machine
+  // must not read as two, and the phone holds only its own machine's
+  // sessions, so it vouches for that machine's idleness and no other's.
+  it("says how many machines answer from the fleet, and vouches only for its own", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    const machine = idle.machine.name
+
+    await draw({ snapshot: idle, fleet: undefined })
+    expect(screen.getByText(`${machine} is answering and has no work in flight. Empty here is a healthy state, not a failure.`)).toBeOnTheScreen()
+    expect(screen.queryByText(/Two machines/)).toBeNull()
+
+    await draw({ snapshot: idle, fleet: [entry(machine, "healthy", true)] })
+    expect(screen.getByText(`${machine} is answering and has no work in flight. Empty here is a healthy state, not a failure.`)).toBeOnTheScreen()
+
+    await draw({ snapshot: idle, fleet: [entry(machine, "healthy", true), entry("hetzner", "healthy"), entry("wsl", "unreachable")] })
+    expect(screen.getByText(`2 machines are answering. ${machine}, the one this phone reads, has no work in flight. Empty here is a healthy state, not a failure.`)).toBeOnTheScreen()
+  })
+
+  // A fleet read before the connection dropped says nothing about now. While
+  // the banner says so, the idle card drops the count and speaks of the last
+  // read rather than claiming machines are answering.
+  it("does not count answering machines while the connection is down", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    const machine = idle.machine.name
+    await draw({
+      snapshot: idle,
+      fleet: [entry(machine, "healthy", true), entry("hetzner", "healthy")],
+      notice: { tone: "warning", headline: "Not connected", detail: "Nothing here is live. This is the last state the phone was sent." },
+    })
+
+    expect(screen.getByText(`${machine} had no work in flight when last read.`)).toBeOnTheScreen()
+    expect(screen.queryByText(/answering/)).toBeNull()
+  })
+
+  // Frame 10's rows say a machine's state in a few words ("last seen 2d ago"),
+  // not a sentence that repeats the machine's name beside it.
+  it("says a quiet machine's state in the design's short words", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    const now = Date.parse("2026-09-20T00:00:00.000Z")
+    await draw({ snapshot: idle, now, fleet: [entry("mac-mini", "healthy", true), entry("wsl", "unreachable")] })
+
+    expect(screen.getByText("last seen 2d ago")).toBeOnTheScreen()
+    expect(screen.queryByText(/cannot be reached/)).toBeNull()
+  })
+
+  // A green light says a machine answers now. Read before the connection
+  // dropped, it no longer says that, so no row keeps a green light while the
+  // banner says the phone is not connected.
+  it("drops the answering lights while the connection is down", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    const fleet = [entry("mac-mini", "healthy", true), entry("hetzner", "healthy")]
+
+    await draw({ snapshot: idle, fleet })
+    expect(screen.getAllByTestId("fleet-dot").map((dot) => String(dot.props.className))).toEqual([
+      expect.stringContaining("bg-success"),
+      expect.stringContaining("bg-success"),
+    ])
+
+    await draw({ snapshot: idle, fleet, notice: { tone: "warning", headline: "Not connected", detail: "Nothing here is live." } })
+    for (const dot of screen.getAllByTestId("fleet-dot")) expect(String(dot.props.className)).not.toContain("bg-success")
+  })
+
+  // A machine that answered and asked to be paired again is not a machine
+  // that went quiet, so it says what it wants rather than when it was seen.
+  it("says a machine that needs pairing again wants pairing", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    await draw({ snapshot: idle, now: Date.parse("2026-09-20T00:00:00.000Z"), fleet: [entry("mac-mini", "healthy", true), entry("old-box", "pairing-required")] })
+
+    expect(screen.getByText("Pair again")).toBeOnTheScreen()
+    expect(screen.queryByText(/last seen/)).toBeNull()
+  })
+
+  // Frame 10 lists the fleet under the idle card, one row per machine.
+  it("lists the fleet under the idle card", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    await draw({ snapshot: idle, fleet: [entry("mac-mini", "healthy", true), entry("hetzner", "healthy"), entry("wsl", "unreachable")] })
+
+    for (const label of ["mac-mini", "hetzner", "wsl"]) expect(screen.getByText(label)).toBeOnTheScreen()
   })
 
   it("keeps Start a session visible and disabled with the exact no-project reason", async () => {

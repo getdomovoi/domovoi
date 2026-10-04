@@ -6,7 +6,7 @@
     "packages/ui/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
   ],
-  "note": "A study of where the per-turn skill selection shows: 1a, a line in the composer before send (the design's recommendation), or 1b, only on the sent message. Neither option is ruled on. Option labels, eyebrows and captions are annotations; the composer chips and the sample prompt are the fictional session.",
+  "note": "A study of where the per-turn skill selection shows: 1a, a line in the composer before send (the design's recommendation), or 1b, only on the sent message. Neither option was ruled on when it was drawn. Option labels, eyebrows and captions are annotations; the composer chips and the sample prompt are the fictional session. Ruled after this study was drawn (2026-09-26): Q32 A takes option 1a, the composer line; Q33 A shows a refusal at /skill time from the client's skill list and again from the daemon on send. Both drawings assume a turn runs without a refused skill, which is false: the daemon refuses the whole send, and the protocol forbids omissions on an explicit selection.",
   "sample": [
     "sql-explain",
     "Build · ask",
@@ -55,8 +55,8 @@
         "Next turn"
       ],
       "missing": {
-        "since": "2026-09-26",
-        "reason": "study option 1a, recommended by the design and not ruled on; /skill keeps the selection in the composer draft (thread.tsx skillSelection) but nothing draws it before send, and no refusal reaches the composer before send"
+        "since": "2026-10-02",
+        "reason": "option 1a, chosen by Q32 A (2026-09-26); /skill keeps the selection in the composer draft (thread.tsx skillSelection) but nothing draws it before send. Q33 A shows a refusal at /skill time from the client's skill list (client-only for not enabled and review changed); an authoritative pre-send answer for policy and unavailable needs a daemon check. The drawn Send still works; that turn runs without it is false: the daemon refuses the whole send (Cannot send this turn: selected skill ...)"
       }
     },
     {
@@ -68,18 +68,22 @@
         "Refused",
         "The turn runs without it."
       ],
-      "presence": [
-        "omitted before send"
-      ],
       "evidence": [
         "Skills this turn",
         "The turn runs without it."
       ],
-      "partial": {
-        "since": "2026-09-26",
-        "reason": "study option 1b, not ruled on; PromptDeliveryNote already records delivered and omitted skills under the sent turn in its own words (Sent with, omitted before send), not the drawn Skills this turn and Refused lines"
+      "blocked": {
+        "since": "2026-10-02",
+        "needs": "design",
+        "reason": "option 1b is not the option Q32 A (2026-09-26) chose, and its The turn runs without it. is false for an explicit selection: the daemon refuses the whole turn and the protocol forbids omissions. It cannot be built as drawn; the v2 decisions of 2026-10-02 send option 1b back to Claude Design. PromptDeliveryNote already records delivered and omitted skills under the sent turn in its own words (Sent with, omitted before send)"
       }
     }
   ],
-  "humanRead": []
+  "humanRead": [
+    {
+      "id": "turn-skills.composer-line",
+      "since": "2026-10-02",
+      "note": "Q32 A and Q33 A (2026-09-26) keep refusing the turn, so the drawn run-without copy is not built; the v2 decisions of 2026-10-02 send step 4's footnote and option 1b back to Claude Design. The refused-skill line states the refusal before send rather than promising the turn carries on."
+    }
+  ]
 }

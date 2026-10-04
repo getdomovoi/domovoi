@@ -1,9 +1,11 @@
-import { daemonAuthenticationErrorCode, devicePairingLimitErrorCode, devicePairResultSchema, pairingCodeSchema, protocolVersion, protocolVersionMismatchErrorCode, type ClientKind } from "@getdomovoi/protocol"
+import { daemonAuthenticationErrorCode, devicePairingLimitErrorCode, devicePairResultSchema, pairingCodeSchema, protocolCompatibilitySchema, protocolVersion, protocolVersionMismatchErrorCode, type ClientKind } from "@getdomovoi/protocol"
 import type { PairingOutcome } from "@getdomovoi/ui"
 
+import { PairingReplyError, PairingTransportError } from "@/browser-pairing-client"
 import { DaemonRpcError } from "@/client"
 
 import { daemonSessionFrom, isDaemonCredential, type DaemonSession } from "./credential"
+import { BrowserCapabilityError } from "./platform-refusals"
 
 type PairingConnection = {
   connect(): Promise<unknown>
@@ -80,12 +82,16 @@ export async function redeemBrowserCode(input: {
     await client.connect()
     input.onConnected?.()
     const redeemed = await client.request("device.redeemCode", { code: code.data, label: input.label, protocolVersion })
-    const session = daemonSessionFrom(redeemed)
+    // The daemon answered. A reply this page cannot read may still have
+    // spent the code, so it is its own failure and never a no-answer.
+    const reply = devicePairResultSchema.safeParse(redeemed)
+    if (!reply.success) throw new PairingReplyError()
+    const session = daemonSessionFrom(reply.data)
     // The daemon refuses a greeting whose kind is not the credential's, and
     // this tab greets as input.client. A credential bound to another kind
     // would report paired here and then fail at the session, so it is not
     // kept. The daemon already spent the code and enrolled the device.
-    const { binding } = devicePairResultSchema.parse(redeemed).device
+    const { binding } = reply.data.device
     const bound = binding.kind === "client" ? binding.client : undefined
     if (bound !== input.client) throw new DeviceKindMismatchError(bound, input.client)
     return session
@@ -93,6 +99,10 @@ export async function redeemBrowserCode(input: {
     client.disconnect()
   }
 }
+
+// The pairing client raises it for a malformed envelope, and this page for a
+// result it cannot read; either way the daemon may have paired the browser.
+export { PairingReplyError }
 
 export class DeviceKindMismatchError extends Error {
   readonly bound: ClientKind | undefined
@@ -106,28 +116,53 @@ export class DeviceKindMismatchError extends Error {
   }
 }
 
-function kindMismatchOutcome(cause: DeviceKindMismatchError, host: string): Omit<PairingOutcome, "action"> {
+// The daemon enrolled the device before this page saw its kind, so the card
+// names it for revoking. Only the machine's desktop app revokes a device.
+function kindMismatchOutcome(cause: DeviceKindMismatchError, host: string, label: string | undefined): Omit<PairingOutcome, "action"> {
   const expected = kindNames[cause.expected]
   return {
     tone: "danger",
     pill: "not kept",
     title: cause.bound ? `This code is for ${kindNames[cause.bound].device}` : "This code is not for a browser",
     mono: `pair.refused · kind_mismatch · code ${cause.bound ?? "none"}, browser ${cause.expected}`,
-    body: `This browser counts as ${expected.device}. On ${host}, show a ${expected.code} under Settings, Phone and tablet. The code was used, so unpair the extra device under Machines.`,
+    body: `This browser counts as ${expected.device}. On ${host}, show a ${expected.code} under Settings, Phone and tablet. The code was used, so in the desktop app on ${host}, under Machines, revoke ${label ?? "this browser's device"}.`,
   }
+}
+
+function mismatchData(cause: DaemonRpcError): { daemonProtocolVersion?: unknown; clientProtocolVersion?: unknown; compatibility?: unknown } {
+  return typeof cause.data === "object" && cause.data !== null ? cause.data : {}
+}
+
+// The daemon names the older side in data.compatibility, from the machine's
+// point of view (protocolCompatibility). Anything else says nothing.
+function olderSide(cause: DaemonRpcError): "page" | "daemon" | undefined {
+  const compatibility = protocolCompatibilitySchema.safeParse(mismatchData(cause).compatibility)
+  if (!compatibility.success) return undefined
+  if (compatibility.data === "machine-ahead") return "page"
+  if (compatibility.data === "machine-behind") return "daemon"
+  return undefined
 }
 
 // What the daemon said, as the page draws it. Every bad code gets one uniform
 // refusal from the daemon on purpose, so the page cannot say whether a code
 // expired, was spent, or came from another machine, and does not guess.
-export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOutcome, "action"> {
-  if (cause instanceof DeviceKindMismatchError) return kindMismatchOutcome(cause, host)
+// label: the device label this page sent with the code, when it sent one.
+export function pairingOutcomeFor(cause: unknown, host: string, label?: string): Omit<PairingOutcome, "action"> {
+  if (cause instanceof DeviceKindMismatchError) return kindMismatchOutcome(cause, host, label)
   if (cause instanceof DaemonRpcError) {
     if (cause.code === protocolVersionMismatchErrorCode) {
-      const data = (typeof cause.data === "object" && cause.data !== null ? cause.data : {}) as { daemonProtocolVersion?: unknown; clientProtocolVersion?: unknown }
+      const data = mismatchData(cause)
       const page = typeof data.clientProtocolVersion === "string" ? data.clientProtocolVersion : protocolVersion
       const daemon = typeof data.daemonProtocolVersion === "string" ? data.daemonProtocolVersion : "unknown"
-      return { tone: "danger", pill: "refused", title: `This page is older than the daemon on ${host}`, mono: `pair.refused · protocol_mismatch · page ${page}, daemon ${daemon}`, body: "The daemon was updated while this tab was open. Reload the page to update it. The daemon needs nothing. The code was not used." }
+      const mono = `pair.refused · protocol_mismatch · page ${page}, daemon ${daemon}`
+      const older = olderSide(cause)
+      if (older === "page") {
+        return { tone: "danger", pill: "refused", title: `This page is older than the daemon on ${host}`, mono, body: "The daemon was updated while this tab was open. Reload the page to update it. The daemon needs nothing. The code was not used." }
+      }
+      if (older === "daemon") {
+        return { tone: "danger", pill: "refused", title: `The daemon on ${host} is older than this page`, mono, body: `Update Domovoi on ${host}, then show a new code there and type it here. The daemon checked the version first, so this code was not used.` }
+      }
+      return { tone: "danger", pill: "refused", title: `This page and the daemon on ${host} speak different protocol versions`, mono, body: "The daemon did not say which one is older, so this page cannot say which to update." }
     }
     if (cause.code === devicePairingLimitErrorCode) {
       return { tone: "danger", pill: "refused", title: `${host} has no room for another device`, mono: "pair.refused · device_limit", body: "Unpair a device on the machine, under Machines, then show another code." }
@@ -140,7 +175,41 @@ export function pairingOutcomeFor(cause: unknown, host: string): Omit<PairingOut
   if (cause instanceof CodeShapeError) {
     return { tone: "plain", pill: "not sent", title: `That is not a ${codeNameFor(cause.expected)}`, mono: "word-word-word-00", body: cause.message }
   }
-  return { tone: "plain", pill: "unconfirmed", title: `${host} did not answer, so pairing is unconfirmed`, mono: `pair · no reply · ${host}`, body: "The daemon may have stopped or left the tailnet. If the machine lists this browser under Phone and tablet, it paired." }
+  // Both of these come after the daemon answered with a credential or
+  // something like one, so the code is spent and a device may be enrolled.
+  // Only the machine's own desktop app manages devices (a device credential
+  // is refused), and its control is Revoke, so the card says where and names
+  // the device by the label this page sent.
+  const device = label ?? "this browser's device"
+  const pairedAs = label ? ` as ${label}` : ""
+  const where = `the desktop app on ${host}, under Machines, revoke ${device}.`
+  if (cause instanceof BrowserCapabilityError) {
+    return { tone: "danger", pill: "not kept", title: "This tab cannot keep the credential", mono: `pair.paired · ${cause.reason}`, body: `${cause.message} The daemon paired this browser${pairedAs}. In ${where}` }
+  }
+  if (cause instanceof PairingReplyError) {
+    return { tone: "danger", pill: "unconfirmed", title: `${host} answered, but its reply could not be read`, mono: "pair · reply unreadable", body: `It may have paired this browser${pairedAs}. If it did, in ${where}` }
+  }
+  if (cause instanceof PairingTransportError) {
+    return { tone: "plain", pill: "unconfirmed", title: `${host} did not answer, so pairing is unconfirmed`, mono: `pair · no reply · ${host}`, body: "The daemon may have stopped or left the tailnet. If the machine lists this browser under Machines, it paired." }
+  }
+  return { tone: "plain", pill: "unconfirmed", title: `Pairing with ${host} did not finish`, mono: "pair · unconfirmed", body: `If ${host} lists ${device} under Machines, it paired. Before you pair again, revoke it there, in the desktop app on ${host}.` }
+}
+
+// What cures a refusal. A page older than the daemon needs a reload. A daemon
+// older than the page needs updating on its machine; the update restarts it
+// and drops the open code, so the way on is a new code. A mismatch that does
+// not say which side is older leaves this page nothing to offer. Only a
+// transport failure sends the same code again (Q366 A): a code the daemon did
+// spend meets the uniform refusal. A credential the tab could not keep or a
+// reply it could not read came after the code was spent, so neither is
+// retried. Every other outcome is answered with another code.
+export function pairingNextStep(cause: unknown): "reload" | "new-code" | "retry" | "none" {
+  if (cause instanceof PairingTransportError) return "retry"
+  if (cause instanceof BrowserCapabilityError || cause instanceof PairingReplyError) return "none"
+  if (!(cause instanceof DaemonRpcError)) return "new-code"
+  if (cause.code !== protocolVersionMismatchErrorCode) return "new-code"
+  const older = olderSide(cause)
+  return older === "page" ? "reload" : older === "daemon" ? "new-code" : "none"
 }
 
 export const daemonCredentialShapeMessage =

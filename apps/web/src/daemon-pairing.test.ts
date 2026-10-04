@@ -117,9 +117,10 @@ describe("redeeming a web code", () => {
     const { daemonAuthenticationErrorCode, devicePairingLimitErrorCode, protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
     const host = "mac-mini-m4.tail4c2e.ts.net"
     expect(pairingOutcomeFor(new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused"), host)).toMatchObject({ pill: "refused", title: "That code was refused", body: "It may have expired or been used already. Show another on mac-mini-m4.tail4c2e.ts.net, under Settings, Phone and tablet." })
-    expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x", { kind: "protocol-mismatch", daemonProtocolVersion: "0.9.0", clientProtocolVersion: "0.8.0", compatibility: "client-too-old" }), host)).toMatchObject({ pill: "refused", title: "This page is older than the daemon on mac-mini-m4.tail4c2e.ts.net", mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.9.0" })
+    expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x", { kind: "protocol-mismatch", daemonProtocolVersion: "0.9.0", clientProtocolVersion: "0.8.0", compatibility: "machine-ahead" }), host)).toMatchObject({ pill: "refused", title: "This page is older than the daemon on mac-mini-m4.tail4c2e.ts.net", mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.9.0" })
     expect(pairingOutcomeFor(new DaemonRpcError(devicePairingLimitErrorCode, "The paired device limit is reached"), host)).toMatchObject({ pill: "refused", title: "mac-mini-m4.tail4c2e.ts.net has no room for another device" })
-    expect(pairingOutcomeFor(new Error("socket closed"), host)).toMatchObject({ pill: "unconfirmed", title: "mac-mini-m4.tail4c2e.ts.net did not answer, so pairing is unconfirmed" })
+    const { PairingTransportError } = await import("@/browser-pairing-client")
+    expect(pairingOutcomeFor(new PairingTransportError("Daemon connection closed"), host)).toMatchObject({ pill: "unconfirmed", title: "mac-mini-m4.tail4c2e.ts.net did not answer, so pairing is unconfirmed" })
   })
 
   it("draws a refusal it has no card for with the daemon's own words", async () => {
@@ -137,13 +138,16 @@ describe("redeeming a web code", () => {
     const client = fakeClient()
     const caught = await redeemBrowserCode({ url: "wss://daemon.example/rpc", client: "phone", code: "hearth-quiet-ember-42", label: "Phone browser 4f2a1c9d", createClient: () => client }).catch((error: unknown) => error)
     expect(client.disconnect).toHaveBeenCalledOnce()
-    expect(pairingOutcomeFor(caught, "mac-mini-m4.tail4c2e.ts.net")).toEqual({
+    // Only the machine's desktop app revokes devices, and the card names the
+    // device the daemon enrolled under this page's label.
+    expect(pairingOutcomeFor(caught, "mac-mini-m4.tail4c2e.ts.net", "Phone browser 4f2a1c9d")).toEqual({
       tone: "danger",
       pill: "not kept",
       title: "This code is for a web browser",
       mono: "pair.refused · kind_mismatch · code web, browser phone",
-      body: "This browser counts as a phone. On mac-mini-m4.tail4c2e.ts.net, show a phone code under Settings, Phone and tablet. The code was used, so unpair the extra device under Machines.",
+      body: "This browser counts as a phone. On mac-mini-m4.tail4c2e.ts.net, show a phone code under Settings, Phone and tablet. The code was used, so in the desktop app on mac-mini-m4.tail4c2e.ts.net, under Machines, revoke Phone browser 4f2a1c9d.",
     })
+    expect(pairingOutcomeFor(caught, "host").body).toContain("The code was used, so in the desktop app on host, under Machines, revoke this browser's device.")
   })
 
   it("names each kind a code can be bound to and a browser can greet as", async () => {
@@ -204,6 +208,66 @@ describe("redeeming a web code", () => {
     const { protocolVersion, protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
     expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x"), "host").mono).toBe(`pair.refused · protocol_mismatch · page ${protocolVersion}, daemon unknown`)
     expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x", { daemonProtocolVersion: 9 }), "host").mono).toBe(`pair.refused · protocol_mismatch · page ${protocolVersion}, daemon unknown`)
+  })
+
+  // The daemon says which side is older (data.compatibility), and checks the
+  // version before it spends the code. Only an older page is cured by a
+  // reload; an older daemon needs updating, and the code still works.
+  it("names the older side of a protocol mismatch and what cures it", async () => {
+    const { pairingNextStep, pairingOutcomeFor } = await import("./daemon-pairing")
+    const { DaemonRpcError } = await import("@/client")
+    const { protocolVersionMismatchErrorCode } = await import("@getdomovoi/protocol")
+    const mismatch = (compatibility?: string) => new DaemonRpcError(protocolVersionMismatchErrorCode, "Client and daemon protocol versions are incompatible", {
+      kind: "protocol-mismatch", daemonProtocolVersion: "0.7.0", clientProtocolVersion: "0.8.0", ...(compatibility ? { compatibility } : {}),
+    })
+
+    expect(pairingOutcomeFor(mismatch("machine-ahead"), "host")).toEqual({
+      tone: "danger", pill: "refused", title: "This page is older than the daemon on host",
+      mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.7.0",
+      body: "The daemon was updated while this tab was open. Reload the page to update it. The daemon needs nothing. The code was not used.",
+    })
+    expect(pairingNextStep(mismatch("machine-ahead"))).toBe("reload")
+
+    expect(pairingOutcomeFor(mismatch("machine-behind"), "host")).toEqual({
+      tone: "danger", pill: "refused", title: "The daemon on host is older than this page",
+      mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.7.0",
+      // An update restarts the daemon, which drops the open code, and takes
+      // longer than its 180 seconds, so the way on is a new code.
+      body: "Update Domovoi on host, then show a new code there and type it here. The daemon checked the version first, so this code was not used.",
+    })
+    expect(pairingNextStep(mismatch("machine-behind"))).toBe("new-code")
+
+    expect(pairingOutcomeFor(mismatch(), "host")).toEqual({
+      tone: "danger", pill: "refused", title: "This page and the daemon on host speak different protocol versions",
+      mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.7.0",
+      body: "The daemon did not say which one is older, so this page cannot say which to update.",
+    })
+    expect(pairingNextStep(mismatch())).toBe("none")
+    expect(pairingNextStep(mismatch("compatible"))).toBe("none")
+  })
+
+  // Q366 A: only a transport failure is retried with the same code. After
+  // the daemon answered, a resend would only pair another device.
+  it("retries only when the daemon did not answer", async () => {
+    const { pairingNextStep, pairingOutcomeFor, CodeShapeError, DeviceKindMismatchError, PairingReplyError } = await import("./daemon-pairing")
+    const { DaemonRpcError } = await import("@/client")
+    const { PairingTransportError } = await import("@/browser-pairing-client")
+    const { BrowserCapabilityError } = await import("./platform-refusals")
+    const { daemonAuthenticationErrorCode } = await import("@getdomovoi/protocol")
+    expect(pairingNextStep(new PairingTransportError("Daemon connection closed"))).toBe("retry")
+    expect(pairingNextStep(new BrowserCapabilityError("credentials-unavailable"))).toBe("none")
+    expect(pairingNextStep(new PairingReplyError())).toBe("none")
+    expect(pairingNextStep(new Error("The daemon did not return a device credential for this browser"))).toBe("new-code")
+    expect(pairingNextStep("socket closed")).toBe("new-code")
+    expect(pairingOutcomeFor(new Error("anything else"), "host", "Web browser 4f2a1c9d")).toEqual({
+      tone: "plain", pill: "unconfirmed", title: "Pairing with host did not finish", mono: "pair · unconfirmed",
+      body: "If host lists Web browser 4f2a1c9d under Machines, it paired. Before you pair again, revoke it there, in the desktop app on host.",
+    })
+    // Without a label the card still names no control a browser cannot reach.
+    expect(pairingOutcomeFor(new PairingReplyError(), "host").body).toBe("It may have paired this browser. If it did, in the desktop app on host, under Machines, revoke this browser's device.")
+    expect(pairingNextStep(new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused"))).toBe("new-code")
+    expect(pairingNextStep(new CodeShapeError("web"))).toBe("new-code")
+    expect(pairingNextStep(new DeviceKindMismatchError("web", "phone"))).toBe("new-code")
   })
 
   it("says a malformed code was never sent", async () => {

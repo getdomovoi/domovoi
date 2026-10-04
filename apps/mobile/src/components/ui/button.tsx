@@ -3,7 +3,7 @@ import { Pressable, type PressableProps } from "react-native"
 import { cn } from "../../lib/cn"
 import { Text } from "./text"
 
-type Variant = "primary" | "affirm" | "deny" | "outline" | "ghost" | "quiet" | "destructive"
+type Variant = "primary" | "affirm" | "deny" | "outline" | "ghost" | "quiet" | "destructive" | "info" | "info-outline"
 
 // The handoff draws two shapes. A pill is an action beside a heading, where it
 // has to read as a control without taking the width of one. A block is an
@@ -27,6 +27,10 @@ const surface: Record<Variant, string> = {
   // more to give: the reason has to be written before it can be sent.
   quiet: "border border-border bg-transparent",
   destructive: "border border-destructive bg-transparent",
+  // The actions inside an info card (the pairing card) take the card's own
+  // ink rather than the brand colour, so the card reads as one notice.
+  info: "bg-info-fg",
+  "info-outline": "border border-info-border bg-transparent",
 }
 
 const label: Record<Variant, string> = {
@@ -37,6 +41,8 @@ const label: Record<Variant, string> = {
   ghost: "text-primary",
   quiet: "text-muted-foreground",
   destructive: "text-destructive",
+  info: "text-info-bg",
+  "info-outline": "text-info-fg",
 }
 
 const shapes: Record<Shape, string> = {

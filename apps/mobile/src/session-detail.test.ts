@@ -135,8 +135,56 @@ describe("threadEntries", () => {
   })
 })
 
+// Ruling Q357 A: only the latest receipt in the open turn is drawn in full.
+// Receipts carry no turn id today, so a receipt belongs to the open turn when
+// the session holds one and no message of yours has started another since.
+describe("current receipt", () => {
+  function receipt(id: string, createdAt: string) {
+    return {
+      id, sessionId: "session-billing", kind: "receipt" as const, decision: "allow-once" as const,
+      operation: "pnpm test", checkpoint: "8f3c1de0000000000000000000000000deadbeef", client: "phone" as const, createdAt,
+    }
+  }
+  function you(id: string, createdAt: string) {
+    return { id, sessionId: "session-billing", kind: "user" as const, body: "next", createdAt }
+  }
+  function currents(running: boolean, thread: WorkspaceSnapshot["thread"]): boolean[] {
+    const snapshot = workspace()
+    const session = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
+    session.activeTurnId = running ? "turn-open" : undefined
+    snapshot.thread = thread
+    const detail = sessionDetail(snapshot, "session-billing")!
+    return detail.entries.flatMap((entry) => entry.kind === "receipt" ? [entry.current] : [])
+  }
+
+  it("marks the latest receipt of a running turn as current, and no other", () => {
+    expect(currents(true, [receipt("r1", "2026-08-25T21:40:00.000Z"), receipt("r2", "2026-08-25T21:50:00.000Z")])).toEqual([false, true])
+  })
+
+  it("marks nothing current once your next message has started another turn", () => {
+    expect(currents(true, [receipt("r1", "2026-08-25T21:40:00.000Z"), you("u1", "2026-08-25T21:50:00.000Z")])).toEqual([false])
+  })
+
+  // A thread item's turnId is the daemon's usage digest (64 hex), never the
+  // raw provider id in session.activeTurnId, so a receipt's turnId cannot say
+  // whether it belongs to the open turn and must not make it history.
+  it("keeps a receipt current when it carries the daemon's digest turn id", () => {
+    const digest = "a3f1".repeat(16)
+    expect(currents(true, [{ ...receipt("r1", "2026-08-25T21:40:00.000Z"), turnId: digest }])).toEqual([true])
+  })
+
+  it("marks nothing current while no turn is running", () => {
+    expect(currents(false, [receipt("r1", "2026-08-25T21:40:00.000Z")])).toEqual([false])
+  })
+})
+
 describe("threadEntries receipt", () => {
-  it("names the outcome, who decided, the credential, the checkpoint and how long it took", () => {
+  // decisionDurationMs is how long the gate waited for an answer; ranForMs is
+  // how long the allowed command took once answered. The design's "ran in" is
+  // the second, so the two are carried apart.
+  // A legacy receipt carries the client id a hello declared, which no paired
+  // credential vouches for, so it is named as declared (as packages/ui does).
+  it("names the outcome, who decided, the declared client, the checkpoint and how long it ran", () => {
     const snapshot = workspace()
     snapshot.thread = [{
       id: "t-receipt",
@@ -148,6 +196,7 @@ describe("threadEntries receipt", () => {
       client: "phone",
       clientId: "device-fcbd4c3f99c7294586f0c5ca22f9cdf8",
       decisionDurationMs: 38_400,
+      ranForMs: 12_300,
       createdAt: "2026-08-25T21:52:00.000Z",
     }]
 
@@ -157,12 +206,108 @@ describe("threadEntries receipt", () => {
       id: "t-receipt",
       kind: "receipt",
       decision: "Allowed once",
+      recorded: "allow-once",
       operation: "pnpm -w prisma migrate deploy",
       explanation: undefined,
-      attribution: "phone · device fcbd…cdf8",
+      client: "phone",
+      declaredClient: "device fcbd…cdf8",
       checkpoint: "8f3c1de",
-      duration: "38s",
+      checkpointTaken: true,
+      ranFor: "12s",
+      decidedAfter: "38s",
+      // The fixture's session holds no open turn.
+      current: false,
     })
+  })
+
+  // A current receipt records the id of the connection the decision came
+  // over and declares no client id, so it names no declared client.
+  it("names no declared client on a receipt that records a connection", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "pnpm test",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "phone",
+      connectionId: "3f1c2b8e-1d2a-4c5b-9e6f-7a8b9c0d1e2f",
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }]
+
+    expect(threadEntries(snapshot, "session-billing").entries[0]).toMatchObject({ declaredClient: undefined })
+  })
+
+  it("says minutes for a command that ran past one", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "always-project",
+      operation: "pnpm test",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "phone",
+      ranForMs: 252_000,
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }]
+
+    expect(threadEntries(snapshot, "session-billing").entries[0]).toMatchObject({
+      checkpointTaken: true,
+      ranFor: "4m 12s",
+    })
+  })
+
+  // Past an hour, seconds stop helping and minutes count up from the hour,
+  // so 65 minutes reads 1h 5m rather than 65m 0s.
+  it("says hours for a command that ran past one", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "pnpm test",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "phone",
+      ranForMs: 65 * 60_000 + 20_000,
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }]
+
+    expect(threadEntries(snapshot, "session-billing").entries[0]).toMatchObject({ ranFor: "1h 5m" })
+  })
+
+  // Only an allow takes a checkpoint before the command, and only when the
+  // daemon could take one. A deny records the session's reference instead.
+  it("does not claim a checkpoint was taken for a deny or when none could be", () => {
+    const snapshot = workspace()
+    snapshot.thread = [
+      {
+        id: "t-deny",
+        sessionId: "session-billing",
+        kind: "receipt",
+        decision: "deny",
+        operation: "pnpm test",
+        checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+        client: "phone",
+        createdAt: "2026-08-25T21:52:00.000Z",
+      },
+      {
+        id: "t-none",
+        sessionId: "session-billing",
+        kind: "receipt",
+        decision: "allow-once",
+        operation: "pnpm test",
+        checkpoint: "unavailable",
+        client: "phone",
+        createdAt: "2026-08-25T21:53:00.000Z",
+      },
+    ]
+
+    const { entries } = threadEntries(snapshot, "session-billing")
+
+    expect(entries.map((entry) => entry.kind === "receipt" && entry.checkpointTaken)).toEqual([false, false])
   })
 
   it("keeps the explanation with the decision and the facts with the record", () => {
@@ -186,9 +331,12 @@ describe("threadEntries receipt", () => {
       decision: "Denied with an explanation",
       operation: "rm -rf node_modules",
       explanation: "Not on the release branch.",
-      attribution: "web",
+      client: "web",
+      declaredClient: undefined,
       checkpoint: "no checkpoint",
-      duration: undefined,
+      checkpointTaken: false,
+      ranFor: undefined,
+      decidedAfter: undefined,
     })
   })
 })

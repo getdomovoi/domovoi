@@ -56,6 +56,7 @@ import { cn } from "./lib/utils"
 import { skillReReviewSummary } from "./skill-capability-diff"
 import { filterSkills, groupSkills, skillSourceLabel } from "./skill-browser-model"
 import { compareSkillInventories, type SkillFleetCellState } from "./skill-fleet-comparison"
+import { formatGrantTime } from "./tool-inventory-model"
 
 // Why a blocked skill refuses review. A disabled control with no reason reads as
 // a bug rather than a refusal. Keyed on the schema's own union rather than on
@@ -81,6 +82,38 @@ function comparisonVariant(state: SkillFleetCellState): "success" | "warning" | 
   if (state === "blocked") return "destructive"
   if (state === "different" || state === "missing" || state === "untrusted") return "warning"
   return "secondary"
+}
+
+type OtherInventoryTone = "success" | "destructive" | "faint"
+
+type OtherInventoryRow = { id: string; name: string; platform: string; state: string; tone: OtherInventoryTone }
+
+const otherInventoryDot: Record<OtherInventoryTone, string> = {
+  success: "bg-success",
+  destructive: "bg-destructive",
+  faint: "bg-faint",
+}
+
+const otherInventoryText: Record<OtherInventoryTone, string> = {
+  success: "text-muted-foreground",
+  destructive: "text-destructive",
+  faint: "text-faint",
+}
+
+// One row for each machine this one is not, saying what its inventory says.
+// The first source is this machine (collectFleetInventories puts it there),
+// so it is left out. Per-skill comparison lives on the selected skill.
+function otherInventoryRows(sources: readonly SkillInventorySource[]): OtherInventoryRow[] {
+  return sources.slice(1).map((source): OtherInventoryRow => {
+    const machine = source.state === "available" ? source.inventory.machine : source.machine
+    const base = { id: machine.id, name: machine.name, platform: `${machine.platform} · ${machine.arch} · ${machine.version}` }
+    if (source.state === "available") {
+      const count = source.inventory.skills.length
+      return { ...base, state: `inventory available, ${count} ${count === 1 ? "skill" : "skills"}`, tone: "success" }
+    }
+    if (source.state === "unreachable") return { ...base, state: "unreachable, no inventory read", tone: "destructive" }
+    return { ...base, state: "unknown, it returned no inventory", tone: "faint" }
+  }).sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
 }
 
 const installScopeLabel: Record<SkillInstallScope, string> = {
@@ -190,6 +223,7 @@ export function SkillBrowser({
   error,
   onReadSkill,
   projectId,
+  projectName,
   enablements,
   onSetSkillEnabled,
   onReviewSkill,
@@ -207,6 +241,9 @@ export function SkillBrowser({
   onReadSkill: (id: string) => Promise<SkillDocument>
   requestedSkillId?: string | undefined
   projectId: string | undefined
+  // The project's display name, for the one decision the design names after
+  // it: "Trust it for <project>".
+  projectName?: string | undefined
   enablements: readonly SkillEnablementReview[]
   onSetSkillEnabled: (input: {
     id: string
@@ -235,11 +272,22 @@ export function SkillBrowser({
   const [sourceLoading, setSourceLoading] = useState(false)
   const [sourceError, setSourceError] = useState("")
   const sourceRequestGeneration = useRef(0)
-  const [reviewEnabled, setReviewEnabled] = useState<boolean>()
+  const [trustOpen, setTrustOpen] = useState(false)
   const [reviewPending, setReviewPending] = useState(false)
-  const [reviewError, setReviewError] = useState("")
-  const [machineReviewPending, setMachineReviewPending] = useState(false)
-  const [machineReviewError, setMachineReviewError] = useState("")
+  // Which step of the one decision failed. Trust is two RPCs, and a rejection
+  // after the first has recorded the project enablement, an approval fact the
+  // cause alone would hide.
+  const [reviewError, setReviewError] = useState<{
+    step: "enable" | "review" | "revoke"
+    message: string
+  }>()
+  // The trust dialog's action closes it in the same click, and the button that
+  // opened it is disabled while the RPCs run, so the dialog's focus return has
+  // nowhere to land. Each settled decision moves focus to its result instead.
+  const [reviewSettled, setReviewSettled] = useState(0)
+  const reviewErrorRef = useRef<HTMLDivElement>(null)
+  const trustButtonRef = useRef<HTMLButtonElement>(null)
+  const revokeButtonRef = useRef<HTMLButtonElement>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [addPath, setAddPath] = useState("")
   const [addPreview, setAddPreview] = useState<SkillInstallPreview>()
@@ -250,6 +298,7 @@ export function SkillBrowser({
   const filtered = useMemo(() => filterSkills(skills, query), [query, skills])
   const groups = useMemo(() => groupSkills(filtered), [filtered])
   const comparisons = useMemo(() => compareSkillInventories(inventorySources), [inventorySources])
+  const otherInventories = useMemo(() => otherInventoryRows(inventorySources), [inventorySources])
   // The launcher names a skill before this pane has rendered, so the request
   // is honoured once the skill it names has been discovered.
   useEffect(() => {
@@ -281,10 +330,27 @@ export function SkillBrowser({
   const selectedSecurity = selected ? skillSecurityCopy(selected) : undefined
   const machineReviewed = selected?.trust.state === "trusted"
     && selected.trust.reason === "manual-review"
+  // Ruling Q359 A: trust and enablement are one decision, named after the
+  // project. It is complete once the skill is enabled for the project and
+  // trusted on this machine; until then Trust stays offered, and Revoke is
+  // offered while the project enablement exists. Revoke is project-only: the
+  // machine review also governs Build auto in other projects, so it stays.
+  const trustLabel = `Trust it for ${projectName ?? "this project"}`
+  const trustOffered = Boolean(selected) && !(selectedEnabled && selected?.trust.state === "trusted")
+  const revokeOffered = selectedEnabled
 
   useEffect(() => {
     if (!selectedId && skills[0]) setSelectedId(skills[0].id)
   }, [selectedId, skills])
+
+  // Runs after the render that shows the result, so the alert is in the DOM
+  // when it is the target. With no failure, the control the decision leaves
+  // offered takes focus: Revoke where the enablement exists, else Trust.
+  useEffect(() => {
+    if (reviewSettled === 0) return
+    const target = reviewErrorRef.current ?? revokeButtonRef.current ?? trustButtonRef.current
+    target?.focus()
+  }, [reviewSettled])
 
   const readSource = (skill: SkillSummary) => {
     const generation = ++sourceRequestGeneration.current
@@ -306,19 +372,54 @@ export function SkillBrowser({
     })
   }
 
-  const submitReview = () => {
-    if (readOnly || !selected || reviewEnabled === undefined) return
+  // Both RPCs pin the same digest and manifest the dialog showed. The project
+  // grant goes first: a failure part-way then leaves the narrower state, never
+  // a machine review without the enablement it was asked for. A digest the
+  // machine already trusts needs no second review record.
+  const submitTrust = () => {
+    if (readOnly || !selected) return
+    const skill = selected
     setReviewPending(true)
-    setReviewError("")
+    setReviewError(undefined)
+    const failed = (step: "enable" | "review") => (cause: unknown) => {
+      setReviewError({ step, message: cause instanceof Error ? cause.message : "Skill review failed" })
+    }
+    void onSetSkillEnabled({
+      id: skill.id,
+      enabled: true,
+      contentDigest: skill.contentDigest,
+      manifest: skill.manifest,
+    }).then(
+      () => (
+        skill.trust.state === "untrusted"
+          ? onReviewSkill({ id: skill.id, contentDigest: skill.contentDigest, decision: "trust" }).then(
+              () => setTrustOpen(false),
+              failed("review"),
+            )
+          : setTrustOpen(false)
+      ),
+      failed("enable"),
+    ).finally(() => {
+      setReviewPending(false)
+      setReviewSettled((count) => count + 1)
+    })
+  }
+
+  const submitRevoke = () => {
+    if (readOnly || !selected) return
+    setReviewPending(true)
+    setReviewError(undefined)
     void onSetSkillEnabled({
       id: selected.id,
-      enabled: reviewEnabled,
+      enabled: false,
       contentDigest: selected.contentDigest,
       manifest: selected.manifest,
-    }).then(
-      () => setReviewEnabled(undefined),
-      (cause: unknown) => setReviewError(cause instanceof Error ? cause.message : "Skill review failed"),
-    ).finally(() => setReviewPending(false))
+    }).catch((cause: unknown) => {
+      setReviewError({ step: "revoke", message: cause instanceof Error ? cause.message : "Skill review failed" })
+    }).finally(() => {
+      setReviewPending(false)
+      setReviewSettled((count) => count + 1)
+    })
   }
 
   const addTarget = addPreview?.targets.find((target) => target.scope === addScope)
@@ -375,19 +476,6 @@ export function SkillBrowser({
         else setAddError(cause instanceof Error ? cause.message : "The skill could not be installed")
       },
     ).finally(() => setAddPending(false))
-  }
-
-  const submitMachineReview = (decision: SkillReviewDecision) => {
-    if (readOnly || !selected) return
-    setMachineReviewPending(true)
-    setMachineReviewError("")
-    void onReviewSkill({
-      id: selected.id,
-      contentDigest: selected.contentDigest,
-      decision,
-    }).catch((cause: unknown) => {
-      setMachineReviewError(cause instanceof Error ? cause.message : "Machine review failed")
-    }).finally(() => setMachineReviewPending(false))
   }
 
   return (
@@ -471,13 +559,18 @@ export function SkillBrowser({
               <h2 id="skill-inventories-title" className="m-0 text-[13px] font-semibold">Inventories from your other machines</h2>
               <span className="text-[11px] text-muted-foreground">Usable only where installed.</span>
             </div>
-            {inventorySources.length > 1 ? comparisons.flatMap((comparison) => comparison.machines).map((machine, index) => (
-              <div key={`${machine.machineId}:${machine.state}:${index}`} className="flex items-center gap-3 border-t px-3.5 py-2.5 first:border-t-0">
-                <span className="size-1.5 rounded-full bg-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate font-machine text-[11px]">{machine.machineName}</span>
-                <Badge variant={comparisonVariant(machine.state)}>{comparisonLabel[machine.state]}</Badge>
-              </div>
-            )) : <p className="m-0 px-3.5 py-3 text-[11px] text-muted-foreground">No other paired machine reports the skills capability.</p>}
+            {otherInventories.length > 0 ? (
+              <ul aria-labelledby="skill-inventories-title" className="m-0 list-none p-0">
+                {otherInventories.map((row) => (
+                  <li key={row.id} className={cn("flex flex-wrap items-center gap-x-[11px] gap-y-1 border-t px-3.5 py-2.5 first:border-t-0", row.tone === "faint" && "opacity-60")}>
+                    <span aria-hidden className={cn("size-1.5 shrink-0 rounded-full", otherInventoryDot[row.tone])} />
+                    <span className="w-40 min-w-0 truncate font-machine text-[11px] text-strong">{row.name}</span>
+                    <span className="w-[190px] min-w-0 truncate font-machine text-[10.5px] text-muted-foreground">{row.platform}</span>
+                    <span className={cn("min-w-0 flex-1 text-[11.5px]", otherInventoryText[row.tone])}>{row.state}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="m-0 px-3.5 py-3 text-[11px] text-muted-foreground">No other paired machine reports the skills capability.</p>}
           </section>
 
           {selected && filtered.some((skill) => skill.id === selected.id) ? (
@@ -532,27 +625,13 @@ export function SkillBrowser({
                         ? selected.manifest.capabilities.map((capability) => <Badge key={capability} variant="outline">{capability}</Badge>)
                         : <span className="text-muted-foreground">No declared capabilities</span>}
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-muted-foreground">
-                        {machineReviewed
-                          ? "Reviewed on this machine for this exact digest"
-                          : "Not reviewed on this machine"}
-                      </span>
-                      {selected.trust.state === "blocked" ? null : (
-                        <Button
-                          variant={machineReviewed ? "outline" : "default"}
-                          size="sm"
-                          disabled={readOnly || machineReviewPending}
-                          onClick={() => submitMachineReview(machineReviewed ? "revoke" : "trust")}
-                        >
-                          {machineReviewed ? "Revoke machine review" : "Mark reviewed on this machine"}
-                        </Button>
-                      )}
-                    </div>
-                    <p className="m-0 text-muted-foreground">
-                      A machine review is the interim trust path. It is bound to this digest, so any content change drops the skill back to untrusted. It is not a cryptographic signature check.
-                    </p>
-                    {machineReviewError ? <span className="text-destructive">{machineReviewError}</span> : null}
+                    {/* A fact, not a control: the machine review is recorded by
+                        "Trust it for <project>" and stays through Revoke. */}
+                    <span className="text-muted-foreground">
+                      {machineReviewed
+                        ? "Reviewed on this machine for this exact digest"
+                        : "Not reviewed on this machine"}
+                    </span>
                   </CardContent>
                 </Card>
               </div>
@@ -577,37 +656,63 @@ export function SkillBrowser({
               </Card>
               <Alert className="mt-4">
                 <FileTextIcon />
-                <AlertTitle>Project review</AlertTitle>
+                <AlertTitle>Enablement is a review, and it is per project</AlertTitle>
                 <AlertDescription>
-                  Enablement does not change signature or trust state. Any content or capability change requires another review.
-                  {selected.trust.state === "untrusted"
-                    ? selectedEnabled
-                      ? " This skill is used in Ask, Plan, and Build manual. Build auto runs without this skill."
-                      : " Review and enable this exact skill to use it in Ask, Plan, and Build manual. Build auto will run without it."
-                    : null}
-                  {selected.trust.state === "blocked" ? " Blocked skills are never injected into provider context." : null}
+                  {selectedEnabled && selectedReview ? (
+                    <span className="font-machine text-[10.5px]">
+                      {`${projectName ?? "This project"} · reviewed ${formatGrantTime(selectedReview.reviewedAt)} by ${selectedReview.reviewedBy.client}`}
+                    </span>
+                  ) : null}
+                  <span>
+                    Pinned to the digest and manifest you read. Change either and it is refused with <code className="font-machine">review-changed</code>. Manual review also grants trust.
+                    {selected.trust.state === "blocked" ? " Blocked skills are never injected into provider context." : null}
+                  </span>
                 </AlertDescription>
               </Alert>
-              {reviewError ? <Alert variant="destructive" className="mt-4"><AlertTitle>Review failed</AlertTitle><AlertDescription>{reviewError}</AlertDescription></Alert> : null}
-              <div className="mt-4 flex flex-wrap gap-2">
+              {reviewError ? (
+                <Alert ref={reviewErrorRef} tabIndex={-1} variant="destructive" className="mt-4">
+                  <AlertTitle>{reviewError.step === "revoke" ? "Revoke failed" : "Review failed"}</AlertTitle>
+                  <AlertDescription className="flex flex-col gap-1">
+                    <span>{reviewError.message}</span>
+                    {/* The first RPC succeeded, so the skill is enabled for the
+                        project without the trust the button promised. Both
+                        facts are stated, and what each remaining control does
+                        about them. */}
+                    {reviewError.step === "review" ? (
+                      <>
+                        <span>{`Enablement for ${projectName ?? "this project"} was recorded. The machine review was not, so Build auto still excludes it.`}</span>
+                        <span>{`${trustLabel} again repeats both steps. Revoke takes back the enablement for ${projectName ?? "this project"}.`}</span>
+                      </>
+                    ) : null}
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+              <div className="mt-4 flex flex-wrap items-center gap-2">
                 <Button variant="outline" onClick={() => readSource(selected)}>
                   <FileTextIcon data-icon="inline-start" />
                   View SKILL.md
                 </Button>
-                {/* A dead control cannot be told apart from a broken one, so
-                    the two reasons this used to collapse are now separate.
-                    Enablement is per project: with none open the decision does
-                    not exist here, and the control is absent rather than inert.
-                    A blocked skill is the other case — the decision exists and
-                    is refused, so the control stays visible and the refusal is
-                    named beside it. */}
-                {projectId ? (
+                {/* Enablement is per project: with none open the decision does
+                    not exist here, and the controls are absent rather than
+                    inert. A blocked skill is the other case: the decision
+                    exists and is refused, so Trust stays visible and the
+                    refusal is named beside it. */}
+                {projectId && trustOffered ? (
                   <Button
-                    disabled={readOnly || (selected.trust.state === "blocked" && !selectedEnabled)}
-                    onClick={() => setReviewEnabled(!selectedEnabled)}
+                    ref={trustButtonRef}
+                    disabled={readOnly || reviewPending || selected.trust.state === "blocked"}
+                    onClick={() => setTrustOpen(true)}
                   >
-                    {selectedEnabled ? "Review & disable" : "Review & enable"}
+                    {trustLabel}
                   </Button>
+                ) : null}
+                {projectId && revokeOffered ? (
+                  <Button ref={revokeButtonRef} variant="outline" disabled={readOnly || reviewPending} onClick={submitRevoke}>
+                    Revoke
+                  </Button>
+                ) : null}
+                {projectId ? (
+                  <span className="text-[11.5px] text-faint">Trust and revoke are the only two decisions.</span>
                 ) : null}
               </div>
               {projectId ? null : (
@@ -726,10 +831,15 @@ export function SkillBrowser({
                     {addTarget ? installTargetCopy(addTarget, addPreview.name) : "Choose where this skill lives."}
                   </p>
                 </section>
+                {/* Ruling Q360 A: a refusal on any file refuses the whole
+                    install, since the folder digest is what was reviewed. The
+                    design's "N files will not be copied" would read as the rest
+                    being copied, so the title says the install cannot proceed. */}
                 {addRefusals.length > 0 ? (
                   <Alert variant="destructive">
-                    <AlertTitle>Install refused</AlertTitle>
+                    <AlertTitle>The install cannot proceed</AlertTitle>
                     <AlertDescription>
+                      <span className="font-machine text-[10.5px]">typed refusals, not warnings</span>
                       <ul className="m-0 list-disc pl-4">
                         {addRefusals.map((refusal) => (
                           <li key={`${refusal.reason}:${refusal.path ?? ""}`}>{installRefusalCopy(refusal, addPreview.name)}</li>
@@ -741,7 +851,10 @@ export function SkillBrowser({
               </>
             ) : null}
           </div>
-          <DialogFooter>
+          <DialogFooter className="sm:items-center">
+            {addPreview ? (
+              <span className="text-[11.5px] text-faint sm:mr-auto">Installing does not enable it in any project.</span>
+            ) : null}
             <Button variant="outline" disabled={addPending} onClick={() => setAddOpen(false)}>Cancel</Button>
             {addPreview ? (
               <Button
@@ -754,12 +867,12 @@ export function SkillBrowser({
           </DialogFooter>
         </DialogContent>
       </Dialog>
-      <AlertDialog open={reviewEnabled !== undefined} onOpenChange={(open) => { if (!open && !reviewPending) setReviewEnabled(undefined) }}>
+      <AlertDialog open={trustOpen} onOpenChange={(open) => { if (!open && !reviewPending) setTrustOpen(false) }}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Review {selected?.name ?? "skill"}</AlertDialogTitle>
             <AlertDialogDescription>
-              Confirm this exact content digest and capability manifest for {projectId ? "the open project" : "a project"}. This does not grant trust.
+              Pinned to the digest and manifest you read. Change either and it is refused with review-changed. Manual review also grants trust.
             </AlertDialogDescription>
           </AlertDialogHeader>
           {/* The change leads and the digest is evidence beneath it. Approving a
@@ -795,8 +908,8 @@ export function SkillBrowser({
           {selected ? <div className="flex flex-col gap-2 font-machine text-[10.5px]"><code className="break-all">{selected.contentDigest}</code><span>{selected.manifest.capabilities.join(", ") || "No declared capabilities"}</span></div> : null}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={reviewPending}>Cancel</AlertDialogCancel>
-            <AlertDialogAction disabled={readOnly || reviewPending} onClick={submitReview}>
-              {reviewEnabled ? "Enable for project" : "Disable for project"}
+            <AlertDialogAction disabled={readOnly || reviewPending} onClick={submitTrust}>
+              {trustLabel}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

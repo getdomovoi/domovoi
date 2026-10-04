@@ -41,13 +41,74 @@
         "domovoi approve|deny <approval-id>"
       ],
       "evidence": [
-        "session new",
+        "command === \"session\"",
         "--no-prompt",
         "approve|deny"
       ],
       "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J44; the CLI has pair, status, doctor, logs and skill install only"
+        "since": "2026-10-02",
+        "reason": "drawn 2026-09-23 for J44; the CLI (apps/cli) has pair, status, doctor, logs and skill install only, and neither binary has session new, send, watch, approve or deny. The protocol already has what they need (session.create, session.send, workspace.get with the workspace broadcasts, approval.resolve), so this is client work; CLI control is next in the Q126 order. The evidence now names the dispatch shape (command === \"session\"), because the bare words session new also sit in a daemon comment"
+      }
+    },
+    {
+      "id": "cli.send",
+      "name": "domovoi send",
+      "where": "the send transcript: the message, sent from cli on <machine> · read at <time>, the note that it lands when the current tool call returns",
+      "evidence": [
+        "command === \"send\""
+      ],
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "no send command; session.send exists on the wire, so this is client-only. Its strings are still in the script backlog"
+      }
+    },
+    {
+      "id": "cli.watch-stream",
+      "name": "domovoi watch, the turn stream",
+      "where": "the watch transcript: started by whom from where, tool rows with outcome and size, agent and you lines, the turn's end",
+      "evidence": [
+        "command === \"watch\""
+      ],
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "no watch command, and nothing can stream yet: apps/cli/src/rpc.ts drops every daemon notification. workspace.get and the workspace.changed and workspace.delta broadcasts give what it needs. Its strings are still in the script backlog"
+      }
+    },
+    {
+      "id": "cli.gate-prompt",
+      "name": "Gate prompt in watch",
+      "where": "watch at a gate: waiting on your decision, the facts, Allow once · Always here · Deny with the choose prompt; the hard gate without Always here and its reason; the policy refusal with its rule; --no-prompt printing the facts and exiting",
+      "evidence": [
+        "re:choose a(, r)? or d:"
+      ],
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "no gate prompt. The approval request carries risk, machine, directory, affects, network, estimate and checkpoint, so the prompt and the policy refusal's local fields are client-only; the hard because and outside project facts have no field on the request (protocol). Its strings are still in the script backlog"
+      }
+    },
+    {
+      "id": "cli.approve-deny",
+      "name": "domovoi approve and deny from another shell",
+      "where": "approve and deny by approval id: the receipt line, already decided with the receipt on record, a hard gate refused without a terminal",
+      "evidence": [
+        "command === \"approve\"",
+        "command === \"deny\""
+      ],
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "no approve or deny command; approval.resolve exists, so deciding is client-only. Already decided needs a distinct refusal and the approval id on the receipt: today a settled approval answers invalidParams with Approval does not exist (protocol and daemon). Its strings are still in the script backlog"
+      }
+    },
+    {
+      "id": "cli.reconnect",
+      "name": "watch losing and regaining the daemon",
+      "where": "lost the daemon mid-turn, reconnecting attempts, unconfirmed calls, reconnected and replaying from <time>, back with and without the daemon's result",
+      "evidence": [
+        "replaying from"
+      ],
+      "missing": {
+        "since": "2026-10-02",
+        "reason": "no watch command to reconnect. Replay from a time is client work over the existing snapshot; an unconfirmed tool state (no result seen) does not exist on the wire (roadmap S3.8). Its strings are still in the script backlog"
       }
     },
     {
@@ -63,15 +124,31 @@
         "RETURNED BY"
       ],
       "evidence": [
-        "Unconfirmed and failed never share a code"
+        "re:(?:exitCode = |return )3\\b"
       ],
       "missing": {
-        "since": "2026-09-23",
-        "reason": "drawn 2026-09-23 for J44; the numbers are marked proposed in the design's own open questions"
+        "since": "2026-10-02",
+        "reason": "the CLI exits 0, 1 and 2 only: daemon unreachable, a declined install, a failed doctor probe and every daemon refusal are 1 (the design says 3 for unreachable), and usage and Not paired are 2; domovoid returns 1 for usage where domovoi returns 2. Q391 A (2026-10-02) adopts the design's table now, before 1.0: unreachable becomes 3 and an unpaired client gets a named code. The earlier evidence was design prose no code prints, so it could never prove the element; the evidence now looks for the unreachable code. Exit 31 (already decided) and 22 (unconfirmed) need protocol"
       }
     }
   ],
-  "humanRead": [],
+  "humanRead": [
+    {
+      "id": "cli.session-commands",
+      "since": "2026-10-02",
+      "note": "Open gap in shipped text: the CLI usage says domovoid pair --client cli prints a credential to paste into domovoi pair. domovoid pair accepts --client only with --label and prints a pairing code, which domovoi pair refuses, so the documented path does not work. Q337 A makes domovoi pair redeem a pairing code with device.redeemCode and corrects the usage text."
+    },
+    {
+      "id": "cli.gate-prompt",
+      "since": "2026-10-02",
+      "note": "Q394 A: facts one per line (the design's layout A), not the boxed card. Q393 A: the policy refusal shows only the local fields; the org-owner lines (set by <person>, as org policy; Only an org owner can change this rule) are M4 and are not printed in M1."
+    },
+    {
+      "id": "cli.approve-deny",
+      "since": "2026-10-02",
+      "note": "Q392 A: M1 has no accounts, so the <person> in receipts and watch lines (allowed once by dana) is the device label and client kind."
+    }
+  ],
   "scriptBacklog": {
     "since": "2026-09-26",
     "reason": "Copy the design builds in its data script, collected by the gate since audit G23 and not yet read against the implementation. Classify each string as an element's copy, sample or annotations, and remove it here.",

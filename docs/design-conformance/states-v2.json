@@ -20,17 +20,35 @@
         "The daemon is answering and two repositories are visible to it. A session is a worktree plus a thread, so starting one never touches your checkout.",
         "Start a session",
         "Clone a repository",
-        "READY ON THIS MACHINE",
-        "reading the thread from mac-mini-m4"
+        "READY ON THIS MACHINE"
       ],
       "evidence": [
         "No sessions yet on",
-        "READY ON THIS MACHINE",
-        "Clone a repository"
+        "READY ON THIS MACHINE"
       ],
       "missing": {
-        "since": "2026-09-23",
-        "reason": "no client draws the empty sessions state as designed: none of its lines exist. The earlier evidence matched the palette's SESSIONS group heading and the phone's Start a session, not this state"
+        "since": "2026-10-02",
+        "reason": "no client draws the empty sessions state as designed: none of its lines exist. Desktop and web draw No session is open or No project is open whenever no session is active, even when sessions exist, and the drawer says No sessions on this machine yet.; the tablet draws nothing when there are no sessions; the phone draws its own Phone v2 idle state. Buildable now: the title, Start a session, and READY rows for providers and active projects with their branch. The repository rows with git state (clean, uncommitted count) and two repositories are visible to it need a repository listing RPC. Clone a repository is cut on every client (Q385 A, 2026-10-02), so it is not evidence"
+      }
+    },
+    {
+      "id": "states.loading",
+      "name": "Reading the thread",
+      "where": "loading state: rail skeleton rows, thread header skeleton with the reading line, bubble-shaped turns at 720px, composer skeleton, rail footer reading N machines, chrome pill connecting",
+      "copy": [
+        "reading the thread from mac-mini-m4"
+      ],
+      "presence": [
+        "export function ThreadSkeleton(",
+        "readingLabel = `reading "
+      ],
+      "evidence": [
+        "export function ThreadSkeleton(",
+        "reading the thread from"
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "split from states.sessions, which held its line. ThreadSkeleton draws full-width bars at first connect with reading <machine id or RPC URL>, so before attach it names a raw ws:// address; there are no rail skeleton rows, bubble shapes, composer skeleton, reading N machines footer or connecting pill. The shimmer and the reading line stay after the first attempt fails, under the Cannot reach the daemon banner: Q344 A (2026-10-02) stops the shimmer then and says Not connected. Nothing has been read from <host> yet. The phone draws its own Reaching the daemon state; the tablet falls back to the phone layout until a snapshot exists"
       }
     },
     {
@@ -48,10 +66,16 @@
         "nothing was written, nothing was lost",
         "idempotency"
       ],
-      "evidence": [
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "FailedReadState draws the frame, but its one caller is the provider-restart path in thread.tsx, not a failed session read. No caller passes attempts or Open the machine, so WHAT IT TRIED and the attempt count are never drawn. The line nothing was written, nothing was lost shows only where a caller says the failure only read, and no caller does: a provider can write files before it stops."
+      },
+      "presence": [
         "Could not read this session",
-        "WHAT IT TRIED",
-        "nothing was written, nothing was lost"
+        "WHAT IT TRIED"
+      ],
+      "evidence": [
+        "3 attempts"
       ]
     },
     {
@@ -62,7 +86,6 @@
         "Nothing matched on the two machines that answered",
         "wsl-ubuntu-24 did not answer, so its sessions were not searched. This is not the same as having no results, and Domovoi will not round it down to one.",
         "Search only what answered",
-        "Worktree ready",
         "searched 2 of 3 machines"
       ],
       "presence": [
@@ -74,8 +97,8 @@
         "Search only what answered"
       ],
       "partial": {
-        "since": "2026-09-23",
-        "reason": "the palette searches every admitted machine and says which answered (J39); the aggregate no-match line is not drawn, each machine says no matches on its own row"
+        "since": "2026-10-02",
+        "reason": "the palette searches every admitted machine and says which answered (J39), with the not-searched line and Search only what answered; the main-area block (the SearchX icon, the aggregate Nothing matched on the N machines that answered, per-machine rows with N sessions searched) is not drawn, each machine says no matches on its own row; the rail's No session matched with Clear the search is not drawn because the drawer has no filter. The phone and tablet have no search"
       }
     },
     {
@@ -83,6 +106,7 @@
       "name": "Worktree ready state",
       "where": "session start state",
       "copy": [
+        "Worktree ready",
         "wt-search-index off main at 8f3c1de",
         "Nothing has run yet",
         "The session exists, the worktree is cut, and the agent has not been given a turn. Your first message is what starts it.",
@@ -92,11 +116,12 @@
       ],
       "evidence": [
         "Worktree ready",
-        "Nothing has run yet"
+        "Nothing has run yet",
+        "Say what you want done in"
       ],
       "partial": {
-        "since": "2026-09-22",
-        "reason": "The phone draws Nothing has run yet on an empty session. Desktop and web draw no session start state, and no client draws the Worktree ready header."
+        "since": "2026-10-02",
+        "reason": "The phone draws Nothing has run yet and its body on an empty session, with no Worktree ready header. Desktop and web draw only the start line (repo, branch, worktree, started HH:MM) and the tablet nothing; no client draws the Worktree ready header or the Say what you want done in <project> placeholder, though baseCommit, branch, workspacePath and the project branch are all in the snapshot. Q368 A (2026-10-02): build the header, title, body and placeholder now; build the What it will do first rows only from the session's permission mode and checkpoint policy, because as drawn they describe Ask-like behaviour in every mode; defer the starters, which need a suggestion source"
       },
       "presence": [
         "Nothing has run yet"
@@ -105,7 +130,23 @@
   ],
   "annotations": [],
   "sample": [],
-  "humanRead": [],
+  "humanRead": [
+    {
+      "id": "states.sessions",
+      "since": "2026-10-02",
+      "note": "Q385 A: Clone a repository is cut from the empty sessions state on every client, as the phone's clone was cut on 2026-09-18; there is no clone RPC. The copy stays claimed here because the design still draws it."
+    },
+    {
+      "id": "states.worktree",
+      "since": "2026-10-02",
+      "note": "Q368 A: the OR START FROM SOMETHING IT ALREADY KNOWS starters are deferred until a suggestion source exists, and the What it will do first rows follow the session's permission mode and checkpoint policy rather than the drawn Ask-like lines."
+    },
+    {
+      "id": "states.loading",
+      "since": "2026-10-02",
+      "note": "Q344 A: once the first attempt fails the skeleton stops and says Not connected. Nothing has been read from <host> yet., a third state the design does not draw; the drawn shimmer would claim a read that is not happening."
+    }
+  ],
   "scriptBacklog": {
     "since": "2026-09-26",
     "reason": "Copy the design builds in its data script, collected by the gate since audit G23 and not yet read against the implementation. Classify each string as an element's copy, sample or annotations, and remove it here.",

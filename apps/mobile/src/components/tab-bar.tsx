@@ -14,7 +14,7 @@ export function normalizeTab(value: unknown): Tab {
 }
 
 const tabs: Array<{ id: Tab, label: string, icon: IconName }> = [
-  { id: "sessions", label: "Sessions", icon: "layers" },
+  { id: "sessions", label: "Sessions", icon: "message-square" },
   { id: "machines", label: "Machines", icon: "server" },
   { id: "settings", label: "Settings", icon: "settings" },
 ]

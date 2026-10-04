@@ -50,6 +50,13 @@ describe("shellState", () => {
 
     expect(reaching.kind).toBe("reaching")
     expect(reaching.detail).toBe("Cannot reach ws://desk")
+    expect(reaching.faulted).toBe(true)
+  })
+
+  // First contact and a retried failure are both "reaching"; only one of them
+  // has gone wrong, and the screen marks that one.
+  it("says reaching is a fault only when one is behind it", () => {
+    expect(shellState(base).faulted).toBeUndefined()
   })
 })
 
@@ -88,6 +95,7 @@ describe("unreachableShell", () => {
       kind: "reaching",
       headline: "Reaching the daemon",
       detail: "No route.",
+      faulted: true,
     })
   })
 })

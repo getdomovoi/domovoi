@@ -36,4 +36,15 @@ describe("BrowserLimitsPanel", () => {
 
     expect(onContinue).toHaveBeenCalledTimes(1)
   })
+
+  it("names the way back when it was opened before there is a session", async () => {
+    const user = userEvent.setup()
+    const onContinue = vi.fn()
+    render(<BrowserLimitsPanel rows={rows} onContinue={onContinue} continueLabel="Back to pairing" />)
+
+    expect(screen.queryByRole("button", { name: "Continue to the session" })).toBeNull()
+    await user.click(screen.getByRole("button", { name: "Back to pairing" }))
+
+    expect(onContinue).toHaveBeenCalledTimes(1)
+  })
 })

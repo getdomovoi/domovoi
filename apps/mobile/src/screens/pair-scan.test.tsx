@@ -50,12 +50,93 @@ describe("pairing by camera", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
     await waitFor(() => expect(onPaired).toHaveBeenCalledWith(credential))
   }, cold)
+  // Phone v2 frame 04g: before it pairs, the phone heads the shared grant list
+  // with what this device will be able to do. A tablet says tablet.
+  it("heads the grant list with what this device will be able to do", async () => {
+    for (const [device, eyebrow] of [["phone", "THIS PHONE WILL BE ABLE TO"], ["tablet", "THIS TABLET WILL BE ABLE TO"]] as const) {
+      await render(
+        <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device={device} />,
+      )
+      expect(screen.getByText(eyebrow)).toBeTruthy()
+      expect(screen.queryByText("A paired phone can")).toBeNull()
+    }
+  }, cold)
+
+  // The note under the grant list names the device being paired: the client
+  // kind the machine mints for and whose keychain holds the credential.
+  it("names the tablet in the note under the grant list", async () => {
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPad" onDone={jest.fn()} device="tablet" />,
+    )
+    // Before the code is spent the phone cannot know which kind it mints (the
+    // payload carries none), so the note names the device holding the
+    // credential and not the credential's kind.
+    expect(screen.getByText(/minted with domovoid pair for a phone or a tablet/)).toBeTruthy()
+    expect(screen.getByText(/stays in this tablet's keychain/)).toBeTruthy()
+    expect(screen.queryByText(/--client (phone|tablet)|this phone's keychain/)).toBeNull()
+    // The field the machine's device list will show names the tablet too.
+    expect(screen.getByText("Name this tablet")).toBeTruthy()
+    expect(screen.getByLabelText("Tablet name")).toBeTruthy()
+    expect(screen.queryByText("Name this phone")).toBeNull()
+  }, cold)
+
+  // The kind is the credential's, which the machine fixed when it issued the
+  // code. A tablet that spends a phone's code holds a phone credential, and
+  // the paired card says so.
+  it("says when the credential's kind is not the device's", async () => {
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => ({ ...credential, client: "phone" as const })} deviceName="iPad" onDone={jest.fn()} device="tablet" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(screen.getByText("Paired with djs-macbook-pro-1")).toBeOnTheScreen())
+
+    expect(screen.getByText("Paired as a phone, because the code was issued for one.")).toBeOnTheScreen()
+  }, cold)
+
+  it("says nothing about the kind when it is the device's", async () => {
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(screen.getByText("Paired with djs-macbook-pro-1")).toBeOnTheScreen())
+
+    expect(screen.queryByText(/^Paired as a/)).toBeNull()
+  }, cold)
+
   it("says what a wrong code is and keeps scanning", async () => {
     await render(
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("https://example.com")} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
     )
     expect(screen.getByText("This is not a Domovoi pairing code")).toBeTruthy()
     expect(screen.queryByRole("button", { name: "Pair with this machine" })).toBeNull()
+  })
+
+  // Phone v2 frames 09 and 09b: a close control and the screen's name in a
+  // nav row, rather than a page heading over a Cancel at the foot.
+  it("heads pairing with a close control and the screen's name", async () => {
+    const onCancel = jest.fn()
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith("")} onPaired={jest.fn()} onCancel={onCancel} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,
+    )
+
+    expect(screen.getByText("Pair with a machine")).toBeTruthy()
+    expect(screen.queryByText("Pair a machine")).toBeNull()
+    expect(screen.getAllByRole("button", { name: "Cancel" })).toHaveLength(1)
+    await fireEvent.press(screen.getByRole("button", { name: "Cancel" }))
+    expect(onCancel).toHaveBeenCalledTimes(1)
+  })
+
+  it("closes from the same control once paired", async () => {
+    const onDone = jest.fn()
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onDone={onDone} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" device="phone" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(screen.getByText("Paired with djs-macbook-pro-1")).toBeOnTheScreen())
+
+    expect(screen.getByText("Pair with a machine")).toBeTruthy()
+    await fireEvent.press(screen.getByRole("button", { name: "Close" }))
+    expect(onDone).toHaveBeenCalledTimes(1)
   })
 
   it("keeps the typed fallback explicit beside the camera", async () => {

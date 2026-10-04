@@ -46,49 +46,93 @@ const textTone: Record<PlanRow["tone"], string> = {
 // Memoized, with a stable onWatch from the screen: a keystroke or a streamed
 // batch re-renders the screen, and a row that has not changed is not drawn or
 // parsed again.
+function Receipt({ entry, onWatch }: {
+  entry: Extract<ThreadEntry, { kind: "receipt" }>
+  onWatch: () => void
+}) {
+  // A deny is not a success, so it does not wear the success colours.
+  const denied = entry.recorded === "deny" || entry.recorded === "deny-explain"
+  const dim = denied ? "text-muted-foreground" : "text-ok-dim"
+  const record: Array<[string, string]> = [
+    ["Decision", entry.recorded],
+    ["Decided on", entry.client],
+    ...(entry.declaredClient ? [["Declared client", entry.declaredClient] as [string, string]] : []),
+    ["Checkpoint", entry.checkpoint],
+  ]
+  return (
+    <View className="gap-3">
+      <View className={cn("gap-[7px] rounded-2xl border px-4 py-[15px]", denied ? "border-border bg-card" : "border-ok-border bg-ok-bg")}>
+        <View className="flex-row items-center gap-2.5">
+          <View className={cn("h-[9px] w-[9px] rounded-full", denied ? "bg-faint" : "bg-success")} />
+          <Text className={cn("font-sans-semibold text-[19px] leading-[24px] tracking-[-0.015em]", denied ? "text-strong" : "text-ok-fg")}>{entry.decision}</Text>
+        </View>
+        {/* The checkpoint comes before the run, so the line names it first.
+            It is named by the commit the daemon recorded, which is the only
+            name the receipt carries for it. */}
+        {entry.checkpointTaken ? (
+          <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>
+            Checkpoint <Text className="font-mono text-[12px]">{entry.checkpoint}</Text>{" "}
+            {entry.ranFor
+              ? <>was taken first, then it ran in <Text className="font-mono text-[12px]">{entry.ranFor}</Text>.</>
+              : "was taken first."}
+          </Text>
+        ) : null}
+        <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>{entry.operation}</Text>
+        {entry.explanation ? <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>{entry.explanation}</Text> : null}
+      </View>
+      {/* Ruling Q357 A: the record, the notes and Watch belong to the latest
+          receipt of the open turn. A receipt that is history stops above. */}
+      {entry.current ? <>
+      <View className="overflow-hidden rounded-2xl border border-border">
+        <Text variant="label" className="border-b border-border px-[15px] py-[11px] tracking-[0.13em]">RECORDED AS</Text>
+        {record.map(([key, value], index) => (
+          <View
+            key={key}
+            accessible
+            accessibilityLabel={`${key}, ${value}`}
+            className={cn("flex-row items-baseline gap-3 bg-card px-[15px] py-[11px]", index > 0 && "border-t border-border")}
+          >
+            <Text className="font-sans text-[12.5px] text-muted-foreground">{key}</Text>
+            <Text className="flex-1 text-right font-mono text-[12px] text-strong">{value}</Text>
+          </View>
+        ))}
+      </View>
+      {/* Frame 03's note, that the audit row names this phone's verified
+          credential, is not drawn. A receipt records a client kind and a
+          connection id, and a daemon bearer typed into Settings can declare
+          phone over a recorded connection too, so the phone cannot show the
+          claim is true for a given receipt. */}
+      <Button title="Watch the rest of the turn" shape="block" onPress={onWatch} />
+      <Text className="font-sans text-[12px] leading-[19px] text-faint">Reverting happens on a desktop. A phone answers what a machine proposed; it does not rewind the work.</Text>
+      </> : null}
+    </View>
+  )
+}
+
 const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWatch: () => void }) {
-  if (entry.kind === "receipt") {
-    return (
-      <Card className="gap-3 border-ok-border bg-ok-bg">
-        <View className="flex-row items-center gap-2">
-          <View className="h-2 w-2 rounded-full bg-success" />
-          <Text variant="nav" className="text-ok-fg">{entry.decision}</Text>
-        </View>
-        <Text variant="meta" className="text-ok-dim">{entry.operation}</Text>
-        {entry.explanation ? <Text variant="meta" className="text-ok-dim">{entry.explanation}</Text> : null}
-        <View className="gap-2 rounded-xl border border-border bg-card p-3">
-          <Text variant="label">RECORDED AS</Text>
-          <Text variant="machine">Attribution · {entry.attribution}</Text>
-          <Text variant="machine">Checkpoint · {entry.checkpoint}</Text>
-          {entry.duration ? <Text variant="machine">Duration · {entry.duration}</Text> : null}
-        </View>
-        <Button title="Watch the rest of the turn" shape="block" onPress={onWatch} />
-        <Text variant="note">Reverting happens on a desktop. A phone answers what a machine proposed; it does not rewind the work.</Text>
-      </Card>
-    )
-  }
+  if (entry.kind === "receipt") return <Receipt entry={entry} onWatch={onWatch} />
+
   if (entry.kind === "policy-refusal") return null
+  // Phone v2 frame 11: yours is filled with the primary colour and tails to
+  // the right, the agent's is a bordered card that tails to the left.
   if (entry.kind === "message" && entry.voice === "you") {
     const bubble = (
-      <View className="max-w-[84%] self-end rounded-[13px] rounded-br-[4px] border border-border bg-accent px-[13px] py-2.5">
-        <Text variant="body">{entry.body}</Text>
+      <View className="max-w-[86%] self-end rounded-[18px] rounded-br-[4px] bg-primary px-3.5 py-[11px]">
+        <Text className="font-sans text-[13.5px] leading-[21px] text-primary-foreground">{entry.body}</Text>
       </View>
     )
     if (!entry.omission) return bubble
     return (
       <View className="gap-1">
         {bubble}
-        <Text variant="machine" className="max-w-[84%] self-end text-right text-faint">{entry.omission}</Text>
+        <Text variant="machine" className="max-w-[86%] self-end text-right text-faint">{entry.omission}</Text>
       </View>
     )
   }
   if (entry.kind === "message") {
     return (
-      <View className="flex-row gap-2.5">
-        <View className="h-[22px] w-[22px] items-center justify-center rounded-md border border-border">
-          <Text className="font-mono text-machine text-primary">◆</Text>
-        </View>
-        <AgentMarkdown body={entry.body} className="flex-1" />
+      <View className="max-w-[86%] self-start rounded-[18px] rounded-bl-[4px] border border-border bg-card px-3.5 py-[11px]">
+        <AgentMarkdown body={entry.body} />
       </View>
     )
   }
@@ -103,13 +147,69 @@ const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWa
   )
 })
 
-function PolicyRefusal({ refusal }: {
+// Ruling Q356 A: the refusal's one remedy can go to the agent as a steer from
+// here, because the composer is not drawn under a refusal. The protocol
+// carries a single remedy string; frame 05's tone-coded alternatives wait on
+// a protocol change.
+//
+// During a running turn the phone sends as the next turn's message, and the
+// daemon lets one such message wait per session: a new one replaces it. So the
+// refusal says that before the tap when one is waiting, draws the waiting one
+// with its cancel (the thread that would show it is not drawn here), and says
+// where the remedy went after the tap.
+const replaceable: ReadonlySet<QueuedSessionSend["state"]> = new Set(["waiting", "held", "unconfirmed"])
+
+// How a remedy went: as the next turn's message (next-turn-replace), straight
+// to the session, or queued and then held by the daemon because the turn had
+// already ended, in which case no boundary will release it on its own.
+export type TellDelivery = "next-turn" | "direct" | "held"
+
+function PolicyRefusal({ refusal, onTellAgent, sending, problem, activeTurn, queuedSend, canCancel, onCancelQueuedSend }: {
   refusal: Extract<ThreadEntry, { kind: "policy-refusal" }>
+  onTellAgent: ((text: string) => Promise<TellDelivery | undefined>) | undefined
+  sending: boolean
+  problem: string
+  activeTurn: boolean
+  queuedSend: QueuedSessionSend | undefined
+  canCancel: boolean
+  onCancelQueuedSend: (queueId: string) => void
 }) {
+  // How the remedy was sent at the tap. The turn can end or start before the
+  // screen redraws, so the line is picked from this, not from activeTurn.
+  const [sent, setSent] = useState<TellDelivery | undefined>(undefined)
+  const replaces = activeTurn && queuedSend !== undefined && replaceable.has(queuedSend.state)
   return (
     <View className="gap-3">
       <Text variant="title" className="text-[24px] leading-[30px]">Nothing to approve</Text>
       <PolicyRefusalCards refusal={refusal} />
+      {onTellAgent ? (
+        <View className="gap-2">
+          {replaces && !sent ? (
+            <Text variant="note" className="px-1">This replaces the message already queued for the next turn.</Text>
+          ) : null}
+          <Button
+            title="Tell the agent"
+            shape="block"
+            disabled={sending}
+            onPress={() => {
+              setSent(undefined)
+              void onTellAgent(refusal.remedy).then(setSent)
+            }}
+          />
+          {sent ? (
+            <Text accessibilityRole="alert" variant="note" className="px-1">
+              {/* Held: the queued card below carries the daemon's reason. */}
+              {sent === "held"
+                ? "Held. It will not reach the agent on its own."
+                : sent === "next-turn" ? "Sent. It will reach the agent when this turn ends." : "Sent to the agent."}
+            </Text>
+          ) : null}
+          {problem ? <Text accessibilityRole="alert" variant="note" className="px-1 text-destructive">{problem}</Text> : null}
+        </View>
+      ) : null}
+      {queuedSend ? (
+        <QueuedSendCard queued={queuedSend} canCancel={canCancel} onCancel={onCancelQueuedSend} />
+      ) : null}
     </View>
   )
 }
@@ -120,8 +220,11 @@ export function PolicyRefusalCards({ refusal }: {
   return (
     <>
       <Card className="gap-2 border-danger-border bg-danger-bg">
-        <Text variant="nav" className="text-danger-fg">Refused by policy</Text>
-        <Text variant="meta" className="text-danger-fg">The daemon refused before the command ran. No approval can override it.</Text>
+        <View className="flex-row items-center gap-2.5">
+          <View className="h-[9px] w-[9px] rounded-full bg-destructive" />
+          <Text className="font-sans-semibold text-[19px] leading-[24px] tracking-[-0.015em] text-danger-fg">Refused by policy</Text>
+        </View>
+        <Text variant="meta" className="text-danger-fg">There is no approve button here, because no decision of yours can permit it. The daemon refused before the command ran.</Text>
         <View className="rounded-xl bg-code p-3">
           <Text variant="machine" className="text-danger-fg">{refusal.command}</Text>
         </View>
@@ -462,6 +565,7 @@ export function SessionScreen({
   startRefusal,
   onSeeHeldBack,
   onStartLike,
+  onTellAgent,
 }: {
   detail: SessionDetail
   // The route can die while the thread is open; the screen says what is drawn
@@ -513,6 +617,9 @@ export function SessionScreen({
   startRefusal?: PhoneRefusal | undefined
   onSeeHeldBack?: (() => void) | undefined
   onStartLike: (prompt: string, mode: PermissionMode) => void
+  // Sends a policy refusal's remedy to the agent as a steer (ruling Q356 A).
+  // Resolves to how the daemon took the message, or undefined when it did not.
+  onTellAgent?: ((text: string) => Promise<TellDelivery | undefined>) | undefined
 }) {
   const [startOpen, setStartOpen] = useState(false)
   const [attachOpen, setAttachOpen] = useState(false)
@@ -587,7 +694,20 @@ export function SessionScreen({
           testID="thread"
         >
           <ConnectionBanner notice={notice} />
-          {detail.policyRefusal ? <PolicyRefusal refusal={detail.policyRefusal} /> : <>
+          {detail.policyRefusal ? (
+            <PolicyRefusal
+              // A new refusal starts with nothing sent.
+              key={detail.policyRefusal.id}
+              refusal={detail.policyRefusal}
+              onTellAgent={access === "full" && detail.sending.can ? onTellAgent : undefined}
+              sending={sending}
+              problem={sendProblem}
+              activeTurn={detail.activeTurn}
+              queuedSend={detail.queuedSend}
+              canCancel={access === "full"}
+              onCancelQueuedSend={onCancelQueuedSend}
+            />
+          ) : <>
           {/* The reason the phone was picked up goes above the reading, because
               scrolling a thread to find the decision is the slow path. */}
           {approvalId ? (
