@@ -156,6 +156,31 @@ describe("useWorkspace connection lifecycle", () => {
     expect(harness.sockets).toHaveLength(2)
   })
 
+  // A row the daemon attributes to a connection is this client's only when it
+  // names the connection this client holds now, so the id follows each hello
+  // and is gone while no connection is open.
+  it("holds the connection id each hello names, and none while disconnected", async () => {
+    const firstId = "11111111-1111-4111-8111-111111111111"
+    const secondId = "22222222-2222-4222-8222-222222222222"
+    const view = mountWorkspace()
+    expect(view.result.current.connectionId).toBeNull()
+    const first = harness.socket(0)
+    await drive(() => completeHandshake(first, { ...workspaceSnapshot(), connectionId: firstId }))
+    expect(view.result.current.connectionId).toBe(firstId)
+
+    await drive(() => first.drop(1006, "daemon restarted"))
+    expect(view.result.current.connectionId).toBeNull()
+
+    await drive(() => vi.advanceTimersToNextTimer())
+    await drive(() => completeHandshake(harness.socket(1), { ...workspaceSnapshot(), connectionId: secondId }))
+    expect(view.result.current.connectionId).toBe(secondId)
+
+    await drive(() => harness.socket(1).drop(1006, "daemon restarted"))
+    await drive(() => vi.advanceTimersToNextTimer())
+    await drive(() => completeHandshake(harness.socket(2)))
+    expect(view.result.current.connectionId).toBeNull()
+  })
+
   it("reconnect() refuses to open a duplicate socket while the current one is open", async () => {
     const view = mountWorkspace()
     const socket = harness.socket(0)

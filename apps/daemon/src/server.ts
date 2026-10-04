@@ -1187,8 +1187,19 @@ export function sessionHistoryEntries(
         ...(item.reason ? { reason: item.reason } : {}),
         ...(item.commit ? { commit: item.commit } : {}),
       })
-    } else if (item.kind === "user" || item.kind === "assistant") {
-      entries.push({ ...base, category: "messages", role: item.kind, body: item.body })
+    } else if (item.kind === "user") {
+      // The thread notes beside a sent message how many open annotations the
+      // per-turn limit left out; history carries the same count (Q431).
+      const overLimit = item.providerPromptDelivery?.annotations.omitted.limit ?? 0
+      entries.push({
+        ...base,
+        category: "messages",
+        role: "user",
+        body: item.body,
+        ...(overLimit > 0 ? { annotationsOverLimit: overLimit } : {}),
+      })
+    } else if (item.kind === "assistant") {
+      entries.push({ ...base, category: "messages", role: "assistant", body: item.body })
     } else if (item.kind === "system" && item.transfer) {
       entries.push({
         ...base,
@@ -8450,7 +8461,7 @@ export class DomovoiDaemon {
           (session) => !sessionIsReadOnly(session)
             && session.providerThreadId
             && session.activeTurnId,
-        ), params.client)
+        ), params.client, this.#pauseAttribution(socket))
       }
 
       if (method === "session.pause") {
@@ -8467,6 +8478,7 @@ export class DomovoiDaemon {
         changed = await this.#pauseSessions(
           session.providerThreadId && session.activeTurnId ? [session] : [],
           params.client,
+          this.#pauseAttribution(socket),
         )
       }
 
@@ -12178,9 +12190,20 @@ export class DomovoiDaemon {
     }
   }
 
+  // The connection that asked for a pause, written on its row as a receipt
+  // carries it, so a client can tell its own pause from another client's of
+  // the same kind (Q427). Empty when no authenticated client connection asked.
+  #pauseAttribution(socket: RpcOutboundSocket): { connectionId?: string; clientId?: string } {
+    const actor = this.#authenticatedActors.get(socket)
+    const connectionId = this.#connectionIds.get(socket)
+    if (actor?.kind !== "client" || !connectionId) return {}
+    return { connectionId, ...(actor.clientId ? { clientId: actor.clientId } : {}) }
+  }
+
   async #pauseSessions(
     active: WorkspaceSnapshot["sessions"],
     client: ClientKind,
+    attribution: { connectionId?: string; clientId?: string },
   ): Promise<boolean> {
     const results = await Promise.allSettled(active.map(async (session) =>
       withTimeout(
@@ -12210,6 +12233,7 @@ export class DomovoiDaemon {
           sessionId: session.id,
           kind: "system",
           body: `Paused by ${client}.`,
+          ...attribution,
           createdAt,
         })
       } else if (result.reason instanceof OperationTimeoutError) {

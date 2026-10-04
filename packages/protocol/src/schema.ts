@@ -676,6 +676,12 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     // notice cannot say where that split happened. Absent on a snapshot
     // written before the notice existed, and on every other system row.
     notice: z.literal("context-compaction").optional(),
+    // The connection that asked for a pause, shaped as on a receipt, so a
+    // client can tell its own pause from another client's of the same kind.
+    // Absent on a row written before the field existed and on rows no
+    // connection asked for.
+    connectionId: connectionIdSchema.optional(),
+    clientId: clientIdentityIdSchema.optional(),
     createdAt: dateTimeSchema,
   }),
   z.object({
