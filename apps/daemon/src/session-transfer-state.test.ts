@@ -89,6 +89,29 @@ describe("portable session transfer state", () => {
     }
   })
 
+  // A receipt crosses machines with the deciding device's id and label. The
+  // label is a person's own text, so a secret in it is replaced before it
+  // leaves; the id stays.
+  it("redacts a secret in a receipt's device label before it leaves", () => {
+    const source = sourceWorkspace()
+    const deviceId = `device-${"f".repeat(32)}`
+    source.thread.push({
+      id: "receipt-device-label",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "Run the migrations",
+      checkpoint: "unavailable",
+      client: "phone",
+      device: { id: deviceId, label: "office NPM_TOKEN=label-secret-1" },
+      createdAt: "2026-10-03T00:00:00.000Z",
+    })
+    const state = portableSessionTransferState(source, "session-billing", usage)
+    expect(state.thread.find((item) => item.id === "receipt-device-label"))
+      .toMatchObject({ device: { id: deviceId, label: "office NPM_TOKEN=[REDACTED]" } })
+    expect(JSON.stringify(state)).not.toContain("label-secret-1")
+  })
+
   it("names every durable checkpoint the repository transport must carry", () => {
     const state = portableSessionTransferState(sourceWorkspace(), "session-billing", usage)
 

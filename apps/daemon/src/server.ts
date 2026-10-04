@@ -345,6 +345,7 @@ import {
   workingPlanNeedsProviderDelivery,
   WorkingPlanMutationError,
 } from "./working-plan.js"
+import { redactDeviceLabel } from "./workspace-redaction.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -3925,10 +3926,12 @@ export class DomovoiDaemon {
   // terminal owner names it (ruling Q424 A): the id and label of the device
   // record the credential was checked against, read when the connection
   // acts. A connection on the daemon credential has no paired device and
-  // names none. Nothing the request said of itself is used.
+  // names none. Nothing the request said of itself is used. The label is a
+  // person's own text and is redacted before it enters the snapshot, where
+  // history, persistence and transfer copy it from.
   #decidingDevice(socket: RpcOutboundSocket): Pick<TerminalOwner, "device"> {
     const device = this.#deviceCredentials.get(socket)?.verified.device
-    return device ? { device: { id: device.id, label: device.label } } : {}
+    return device ? { device: { id: device.id, label: redactDeviceLabel(device.label) } } : {}
   }
 
   // The claimant as the receipt names a decider: what the connection said of

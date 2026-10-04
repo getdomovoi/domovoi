@@ -124,6 +124,20 @@ describe("the deciding device on a receipt", () => {
     expect((await history())[0]).toMatchObject({ category: "approvals", device: { id: phone.device.id, label: "dana" } })
   })
 
+  // The label is a person's own text, so a secret in it is replaced before
+  // the receipt enters the snapshot; history copies the receipt, so it reads
+  // the same. The device's id is an identifier and stays.
+  it("redacts a secret in the deciding device's label on the receipt and in history", async () => {
+    const { paired, raiseGate, receipts, history, snapshot } = await start()
+    const phone = await paired("office NPM_TOKEN=label-secret-1", "phone")
+    const card = await raiseGate("phone", phone.rpc)
+    expect((await phone.rpc("approval.resolve", { approvalId: card.id, decision: "allow-once", revision: card.revision, client: "phone" })).error).toBeUndefined()
+    const [receipt] = await receipts()
+    expect(receipt).toMatchObject({ device: { id: phone.device.id, label: "office NPM_TOKEN=[REDACTED]" } })
+    expect((await history())[0]).toMatchObject({ device: { id: phone.device.id, label: "office NPM_TOKEN=[REDACTED]" } })
+    expect(JSON.stringify(await snapshot())).not.toContain("label-secret-1")
+  })
+
   it("writes no device for a decision made on the daemon credential", async () => {
     const { owner, raiseGate, receipts, history } = await start()
     const card = await raiseGate("cli")
