@@ -1,7 +1,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, fleetSnapshotOverflowErrorCode, maximumFleetEntries, protocolVersion, workspaceDeltaSchema } from "@getdomovoi/protocol"
+import { demoWorkspace, fleetSnapshotOverflowErrorCode, maximumFleetEntries, maximumReviewAnnotations, protocolVersion, workspaceDeltaSchema } from "@getdomovoi/protocol"
 
 import {
   completeHandshake,
@@ -159,6 +159,36 @@ describe("useWorkspace connection lifecycle", () => {
     })
     await drive(() => respond(socket, "session.send", resolved))
     await expect(other).resolves.toBeUndefined()
+  })
+
+  // Codex review of PR #717: with more open comments than a message carries,
+  // the send names the newest up to the limit and counts the rest, so the
+  // daemon records them as the turn's limit omission instead of losing them.
+  it("names the newest open comments up to the limit and counts the rest", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    const base = workspaceSnapshot()
+    const annotation = base.annotations.find((candidate) => candidate.sessionId === "session-billing")!
+    const annotations = Array.from({ length: maximumReviewAnnotations + 1 }, (_, index) => ({
+      ...annotation,
+      id: `comment-${String(index).padStart(2, "0")}`,
+      status: "open" as const,
+      updatedAt: `2026-09-30T13:${String(index).padStart(2, "0")}:00.000Z`,
+    }))
+    await drive(() => completeHandshake(socket, workspaceSnapshot({ annotations })))
+
+    const sending = view.result.current.sendMessage("session-billing", "Address these")
+    expect(sentRequests(socket, "session.send")[0]?.params).toEqual({
+      sessionId: "session-billing",
+      prompt: "Address these",
+      client: "web",
+      review: {
+        annotationIds: annotations.slice(1).map((candidate) => candidate.id).reverse(),
+        omittedOverLimit: 1,
+      },
+    })
+    await drive(() => respond(socket, "session.send", workspaceSnapshot({ annotations })))
+    await expect(sending).resolves.toBeUndefined()
   })
 
   it("closes the previous socket and forgets its snapshot when the target changes", async () => {

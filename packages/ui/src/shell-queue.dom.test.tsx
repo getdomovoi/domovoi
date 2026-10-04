@@ -5,7 +5,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { StrictMode } from 'react'
 import { afterEach, beforeEach, expect, it } from 'vitest'
-import { workspaceSnapshotSchema, systemEmergencyStoppedNotificationSchema, skillSummarySchema, type SkillSummary, type WorkspaceSnapshot } from '@getdomovoi/protocol'
+import { maximumReviewAnnotations, workspaceSnapshotSchema, systemEmergencyStoppedNotificationSchema, skillSummarySchema, type SkillSummary, type WorkspaceSnapshot } from '@getdomovoi/protocol'
 import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
@@ -105,6 +105,49 @@ it('sends A when A ends while B stays visible', async () => {
   await snapshot(socket, visible(idle(value), other))
   expect(sentRequests(socket, 'session.send')).toHaveLength(1)
   expect(sentRequests(socket, 'session.send')[0]?.params).toMatchObject({ sessionId: value.activeSessionId, prompt: 'deliver for A' })
+})
+
+// Codex review of PR #717: a send names at most the newest
+// maximumReviewAnnotations open comments. A queued message reads its review
+// when it is released, counts the open comments it left out, and the turn's
+// delivery note shows them once the daemon records the send.
+it('a released send counts the open comments it left over the limit, and the note shows them', async () => {
+  const base = workspaceSnapshot()
+  const value = running()
+  const sessionId = value.activeSessionId!
+  const comment = base.annotations.find(annotation => annotation.sessionId === sessionId)!
+  value.artifacts = base.artifacts
+  value.annotations = Array.from({ length: maximumReviewAnnotations + 1 }, (_, index) => ({
+    ...comment,
+    id: `comment-${String(index).padStart(2, '0')}`,
+    status: 'open' as const,
+    updatedAt: `2026-09-30T13:${String(index).padStart(2, '0')}:00.000Z`,
+  }))
+  const socket = await open(workspaceSnapshotSchema.parse(value))
+  queue('address every comment')
+  await snapshot(socket, idle(value))
+
+  expect(sentRequests(socket, 'session.send')).toHaveLength(1)
+  const review = (sentRequests(socket, 'session.send')[0]?.params as { review: { annotationIds: string[], omittedOverLimit?: number } }).review
+  expect(review.annotationIds).toHaveLength(maximumReviewAnnotations)
+  expect(review.annotationIds).not.toContain('comment-00')
+  expect(review.omittedOverLimit).toBe(1)
+
+  const delivered = idle(value)
+  delivered.thread.push({
+    id: 'thread-user-over-limit', sessionId, kind: 'user', body: 'address every comment', createdAt: '2026-09-30T14:00:00.000Z',
+    providerPromptDelivery: {
+      version: 1,
+      budget: { unit: 'utf16-code-units', limit: 262_144, used: 9_000 },
+      handoff: { status: 'not-required' },
+      workingPlan: { status: 'not-required' },
+      annotations: { availableCount: maximumReviewAnnotations + 1, deliveredIds: review.annotationIds, omitted: { budget: 0, limit: 1 } },
+      skills: { selection: 'project-default', delivered: [], omitted: { budget: [], limit: [], unavailable: [], reviewChanged: [], policy: [] } },
+    },
+  })
+  await act(async () => respond(socket, 'session.send', workspaceSnapshotSchema.parse(delivered)))
+  await settle()
+  expect(screen.getByRole('note', { name: 'Prompt delivery' }).textContent).toContain('1 open annotation was over the per-turn limit')
 })
 
 it('refusal retains the message without automatic retry', async () => {
