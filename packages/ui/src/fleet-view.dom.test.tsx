@@ -23,7 +23,11 @@ it("shows client authorization next to disabled remote controls and names its au
   expect(screen.getByRole("button", { name: "Use studio" }).hasAttribute("disabled")).toBe(true)
   await user.click(screen.getByRole("button", { name: "Authorize this client for studio" }))
   const dialog = screen.getByRole("dialog")
-  expect(within(dialog).getByText('domovoid pair --client desktop --label "My desktop"')).toBeTruthy()
+  // `domovoid pair` prints a one-time pairing code, which this field does not
+  // take, so the dialog does not send the person to it for a credential.
+  expect(dialog.textContent).not.toContain("Run this on studio")
+  expect(dialog.textContent).toContain("Paste a client credential for a desktop client on studio. It comes from a device.pair request made with that daemon's own credential.")
+  expect(dialog.textContent).toContain("domovoid pair --client desktop --label <device label> prints a one-time pairing code, which this field does not take.")
   expect(dialog.textContent).toContain("session sends, approvals and terminals")
   expect(dialog.textContent).toContain("Devices list")
   expect(within(dialog).getByLabelText("Client credential").getAttribute("type")).toBe("password")

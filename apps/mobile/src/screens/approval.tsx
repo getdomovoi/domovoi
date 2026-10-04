@@ -32,6 +32,7 @@ export function approvalFacts(approval: ApprovalRequest): Array<{ key: string, v
 
 export function ApprovalScreen({
   approval,
+  sessionTitle,
   pending,
   notice,
   problem = "",
@@ -41,6 +42,10 @@ export function ApprovalScreen({
   watching = false,
 }: {
   approval: ApprovalRequest
+  // The session the gate belongs to, named above it so the person knows
+  // which piece of work is asking. The machine stands in when the phone has
+  // no session by that id.
+  sessionTitle?: string | undefined
   pending: boolean
   // A watching phone reads the gate in full and answers nothing. The daemon
   // refuses its decisions; the screen does not offer them.
@@ -69,27 +74,42 @@ export function ApprovalScreen({
         >
           <Icon name="chevron-left" tone="primary" />
         </Pressable>
-        <View className="flex-1">
-          <Text variant="nav" numberOfLines={1}>Approval</Text>
-          <Text variant="machine">{approval.machine}</Text>
-        </View>
+        <Text className="flex-1 font-sans text-[13px] text-muted-foreground" numberOfLines={1}>
+          {sessionTitle ?? approval.machine}
+        </Text>
         {approval.risk === "hard-gate" ? <Badge label="Hard gate" tone="warning" pill /> : null}
       </View>
 
       {/* What the decision bar blurs on Android. The bar stays outside it. */}
       <BlurBackdrop style={{ flex: 1 }}>
         <PageScroller
-          contentContainerClassName="gap-3 px-3.5"
+          contentContainerClassName="gap-[13px] px-4"
           bottomInset={footprint}
         >
           <ConnectionBanner notice={notice} />
-          <Text variant="body">{approval.operation}</Text>
+          {/* Whose turn it is, in the gate's own amber. A watching phone
+              cannot answer, so for it the gate waits on someone else. */}
+          <View className="flex-row items-center gap-[11px]">
+            <View className="h-[11px] w-[11px] rounded-full bg-warning" />
+            <Text
+              accessibilityRole="header"
+              className="flex-1 font-sans-semibold text-[24px] leading-[30px] tracking-[-0.02em] text-warn-fg"
+            >
+              {watching ? "Waiting on a full-access device" : "Waiting on you"}
+            </Text>
+          </View>
+          {/* A gate is raised before its command runs, so a pending one has
+              changed nothing yet. */}
+          <View>
+            <Text className="font-sans text-[14px] leading-[22px] text-strong">{approval.operation}</Text>
+            <Text className="font-sans text-[14px] leading-[22px] text-strong">Nothing has run yet.</Text>
+          </View>
 
-          <Card className="bg-code px-3.5 py-3.5">
-            <Text variant="machine" className="text-[12px] leading-[19px] text-warn-fg">
+          <View className="rounded-2xl bg-code px-[15px] py-3.5">
+            <Text className="font-mono text-[14px] leading-[21px] text-warn-fg">
               {approval.command}
             </Text>
-          </Card>
+          </View>
 
           <Card flush>
             {approvalFacts(approval).map((fact, index) => (

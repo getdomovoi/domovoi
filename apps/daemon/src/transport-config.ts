@@ -18,12 +18,18 @@ export function isLoopbackHost(host: string): boolean {
 
 // This is an operator's explicit route classification, not inferred membership
 // or evidence that a name/IP range protects traffic. Remote listeners still need TLS.
+// Re-review of 10dba4a2 (P2): every check reads the host the URL parser
+// produces, and a name it rewrites (1.0x0 parses as 1.0.0.0) is refused, so
+// what is checked is what is advertised. An IPv6 literal is only written in
+// its compressed form, which says the same address.
 export const tailnetHostSchema = z.string().min(1).check(utf16MaxLength(253)).refine((host) => {
   if (/[\s/@?#\\%]/u.test(host)) return false
   try {
     const url = new URL(`wss://${endpointHost(host)}:1/rpc`)
-    return url.port === "1" && url.pathname === "/rpc"
-      && !["0.0.0.0", "[::]"].includes(url.hostname) && !isLoopbackHost(host)
+    const parsed = url.hostname
+    const rewritten = !host.includes(":") && parsed !== host.toLowerCase()
+    return url.port === "1" && url.pathname === "/rpc" && !rewritten
+      && !["0.0.0.0", "[::]"].includes(parsed) && !isLoopbackHost(parsed)
   } catch { return false }
 })
 

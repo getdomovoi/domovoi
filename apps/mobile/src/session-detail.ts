@@ -29,11 +29,27 @@ export type ThreadEntry =
     id: string
     kind: "receipt"
     decision: string
+    // The decision as the record holds it, for the RECORDED AS rows.
+    recorded: ApprovalDecision
     operation: string
     explanation: string | undefined
-    attribution: string
+    client: string
+    // The client id a hello declared, which legacy receipts carry. No paired
+    // credential vouches for it, so it is shown as declared, never as a
+    // credential (packages/ui/src/session-history.ts names it the same way).
+    declaredClient: string | undefined
     checkpoint: string
-    duration: string | undefined
+    // True only when the daemon took this checkpoint before running the
+    // command: an allow that names a commit. A deny records the session's
+    // reference, and an allow that could not take one says unavailable.
+    checkpointTaken: boolean
+    // How long the allowed command ran, once it has finished.
+    ranFor: string | undefined
+    // How long the gate waited for this answer.
+    decidedAfter: string | undefined
+    // The latest receipt of the open turn, which the phone draws in full.
+    // Every other receipt is history and is drawn compact (ruling Q357 A).
+    current: boolean
   }
   | ({ id: string, kind: "policy-refusal" } & Pick<
     PolicyRefusalThreadItem,
@@ -78,7 +94,21 @@ function shortReference(reference: string): string {
   return /^[0-9a-f]{40}$/.test(reference) ? reference.slice(0, 7) : reference
 }
 
-function credentialReference(clientId: string): string {
+// Seconds, then minutes and seconds, then hours and minutes, rounded to the
+// second the daemon measured in. Past an hour the seconds stop helping.
+function elapsed(ms: number): string {
+  const seconds = Math.round(ms / 1_000)
+  if (seconds < 60) return `${seconds}s`
+  if (seconds < 3_600) {
+    const rest = seconds % 60
+    return rest === 0 ? `${Math.floor(seconds / 60)}m` : `${Math.floor(seconds / 60)}m ${rest}s`
+  }
+  const minutes = Math.floor((seconds % 3_600) / 60)
+  const hours = Math.floor(seconds / 3_600)
+  return minutes === 0 ? `${hours}h` : `${hours}h ${minutes}m`
+}
+
+function clientReference(clientId: string): string {
   const normalized = clientId.replace(/^device-/, "device ")
   if (normalized.length <= 16) return normalized
   return `${normalized.slice(0, 11)}…${normalized.slice(-4)}`
@@ -106,20 +136,21 @@ function entryFor(item: ThreadItem): ThreadEntry {
         meta: item.commit ? item.commit.slice(0, 7) : undefined,
       }
     case "receipt": {
-      const attribution = item.clientId
-        ? `${item.client} · ${credentialReference(item.clientId)}`
-        : item.client
+      const allowed = item.decision === "allow-once" || item.decision === "always-project"
       return {
         id: item.id,
         kind: "receipt",
         decision: decisionLabels[item.decision],
+        recorded: item.decision,
         operation: item.operation,
         explanation: item.explanation,
-        attribution,
+        client: item.client,
+        declaredClient: item.clientId ? clientReference(item.clientId) : undefined,
         checkpoint: item.checkpoint === "unavailable" ? "no checkpoint" : shortReference(item.checkpoint),
-        duration: item.decisionDurationMs === undefined
-          ? undefined
-          : `${Math.round(item.decisionDurationMs / 1_000)}s`,
+        checkpointTaken: allowed && item.checkpoint !== "unavailable",
+        ranFor: item.ranForMs === undefined ? undefined : elapsed(item.ranForMs),
+        decidedAfter: item.decisionDurationMs === undefined ? undefined : elapsed(item.decisionDurationMs),
+        current: false,
       }
     }
     case "policy-refusal":
@@ -149,7 +180,33 @@ export function threadEntries(
 ): { entries: ThreadEntry[], omitted: number } {
   const mine = snapshot.thread.filter((item) => item.sessionId === sessionId)
   const bounded = boundedClientThread(mine, sessionId)
-  return { entries: bounded.map(entryFor), omitted: mine.length - bounded.length }
+  const entries = bounded.map(entryFor)
+  const current = currentReceiptIndex(bounded, snapshot.sessions.find((session) => session.id === sessionId)?.activeTurnId)
+  if (current !== undefined) {
+    const entry = entries[current]
+    if (entry?.kind === "receipt") entries[current] = { ...entry, current: true }
+  }
+  return { entries, omitted: mine.length - bounded.length }
+}
+
+// Ruling Q357 A draws only the latest receipt of the open turn in full. A
+// receipt belongs to the open turn when the session holds one and no message
+// of yours has started another since.
+//
+// Known limitation: a thread item's turnId is the daemon's usage digest, not
+// the raw provider id in session.activeTurnId, so the two cannot be compared.
+// That is why a steer into the same running turn (from a desktop, say) still
+// folds the latest receipt to compact: its user item looks like a new turn.
+// For the same reason a receipt's own turnId is not compared and does not
+// decide whether it is current; the scan rule alone does.
+function currentReceiptIndex(items: readonly ThreadItem[], activeTurnId: string | undefined): number | undefined {
+  if (!activeTurnId) return undefined
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index]!
+    if (item.kind === "user") return undefined
+    if (item.kind === "receipt") return index
+  }
+  return undefined
 }
 
 // The daemon refuses to pause a session it considers read-only, and it stops

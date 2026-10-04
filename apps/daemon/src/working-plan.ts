@@ -160,6 +160,25 @@ export function updateWorkingPlanFromProvider(
   return { plan, changed: true, structureChanged }
 }
 
+// Whether an artifact is the session's working plan or a turn-scoped working
+// plan stored before the stable id existed. Those were named
+// plan-<sessionId>-<provider turn id, or "current"> and never had a path.
+// The artifact watcher names plan files found in the worktree
+// plan-<sessionId>-<hash> and always records their path, so the id alone
+// cannot tell the two apart: a prefixed artifact with a path is a file.
+// The watcher never makes the exact id plan-<sessionId>. Older daemons could
+// rename a watched file to it and keep the path, so that id is the working
+// plan whatever its path, and taking it over drops the path.
+export function isWorkingPlanArtifact(artifact: Artifact, sessionId: string): boolean {
+  const artifactId = `plan-${sessionId}`
+  return artifact.sessionId === sessionId
+    && artifact.type === "plan"
+    && (
+      artifact.id === artifactId
+      || (artifact.path === undefined && artifact.id.startsWith(`${artifactId}-`))
+    )
+}
+
 export function syncWorkingPlanArtifact(
   artifacts: Artifact[],
   annotations: Annotation[],
@@ -167,12 +186,7 @@ export function syncWorkingPlanArtifact(
   structureChanged: boolean,
 ): { artifact: Artifact, changed: boolean } {
   const artifactId = `plan-${plan.sessionId}`
-  const legacyPrefix = `${artifactId}-`
-  const matching = artifacts.filter((artifact) =>
-    artifact.sessionId === plan.sessionId
-    && artifact.type === "plan"
-    && (artifact.id === artifactId || artifact.id.startsWith(legacyPrefix)),
-  )
+  const matching = artifacts.filter((artifact) => isWorkingPlanArtifact(artifact, plan.sessionId))
   const stable = matching.find((artifact) => artifact.id === artifactId)
   if (!structureChanged && stable) return { artifact: stable, changed: false }
 

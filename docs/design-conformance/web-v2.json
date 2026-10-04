@@ -7,7 +7,7 @@
     "packages/protocol/src/**/*.ts",
     "apps/web/src/**/*.{ts,tsx}"
   ],
-  "note": "Six frames. The web renders the desktop package, so the thread, gate, composer and review inherit docs/design-conformance/desktop-v2.json and are not repeated here; this inventory holds what the web draws of its own. The design describes a browser reached over Domovoi Cloud with account tiers. M1's web client runs over loopback and the tailnet with no relay and no accounts (S3.2, S0.6, Phase 2, Phase 5), so most of this design is blocked on the platform rather than unbuilt, and the finding is recorded once at the top: the Web v2 design is the Phase 2 product drawn early. Ruled 2026-09-18: this inventory is scoped to the limits page and what the web inherits from the desktop; the rest is not measurable until the relay exists, and five blocked out of eleven is the honest number.",
+  "note": "Six frames. The web renders the desktop package, so the thread, gate, composer and review inherit docs/design-conformance/desktop-v2.json and are not repeated here; this inventory holds what the web draws of its own. The design describes a browser reached over Domovoi Cloud with account tiers. M1's web client runs over loopback and the tailnet with no relay and no accounts (S3.2, S0.6, Phase 2, Phase 5), so most of this design is blocked on the platform rather than unbuilt, and the finding is recorded once at the top: the Web v2 design is the Phase 2 product drawn early. Ruled 2026-09-18: this inventory is scoped to the limits page and what the web inherits from the desktop; the rest is not measurable until the relay exists. Re-read against the code 2026-10-02 (v2 parity audit, rulings Q336 to Q397): five elements that rested on a component name or on strings without the drawn behaviour are partial, the route chip's loopback and tailnet states are M1 and no longer blocked, and the expired and wrong-machine outcomes are blocked on a design edit (Q365 A).",
   "sample": [
     "acme-api · pull requests",
     "no extension, no install",
@@ -33,10 +33,22 @@
       "copy": [
         "Domovoi"
       ],
-      "evidence": [
+      "presence": [
         "<DomovoiMark reduced className=\"size-[22px] shrink-0 text-primary\"",
         "Use dark theme"
       ],
+      "evidence": [
+        "<DomovoiMark reduced className=\"size-[22px] shrink-0 text-primary\"",
+        "Use dark theme",
+        {
+          "absent": "<DomovoiMark reduced className=\"size-5 text-primary\" />",
+          "in": "packages/ui/src/web-connect-page.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "inside the workspace the web draws the desktop v2 bar (the 2026-09-18 inheritance ruling); the pre-session pages draw no bar at all. WebConnectPage, BrowserLimitsPanel and DaemonCredentialPrompt put a 20px mark beside their heading with no Domovoi wordmark, app label or theme toggle, so the theme cannot be changed before pairing. Q382 A (2026-10-02) keeps the desktop bar in the workspace and draws the Web v2 bar on the pre-session pages. The Domovoi copy claim matches only the palette title fallback in app-bar, not a drawn wordmark"
+      },
       "notes": [
         "2026-10-01 (S3.10 slice 1): the shared app bar draws the mark at 22px, which the Web v2 markStyle also draws."
       ]
@@ -50,13 +62,19 @@
         "tailnet",
         "loopback"
       ],
-      "evidence": [
-        "routeText"
+      "presence": [
+        "const transport = machineTransport ??"
       ],
-      "blocked": {
-        "since": "2026-09-18",
-        "needs": "platform",
-        "reason": "the chip's states are relay routes; M1 has loopback and the tailnet only (S0.6, Phase 2). The M1 web client shows connection state, not a route chip"
+      "evidence": [
+        "const transport = machineTransport ??",
+        {
+          "absent": "attached ? \"remote\" : \"local\"",
+          "in": "packages/ui/src/workspace-shell.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "no longer blocked as a whole: the design's loopback and tailnet states are M1 (frame 0c, Attached over tailnet: the chip names the route and the machine). The web draws the desktop machine chip, and workspace-shell passes local, remote or unreachable, so a web tab over the tailnet reads local, which is false. The route is already known: routeName in apps/web/src/browser-limits.ts derives loopback or the tailnet from the RPC URL. Only the cloud relay · latency state is blocked (relay, M2)"
       }
     },
     {
@@ -81,12 +99,25 @@
         "Pair this browser",
         "HOW THIS TAB IS TRUSTED"
       ],
+      "presence": [
+        "Works once, for 180 seconds",
+        "Pair this browser",
+        "HOW THIS TAB IS TRUSTED"
+      ],
       "evidence": [
         "Works once, for 180 seconds",
         "Pair this browser",
         "HOW THIS TAB IS TRUSTED",
-        "device.redeemCode"
-      ]
+        "Reload this page",
+        {
+          "absent": "mono: `credential ${next.deviceId.slice(-8)} · this tab only`",
+          "in": "apps/web/src/web-app.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "pairing by code works; the page is not the drawn page. Every refusal offers Type a new code, so a version mismatch says to reload but offers no Reload this page (environment.reloadPage exists) and no answer offers no Try again (Q366 A, 2026-10-02: Try again resends the same code). The accepted mono line lacks the route prefix (tailnet · credential …). The trust facts are a bare list, not the bordered card; the page has no app bar (see appbar); the What a browser tab can and cannot do link is dead before pairing (see limits)"
+      }
     },
     {
       "id": "connect.page-origin",
@@ -109,9 +140,9 @@
         "wrong_machine"
       ],
       "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "the daemon answers every bad code with one uniform refusal on purpose (Pairing was refused), so a page cannot tell expired from spent from another machine's code; only protocol mismatch, device limit and no answer are distinct"
+        "since": "2026-10-02",
+        "needs": "design",
+        "reason": "not to be built (Q365 A, 2026-10-02): the daemon answers every bad code with one uniform refusal on purpose (Pairing was refused), so codes give no oracle and a page cannot tell expired from spent from another machine's code; only protocol mismatch, device limit and no answer are distinct. The two drawn cards go back to Claude Design as a design edit"
       }
     },
     {
@@ -129,7 +160,7 @@
       "blocked": {
         "since": "2026-09-18",
         "needs": "platform",
-        "reason": "attaching over Cloud with a signed-in identity is Phase 2 and Phase 5; M1's web client pairs one daemon with a device credential (apps/web/src/credential.ts)"
+        "reason": "attaching over Cloud with a signed-in identity is Phase 2 and Phase 5 (M2 relay, M3 accounts); M1's web client pairs one daemon with a device credential (apps/web/src/credential.ts)"
       }
     },
     {
@@ -139,9 +170,21 @@
       "copy": [
         "Switch"
       ],
-      "evidence": [
+      "presence": [
         "<SessionsDrawerColumn"
-      ]
+      ],
+      "evidence": [
+        "<SessionsDrawerColumn",
+        "re:>\\s*Switch\\s*<",
+        {
+          "absent": "const [sessionsOpen, setSessionsOpen] = useState(false)",
+          "in": "packages/ui/src/workspace-shell.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the web draws the desktop v2 drawer, closed by default at 268px; the Web v2 frame draws an always-open 244px column carrying Paired for this tab. Q384 A (2026-10-02) opens it by default on the web at wide widths. The claimed Switch is in no source (the earlier evidence proved only that a column exists): Switch goes back to attach over Cloud, so that half is blocked on the relay (M2)"
+      }
     },
     {
       "id": "sessions-column.tab-credential",
@@ -170,7 +213,7 @@
       "blocked": {
         "since": "2026-09-18",
         "needs": "platform",
-        "reason": "a relay latency banner needs a relay; S2.4 covers degraded behaviour under packet loss for the routes M1 has"
+        "reason": "a relay latency banner needs a relay (Phase 2, M2); S2.4 covers degraded behaviour under packet loss for the routes M1 has"
       }
     },
     {
@@ -228,10 +271,26 @@
         "What a browser tab can and cannot do",
         "Each difference follows from one fact: no daemon, no repository, no keychain."
       ],
-      "evidence": [
+      "presence": [
         "Browser limits",
         "What a browser tab can and cannot do"
-      ]
+      ],
+      "evidence": [
+        "Browser limits",
+        "What a browser tab can and cannot do",
+        {
+          "absent": "and that path is not built.",
+          "in": "apps/web/src/browser-limits.ts"
+        },
+        {
+          "absent": "onOpenLimits={() => setLimitsSeen(false)}",
+          "in": "apps/web/src/web-app.tsx"
+        }
+      ],
+      "partial": {
+        "since": "2026-10-02",
+        "reason": "the panel reports real browser state; one row is false and the page cannot be reached as drawn. Attach a local file says not yet ... that path is not built, while the shared composer attaches an image or file from this device as a payload, which is the design's always a payload row (Q383 A, 2026-10-02: fix that row to the design's wording). The page is an interstitial shown once per tab: the connect page's link only queues it for after pairing, so it does nothing before pairing, and nothing in the workspace reopens it. Q367 A (2026-10-02) keeps the interstitial, makes the connect link navigate with a Back, and adds the page to the palette or Settings"
+      }
     },
     {
       "id": "limits.tier-note",
@@ -246,7 +305,7 @@
       "blocked": {
         "since": "2026-09-18",
         "needs": "platform",
-        "reason": "tiers are Phase 5; no product surface may claim account behaviour in M1"
+        "reason": "tiers are Phase 5 (M3); no product surface may claim account behaviour in M1"
       }
     },
     {
@@ -269,7 +328,7 @@
       "blocked": {
         "since": "2026-09-18",
         "needs": "platform",
-        "reason": "a capability refused by route exists (S3.2, capability-refused real rather than drawn); the tier framing and the two tier lists are Phase 5 and may not ship in M1"
+        "reason": "a capability refused by route exists (S3.2, capability-refused real rather than drawn); the tier framing and the two tier lists are Phase 5 (M3) and may not ship in M1"
       }
     },
     {
@@ -291,6 +350,11 @@
       "note": "the panel reports real browser state; whether its rows are the design's seven, with what, state and why, is not verified by this gate"
     },
     {
+      "id": "limits",
+      "since": "2026-10-02",
+      "note": "Ruled Q383 A: the page keeps its eleven measured rows rather than the design's seven. The four extra rows are Notifications, Copy to the clipboard, Install as an app and Choose a folder, each measured against this browser. Hold the credential stands in for the design's Store a credential, and Terminal reads same as desktop on loopback or the tailnet rather than tier dependent, because tiers are not in M1. Attach a local file uses the design's state, always a payload."
+    },
+    {
       "id": "connect",
       "since": "2026-09-23",
       "note": "The connect title and sub-line, the pair hint, the outcome cards and the five trust facts live in the design's data (connectTitle, connectSub, pairHint, outcomes, tailFacts), so the gate cannot hold them as drawn copy. Read them against the connect page."
@@ -299,6 +363,21 @@
       "id": "connect",
       "since": "2026-09-23",
       "note": "The code is the daemon's word code (ND1), so the placeholder and the lock hint follow that shape instead of DVOI-XXXX-XXXX and 12 characters. Before pairing a tab knows only the address it dials, so the title names the host, not the daemon's machine name. The QR fill reads ?code= from the address bar and removes it. The daemon credential stays reachable one link down for a machine with no desktop."
+    },
+    {
+      "id": "limits",
+      "since": "2026-10-02",
+      "note": "Q383 A: the page keeps its eleven measured rows where the design draws seven; the four extra rows are a ruled addition, and the attach row takes the design's wording. The design's Terminal · tier dependent row is tier framing (M3); the code's same as desktop on loopback or the tailnet is the M1 row."
+    },
+    {
+      "id": "appbar",
+      "since": "2026-10-02",
+      "note": "Inside the workspace the web draws the desktop v2 bar, not the Web v2 bar (2026-09-18 inheritance ruling, kept by Q382 A); only the pre-session pages take the Web v2 bar."
+    },
+    {
+      "id": "gate",
+      "since": "2026-10-02",
+      "note": "The design draws Always here on a hard gate; the code hides Always on hard gates and on requests it could not resolve (ruled 2026-09-24, #545). Open gap, no ruling: the holder line's second half, the phone is watching, is not drawn, because per-gate presence of other devices is not on the wire. Q371 A changes the Always label to Always for this command here on the desktop and web gate card, which the web shares."
     }
   ],
   "annotations": [

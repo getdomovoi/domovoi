@@ -38,7 +38,8 @@ export function DaemonCredentialPrompt({
   }
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-background p-6 text-foreground">
+    // Full height comes from the page around it, under the Web v2 bar.
+    <main className="flex min-h-0 flex-1 items-center justify-center bg-background p-6 text-foreground">
       <Card className="w-full max-w-md">
         <CardHeader>
           <div className="mb-2 flex size-9 items-center justify-center rounded-md bg-accent text-primary">

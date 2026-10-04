@@ -10,6 +10,8 @@ import Eye from "lucide-react-native/icons/eye"
 import Image from "lucide-react-native/icons/image"
 import Layers from "lucide-react-native/icons/layers"
 import ListChecks from "lucide-react-native/icons/list-checks"
+import MessageSquare from "lucide-react-native/icons/message-square"
+import MessageSquareDashed from "lucide-react-native/icons/message-square-dashed"
 import Pencil from "lucide-react-native/icons/pencil"
 import Pin from "lucide-react-native/icons/pin"
 import Plus from "lucide-react-native/icons/plus"
@@ -38,6 +40,8 @@ const glyphs = {
   image: Image,
   layers: Layers,
   "list-checks": ListChecks,
+  "message-square": MessageSquare,
+  "message-square-dashed": MessageSquareDashed,
   pencil: Pencil,
   pin: Pin,
   plus: Plus,

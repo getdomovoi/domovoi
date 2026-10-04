@@ -84,6 +84,14 @@ describe("readCredential", () => {
     expect(() => readCredential("hearth-quiet-ember-42")).toThrow(PairingError)
     expect(() => readCredential("")).toThrow(PairingError)
   })
+
+  // No `domovoid` command prints a client credential, so the refusal does
+  // not name one; it says a pairing code is not taken here.
+  it("says a pairing code does not work here, without naming a command that prints none", () => {
+    expect(() => readCredential("hearth-quiet-ember-42")).toThrow(
+      "That is not a client credential. Paste the credential alone, or the line 'Client credential: <credential>'. A pairing code does not work here.",
+    )
+  })
 })
 
 describe("pair", () => {
