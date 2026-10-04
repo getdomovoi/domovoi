@@ -176,7 +176,7 @@ function boundedString(value: unknown, maximum: number): value is string {
 
 // TailnetReach: known keys only, two levels, booleans and bounded strings.
 // The renderer parses the exact shape (packages/ui tailnet-reach.ts).
-const tailnetKeys = new Set("state detail name address stored httpsCertificates certificateExpiresAt renewalFailed at message ignored handSet kept setAside undeleted ok report statusUnanswered reason step".split(" "))
+const tailnetKeys = new Set("state detail name address stored httpsCertificates certificateExpiresAt renewalFailed at message ignored handSet kept setAside undeleted ok report statusUnanswered statusFailed reason step".split(" "))
 function tailnetAnswer(value: unknown, depth = 0): unknown {
   if (depth && (typeof value === "boolean" || boundedString(value, 4_096))) return value
   if (depth > 2 || !value || typeof value !== "object" || Array.isArray(value)) throw new Error("Desktop returned an invalid tailnet answer")

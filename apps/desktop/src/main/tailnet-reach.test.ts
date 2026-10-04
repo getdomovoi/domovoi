@@ -307,6 +307,43 @@ describe("TailnetReach status deadline", () => {
     await expect(after).resolves.toMatchObject({ state: "none" })
   })
 
+  // Codex review of PR #722, round 2 (P3-R2-2), Q441 A: a status read after a
+  // completed turn-off that fails, not past its deadline, is not the turn-off
+  // failing. It answers done with the read's own words and the files it could
+  // not delete, and the switch can change again.
+  it("finishes a turn-off whose status read fails, with the read's words and the files left", async () => {
+    const { reach, deps, record, timers } = harness({
+      record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, removeDirectoryThrows: new Error("EIO: rmdir"),
+    })
+    const answer = deps.tailscale
+    deps.tailscale = vi.fn(async () => { throw new Error("spawn tailscale EACCES") })
+    await expect(reach.turnOff()).resolves.toEqual({ ok: true, statusFailed: "spawn tailscale EACCES", undeleted: "~/.domovoi/tls/.pending-1" })
+    expect(record()).toBeUndefined()
+    expect(deps.restart).toHaveBeenCalledWith({ clear: true })
+    expect(timers()).toEqual([])
+    deps.tailscale = answer
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true, report: { state: "on" } })
+  })
+
+  it("answers a failed status read after a turn-off without the files when it deleted them", async () => {
+    const { reach, deps } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
+    deps.tailscale = vi.fn(async () => { throw new Error("spawn tailscale EACCES") })
+    await expect(reach.turnOff()).resolves.toEqual({ ok: true, statusFailed: "spawn tailscale EACCES" })
+  })
+
+  // A restart that throws, or a deletion that fails, is still the turn-off
+  // failing, not a status read.
+  it("still fails a turn-off whose restart throws or whose deletion fails", async () => {
+    const thrown = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, restartThrows: new Error("Cannot find module './daemon-service-assembly.js'") })
+    await expect(thrown.reach.turnOff()).rejects.toThrow("Cannot find module './daemon-service-assembly.js'")
+    const unread = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
+    unread.deps.record.read = async () => { throw new Error("EACCES: permission denied, open") }
+    await expect(unread.reach.turnOff()).rejects.toThrow("EACCES: permission denied, open")
+    expect(unread.deps.restart).not.toHaveBeenCalled()
+    const stays = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, recordRemoveThrows: new Error("EACCES: permission denied") })
+    await expect(stays.reach.turnOff()).resolves.toMatchObject({ ok: false, reason: "failed", step: "delete" })
+  })
+
   it("reports a turn-off with the status read after it when that answers by the deadline", async () => {
     const { reach, deps, timers } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
     const status = held<"missing">()

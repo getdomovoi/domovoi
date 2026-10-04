@@ -48,8 +48,11 @@ export type TailnetReachOutcome =
   | { ok: true; report: TailnetReachReport }
   // Q439 B: a turn-off that is done, whose status read after it did not
   // answer by the desktop's deadline; undeleted names the files it set aside
-  // and could not delete. Only this success has no report.
+  // and could not delete. This and the next are the successes with no report.
   | { ok: true; statusUnanswered: true; undeleted?: string }
+  // Q441 A: a turn-off that is done, whose status read after it failed before
+  // the deadline, in the read's own words.
+  | { ok: true; statusFailed: string; undeleted?: string }
   // undeleted: the restart failed after a turn-off deleted the record but
   // could not delete the files it set aside, which are in this directory.
   | { ok: false; reason: TailnetReachFailure; step: TailnetReachStep; message: string; detail?: string; undeleted?: string }
@@ -103,10 +106,16 @@ export function parseTailnetReachReport(value: unknown): TailnetReachReport {
 
 export function parseTailnetReachOutcome(value: unknown): TailnetReachOutcome {
   if (value && typeof value === "object" && (value as Fields).ok === true) {
-    if (!("statusUnanswered" in value)) return { ok: true, report: parseTailnetReachReport(fields(value, ["ok", "report"]).report) }
-    const read = fields(value, ["ok", "statusUnanswered"], ["undeleted"])
-    if (read.statusUnanswered !== true) throw new UnreadableAnswer()
-    return { ok: true, statusUnanswered: true, ...(read.undeleted === undefined ? {} : { undeleted: text(read.undeleted) }) }
+    if ("statusUnanswered" in value) {
+      const read = fields(value, ["ok", "statusUnanswered"], ["undeleted"])
+      if (read.statusUnanswered !== true) throw new UnreadableAnswer()
+      return { ok: true, statusUnanswered: true, ...(read.undeleted === undefined ? {} : { undeleted: text(read.undeleted) }) }
+    }
+    if ("statusFailed" in value) {
+      const read = fields(value, ["ok", "statusFailed"], ["undeleted"])
+      return { ok: true, statusFailed: text(read.statusFailed), ...(read.undeleted === undefined ? {} : { undeleted: text(read.undeleted) }) }
+    }
+    return { ok: true, report: parseTailnetReachReport(fields(value, ["ok", "report"]).report) }
   }
   const read = fields(value, ["ok", "reason", "step", "message"], ["detail", "undeleted"])
   const { reason, step } = read

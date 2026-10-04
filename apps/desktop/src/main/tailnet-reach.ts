@@ -120,6 +120,8 @@ class StatusUnanswered extends Error {
     super(statusUnanswered)
   }
 }
+// Q441 A: what a turn-off answers for a status read that failed without words.
+const statusFailedUnsaid = "it gave no reason"
 // tailscale cert waits on the ACME exchange, which takes tens of seconds.
 const certificateTimeoutMs = 120_000
 const maximumDetailLength = 1_024
@@ -571,15 +573,22 @@ export class TailnetReach {
   // It is its own change: it starts a new generation, so no read after it is
   // handed this one, and its own answer comes from its own record. This
   // turn-off's answer is then the state as read just after the turn-off.
+  //
+  // Codex review of PR #722, round 2 (P3-R2-2), Q441 A: a read that fails
+  // before the deadline is not the turn-off failing either. The turn-off is
+  // answered as done with the read's own words, bounded as a detail is. A
+  // deletion or restart that fails is still the turn-off failing: #turnOff
+  // answers or throws it before this read starts.
   async turnOff(): Promise<TailnetReachOutcome> {
     const changed = await this.#exclusive("status", () => this.#turnOff())
     if (!("done" in changed)) return changed
+    const undeleted = changed.undeleted === undefined ? {} : { undeleted: this.deps.display(changed.undeleted) }
     try {
       return { ok: true, report: await this.status() }
     } catch (cause) {
-      // A read that failed, not one past its deadline, is thrown as before.
-      if (!(cause instanceof StatusUnanswered)) throw cause
-      return { ok: true, statusUnanswered: true, ...(changed.undeleted === undefined ? {} : { undeleted: this.deps.display(changed.undeleted) }) }
+      if (cause instanceof StatusUnanswered) return { ok: true, statusUnanswered: true, ...undeleted }
+      const said = detail(cause instanceof Error ? cause.message : String(cause))
+      return { ok: true, statusFailed: said || statusFailedUnsaid, ...undeleted }
     }
   }
 

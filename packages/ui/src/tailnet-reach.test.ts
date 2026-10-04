@@ -58,6 +58,33 @@ describe("the TailnetReach answer", () => {
     expect(parseTailnetReachOutcome(left)).toEqual(left)
   })
 
+  // Codex review of PR #722, round 2 (P3-R2-2), Q441 A: a turn-off done whose
+  // status read failed, in the read's own words.
+  it("reads a turn-off done whose status read failed", () => {
+    const failed = { ok: true, statusFailed: "spawn tailscale EACCES" }
+    expect(parseTailnetReachOutcome(failed)).toEqual(failed)
+    const left = { ok: true, statusFailed: "spawn tailscale EACCES", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+    expect(parseTailnetReachOutcome(left)).toEqual(left)
+    const longest = { ok: true, statusFailed: "x".repeat(4_096) }
+    expect(parseTailnetReachOutcome(longest)).toEqual(longest)
+  })
+
+  it.each([
+    { ok: true, statusFailed: "" },
+    { ok: true, statusFailed: "x".repeat(4_097) },
+    { ok: true, statusFailed: true },
+    { ok: true, statusFailed: { message: "x" } },
+    { ok: true, statusFailed: "x", statusUnanswered: true },
+    { ok: true, statusFailed: "x", report: on },
+    { ok: true, statusFailed: "x", detail: "y" },
+    { ok: true, statusFailed: "x", kept: "~/.domovoi/tls/.pending-Ab3xYz" },
+    { ok: true, statusFailed: "x", undeleted: "" },
+    { ok: true, report: on, undeleted: "~/.domovoi/tls/.pending-Ab3xYz" },
+    { ok: false, reason: "failed", step: "delete", message: "x", statusFailed: "x" },
+  ])("refuses a failed-read outcome %j", (outcome) => {
+    expect(() => parseTailnetReachOutcome(outcome)).toThrow("The desktop sent an unreadable tailnet answer")
+  })
+
   it.each([
     { ok: true },
     { ok: true, statusUnanswered: false },

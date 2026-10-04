@@ -429,6 +429,50 @@ it("says a turn-off is done and the switch not known when the desktop does not a
   expect(view.getByText(`The certificate and key were set aside in ${undeleted} and could not be deleted.`)).toBeTruthy()
 })
 
+// Codex review of PR #722, round 2 (P3-R2-2), Q441 A: the turn-off is done,
+// but the desktop's status read after it failed in its own words. The card
+// says so as it does for the deadline, with those words and one final period,
+// and draws the next answered read as usual.
+it.each([
+  ["spawn tailscale EACCES", "Turned off. Reading what the switch reads now failed: spawn tailscale EACCES."],
+  ["The tailscale command could not be started.", "Turned off. Reading what the switch reads now failed: The tailscale command could not be started."],
+])("says a turn-off is done and the switch not known when the status read after it fails: %s", async (message, line) => {
+  const undeleted = "~/.domovoi/tls/.pending-Ab3xYz"
+  const reads: (() => Promise<unknown>)[] = [
+    () => Promise.resolve(on),
+    () => Promise.reject(new Error("The desktop did not answer.")),
+    () => Promise.resolve({ ...off, undeleted }),
+  ]
+  const ask = vi.fn(async (action: "status" | "on" | "off") => {
+    if (action === "off") return { ok: true, statusFailed: message, undeleted }
+    if (action === "on") throw new Error("Nothing turns on here")
+    return reads.shift()!()
+  })
+  render(<Harness source={{ act: ask, listener: async () => ({ state: "off" as const }), inApp: true }} />)
+  await settle()
+  const user = userEvent.setup()
+  await user.click(toggle())
+  await settle()
+  const view = within(region())
+  expect(view.getByText("Not known")).toBeTruthy()
+  expect(view.getByText(line)).toBeTruthy()
+  expect(region().textContent).not.toContain("..")
+  expect(view.queryByText("Turned off. The desktop did not answer when asked what the switch reads now.")).toBeNull()
+  expect(view.queryByText("Bring Tailscale up yourself, then check again.")).toBeNull()
+  expect(view.queryByRole("alert")).toBeNull()
+  expect(view.queryByText("Could not turn it off")).toBeNull()
+  expect(view.getByText(`The certificate and key were set aside in ${undeleted} and could not be deleted.`)).toBeTruthy()
+  expect(toggle().getAttribute("aria-checked")).toBe("false")
+  expect((toggle() as HTMLButtonElement).disabled).toBe(true)
+  await user.click(view.getByRole("button", { name: "Check again" }))
+  await settle()
+  expect(view.getByText("Off")).toBeTruthy()
+  expect(view.queryByText("Not known")).toBeNull()
+  expect(view.queryByText(line)).toBeNull()
+  expect(view.getByText(`The certificate and key were set aside in ${undeleted} and could not be deleted.`)).toBeTruthy()
+  expect((toggle() as HTMLButtonElement).disabled).toBe(false)
+})
+
 // Codex review of PR #722, round 2 (P3-R2-1): with Q439 B the desktop releases
 // the switch before a turn-off's status read, so a turn-on can start and end
 // while that turn-off is still waiting. The turn-off then answers what the

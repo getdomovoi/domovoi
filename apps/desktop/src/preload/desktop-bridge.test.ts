@@ -333,7 +333,12 @@ describe("createDesktopWindowBridge", () => {
     const unanswered = { ok: true, statusUnanswered: true, undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
     target.invoke.mockImplementation(async () => unanswered)
     await expect(bridge.tailnetReach?.("off")).resolves.toEqual(unanswered)
-    const none = { state: "none", detail: "Tailscale is not running on this computer (Stopped).", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+    // Q441 A: a turn-off done whose status read failed, in the read's words.
+    // An answer, not a rejection, so Electron puts no prefix on them.
+    const failedRead = { ok: true, statusFailed: "spawn tailscale EACCES", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+    target.invoke.mockImplementation(async () => failedRead)
+    await expect(bridge.tailnetReach?.("off")).resolves.toEqual(failedRead)
+    const none ={ state: "none", detail: "Tailscale is not running on this computer (Stopped).", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
     target.invoke.mockImplementation(async () => none)
     await expect(bridge.tailnetReach?.("status")).resolves.toEqual(none)
   })
