@@ -91,8 +91,6 @@ import {
   deviceRevokeParamsSchema,
   deviceRotateParamsSchema,
   devicesResultSchema,
-  deviceIdSchema,
-  deviceLabelSchema,
   pairedDeviceSchema,
 } from "./devices.js"
 import { fleetChangedNotificationSchema, fleetMachineDescriptorSchema, fleetSnapshotSchema } from "./fleet.js"
@@ -106,6 +104,7 @@ import {
   annotationStatusSchema,
   commitShaSchema,
   credentialSchema,
+  deviceReferenceSchema,
   forkRequestIdSchema,
   machineIdSchema,
   projectIdSchema,
@@ -430,6 +429,9 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     client: clientKindSchema,
     connectionId: connectionIdSchema.optional(),
     clientId: clientIdentityIdSchema.optional(),
+    // Mirrors the receipt thread item: the paired device that decided, when
+    // the deciding connection held one.
+    device: deviceReferenceSchema.optional(),
     explanation: z.string().min(1).optional(),
     decisionDurationMs: approvalDecisionDurationMsSchema.optional(),
     ranForMs: approvedCommandRunMsSchema.optional(),
@@ -1022,7 +1024,7 @@ const terminalDimensionSchema = z.number().int().min(2).max(1_000)
 export const terminalOwnerSchema = z.object({
   client: clientKindSchema,
   clientId: clientIdentityIdSchema,
-  device: z.object({ id: deviceIdSchema, label: deviceLabelSchema }).strict().optional(),
+  device: deviceReferenceSchema.optional(),
 })
 
 const terminalClientIdentitySchema = terminalOwnerSchema

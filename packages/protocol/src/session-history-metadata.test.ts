@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 
+import { maximumPairedDeviceLabelLength } from "./devices.js"
 import { sessionHistoryEntrySchema, sessionHistoryParamsSchema } from "./rpc.js"
 import { protocolVersion, threadItemSchema } from "./schema.js"
 import { protocolCompatibility } from "./fleet-health.js"
@@ -61,6 +62,34 @@ describe("session history metadata", () => {
         .toHaveProperty("decisionDurationMs", 0)
       for (const duration of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1, Infinity, "38000"]) {
         expect(schema.safeParse({ ...value, decisionDurationMs: duration }).success).toBe(false)
+      }
+    }
+  })
+
+  // Ruling Q424 A: the receipt names the paired device that decided, in the
+  // shape a terminal owner names it, so a client draws "allowed once by
+  // <label> · <client>" from the wire. A root bearer has no device, so the
+  // field is absent; a snapshot written before the field existed parses.
+  it("carries the deciding device on receipts and approval history, bounded like a paired device label", () => {
+    const device = { id: `device-${"a".repeat(32)}`, label: "dana" }
+    for (const [schema, value] of [
+      [threadItemSchema, receipt],
+      [sessionHistoryEntrySchema, approval],
+    ] as const) {
+      expect(schema.parse(value)).not.toHaveProperty("device")
+      expect(schema.parse({ ...value, device })).toHaveProperty("device", device)
+      expect(schema.parse({ ...value, device: { ...device, label: "  dana  " } })).toHaveProperty("device", device)
+      for (const malformed of [
+        { label: "dana" },
+        { id: device.id },
+        { id: "device-1", label: "dana" },
+        { ...device, label: "" },
+        { ...device, label: "   " },
+        { ...device, label: "n".repeat(maximumPairedDeviceLabelLength + 1) },
+        { ...device, clientId: "extra" },
+        "dana",
+      ]) {
+        expect(schema.safeParse({ ...value, device: malformed }).success, JSON.stringify(malformed)).toBe(false)
       }
     }
   })

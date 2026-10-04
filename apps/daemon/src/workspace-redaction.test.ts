@@ -104,3 +104,45 @@ describe("incremental workspace redaction", () => {
     expect(flush.result).toEqual(redactWorkspaceCopies(snapshot))
   })
 })
+
+// A device label is a person's own text, so it can carry a secret the way any
+// durable text can. The receipt keeps the device's id, an identifier, and the
+// redacted label stays within the label's schema bound.
+describe("the deciding device's label on a receipt", () => {
+  const deviceId = `device-${"f".repeat(32)}`
+  function receiptWorkspace(label: string): WorkspaceSnapshot {
+    const snapshot = structuredClone(demoWorkspace)
+    const sessionId = snapshot.sessions[0]!.id
+    snapshot.thread.push({
+      id: "receipt-device-label",
+      sessionId,
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "Run the migrations",
+      checkpoint: "unavailable",
+      client: "phone",
+      device: { id: deviceId, label },
+      createdAt,
+    })
+    return snapshot
+  }
+  const receipt = (snapshot: WorkspaceSnapshot) => snapshot.thread.find((item) => item.id === "receipt-device-label")
+
+  it("redacts a secret in the label and keeps the id", () => {
+    const snapshot = receiptWorkspace("office NPM_TOKEN=label-secret-1")
+    const written = redactWorkspaceCopies(snapshot)
+    expect(receipt(written)).toMatchObject({ device: { id: deviceId, label: "office NPM_TOKEN=[REDACTED]" } })
+    expect(JSON.stringify(written)).not.toContain("label-secret-1")
+    expect(createWorkspaceRedactor()(snapshot)).toEqual(written)
+    expect(receipt(snapshot)).toMatchObject({ device: { label: "office NPM_TOKEN=label-secret-1" } })
+  })
+
+  it("keeps the redacted label within the label's bound", () => {
+    const label = `${"o".repeat(128 - " password=hunter2".length)} password=hunter2`
+    expect(label).toHaveLength(128)
+    const written = receipt(redactWorkspaceCopies(receiptWorkspace(label)))
+    if (written?.kind !== "receipt") throw new Error("The receipt is missing")
+    expect(written.device?.label.length).toBeLessThanOrEqual(128)
+    expect(JSON.stringify(written)).not.toContain("hunter2")
+  })
+})
