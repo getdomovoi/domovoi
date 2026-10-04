@@ -104,6 +104,35 @@ describe("threadEntries", () => {
     expect(note?.kind).toBe("note")
     expect(note?.kind === "note" ? note.meta : undefined).toBe("command · failed")
   })
+
+  // Codex review of PR #717: the daemon records how many open comments a sent
+  // message left over the per-turn limit. The phone says so under that
+  // message, in the sentence desktop and web use, for as long as it shows it.
+  it("says how many open comments a sent message left over the per-turn limit", () => {
+    const delivery = (limit: number) => ({
+      version: 1 as const,
+      budget: { unit: "utf16-code-units" as const, limit: 262_144, used: 9_000 },
+      handoff: { status: "not-required" as const },
+      workingPlan: { status: "not-required" as const },
+      annotations: { availableCount: limit, deliveredIds: [], omitted: { budget: 0, limit } },
+      skills: { selection: "project-default" as const, delivered: [], omitted: { budget: [], limit: [], unavailable: [], reviewChanged: [], policy: [] } },
+    })
+    const user = (id: string, providerPromptDelivery?: ReturnType<typeof delivery>) => ({
+      id, sessionId: "session-billing", kind: "user" as const, body: "Address these", createdAt: "2026-09-30T14:00:00.000Z",
+      ...(providerPromptDelivery ? { providerPromptDelivery } : {}),
+    })
+    const snapshot = workspace()
+    snapshot.thread = [user("one", delivery(1)), user("three", delivery(3)), user("none", delivery(0)), user("untracked")]
+
+    const { entries } = threadEntries(snapshot, "session-billing")
+
+    expect(entries).toEqual([
+      { id: "one", kind: "message", voice: "you", body: "Address these", omission: "1 open annotation was over the per-turn limit" },
+      { id: "three", kind: "message", voice: "you", body: "Address these", omission: "3 open annotations were over the per-turn limit" },
+      { id: "none", kind: "message", voice: "you", body: "Address these" },
+      { id: "untracked", kind: "message", voice: "you", body: "Address these" },
+    ])
+  })
 })
 
 describe("threadEntries receipt", () => {

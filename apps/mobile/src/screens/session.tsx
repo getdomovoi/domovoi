@@ -69,9 +69,16 @@ const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWa
   }
   if (entry.kind === "policy-refusal") return null
   if (entry.kind === "message" && entry.voice === "you") {
-    return (
+    const bubble = (
       <View className="max-w-[84%] self-end rounded-[13px] rounded-br-[4px] border border-border bg-accent px-[13px] py-2.5">
         <Text variant="body">{entry.body}</Text>
+      </View>
+    )
+    if (!entry.omission) return bubble
+    return (
+      <View className="gap-1">
+        {bubble}
+        <Text variant="machine" className="max-w-[84%] self-end text-right text-faint">{entry.omission}</Text>
       </View>
     )
   }
