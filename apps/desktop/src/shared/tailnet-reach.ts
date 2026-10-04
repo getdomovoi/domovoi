@@ -56,6 +56,10 @@ export type TailnetReachFailure = (typeof tailnetReachFailures)[number]
 
 export type TailnetReachOutcome =
   | { ok: true; report: TailnetReachReport }
+  // Codex review of PR #722 (P3-2), Q439 B: a turn-off that is done, whose
+  // status read after it did not answer by its deadline. undeleted: the
+  // directory holding the files it set aside and could not delete.
+  | { ok: true; statusUnanswered: true; undeleted?: string }
   // undeleted (Codex review round 6, P3-2): the restart failed after a
   // turn-off deleted the record but could not delete the files it set aside,
   // which are in this directory; the deletion step is not done.

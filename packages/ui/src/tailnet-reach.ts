@@ -46,6 +46,10 @@ export type TailnetReachFailure = (typeof tailnetReachFailures)[number]
 
 export type TailnetReachOutcome =
   | { ok: true; report: TailnetReachReport }
+  // Q439 B: a turn-off that is done, whose status read after it did not
+  // answer by the desktop's deadline; undeleted names the files it set aside
+  // and could not delete. Only this success has no report.
+  | { ok: true; statusUnanswered: true; undeleted?: string }
   // undeleted: the restart failed after a turn-off deleted the record but
   // could not delete the files it set aside, which are in this directory.
   | { ok: false; reason: TailnetReachFailure; step: TailnetReachStep; message: string; detail?: string; undeleted?: string }
@@ -99,7 +103,10 @@ export function parseTailnetReachReport(value: unknown): TailnetReachReport {
 
 export function parseTailnetReachOutcome(value: unknown): TailnetReachOutcome {
   if (value && typeof value === "object" && (value as Fields).ok === true) {
-    return { ok: true, report: parseTailnetReachReport(fields(value, ["ok", "report"]).report) }
+    if (!("statusUnanswered" in value)) return { ok: true, report: parseTailnetReachReport(fields(value, ["ok", "report"]).report) }
+    const read = fields(value, ["ok", "statusUnanswered"], ["undeleted"])
+    if (read.statusUnanswered !== true) throw new UnreadableAnswer()
+    return { ok: true, statusUnanswered: true, ...(read.undeleted === undefined ? {} : { undeleted: text(read.undeleted) }) }
   }
   const read = fields(value, ["ok", "reason", "step", "message"], ["detail", "undeleted"])
   const { reason, step } = read

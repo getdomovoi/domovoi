@@ -113,6 +113,13 @@ const statusDeadlineMs = statusTimeoutMs + 5_000
 // Q436 B: past the deadline the switch is not known, not off and not without a
 // tailnet, so the read refuses in the words the card's own deadline uses.
 const statusUnanswered = "The desktop did not answer."
+// The refusal at that deadline, told apart from a read that failed. Its name
+// stays Error, so the bridge cuts Electron's prefix from it as from any other.
+class StatusUnanswered extends Error {
+  constructor() {
+    super(statusUnanswered)
+  }
+}
 // tailscale cert waits on the ACME exchange, which takes tens of seconds.
 const certificateTimeoutMs = 120_000
 const maximumDetailLength = 1_024
@@ -509,7 +516,7 @@ export class TailnetReach {
     const generation = this.#generation
     const work = this.#inFlight?.generation === generation ? this.#inFlight.work : this.#started(generation)
     return new Promise((resolve, reject) => {
-      const deadline = this.#timers.set(() => reject(new Error(statusUnanswered)), statusDeadlineMs)
+      const deadline = this.#timers.set(() => reject(new StatusUnanswered()), statusDeadlineMs)
       work.then(
         (report) => { this.#timers.clear(deadline); resolve(report) },
         (cause: unknown) => { this.#timers.clear(deadline); reject(cause) },
@@ -554,11 +561,29 @@ export class TailnetReach {
     return this.#exclusive("status", () => this.#turnOn())
   }
 
-  turnOff(): Promise<TailnetReachOutcome> {
-    return this.#exclusive("status", () => this.#turnOff())
+  // Codex review of PR #722 (P3-2), Q439 B: the status after a turn-off is
+  // read once the change has ended and released the switch, as a public read
+  // under the deadline in the generation after the change, so the card's own
+  // read after the change joins it instead of starting a second one that
+  // stalls on the same dependency. Past the deadline the turn-off is still
+  // done: it answers so, with the files it could not delete, and no state it
+  // did not read. Trade-off: a turn-on can start while that read is pending.
+  // It is its own change: it starts a new generation, so no read after it is
+  // handed this one, and its own answer comes from its own record. This
+  // turn-off's answer is then the state as read just after the turn-off.
+  async turnOff(): Promise<TailnetReachOutcome> {
+    const changed = await this.#exclusive("status", () => this.#turnOff())
+    if (!("done" in changed)) return changed
+    try {
+      return { ok: true, report: await this.status() }
+    } catch (cause) {
+      // A read that failed, not one past its deadline, is thrown as before.
+      if (!(cause instanceof StatusUnanswered)) throw cause
+      return { ok: true, statusUnanswered: true, ...(changed.undeleted === undefined ? {} : { undeleted: this.deps.display(changed.undeleted) }) }
+    }
   }
 
-  async #exclusive(step: TailnetReachStep, run: () => Promise<TailnetReachOutcome>): Promise<TailnetReachOutcome> {
+  async #exclusive<T>(step: TailnetReachStep, run: () => Promise<T>): Promise<T | TailnetReachOutcome> {
     if (this.#busy) return { ok: false, reason: "busy", step, message: "The switch is already changing." }
     this.#changing(true)
     try {
@@ -711,7 +736,9 @@ export class TailnetReach {
     }
   }
 
-  async #turnOff(): Promise<TailnetReachOutcome> {
+  // A refusal or failure, or done: the record is gone and the daemon
+  // restarted, with the pending directory holding files it could not delete.
+  async #turnOff(): Promise<TailnetReachOutcome | { done: true; undeleted?: string }> {
     const refused = await this.#refusal("delete")
     if (refused) return refused
     const record = await this.deps.record.read()
@@ -758,9 +785,8 @@ export class TailnetReach {
         message: restartFailedWithRetainedFiles(this.deps.display(undeleted), restarted.message),
       }
     }
-    // Unbounded, as before the deadline: a turn-off that happened is not
-    // answered as a refusal because the read after it is slow.
-    return { ok: true, report: await this.#status() }
+    // Done; turnOff reads the status once the switch is released.
+    return { done: true, ...(undeleted === undefined ? {} : { undeleted }) }
   }
 
   // Review of PR #713 (P2): turning off sets the switch's files aside in a

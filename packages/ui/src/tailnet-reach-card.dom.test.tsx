@@ -391,6 +391,44 @@ it("turns off through the switch, listing the two steps", async () => {
   expect(view.getByText("Off")).toBeTruthy()
 })
 
+// Codex review of PR #722 (P3-2), Q439 B: the turn-off is done, but the
+// desktop's status read after it did not answer by its deadline. The card
+// says the switch was turned off and that what it reads now is not known,
+// without a failure and without the Tailscale hint, keeps naming the files the
+// turn-off could not delete, and draws the next answered read as usual.
+it("says a turn-off is done and the switch not known when the desktop does not answer after it", async () => {
+  const undeleted = "~/.domovoi/tls/.pending-Ab3xYz"
+  const reads: (() => Promise<unknown>)[] = [
+    () => Promise.resolve(on),
+    () => Promise.reject(new Error("The desktop did not answer.")),
+    () => Promise.resolve({ ...off, undeleted }),
+  ]
+  const ask = vi.fn(async (action: "status" | "on" | "off") => {
+    if (action === "off") return { ok: true, statusUnanswered: true, undeleted }
+    if (action === "on") throw new Error("Nothing turns on here")
+    return reads.shift()!()
+  })
+  render(<Harness source={{ act: ask, listener: async () => ({ state: "off" as const }), inApp: true }} />)
+  await settle()
+  const user = userEvent.setup()
+  await user.click(toggle())
+  await settle()
+  const view = within(region())
+  expect(view.getByText("Not known")).toBeTruthy()
+  expect(view.getByText("Turned off. The desktop did not answer when asked what the switch reads now.")).toBeTruthy()
+  expect(view.queryByText("The desktop did not answer.")).toBeNull()
+  expect(view.queryByText("Bring Tailscale up yourself, then check again.")).toBeNull()
+  expect(view.queryByRole("alert")).toBeNull()
+  expect(view.queryByText("Could not turn it off")).toBeNull()
+  expect(view.getByText(`The certificate and key were set aside in ${undeleted} and could not be deleted.`)).toBeTruthy()
+  await user.click(view.getByRole("button", { name: "Check again" }))
+  await settle()
+  expect(view.getByText("Off")).toBeTruthy()
+  expect(view.queryByText("Not known")).toBeNull()
+  expect(view.queryByText("Turned off. The desktop did not answer when asked what the switch reads now.")).toBeNull()
+  expect(view.getByText(`The certificate and key were set aside in ${undeleted} and could not be deleted.`)).toBeTruthy()
+})
+
 // Review of PR #713 (P2): a renewal fails, or the daemon refuses the tailnet
 // listener at the certificate's expiry, with Settings open and nothing
 // clicked. The card reads the switch and tailnet.status again when the window

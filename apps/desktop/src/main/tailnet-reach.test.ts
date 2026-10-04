@@ -277,18 +277,45 @@ describe("TailnetReach status deadline", () => {
     await expect(answer).rejects.toThrow(unanswered)
   })
 
-  // A turn-off that has happened is not reported as failed because the
-  // status read after it is slow: that read waits as it did before.
-  it("reports a turn-off once the status after it answers, however long it takes", async () => {
+  // Codex review of PR #722 (P3-2), Q439 B: a turn-off that has happened is
+  // not reported as failed because the status read after it is slow, and it
+  // does not hold the switch while that read stalls. Past the deadline it is
+  // answered as done without a status, with the files it could not delete
+  // still named, and the switch can change again.
+  it("finishes a turn-off whose status read stalls past the deadline, releasing the switch and naming the files left", async () => {
+    const { reach, deps, timers } = harness({
+      record: ours, files: { [certPath]: certificate, [keyPath]: "key" }, removeDirectoryThrows: new Error("EIO: rmdir"),
+    })
+    const answer = deps.tailscale
+    const status = held<"missing">()
+    const stalled = vi.fn(() => status.promise)
+    deps.tailscale = stalled
+    const outcome = reach.turnOff()
+    await vi.waitFor(() => expect(timers().filter((timer) => timer.ms === 15_000)).toHaveLength(1))
+    expect(deps.restart).toHaveBeenCalledWith({ clear: true })
+    fire(timers().find((timer) => timer.ms === 15_000))
+    await expect(outcome).resolves.toEqual({ ok: true, statusUnanswered: true, undeleted: "~/.domovoi/tls/.pending-1" })
+    // The card's own read after the change joins the stalled one.
+    const after = reach.status()
+    expect(stalled).toHaveBeenCalledTimes(1)
+    // A turn-on is its own change, not refused as busy, and a read after it
+    // starts its own instead of taking the stalled one's answer.
+    deps.tailscale = answer
+    await expect(reach.turnOn()).resolves.toMatchObject({ ok: true, report: { state: "on" } })
+    await expect(reach.status()).resolves.toMatchObject({ state: "on", name })
+    status.settle("missing")
+    await expect(after).resolves.toMatchObject({ state: "none" })
+  })
+
+  it("reports a turn-off with the status read after it when that answers by the deadline", async () => {
     const { reach, deps, timers } = harness({ record: ours, files: { [certPath]: certificate, [keyPath]: "key" } })
     const status = held<"missing">()
     deps.tailscale = () => status.promise
     const outcome = reach.turnOff()
-    await vi.waitFor(() => expect(deps.restart).toHaveBeenCalled())
-    await Promise.resolve()
-    expect(timers().filter((timer) => timer.ms === 15_000)).toEqual([])
+    await vi.waitFor(() => expect(timers().filter((timer) => timer.ms === 15_000)).toHaveLength(1))
     status.settle("missing")
-    await expect(outcome).resolves.toMatchObject({ ok: true, report: { state: "none" } })
+    await expect(outcome).resolves.toEqual({ ok: true, report: { state: "none", detail: "Domovoi found no tailscale command on this computer." } })
+    expect(timers()).toEqual([])
   })
 
   it("leaves a read that settles in time as it was, and clears its deadline", async () => {

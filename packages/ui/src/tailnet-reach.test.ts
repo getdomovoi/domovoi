@@ -50,8 +50,23 @@ describe("the TailnetReach answer", () => {
     expect(parseTailnetReachOutcome(retained)).toEqual(retained)
   })
 
+  // Codex review of PR #722 (P3-2), Q439 B: a turn-off done whose status read
+  // did not answer by its deadline, with the files it could not delete.
+  it("reads a turn-off done without its status", () => {
+    expect(parseTailnetReachOutcome({ ok: true, statusUnanswered: true })).toEqual({ ok: true, statusUnanswered: true })
+    const left = { ok: true, statusUnanswered: true, undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
+    expect(parseTailnetReachOutcome(left)).toEqual(left)
+  })
+
   it.each([
     { ok: true },
+    { ok: true, statusUnanswered: false },
+    { ok: true, statusUnanswered: "yes" },
+    { ok: true, statusUnanswered: true, report: on },
+    { ok: true, statusUnanswered: true, kept: "~/.domovoi/tls/.pending-Ab3xYz" },
+    { ok: true, statusUnanswered: true, undeleted: "" },
+    { ok: true, undeleted: "~/.domovoi/tls/.pending-Ab3xYz" },
+    { ok: false, reason: "failed", step: "restart", message: "x", statusUnanswered: true },
     { ok: false, reason: "lost", step: "status", message: "x" },
     { ok: false, reason: "failed", step: "renew", message: "x" },
     { ok: false, reason: "failed", step: "status" },
