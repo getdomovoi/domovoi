@@ -107,11 +107,14 @@ function entryFor(item: ThreadItem): ThreadEntry {
       }
     case "receipt": {
       // Ruling Q424 A: the paired device the daemon verified on the deciding
-      // connection names the decider, label first as the design's line reads;
-      // a receipt without one names the client alone.
+      // connection names the decider, label first as the design's line reads,
+      // then the client, then the device's id shortened. A receipt without
+      // one names the client and, when a receipt written before the field
+      // carries it, the credential it named as clientId.
       const decider = item.device ? `${item.device.label} · ${item.client}` : item.client
-      const attribution = item.clientId
-        ? `${decider} · ${credentialReference(item.clientId)}`
+      const reference = item.device?.id ?? item.clientId
+      const attribution = reference
+        ? `${decider} · ${credentialReference(reference)}`
         : decider
       return {
         id: item.id,
