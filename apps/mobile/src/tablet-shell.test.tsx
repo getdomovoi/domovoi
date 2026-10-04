@@ -62,6 +62,15 @@ describe("TabletShell", () => {
     expect(screen.getByText("NEEDS YOU")).toBeOnTheScreen()
   })
 
+  // Tablet v2 heads the sessions pane with the shared Domovoi mark beside the
+  // wordmark (ruling Q386: one mark component for phone and tablet). The
+  // wordmark names it, so the mark is not announced.
+  it("heads the sessions pane with the Domovoi mark", async () => {
+    await draw()
+    expect(screen.getByTestId("domovoi-mark", { includeHiddenElements: true })).toBeOnTheScreen()
+    expect(screen.queryByRole("image", { name: "Domovoi" })).toBeNull()
+  })
+
   it("shows a watching tablet the gate without decisions", async () => {
     await draw("hard-gate", "watching")
 
@@ -210,7 +219,7 @@ describe("TabletShell", () => {
   })
 
   // Ruling Q424 A: the receipt names the device that decided. A decision also
-  // carries how long it took, and the one must not hide the other.
+  // carries how long the gate waited, and the one must not hide the other.
   it("names the deciding device on a receipt that also carries a duration", async () => {
     await draw("normal", "full", (snapshot) => {
       snapshot.thread.push({
@@ -227,7 +236,47 @@ describe("TabletShell", () => {
       })
     })
 
-    expect(screen.getByText(/^dana · phone\b.* · 38s$/)).toBeOnTheScreen()
+    expect(screen.getByText("dana · phone · device fcbd…cdf8 · decided after 38s")).toBeOnTheScreen()
+  })
+
+  // The tablet receipt says what the phone's says: a checkpoint only when an
+  // allow took one, how long the command ran when it has, and the gate's wait
+  // under its own name rather than as an unlabeled number.
+  describe("receipts", () => {
+    function receipt(id: string, decision: "allow-once" | "deny", checkpoint: string, extra: { ranForMs?: number, decisionDurationMs?: number } = {}) {
+      return {
+        id, kind: "receipt" as const, decision, operation: `operation ${id}`, checkpoint,
+        client: "tablet" as const, createdAt: "2026-09-22T12:00:00.000Z", ...extra,
+      }
+    }
+    const commit = "8f3c1de0000000000000000000000000deadbeef"
+
+    it("names the checkpoint an allow took and how long it ran, and labels the wait", async () => {
+      await draw("normal", "full", (snapshot) => {
+        snapshot.thread.push({ ...receipt("allowed", "allow-once", commit, { ranForMs: 12_000, decisionDurationMs: 38_000 }), sessionId: snapshot.approvals[0]!.sessionId })
+      })
+      expect(screen.getByText("Checkpoint 8f3c1de was taken first, then it ran in 12s.")).toBeOnTheScreen()
+      // Who decided comes first on the meta line (ruling Q424 A).
+      expect(screen.getByText("tablet · decided after 38s")).toBeOnTheScreen()
+    })
+
+    it("claims no checkpoint for a deny", async () => {
+      await draw("normal", "full", (snapshot) => {
+        snapshot.thread.push({ ...receipt("denied", "deny", commit), sessionId: snapshot.approvals[0]!.sessionId })
+      })
+      expect(screen.getByText("operation denied")).toBeOnTheScreen()
+      // The open gate beside it has a Checkpoint fact; the receipt's sentence
+      // is what must be absent.
+      expect(screen.queryByText(/was taken first|was recorded before it ran/)).toBeNull()
+    })
+
+    it("says nothing about a checkpoint an allow could not take", async () => {
+      await draw("normal", "full", (snapshot) => {
+        snapshot.thread.push({ ...receipt("unchecked", "allow-once", "unavailable"), sessionId: snapshot.approvals[0]!.sessionId })
+      })
+      expect(screen.getByText("operation unchecked")).toBeOnTheScreen()
+      expect(screen.queryByText(/no checkpoint/)).toBeNull()
+    })
   })
 
   it("shows the connection notice, so a tablet hears when the daemon sent something it could not read", async () => {

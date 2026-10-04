@@ -576,7 +576,9 @@ describe("provider failure state", () => {
     )
 
     expect(markup).toContain("Could not read this session")
-    expect(markup).toContain("nothing was written, nothing was lost")
+    // A provider can stop after writing files, so this surface does not
+    // claim that nothing was written.
+    expect(markup).not.toContain("nothing was written, nothing was lost")
     expect(markup).toContain("Try again")
     expect(markup).toMatch(/aria-label="Send message"[^>]*disabled=""/)
   })

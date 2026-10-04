@@ -42,8 +42,12 @@ export function AuthorizeClientDialog({ machine, kind, onAuthorize, onClose }: {
           if (!controller.signal.aborted) { operation.current = null; setPending(false) }
         })
       }}>
-        <p className="text-sm text-muted-foreground">Run this on {machine.label} using that daemon's own credential:</p>
-        <code className="break-words font-machine text-sm">{`domovoid pair --client ${kind} --label "My ${kind}"`}</code>
+        {/* No command prints a client credential today. `domovoid pair` prints
+            a one-time pairing code, which this field does not take. */}
+        <p className="text-sm text-muted-foreground">
+          Paste a client credential for a {kind} client on {machine.label}. It comes from a device.pair request made with that daemon's own credential.{" "}
+          <code className="break-words font-machine">{`domovoid pair --client ${kind} --label <device label>`}</code> prints a one-time pairing code, which this field does not take.
+        </p>
         <FieldGroup>
           <Field data-invalid={Boolean(error)} data-disabled={pending}>
             <FieldLabel htmlFor={id}>Client credential</FieldLabel>

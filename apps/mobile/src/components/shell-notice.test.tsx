@@ -23,6 +23,14 @@ const reaching = unreachable(shellState({
   },
 }))
 
+// First launch: a saved credential, nothing heard yet, and nothing gone wrong.
+const launching = unreachable(shellState({
+  restoringCredential: false,
+  hasCredential: true,
+  hasSnapshot: false,
+  fault: undefined,
+}))
+
 const refused = unreachable(shellState({
   restoringCredential: false,
   hasCredential: true,
@@ -60,6 +68,34 @@ async function draw(overrides: Partial<Parameters<typeof ShellNotice>[0]> = {}) 
 }
 
 describe("ShellNotice", () => {
+  // Phone v2 frame 06: launch leads with the Domovoi mark while daemons
+  // answer. A refused credential is not launch, and keeps its own sign.
+  it("leads launch with the Domovoi mark, and not a refusal", async () => {
+    // Frame 06 draws the mark's working variant while daemons answer
+    // (ruling Q386 A).
+    await draw({ shell: launching })
+    expect(screen.getByTestId("domovoi-mark-working", { includeHiddenElements: true })).toBeOnTheScreen()
+    await draw({ shell: restoring })
+    expect(screen.getByTestId("domovoi-mark-working", { includeHiddenElements: true })).toBeOnTheScreen()
+    await draw({ shell: refused })
+    expect(screen.queryByTestId("domovoi-mark", { includeHiddenElements: true })).toBeNull()
+  })
+
+  // A connection that failed and is being retried is not launch: it keeps the
+  // failure's sign, so a person does not read it as the app starting up.
+  it("keeps the failure sign while retrying a fault", async () => {
+    await draw({ shell: reaching })
+    expect(screen.queryByTestId("domovoi-mark", { includeHiddenElements: true })).toBeNull()
+    expect(screen.getByTestId("fault-sign", { includeHiddenElements: true })).toBeOnTheScreen()
+  })
+
+  // The heading names the screen, so the mark beside it says nothing more to
+  // a screen reader and is not announced.
+  it("does not announce the mark", async () => {
+    await draw({ shell: restoring })
+    expect(screen.queryByRole("image", { name: "Domovoi" })).toBeNull()
+  })
+
   // The whole point of the screen: it says the phone cannot see anything rather
   // than drawing a session list it cannot vouch for.
   it("says no daemon is reachable and names the one route it has", async () => {

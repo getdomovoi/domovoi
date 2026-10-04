@@ -28,14 +28,14 @@ function PairingCard({ onScan, onType }: { onScan: () => void, onType: () => voi
   return (
     <Card className="gap-3 border-info-border bg-info-bg">
       <View>
-        <Text className="font-sans-medium text-[15px] text-info-fg">Pair this phone</Text>
+        <Text className="font-sans-semibold text-[15px] tracking-[-0.01em] text-info-fg">Pair this phone</Text>
         <Text className="mt-[7px] text-[13px] leading-[20px] text-info-dim">
           Pairing exchanges keys with one machine directly, over your tailnet. Nothing passes through a server, and the phone stores no code.
         </Text>
       </View>
       <View className="flex-row gap-2">
-        <Button title="Scan a code" variant="primary" className="flex-1" onPress={onScan} />
-        <Button title="Type it" variant="outline" className="flex-1" onPress={onType} />
+        <Button title="Scan a code" variant="info" className="flex-1" onPress={onScan} />
+        <Button title="Type it" variant="info-outline" className="flex-1" onPress={onType} />
       </View>
     </Card>
   )

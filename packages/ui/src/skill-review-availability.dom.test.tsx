@@ -29,6 +29,7 @@ function props(overrides: Record<string, unknown> = {}) {
     onOpenAudit: vi.fn(),
     onReadSkill: vi.fn(),
     projectId: "project-acme-api",
+    projectName: "acme-api",
     enablements: [],
     onSetSkillEnabled: vi.fn(async () => {}),
     onReviewSkill: vi.fn(async () => skill()),
@@ -42,18 +43,19 @@ function props(overrides: Record<string, unknown> = {}) {
 // A dead control cannot be told apart from a broken one. Enablement is per
 // project, so with no project open the decision does not exist here at all: the
 // control is absent and the reason is stated, rather than present and inert.
-it("removes the review control with no project open, and says why", () => {
-  render(<SkillBrowser {...props({ projectId: undefined })} />)
+it("removes the trust control with no project open, and says why", () => {
+  render(<SkillBrowser {...props({ projectId: undefined, projectName: undefined })} />)
 
-  expect(screen.queryByRole("button", { name: /Review & / })).toBeNull()
-  expect(screen.getByText(/Enablement is per project/)).toBeTruthy()
+  expect(screen.queryByRole("button", { name: /Trust it for/ })).toBeNull()
+  expect(screen.queryByText("Trust and revoke are the only two decisions.")).toBeNull()
+  expect(screen.getByText(/Enablement is per project\./)).toBeTruthy()
 })
 
-it("offers the review control once a project is open", () => {
+it("offers the trust control once a project is open", () => {
   render(<SkillBrowser {...props()} />)
 
-  expect(screen.getByRole("button", { name: "Review & enable" })).toBeTruthy()
-  expect(screen.queryByText(/Enablement is per project/)).toBeNull()
+  expect(screen.getByRole("button", { name: "Trust it for acme-api" })).toBeTruthy()
+  expect(screen.queryByText(/Enablement is per project\./)).toBeNull()
 })
 
 // A blocked skill is different: the decision exists and is refused. The control
@@ -64,7 +66,7 @@ it("keeps the control for a blocked skill and names the refusal", () => {
     skills: [skill({ trust: { state: "blocked", reason: "invalid-signature" } })],
   })} />)
 
-  const control = screen.getByRole("button", { name: "Review & enable" })
+  const control = screen.getByRole("button", { name: "Trust it for acme-api" })
   expect(control.hasAttribute("disabled")).toBe(true)
   expect(screen.getByText(/signature does not match its content/)).toBeTruthy()
 })

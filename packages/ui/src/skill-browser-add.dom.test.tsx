@@ -139,14 +139,21 @@ it("shows refusals from the review and from the install in place", async () => {
 
   const dialog = await openReview(user)
 
+  // Ruling Q360 A: a refusal on any file refuses the whole install, since the
+  // digest covers the folder. The copy says the install cannot proceed, and
+  // never that the rest is copied.
   const alert = within(dialog).getByRole("alert")
-  expect(alert.textContent).toContain("Install refused")
+  expect(alert.textContent).toContain("The install cannot proceed")
+  expect(alert.textContent).toContain("typed refusals, not warnings")
+  expect(alert.textContent).not.toContain("Install refused")
+  expect(alert.textContent).not.toMatch(/will not be copied/)
   expect(alert.textContent).toContain("The signature is invalid, so this skill is blocked")
   expect(alert.textContent).toContain("scripts/escape links to a file outside the folder")
   expect(within(dialog).getByText("Signature invalid")).toBeTruthy()
   expect(within(dialog).getByRole("radio", { name: "This project only" }).hasAttribute("disabled")).toBe(true)
   expect(within(dialog).getByRole("radio", { name: "All my projects" }).getAttribute("aria-checked")).toBe("true")
   expect(within(dialog).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
+  expect(within(dialog).getByText("Installing does not enable it in any project.")).toBeTruthy()
   expect(onInstallSkill).not.toHaveBeenCalled()
 
   cleanup()
@@ -163,7 +170,7 @@ it("shows refusals from the review and from the install in place", async () => {
 
   expect(stale).toHaveBeenCalledOnce()
   const refusal = within(again).getByRole("alert")
-  expect(refusal.textContent).toContain("Install refused")
+  expect(refusal.textContent).toContain("The install cannot proceed")
   expect(refusal.textContent).toContain("The folder changed since it was reviewed. Review it again.")
   expect(screen.getByRole("dialog", { name: "Install from a path on this machine" })).toBeTruthy()
 })

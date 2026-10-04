@@ -35,7 +35,7 @@ daemon-ready milestones plus main-process RSS. Interpret it as local diagnostic 
 
 | Surface | Alpha budget | Stable gate |
 | --- | --- | --- |
-| Startup | Web JS 1,280,000 startup bytes and 400,000 lazy bytes; web CSS 128,000; desktop renderer JS 1,280,000 startup bytes and 400,000 lazy bytes; renderer CSS 128,000; main 44,544; preload 10,752 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
+| Startup | Web JS 1,290,000 startup bytes and 400,000 lazy bytes; web CSS 128,000; desktop renderer JS 1,290,000 startup bytes and 400,000 lazy bytes; renderer CSS 128,000; main 44,544; preload 10,752 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
 | Memory | 100 thread items in a client snapshot; 200 retained history items; 65,536 terminal replay characters | Active-session snapshot window, bounded history merge/DOM, bounded terminal replay |
 | Long threads | 100 snapshot/rendered items; 100 items per history page; 32,768 Markdown characters and 500 lines per item | Durable history remains daemon-owned and pageable; client and quick-view tests enforce windows |
 | Terminal throughput | 65,536 characters per notification; 16 ms batching; WebSocket pause/resume at 1,048,576/262,144 buffered bytes | Fake-clock batching and backpressure tests plus protocol payload validation; bytes remain ordered and lossless |
@@ -57,6 +57,11 @@ schema map for validation, so every new schema lands in the startup graph even b
 uses it. The owner ruled on 2026-10-01 to raise both to 1,280,000 and to follow up by moving work
 out of the startup graph. React 19.3 (#689) does not fit under the raised budget either and stays
 a separate decision.
+
+On 2026-10-03 the owner ruled Q420 A to raise both to 1,290,000. The v2 conversation work (#709)
+adds about 8,300 bytes of startup JavaScript (the composer, slash commands and paste handling),
+and main had grown to 1,277,458 web and 1,273,445 renderer bytes by then, so the merged branch
+measured 1,285,767 and 1,281,947. Moving work out of the startup graph stays the follow-up.
 
 The desktop main budget was 33,792 until 2026-09-14, when the relay pin file took the main bundle
 to 35,813 bytes locally and 35,397 on CI. The added bytes are the file's shape validation, the

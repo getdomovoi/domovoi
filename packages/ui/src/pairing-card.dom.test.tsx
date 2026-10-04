@@ -83,6 +83,69 @@ it("draws the browser's certificate line and the web flag", async () => {
   expect(await screen.findByText("A certificate warning means the address is not this machine's full tailnet name, or its certificate lapsed. Do not click through.")).toBeTruthy()
 })
 
+// The browser's connect page takes the word code alone; a pasted payload is
+// refused there, so Copy for a browser hands over the code the card shows.
+it("copies the bare code for a web browser, the one thing its connect page takes", async () => {
+  const { onCopy, user } = card()
+  await user.click(screen.getByRole("button", { name: "Web browser" }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await screen.findByText("hearth-quiet-ember-42")
+  await user.click(screen.getByRole("button", { name: "Copy" }))
+  expect(onCopy).toHaveBeenCalledWith("hearth-quiet-ember-42")
+})
+
+// Q399: a phone camera scanning a browser QR opens the phone's own pairing,
+// which greets as a phone, spends the web code and leaves an extra device.
+// So the Web browser tab draws no QR at all. It names the web app address to
+// open on that device when the daemon has one, and says to type the code.
+it("draws no QR for a browser and names the web app address to open when the daemon has one", async () => {
+  const webAppUrl = "https://domovoi.example/app/"
+  const { onIssueCode, user } = card()
+  onIssueCode.mockResolvedValueOnce(issued({ webAppUrl }))
+  await user.click(screen.getByRole("button", { name: "Web browser" }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await screen.findByText("hearth-quiet-ember-42")
+  expect(screen.queryByRole("img", { name: /Pairing code/ })).toBeNull()
+  expect(screen.getByText("Open this address in the browser on that device, then type the code.")).toBeTruthy()
+  expect(screen.getByText(webAppUrl)).toBeTruthy()
+  expect(document.body.textContent).not.toContain("?code=")
+  expect(screen.queryByText("The QR holds this address and the code, never a credential:")).toBeNull()
+})
+
+it("draws no QR for a browser and says to open Domovoi there when the daemon has no web app address", async () => {
+  const { onCopy, user } = card()
+  await user.click(screen.getByRole("button", { name: "Web browser" }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await screen.findByText("hearth-quiet-ember-42")
+  expect(screen.queryByRole("img", { name: /Pairing code/ })).toBeNull()
+  expect(screen.getByText("Open Domovoi in the browser on that device and type the code.")).toBeTruthy()
+  expect(screen.queryByText("Open the address in the browser and type the code.")).toBeNull()
+  expect(screen.queryByText("The QR holds this address and the code, never a credential:")).toBeNull()
+  await user.click(screen.getByRole("button", { name: "Copy" }))
+  expect(onCopy).toHaveBeenCalledWith("hearth-quiet-ember-42")
+})
+
+it("still draws the payload QR for a phone when the daemon has a web app address", async () => {
+  const { onIssueCode, user } = card()
+  onIssueCode.mockResolvedValueOnce(issued({ webAppUrl: "https://domovoi.example/app/" }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  await screen.findByText("hearth-quiet-ember-42")
+  expect(screen.getByRole("img", { name: "Pairing code for mac-mini-m4.tail4c2e.ts.net" })).toBeTruthy()
+  expect(screen.getByText("The QR holds this address and the code, never a credential:")).toBeTruthy()
+})
+
+// The tablet app, like the phone app, takes the payload: address and code.
+it("copies the payload, not the bare code, for a tablet", async () => {
+  const { onIssueCode, onCopy, user } = card()
+  await user.click(screen.getByRole("button", { name: "Tablet" }))
+  await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
+  expect(onIssueCode).toHaveBeenCalledWith("tablet")
+  await screen.findByText("hearth-quiet-ember-42")
+  await user.click(screen.getByRole("button", { name: "Copy" }))
+  expect(onCopy).toHaveBeenCalledWith(encodePairingPayload({ v: 1, url: address.url, code: "hearth-quiet-ember-42", label: address.label }))
+  expect(onCopy).not.toHaveBeenCalledWith("hearth-quiet-ember-42")
+})
+
 it("locks the code for a watching window and names the refusal", () => {
   card({ readOnly: true })
   expect(screen.getByRole("button", { name: "Show a pairing code" }).hasAttribute("disabled")).toBe(true)

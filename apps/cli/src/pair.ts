@@ -12,18 +12,17 @@ export class PairingError extends Error {
 
 export type RpcCall = (method: string, params: Record<string, unknown>) => Promise<unknown>
 
-// The daemon side of pairing is `domovoid pair --client cli`, run where the
-// daemon runs: it mints a client bearer and prints it once. The pairing code
-// and device.claim are the machine-enrollment path, and a credential minted
-// there cannot identify as a client. So this half is: take the bearer the
-// operator pasted, prove it works with an authenticated hello, then keep it.
-// The bearer is read from stdin, never argv, so it stays out of shell history
-// and the process table.
+// A client credential comes from a device.pair request made with the daemon's
+// own credential. `domovoid pair --client cli --label <label>` prints a
+// one-time pairing code instead, and this CLI does not redeem codes yet. So
+// this half is: take the bearer the operator pasted, prove it works with an
+// authenticated hello, then keep it. The bearer is read from stdin, never
+// argv, so it stays out of shell history and the process table.
 export function readCredential(input: string): string {
   const trimmed = input.trim()
   const fromPrintout = /Client credential:\s*(\S+)/.exec(trimmed)?.[1] ?? trimmed
   if (!credentialSchema.safeParse(fromPrintout).success) {
-    throw new PairingError("That is not a client credential. Paste the line 'domovoid pair --client cli' printed, or the credential alone.")
+    throw new PairingError("That is not a client credential. Paste the credential alone, or the line 'Client credential: <credential>'. A pairing code does not work here.")
   }
   return fromPrintout
 }
