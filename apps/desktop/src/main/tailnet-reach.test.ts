@@ -318,6 +318,46 @@ describe("TailnetReach status deadline", () => {
     await expect(reach.status()).resolves.toMatchObject({ state: "off" })
   })
 
+  // Codex review of PR #722 (P3-1): a read is shared from when it starts, not
+  // only once a deadline fires, so reads that overlap before any deadline do
+  // not each start their own, and one settling frees nothing still pending.
+  it("starts one read for a burst of reads before the first deadline, each under its own deadline", async () => {
+    const { reach, deps, timers } = harness()
+    const record = held<TailnetReachRecord | undefined>()
+    const read = vi.fn(() => record.promise)
+    deps.record.read = read
+    const answers = [reach.status(), reach.status(), reach.status()]
+    expect(read).toHaveBeenCalledTimes(1)
+    expect(timers().filter((timer) => timer.ms === 15_000)).toHaveLength(3)
+    record.settle(undefined)
+    for (const answer of answers) await expect(answer).resolves.toMatchObject({ state: "off", name })
+    expect(timers()).toEqual([])
+  })
+
+  it("starts no third read when two overlapping reads are refused at their deadlines and the newer settles first", async () => {
+    const { reach, deps, timers } = harness()
+    const reads: { settle: (value: TailnetReachRecord | undefined) => void }[] = []
+    const read = vi.fn(() => {
+      const record = held<TailnetReachRecord | undefined>()
+      reads.push(record)
+      return record.promise
+    })
+    deps.record.read = read
+    const automatic = reach.status()
+    const explicit = reach.status()
+    const [first, second] = timers()
+    fire(first)
+    fire(second)
+    await expect(automatic).rejects.toThrow(unanswered)
+    await expect(explicit).rejects.toThrow(unanswered)
+    reads.at(-1)!.settle(undefined)
+    await new Promise((resolve) => setImmediate(resolve))
+    const next = reach.status()
+    expect(read).toHaveBeenCalledTimes(2)
+    for (const record of reads) record.settle(undefined)
+    await expect(next).resolves.toMatchObject({ state: "off", name })
+  })
+
   it("does not hand a read held from before a change to a read after it", async () => {
     const { reach, deps, timers } = harness({ status: "missing" })
     const record = held<TailnetReachRecord | undefined>()

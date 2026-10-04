@@ -211,13 +211,13 @@ export class TailnetReach {
   // Where a turn-off in this session set the files aside, deleted the record,
   // and then could not delete them (Q417 A).
   #undeletedPending: string | undefined
-  // Counts each start and end of a change or renewal, so a status read held
-  // past its deadline is shared only with reads from the same stretch.
+  // Counts each start and end of a change or renewal, so a status read in
+  // flight is shared only with reads from the same stretch.
   #generation = 0
-  // A status read past its deadline and not yet settled. Later reads wait on
-  // it, each under its own deadline, instead of starting another that stalls
-  // on the same dependency.
-  #held: { generation: number; work: Promise<TailnetReachReport> } | undefined
+  // The status read in flight, from when it starts until it settles. Later
+  // reads of the same generation wait on it, each under its own deadline,
+  // instead of starting another that stalls on the same dependency.
+  #inFlight: { generation: number; work: Promise<TailnetReachReport> } | undefined
 
   constructor(private readonly deps: TailnetReachDependencies) {}
 
@@ -502,26 +502,31 @@ export class TailnetReach {
 
   // Review of PR #713 (P3): answers by statusDeadlineMs, or refuses when the
   // read has not settled by then (Q436 B). What the read answers later goes
-  // nowhere for this call; its tailscale process, if it starts one, still ends
-  // at its own timeout.
+  // nowhere for this call. The deadline cancels nothing: the executable
+  // lookup, the file reads and the tailscale process, which keeps its own
+  // timeout, run on until they settle.
   status(): Promise<TailnetReachReport> {
     const generation = this.#generation
-    const held = this.#held?.generation === generation ? this.#held : undefined
-    const work = held?.work ?? this.#status()
+    const work = this.#inFlight?.generation === generation ? this.#inFlight.work : this.#started(generation)
     return new Promise((resolve, reject) => {
-      const deadline = this.#timers.set(() => {
-        if (!held) {
-          const entry = this.#held = { generation, work }
-          const release = () => { if (this.#held === entry) this.#held = undefined }
-          work.then(release, release)
-        }
-        reject(new Error(statusUnanswered))
-      }, statusDeadlineMs)
+      const deadline = this.#timers.set(() => reject(new Error(statusUnanswered)), statusDeadlineMs)
       work.then(
         (report) => { this.#timers.clear(deadline); resolve(report) },
         (cause: unknown) => { this.#timers.clear(deadline); reject(cause) },
       )
     })
+  }
+
+  // Codex review of PR #722 (P3-1): a read is registered when it starts, so a
+  // read that overlaps it joins it before any deadline fires, and only its own
+  // settling frees the slot. A read from an earlier generation is replaced in
+  // the slot, not shared, and its settling leaves the newer one in place.
+  #started(generation: number): Promise<TailnetReachReport> {
+    const entry = { generation, work: this.#status() }
+    this.#inFlight = entry
+    const release = () => { if (this.#inFlight === entry) this.#inFlight = undefined }
+    entry.work.then(release, release)
+    return entry.work
   }
 
   async #status(): Promise<TailnetReachReport> {
@@ -563,7 +568,7 @@ export class TailnetReach {
     }
   }
 
-  // A status read held from before a change, or from during one, is not
+  // A status read in flight from before a change, or from during one, is not
   // shared with a read after it.
   #changing(busy: boolean): void {
     this.#busy = busy
