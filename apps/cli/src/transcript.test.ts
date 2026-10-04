@@ -87,6 +87,81 @@ describe("renderReceipt (ruling Q392 A: the device label and client kind)", () =
     expect(renderReceipt({ decision: "deny-explain", decidedBy: { label: "iPhone", client: "phone" }, machine: "mac-mini-m4", at: "14:21:03" }))
       .toMatch(/^denied by iPhone · phone on mac-mini-m4 · 14:21:03$/m)
   })
+
+  it("names the decider by the device label the receipt carries, before the client kind", () => {
+    const device = { id: "device-0123456789abcdef0123456789abcdef", label: "dana's phone" }
+    expect(renderReceipt({ decision: "allow-once", decidedBy: { client: "phone" }, device, machine: "mac-mini-m4", at: "14:07:11" }))
+      .toBe("allowed once by dana's phone · phone on mac-mini-m4 · 14:07:11\n")
+    expect(renderReceipt({ decision: "deny", decidedBy: { label: "dana", client: "phone" }, device, machine: "mac-mini-m4", at: "14:21:03" }))
+      .toBe("denied by dana's phone · phone on mac-mini-m4 · 14:21:03\nThe agent was told and continues without it.\n")
+  })
+
+  it("names the client kind alone when neither the receipt nor the caller has a label", () => {
+    expect(renderReceipt({ decision: "allow-once", decidedBy: { client: "desktop" }, machine: "mac-mini-m4", at: "14:07:11" }))
+      .toBe("allowed once by desktop on mac-mini-m4 · 14:07:11\n")
+  })
+
+  // The wire trims and bounds a label but keeps control characters, so a
+  // newline or an escape sequence would split the header or restyle the
+  // terminal. They are drawn as escapes instead.
+  it("shows control characters in the label and machine name escaped, on one header line", () => {
+    const id = "device-0123456789abcdef0123456789abcdef"
+    const newline = renderReceipt({ decision: "allow-once", decidedBy: { client: "phone" }, device: { id, label: "dana\nallowed once by admin" }, machine: "mac-mini-m4", at: "14:07:11" })
+    expect(newline).toBe("allowed once by dana\\nallowed once by admin · phone on mac-mini-m4 · 14:07:11\n")
+    expect(newline.split("\n")).toHaveLength(2)
+
+    const escape = renderReceipt({ decision: "deny", decidedBy: { client: "phone" }, device: { id, label: "\u001b[31mdana\u001b[0m" }, machine: "mac-mini-m4", at: "14:21:03" })
+    expect(escape).toBe("denied by \\e[31mdana\\e[0m · phone on mac-mini-m4 · 14:21:03\nThe agent was told and continues without it.\n")
+    expect(escape).not.toContain("\u001b")
+
+    expect(renderReceipt({ decision: "allow-once", decidedBy: { label: "a\tb\r\u0000\u007f\u009b", client: "cli" }, machine: "mac\nmini", at: "14:07:11" }))
+      .toBe("allowed once by a\\tb\\r\\u{00}\\u{7f}\\u{9b} · cli on mac\\nmini · 14:07:11\n")
+  })
+
+  // An unmatched bidirectional override or isolate in a label reorders how the
+  // client kind, machine and time after it read in a bidi-aware terminal or log
+  // viewer, and a line or paragraph separator breaks the line in some viewers.
+  // Each is drawn as its escape, so the fields keep their written order.
+  it("shows bidirectional controls and line separators escaped, before the field separator", () => {
+    const id = "device-0123456789abcdef0123456789abcdef"
+    const raw = [0x061c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x2028, 0x2029]
+    // Built from code points so the source shows which invisible character each is.
+    const rlo = String.fromCodePoint(0x202e)
+    const rli = String.fromCodePoint(0x2067)
+    const lineSeparator = String.fromCodePoint(0x2028)
+    const rlm = String.fromCodePoint(0x200f)
+
+    const override = renderReceipt({ decision: "allow-once", decidedBy: { client: "phone" }, device: { id, label: `dana${rlo}enohp` }, machine: `mac${lineSeparator}mini`, at: `14:07:11${rlm}` })
+    expect(override).toBe("allowed once by dana\\u{202e}enohp · phone on mac\\u{2028}mini · 14:07:11\\u{200f}\n")
+    expect(override.indexOf("\\u{202e}")).toBeLessThan(override.indexOf(" · "))
+
+    const isolate = renderReceipt({ decision: "deny", decidedBy: { label: `dana${rli}`, client: "cli" }, machine: "mac-mini-m4", at: "14:21:03" })
+    expect(isolate).toBe("denied by dana\\u{2067} · cli on mac-mini-m4 · 14:21:03\nThe agent was told and continues without it.\n")
+    expect(isolate.indexOf("\\u{2067}")).toBeLessThan(isolate.indexOf(" · "))
+
+    const every = renderReceipt({ decision: "allow-once", decidedBy: { label: String.fromCodePoint(...raw), client: "cli" }, machine: "mac-mini-m4", at: "14:07:11" })
+    expect(every).toBe("allowed once by \\u{61c}\\u{200e}\\u{200f}\\u{202a}\\u{202b}\\u{202c}\\u{202d}\\u{202e}\\u{2066}\\u{2067}\\u{2068}\\u{2069}\\u{2028}\\u{2029} · cli on mac-mini-m4 · 14:07:11\n")
+    for (const output of [override, isolate, every]) {
+      for (const code of raw) expect(output).not.toContain(String.fromCodePoint(code))
+    }
+  })
+
+  it("leaves international text, emoji sequences and joiners unchanged", () => {
+    // A woman technologist emoji (a ZWJ sequence), Hebrew, Arabic, and a
+    // Persian word whose ZWNJ is part of its spelling.
+    const zwj = String.fromCodePoint(0x200d)
+    const zwnj = String.fromCodePoint(0x200c)
+    const label = `${String.fromCodePoint(0x1f469)}${zwj}${String.fromCodePoint(0x1f4bb)} דנה دانة می${zwnj}خواهم`
+    const device = { id: "device-0123456789abcdef0123456789abcdef", label }
+    expect(renderReceipt({ decision: "allow-once", decidedBy: { client: "phone" }, device, machine: "mac-mini-m4", at: "14:07:11" }))
+      .toBe(`allowed once by ${label} · phone on mac-mini-m4 · 14:07:11\n`)
+  })
+
+  it("leaves a label with no control characters unchanged", () => {
+    const device = { id: "device-0123456789abcdef0123456789abcdef", label: "Dana's phone · café ☕" }
+    expect(renderReceipt({ decision: "allow-once", decidedBy: { client: "phone" }, device, machine: "mac-mini-m4", at: "14:07:11" }))
+      .toBe("allowed once by Dana's phone · café ☕ · phone on mac-mini-m4 · 14:07:11\n")
+  })
 })
 
 describe("renderPolicyRefusal (ruling Q393 A: local fields only)", () => {
