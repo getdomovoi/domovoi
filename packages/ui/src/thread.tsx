@@ -59,7 +59,6 @@ import { useThreadFollow } from "./thread-follow"
 import { MachineSwitcher } from "./machine-switcher.js"
 import { fleetMachines } from "./fleet-entries.js"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
-import { TransferSessionDialog } from "./transfer-session-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { cn } from "./lib/utils"
 import { DomovoiMark } from "./domovoi-mark"
@@ -109,14 +108,22 @@ export const freshStartPanel = { prefetch: () => { void loadFreshStart().catch((
 const WorktreeReadyHeader = lazy(async () => ({ default: (await loadFreshStart()).WorktreeReadyHeader }))
 const NothingHasRunYet = lazy(async () => ({ default: (await loadFreshStart()).NothingHasRunYet }))
 
-// The line the panel's code loads behind, registered by identity so the start
+// The move dialog is drawn only once a move has been asked for, from the
+// machine menu, the launcher or /handoff, so its code loads the same way.
+const loadMoveDialog = () => import("./transfer-session-dialog.js")
+export const moveDialog = { prefetch: () => { void loadMoveDialog().catch(() => undefined) } }
+const TransferSessionDialog = lazy(async () => ({ default: (await loadMoveDialog()).TransferSessionDialog }))
+
+// The line a piece's code loads behind, registered by identity so the start
 // flow's focus rules hold for it (start-handoff.ts). It takes no focus of its
-// own: the thread is already open and the start flow decides where focus is.
-function FreshStartLoading() {
+// own: the thread is already open and the start flow decides where focus is,
+// or, for the move dialog, the menu's close returns focus to where it was and
+// the dialog takes it once its code lands.
+function ThreadPieceLoading({ children }: { children: string }) {
   const line = useRef<HTMLParagraphElement>(null)
   useEffect(() => loadingLineRef(line.current), [])
   return (
-    <p ref={line} role="status" tabIndex={-1} className="font-machine text-mono-xs text-faint outline-none">Opening the fresh-start panel</p>
+    <p ref={line} role="status" tabIndex={-1} className="font-machine text-mono-xs text-faint outline-none">{children}</p>
   )
 }
 
@@ -1113,7 +1120,7 @@ export function Thread({
             card's width. */}
         <div data-thread-column="" className="mx-auto flex w-full max-w-[calc(var(--shell-thread)+3rem)] flex-col gap-5 px-6 pt-6 pb-14">
           {freshWorktree ? (
-            <Suspense fallback={<FreshStartLoading />}>
+            <Suspense fallback={<ThreadPieceLoading>Opening the fresh-start panel</ThreadPieceLoading>}>
               <NothingHasRunYet runtime={active.runtime} />
             </Suspense>
           ) : (
@@ -1333,32 +1340,34 @@ export function Thread({
             />
           ) : null}
           {!readOnly && onTransferSession && transferTarget ? (
-            <TransferSessionDialog
-              open
-              onOpenChange={(open) => { if (!open) setTransferTargetId(null) }}
-              session={active}
-              source={sourceMachine}
-              target={transferTarget}
-              onTransfer={onTransferSession}
-              onPreview={onPreviewTransfer!}
-              onTransferred={(machineId) => {
-                setTransferTargetId(null)
-                onSelectMachine?.(machineId)
-              }}
-              onOutcome={(result) => setTransferReceipt({
-                targetLabel: transferTarget.label,
-                sourceLabel: sourceMachine.label,
-                result,
-              })}
-              {...(onReleaseSession ? {
-                onRecoverSource: (transferId: string) => onReleaseSession({
-                  sessionId: active.id,
-                  transferId,
-                  confirmation: "target-does-not-have-session",
-                }).then(() => undefined),
-              } : {})}
-              onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: true })}
-            />
+            <Suspense fallback={<ThreadPieceLoading>Opening the move dialog</ThreadPieceLoading>}>
+              <TransferSessionDialog
+                open
+                onOpenChange={(open) => { if (!open) setTransferTargetId(null) }}
+                session={active}
+                source={sourceMachine}
+                target={transferTarget}
+                onTransfer={onTransferSession}
+                onPreview={onPreviewTransfer!}
+                onTransferred={(machineId) => {
+                  setTransferTargetId(null)
+                  onSelectMachine?.(machineId)
+                }}
+                onOutcome={(result) => setTransferReceipt({
+                  targetLabel: transferTarget.label,
+                  sourceLabel: sourceMachine.label,
+                  result,
+                })}
+                {...(onReleaseSession ? {
+                  onRecoverSource: (transferId: string) => onReleaseSession({
+                    sessionId: active.id,
+                    transferId,
+                    confirmation: "target-does-not-have-session",
+                  }).then(() => undefined),
+                } : {})}
+                onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: true })}
+              />
+            </Suspense>
           ) : null}
         </ThreadComposer>
         {!readOnly ? (

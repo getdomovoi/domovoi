@@ -3,9 +3,27 @@ import userEvent from "@testing-library/user-event"
 import { demoWorkspace, sessionTransferContractVersion, type FleetMachine, type SessionTransferResult, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { isLoadingLine } from "./start-handoff"
 import { ThreadWithDrawerMove } from "./test-support/drawer-move"
 
-afterEach(cleanup)
+// The dialog's code loads on first use. The first test holds its chunk back
+// until it has seen the loading line; the module is then cached, so every
+// later test gets it at once.
+const chunk = vi.hoisted(() => {
+  let release = () => {}
+  const open = new Promise<void>((resolve) => { release = resolve })
+  return { open, release, held: false }
+})
+vi.mock("./transfer-session-dialog.js", async (importOriginal) => {
+  if (chunk.held) await chunk.open
+  return importOriginal()
+})
+
+afterEach(() => {
+  cleanup()
+  // A held chunk is let go even when the holding test failed first.
+  chunk.release()
+})
 
 const handlers = {
   onResolve: vi.fn(async () => {}),
@@ -91,8 +109,38 @@ async function openTransferDialog(result: SessionTransferResult) {
   )
   await user.click(screen.getByRole("button", { name: "Move to another machine" }))
   await user.click(screen.getByRole("menuitem", { name: /move this session to studio/i }))
+  // The dialog's code loads on first use; a held chunk is the test's to let go.
+  if (!chunk.held) await screen.findByRole("heading", { name: "Move this session to another machine" })
   return { user, snapshot, studio, onTransferSession, onSelectMachine }
 }
+
+// The dialog is drawn only once a move has been asked for, so its code loads
+// on first use behind the registered loading line, as a surface's does. The
+// line takes no focus of its own: the menu's close returns focus to where it
+// was, and the dialog takes it once its code lands.
+it("loads the dialog's code on first use behind the registered loading line", async () => {
+  chunk.held = true
+  await openTransferDialog({
+    outcome: "succeeded",
+    contractVersion: sessionTransferContractVersion,
+    transferId: "transfer-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    ownershipGeneration: 2,
+    coverage: { included: [{ kind: "repository" }], excluded: [], warnings: [] },
+    workspacePath: "/worktrees/session",
+    checkpointCommit: "c".repeat(40),
+  })
+
+  const line = screen.getByText("Opening the move dialog")
+  expect(line.getAttribute("role")).toBe("status")
+  expect(isLoadingLine(line)).toBe(true)
+  expect(document.activeElement).not.toBe(line)
+  expect(screen.queryByRole("heading", { name: "Move this session to another machine" })).toBeNull()
+
+  chunk.release()
+  expect(await screen.findByRole("heading", { name: "Move this session to another machine" })).toBeTruthy()
+  expect(screen.queryByText("Opening the move dialog")).toBeNull()
+  expect(isLoadingLine(line)).toBe(false)
+})
 
 it("opens the transfer dialog from the composer device menu", async () => {
   await openTransferDialog({
@@ -105,7 +153,7 @@ it("opens the transfer dialog from the composer device menu", async () => {
     checkpointCommit: "c".repeat(40),
   })
 
-  expect(screen.getByRole("heading", { name: "Move this session to another machine" })).toBeTruthy()
+  expect(await screen.findByRole("heading", { name: "Move this session to another machine" })).toBeTruthy()
 })
 
 it("moves the session and switches to the target machine", async () => {
