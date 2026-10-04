@@ -809,7 +809,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the archived half is built; the paused half (Paused. The daemon is holding the session ... until you resume, meta paused <time> from this client, Resume) is drawn nowhere and cannot be drawn honestly: sessionStateSchema has no paused state and session.pause only interrupts the running turn. Q361 A (2026-10-02) draws a Stopped notice after a client stop, saying the turn ended and the next send starts the next one, and asks Claude Design to edit the paused copy; until that edit is vendored this evidence holds the drawn paused line"
+        "reason": "the archived half is built; the paused half (Paused. The daemon is holding the session ... until you resume, Resume) is drawn nowhere and cannot be drawn honestly: sessionStateSchema has no paused state and session.pause only interrupts the running turn. Q361 A (2026-10-02) draws a Stopped notice after a client stop, saying the turn ended and the next send starts the next one, and asks Claude Design to edit the paused copy; until that edit is vendored this evidence holds the drawn paused line. The design's from this client meta is carried by the Stopped notice instead: since PR #719 it reads stopped <time> · from this client when the daemon's pause row names this connection"
       },
       "copy": [
         "Archived and read-only. The worktree was removed. Branch",

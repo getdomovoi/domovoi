@@ -1,4 +1,4 @@
-import type { ApprovalRequest, ClientKind, PolicyRefusalThreadItem } from "@getdomovoi/protocol"
+import type { ApprovalRequest, ClientKind, PolicyRefusalThreadItem, ThreadItem } from "@getdomovoi/protocol"
 
 // The lines a session transcript prints for a gate, a receipt and a policy
 // refusal, laid out as the signed CLI transcripts design draws them (J44) and
@@ -20,6 +20,41 @@ const choiceWidth = 13
 // label, so a narrow terminal wraps nothing and loses nothing.
 function header(label: string, id: string, columns: number): string {
   return `${label}${" ".repeat(Math.max(2, columns - label.length - id.length))}${id}`
+}
+
+// Wire text a person chose (a device label, a machine name) may carry
+// control and formatting characters: the schema trims and bounds a label but
+// does not refuse them. Printed raw, a newline splits one line into two and an
+// escape sequence restyles the terminal. An unmatched bidirectional override
+// or isolate reorders how the client kind, machine and time after it read in a
+// bidi-aware terminal or log viewer, and U+2028 and U+2029 break the line in
+// some viewers. So C0 controls, DEL, C1 controls, every Unicode Bidi_Control
+// code point (U+061C, U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) and
+// the line and paragraph separators are escaped: the shell escapes a reader
+// knows (\n, \r, \t, \e) where one exists, otherwise \u{XX}, the JavaScript
+// code point form. Each stays visible on the same line and names the character
+// it replaced. Ordinary letters in any script, emoji, and the joiners U+200C
+// and U+200D that spell some words and emoji sequences pass unchanged. Fields
+// are not isolated: right-to-left text in one field can still move a
+// neighbouring number, such as the time, in a viewer that applies bidi
+// ordering. Wrapping each field in renderer-owned isolates is the fix once a
+// command prints this line.
+const namedControls: Record<number, string> = { 0x09: "\\t", 0x0a: "\\n", 0x0d: "\\r", 0x1b: "\\e" }
+
+function shownEscaped(code: number): boolean {
+  if (code <= 0x1f || (code >= 0x7f && code <= 0x9f)) return true
+  if (code === 0x061c || code === 0x200e || code === 0x200f) return true
+  if (code >= 0x2028 && code <= 0x202e) return true
+  return code >= 0x2066 && code <= 0x2069
+}
+
+function terminalSafe(text: string): string {
+  let safe = ""
+  for (const character of text) {
+    const code = character.codePointAt(0) ?? 0
+    safe += shownEscaped(code) ? namedControls[code] ?? `\\u{${code.toString(16).padStart(2, "0")}}` : character
+  }
+  return safe
 }
 
 function fact(key: string, value: string): string {
@@ -88,18 +123,23 @@ renderGate.ask = (gate: GateView): string => {
 
 // Q392 A: there are no accounts in M1, so the person is the paired device's
 // label, beside the client kind and the machine the decision reached. The
-// receipt on the wire names the client kind but not the label; the caller
-// supplies it. An Always decision has no line in the design, so it has none
-// here either.
+// label comes from the device the daemon wrote on the receipt (ruling Q424 A),
+// in the order the web and desktop receipt reads it: label, then client kind.
+// A receipt without a device (the daemon credential, or a row written before
+// the field) takes the label the caller supplies, and with none names the
+// client kind alone, as the web and desktop receipt does. An Always decision
+// has no line in the design, so it has none here either.
 export type ReceiptView = {
   decision: "allow-once" | "deny" | "deny-explain"
-  decidedBy: { label: string; client: ClientKind }
+  decidedBy: { label?: string; client: ClientKind }
   machine: string
   at: string
-}
+} & Pick<Extract<ThreadItem, { kind: "receipt" }>, "device">
 
 export function renderReceipt(receipt: ReceiptView): string {
-  const who = `${receipt.decidedBy.label} · ${receipt.decidedBy.client} on ${receipt.machine} · ${receipt.at}`
+  const label = receipt.device?.label ?? receipt.decidedBy.label
+  const decider = label === undefined ? receipt.decidedBy.client : `${terminalSafe(label)} · ${receipt.decidedBy.client}`
+  const who = `${decider} on ${terminalSafe(receipt.machine)} · ${terminalSafe(receipt.at)}`
   if (receipt.decision === "allow-once") return `allowed once by ${who}\n`
   return `denied by ${who}\nThe agent was told and continues without it.\n`
 }

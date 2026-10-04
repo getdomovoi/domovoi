@@ -1291,7 +1291,10 @@ function sessionHistorySearchText(entry: SessionHistoryEntry): string {
     return `${entry.title}\n${entry.output ?? ""}\n${entry.status}\n${entry.tool}`
   }
   if (entry.category === "approvals") {
-    return `${entry.operation}\n${entry.decision}\n${entry.checkpoint}\n${entry.client}\n${entry.explanation ?? ""}`
+    // The label of the device that decided (ruling Q424 A), so a search for
+    // dana finds what was decided on dana's phone. An entry without a device
+    // (the daemon credential, or a row written before the field) adds nothing.
+    return `${entry.operation}\n${entry.decision}\n${entry.checkpoint}\n${entry.client}\n${entry.device?.label ?? ""}\n${entry.explanation ?? ""}`
   }
   if (entry.category === "policy-refusals") {
     return `${entry.operation}\n${entry.command}\n${entry.rule}\n${entry.setBy}\n${entry.scope}\n${entry.remedy}`
