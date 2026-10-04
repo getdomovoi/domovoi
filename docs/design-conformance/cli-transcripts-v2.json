@@ -187,7 +187,7 @@
         "allowed once by ${who}",
         "denied by ${who}",
         "The agent was told and continues without it.",
-        "decidedBy: { label: string; client: ClientKind }"
+        "const label = receipt.device?.label ?? receipt.decidedBy.label"
       ]
     },
     {
@@ -261,7 +261,7 @@
     {
       "id": "cli.receipt",
       "since": "2026-10-03",
-      "note": "Built for Q392 A: the person is the paired device's label, then the client kind and machine, as in allowed once by dana · cli on mac-mini-m4 · 14:07:11. The receipt thread item carries the client kind but not the device label, so the renderer takes the label from its caller; a receipt made by another client cannot be named this way until the protocol adds the device to the receipt. The design's checkpoint line is not drawn, as its own open question proposes, and an Always decision has no line in the design so it has none here."
+      "note": "Built for Q392 A: the person is the paired device's label, then the client kind and machine, as in allowed once by dana · cli on mac-mini-m4 · 14:07:11. The receipt thread item now carries the paired device the daemon verified (Q424 A), so the renderer takes the label from the receipt's device, label before client kind as the web and desktop receipt reads, whichever client decided. A receipt without a device (the daemon credential, or a row written before the field) takes a label from the caller, and with none names the client kind alone, as allowed once by desktop on mac-mini-m4 · 14:07:11, which the design does not draw. The design's checkpoint line is not drawn, as its own open question proposes, and an Always decision has no line in the design so it has none here."
     },
     {
       "id": "cli.policy-refusal",

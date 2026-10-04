@@ -1,4 +1,4 @@
-import type { ApprovalRequest, ClientKind, PolicyRefusalThreadItem } from "@getdomovoi/protocol"
+import type { ApprovalRequest, ClientKind, PolicyRefusalThreadItem, ThreadItem } from "@getdomovoi/protocol"
 
 // The lines a session transcript prints for a gate, a receipt and a policy
 // refusal, laid out as the signed CLI transcripts design draws them (J44) and
@@ -88,18 +88,23 @@ renderGate.ask = (gate: GateView): string => {
 
 // Q392 A: there are no accounts in M1, so the person is the paired device's
 // label, beside the client kind and the machine the decision reached. The
-// receipt on the wire names the client kind but not the label; the caller
-// supplies it. An Always decision has no line in the design, so it has none
-// here either.
+// label comes from the device the daemon wrote on the receipt (ruling Q424 A),
+// in the order the web and desktop receipt reads it: label, then client kind.
+// A receipt without a device (the daemon credential, or a row written before
+// the field) takes the label the caller supplies, and with none names the
+// client kind alone, as the web and desktop receipt does. An Always decision
+// has no line in the design, so it has none here either.
 export type ReceiptView = {
   decision: "allow-once" | "deny" | "deny-explain"
-  decidedBy: { label: string; client: ClientKind }
+  decidedBy: { label?: string; client: ClientKind }
   machine: string
   at: string
-}
+} & Pick<Extract<ThreadItem, { kind: "receipt" }>, "device">
 
 export function renderReceipt(receipt: ReceiptView): string {
-  const who = `${receipt.decidedBy.label} · ${receipt.decidedBy.client} on ${receipt.machine} · ${receipt.at}`
+  const label = receipt.device?.label ?? receipt.decidedBy.label
+  const decider = label === undefined ? receipt.decidedBy.client : `${label} · ${receipt.decidedBy.client}`
+  const who = `${decider} on ${receipt.machine} · ${receipt.at}`
   if (receipt.decision === "allow-once") return `allowed once by ${who}\n`
   return `denied by ${who}\nThe agent was told and continues without it.\n`
 }

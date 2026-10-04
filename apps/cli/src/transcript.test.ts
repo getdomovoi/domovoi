@@ -87,6 +87,19 @@ describe("renderReceipt (ruling Q392 A: the device label and client kind)", () =
     expect(renderReceipt({ decision: "deny-explain", decidedBy: { label: "iPhone", client: "phone" }, machine: "mac-mini-m4", at: "14:21:03" }))
       .toMatch(/^denied by iPhone · phone on mac-mini-m4 · 14:21:03$/m)
   })
+
+  it("names the decider by the device label the receipt carries, before the client kind", () => {
+    const device = { id: "device-0123456789abcdef0123456789abcdef", label: "dana's phone" }
+    expect(renderReceipt({ decision: "allow-once", decidedBy: { client: "phone" }, device, machine: "mac-mini-m4", at: "14:07:11" }))
+      .toBe("allowed once by dana's phone · phone on mac-mini-m4 · 14:07:11\n")
+    expect(renderReceipt({ decision: "deny", decidedBy: { label: "dana", client: "phone" }, device, machine: "mac-mini-m4", at: "14:21:03" }))
+      .toBe("denied by dana's phone · phone on mac-mini-m4 · 14:21:03\nThe agent was told and continues without it.\n")
+  })
+
+  it("names the client kind alone when neither the receipt nor the caller has a label", () => {
+    expect(renderReceipt({ decision: "allow-once", decidedBy: { client: "desktop" }, machine: "mac-mini-m4", at: "14:07:11" }))
+      .toBe("allowed once by desktop on mac-mini-m4 · 14:07:11\n")
+  })
 })
 
 describe("renderPolicyRefusal (ruling Q393 A: local fields only)", () => {
