@@ -218,6 +218,27 @@ describe("TabletShell", () => {
     expect(screen.getByText(refusal.remedy)).toBeOnTheScreen()
   })
 
+  // Ruling Q424 A: the receipt names the device that decided. A decision also
+  // carries how long the gate waited, and the one must not hide the other.
+  it("names the deciding device on a receipt that also carries a duration", async () => {
+    await draw("normal", "full", (snapshot) => {
+      snapshot.thread.push({
+        id: "receipt-tablet",
+        sessionId: snapshot.approvals[0]!.sessionId,
+        kind: "receipt",
+        decision: "allow-once",
+        operation: "pnpm -w prisma migrate deploy",
+        checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+        client: "phone",
+        device: { id: "device-fcbd4c3f99c7294586f0c5ca22f9cdf8", label: "dana" },
+        decisionDurationMs: 38_400,
+        createdAt: "2026-08-25T21:52:00.000Z",
+      })
+    })
+
+    expect(screen.getByText("dana · phone · device fcbd…cdf8 · decided after 38s")).toBeOnTheScreen()
+  })
+
   // The tablet receipt says what the phone's says: a checkpoint only when an
   // allow took one, how long the command ran when it has, and the gate's wait
   // under its own name rather than as an unlabeled number.
@@ -235,7 +256,8 @@ describe("TabletShell", () => {
         snapshot.thread.push({ ...receipt("allowed", "allow-once", commit, { ranForMs: 12_000, decisionDurationMs: 38_000 }), sessionId: snapshot.approvals[0]!.sessionId })
       })
       expect(screen.getByText("Checkpoint 8f3c1de was taken first, then it ran in 12s.")).toBeOnTheScreen()
-      expect(screen.getByText("decided after 38s")).toBeOnTheScreen()
+      // Who decided comes first on the meta line (ruling Q424 A).
+      expect(screen.getByText("tablet · decided after 38s")).toBeOnTheScreen()
     })
 
     it("claims no checkpoint for a deny", async () => {

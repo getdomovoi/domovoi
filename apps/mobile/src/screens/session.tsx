@@ -55,7 +55,7 @@ function Receipt({ entry, onWatch }: {
   const dim = denied ? "text-muted-foreground" : "text-ok-dim"
   const record: Array<[string, string]> = [
     ["Decision", entry.recorded],
-    ["Decided on", entry.client],
+    ["Decided on", entry.decidedBy],
     ...(entry.declaredClient ? [["Declared client", entry.declaredClient] as [string, string]] : []),
     ["Checkpoint", entry.checkpoint],
   ]

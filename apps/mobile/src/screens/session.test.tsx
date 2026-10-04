@@ -194,6 +194,7 @@ describe("SessionScreen decision receipt", () => {
     operation: "pnpm -w prisma migrate deploy",
     explanation: undefined,
     client: "phone",
+    decidedBy: "phone",
     declaredClient: undefined as string | undefined,
     checkpoint: "8f3c1de",
     checkpointTaken: true,
@@ -270,10 +271,18 @@ describe("SessionScreen decision receipt", () => {
   })
 
   it("does not speak of a phone's credential for a decision made elsewhere", async () => {
-    await drawReceipt({ ...allowed, client: "desktop" })
+    await drawReceipt({ ...allowed, client: "desktop", decidedBy: "desktop" })
 
     expect(screen.getByLabelText("Decided on, desktop")).toBeOnTheScreen()
     expect(screen.queryByText(/The audit row names this phone's verified credential/)).toBeNull()
+  })
+
+  // Ruling Q424 A: the paired device the daemon wrote on the receipt names
+  // who decided, label first, then the client and the shortened device id.
+  it("names the deciding device in the record", async () => {
+    await drawReceipt({ ...allowed, decidedBy: "dana · phone · device fcbd…cdf8" })
+
+    expect(screen.getByLabelText("Decided on, dana · phone · device fcbd…cdf8")).toBeOnTheScreen()
   })
 
   it("claims no checkpoint for a receipt that took none", async () => {

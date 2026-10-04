@@ -89,6 +89,29 @@ describe("portable session transfer state", () => {
     }
   })
 
+  // A receipt crosses machines with the deciding device's id and label. The
+  // label is a person's own text, so a secret in it is replaced before it
+  // leaves; the id stays.
+  it("redacts a secret in a receipt's device label before it leaves", () => {
+    const source = sourceWorkspace()
+    const deviceId = `device-${"f".repeat(32)}`
+    source.thread.push({
+      id: "receipt-device-label",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "Run the migrations",
+      checkpoint: "unavailable",
+      client: "phone",
+      device: { id: deviceId, label: "office NPM_TOKEN=label-secret-1" },
+      createdAt: "2026-10-03T00:00:00.000Z",
+    })
+    const state = portableSessionTransferState(source, "session-billing", usage)
+    expect(state.thread.find((item) => item.id === "receipt-device-label"))
+      .toMatchObject({ device: { id: deviceId, label: "office NPM_TOKEN=[REDACTED]" } })
+    expect(JSON.stringify(state)).not.toContain("label-secret-1")
+  })
+
   it("names every durable checkpoint the repository transport must carry", () => {
     const state = portableSessionTransferState(sourceWorkspace(), "session-billing", usage)
 
@@ -120,37 +143,9 @@ describe("portable session transfer state", () => {
 
   it("imports one idle owner, resets Auto, preserves the draft, and records the handoff", () => {
     const state = portableSessionTransferState(sourceWorkspace(), "session-billing", usage)
-    const target = structuredClone(demoWorkspace)
-    target.machine.id = targetMachineId
-    target.project!.id = "project-target"
-    target.project!.machineId = targetMachineId
-    target.sessions = []
-    target.thread = []
-    target.artifacts = []
-    target.workingPlans = []
-    target.annotations = []
-    target.approvals = []
-    target.activeSessionId = null
-    target.approvalRules = target.approvalRules.map((rule) => ({
-      ...rule,
-      projectId: "project-target",
-    }))
-    target.skillEnablements = target.skillEnablements.map((review) => ({
-      ...review,
-      projectId: "project-target",
-    }))
+    const target = targetWorkspace()
 
-    const imported = importSessionTransferState(target, state, {
-      sourceMachineId,
-      targetProjectId: "project-target",
-      workspacePath: "/target/session-billing",
-      transferId: `transfer-${"d".repeat(32)}`,
-      manifestDigest: `sha256:${"e".repeat(64)}`,
-      ownershipGeneration: 5,
-      checkpointCommit,
-      completedAt: "2026-09-03T20:00:00.000Z",
-      coverage: { included: [], excluded: [], warnings: [] },
-    })
+    const imported = importSessionTransferState(target, state, importInput)
     const session = imported.sessions.find((candidate) => candidate.id === "session-billing")!
     expect(session).toMatchObject({
       state: "idle",
@@ -172,4 +167,66 @@ describe("portable session transfer state", () => {
     expect(imported.approvalRules).toEqual(target.approvalRules)
     expect(imported.skillEnablements).toEqual(target.skillEnablements)
   })
+
+  // A source that ran before receipt labels were redacted sends the label as
+  // it was written. The state is accepted as sent, so its bytes and digest
+  // still verify, and the import redacts it before it becomes this machine's
+  // state; the device's id stays.
+  it("redacts a secret in an arriving receipt's device label", () => {
+    const state = portableSessionTransferState(sourceWorkspace(), "session-billing", usage)
+    const deviceId = `device-${"f".repeat(32)}`
+    state.thread.push({
+      id: "receipt-device-label",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "Run the migrations",
+      checkpoint: "unavailable",
+      client: "phone",
+      device: { id: deviceId, label: "office NPM_TOKEN=label-secret-1" },
+      createdAt: "2026-10-03T00:00:00.000Z",
+    })
+    const sent = sessionTransferStateSchema.parse(structuredClone(state))
+
+    const imported = importSessionTransferState(targetWorkspace(), state, importInput)
+    expect(imported.thread.find((item) => item.id === "receipt-device-label"))
+      .toMatchObject({ device: { id: deviceId, label: "office NPM_TOKEN=[REDACTED]" } })
+    expect(JSON.stringify(imported)).not.toContain("label-secret-1")
+    expect(state).toEqual(sent)
+  })
 })
+
+const importInput = {
+  sourceMachineId,
+  targetProjectId: "project-target",
+  workspacePath: "/target/session-billing",
+  transferId: `transfer-${"d".repeat(32)}`,
+  manifestDigest: `sha256:${"e".repeat(64)}`,
+  ownershipGeneration: 5,
+  checkpointCommit,
+  completedAt: "2026-09-03T20:00:00.000Z",
+  coverage: { included: [], excluded: [], warnings: [] },
+}
+
+function targetWorkspace() {
+  const target = structuredClone(demoWorkspace)
+  target.machine.id = targetMachineId
+  target.project!.id = "project-target"
+  target.project!.machineId = targetMachineId
+  target.sessions = []
+  target.thread = []
+  target.artifacts = []
+  target.workingPlans = []
+  target.annotations = []
+  target.approvals = []
+  target.activeSessionId = null
+  target.approvalRules = target.approvalRules.map((rule) => ({
+    ...rule,
+    projectId: "project-target",
+  }))
+  target.skillEnablements = target.skillEnablements.map((review) => ({
+    ...review,
+    projectId: "project-target",
+  }))
+  return target
+}

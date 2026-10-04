@@ -14,6 +14,7 @@ import {
   clientIdentityIdSchema,
   clientKindSchema,
   commitShaSchema,
+  deviceReferenceSchema,
   forkRequestIdSchema,
   machineIdSchema,
   projectIdSchema,
@@ -697,6 +698,11 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     client: clientKindSchema,
     connectionId: connectionIdSchema.optional(),
     clientId: clientIdentityIdSchema.optional(),
+    // The paired device the daemon verified on the connection that decided,
+    // as a terminal owner names it (ruling Q424 A), so a client can say who
+    // decided without a lookup. Absent when the decider held the daemon
+    // credential, which has no device, and on a row written before the field.
+    device: deviceReferenceSchema.optional(),
     explanation: z.string().min(1).optional(),
     decisionDurationMs: approvalDecisionDurationMsSchema.optional(),
     ranForMs: approvedCommandRunMsSchema.optional(),

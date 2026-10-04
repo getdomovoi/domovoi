@@ -3,17 +3,25 @@ import { z } from "zod"
 import { pairingAddressSchema } from "./pairing-url.js"
 import { offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
 
-import { clientKindSchema, credentialSchema, machineIdSchema } from "./identifiers.js"
+import {
+  clientKindSchema,
+  credentialSchema,
+  deviceIdSchema,
+  deviceLabelSchema,
+  machineIdSchema,
+  maximumPairedDeviceLabelLength,
+} from "./identifiers.js"
 import { fleetMachineDescriptorSchema } from "./fleet.js"
 import { protocolCompatibilitySchema, protocolVersionSchema } from "./protocol-version.js"
 import { relayChannelPinSchema, relayPublicKeySchema } from "./relay-admission.js"
 import { relayIdentityPinSchema } from "./relay-identity.js"
 
-export const maximumPairedDeviceLabelLength = 128
+// Defined in identifiers.ts so the thread can name a device without an import
+// cycle; re-exported here, where the device schemas are read from.
+export { deviceIdSchema, deviceLabelSchema, maximumPairedDeviceLabelLength }
+
 export const maximumListedDevices = 256
 
-export const deviceIdSchema = z.string().regex(/^device-[0-9a-f]{32}$/)
-export const deviceLabelSchema = z.string().trim().min(1).check(utf16MaxLength(maximumPairedDeviceLabelLength))
 export const clientAccessSchema = z.enum(["full", "watching"])
 
 export const deviceCredentialBindingSchema = z.discriminatedUnion("kind", [

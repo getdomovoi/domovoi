@@ -20,6 +20,17 @@ export const toolStatusSchema = z.enum(["running", "completed", "failed", "decli
 export const projectIdSchema = z.string().min(1).check(utf16MaxLength(256))
 export const forkRequestIdSchema =z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/)
 
+// A paired device's id and label live here rather than in devices.ts because
+// the thread (schema.ts) names a device on a receipt, and devices.ts reaches
+// schema.ts through fleet.ts; devices.ts re-exports them.
+export const maximumPairedDeviceLabelLength = 128
+export const deviceIdSchema = z.string().regex(/^device-[0-9a-f]{32}$/)
+export const deviceLabelSchema = z.string().trim().min(1).check(utf16MaxLength(maximumPairedDeviceLabelLength))
+// A paired device as a terminal owner or a receipt names it: the id, and the
+// label the device had when it acted. Renaming the device later does not
+// rewrite it.
+export const deviceReferenceSchema = z.object({ id: deviceIdSchema, label: deviceLabelSchema }).strict()
+
 const canonicalBase64Pattern = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 const base64Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 

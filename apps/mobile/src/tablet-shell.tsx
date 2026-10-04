@@ -198,16 +198,19 @@ export function TabletReceipt({ entry }: { entry: Extract<ThreadEntry, { kind: "
   const denied = entry.recorded === "deny" || entry.recorded === "deny-explain"
   const ink = denied ? "text-strong" : "text-ok-fg"
   const dim = denied ? "text-muted-foreground" : "text-ok-dim"
+  // The meta line reads who decided and then how long the gate waited, joined
+  // the way the design's meta reads (ruling Q424 A). A decision nearly always
+  // carries a wait, so the one must not stand in for the other.
+  const decider = entry.declaredClient ? `${entry.decidedBy} · declared ${entry.declaredClient}` : entry.decidedBy
+  const meta = [decider, entry.decidedAfter ? `decided after ${entry.decidedAfter}` : undefined]
+    .filter((part) => part !== undefined)
+    .join(" · ")
   return (
     <Card className={cn("gap-1.5", denied ? "border-border bg-card" : "border-ok-border bg-ok-bg")}>
       <View className="flex-row items-center gap-2">
         <View className={cn("h-2 w-2 rounded-full", denied ? "bg-faint" : "bg-success")} />
         <Text className={cn("flex-1 font-sans-medium text-[14px]", ink)}>{entry.decision}</Text>
-        <Text variant="machine" className={dim}>
-          {entry.decidedAfter
-            ? `decided after ${entry.decidedAfter}`
-            : entry.declaredClient ? `${entry.client} · declared ${entry.declaredClient}` : entry.client}
-        </Text>
+        <Text variant="machine" className={dim}>{meta}</Text>
       </View>
       <Text className={cn("text-[13px] leading-[19px]", ink)}>{entry.operation}</Text>
       {entry.checkpointTaken ? (
