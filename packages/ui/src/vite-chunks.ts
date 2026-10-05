@@ -16,5 +16,9 @@ export function vendorChunkFor(moduleId: string): string | undefined {
   if (packageName === "react-resizable-panels") return "panels"
   if (packageName === "zod") return "validation"
   if (packageName.startsWith("@xterm/")) return "terminal"
+  // Packages only a lazily loaded surface uses get a chunk of their own. In
+  // the shared vendor chunk they would load at startup with everything else:
+  // the pairing card's QR code draws only in Settings.
+  if (packageName === "qrcode-generator") return "qrcode"
   return "vendor"
 }

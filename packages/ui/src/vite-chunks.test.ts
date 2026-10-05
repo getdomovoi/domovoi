@@ -12,6 +12,8 @@ describe("vendorChunkFor", () => {
     ["/repo/node_modules/zod/index.js", "validation"],
     ["/repo/node_modules/@xterm/xterm/lib/xterm.js", "terminal"],
     ["/repo/node_modules/@xterm/addon-fit/lib/addon-fit.js", "terminal"],
+    ["/repo/node_modules/.pnpm/qrcode-generator@2/node_modules/qrcode-generator/dist/qrcode.mjs", "qrcode"],
+    ["/repo/node_modules/.pnpm/tailwind-merge@3/node_modules/tailwind-merge/dist/bundle-mjs.mjs", "vendor"],
   ])("maps %s to %s", (moduleId, chunk) => {
     expect(vendorChunkFor(moduleId)).toBe(chunk)
   })
