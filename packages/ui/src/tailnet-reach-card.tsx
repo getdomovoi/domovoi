@@ -36,11 +36,12 @@ export type TailnetReachController = {
   listener: TailnetListenerStatus | undefined
   running: { direction: Direction; renew: boolean } | undefined
   failure: { direction: Direction; outcome: Failure } | undefined
-  // Q439 B: a turn-off is done, but no status has answered since it; with
-  // the directory holding the files it could not delete, if any. failed
-  // (Q441 A): the status read after it failed, in these words, rather than
-  // not answering by its deadline.
-  turnedOffUnread: { undeleted?: string; failed?: string } | undefined
+  // Q439 B: a change is done, but no status has answered since it; with
+  // the directory holding the files a turn-off could not delete, if any.
+  // failed (Q441 A): the status read after it failed, in these words, rather
+  // than not answering by its deadline. Codex review of PR #722, round 2
+  // (P3-2): a turn-on, Renew now included, as well as a turn-off.
+  changedUnread: { direction: Direction; undeleted?: string; failed?: string } | undefined
   inApp: boolean
   check(): void
   turnOn(): Promise<TailnetReachOutcome | undefined>
@@ -74,7 +75,7 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
   const [listener, setListener] = useState<TailnetListenerStatus>()
   const [running, setRunning] = useState<TailnetReachController["running"]>()
   const [failure, setFailure] = useState<TailnetReachController["failure"]>()
-  const [turnedOffUnread, setTurnedOffUnread] = useState<TailnetReachController["turnedOffUnread"]>()
+  const [changedUnread, setChangedUnread] = useState<TailnetReachController["changedUnread"]>()
   const [revealed, setRevealed] = useState(0)
   // Each half of a read is numbered on its own, so only the latest answer of
   // each is drawn: a late tailnet.status answer, or a late desktop answer, does
@@ -116,7 +117,7 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
     const { call, request: asked } = status(current, automatic)
     const failed = (cause: unknown) => { if (asked === asking.current) setReadError(cause instanceof Error ? cause.message : "The desktop did not answer.") }
     const answered = call.then(parseTailnetReachReport).then(
-      (answer) => { if (asked === asking.current) { setReport(answer); setReadError(undefined); setTurnedOffUnread(undefined) } },
+      (answer) => { if (asked === asking.current) { setReport(answer); setReadError(undefined); setChangedUnread(undefined) } },
       failed,
     )
     const desktop = automatic
@@ -209,19 +210,20 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
     setRunning({ direction, renew: direction === "on" && report?.state === "on" })
     let outcome: TailnetReachOutcome
     try {
-      outcome = parseTailnetReachOutcome(await current.act(direction))
+      outcome = parseTailnetReachOutcome(await current.act(direction), direction)
     } catch (cause) {
       outcome = { ok: false, reason: "failed", step: direction === "on" ? "status" : "delete", message: cause instanceof Error ? cause.message : "The desktop did not answer." }
     }
     if (mine !== changes.current) return outcome
     if (outcome.ok && "report" in outcome) {
       setReport(outcome.report)
-      setTurnedOffUnread(undefined)
+      setChangedUnread(undefined)
     } else if (outcome.ok) {
       // Q439 B and Q441 A: done, but what the switch reads now is not known,
       // so the report from before the change is not drawn as current.
       setReport(undefined)
-      setTurnedOffUnread({
+      setChangedUnread({
+        direction,
         ...(outcome.undeleted === undefined ? {} : { undeleted: outcome.undeleted }),
         ...("statusFailed" in outcome ? { failed: outcome.statusFailed } : {}),
       })
@@ -238,7 +240,7 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
   const turnOff = useCallback(() => change("off"), [change])
   const reveal = useCallback(() => setRevealed((count) => count + 1), [])
   if (!source) return undefined
-  return { report, readError, listener, running, failure, turnedOffUnread, inApp: source.inApp, check, turnOn, turnOff, revealed, reveal }
+  return { report, readError, listener, running, failure, changedUnread, inApp: source.inApp, check, turnOn, turnOff, revealed, reveal }
 }
 
 const title = "Reach this machine from my tailnet"
@@ -255,13 +257,19 @@ function moment(iso: string): string {
   return `${date.getDate()} ${months[date.getMonth()]} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`
 }
 
-// What the card says after a turn-off whose status read did not answer by
-// its deadline (Q439 B) or failed (Q441 A). The read's words end in one
-// period, whether or not they brought their own.
-function unreadLine(unread: NonNullable<TailnetReachController["turnedOffUnread"]>): string {
-  return unread.failed === undefined
-    ? "Turned off. The desktop did not answer when asked what the switch reads now."
-    : `Turned off. Reading what the switch reads now failed: ${unread.failed.replace(/\.+$/u, "")}.`
+// What the card says after a change whose status read did not answer by its
+// deadline (Q439 B; after a turn-on, Q443 A) or failed (Q441 A; after a
+// turn-on, Q444 A). The read's words end in one period, whether or not they
+// brought their own.
+const turnedOffUnanswered = "Turned off. The desktop did not answer when asked what the switch reads now."
+const turnedOffFailed = (words: string) => `Turned off. Reading what the switch reads now failed: ${words}.`
+const turnedOnUnanswered = "Turned on. The desktop did not answer when asked what the switch reads now."
+const turnedOnFailed = (words: string) => `Turned on. Reading what the switch reads now failed: ${words}.`
+function unreadLine(unread: NonNullable<TailnetReachController["changedUnread"]>): string {
+  const on = unread.direction === "on"
+  if (unread.failed === undefined) return on ? turnedOnUnanswered : turnedOffUnanswered
+  const words = unread.failed.replace(/\.+$/u, "")
+  return on ? turnedOnFailed(words) : turnedOffFailed(words)
 }
 
 type StepRow = { step: TailnetReachStep; label: string; mono: string }
@@ -357,14 +365,14 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
   // after a turn-on that ended with the service installed but not reached.
   const stillAnswering = report?.state === "off" && listening
   const stoppedOn = failure?.direction === "on" && !isOn
-  // Q439 B: a turn-off is done, and no status has answered since.
-  const offUnread = !report ? controller.turnedOffUnread : undefined
-  const undeleted = report ? report.undeleted : offUnread?.undeleted
+  // Q439 B: a change is done, and no status has answered since.
+  const unread = !report ? controller.changedUnread : undefined
+  const undeleted = report ? report.undeleted : unread?.undeleted
 
   const [tone, label] = running
     ? ["bg-primary", running.direction === "off" ? "Turning off" : running.renew ? "Renewing" : "Turning on"]
     : stoppedOn ? ["bg-destructive", "Stopped"]
-      : !report ? ["bg-faint", readError || offUnread ? "Not known" : "Reading"]
+      : !report ? ["bg-faint", readError || unread ? "Not known" : "Reading"]
         : report.state === "none" ? ["bg-faint", "No tailnet"]
           : stillAnswering ? ["bg-destructive", "Still answering"]
           : report.state === "off" ? ["bg-faint", "Off"]
@@ -376,7 +384,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
       : running.renew ? "Renewing. Tailscale is asked for the certificate again, then the daemon restarts once."
         : "Turning on. The steps run in this order."
     : stoppedOn ? (httpsOff ? "Stopped before storing or restarting anything." : "The switch stays off.")
-      : !report ? (offUnread ? unreadLine(offUnread) : readError ?? "Reading the tailnet status from Tailscale.")
+      : !report ? (unread ? unreadLine(unread) : readError ?? "Reading the tailnet status from Tailscale.")
         : report.state === "none" ? "No tailnet interface found on this machine. Domovoi does not set one up for you."
           : stillAnswering ? "The switch is off, but the daemon still answers on the tailnet."
           // Codex review round 1 (P3-6): only this computer only when known: a
@@ -437,11 +445,11 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
       {/* Q439 B: also after a turn-off whose status did not answer. */}
       {undeleted ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">{`The certificate and key were set aside in ${undeleted} and could not be deleted.`}</p> : null}
 
-      {report?.state === "none" || (!report && readError) || (offUnread && !running) ? (
+      {report?.state === "none" || (!report && readError) || (unread && !running) ? (
         <div className="flex flex-wrap items-center gap-2.5">
           <Button type="button" variant="outline" size="sm" onClick={controller.check}>Check again</Button>
-          {/* Q439 B: Tailscale is not what a turn-off left unread. */}
-          {offUnread ? null : <span className="text-[11px] leading-[1.5] text-muted-foreground">Bring Tailscale up yourself, then check again.</span>}
+          {/* Q439 B: Tailscale is not what a change left unread. */}
+          {unread ? null : <span className="text-[11px] leading-[1.5] text-muted-foreground">Bring Tailscale up yourself, then check again.</span>}
         </div>
       ) : null}
 

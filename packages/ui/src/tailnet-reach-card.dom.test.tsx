@@ -473,6 +473,70 @@ it.each([
   expect((toggle() as HTMLButtonElement).disabled).toBe(false)
 })
 
+// Codex review of PR #722, round 2 (P3-2), Q443 A and Q444 A: a turn-on, or
+// Renew now, is done, but the desktop's status read after it did not answer
+// by its deadline or failed in its own words. The card says so as it does
+// after a turn-off: Not known, the switch unread and disabled, Check again
+// without the Tailscale hint, no failure, and the next answered read drawn as
+// usual.
+describe.each([
+  ["did not answer", { ok: true, statusUnanswered: true }, "Turned on. The desktop did not answer when asked what the switch reads now."],
+  ["failed", { ok: true, statusFailed: "spawn tailscale EACCES" }, "Turned on. Reading what the switch reads now failed: spawn tailscale EACCES."],
+  ["failed with its own period", { ok: true, statusFailed: "The tailscale command could not be started." }, "Turned on. Reading what the switch reads now failed: The tailscale command could not be started."],
+])("after a turn-on whose status read %s", (_label, answer, line) => {
+  function source(first: unknown) {
+    const reads: (() => Promise<unknown>)[] = [
+      () => Promise.resolve(first),
+      () => Promise.reject(new Error("The desktop did not answer.")),
+      () => Promise.resolve(on),
+    ]
+    const ask = vi.fn(async (action: "status" | "on" | "off") => {
+      if (action === "on") return answer
+      if (action === "off") throw new Error("Nothing turns off here")
+      return reads.shift()!()
+    })
+    render(<Harness source={{ act: ask, listener: async () => listening, inApp: true }} />)
+  }
+
+  async function unreadThenRecovered() {
+    const view = within(region())
+    expect(view.getByText("Not known")).toBeTruthy()
+    expect(view.getByText(line)).toBeTruthy()
+    expect(region().textContent).not.toContain("..")
+    expect(view.queryByText("The desktop did not answer.")).toBeNull()
+    expect(view.queryByText("Bring Tailscale up yourself, then check again.")).toBeNull()
+    expect(view.queryByRole("alert")).toBeNull()
+    expect(view.queryByText("Could not turn it on")).toBeNull()
+    expect(view.queryByText(/Turned off/u)).toBeNull()
+    expect(toggle().getAttribute("aria-checked")).toBe("false")
+    expect((toggle() as HTMLButtonElement).disabled).toBe(true)
+    await userEvent.setup().click(view.getByRole("button", { name: "Check again" }))
+    await settle()
+    expect(view.getByText("On")).toBeTruthy()
+    expect(view.queryByText("Not known")).toBeNull()
+    expect(view.queryByText(line)).toBeNull()
+    expect(toggle().getAttribute("aria-checked")).toBe("true")
+    expect((toggle() as HTMLButtonElement).disabled).toBe(false)
+  }
+
+  it("says the switch turned on and is not known", async () => {
+    source(off)
+    await settle()
+    await userEvent.setup().click(toggle())
+    await settle()
+    await unreadThenRecovered()
+  })
+
+  it("says the same after Renew now", async () => {
+    source({ ...on, renewalFailed: { at: "2026-10-02T12:00:00.000Z", message: "Tailscale did not renew the certificate." } })
+    await settle()
+    await userEvent.setup().click(within(region()).getByRole("button", { name: "Renew now" }))
+    await settle()
+    expect(within(region()).queryByText("The certificate did not renew")).toBeNull()
+    await unreadThenRecovered()
+  })
+})
+
 // The desktop's refusal of a change while another holds the switch
 // (apps/desktop/src/main/tailnet-reach.ts #exclusive).
 const busy = { ok: false, reason: "busy", step: "status", message: "The switch is already changing." } as const
