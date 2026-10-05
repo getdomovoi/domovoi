@@ -85,6 +85,16 @@ export function lazySurface<P extends object>(name: string, load: () => Promise<
   }
 }
 
+// Whether to draw a dialog whose code loads the first time it opens. Before
+// that open nothing is drawn, so the shell does not load its code at launch.
+// After it the dialog stays drawn while closed, as it was when it loaded with
+// the shell, so its own close and every later open run as before.
+export function useDrawnOnceOpen(open: boolean): boolean {
+  const [drawn, setDrawn] = useState(open)
+  if (open && !drawn) setDrawn(true)
+  return drawn || open
+}
+
 // After first paint, when the browser has nothing else to do. A failed
 // prefetch changes nothing: opening the surface loads it again.
 export function prefetchWhenIdle(

@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -64,7 +66,7 @@ import type { SkillsSurfaceTab } from "./skills-surface"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
 import type { RepositoryTrustRequestParams } from "./repository-trust-sheet"
 import { gitFilterRefusalFrom } from "./session-refusal"
-import { lazySurface, prefetchWhenIdle, SurfaceCodeReload } from "./lazy-surface"
+import { lazySurface, prefetchWhenIdle, SurfaceCodeReload, useDrawnOnceOpen } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
@@ -106,10 +108,9 @@ import {
 import {
   buildWorkspaceCommands,
   commandPaletteShortcut,
-  CommandPalette,
   workspaceShortcut,
   type CommandPalettePlatform,
-} from "./command-palette"
+} from "./workspace-commands"
 import { colorSchemeQuery, resolveAppearanceTheme, useAppearanceTheme, type WorkspaceTheme } from "./appearance"
 import { WorkspaceNotificationTracker, type DesktopNotificationRequest } from "./desktop-notifications"
 import {
@@ -177,7 +178,13 @@ const refusalSurface = lazySurface("the refusal", async () => (await import("./s
 // The fresh-start panel is the first thing a new session shows, and the move
 // dialog opens from the machine menu, the launcher or /handoff, so both are
 // prefetched with them (thread.tsx).
-const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface, refusalSurface, freshStartPanel, moveDialog]
+// The command palette is a dialog a person opens, so its code loads the
+// first time it opens, and at idle with the surfaces. Until the code lands
+// nothing is drawn and focus stays on what opened it.
+const loadCommandPalette = () => import("./command-palette")
+const commandPaletteDialog = { prefetch: () => { void loadCommandPalette().catch(() => undefined) } }
+const CommandPalette = lazy(async () => ({ default: (await loadCommandPalette()).CommandPalette }))
+const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface, refusalSurface, freshStartPanel, moveDialog, commandPaletteDialog]
 const SettingsShell = settingsSurface.Surface
 const SkillsSurface = skillsSurface.Surface
 const FleetView = machinesSurface.Surface
@@ -477,6 +484,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
   const deepLinkRoutingRef = useRef(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const commandPaletteDrawn = useDrawnOnceOpen(commandPaletteOpen)
   const [requestedSkillId, setRequestedSkillId] = useState<string>()
   const [pendingDeepLinks, setPendingDeepLinks] = useState<string[]>([])
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
@@ -1873,17 +1881,21 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onConfirm={(path) => { void confirmProjectSwitch(path) }}
           />
         ) : null}
-        <CommandPalette
-          open={commandPaletteOpen}
-          platform={commandPlatform}
-          commands={workspaceCommands}
-          onOpenChange={setCommandPaletteOpen}
-          restoreFocusTo={commandPaletteFocusRef.current}
-          machineSearch={machineSearch}
-          {...(firstRunEnabled && !watching ? {
-            onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
-          } : {})}
-        />
+        {commandPaletteDrawn ? (
+          <Suspense fallback={null}>
+            <CommandPalette
+              open={commandPaletteOpen}
+              platform={commandPlatform}
+              commands={workspaceCommands}
+              onOpenChange={setCommandPaletteOpen}
+              restoreFocusTo={commandPaletteFocusRef.current}
+              machineSearch={machineSearch}
+              {...(firstRunEnabled && !watching ? {
+                onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
+              } : {})}
+            />
+          </Suspense>
+        ) : null}
         {firstRunEnabled ? (
           <DesktopFirstRunDialog
             open={!watching && desktopFirstRun.open}

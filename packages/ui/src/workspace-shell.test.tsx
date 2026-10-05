@@ -6,7 +6,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
 import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, PreviewVariantThumbnail, ProviderReadinessList, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
-import { buildWorkspaceCommands } from "./command-palette"
+import { buildWorkspaceCommands } from "./workspace-commands"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
 
 const runtime: Runtime = {

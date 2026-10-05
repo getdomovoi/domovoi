@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import type { FleetEntry, FleetMachine, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { buildWorkspaceCommands, rankWorkspaceCommands } from "./command-palette"
+import { buildWorkspaceCommands, rankWorkspaceCommands } from "./workspace-commands"
 
 type Session = WorkspaceSnapshot["sessions"][number]
 

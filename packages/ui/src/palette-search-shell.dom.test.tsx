@@ -52,7 +52,7 @@ it("searches an admitted machine from the palette and switches to a picked sessi
   await user.keyboard("{Escape}")
 
   await user.keyboard("{Control>}k{/Control}")
-  await user.type(screen.getByRole("combobox"), "billing")
+  await user.type(await screen.findByRole("combobox"), "billing")
   await screen.findByText("SESSIONS ON OTHER MACHINES")
   await waitFor(() => expect(sentRequests(home, "session.search")[0]?.params).toMatchObject({ query: "billing" }))
   await act(async () => { respond(home, "session.search", { query: "billing", truncated: false, matches: [] }) })

@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { Component, type ReactNode } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { lazySurface, prefetchWhenIdle, SurfaceCodeReload } from "./lazy-surface"
+import { lazySurface, prefetchWhenIdle, SurfaceCodeReload, useDrawnOnceOpen } from "./lazy-surface"
 
 afterEach(() => {
   cleanup()
@@ -23,6 +23,21 @@ it("leaves a surface that loaded and then failed to draw to the boundary above, 
 
   expect(await screen.findByText("outer caught: a row had no id")).toBeTruthy()
   expect(screen.queryByText(/did not load in this window/)).toBeNull()
+})
+
+it("draws a lazily loaded dialog only once it opens, and keeps it drawn after it closes", () => {
+  function Host({ open }: { open: boolean }) {
+    const drawn = useDrawnOnceOpen(open)
+    return drawn ? <p>dialog {open ? "open" : "closed"}</p> : null
+  }
+  const { rerender } = render(<Host open={false} />)
+  expect(screen.queryByText(/^dialog/)).toBeNull()
+  rerender(<Host open />)
+  expect(screen.getByText("dialog open")).toBeTruthy()
+  rerender(<Host open={false} />)
+  expect(screen.getByText("dialog closed")).toBeTruthy()
+  rerender(<Host open />)
+  expect(screen.getByText("dialog open")).toBeTruthy()
 })
 
 it("fetches every surface when the scheduler runs, and not before", () => {

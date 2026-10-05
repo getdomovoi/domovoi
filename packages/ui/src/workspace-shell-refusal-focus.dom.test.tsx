@@ -144,7 +144,8 @@ it("registers the controls that open a session start, and no others", async () =
   expect(isStartOpener(screen.getByRole("button", { name: "New session" }))).toBe(true)
 
   await user.keyboard("{Control>}k{/Control}")
-  expect(isStartOpener(screen.getByRole("option", { name: /New session/ }))).toBe(true)
+  // The palette's code loads the first time it opens.
+  expect(isStartOpener(await screen.findByRole("option", { name: /New session/ }))).toBe(true)
   expect(isStartOpener(screen.getByRole("option", { name: /Open project/ }))).toBe(false)
   await user.type(screen.getByRole("combobox"), "New session")
   await user.keyboard("{Enter}")
@@ -224,7 +225,7 @@ async function connectedShell() {
 async function refusedFromPalette(shell: Awaited<ReturnType<typeof connectedShell>>) {
   const { user } = shell
   await user.keyboard("{Control>}k{/Control}")
-  await user.type(screen.getByRole("combobox"), "New session")
+  await user.type(await screen.findByRole("combobox"), "New session")
   await user.keyboard("{Enter}")
   await settle()
   await refusedFromLauncher(shell)

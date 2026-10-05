@@ -91,6 +91,8 @@ async function openWorkspace(platform: WorkspacePlatform, snapshot = workspaceSn
   async function openCommandPalette() {
   await userEvent.click(screen.getByRole("button", { name: "Open command palette" }))
   await settle()
+  // The palette's code loads the first time it opens.
+  await screen.findByRole("dialog", { name: "Domovoi commands" })
   }
 
 async function openNotificationSettings() {

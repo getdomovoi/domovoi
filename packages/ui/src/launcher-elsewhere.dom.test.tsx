@@ -3,7 +3,8 @@ import userEvent from "@testing-library/user-event"
 import { useState } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { CommandPalette, type CommandPalettePlatform, type WorkspaceCommand } from "./command-palette"
+import { CommandPalette } from "./command-palette"
+import type { CommandPalettePlatform, WorkspaceCommand } from "./workspace-commands"
 
 afterEach(cleanup)
 

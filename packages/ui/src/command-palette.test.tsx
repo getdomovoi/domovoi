@@ -1,17 +1,17 @@
 import { demoWorkspace } from "@getdomovoi/protocol"
 import { describe, expect, it, vi } from "vitest"
 
+import { restoreCommandPaletteFocus } from "./command-palette"
 import {
   buildWorkspaceCommands,
   opensElsewhere,
   sessionTone,
   commandPaletteShortcut,
   rankWorkspaceCommands,
-  restoreCommandPaletteFocus,
   shortcutLabel,
   workspaceShortcut,
   type WorkspaceCommand,
-} from "./command-palette"
+} from "./workspace-commands"
 import { openDesktopPath, type DesktopWindowBridge } from "./desktop-platform"
 
 describe("commandPaletteShortcut", () => {

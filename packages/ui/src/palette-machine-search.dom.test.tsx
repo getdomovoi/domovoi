@@ -4,7 +4,8 @@ import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { CommandPalette, type WorkspaceCommand } from "./command-palette"
+import { CommandPalette } from "./command-palette"
+import type { WorkspaceCommand } from "./workspace-commands"
 
 afterEach(cleanup)
 
