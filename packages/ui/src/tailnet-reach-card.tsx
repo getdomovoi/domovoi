@@ -107,13 +107,16 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
   // failure, listened once tailnet.status has answered or failed. An automatic
   // read's desktop half also settles at the deadline, as a failure; the
   // desktop's answer is still drawn if it arrives before the next read.
+  const listen = useCallback((current: TailnetReachSource): Promise<void> => {
+    const request = ++listening.current
+    return current.listener
+      ? attempt(current.listener).then((value) => { if (request === listening.current) setListener(value) }, () => { if (request === listening.current) setListener(undefined) })
+      : Promise.resolve()
+  }, [])
   const read = useCallback((automatic = false): { desktop: Promise<void>; listened: Promise<void> } => {
     const current = sourceRef.current
     if (!current) return { desktop: Promise.resolve(), listened: Promise.resolve() }
-    const request = ++listening.current
-    const listened = current.listener
-      ? attempt(current.listener).then((value) => { if (request === listening.current) setListener(value) }, () => { if (request === listening.current) setListener(undefined) })
-      : Promise.resolve()
+    const listened = listen(current)
     const { call, request: asked } = status(current, automatic)
     const failed = (cause: unknown) => { if (asked === asking.current) setReadError(cause instanceof Error ? cause.message : "The desktop did not answer.") }
     const answered = call.then(parseTailnetReachReport).then(
@@ -127,7 +130,7 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
       })
       : answered
     return { desktop, listened }
-  }, [status])
+  }, [listen, status])
 
   // Review of PR #713 (P2): the switch and the listener also change on their
   // own, with Settings open: a renewal fails, or the daemon refuses the
@@ -228,12 +231,24 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
         ...("statusFailed" in outcome ? { failed: outcome.statusFailed } : {}),
       })
     } else setFailure({ direction, outcome })
-    await read().desktop
+    if (outcome.ok && "statusUnanswered" in outcome) {
+      // Review of PR #724 (P2): the desktop's status read after this change
+      // is still pending, and the desktop shares it with the next status call
+      // under a fresh deadline, so another call now would hold the change
+      // open for one more deadline. The desktop is not asked again; Check
+      // again asks it. A desktop answer to a call from before the change is
+      // older than the change, so its number is passed over and it is not
+      // drawn. The listener is read again as after any change. statusFailed
+      // is not this case: that read has settled, so the next call is fresh.
+      ++asking.current
+      const now = sourceRef.current
+      if (now) void listen(now)
+    } else await read().desktop
     if (mine !== changes.current) return outcome
     changing.current = false
     setRunning(undefined)
     return outcome
-  }, [read, report?.state])
+  }, [listen, read, report?.state])
 
   const check = useCallback(() => { setFailure(undefined); read() }, [read])
   const turnOn = useCallback(() => change("on"), [change])
