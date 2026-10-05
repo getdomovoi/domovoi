@@ -96,6 +96,9 @@ it.each([
   const user = userEvent.setup()
   await user.click(screen.getByRole("button", { name: "New session" }))
   await settle()
+  // The launcher's code loads the first time it opens, and it asks for the
+  // models once it is drawn.
+  await screen.findByText("Loading models")
   const models = [{
     provider: "codex", id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", description: "",
     supportedReasoningEfforts: ["medium" as const], defaultReasoningEffort: "medium" as const, isDefault: true,
@@ -233,8 +236,9 @@ async function refusedFromPalette(shell: Awaited<ReturnType<typeof connectedShel
 
 // With the launcher open, create a session and have the daemon refuse it.
 async function refusedFromLauncher({ socket, snapshot, user }: Awaited<ReturnType<typeof connectedShell>>) {
-  // The launcher's code loads the first time it opens.
-  await screen.findByLabelText("Session goal")
+  // The launcher's code loads the first time it opens, and it asks for the
+  // models once it is drawn.
+  await screen.findByText("Loading models")
   const models = [{
     provider: "codex", id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", description: "",
     supportedReasoningEfforts: ["medium" as const], defaultReasoningEffort: "medium" as const, isDefault: true,
