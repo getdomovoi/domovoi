@@ -5,7 +5,7 @@ import { generateKeyPairSync } from "node:crypto"
 import type { TailnetListenerStatus } from "@getdomovoi/protocol"
 
 import type { TailnetReachRecord } from "./tailnet-reach-record.js"
-import { TailnetReach, tailnetMaterialCheck, type TailnetReachDependencies } from "./tailnet-reach.js"
+import { renewalCheckMs, TailnetReach, tailnetMaterialCheck, type TailnetReachDependencies } from "./tailnet-reach.js"
 
 // TailnetReach (Q404 A), the switch's own steps, with every effect a fake that
 // records what it was asked. Nothing here runs Tailscale or touches a profile.
@@ -435,6 +435,56 @@ describe("TailnetReach status deadline", () => {
     await expect(reach.status()).resolves.toEqual({ state: "none", detail: "Domovoi found no tailscale command on this computer." })
     record.settle(ours)
   })
+
+  // Codex review of PR #722, round 2 (P3-2): a turn-on is done once the record
+  // is written, the daemon restarted on the certificate and the swap
+  // committed. The status read after it waits for nothing of the change: a
+  // stalled read of the certificate's expiry does not keep the switch busy.
+  it("finishes a turn-on whose status read stalls past the deadline, releasing the switch", async () => {
+    const { reach, deps, record, timers } = harness()
+    const read = deps.files.read
+    deps.files.read = (path) => path === certPath ? new Promise(() => {}) : read(path)
+    const outcome = reach.turnOn()
+    await vi.waitFor(() => expect(timers().filter((timer) => timer.ms === 15_000)).toHaveLength(1))
+    expect(record()).toEqual(ours)
+    expect(deps.restart).toHaveBeenCalledWith({ set: { address: "100.101.102.103", name, certPath, keyPath } })
+    expect(timers().map((timer) => timer.ms)).toContain(renewalCheckMs)
+    fire(timers().find((timer) => timer.ms === 15_000))
+    await expect(outcome).resolves.toEqual({ ok: true, statusUnanswered: true })
+    // A turn-off right after is its own change, not refused as busy.
+    deps.files.read = read
+    await expect(reach.turnOff()).resolves.toMatchObject({ ok: true, report: { state: "off", name } })
+    expect(record()).toBeUndefined()
+  })
+
+  it("reports a turn-on with the status read after it when that answers by the deadline", async () => {
+    const { reach, deps, timers } = harness()
+    const read = deps.files.read
+    const expiry = held<Buffer>()
+    deps.files.read = (path) => path === certPath ? expiry.promise : read(path)
+    const outcome = reach.turnOn()
+    await vi.waitFor(() => expect(timers().filter((timer) => timer.ms === 15_000)).toHaveLength(1))
+    expiry.settle(Buffer.from(certificate))
+    await expect(outcome).resolves.toEqual({
+      ok: true, report: {
+        state: "on", name, address: "100.101.102.103", stored: `~/.domovoi/tls/${name}.crt, .key`, httpsCertificates: true,
+        certificateExpiresAt: "2025-01-02T00:00:00.000Z",
+      },
+    })
+    expect(timers().map((timer) => timer.ms)).toEqual([renewalCheckMs])
+  })
+
+  // A status read after a done turn-on that fails before the deadline is not
+  // the turn-on failing: it answers done in the read's own words, bounded as
+  // a detail is, and the switch can change again.
+  it("finishes a turn-on whose status read fails, in the read's bounded words or none", async () => {
+    const silent = harness({ notesThrow: new Error("") })
+    await expect(silent.reach.turnOn()).resolves.toEqual({ ok: true, statusFailed: "it gave no reason" })
+    expect(silent.record()).toEqual(ours)
+    await expect(silent.reach.turnOff()).resolves.toMatchObject({ ok: true })
+    const long = harness({ notesThrow: new Error(`${"x".repeat(2_000)}\n`) })
+    await expect(long.reach.turnOn()).resolves.toEqual({ ok: true, statusFailed: `${"x".repeat(1_023)}…` })
+  })
 })
 
 describe("turning TailnetReach on", () => {
@@ -755,12 +805,14 @@ describe("turning TailnetReach on", () => {
 
   // Round 4 review (P3-2): once the restart succeeded the change is made. A
   // throw while describing it must not undo the files the daemon now uses.
+  // Codex review of PR #722, round 2 (P3-2): it is the status read after the
+  // change failing, answered as done in the read's own words.
   it("keeps the new files and record when describing a committed turn-on throws", async () => {
     const { reach, files, record, calls } = harness({
       record: ours, files: { [certPath]: "old certificate", [keyPath]: "old key" },
       notesThrow: new Error("EACCES: permission denied, scandir"),
     })
-    await expect(reach.turnOn()).rejects.toThrow("EACCES: permission denied, scandir")
+    await expect(reach.turnOn()).resolves.toEqual({ ok: true, statusFailed: "EACCES: permission denied, scandir" })
     expect(files.get(certPath)).toBe(certificate)
     expect(files.get(keyPath)).toBe("private key")
     expect(record()).toEqual(ours)

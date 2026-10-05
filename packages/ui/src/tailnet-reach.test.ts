@@ -42,31 +42,51 @@ describe("the TailnetReach answer", () => {
   })
 
   it("reads outcomes", () => {
-    expect(parseTailnetReachOutcome({ ok: true, report: on })).toEqual({ ok: true, report: on })
-    const failed = { ok: false, reason: "https-off", step: "certificate", message: "HTTPS certificates are off for tail4c2e.ts.net.", detail: "x" }
-    expect(parseTailnetReachOutcome(failed)).toEqual(failed)
+    for (const action of ["on", "off"] as const) {
+      expect(parseTailnetReachOutcome({ ok: true, report: on }, action)).toEqual({ ok: true, report: on })
+      const failed = { ok: false, reason: "https-off", step: "certificate", message: "HTTPS certificates are off for tail4c2e.ts.net.", detail: "x" }
+      expect(parseTailnetReachOutcome(failed, action)).toEqual(failed)
+    }
     // Codex review round 6 (P3-2): a restart that failed after files could not be deleted names their directory.
     const retained = { ok: false, reason: "failed", step: "restart", message: "The daemon did not restart.", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
-    expect(parseTailnetReachOutcome(retained)).toEqual(retained)
+    expect(parseTailnetReachOutcome(retained, "off")).toEqual(retained)
   })
 
   // Codex review of PR #722 (P3-2), Q439 B: a turn-off done whose status read
   // did not answer by its deadline, with the files it could not delete.
   it("reads a turn-off done without its status", () => {
-    expect(parseTailnetReachOutcome({ ok: true, statusUnanswered: true })).toEqual({ ok: true, statusUnanswered: true })
+    expect(parseTailnetReachOutcome({ ok: true, statusUnanswered: true }, "off")).toEqual({ ok: true, statusUnanswered: true })
     const left = { ok: true, statusUnanswered: true, undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
-    expect(parseTailnetReachOutcome(left)).toEqual(left)
+    expect(parseTailnetReachOutcome(left, "off")).toEqual(left)
   })
 
   // Codex review of PR #722, round 2 (P3-R2-2), Q441 A: a turn-off done whose
   // status read failed, in the read's own words.
   it("reads a turn-off done whose status read failed", () => {
     const failed = { ok: true, statusFailed: "spawn tailscale EACCES" }
-    expect(parseTailnetReachOutcome(failed)).toEqual(failed)
+    expect(parseTailnetReachOutcome(failed, "off")).toEqual(failed)
     const left = { ok: true, statusFailed: "spawn tailscale EACCES", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" }
-    expect(parseTailnetReachOutcome(left)).toEqual(left)
+    expect(parseTailnetReachOutcome(left, "off")).toEqual(left)
     const longest = { ok: true, statusFailed: "x".repeat(4_096) }
-    expect(parseTailnetReachOutcome(longest)).toEqual(longest)
+    expect(parseTailnetReachOutcome(longest, "off")).toEqual(longest)
+  })
+
+  // Codex review of PR #722, round 2 (P3-2): a turn-on done whose status read
+  // did not answer by its deadline, or failed in its own words.
+  it("reads a turn-on done without its status or whose status read failed", () => {
+    expect(parseTailnetReachOutcome({ ok: true, statusUnanswered: true }, "on")).toEqual({ ok: true, statusUnanswered: true })
+    const failed = { ok: true, statusFailed: "spawn tailscale EACCES" }
+    expect(parseTailnetReachOutcome(failed, "on")).toEqual(failed)
+  })
+
+  // Only a turn-off leaves files it set aside and could not delete, so only
+  // its answer names them.
+  it.each([
+    { ok: true, statusUnanswered: true, undeleted: "~/.domovoi/tls/.pending-Ab3xYz" },
+    { ok: true, statusFailed: "spawn tailscale EACCES", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" },
+    { ok: false, reason: "failed", step: "restart", message: "The daemon did not restart.", undeleted: "~/.domovoi/tls/.pending-Ab3xYz" },
+  ])("refuses a turn-on outcome that names files a turn-off left: %j", (outcome) => {
+    expect(() => parseTailnetReachOutcome(outcome, "on")).toThrow("The desktop sent an unreadable tailnet answer")
   })
 
   it.each([
@@ -82,7 +102,7 @@ describe("the TailnetReach answer", () => {
     { ok: true, report: on, undeleted: "~/.domovoi/tls/.pending-Ab3xYz" },
     { ok: false, reason: "failed", step: "delete", message: "x", statusFailed: "x" },
   ])("refuses a failed-read outcome %j", (outcome) => {
-    expect(() => parseTailnetReachOutcome(outcome)).toThrow("The desktop sent an unreadable tailnet answer")
+    for (const action of ["on", "off"] as const) expect(() => parseTailnetReachOutcome(outcome, action)).toThrow("The desktop sent an unreadable tailnet answer")
   })
 
   it.each([
@@ -99,6 +119,6 @@ describe("the TailnetReach answer", () => {
     { ok: false, reason: "failed", step: "status" },
     { ok: true, report: { state: "on" } },
   ])("refuses outcome %j", (outcome) => {
-    expect(() => parseTailnetReachOutcome(outcome)).toThrow("The desktop sent an unreadable tailnet answer")
+    for (const action of ["on", "off"] as const) expect(() => parseTailnetReachOutcome(outcome, action)).toThrow("The desktop sent an unreadable tailnet answer")
   })
 })
