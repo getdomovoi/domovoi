@@ -16,6 +16,8 @@ import {
 } from "react"
 
 import { Button } from "./components/ui/button"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./components/ui/dialog"
+import { SkeletonBars } from "./loading-skeleton"
 import { loadingLineRef } from "./start-handoff"
 
 // A surface the shell does not open on: its code loads the first time it is
@@ -93,6 +95,65 @@ export function useDrawnOnceOpen(open: boolean): boolean {
   const [drawn, setDrawn] = useState(open)
   if (open && !drawn) setDrawn(true)
   return drawn || open
+}
+
+// While a dialog's code loads, a dialog of the same size with the same title
+// stands in for it, so an open is seen to land and can be taken back. Escape,
+// a click outside and the close button go through the onOpenChange the loaded
+// dialog closes through, so an open taken back stays closed when the code
+// arrives. Focus moves into the frame rather than onto its close button, so
+// keys typed while it loads cannot close it, and goes back to where it was
+// when the open is taken back. The loaded dialog replaces it in place and
+// moves focus itself, so a frame that was replaced while open leaves focus
+// alone.
+export function DialogLoading({
+  open,
+  onOpenChange,
+  title,
+  titleHidden = false,
+  showCloseButton = true,
+  className,
+  bodyClassName,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  titleHidden?: boolean
+  showCloseButton?: boolean
+  className?: string
+  bodyClassName?: string
+}) {
+  const frame = useRef<HTMLDivElement>(null)
+  const opener = useRef<HTMLElement | null>(null)
+  const stillOpen = useRef(open)
+  useEffect(() => { stillOpen.current = open }, [open])
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        ref={frame}
+        aria-busy
+        aria-describedby={undefined}
+        className={className}
+        showCloseButton={showCloseButton}
+        onOpenAutoFocus={(event) => {
+          opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+          event.preventDefault()
+          frame.current?.focus()
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault()
+          if (!stillOpen.current) opener.current?.focus()
+        }}
+      >
+        <DialogHeader className={titleHidden ? "sr-only" : undefined}>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <div className={bodyClassName}>
+          <SkeletonBars blocks={2} />
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 // After first paint, when the browser has nothing else to do. A failed

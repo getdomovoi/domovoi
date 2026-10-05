@@ -35,6 +35,10 @@ import { desktopExternalActionLabel, type DesktopExternalEditor } from "./deskto
 
 export type CommandPalettePlatform = "darwin" | "linux" | "win32"
 
+// The palette's accessible name, which the dialog standing in for it while
+// its code loads carries too.
+export const commandPaletteTitle = "Domovoi commands"
+
 type ShortcutEvent = {
   key: string
   metaKey: boolean

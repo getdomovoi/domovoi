@@ -66,7 +66,7 @@ import type { SkillsSurfaceTab } from "./skills-surface"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
 import type { RepositoryTrustRequestParams } from "./repository-trust-sheet"
 import { gitFilterRefusalFrom } from "./session-refusal"
-import { lazySurface, prefetchWhenIdle, SurfaceCodeReload, useDrawnOnceOpen } from "./lazy-surface"
+import { DialogLoading, lazySurface, prefetchWhenIdle, SurfaceCodeReload, useDrawnOnceOpen } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
@@ -108,6 +108,7 @@ import {
 import {
   buildWorkspaceCommands,
   commandPaletteShortcut,
+  commandPaletteTitle,
   workspaceShortcut,
   type CommandPalettePlatform,
 } from "./workspace-commands"
@@ -137,7 +138,7 @@ import {
   localFleetEntry,
   sessionIsArchiveReadOnly,
 } from "./workspace-selectors"
-import type { LauncherMode } from "./launcher-dialog"
+import { launcherContentClassName, launcherTitle, type LauncherMode } from "./launcher-frame"
 import { ProjectSwitchConfirmationDialog } from "./project-switch-confirmation"
 import { AppBar, useUsageToday } from "./app-bar"
 import { ArchiveConfirmBody, Thread, archiveSessionDescription, freshStartPanel, moveDialog } from "./thread"
@@ -179,7 +180,9 @@ const refusalSurface = lazySurface("the refusal", async () => (await import("./s
 // prefetched with them (thread.tsx).
 // The command palette and the launcher are dialogs a person opens, so each
 // one's code loads the first time it opens, and at idle with the surfaces.
-// Until the code lands nothing is drawn and focus stays on what opened it.
+// Until the code lands a dialog of the same size with the same title stands
+// in for it, which a person can close as they would the dialog itself
+// (DialogLoading in lazy-surface.tsx).
 // The project switch confirmation is not one of them: a switch can start
 // from the folder picker before any dialog's code has arrived, and what it
 // stops must be on screen the moment the daemon asks, so it loads with the
@@ -1856,7 +1859,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           </div>
         ) : null}
         {snapshot && !watching && launcherDrawn ? (
-          <Suspense fallback={null}>
+          <Suspense fallback={
+            <DialogLoading
+              open={launcherMode !== null}
+              onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
+              title={launcherTitle(launcherMode)}
+              className={launcherContentClassName(launcherMode)}
+            />
+          }>
             <LauncherDialog
               mode={launcherMode}
               {...(launcherProjectNote ? { projectNote: launcherProjectNote } : {})}
@@ -1893,7 +1903,19 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           />
         ) : null}
         {commandPaletteDrawn ? (
-          <Suspense fallback={null}>
+          <Suspense fallback={
+            // CommandDialog's own frame (components/ui/command.tsx), which
+            // loads with cmdk in the palette's code.
+            <DialogLoading
+              open={commandPaletteOpen}
+              onOpenChange={setCommandPaletteOpen}
+              title={commandPaletteTitle}
+              titleHidden
+              showCloseButton={false}
+              className="top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0"
+              bodyClassName="p-3"
+            />
+          }>
             <CommandPalette
               open={commandPaletteOpen}
               platform={commandPlatform}

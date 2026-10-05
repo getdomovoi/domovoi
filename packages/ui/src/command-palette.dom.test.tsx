@@ -27,11 +27,12 @@ const settle = () => act(async () => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 })
 
-// The palette's code loads the first time it opens, so an open waits for the
-// dialog to be drawn.
+// The palette's code loads the first time it opens, and a dialog with its
+// name stands in for it until then, so an open waits for the palette's own
+// search field.
 const openPalette = async (user: ReturnType<typeof userEvent.setup>) => {
   await user.keyboard("{Control>}k{/Control}")
-  await screen.findByRole("dialog", { name: "Domovoi commands" })
+  await screen.findByRole("combobox")
 }
 
 describe("workspace command palette keyboard path", () => {

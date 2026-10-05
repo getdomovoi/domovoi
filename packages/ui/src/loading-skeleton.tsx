@@ -22,6 +22,23 @@ function Bar({ className, still }: { className?: string, still: boolean }) {
   return <span aria-hidden className={cn(still ? "bg-[var(--skel)]" : "skeleton-bar", "block rounded-sm", className)} />
 }
 
+// The bars without the line, for a frame that already names what is coming:
+// a dialog drawn while its code loads carries the loaded dialog's own title
+// (lazy-surface.tsx), so a sentence here would only repeat it.
+export function SkeletonBars({ blocks }: { blocks: number }) {
+  return (
+    <div aria-hidden className="flex flex-col gap-4">
+      {Array.from({ length: blocks }, (_, block) => (
+        <div key={block} className="flex flex-col gap-2">
+          <Bar still={false} className="h-2.5 w-1/3" />
+          <Bar still={false} className="h-2 w-full" />
+          <Bar still={false} className="h-2 w-2/3" />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 // Ruled Q344 A: once the first attempt has failed, nothing is being read, so
 // the shimmer stops and the line says so. notConnectedTo names the host the
 // client dialled. The shell's banner keeps saying what it is doing about it.

@@ -63,6 +63,15 @@ const settle = () => act(async () => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 })
 
+// Lets a held chunk arrive and the shell draw what it brought.
+const arrive = async (chunk: { release: () => void }) => {
+  await act(async () => {
+    chunk.release()
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
+  await settle()
+}
+
 async function openWorkspace({ platform, snapshot = workspaceSnapshot() }: {
   platform?: WorkspacePlatform
   snapshot?: ReturnType<typeof workspaceSnapshot>
@@ -111,4 +120,96 @@ it("shows what a project switch stops before any dialog's code has loaded", asyn
   expect(confirmation.textContent).toContain("/worktrees/session-1")
   expect(confirmation.textContent).toContain("Second task")
   expect(screen.getByRole("button", { name: "Stop work and switch" })).toBeTruthy()
+})
+
+it("lets a launcher opened before its code arrives be closed, and keeps it closed", async () => {
+  await openWorkspace()
+  const user = userEvent.setup()
+  const opener = screen.getByRole("button", { name: "New session" })
+  await user.click(opener)
+  await settle()
+
+  const loading = screen.getByRole("dialog", { name: "Start a session" })
+  expect(loading.getAttribute("aria-busy")).toBe("true")
+  expect(loading.contains(document.activeElement)).toBe(true)
+  expect(screen.queryByLabelText("Session goal")).toBeNull()
+
+  await user.keyboard("{Escape}")
+  await settle()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(document.activeElement).toBe(opener)
+
+  await arrive(chunks.launcher)
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(screen.queryByLabelText("Session goal")).toBeNull()
+})
+
+it("lets a palette opened before its code arrives be closed, and keeps it closed", async () => {
+  await openWorkspace()
+  const user = userEvent.setup()
+  const opener = screen.getByRole("button", { name: "New session" })
+  opener.focus()
+  await user.keyboard("{Control>}k{/Control}")
+  await settle()
+
+  const loading = screen.getByRole("dialog", { name: "Domovoi commands" })
+  expect(loading.getAttribute("aria-busy")).toBe("true")
+  expect(loading.contains(document.activeElement)).toBe(true)
+  expect(screen.queryByRole("combobox")).toBeNull()
+
+  await user.keyboard("{Escape}")
+  await settle()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(document.activeElement).toBe(opener)
+
+  await arrive(chunks.palette)
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(screen.queryByRole("combobox")).toBeNull()
+})
+
+it("replaces the loading launcher with the launcher once its code arrives", async () => {
+  await openWorkspace()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole("button", { name: "New session" }))
+  await settle()
+  expect(screen.getByRole("dialog", { name: "Start a session" }).getAttribute("aria-busy")).toBe("true")
+
+  await arrive(chunks.launcher)
+  const goal = await screen.findByLabelText("Session goal")
+  const launcher = screen.getByRole("dialog", { name: "Start a session" })
+  expect(launcher.contains(goal)).toBe(true)
+  expect(launcher.getAttribute("aria-busy")).toBeNull()
+  expect(screen.getAllByRole("dialog")).toHaveLength(1)
+  expect(launcher.contains(document.activeElement)).toBe(true)
+
+  await user.keyboard("{Escape}")
+  await settle()
+  expect(screen.queryByRole("dialog")).toBeNull()
+})
+
+it("replaces the loading palette with the palette once its code arrives", async () => {
+  await openWorkspace()
+  const user = userEvent.setup()
+  const opener = screen.getByRole("button", { name: "New session" })
+  opener.focus()
+  await user.keyboard("{Control>}k{/Control}")
+  await settle()
+  expect(screen.getByRole("dialog", { name: "Domovoi commands" }).getAttribute("aria-busy")).toBe("true")
+
+  await arrive(chunks.palette)
+  const search = await screen.findByRole("combobox")
+  const palette = screen.getByRole("dialog", { name: "Domovoi commands" })
+  expect(palette.contains(search)).toBe(true)
+  expect(palette.getAttribute("aria-busy")).toBeNull()
+  expect(screen.getAllByRole("dialog")).toHaveLength(1)
+  expect(document.activeElement).toBe(search)
+
+  // A focus move the replaced stand-in scheduled must not take focus back.
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)) })
+  expect(document.activeElement).toBe(screen.getByRole("combobox"))
+
+  await user.keyboard("{Escape}")
+  await settle()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(document.activeElement).toBe(opener)
 })

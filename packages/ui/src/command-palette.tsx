@@ -15,6 +15,7 @@ import type { SessionSearchMatch, SessionSearchResult } from "@getdomovoi/protoc
 import { startOpenerRef } from "./start-handoff"
 import { StatusDot } from "./status-dot"
 import {
+  commandPaletteTitle,
   opensElsewhere,
   rankWorkspaceCommands,
   shortcutLabel,
@@ -211,7 +212,7 @@ export function CommandPalette({
         if (!nextOpen) { close(); return }
         onOpenChange(nextOpen)
       }}
-      title="Domovoi commands"
+      title={commandPaletteTitle}
       description="Navigate Domovoi and run common session actions."
     >
       <Command

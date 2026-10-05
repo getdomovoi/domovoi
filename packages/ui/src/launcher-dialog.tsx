@@ -27,7 +27,7 @@ import {
 } from "./components/ui/dropdown-menu"
 import { Input } from "./components/ui/input"
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "./components/ui/field"
-import { cn } from "./lib/utils"
+import { launcherContentClassName, launcherTitle, type LauncherMode } from "./launcher-frame"
 import { startOpenerRef } from "./start-handoff"
 import {
   preferredSessionProvider,
@@ -44,7 +44,7 @@ const defaultRuntime: Runtime = {
   permissionMode: "build",
   auto: false,
 }
-export type LauncherMode = "project" | "session" | null
+export type { LauncherMode }
 
 // When every harness is missing the list is an empty state, and the useful
 // part of an empty state is what was looked for and where. A miss on one PATH
@@ -286,10 +286,10 @@ export function LauncherDialog({
         onOpenChange(open)
       }}
     >
-      <DialogContent className={cn("max-h-[calc(100dvh-2rem)] overflow-y-auto", !isProject && "sm:max-w-lg")}>
+      <DialogContent className={launcherContentClassName(mode)}>
         <form className="contents" onSubmit={(event) => void submit(event)}>
           <DialogHeader>
-            <DialogTitle>{isProject ? "Open a project" : "Start a session"}</DialogTitle>
+            <DialogTitle>{launcherTitle(mode)}</DialogTitle>
             <DialogDescription>
               {isProject
                 ? projectDescription
