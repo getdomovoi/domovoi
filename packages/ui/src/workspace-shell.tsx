@@ -138,6 +138,7 @@ import {
   sessionIsArchiveReadOnly,
 } from "./workspace-selectors"
 import type { LauncherMode } from "./launcher-dialog"
+import { ProjectSwitchConfirmationDialog } from "./project-switch-confirmation"
 import { AppBar, useUsageToday } from "./app-bar"
 import { ArchiveConfirmBody, Thread, archiveSessionDescription, freshStartPanel, moveDialog } from "./thread"
 
@@ -179,14 +180,16 @@ const refusalSurface = lazySurface("the refusal", async () => (await import("./s
 // The command palette and the launcher are dialogs a person opens, so each
 // one's code loads the first time it opens, and at idle with the surfaces.
 // Until the code lands nothing is drawn and focus stays on what opened it.
-// The launcher's module also holds the project switch confirmation.
+// The project switch confirmation is not one of them: a switch can start
+// from the folder picker before any dialog's code has arrived, and what it
+// stops must be on screen the moment the daemon asks, so it loads with the
+// shell.
 const loadCommandPalette = () => import("./command-palette")
 const commandPaletteDialog = { prefetch: () => { void loadCommandPalette().catch(() => undefined) } }
 const CommandPalette = lazy(async () => ({ default: (await loadCommandPalette()).CommandPalette }))
 const loadLauncher = () => import("./launcher-dialog")
 const launcherDialog = { prefetch: () => { void loadLauncher().catch(() => undefined) } }
 const LauncherDialog = lazy(async () => ({ default: (await loadLauncher()).LauncherDialog }))
-const ProjectSwitchConfirmationDialog = lazy(async () => ({ default: (await loadLauncher()).ProjectSwitchConfirmationDialog }))
 const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface, refusalSurface, freshStartPanel, moveDialog, commandPaletteDialog, launcherDialog]
 const SettingsShell = settingsSurface.Surface
 const SkillsSurface = skillsSurface.Surface
@@ -1878,18 +1881,16 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           </Suspense>
         ) : null}
         {projectSwitchConfirmation ? (
-          <Suspense fallback={null}>
-            <ProjectSwitchConfirmationDialog
-              confirmation={projectSwitchConfirmation}
-              pending={projectSwitchPending}
-              error={projectSwitchError}
-              onCancel={() => {
-                setProjectSwitchError("")
-                setProjectSwitchConfirmation(null)
-              }}
-              onConfirm={(path) => { void confirmProjectSwitch(path) }}
-            />
-          </Suspense>
+          <ProjectSwitchConfirmationDialog
+            confirmation={projectSwitchConfirmation}
+            pending={projectSwitchPending}
+            error={projectSwitchError}
+            onCancel={() => {
+              setProjectSwitchError("")
+              setProjectSwitchConfirmation(null)
+            }}
+            onConfirm={(path) => { void confirmProjectSwitch(path) }}
+          />
         ) : null}
         {commandPaletteDrawn ? (
           <Suspense fallback={null}>

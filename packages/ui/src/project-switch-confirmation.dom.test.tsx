@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { ProjectSwitchConfirmationDialog } from "./launcher-dialog"
+import { ProjectSwitchConfirmationDialog } from "./project-switch-confirmation"
 
 afterEach(cleanup)
 
