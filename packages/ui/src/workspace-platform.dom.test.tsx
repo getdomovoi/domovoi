@@ -187,7 +187,8 @@ it("says why a browser has no folder picker when a project is opened", async () 
   await settle()
 
   expect(platform.dialogs.pickProjectDirectory).toHaveBeenCalledOnce()
-  expect(screen.getByRole("dialog").textContent).toContain(
+  // The launcher's code loads the first time it opens.
+  expect((await screen.findByRole("dialog")).textContent).toContain(
     "A browser cannot open a folder picker on the execution machine.",
   )
 })

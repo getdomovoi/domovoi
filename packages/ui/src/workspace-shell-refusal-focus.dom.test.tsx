@@ -233,6 +233,8 @@ async function refusedFromPalette(shell: Awaited<ReturnType<typeof connectedShel
 
 // With the launcher open, create a session and have the daemon refuse it.
 async function refusedFromLauncher({ socket, snapshot, user }: Awaited<ReturnType<typeof connectedShell>>) {
+  // The launcher's code loads the first time it opens.
+  await screen.findByLabelText("Session goal")
   const models = [{
     provider: "codex", id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", description: "",
     supportedReasoningEfforts: ["medium" as const], defaultReasoningEffort: "medium" as const, isDefault: true,

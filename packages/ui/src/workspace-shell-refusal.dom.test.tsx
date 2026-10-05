@@ -91,6 +91,8 @@ async function createFromLauncher() {
   const user = userEvent.setup()
   await user.click(screen.getByRole("button", { name: "New session" }))
   await settle()
+  // The launcher's code loads the first time it opens.
+  await screen.findByLabelText("Session goal")
   const models = [{
     provider: "codex",
     id: "gpt-5.6-sol",
