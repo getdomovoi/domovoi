@@ -87,6 +87,42 @@ export function lazySurface<P extends object>(name: string, load: () => Promise<
   }
 }
 
+export type LazyDialog<P extends object> = {
+  Dialog: (props: P & { loading: ReactNode }) => ReactNode
+  prefetch: () => void
+}
+
+// A dialog whose code loads the first time it opens, or at idle before that.
+// React.lazy suspends on its first render even when the code is already
+// here, which would draw `loading` for a moment on an open the prefetch made
+// instant. So once the code has arrived the dialog is drawn directly. Which
+// of the two a drawn dialog is gets settled when it is first drawn and never
+// changes while it stays drawn, since switching would remount the dialog and
+// lose what it holds.
+export function lazyDialog<P extends object>(load: () => Promise<ComponentType<P>>): LazyDialog<P> {
+  let loaded: ComponentType<P> | undefined
+  const fetch = () => load().then((component) => {
+    loaded = component
+    return component
+  })
+  const Lazy = lazy(async () => ({ default: await fetch() }))
+
+  function Dialog({ loading, ...props }: P & { loading: ReactNode }) {
+    const [Ready] = useState(() => loaded)
+    if (Ready) return <Ready {...(props as P)} />
+    return (
+      <Suspense fallback={loading}>
+        <Lazy {...(props as P)} />
+      </Suspense>
+    )
+  }
+
+  return {
+    Dialog,
+    prefetch: () => { void fetch().catch(() => undefined) },
+  }
+}
+
 // Whether to draw a dialog whose code loads the first time it opens. Before
 // that open nothing is drawn, so the shell does not load its code at launch.
 // After it the dialog stays drawn while closed, as it was when it loaded with

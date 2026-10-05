@@ -84,6 +84,35 @@ async function openWorkspace({ platform, snapshot = workspaceSnapshot() }: {
   return socket
 }
 
+// Opens the workspace and lets the idle prefetch fetch both dialogs' code
+// before anything is opened, as it does once the shell has painted.
+async function openPrefetchedWorkspace() {
+  const idle: Array<() => void> = []
+  vi.stubGlobal("requestIdleCallback", (run: IdleRequestCallback) => {
+    idle.push(() => run({ didTimeout: false, timeRemaining: () => 50 }))
+    return idle.length
+  })
+  chunks.palette.release()
+  chunks.launcher.release()
+  await openWorkspace()
+  expect(idle.length).toBeGreaterThan(0)
+  await act(async () => { for (const run of idle) run() })
+  await act(async () => {
+    await import("./command-palette")
+    await import("./launcher-dialog")
+  })
+  await settle()
+}
+
+// Every stand-in drawn from here on, however briefly.
+function watchForStandIns(): { seen: () => number, stop: () => void } {
+  let seen = 0
+  const count = () => { if (document.querySelector("[aria-busy=\"true\"]")) seen += 1 }
+  const observer = new MutationObserver(count)
+  observer.observe(document.body, { subtree: true, childList: true, attributes: true })
+  return { seen: () => { count(); return seen }, stop: () => observer.disconnect() }
+}
+
 it("shows what a project switch stops before any dialog's code has loaded", async () => {
   const platform: WorkspacePlatform = {
     dialogs: { pickProjectDirectory: vi.fn(async () => ({ status: "selected" as const, path: "/code/elsewhere" })) },
@@ -212,4 +241,43 @@ it("replaces the loading palette with the palette once its code arrives", async 
   await settle()
   expect(screen.queryByRole("dialog")).toBeNull()
   expect(document.activeElement).toBe(opener)
+})
+
+it("opens a palette whose code the idle prefetch already fetched at once, with no stand-in", async () => {
+  await openPrefetchedWorkspace()
+  const user = userEvent.setup()
+  const opener = screen.getByRole("button", { name: "New session" })
+  opener.focus()
+  const standIns = watchForStandIns()
+
+  await user.keyboard("{Control>}k{/Control}")
+  expect(document.querySelector("[aria-busy=\"true\"]")).toBeNull()
+  const search = screen.getByRole("combobox")
+  expect(screen.getByRole("dialog", { name: "Domovoi commands" }).contains(search)).toBe(true)
+  await settle()
+  expect(standIns.seen()).toBe(0)
+  standIns.stop()
+
+  await user.keyboard("{Escape}")
+  await settle()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(document.activeElement).toBe(opener)
+})
+
+it("opens a launcher whose code the idle prefetch already fetched at once, with no stand-in", async () => {
+  await openPrefetchedWorkspace()
+  const user = userEvent.setup()
+  const standIns = watchForStandIns()
+
+  await user.click(screen.getByRole("button", { name: "New session" }))
+  expect(document.querySelector("[aria-busy=\"true\"]")).toBeNull()
+  const goal = screen.getByLabelText("Session goal")
+  expect(screen.getByRole("dialog", { name: "Start a session" }).contains(goal)).toBe(true)
+  await settle()
+  expect(standIns.seen()).toBe(0)
+  standIns.stop()
+
+  await user.keyboard("{Escape}")
+  await settle()
+  expect(screen.queryByRole("dialog")).toBeNull()
 })

@@ -1,8 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
-import { Component, type ReactNode } from "react"
+import { Component, useState, type ReactNode } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { lazySurface, prefetchWhenIdle, SurfaceCodeReload, useDrawnOnceOpen } from "./lazy-surface"
+import { lazyDialog, lazySurface, prefetchWhenIdle, SurfaceCodeReload, useDrawnOnceOpen } from "./lazy-surface"
 
 afterEach(() => {
   cleanup()
@@ -38,6 +38,34 @@ it("draws a lazily loaded dialog only once it opens, and keeps it drawn after it
   expect(screen.getByText("dialog closed")).toBeTruthy()
   rerender(<Host open />)
   expect(screen.getByText("dialog open")).toBeTruthy()
+})
+
+it("keeps a dialog drawn before its code arrived as it is, and draws one drawn after at once", async () => {
+  let arrive = () => {}
+  const code = new Promise<void>((resolve) => { arrive = resolve })
+  function Counter({ label }: { label: string }) {
+    const [count, setCount] = useState(0)
+    return <button onClick={() => setCount((current) => current + 1)}>{label} {count}</button>
+  }
+  const dialog = lazyDialog(async () => {
+    await code
+    return Counter
+  })
+
+  const { rerender } = render(<dialog.Dialog loading={<p>loading</p>} label="first" />)
+  expect(screen.getByText("loading")).toBeTruthy()
+  await act(async () => {
+    arrive()
+    await code
+  })
+  fireEvent.click(await screen.findByRole("button", { name: "first 0" }))
+  rerender(<dialog.Dialog loading={<p>loading</p>} label="again" />)
+  expect(screen.getByRole("button", { name: "again 1" })).toBeTruthy()
+
+  cleanup()
+  render(<dialog.Dialog loading={<p>loading</p>} label="later" />)
+  expect(screen.getByRole("button", { name: "later 0" })).toBeTruthy()
+  expect(screen.queryByText("loading")).toBeNull()
 })
 
 it("fetches every surface when the scheduler runs, and not before", () => {

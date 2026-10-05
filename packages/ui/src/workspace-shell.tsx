@@ -1,6 +1,4 @@
 import {
-  lazy,
-  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -66,7 +64,7 @@ import type { SkillsSurfaceTab } from "./skills-surface"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
 import type { RepositoryTrustRequestParams } from "./repository-trust-sheet"
 import { gitFilterRefusalFrom } from "./session-refusal"
-import { DialogLoading, lazySurface, prefetchWhenIdle, SurfaceCodeReload, useDrawnOnceOpen } from "./lazy-surface"
+import { DialogLoading, lazyDialog, lazySurface, prefetchWhenIdle, SurfaceCodeReload, useDrawnOnceOpen } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
@@ -180,6 +178,7 @@ const refusalSurface = lazySurface("the refusal", async () => (await import("./s
 // prefetched with them (thread.tsx).
 // The command palette and the launcher are dialogs a person opens, so each
 // one's code loads the first time it opens, and at idle with the surfaces.
+// An open after the code has arrived draws the dialog at once (lazyDialog).
 // Until the code lands a dialog of the same size with the same title stands
 // in for it, which a person can close as they would the dialog itself
 // (DialogLoading in lazy-surface.tsx).
@@ -187,12 +186,10 @@ const refusalSurface = lazySurface("the refusal", async () => (await import("./s
 // from the folder picker before any dialog's code has arrived, and what it
 // stops must be on screen the moment the daemon asks, so it loads with the
 // shell.
-const loadCommandPalette = () => import("./command-palette")
-const commandPaletteDialog = { prefetch: () => { void loadCommandPalette().catch(() => undefined) } }
-const CommandPalette = lazy(async () => ({ default: (await loadCommandPalette()).CommandPalette }))
-const loadLauncher = () => import("./launcher-dialog")
-const launcherDialog = { prefetch: () => { void loadLauncher().catch(() => undefined) } }
-const LauncherDialog = lazy(async () => ({ default: (await loadLauncher()).LauncherDialog }))
+const commandPaletteDialog = lazyDialog(async () => (await import("./command-palette")).CommandPalette)
+const launcherDialog = lazyDialog(async () => (await import("./launcher-dialog")).LauncherDialog)
+const CommandPalette = commandPaletteDialog.Dialog
+const LauncherDialog = launcherDialog.Dialog
 const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface, refusalSurface, freshStartPanel, moveDialog, commandPaletteDialog, launcherDialog]
 const SettingsShell = settingsSurface.Surface
 const SkillsSurface = skillsSurface.Surface
@@ -1859,36 +1856,35 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           </div>
         ) : null}
         {snapshot && !watching && launcherDrawn ? (
-          <Suspense fallback={
-            <DialogLoading
-              open={launcherMode !== null}
-              onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
-              title={launcherTitle(launcherMode)}
-              className={launcherContentClassName(launcherMode)}
-            />
-          }>
-            <LauncherDialog
-              mode={launcherMode}
-              {...(launcherProjectNote ? { projectNote: launcherProjectNote } : {})}
-              providers={snapshot.machine.providers}
-              toolPath={snapshot.machine.toolPath}
-              {...(desktopFirstRun.persisted.status === "complete"
-                ? { defaultProviderId: desktopFirstRun.persisted.providerId }
-                : {})}
-              defaultPermissionMode={desktopFirstRun.persisted.status === "complete"
-                ? desktopFirstRun.persisted.permissionMode
-                : "build"}
-              onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
-              onOpenProject={openProjectSafely}
-              onCreateSession={(title, runtime) => startSession({ kind: "create", title, runtime })}
-              onListModels={listModels}
-              recentSessions={snapshot.sessions}
-              onResumeSession={(sessionId) => {
-                openSessionInWorkspace(sessionId)
-                setLauncherMode(null)
-              }}
-            />
-          </Suspense>
+          <LauncherDialog
+            loading={
+              <DialogLoading
+                open={launcherMode !== null}
+                onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
+                title={launcherTitle(launcherMode)}
+                className={launcherContentClassName(launcherMode)}
+              />
+            }
+            mode={launcherMode}
+            {...(launcherProjectNote ? { projectNote: launcherProjectNote } : {})}
+            providers={snapshot.machine.providers}
+            toolPath={snapshot.machine.toolPath}
+            {...(desktopFirstRun.persisted.status === "complete"
+              ? { defaultProviderId: desktopFirstRun.persisted.providerId }
+              : {})}
+            defaultPermissionMode={desktopFirstRun.persisted.status === "complete"
+              ? desktopFirstRun.persisted.permissionMode
+              : "build"}
+            onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
+            onOpenProject={openProjectSafely}
+            onCreateSession={(title, runtime) => startSession({ kind: "create", title, runtime })}
+            onListModels={listModels}
+            recentSessions={snapshot.sessions}
+            onResumeSession={(sessionId) => {
+              openSessionInWorkspace(sessionId)
+              setLauncherMode(null)
+            }}
+          />
         ) : null}
         {projectSwitchConfirmation ? (
           <ProjectSwitchConfirmationDialog
@@ -1903,31 +1899,30 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           />
         ) : null}
         {commandPaletteDrawn ? (
-          <Suspense fallback={
-            // CommandDialog's own frame (components/ui/command.tsx), which
-            // loads with cmdk in the palette's code.
-            <DialogLoading
-              open={commandPaletteOpen}
-              onOpenChange={setCommandPaletteOpen}
-              title={commandPaletteTitle}
-              titleHidden
-              showCloseButton={false}
-              className="top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0"
-              bodyClassName="p-3"
-            />
-          }>
-            <CommandPalette
-              open={commandPaletteOpen}
-              platform={commandPlatform}
-              commands={workspaceCommands}
-              onOpenChange={setCommandPaletteOpen}
-              restoreFocusTo={commandPaletteFocusRef.current}
-              machineSearch={machineSearch}
-              {...(firstRunEnabled && !watching ? {
-                onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
-              } : {})}
-            />
-          </Suspense>
+          <CommandPalette
+            loading={
+              // CommandDialog's own frame (components/ui/command.tsx), which
+              // loads with cmdk in the palette's code.
+              <DialogLoading
+                open={commandPaletteOpen}
+                onOpenChange={setCommandPaletteOpen}
+                title={commandPaletteTitle}
+                titleHidden
+                showCloseButton={false}
+                className="top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0"
+                bodyClassName="p-3"
+              />
+            }
+            open={commandPaletteOpen}
+            platform={commandPlatform}
+            commands={workspaceCommands}
+            onOpenChange={setCommandPaletteOpen}
+            restoreFocusTo={commandPaletteFocusRef.current}
+            machineSearch={machineSearch}
+            {...(firstRunEnabled && !watching ? {
+              onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
+            } : {})}
+          />
         ) : null}
         {firstRunEnabled ? (
           <DesktopFirstRunDialog
