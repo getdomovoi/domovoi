@@ -46,7 +46,7 @@ it("cancels a machine-specific launch when the user returns home before attachme
   await settle()
   expect(screen.getByText("Client credential verified")).toBeTruthy()
   await user.click(screen.getByRole("button", { name: "Open command palette" }))
-  await user.click(screen.getByRole("combobox"))
+  await user.click(await screen.findByRole("combobox"))
   await user.paste("Review destination host")
   await user.keyboard("{Control>}{Enter}{/Control}")
   await settle()

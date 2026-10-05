@@ -35,7 +35,7 @@ async function setup() {
 }
 async function pick(user: ReturnType<typeof userEvent.setup>, title: string) {
   await user.click(screen.getByRole("button", { name: "Open command palette" }))
-  await user.click(screen.getByRole("combobox"))
+  await user.click(await screen.findByRole("combobox"))
   await user.paste(title)
   await user.keyboard("{Control>}{Enter}{/Control}")
   await user.click(screen.getByRole("option", { name: /Review destination/ }))

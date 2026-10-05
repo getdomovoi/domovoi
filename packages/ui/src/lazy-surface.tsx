@@ -16,6 +16,8 @@ import {
 } from "react"
 
 import { Button } from "./components/ui/button"
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./components/ui/dialog"
+import { SkeletonBars } from "./loading-skeleton"
 import { loadingLineRef } from "./start-handoff"
 
 // A surface the shell does not open on: its code loads the first time it is
@@ -83,6 +85,111 @@ export function lazySurface<P extends object>(name: string, load: () => Promise<
     Surface,
     prefetch: () => { void load().catch(() => undefined) },
   }
+}
+
+export type LazyDialog<P extends object> = {
+  Dialog: (props: P & { loading: ReactNode }) => ReactNode
+  prefetch: () => void
+}
+
+// A dialog whose code loads the first time it opens, or at idle before that.
+// React.lazy suspends on its first render even when the code is already
+// here, which would draw `loading` for a moment on an open the prefetch made
+// instant. So once the code has arrived the dialog is drawn directly. Which
+// of the two a drawn dialog is gets settled when it is first drawn and never
+// changes while it stays drawn, since switching would remount the dialog and
+// lose what it holds.
+export function lazyDialog<P extends object>(load: () => Promise<ComponentType<P>>): LazyDialog<P> {
+  let loaded: ComponentType<P> | undefined
+  const fetch = () => load().then((component) => {
+    loaded = component
+    return component
+  })
+  const Lazy = lazy(async () => ({ default: await fetch() }))
+
+  function Dialog({ loading, ...props }: P & { loading: ReactNode }) {
+    const [Ready] = useState(() => loaded)
+    if (Ready) return <Ready {...(props as P)} />
+    return (
+      <Suspense fallback={loading}>
+        <Lazy {...(props as P)} />
+      </Suspense>
+    )
+  }
+
+  return {
+    Dialog,
+    prefetch: () => { void fetch().catch(() => undefined) },
+  }
+}
+
+// Whether to draw a dialog whose code loads the first time it opens. Before
+// that open nothing is drawn, so the shell does not load its code at launch.
+// After it the dialog stays drawn while closed, as it was when it loaded with
+// the shell, so its own close and every later open run as before.
+export function useDrawnOnceOpen(open: boolean): boolean {
+  const [drawn, setDrawn] = useState(open)
+  if (open && !drawn) setDrawn(true)
+  return drawn || open
+}
+
+// While a dialog's code loads, a dialog of the same size with the same title
+// stands in for it, so an open is seen to land and can be taken back. Escape,
+// a click outside and the close button go through the onOpenChange the loaded
+// dialog closes through, so an open taken back stays closed when the code
+// arrives. Focus moves into the frame rather than onto its close button, so
+// keys typed while it loads cannot close it, and goes back to where it was
+// when the open is taken back. The loaded dialog replaces it in place and
+// moves focus itself, so a frame that was replaced while open leaves focus
+// alone.
+export function DialogLoading({
+  open,
+  onOpenChange,
+  title,
+  titleHidden = false,
+  showCloseButton = true,
+  className,
+  bodyClassName,
+}: {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  title: string
+  titleHidden?: boolean
+  showCloseButton?: boolean
+  className?: string
+  bodyClassName?: string
+}) {
+  const frame = useRef<HTMLDivElement>(null)
+  const opener = useRef<HTMLElement | null>(null)
+  const stillOpen = useRef(open)
+  useEffect(() => { stillOpen.current = open }, [open])
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        ref={frame}
+        aria-busy
+        aria-describedby={undefined}
+        className={className}
+        showCloseButton={showCloseButton}
+        onOpenAutoFocus={(event) => {
+          opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+          event.preventDefault()
+          frame.current?.focus()
+        }}
+        onCloseAutoFocus={(event) => {
+          event.preventDefault()
+          if (!stillOpen.current) opener.current?.focus()
+        }}
+      >
+        <DialogHeader className={titleHidden ? "sr-only" : undefined}>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <div className={bodyClassName}>
+          <SkeletonBars blocks={2} />
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
 }
 
 // After first paint, when the browser has nothing else to do. A failed

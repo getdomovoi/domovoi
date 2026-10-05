@@ -64,7 +64,7 @@ import type { SkillsSurfaceTab } from "./skills-surface"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
 import type { RepositoryTrustRequestParams } from "./repository-trust-sheet"
 import { gitFilterRefusalFrom } from "./session-refusal"
-import { lazySurface, prefetchWhenIdle, SurfaceCodeReload } from "./lazy-surface"
+import { DialogLoading, lazyDialog, lazySurface, prefetchWhenIdle, SurfaceCodeReload, useDrawnOnceOpen } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
@@ -106,10 +106,10 @@ import {
 import {
   buildWorkspaceCommands,
   commandPaletteShortcut,
-  CommandPalette,
+  commandPaletteTitle,
   workspaceShortcut,
   type CommandPalettePlatform,
-} from "./command-palette"
+} from "./workspace-commands"
 import { colorSchemeQuery, resolveAppearanceTheme, useAppearanceTheme, type WorkspaceTheme } from "./appearance"
 import { WorkspaceNotificationTracker, type DesktopNotificationRequest } from "./desktop-notifications"
 import {
@@ -136,15 +136,14 @@ import {
   localFleetEntry,
   sessionIsArchiveReadOnly,
 } from "./workspace-selectors"
-import { LauncherDialog, type LauncherMode, ProjectSwitchConfirmationDialog } from "./launcher-dialog"
+import { launcherContentClassName, launcherTitle, type LauncherMode } from "./launcher-frame"
+import { ProjectSwitchConfirmationDialog } from "./project-switch-confirmation"
 import { AppBar, useUsageToday } from "./app-bar"
 import { ArchiveConfirmBody, Thread, archiveSessionDescription, freshStartPanel, moveDialog } from "./thread"
 
 export { CheckpointThreadItem, SessionReadOnlyNotice, SessionRow, type SessionTransferReceipt, Thread, archiveSessionDescription, providerFailureActionCopy, sessionStatusMeaning, sessionTransferReceiptText } from "./thread"
 
 export { AppBar, emergencyStopAnnouncement, useUsageToday } from "./app-bar"
-
-export { LauncherDialog, ProjectSwitchConfirmationDialog, ProviderReadinessList, ProviderSearchReport } from "./launcher-dialog"
 
 export { activeSession, activeSessionCount, activeThreadKey, forkSessionBlockedReason, renderedThreadForActiveSession, sessionIsArchiveReadOnly } from "./workspace-selectors"
 export { AnnotationComments, ArtifactDock, PreviewVariantThumbnail, artifactAuthorizationKey, capturePreviewThumbnailState } from "./artifact-dock"
@@ -177,7 +176,21 @@ const refusalSurface = lazySurface("the refusal", async () => (await import("./s
 // The fresh-start panel is the first thing a new session shows, and the move
 // dialog opens from the machine menu, the launcher or /handoff, so both are
 // prefetched with them (thread.tsx).
-const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface, refusalSurface, freshStartPanel, moveDialog]
+// The command palette and the launcher are dialogs a person opens, so each
+// one's code loads the first time it opens, and at idle with the surfaces.
+// An open after the code has arrived draws the dialog at once (lazyDialog).
+// Until the code lands a dialog of the same size with the same title stands
+// in for it, which a person can close as they would the dialog itself
+// (DialogLoading in lazy-surface.tsx).
+// The project switch confirmation is not one of them: a switch can start
+// from the folder picker before any dialog's code has arrived, and what it
+// stops must be on screen the moment the daemon asks, so it loads with the
+// shell.
+const commandPaletteDialog = lazyDialog(async () => (await import("./command-palette")).CommandPalette)
+const launcherDialog = lazyDialog(async () => (await import("./launcher-dialog")).LauncherDialog)
+const CommandPalette = commandPaletteDialog.Dialog
+const LauncherDialog = launcherDialog.Dialog
+const lazySurfaces = [settingsSurface, skillsSurface, machinesSurface, auditSurface, refusalSurface, freshStartPanel, moveDialog, commandPaletteDialog, launcherDialog]
 const SettingsShell = settingsSurface.Surface
 const SkillsSurface = skillsSurface.Surface
 const FleetView = machinesSurface.Surface
@@ -477,9 +490,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
   const deepLinkRoutingRef = useRef(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
+  const commandPaletteDrawn = useDrawnOnceOpen(commandPaletteOpen)
   const [requestedSkillId, setRequestedSkillId] = useState<string>()
   const [pendingDeepLinks, setPendingDeepLinks] = useState<string[]>([])
   const [launcherMode, setLauncherMode] = useState<LauncherMode>(null)
+  const launcherDrawn = useDrawnOnceOpen(launcherMode !== null)
   // A launch the palette asked for on a named machine. It becomes a launcher
   // only when that machine is the one attached and its snapshot has a project.
   const [launchIntent, setLaunchIntent] = useState<{ machineId: string } | null>(null)
@@ -1840,27 +1855,37 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             ) : null}
           </div>
         ) : null}
-        {snapshot && !watching ? <LauncherDialog
-          mode={launcherMode}
-          {...(launcherProjectNote ? { projectNote: launcherProjectNote } : {})}
-          providers={snapshot.machine.providers}
-          toolPath={snapshot.machine.toolPath}
-          {...(desktopFirstRun.persisted.status === "complete"
-            ? { defaultProviderId: desktopFirstRun.persisted.providerId }
-            : {})}
-          defaultPermissionMode={desktopFirstRun.persisted.status === "complete"
-            ? desktopFirstRun.persisted.permissionMode
-            : "build"}
-          onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
-          onOpenProject={openProjectSafely}
-          onCreateSession={(title, runtime) => startSession({ kind: "create", title, runtime })}
-          onListModels={listModels}
-          recentSessions={snapshot.sessions}
-          onResumeSession={(sessionId) => {
-            openSessionInWorkspace(sessionId)
-            setLauncherMode(null)
-          }}
-        /> : null}
+        {snapshot && !watching && launcherDrawn ? (
+          <LauncherDialog
+            loading={
+              <DialogLoading
+                open={launcherMode !== null}
+                onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
+                title={launcherTitle(launcherMode)}
+                className={launcherContentClassName(launcherMode)}
+              />
+            }
+            mode={launcherMode}
+            {...(launcherProjectNote ? { projectNote: launcherProjectNote } : {})}
+            providers={snapshot.machine.providers}
+            toolPath={snapshot.machine.toolPath}
+            {...(desktopFirstRun.persisted.status === "complete"
+              ? { defaultProviderId: desktopFirstRun.persisted.providerId }
+              : {})}
+            defaultPermissionMode={desktopFirstRun.persisted.status === "complete"
+              ? desktopFirstRun.persisted.permissionMode
+              : "build"}
+            onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
+            onOpenProject={openProjectSafely}
+            onCreateSession={(title, runtime) => startSession({ kind: "create", title, runtime })}
+            onListModels={listModels}
+            recentSessions={snapshot.sessions}
+            onResumeSession={(sessionId) => {
+              openSessionInWorkspace(sessionId)
+              setLauncherMode(null)
+            }}
+          />
+        ) : null}
         {projectSwitchConfirmation ? (
           <ProjectSwitchConfirmationDialog
             confirmation={projectSwitchConfirmation}
@@ -1873,17 +1898,32 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onConfirm={(path) => { void confirmProjectSwitch(path) }}
           />
         ) : null}
-        <CommandPalette
-          open={commandPaletteOpen}
-          platform={commandPlatform}
-          commands={workspaceCommands}
-          onOpenChange={setCommandPaletteOpen}
-          restoreFocusTo={commandPaletteFocusRef.current}
-          machineSearch={machineSearch}
-          {...(firstRunEnabled && !watching ? {
-            onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
-          } : {})}
-        />
+        {commandPaletteDrawn ? (
+          <CommandPalette
+            loading={
+              // CommandDialog's own frame (components/ui/command.tsx), which
+              // loads with cmdk in the palette's code.
+              <DialogLoading
+                open={commandPaletteOpen}
+                onOpenChange={setCommandPaletteOpen}
+                title={commandPaletteTitle}
+                titleHidden
+                showCloseButton={false}
+                className="top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0"
+                bodyClassName="p-3"
+              />
+            }
+            open={commandPaletteOpen}
+            platform={commandPlatform}
+            commands={workspaceCommands}
+            onOpenChange={setCommandPaletteOpen}
+            restoreFocusTo={commandPaletteFocusRef.current}
+            machineSearch={machineSearch}
+            {...(firstRunEnabled && !watching ? {
+              onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
+            } : {})}
+          />
+        ) : null}
         {firstRunEnabled ? (
           <DesktopFirstRunDialog
             open={!watching && desktopFirstRun.open}

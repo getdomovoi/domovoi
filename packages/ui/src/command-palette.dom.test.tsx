@@ -27,6 +27,14 @@ const settle = () => act(async () => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 })
 
+// The palette's code loads the first time it opens, and a dialog with its
+// name stands in for it until then, so an open waits for the palette's own
+// search field.
+const openPalette = async (user: ReturnType<typeof userEvent.setup>) => {
+  await user.keyboard("{Control>}k{/Control}")
+  await screen.findByRole("combobox")
+}
+
 describe("workspace command palette keyboard path", () => {
   it("opens with Ctrl+K, runs the selected command, and restores focus on Escape", async () => {
     const user = userEvent.setup()
@@ -40,7 +48,7 @@ describe("workspace command palette keyboard path", () => {
     trigger.focus()
     expect(document.activeElement).toBe(trigger)
 
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     expect(screen.getByRole("dialog", { name: "Domovoi commands" })).toBeTruthy()
     const combobox = screen.getByRole("combobox")
     expect(document.activeElement).toBe(combobox)
@@ -52,7 +60,7 @@ describe("workspace command palette keyboard path", () => {
     await settle()
     expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull()
 
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     expect(screen.getByRole("dialog", { name: "Domovoi commands" })).toBeTruthy()
     await user.keyboard("{Escape}")
     expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull()
@@ -72,7 +80,7 @@ describe("workspace command palette keyboard path", () => {
       completeHandshake(socket, snapshot)
     })
 
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     await user.type(screen.getByRole("combobox"), "take a checkpoint")
     await user.keyboard("{Enter}")
     expect(sentRequests(socket, "checkpoint.create")).toEqual([
@@ -92,7 +100,7 @@ describe("workspace command palette keyboard path", () => {
       completeHandshake(harness.socket(0), workspaceSnapshot())
     })
 
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     const option = (name: string) => screen.getByRole("option", { name: new RegExp(`^${name}`, "u") })
     expect(option("Open the changes sheet")).toBeTruthy()
     expect(option("Take a checkpoint").textContent).toContain("manual")
@@ -108,12 +116,12 @@ describe("workspace command palette keyboard path", () => {
     await user.keyboard("{Enter}")
     expect(screen.getByRole("tab", { name: "Changes" }).getAttribute("aria-selected")).toBe("true")
 
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     await user.type(screen.getByRole("combobox"), "review what you have allowed")
     await user.keyboard("{Enter}")
     expect(screen.getByRole("tab", { name: "Rules" }).getAttribute("aria-selected")).toBe("true")
 
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     await user.type(screen.getByRole("combobox"), "revert to a checkpoint")
     await user.keyboard("{Enter}")
     expect(screen.getByRole("tab", { name: "Checkpoints" }).getAttribute("aria-selected")).toBe("true")
@@ -126,7 +134,7 @@ describe("workspace command palette keyboard path", () => {
       completeHandshake(harness.socket(0), workspaceSnapshot())
     })
 
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     expect(screen.getByRole("option", { name: /^Pair a phone or tablet/u }).textContent).toContain("settings")
     await user.type(screen.getByRole("combobox"), "pair a phone")
     await user.keyboard("{Enter}")
@@ -142,7 +150,7 @@ describe("workspace command palette keyboard path", () => {
     })
 
     expect(screen.queryByRole("menu")).toBeNull()
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     await user.type(screen.getByRole("combobox"), "move this session")
     await user.keyboard("{Enter}")
     await settle()
@@ -161,7 +169,7 @@ describe("workspace command palette keyboard path", () => {
       completeHandshake(harness.socket(0), workspaceSnapshot())
     })
 
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     const option = (name: string) => screen.getByRole("option", { name: new RegExp(`^${name}`, "u") })
     expect(option("Open the changes sheet").textContent).toContain("Ctrl+Shift+D")
     expect(option("Show all machines").textContent).toContain("Ctrl+Shift+M")
@@ -182,7 +190,7 @@ describe("workspace command palette keyboard path", () => {
       completeHandshake(harness.socket(0), workspaceSnapshot())
     })
 
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     const option = (name: string) => screen.getByRole("option", { name: new RegExp(`^${name}`, "u") })
     expect(option("Open the changes sheet").textContent).not.toContain("Ctrl+Shift+D")
     expect(option("Show all machines").textContent).not.toContain("Ctrl+Shift+M")
@@ -208,7 +216,7 @@ describe("workspace command palette keyboard path", () => {
       completeHandshake(harness.socket(0), { ...workspaceSnapshot(), clientAccess: "watching" })
     })
 
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     const option = (name: string) => screen.getByRole("option", { name: new RegExp(`^${name}`, "u") })
     expect(option("Move this session to another machine").getAttribute("aria-disabled")).toBe("true")
     expect(option("Open the changes sheet").getAttribute("aria-disabled")).not.toBe("true")
@@ -224,7 +232,7 @@ describe("workspace command palette keyboard path", () => {
       completeHandshake(socket, workspaceSnapshot())
     })
 
-    await user.keyboard("{Control>}k{/Control}")
+    await openPalette(user)
     await user.type(screen.getByRole("combobox"), "emergency stop")
     await user.keyboard("{Enter}")
     expect(sentRequests(socket, "system.emergencyStop")).toHaveLength(1)

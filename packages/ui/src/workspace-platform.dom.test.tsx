@@ -91,6 +91,9 @@ async function openWorkspace(platform: WorkspacePlatform, snapshot = workspaceSn
   async function openCommandPalette() {
   await userEvent.click(screen.getByRole("button", { name: "Open command palette" }))
   await settle()
+  // The palette's code loads the first time it opens, and a dialog with its
+  // name stands in for it until then.
+  await screen.findByRole("combobox")
   }
 
 async function openNotificationSettings() {
@@ -185,6 +188,9 @@ it("says why a browser has no folder picker when a project is opened", async () 
   await settle()
 
   expect(platform.dialogs.pickProjectDirectory).toHaveBeenCalledOnce()
+  // The launcher's code loads the first time it opens, and a dialog with its
+  // title stands in for it until then.
+  await screen.findByLabelText("Repository path")
   expect(screen.getByRole("dialog").textContent).toContain(
     "A browser cannot open a folder picker on the execution machine.",
   )

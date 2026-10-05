@@ -4,7 +4,7 @@ import { afterEach, expect, it, vi } from "vitest"
 
 import { demoWorkspace, type ProviderRuntime } from "@getdomovoi/protocol"
 
-import { LauncherDialog } from "./workspace-shell.js"
+import { LauncherDialog } from "./launcher-dialog.js"
 
 afterEach(cleanup)
 

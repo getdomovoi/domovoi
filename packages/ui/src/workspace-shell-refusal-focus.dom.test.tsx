@@ -96,6 +96,9 @@ it.each([
   const user = userEvent.setup()
   await user.click(screen.getByRole("button", { name: "New session" }))
   await settle()
+  // The launcher's code loads the first time it opens, and it asks for the
+  // models once it is drawn.
+  await screen.findByText("Loading models")
   const models = [{
     provider: "codex", id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", description: "",
     supportedReasoningEfforts: ["medium" as const], defaultReasoningEffort: "medium" as const, isDefault: true,
@@ -144,7 +147,8 @@ it("registers the controls that open a session start, and no others", async () =
   expect(isStartOpener(screen.getByRole("button", { name: "New session" }))).toBe(true)
 
   await user.keyboard("{Control>}k{/Control}")
-  expect(isStartOpener(screen.getByRole("option", { name: /New session/ }))).toBe(true)
+  // The palette's code loads the first time it opens.
+  expect(isStartOpener(await screen.findByRole("option", { name: /New session/ }))).toBe(true)
   expect(isStartOpener(screen.getByRole("option", { name: /Open project/ }))).toBe(false)
   await user.type(screen.getByRole("combobox"), "New session")
   await user.keyboard("{Enter}")
@@ -224,7 +228,7 @@ async function connectedShell() {
 async function refusedFromPalette(shell: Awaited<ReturnType<typeof connectedShell>>) {
   const { user } = shell
   await user.keyboard("{Control>}k{/Control}")
-  await user.type(screen.getByRole("combobox"), "New session")
+  await user.type(await screen.findByRole("combobox"), "New session")
   await user.keyboard("{Enter}")
   await settle()
   await refusedFromLauncher(shell)
@@ -232,6 +236,9 @@ async function refusedFromPalette(shell: Awaited<ReturnType<typeof connectedShel
 
 // With the launcher open, create a session and have the daemon refuse it.
 async function refusedFromLauncher({ socket, snapshot, user }: Awaited<ReturnType<typeof connectedShell>>) {
+  // The launcher's code loads the first time it opens, and it asks for the
+  // models once it is drawn.
+  await screen.findByText("Loading models")
   const models = [{
     provider: "codex", id: "gpt-5.6-sol", displayName: "GPT-5.6 Sol", description: "",
     supportedReasoningEfforts: ["medium" as const], defaultReasoningEffort: "medium" as const, isDefault: true,
