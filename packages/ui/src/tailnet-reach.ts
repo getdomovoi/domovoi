@@ -49,8 +49,9 @@ export type TailnetReachOutcome =
   // Q439 B: a turn-off that is done, whose status read after it did not
   // answer by the desktop's deadline; undeleted names the files it set aside
   // and could not delete. This and the next are the successes with no report.
+  // Codex review of PR #722, round 2 (P3-2): a turn-on too, without undeleted.
   | { ok: true; statusUnanswered: true; undeleted?: string }
-  // Q441 A: a turn-off that is done, whose status read after it failed before
+  // Q441 A: a change that is done, whose status read after it failed before
   // the deadline, in the read's own words.
   | { ok: true; statusFailed: string; undeleted?: string }
   // undeleted: the restart failed after a turn-off deleted the record but
@@ -104,20 +105,23 @@ export function parseTailnetReachReport(value: unknown): TailnetReachReport {
   }
 }
 
-export function parseTailnetReachOutcome(value: unknown): TailnetReachOutcome {
+// The answer to the change the card asked for. Only a turn-off sets files
+// aside and then cannot delete them, so only its answer may name them.
+export function parseTailnetReachOutcome(value: unknown, action: "on" | "off"): TailnetReachOutcome {
+  const left = action === "off" ? ["undeleted"] : []
   if (value && typeof value === "object" && (value as Fields).ok === true) {
     if ("statusUnanswered" in value) {
-      const read = fields(value, ["ok", "statusUnanswered"], ["undeleted"])
+      const read = fields(value, ["ok", "statusUnanswered"], left)
       if (read.statusUnanswered !== true) throw new UnreadableAnswer()
       return { ok: true, statusUnanswered: true, ...(read.undeleted === undefined ? {} : { undeleted: text(read.undeleted) }) }
     }
     if ("statusFailed" in value) {
-      const read = fields(value, ["ok", "statusFailed"], ["undeleted"])
+      const read = fields(value, ["ok", "statusFailed"], left)
       return { ok: true, statusFailed: text(read.statusFailed), ...(read.undeleted === undefined ? {} : { undeleted: text(read.undeleted) }) }
     }
     return { ok: true, report: parseTailnetReachReport(fields(value, ["ok", "report"]).report) }
   }
-  const read = fields(value, ["ok", "reason", "step", "message"], ["detail", "undeleted"])
+  const read = fields(value, ["ok", "reason", "step", "message"], ["detail", ...left])
   const { reason, step } = read
   if (read.ok !== false || !tailnetReachFailures.includes(reason as TailnetReachFailure) || !tailnetReachSteps.includes(step as TailnetReachStep)) throw new UnreadableAnswer()
   return {

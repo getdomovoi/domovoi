@@ -398,9 +398,10 @@ it("turns off through the switch, listing the two steps", async () => {
 // turn-off could not delete, and draws the next answered read as usual.
 it("says a turn-off is done and the switch not known when the desktop does not answer after it", async () => {
   const undeleted = "~/.domovoi/tls/.pending-Ab3xYz"
+  // No status read follows the turn-off (review of PR #724, P2): the next one
+  // is Check again's.
   const reads: (() => Promise<unknown>)[] = [
     () => Promise.resolve(on),
-    () => Promise.reject(new Error("The desktop did not answer.")),
     () => Promise.resolve({ ...off, undeleted }),
   ]
   const ask = vi.fn(async (action: "status" | "on" | "off") => {
@@ -414,6 +415,7 @@ it("says a turn-off is done and the switch not known when the desktop does not a
   await user.click(toggle())
   await settle()
   const view = within(region())
+  expect(statusReads(ask)).toBe(1)
   expect(view.getByText("Not known")).toBeTruthy()
   expect(view.getByText("Turned off. The desktop did not answer when asked what the switch reads now.")).toBeTruthy()
   expect(view.queryByText("The desktop did not answer.")).toBeNull()
@@ -473,6 +475,73 @@ it.each([
   expect((toggle() as HTMLButtonElement).disabled).toBe(false)
 })
 
+// Codex review of PR #722, round 2 (P3-2), Q443 A and Q444 A: a turn-on, or
+// Renew now, is done, but the desktop's status read after it did not answer
+// by its deadline or failed in its own words. The card says so as it does
+// after a turn-off: Not known, the switch unread and disabled, Check again
+// without the Tailscale hint, no failure, and the next answered read drawn as
+// usual.
+describe.each([
+  ["did not answer", { ok: true, statusUnanswered: true }, "Turned on. The desktop did not answer when asked what the switch reads now."],
+  ["failed", { ok: true, statusFailed: "spawn tailscale EACCES" }, "Turned on. Reading what the switch reads now failed: spawn tailscale EACCES."],
+  ["failed with its own period", { ok: true, statusFailed: "The tailscale command could not be started." }, "Turned on. Reading what the switch reads now failed: The tailscale command could not be started."],
+])("after a turn-on whose status read %s", (_label, answer, line) => {
+  function source(first: unknown) {
+    // After statusFailed the card reads the switch once more, which fails
+    // here; after statusUnanswered it does not (review of PR #724, P2). The
+    // last read is Check again's.
+    const reads: (() => Promise<unknown>)[] = [
+      () => Promise.resolve(first),
+      ...("statusUnanswered" in answer ? [] : [() => Promise.reject(new Error("The desktop did not answer."))]),
+      () => Promise.resolve(on),
+    ]
+    const ask = vi.fn(async (action: "status" | "on" | "off") => {
+      if (action === "on") return answer
+      if (action === "off") throw new Error("Nothing turns off here")
+      return reads.shift()!()
+    })
+    render(<Harness source={{ act: ask, listener: async () => listening, inApp: true }} />)
+  }
+
+  async function unreadThenRecovered() {
+    const view = within(region())
+    expect(view.getByText("Not known")).toBeTruthy()
+    expect(view.getByText(line)).toBeTruthy()
+    expect(region().textContent).not.toContain("..")
+    expect(view.queryByText("The desktop did not answer.")).toBeNull()
+    expect(view.queryByText("Bring Tailscale up yourself, then check again.")).toBeNull()
+    expect(view.queryByRole("alert")).toBeNull()
+    expect(view.queryByText("Could not turn it on")).toBeNull()
+    expect(view.queryByText(/Turned off/u)).toBeNull()
+    expect(toggle().getAttribute("aria-checked")).toBe("false")
+    expect((toggle() as HTMLButtonElement).disabled).toBe(true)
+    await userEvent.setup().click(view.getByRole("button", { name: "Check again" }))
+    await settle()
+    expect(view.getByText("On")).toBeTruthy()
+    expect(view.queryByText("Not known")).toBeNull()
+    expect(view.queryByText(line)).toBeNull()
+    expect(toggle().getAttribute("aria-checked")).toBe("true")
+    expect((toggle() as HTMLButtonElement).disabled).toBe(false)
+  }
+
+  it("says the switch turned on and is not known", async () => {
+    source(off)
+    await settle()
+    await userEvent.setup().click(toggle())
+    await settle()
+    await unreadThenRecovered()
+  })
+
+  it("says the same after Renew now", async () => {
+    source({ ...on, renewalFailed: { at: "2026-10-02T12:00:00.000Z", message: "Tailscale did not renew the certificate." } })
+    await settle()
+    await userEvent.setup().click(within(region()).getByRole("button", { name: "Renew now" }))
+    await settle()
+    expect(within(region()).queryByText("The certificate did not renew")).toBeNull()
+    await unreadThenRecovered()
+  })
+})
+
 // The desktop's refusal of a change while another holds the switch
 // (apps/desktop/src/main/tailnet-reach.ts #exclusive).
 const busy = { ok: false, reason: "busy", step: "status", message: "The switch is already changing." } as const
@@ -491,6 +560,75 @@ function controlled(source: TailnetReachSource): () => TailnetReachController {
 }
 
 const statusReads = (ask: { mock: { calls: unknown[][] } }) => ask.mock.calls.filter(([action]) => action === "status").length
+
+// Review of PR #724 (P2): a change that answers statusUnanswered left the
+// desktop's status read after it still pending, and the desktop shares that
+// read with the next status call under a fresh deadline. So the card asks the
+// desktop nothing more after such a change: it says Not known, the line and
+// Check again as soon as the change answers, not one more deadline later. It
+// still reads the daemon's tailnet listener again.
+describe.each([
+  ["a turn-on", off, "on", "switch", "Turned on. The desktop did not answer when asked what the switch reads now."],
+  ["Renew now", { ...on, renewalFailed: { at: "2026-10-02T12:00:00.000Z", message: "Tailscale did not renew the certificate." } }, "on", "Renew now", "Turned on. The desktop did not answer when asked what the switch reads now."],
+  ["a turn-off", on, "off", "switch", "Turned off. The desktop did not answer when asked what the switch reads now."],
+] as const)("after %s whose status read did not answer", (_label, first, direction, control, line) => {
+  it("asks the desktop nothing more and offers Check again at once", async () => {
+    let reads = 0
+    const ask = vi.fn(async (action: "status" | "on" | "off") => {
+      if (action === direction) return { ok: true, statusUnanswered: true }
+      if (action !== "status") throw new Error("Not this change")
+      reads += 1
+      // Every desktop status call after the first stalls, as the desktop's
+      // shared pending read does.
+      return reads === 1 ? first : new Promise<never>(() => {})
+    })
+    const listener = vi.fn(async () => listening)
+    render(<Harness source={{ act: ask, listener, inApp: true }} />)
+    await settle()
+    const user = userEvent.setup()
+    const listened = listener.mock.calls.length
+    await user.click(control === "switch" ? toggle() : within(region()).getByRole("button", { name: control }))
+    await settle()
+    const view = within(region())
+    expect(ask).toHaveBeenCalledWith(direction)
+    expect(view.getByText("Not known")).toBeTruthy()
+    expect(view.getByText(line)).toBeTruthy()
+    expect(view.queryByText(/^(Turning on|Turning off|Renewing)$/u)).toBeNull()
+    const again = view.getByRole("button", { name: "Check again" }) as HTMLButtonElement
+    expect(again.disabled).toBe(false)
+    expect(statusReads(ask)).toBe(1)
+    expect(listener.mock.calls.length).toBe(listened + 1)
+    await user.click(again)
+    await settle()
+    expect(statusReads(ask)).toBe(2)
+  })
+})
+
+// With no status read after such a change, a desktop answer to a read that
+// started before it is still older than the change, and is not drawn.
+it("does not draw a read from before a change whose status read did not answer", async () => {
+  const before = deferred<unknown>()
+  const reads: (() => Promise<unknown>)[] = [() => Promise.resolve(on), () => before.promise]
+  const ask = vi.fn(async (action: "status" | "on" | "off") => {
+    if (action === "off") return { ok: true, statusUnanswered: true }
+    if (action === "on") throw new Error("Nothing turns on here")
+    return reads.shift()!()
+  })
+  render(<Harness source={{ act: ask, listener: async () => listening, inApp: true }} />)
+  await settle()
+  await act(async () => { window.dispatchEvent(new Event("focus")) })
+  await settle()
+  expect(statusReads(ask)).toBe(2)
+  await userEvent.setup().click(toggle())
+  await settle()
+  await act(async () => { before.resolve(on) })
+  await settle()
+  const view = within(region())
+  expect(statusReads(ask)).toBe(2)
+  expect(view.getByText("Not known")).toBeTruthy()
+  expect(view.getByText("Turned off. The desktop did not answer when asked what the switch reads now.")).toBeTruthy()
+  expect(view.queryByText("On")).toBeNull()
+})
 
 // Codex review of PR #722, round 2 (P3-R2-1) and round 3 (P3-R3-1): with
 // Q439 B the desktop releases the switch before a turn-off's status read, so

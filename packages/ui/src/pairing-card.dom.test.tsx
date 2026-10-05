@@ -174,7 +174,7 @@ it("draws no QR when a phone could not reach or trust the daemon, and says which
 function controller(overrides: Partial<TailnetReachController> = {}): TailnetReachController {
   return {
     report: { state: "off", name: "mac-mini-m4.tail4c2e.ts.net", address: "100.101.102.103", stored: "~/.domovoi/tls/mac-mini-m4.tail4c2e.ts.net.crt, .key", httpsCertificates: true },
-    readError: undefined, listener: undefined, running: undefined, failure: undefined, turnedOffUnread: undefined, inApp: true,
+    readError: undefined, listener: undefined, running: undefined, failure: undefined, changedUnread: undefined, inApp: true,
     check: vi.fn(), turnOn: vi.fn(async () => undefined), turnOff: vi.fn(async () => undefined), revealed: 0, reveal: vi.fn(),
     ...overrides,
   }

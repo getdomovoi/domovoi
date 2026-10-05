@@ -120,7 +120,8 @@ class StatusUnanswered extends Error {
     super(statusUnanswered)
   }
 }
-// Q441 A: what a turn-off answers for a status read that failed without words.
+// Q441 A, Q444 A: what a change that is done answers for a status read after
+// it that failed without words.
 const statusFailedUnsaid = "it gave no reason"
 // tailscale cert waits on the ACME exchange, which takes tens of seconds.
 const certificateTimeoutMs = 120_000
@@ -558,37 +559,49 @@ export class TailnetReach {
     throw new Error("Desktop received an invalid tailnet action")
   }
 
-  // Also renews: turned on again, it replaces the files it wrote before.
-  turnOn(): Promise<TailnetReachOutcome> {
-    return this.#exclusive("status", () => this.#turnOn())
-  }
-
-  // Codex review of PR #722 (P3-2), Q439 B: the status after a turn-off is
-  // read once the change has ended and released the switch, as a public read
-  // under the deadline in the generation after the change, so the card's own
-  // read after the change joins it instead of starting a second one that
-  // stalls on the same dependency. Past the deadline the turn-off is still
-  // done: it answers so, with the files it could not delete, and no state it
-  // did not read. Trade-off: a turn-on can start while that read is pending.
-  // It is its own change: it starts a new generation, so no read after it is
-  // handed this one, and its own answer comes from its own record. This
-  // turn-off's answer is then the state as read just after the turn-off.
+  // Codex review of PR #722 (P3-2), Q439 B: the status after a change is read
+  // once the change has ended and released the switch, as a public read under
+  // the deadline in the generation after the change, so the card's own read
+  // after the change joins it instead of starting a second one that stalls on
+  // the same dependency. Past the deadline the change is still done: it
+  // answers so, with the files a turn-off could not delete, and no state it
+  // did not read. Trade-off: another change can start while that read is
+  // pending. It is its own change: it starts a new generation, so no read
+  // after it is handed this one, and its own answer comes from its own read.
+  // This change's answer is then the state as read just after it.
   //
   // Codex review of PR #722, round 2 (P3-R2-2), Q441 A: a read that fails
-  // before the deadline is not the turn-off failing either. The turn-off is
+  // before the deadline is not the change failing either. The change is
   // answered as done with the read's own words, bounded as a detail is. A
-  // deletion or restart that fails is still the turn-off failing: #turnOff
-  // answers or throws it before this read starts.
+  // step that fails is still the change failing: #turnOn and #turnOff answer
+  // or throw it before this read starts.
+  //
+  // Codex review of PR #722, round 2 (P3-2): a turn-on too. It is done once
+  // the record is written, the daemon restarted on the certificate and said
+  // so, the swap committed and renewal scheduled. Reading the certificate's
+  // expiry and the notes is this read, so a stall there no longer keeps the
+  // switch busy for turn-off and renewal. Renew now is a turn-on.
+  async turnOn(): Promise<TailnetReachOutcome> {
+    const changed = await this.#exclusive("status", () => this.#turnOn())
+    return "done" in changed ? this.#readAfterChange({}) : changed
+  }
+
   async turnOff(): Promise<TailnetReachOutcome> {
     const changed = await this.#exclusive("status", () => this.#turnOff())
     if (!("done" in changed)) return changed
-    const undeleted = changed.undeleted === undefined ? {} : { undeleted: this.deps.display(changed.undeleted) }
+    return this.#readAfterChange(changed.undeleted === undefined ? {} : { undeleted: this.deps.display(changed.undeleted) })
+  }
+
+  // The answer for a change that is done: the status read after it, or that
+  // read unanswered or failed, with what the change left (a turn-off's files
+  // it could not delete).
+  async #readAfterChange(left: { undeleted?: string }): Promise<TailnetReachOutcome> {
     try {
       return { ok: true, report: await this.status() }
     } catch (cause) {
-      if (cause instanceof StatusUnanswered) return { ok: true, statusUnanswered: true, ...undeleted }
+      if (cause instanceof StatusUnanswered) return { ok: true, statusUnanswered: true, ...left }
       const said = detail(cause instanceof Error ? cause.message : String(cause))
-      return { ok: true, statusFailed: said || statusFailedUnsaid, ...undeleted }
+      return { ok: true, statusFailed: said || statusFailedUnsaid, ...left }
     }
   }
 
@@ -615,7 +628,10 @@ export class TailnetReach {
       : { ok: false, reason: "refused", step, message: `The daemon cannot restart now: ${refusal} Nothing was changed.` }
   }
 
-  async #turnOn(): Promise<TailnetReachOutcome> {
+  // Also renews: turned on again, it replaces the files it wrote before. A
+  // refusal or failure, or done; turnOn reads the status once the switch is
+  // released.
+  async #turnOn(): Promise<TailnetReachOutcome | { done: true }> {
     const conflict = this.deps.conflict?.()
     if (conflict) return { ok: false, reason: "refused", step: "status", message: `${conflict} Nothing was changed.` }
     const refused = await this.#refusal("status")
@@ -727,7 +743,7 @@ export class TailnetReach {
       if (previous && previous.certPath !== certPath) await this.#forgetOwned(previous)
       this.#renewalFailure = undefined
       this.#schedule(renewalCheckMs)
-      return { ok: true, report: await this.#onReport(record) }
+      return { done: true }
     } catch (cause) {
       // Round 3 re-review (P2): a throw after the swap, from writing the
       // record to a restart that could not even be asked, puts everything
