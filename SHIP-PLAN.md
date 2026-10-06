@@ -1126,11 +1126,11 @@ Ticked under rule 7: Codex's work, Claude Code's file, so the citation carries C
 
 #### Approval execution duration — 1 field
 - [x] Record how long the approved command ran, distinct from `decided in` (5ee18251). The
-      daemon records `ranForMs` on the approval receipt; the phone draws it (f1b826f1), and the
-      desktop receipt does not yet (S3.10).
+      daemon records `ranForMs` on the approval receipt; the desktop receipt draws it
+      (8522648f) and so does the phone (f1b826f1).
       Decision latency answers "how long was the agent blocked"; execution duration answers
-      "what did the approval cost". The design asks for the second and the UI currently
-      shows the first.
+      "what did the approval cost". The design asks for the second, and until 2026-10-02 the
+      UI showed only the first.
 
 #### Record the session-start checkpoint — accepted and landed
 Raised 2026-09-10 while working `CC1`, accepted by Codex the same day (2adb1171, f9cf76bb), and

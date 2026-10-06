@@ -1080,7 +1080,7 @@ td { color: var(--ink2); }
 </ul>
 <h4 id="approval-execution-duration-1-field">Approval execution duration — 1 field</h4>
 <ul>
-<li>[x] Record how long the approved command ran, distinct from <code>decided in</code> (5ee18251). The daemon records <code>ranForMs</code> on the approval receipt; the phone draws it (f1b826f1), and the desktop receipt does not yet (S3.10). Decision latency answers &quot;how long was the agent blocked&quot;; execution duration answers &quot;what did the approval cost&quot;. The design asks for the second and the UI currently shows the first.
+<li>[x] Record how long the approved command ran, distinct from <code>decided in</code> (5ee18251). The daemon records <code>ranForMs</code> on the approval receipt; the desktop receipt draws it (8522648f) and so does the phone (f1b826f1). Decision latency answers &quot;how long was the agent blocked&quot;; execution duration answers &quot;what did the approval cost&quot;. The design asks for the second, and until 2026-10-02 the UI showed only the first.
 </li>
 </ul>
 <h4 id="record-the-session-start-checkpoint-accepted-and-landed">Record the session-start checkpoint — accepted and landed</h4>
