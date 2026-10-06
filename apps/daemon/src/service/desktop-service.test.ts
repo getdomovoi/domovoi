@@ -173,7 +173,7 @@ describe("installDaemonService", () => {
     const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime\\daemon\\index.js" }
     expect(await installDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
     const created = vi.mocked(effects.run).mock.calls.find(([, args]) => args[0] === "/create")![1]
-    expect(created[created.indexOf("/tr") + 1]).toMatch(/^"C:\\Program Files\\Domovoi\\runtime\\node\.exe" "C:\\Program Files\\Domovoi\\runtime\\daemon\\index\.js" --service-config /)
+    expect(created[created.indexOf("/tr") + 1]).toMatch(/^"C:\\Program Files\\Domovoi\\runtime\\node\.exe" "C:\\Program Files\\Domovoi\\runtime\\daemon\\index\.js" --service-supervise /)
   })
 })
 
@@ -495,7 +495,7 @@ describe("security review round 1: the Windows task command", () => {
     const extensionless = { ...windowsRuntime, daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime\\daemon\\domovoid" }
     await installDaemonService({ runtime: extensionless }, effects)
     expect(createdTaskCommand(effects)).toBe(
-      `"${extensionless.nodePath}" "${extensionless.daemonEntryPath}" --service-config "${windowsConfigurationPath}"`,
+      `"${extensionless.nodePath}" "${extensionless.daemonEntryPath}" --service-supervise "${windowsConfigurationPath}"`,
     )
   })
 })
@@ -522,7 +522,7 @@ function taskScheduler(task: { path: string; arguments: string } | undefined) {
   return { state, capture }
 }
 
-const domovoiTask = { path: `"${windowsRuntime.nodePath}"`, arguments: `"${windowsRuntime.daemonEntryPath}" --service-config "${windowsConfigurationPath}"` }
+const domovoiTask = { path: `"${windowsRuntime.nodePath}"`, arguments: `"${windowsRuntime.daemonEntryPath}" --service-supervise "${windowsConfigurationPath}"` }
 // A desktop install records the runtime it installed in service.json.
 const savedConfiguration = {
   ...createServiceConfiguration({}, { platform: "win32", homeDirectory: windowsHome, workingDirectory: windowsHome }),
@@ -560,7 +560,8 @@ describe("security review round 1: a same-named Windows task is not Domovoi's", 
 
   it("reports and removes the task Domovoi registered", async () => {
     const scheduler = taskScheduler(domovoiTask)
-    const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => savedConfiguration) })
+    const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => savedConfiguration),
+      stopSupervisor: vi.fn(async () => {}), supervisorStatus: vi.fn(async () => ({ installed: null, running: scheduler.state.registered && scheduler.state.running, detail: "supervisor observed" })) })
     expect(await readDaemonServiceStatus(effects)).toMatchObject({ installed: true, running: true })
     expect(await removeDaemonService(effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
     expect(scheduler.state).toMatchObject({ registered: false, deleted: true })
@@ -569,7 +570,8 @@ describe("security review round 1: a same-named Windows task is not Domovoi's", 
 
   it("still reports and removes nothing when no task is registered", async () => {
     const scheduler = taskScheduler(undefined)
-    const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => savedConfiguration) })
+    const effects = windowsDependencies({ capture: scheduler.capture, readConfiguration: vi.fn(() => savedConfiguration),
+      stopSupervisor: vi.fn(async () => {}), supervisorStatus: vi.fn(async () => ({ installed: null, running: scheduler.state.registered && scheduler.state.running, detail: "supervisor observed" })) })
     expect(await readDaemonServiceStatus(effects)).toMatchObject({ installed: false, running: false })
     expect(await removeDaemonService(effects)).toMatchObject({ kind: "task" })
   })
@@ -743,7 +745,7 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
   const ran: string[] = []
   let failuresLeft = start.failures ?? 1
   const effects = dependencies({
-    platform, home, ...(platform === "win32" ? { user: "dl" } : {}),
+    platform, home, ...(platform === "win32" ? { user: "dl", supervisorStatus: vi.fn(async () => ({ installed: null, running: false, detail: "stopped; jobs confirmed empty" })) } : {}),
     exists: vi.fn(async (path: string) => files.has(path)),
     read: vi.fn(async (path: string) => {
       const text = files.get(path)
@@ -799,7 +801,7 @@ describe("security review round 3", () => {
 
   const oldWindowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime-1\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js" }
   const oldWindowsConfiguration = JSON.stringify({ ...savedConfiguration, serviceRuntime: { executable: oldWindowsRuntime.nodePath, entry: oldWindowsRuntime.daemonEntryPath } })
-  const oldWindowsTask = { path: `"${oldWindowsRuntime.nodePath}"`, arguments: `"${oldWindowsRuntime.daemonEntryPath}" --service-config "${windowsConfigurationPath}"` }
+  const oldWindowsTask = { path: `"${oldWindowsRuntime.nodePath}"`, arguments: `"${oldWindowsRuntime.daemonEntryPath}" --service-supervise "${windowsConfigurationPath}"` }
 
   // Finding 1: the record must name what the manager registered.
   it("puts the previous service.json back when the new Windows task cannot be registered", async () => {
