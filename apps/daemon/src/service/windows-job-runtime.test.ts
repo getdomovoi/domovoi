@@ -137,3 +137,48 @@ it("honors a retirement request racing the first record of a new loop", async ()
     expect(emergencyStop).toBe(false)
   } finally { clearTimeout(timer); vi.unstubAllGlobals() }
 })
+
+it("retires an unstarted supervised registration with disabled-task proof and no lease", async () => {
+  const f = fixture(), deadline = OperationDeadline.start(2000)
+  rmSync(windowsSupervisorRecordPath(f.home))
+  vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: f.record.loop.bootId, identity: f.record.loop })
+  const confirmNoLaunch = vi.fn(async () => true)
+  try {
+    expect(await stopWindowsSupervisor(f.path, deadline, { confirmNoLaunch })).toMatchObject({ state: "stopped", attempts: [] })
+    expect(confirmNoLaunch).toHaveBeenCalledOnce()
+    expect(readSupervisorStopRequest(f.home)?.registrationId).toBe(f.record.registrationId)
+  } finally { deadline.clear() }
+})
+
+it("retains an unstarted configuration when disabled-task proof fails", async () => {
+  const f = fixture(), deadline = OperationDeadline.start(2000)
+  rmSync(windowsSupervisorRecordPath(f.home))
+  const confirmNoLaunch = vi.fn(async () => false)
+  try {
+    await expect(stopWindowsSupervisor(f.path, deadline, { confirmNoLaunch })).rejects.toThrow("no startup lease")
+    expect(confirmNoLaunch).toHaveBeenCalledOnce()
+    expect(readSupervisorStopRequest(f.home)).toBeUndefined()
+    expect(existsSync(join(f.home, ".domovoi", "windows-supervisor-lease.sqlite"))).toBe(false)
+  } finally { deadline.clear() }
+})
+
+it("does not use idle-task evidence to settle an unconfirmed launch", async () => {
+  const f = fixture(true), deadline = OperationDeadline.start(2000)
+  const confirmNoLaunch = vi.fn(async () => true)
+  try {
+    await expect(stopWindowsSupervisor(f.path, deadline, { confirmNoLaunch })).rejects.toThrow("Restart Windows")
+    expect(confirmNoLaunch).not.toHaveBeenCalled()
+  } finally { deadline.clear() }
+})
+
+it("rechecks launch evidence under the lease after observing an idle task", async () => {
+  const f = fixture(true), deadline = OperationDeadline.start(2000)
+  rmSync(windowsSupervisorRecordPath(f.home))
+  vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: f.record.loop.bootId, identity: f.record.loop })
+  try {
+    await expect(stopWindowsSupervisor(f.path, deadline, { confirmNoLaunch: async () => {
+      writeWindowsSupervisorRecord(f.home, f.record)
+      return true
+    } })).rejects.toThrow("Restart Windows")
+  } finally { deadline.clear() }
+})

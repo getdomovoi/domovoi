@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -25,7 +26,7 @@ const literal = (value: string) => `'${value.replaceAll("'", "''")}'`
 const powershell = (script: string): ServiceCommand => ({ command: windowsPowerShellPath(),
   args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")] })
 
-it.runIf(process.platform === "win32").each(["exhaustion", "stop"] as const)("proves native Windows supervised %s and removal", async (mode) => {
+it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] as const)("proves native Windows supervised %s and removal", async (mode) => {
   const name = `Domovoi-supervision-test-${randomUUID()}`
   const deadline = OperationDeadline.start(lifecycleBudget)
   const directory = await mkdtemp(join(tmpdir(), "domovoi-task-"))
@@ -105,6 +106,16 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
     expect(settings).toMatch(/<ExecutionTimeLimit>PT0S<\/ExecutionTimeLimit>/)
     expect(settings).toMatch(/<DisallowStartIfOnBatteries>false<\/DisallowStartIfOnBatteries>/)
     expect(settings).toMatch(/<StopIfGoingOnBatteries>false<\/StopIfGoingOnBatteries>/)
+    if (mode === "unstarted") {
+      expect(record()).toBeUndefined()
+      expect(existsSync(join(profile.profileDirectory, "windows-supervisor-lease.sqlite"))).toBe(false)
+      await removeService({ platform: "win32", home: directory }, scoped)
+      expect(record()).toMatchObject({ state: "stopped", attempts: [] })
+      expect(existsSync(path)).toBe(false)
+      expect(await capture(plan.inspect)).toMatchObject({ code: 0, stdout: "domovoi-task:missing\r\n" })
+      removed = true
+      return
+    }
     started = true
     await withinServiceDeadline(deadline, () => effects.run(windowsSchtasksPath(), ["/run", "/tn", name], deadline))
     await poll(() => running(1))

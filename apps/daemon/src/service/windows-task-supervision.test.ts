@@ -12,7 +12,7 @@ const target = { platform: "win32", home, user: "test", execPath: "C:\\Domovoi\\
     registrationId: randomUUID(), serviceRuntime: { executable: "C:\\Domovoi\\node.exe", entry: "C:\\Domovoi\\index.js" } } }
 function fixture() {
   const events: string[] = []
-  const task = { enabled: true, running: true, exists: true, flag: "--service-supervise" }
+  const task = { enabled: true, running: true, queued: false, instances: 0, exists: true, flag: "--service-supervise" }
   const effects: ServiceEffects = {
     readConfiguration: () => target.configuration,
     claimServiceOperation: () => ({ release() {} }), claimProfile: () => ({ release() {} }),
@@ -27,6 +27,7 @@ function fixture() {
       if (script.includes("domovoi-task-action:")) return { code: 0, stdout: "domovoi-task-action:" + JSON.stringify({
         path: target.runtime, arguments: `"${target.execPath}" ${task.flag} "${home}\\.domovoi\\service.json"`, enabled: task.enabled, state: task.running ? 4 : 1,
       }) }
+      if (script.includes("$task.GetInstances(0).Count")) return { code: 0, stdout: `domovoi-task:${!task.enabled && !task.running && !task.queued && task.instances === 0 ? 1 : 0}` }
       if (script.includes("$task.Enabled = $false")) { events.push("disable"); task.enabled = false }
       if (script.includes("$task.Stop(0)")) { events.push("stop-task"); task.running = false }
       if (script.includes("$folder.DeleteTask(")) { events.push("delete-task"); task.exists = false; return { code: 0, stdout: "domovoi-task:deleted" } }
@@ -86,4 +87,39 @@ it("does not lose unconfirmed evidence when both task and configuration disappea
   f.effects.supervisorStatus = async () => ({ installed: null, running: false, treeUnconfirmed: true, detail: windowsTreeUnknown, supervisionFailure: "configuration-missing" })
   await expect(removeService(target, f.effects)).rejects.toThrow("Restart Windows")
   expect(f.effects.remove).not.toHaveBeenCalled()
+})
+
+function withoutLaunchHistory(f: ReturnType<typeof fixture>) {
+  f.effects.supervisorStatus = vi.fn(async () => undefined)
+  f.effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
+    if (!await options?.confirmNoLaunch?.()) throw new Error("No lease or record and no disabled supervised task proof")
+    f.events.push("prove-no-launch")
+  })
+}
+
+it.each(["remove", "install"] as const)("can %s a supervised task that never claimed its lease", async (operation) => {
+  const f = fixture(); f.task.running = false
+  withoutLaunchHistory(f)
+  if (operation === "remove") {
+    await removeService(target, f.effects)
+    expect(f.events).toContain("remove-config")
+  } else {
+    await installService(target, f.effects)
+    expect(f.events).toContain("write")
+  }
+  expect(f.events.slice(0, 2)).toEqual(["disable", "prove-no-launch"])
+})
+
+it.each(["remove", "install"] as const)("refuses %s without launch history when scheduler evidence is insufficient", async (operation) => {
+  for (const state of ["missing", "running", "queued", "instance"] as const) {
+    const f = fixture()
+    f.task.exists = state !== "missing"; f.task.running = state === "running"
+    f.task.queued = state === "queued"; f.task.instances = state === "instance" ? 1 : 0
+    withoutLaunchHistory(f)
+    await expect(operation === "remove" ? removeService(target, f.effects) : installService(target, f.effects)).rejects.toThrow()
+    expect(f.effects.write).not.toHaveBeenCalled()
+    expect(f.effects.remove).not.toHaveBeenCalled()
+    expect(f.events).not.toContain("stop-task")
+    expect(f.events).not.toContain("delete-task")
+  }
 })

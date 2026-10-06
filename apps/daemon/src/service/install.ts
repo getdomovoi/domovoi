@@ -18,7 +18,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, launchdPlistProgram, systemdUnit, systemdUnitProgram } from "./units.js"
 import { isRecordedServiceProgram } from "./restore-target.js"
-import { disableWindowsTask, readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsSchtasksPath, windowsTaskRemovalPlan, windowsTaskSettingsCommand, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { disableWindowsTask, readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsSchtasksPath, windowsTaskDisabledAndIdle, windowsTaskRemovalPlan, windowsTaskSettingsCommand, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
 import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, within, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readWindowsSupervisorStatus, stopWindowsSupervisor, windowsTreeUnknown } from "./windows-job-supervisor.js"
@@ -66,7 +66,7 @@ export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
   readConfiguration?: (home: string, platform: string) => ServiceConfiguration | undefined
-  stopSupervisor?: (path: string, deadline: OperationDeadline, options?: { retire?: boolean; previousConfigurationDigest?: string }) => Promise<unknown>
+  stopSupervisor?: (path: string, deadline: OperationDeadline, options?: { retire?: boolean; previousConfigurationDigest?: string; confirmNoLaunch?: () => Promise<boolean> }) => Promise<unknown>
   claimServiceOperation: () => ReturnType<typeof claimServiceOperation>
   claimProfile: (homeDirectory: ProfileLocation) => ProfileLease
   registeredProfile?: (home: string, platform: string) => ProfileLocation | undefined
@@ -497,7 +497,7 @@ export class DaemonServiceHandoffError extends Error {
   }
 }
 
-type InstallEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "remove" | "registeredProfile" | "readOwner" | "readConfiguration" | "supervisorStatus">
+type InstallEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "remove" | "registeredProfile" | "readOwner" | "readConfiguration" | "supervisorStatus" | "stopSupervisor">
 
 // Security review round 3 (#574): what the service files held before this
 // install, so a manager that refuses the new definition leaves the record
@@ -725,7 +725,14 @@ async function installWithDeadline(
     const status = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home)))
     if (status?.treeUnconfirmed) throw new Error(windowsTreeUnknown)
     if (status?.supervising || status?.running) throw new Error("The Windows supervisor is still active; stop and remove it before installing again")
-    if (owner === "supervised" && !status) throw new Error("Windows supervisor evidence is missing; replacement refused")
+    if (!status && (owner === "supervised" || effects.readConfiguration?.(assertHome(target.home), "win32") !== undefined)) {
+      if (!effects.stopSupervisor) throw new Error("Windows supervisor evidence is missing; replacement refused")
+      await disableWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+      await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, {
+        retire: false,
+        ...(owner === "supervised" ? { confirmNoLaunch: () => windowsTaskDisabledAndIdle(displayName, effects, deadline) } : {}),
+      }))
+    }
   }
   const commands = [...await launchdCommandsBeforeInstall(target, plan, effects, deadline), ...plan.commands]
   const previousFiles = await readPreviousFiles(plan, effects, deadline)
@@ -1133,6 +1140,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       const removal = windowsTaskRemovalPlan(displayName)
       await disableWindowsTask(removal, effects, deadline)
       await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, { retire: false,
+        confirmNoLaunch: () => windowsTaskDisabledAndIdle(displayName, effects, deadline),
         ...(restoring ? { previousConfigurationDigest: createHash("sha256").update(serializeServiceConfiguration(parseServiceConfiguration(previousConfiguration))).digest("hex") } : {}) }))
       await stopWindowsTask(removal, effects, deadline)
     }
@@ -1249,7 +1257,8 @@ async function removeWithDeadline(
       progress.managerHoldsDeadline = true
       try {
         await disableWindowsTask(plan, effects, deadline)
-        await withinServiceDeadline(deadline, () => effects.stopSupervisor!(serviceConfigurationPath(home, "win32"), deadline))
+        await withinServiceDeadline(deadline, () => effects.stopSupervisor!(serviceConfigurationPath(home, "win32"), deadline,
+          windowsOwner === "supervised" ? { confirmNoLaunch: () => windowsTaskDisabledAndIdle(plan.name, effects, deadline) } : undefined))
       } catch (cause) { throw new WindowsTaskRemovalError(plan.name, cause, { stopIssued: true }) }
     }
     progress.managerHoldsDeadline = true

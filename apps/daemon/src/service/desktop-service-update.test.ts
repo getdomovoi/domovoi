@@ -179,6 +179,7 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
         const [path, ...rest] = effects.task.definition.split("\" ")
         return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ path: path!.replace(/^"/u, ""), arguments: rest.join("\" "), enabled: effects.task.enabled, state: effects.task.running ? 4 : 3 })}\n` }
       }
+      if (body.includes("$task.GetInstances(0).Count")) return { code: 0, stdout: `domovoi-task:${!effects.task.enabled && !effects.task.running ? 1 : 0}` }
       if (body.includes("DeleteTask")) { order.push("delete task"); return { code: 0, stdout: "domovoi-task:deleted\n" } }
       if (body.includes("$task.Stop(0)")) {
         order.push("stop task")
@@ -496,6 +497,16 @@ describe("updateDaemonService with systemd", () => {
 describe("updateDaemonService with a Windows logon task", () => {
   const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime-2\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index.js" }
 
+  it("updates a supervised task that never claimed its startup lease", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    effects.task.running = false; effects.owner = undefined
+    effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
+      if (!await options?.confirmNoLaunch?.()) throw new Error("No startup history or disabled task proof")
+    })
+    expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task" })
+    expect(effects.task.runningDefinition).toContain("runtime-2")
+  })
+
   it("retains the task and configuration when neither swap nor rollback can prove the job empty", async () => {
     const effects = fake("win32", "C:\\Users\\dl")
     effects.stopSupervisor = vi.fn(async () => { throw new Error("Windows daemon tree unconfirmed. Restart Windows to settle it") })
@@ -553,9 +564,9 @@ describe("updateDaemonService with a Windows logon task", () => {
     )
     const restoredTask = vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create").at(-1)![1]
     expect(restoredTask[restoredTask.indexOf("/tr") + 1]).toBe("\"C:\\Program Files\\Domovoi\\runtime-1\\node.exe\" \"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-supervise \"C:\\Users\\dl\\.domovoi\\service.json\"")
-    expect(effects.stopSupervisor).toHaveBeenNthCalledWith(1, "C:\\Users\\dl\\.domovoi\\service.json", expect.any(OperationDeadline), { retire: false })
+    expect(effects.stopSupervisor).toHaveBeenNthCalledWith(1, "C:\\Users\\dl\\.domovoi\\service.json", expect.any(OperationDeadline), { retire: false, confirmNoLaunch: expect.any(Function) })
     expect(effects.stopSupervisor).toHaveBeenNthCalledWith(2, "C:\\Users\\dl\\.domovoi\\service.json", expect.any(OperationDeadline), {
-      retire: false, previousConfigurationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      retire: false, confirmNoLaunch: expect.any(Function), previousConfigurationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
     })
     expect(effects.order.slice(-3)).toEqual([expect.stringMatching(/^schtasks \/create /), "set task settings", "schtasks /run /tn Domovoi daemon"])
   })

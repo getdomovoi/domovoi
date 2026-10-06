@@ -209,7 +209,7 @@ export function readWindowsSupervisorStatus(home: string): ServiceStatus | undef
 }
 
 export async function stopWindowsSupervisor(path: string, deadline: OperationDeadline,
-  options: { retire?: boolean; previousConfigurationDigest?: string } = {}): Promise<WindowsSupervisorRecord> {
+  options: { retire?: boolean; previousConfigurationDigest?: string; confirmNoLaunch?: () => Promise<boolean> } = {}): Promise<WindowsSupervisorRecord> {
   deadline.throwIfExpired()
   const config = configurationAt(path), home = profileLocation(config.homeDirectory, config.profileDirectory)
   // A rollback may have written the new service.json before a new loop ever
@@ -217,7 +217,12 @@ export async function stopWindowsSupervisor(path: string, deadline: OperationDea
   // under the service-operation lease, never an arbitrary-record fallback.
   const initial = boundRecord(config, options.previousConfigurationDigest)
   if (!initial && !existsSync(join(profileDirectory(home), "windows-supervisor-lease.sqlite"))) {
-    throw new Error("Windows supervisor evidence is missing and no startup lease exists; legacy tree shutdown cannot be proved. Configuration retained.")
+    // Only a verified supervised registration can establish this alternative
+    // to a prior lease: disabled, with no queued or running scheduler instance.
+    // Re-read history under our exclusive lease below before recording no launch.
+    if (!await withinServiceDeadline(deadline, async () => options.confirmNoLaunch?.() ?? false)) {
+      throw new Error("Windows supervisor evidence is missing and no startup lease exists; legacy tree shutdown cannot be proved. Configuration retained.")
+    }
   }
   let requester = initial?.loop
   if (!requester) {

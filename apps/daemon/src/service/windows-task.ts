@@ -162,6 +162,19 @@ export async function disableWindowsTask(plan: WindowsTaskRemovalPlan, effects: 
   if (!["missing", "1", "2", "3", "4"].includes(state)) throw new Error(`Task Scheduler could not disable the task (state ${state})`)
 }
 
+// This is only a no-launch input when the caller has already verified the
+// supervised action and there is no lease or launch history. Task state alone
+// is insufficient: also enumerate instances, and never accept a missing task.
+export async function windowsTaskDisabledAndIdle(name: string, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<boolean> {
+  const command = taskCommand(windowsPowerShellPath(), name, `
+if (-not $task.Enabled -and [int]$task.State -eq 1 -and $task.GetInstances(0).Count -eq 0) {
+  [Console]::Out.WriteLine('domovoi-task:1')
+} else {
+  [Console]::Out.WriteLine('domovoi-task:0')
+}`)
+  return await taskResult(command, effects, deadline) === "1"
+}
+
 // The program and arguments, whether the task is enabled, and its state.
 const windowsTaskActionSchema = z.object({
   path: z.string().min(1),
