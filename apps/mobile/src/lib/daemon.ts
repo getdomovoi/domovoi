@@ -1,6 +1,7 @@
 import {
   applyWorkspaceDelta,
   fleetSnapshotSchema,
+  notificationMethods,
   rpcMethods,
   rpcNotificationSchema,
   rpcResponseSchema,
@@ -10,6 +11,9 @@ import {
   type RpcMethod,
   type RpcParams,
   type RpcResult,
+  type TerminalClosedNotification,
+  type TerminalOutputNotification,
+  type TerminalOwnershipNotification,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -70,6 +74,20 @@ export class DaemonProtocolError extends Error {
 
 export type DaemonStatus = "connecting" | "open" | "closed"
 
+// What the daemon sends about a terminal this connection watches: its output,
+// how it ended, and who holds its claim (Phone v2 frame 04). A phone hears
+// none of it until it calls terminal.watch.
+export type TerminalNotification =
+  | { method: "terminal.output", params: TerminalOutputNotification }
+  | { method: "terminal.closed", params: TerminalClosedNotification }
+  | { method: "terminal.ownership", params: TerminalOwnershipNotification }
+
+const terminalNotificationMethods = ["terminal.output", "terminal.closed", "terminal.ownership"] as const
+
+function isTerminalNotificationMethod(method: string): method is TerminalNotification["method"] {
+  return (terminalNotificationMethods as readonly string[]).includes(method)
+}
+
 // The phone connects to a daemon over the tailnet like any other client. This
 // is a small client rather than the desktop one, which is bound to browser APIs
 // the runtime does not have.
@@ -95,6 +113,7 @@ export class DaemonConnection {
       // The daemon pushes the whole fleet whenever it changes, so a list on
       // screen stops being a claim about when the tab was opened.
       onFleet: (entries: FleetEntry[]) => void
+      onTerminal?: (notification: TerminalNotification) => void
       onStatus: (status: DaemonStatus) => void
       // The cause rather than its sentence, because whether a refusal is worth
       // retrying is decided by the daemon's error code, not its wording.
@@ -170,6 +189,15 @@ export class DaemonConnection {
         const parsed = fleetSnapshotSchema.safeParse(message.params)
         if (parsed.success) this.handlers.onFleet(parsed.data.entries)
         else this.handlers.onProtocolError("The daemon sent a fleet.changed notification this app could not read")
+        return
+      }
+      // Read by the notification's own schema, so the screen is handed only
+      // what the protocol says the daemon may send.
+      if (isTerminalNotificationMethod(message.method)) {
+        const method = message.method
+        const parsed = notificationMethods[method].safeParse(message.params)
+        if (parsed.success) this.handlers.onTerminal?.({ method, params: parsed.data } as TerminalNotification)
+        else this.handlers.onProtocolError(`The daemon sent a ${method} notification this app could not read`)
       }
     }
 

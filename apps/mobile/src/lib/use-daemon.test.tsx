@@ -112,6 +112,34 @@ describe("useDaemon", () => {
     await unmount()
   })
 
+  // Phone v2 frame 04: the watching screen listens for its terminal's
+  // output on the connection that watched it, and on no other.
+  it("hands terminal notifications to whoever subscribed, from the live connection only", async () => {
+    const { result, unmount } = await renderHook(() => useDaemon("ws://desk:8787/rpc", "token", "phone", () => {}))
+    const first = FakeSocket.made[0]!
+    await act(async () => { first.open() })
+    await act(async () => { first.answerHello() })
+    await flush()
+    const heard: unknown[] = []
+    const stop = result.current.subscribeTerminal((notification) => { heard.push(notification) })
+    await act(async () => { first.push("terminal.output", { terminalId: "terminal-1", data: "one\n" }) })
+    expect(heard).toEqual([{ method: "terminal.output", params: { terminalId: "terminal-1", data: "one\n" } }])
+
+    first.readyState = 3
+    await act(async () => { appStateListener?.("active") })
+    const second = FakeSocket.made[1]!
+    await act(async () => { first.push("terminal.output", { terminalId: "terminal-1", data: "stale\n" }) })
+    await act(async () => { second.open() })
+    await act(async () => { second.push("terminal.closed", { terminalId: "terminal-1", exitCode: 0 }) })
+    expect(heard).toHaveLength(2)
+    expect(heard[1]).toEqual({ method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 0 } })
+
+    stop()
+    await act(async () => { second.push("terminal.output", { terminalId: "terminal-1", data: "after\n" }) })
+    expect(heard).toHaveLength(2)
+    await unmount()
+  })
+
   function refuseHello(socket: FakeSocket) {
     const hello = JSON.parse(socket.sent[0]!) as { id: number }
     socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: hello.id, error: { code: -32001, message: "Paired client credential does not match this client" } }) })
