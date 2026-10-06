@@ -611,11 +611,54 @@ it("draws the desktop facts under the decisions, behind a disclosure that starts
   expect(allow.compareDocumentPosition(facts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
 
   await user.click(hide)
-  expect(card.querySelector("dl")).toBeNull()
+  // Folded, not removed: the control's aria-controls still names it.
+  expect(facts.hidden).toBe(true)
   const show = within(card).getByRole("button", { name: "What does this touch?" })
   expect(show.getAttribute("aria-expanded")).toBe("false")
+  expect(show.getAttribute("aria-controls")).toBe(facts.id)
   await user.click(show)
+  expect(facts.hidden).toBe(false)
   expect(within(card).getByText(approval.affects)).toBeTruthy()
+})
+
+// Folding is a choice about the facts the card showed. When the daemon
+// revises the gate, the decision would answer facts the reader has not seen,
+// so the facts open again on the new revision.
+it("opens folded facts again when the daemon revises the gate", async () => {
+  const user = userEvent.setup()
+  const approval = structuredClone(demoWorkspace).approvals[0]!
+  approval.risk = "normal"
+  approval.affects = "The file one/file in the session worktree."
+  const { container, rerender } = render(<ApprovalCard approval={approval} onResolve={vi.fn()} surface="desktop" connected />)
+  const facts = () => container.querySelector("dl")!
+  await user.click(screen.getByRole("button", { name: "Hide what this touches" }))
+  expect(facts().hidden).toBe(true)
+
+  // The same revision redrawn stays folded.
+  rerender(<ApprovalCard approval={structuredClone(approval)} onResolve={vi.fn()} surface="desktop" connected />)
+  expect(screen.getByRole("button", { name: "What does this touch?" })).toBeTruthy()
+  expect(facts().hidden).toBe(true)
+
+  const revised = { ...structuredClone(approval), revision: approval.revision + 1, affects: "The file two/file in the session worktree." }
+  rerender(<ApprovalCard approval={revised} onResolve={vi.fn()} surface="desktop" connected />)
+  expect(screen.getByRole("button", { name: "Hide what this touches" }).getAttribute("aria-expanded")).toBe("true")
+  expect(facts().hidden).toBe(false)
+  expect(within(facts()).getByText("The file two/file in the session worktree.")).toBeTruthy()
+})
+
+// Writing a note does not take the facts away: the disclosure stays beside
+// the note's controls, and the note survives a fold and an unfold.
+it("keeps the facts disclosure while a denial note is written", async () => {
+  const user = userEvent.setup()
+  const approval = structuredClone(demoWorkspace).approvals[0]!
+  render(<ApprovalCard approval={approval} onResolve={vi.fn()} surface="desktop" connected />)
+  await user.click(screen.getByRole("button", { name: "Deny with a note" }))
+  await user.type(screen.getByLabelText("Note on this denial"), "Not on production")
+  await user.click(screen.getByRole("button", { name: "Hide what this touches" }))
+  expect(document.querySelector("dl")!.hidden).toBe(true)
+  await user.click(screen.getByRole("button", { name: "What does this touch?" }))
+  expect(document.querySelector("dl")!.hidden).toBe(false)
+  expect((screen.getByLabelText("Note on this denial") as HTMLInputElement).value).toBe("Not on production")
 })
 
 // Reading the facts decides nothing, so a watching client, whose decisions

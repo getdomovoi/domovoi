@@ -61,8 +61,26 @@ export function ApprovalCard({
   // does this touch?. For a file edit the command reads only the tool's name
   // and Affects is the fact that names the file, so the disclosure starts
   // open and nothing sits behind a click until that is decided.
-  const [factsOpen, setFactsOpen] = useState(true)
+  // A fold holds for the revision it was made on. The daemon revises a gate
+  // when what it reaches changes, and a decision then answers facts the
+  // reader has not seen, so a new revision opens them again.
+  const [foldedRevision, setFoldedRevision] = useState<number | undefined>(undefined)
+  const factsOpen = foldedRevision !== approval.revision
   const factsId = `approval-facts-${approval.id}`
+  const factsToggle = desktop ? (
+    // Reading the facts decides nothing, so a locked card still opens and
+    // folds them.
+    <Button
+      variant="ghost"
+      size="xs"
+      aria-expanded={factsOpen}
+      aria-controls={factsId}
+      className="ml-auto px-1 text-[11px] font-normal text-warn-dim hover:bg-transparent hover:text-warn-foreground aria-expanded:bg-transparent aria-expanded:text-warn-dim dark:hover:bg-transparent"
+      onClick={() => setFoldedRevision(factsOpen ? approval.revision : undefined)}
+    >
+      {factsOpen ? "Hide what this touches" : "What does this touch?"}
+    </Button>
+  ) : null
   // Agent and mode ride the header line instead of the grid, the way the design
   // draws the gate. Nothing is dropped: every fact is on the card.
   const facts = [
@@ -174,7 +192,9 @@ export function ApprovalCard({
                 }
               }}
             />
-            <div className="flex justify-end gap-2">
+            <div className="flex items-center justify-end gap-2">
+              {/* The facts stay within reach while the note is written. */}
+              {factsToggle ? <span className="mr-auto">{factsToggle}</span> : null}
               <Button variant="ghost" size="sm" onClick={closeExplanation}>Cancel</Button>
               <Button
                 variant="warning"
@@ -208,27 +228,15 @@ export function ApprovalCard({
             )}
             {/* Only a connected tab with full access holds the gate. */}
             {surface === "web" && !locked ? <span className="ml-auto font-machine text-[10.5px] text-warn-dim">This tab holds the gate</span> : null}
-            {/* Reading the facts decides nothing, so a locked card still
-                opens and folds them. */}
-            {desktop ? (
-              <Button
-                variant="ghost"
-                size="xs"
-                aria-expanded={factsOpen}
-                aria-controls={factsId}
-                className="ml-auto px-1 text-[11px] font-normal text-warn-dim hover:bg-transparent hover:text-warn-foreground aria-expanded:bg-transparent aria-expanded:text-warn-dim dark:hover:bg-transparent"
-                onClick={() => setFactsOpen((open) => !open)}
-              >
-                {factsOpen ? "Hide what this touches" : "What does this touch?"}
-              </Button>
-            ) : null}
+            {factsToggle}
           </div>
         )}
       </AlertDescription>
-      {desktop && factsOpen ? (
+      {desktop ? (
         // The design's facts: three columns under the decisions, flush with
-        // the card's edges, divided by the gate's own border colour.
-        <dl id={factsId} className="col-span-full m-0 grid grid-cols-1 gap-px border-t border-warn-border bg-warn-border sm:grid-cols-3">
+        // the card's edges, divided by the gate's own border colour. Folded,
+        // they stay mounted and hidden, so the toggle's aria-controls holds.
+        <dl id={factsId} hidden={!factsOpen} className="col-span-full m-0 grid grid-cols-1 gap-px border-t border-warn-border bg-warn-border sm:grid-cols-3">
           {facts.map(([label, value]) => (
             <div key={label} className="bg-warn-background px-3.5 py-2.5">
               <dt className="text-[10.5px] tracking-[.13em] text-warn-dim uppercase">{label}</dt>
