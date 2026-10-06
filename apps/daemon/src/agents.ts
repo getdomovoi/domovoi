@@ -43,6 +43,8 @@ export type AgentEvent =
       itemId?: string
       command?: string
       cwd?: string
+      /** Set only when cwd is the command's own directory reported for this request. */
+      cwdSource?: "request"
       path?: string
       blockedPath?: string
       reason?: string

@@ -11157,6 +11157,7 @@ export class DomovoiDaemon {
       const request: ApprovalRequest = {
         workspace: session.workspacePath ?? project.path,
         cwd: requestCwd,
+        cwdSource: event.cwdSource,
         path: event.path,
         command,
         reason: event.reason,

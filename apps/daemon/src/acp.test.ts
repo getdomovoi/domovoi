@@ -197,6 +197,29 @@ describe("AcpAgentAdapter", () => {
     expect(events).toContainEqual(expect.objectContaining({ type: "item", phase: "started" }))
   })
 
+  it.each([undefined, "", "/reported-command-dir"])("marks only the permission request cwd: %s", async (cwd) => {
+    const { adapter, peer } = createHarness()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    await adapter.connect()
+    await adapter.startThread({ cwd: "/session-spawn-dir", runtime })
+    try {
+      void peer.handlers!.onPermission({
+        sessionId: "acp-session", toolCallId: "tool-cwd", title: "Run command", command: "pwd",
+        ...(cwd === undefined ? {} : { cwd }), options: [{ id: "once", kind: "allow_once" }],
+      })
+      const approval = events.find((event) => event.type === "approval-requested")!
+      expect(approval).toMatchObject({ type: "approval-requested", command: "pwd" })
+      if (cwd) expect(approval).toMatchObject({ cwd, cwdSource: "request" })
+      else {
+        expect(approval).not.toHaveProperty("cwdSource")
+        expect(approval).not.toHaveProperty("cwd")
+      }
+    } finally {
+      await adapter.close()
+    }
+  })
+
   it("maps project grants to allow-once and cancellation drains pending permissions", async () => {
     const { adapter, peer } = createHarness()
     const events: unknown[] = []

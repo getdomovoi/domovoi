@@ -77,6 +77,8 @@ export type ApprovalIdentity = Omit<Approval, DerivedField>
 export type ApprovalRequest = Readonly<{
   workspace: string
   cwd?: string | undefined
+  // A session/display fallback is not evidence of the command's own cwd.
+  cwdSource?: "request" | undefined
   path?: string | undefined
   command?: string | undefined
   reason?: string | undefined
@@ -364,8 +366,9 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
     facts = approvalFacts({ workspace: request.workspace, cwd: request.cwd, scope: input.scope })
   }
 
-  // Old saved cards keep an unknown fact. A saved fact is recomputed from
-  // its original basis, never from a hidden or ambiguous display path.
+  // Old saved cards keep an unknown fact. Saved path facts can be rechecked
+  // from an unambiguous file line. A saved display directory cannot establish
+  // request cwd provenance, even if the card once held a working-directory fact.
   let outsideProject: Approval["outsideProject"]
   if (request.tool === undefined && input.approval.toolServer === undefined && (saved === undefined || saved.outsideProject !== undefined)) {
     if (request.path !== undefined) {
@@ -377,7 +380,9 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
           await resolveApprovalPath(request.workspace, path, undefined, deadline), realWorkspace, "path",
         )
       }
-    } else if (!directoryHidden && request.cwd !== undefined && request.command !== undefined && !resolutionReadsFilePath(request.command)) {
+    } else if (saved === undefined && !directoryHidden && request.cwdSource === "request"
+      && request.cwd !== undefined && request.cwd.length > 0
+      && request.command !== undefined && !resolutionReadsFilePath(request.command)) {
       outsideProject = approvalOutsideProjectFact(
         await resolveApprovalPath(request.workspace, ".", request.cwd, deadline), realWorkspace, "working-directory",
       )
@@ -486,7 +491,8 @@ export async function settleApproval(input: SettlementInput, deadline?: Operatio
 // The settlement input for a card read back from disk: its command and
 // operation as saved, its directory unless the saved card hid it, its saved
 // file and network lines, and the record it held. Its execution is resolved
-// again from these.
+// again from these. The display directory is not the original reported cwd,
+// so this request deliberately has no cwdSource marker.
 export function savedSettlementInput(
   approval: Approval,
   workspace: string,

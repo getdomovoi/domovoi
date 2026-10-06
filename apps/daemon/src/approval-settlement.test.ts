@@ -708,9 +708,33 @@ describe("approval outside-project facts", () => {
   it("limits a shell command's fact to its reported working directory", async () => {
     const workspace = await worktree()
     const { approval } = await settleApproval(input(workspace, {
-      request: { workspace, cwd: workspace, command: "cat /somewhere/else.txt" },
+      request: { workspace, cwd: workspace, cwdSource: "request", command: "cat /somewhere/else.txt" },
     }))
     expect(approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
+  })
+
+  it("does not treat a session cwd as the command cwd", async () => {
+    const workspace = await worktree()
+    const { approval } = await settleApproval(input(workspace))
+    expect(approval).not.toHaveProperty("outsideProject")
+    expect(approval.directory).toBe(workspace)
+    expect(approval.execution.state).toBe("resolved")
+  })
+
+  it.each([undefined, ""])("requires a nonempty cwd alongside the provenance marker: %s", async (cwd) => {
+    const workspace = await worktree()
+    const { approval } = await settleApproval(input(workspace, {
+      request: { workspace, cwd, cwdSource: "request", command: "ls" },
+    }))
+    expect(approval).not.toHaveProperty("outsideProject")
+  })
+
+  it("retains request cwd provenance when settling a held card again", async () => {
+    const workspace = await worktree()
+    const request = { workspace, cwd: workspace, cwdSource: "request" as const, command: "ls" }
+    const first = await settleApproval(input(workspace, { request }))
+    const held = await settleApproval(heldSettlementInput(first.approval, request, undefined, "resolve", () => "normal"))
+    expect(held.approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
   })
 
   it("uses path containment for a target, including new files and sibling directories", async () => {
@@ -736,11 +760,11 @@ describe("approval outside-project facts", () => {
     }))
     expect(escaped.approval.outsideProject).toEqual({ outside: true, basis: "path" })
     const inside = await settleApproval(input(join(parent, "alias"), {
-      request: { workspace: join(parent, "alias"), cwd: workspace, command: "ls" },
+      request: { workspace: join(parent, "alias"), cwd: workspace, cwdSource: "request", command: "ls" },
     }))
     expect(inside.approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
     const external = await settleApproval(input(workspace, {
-      request: { workspace, cwd: join(workspace, "link"), command: "ls" },
+      request: { workspace, cwd: join(workspace, "link"), cwdSource: "request", command: "ls" },
     }))
     expect(external.approval.outsideProject).toEqual({ outside: true, basis: "working-directory" })
   })
@@ -782,14 +806,19 @@ describe("approval outside-project facts", () => {
 })
 
 describe("saved approval context", () => {
-  it("keeps the recorded origin and recomputes known containment without adding it to legacy cards", async () => {
+  it("keeps the recorded origin without promoting a saved display directory to request evidence", async () => {
     const workspace = await worktree()
     const origin = { client: "desktop" as const, connectionId: "11111111-1111-4111-8111-111111111111" }
     const first = input(workspace)
-    const card = (await settleApproval({ ...first, approval: { ...first.approval, origin } })).approval
+    const card = (await settleApproval({
+      ...first, approval: { ...first.approval, origin }, request: { ...first.request, cwdSource: "request" },
+    })).approval
+    expect(card.outsideProject).toEqual({ outside: false, basis: "working-directory" })
     const restored = await settleApproval(savedSettlementInput(card, workspace, undefined, () => "normal"))
     expect(restored.approval.origin).toEqual(origin)
-    expect(restored.approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
+    expect(restored.approval).not.toHaveProperty("outsideProject")
+    expect(restored.approval.directory).toBe(card.directory)
+    expect(restored.approval.execution).toEqual(card.execution)
     const { origin: _origin, outsideProject: _outsideProject, ...legacy } = card
     const old = await settleApproval(savedSettlementInput(legacy, workspace, undefined, () => "normal"))
     expect(old.approval).not.toHaveProperty("origin")

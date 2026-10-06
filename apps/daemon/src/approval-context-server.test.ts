@@ -83,12 +83,31 @@ async function fixture() {
   let requestId = 0
   const request = (turnId?: string, extra: Partial<Extract<AgentEvent, { type: "approval-requested" }>> = {}) => {
     emit({ type: "approval-requested", threadId: session.providerThreadId!, ...(turnId ? { turnId } : {}), requestId: ++requestId,
-      command: "git push", cwd: workspace, ...extra })
+      command: "git push", cwd: workspace, cwdSource: "request", ...extra })
   }
   return { connect, request, emit: (event: AgentEvent) => emit(event), agent, sessionId: session.id, workspace, durable: () => durable }
 }
 
 describe("approval turn context", () => {
+  it.each(["session", "request"] as const)("uses only request cwd provenance for command facts: %s", async (source) => {
+    const context = await fixture()
+    const client = await context.connect("desktop")
+    expect(await client.rpc("session.send", { sessionId: context.sessionId, prompt: "Start", client: "desktop" }))
+      .not.toHaveProperty("error")
+    context.emit({
+      type: "approval-requested", requestId: 42, threadId: "thread-context", turnId: "turn-1",
+      command: "git push", cwd: context.workspace,
+      ...(source === "request" ? { cwdSource: "request" as const } : {}),
+    })
+    await waitForDaemon(() => expect(context.durable().approvals).toHaveLength(1))
+    const snapshot = workspaceSnapshotSchema.parse((await client.rpc("workspace.get", {})).result)
+    const approval = snapshot.approvals[0]!
+    if (source === "request") expect(approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
+    else expect(approval).not.toHaveProperty("outsideProject")
+    expect(approval.directory).toBe(context.workspace)
+    expect(approval.execution).toMatchObject({ state: "resolved", record: { kind: "shell", cwd: "." } })
+  })
+
   it.each(["phone", "tablet"] as const)("persists origin and containment and delivers them with plans to %s", async (handheld) => {
     const context = await fixture()
     const desktop = await context.connect("desktop", "desktop-origin")
