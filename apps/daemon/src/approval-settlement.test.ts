@@ -697,10 +697,18 @@ describe("ApprovalLedger", () => {
 })
 
 describe("approval outside-project facts", () => {
-  it("limits a shell command's fact to its working directory", async () => {
+  it("omits working-directory containment when the command request has no cwd", async () => {
     const workspace = await worktree()
     const { approval } = await settleApproval(input(workspace, {
       request: { workspace, command: "cat /somewhere/else.txt" },
+    }))
+    expect(approval).not.toHaveProperty("outsideProject")
+  })
+
+  it("limits a shell command's fact to its reported working directory", async () => {
+    const workspace = await worktree()
+    const { approval } = await settleApproval(input(workspace, {
+      request: { workspace, cwd: workspace, command: "cat /somewhere/else.txt" },
     }))
     expect(approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
   })

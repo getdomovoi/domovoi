@@ -377,7 +377,7 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
           await resolveApprovalPath(request.workspace, path, undefined, deadline), realWorkspace, "path",
         )
       }
-    } else if (!directoryHidden && request.command !== undefined && !resolutionReadsFilePath(request.command)) {
+    } else if (!directoryHidden && request.cwd !== undefined && request.command !== undefined && !resolutionReadsFilePath(request.command)) {
       outsideProject = approvalOutsideProjectFact(
         await resolveApprovalPath(request.workspace, ".", request.cwd, deadline), realWorkspace, "working-directory",
       )
