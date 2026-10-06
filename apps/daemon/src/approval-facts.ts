@@ -142,7 +142,7 @@ export function approvalOutsideProjectFact(
   basis: NonNullable<ApprovalRequest["outsideProject"]>["basis"],
 ): ApprovalRequest["outsideProject"] {
   if (resolved === undefined || typeof resolved.canonical !== "string" || typeof realWorkspace !== "string") return undefined
-  return { outside: !inWorktree(realWorkspace, resolved.target), basis }
+  return { outside: !inWorktree(resolved.workspace, resolved.target), basis }
 }
 
 // A path that names a credential file is hidden whole on the card; the line
