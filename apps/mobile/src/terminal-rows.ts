@@ -12,25 +12,32 @@ import type { TerminalNotification } from "./lib/daemon"
 // daemon's record at the moment of the watch (already redacted before the
 // daemon kept it) and what arrived live after it.
 
-// One piece of live output, as the daemon sent it.
-type Chunk = { text: string }
-
 export type TerminalRecord = {
   summary: TerminalSummary
-  replay: string
+  // The daemon's record and then live output, as one text. The record can end
+  // mid-line, mid escape sequence or mid overwrite, and live output carries
+  // on from exactly there, so the two are read together.
+  text: string
+  // Where live output begins in text. Undefined for a terminal that was
+  // closed when it was watched, and once the phone has cut past that point.
+  liveAt: number | undefined
+  // When live output began, by the daemon's clock.
+  liveFrom: string | undefined
   replayStartsAt: string | undefined
   // The daemon's record does not start at the shell's start.
   machineDropped: boolean
   // The phone cut the front of what it holds, to keep no more than the
   // daemon keeps. Once cut, the machine's start time no longer describes it.
   phoneDropped: boolean
-  // When live output began. Undefined for a terminal that was already closed
-  // when it was watched: nothing live followed its record.
-  liveFrom: string | undefined
-  live: Chunk[]
+  // Line breaks received live, counted as they arrive and never reduced by a
+  // cut, so what landed can be counted for the reader.
+  received: number
   // The last time anything was heard for this terminal: the watch, then each
   // piece of output. The gap a dropped connection leaves starts here.
   lastHeardAt: string
+  // False for a record kept across a reconnect: the daemon's list has spoken
+  // since, but the output is the old connection's until the new watch answers.
+  confirmed: boolean
 }
 
 // A terminal the session lists, and how far reading it has got.
@@ -45,15 +52,18 @@ export type TerminalTone = "live" | "failed" | "closed" | "unconfirmed"
 
 export function watchFrom(result: TerminalWatchResult): TerminalRecord {
   const { buffer, bufferStartsAt, earlierOutputDropped, watchedAt, ...summary } = result
+  const live = summary.state === "live"
   return {
     summary,
-    replay: buffer,
+    text: buffer,
+    liveAt: live ? buffer.length : undefined,
+    liveFrom: live ? watchedAt : undefined,
     replayStartsAt: bufferStartsAt,
     machineDropped: earlierOutputDropped,
     phoneDropped: false,
-    liveFrom: summary.state === "live" ? watchedAt : undefined,
-    live: [],
+    received: 0,
     lastHeardAt: watchedAt,
+    confirmed: true,
   }
 }
 
@@ -62,16 +72,22 @@ export function watchedSummary(watch: TerminalWatch): TerminalSummary {
 }
 
 // The daemon's answer to terminal.list, laid over what the phone already
-// reads: a terminal still listed keeps its record until a new watch replaces
-// it, one no longer listed is gone, and a new one starts reading.
+// reads. The list is the daemon's word now, so every summary comes from it. A
+// terminal still listed keeps its output, marked unconfirmed, until a new
+// watch replaces it; one no longer listed is gone; anything else is read again.
 export function listedWatches(
   previous: ReadonlyMap<string, TerminalWatch>,
   listed: readonly TerminalSummary[],
 ): Map<string, TerminalWatch> {
-  return new Map(listed.map((terminal) => [
-    terminal.terminalId,
-    previous.get(terminal.terminalId) ?? { state: "reading", summary: terminal },
-  ]))
+  return new Map(listed.map((terminal): [string, TerminalWatch] => {
+    const held = previous.get(terminal.terminalId)
+    return [
+      terminal.terminalId,
+      held?.state === "watching"
+        ? { state: "watching", record: { ...held.record, summary: terminal, confirmed: false } }
+        : { state: "reading", summary: terminal },
+    ]
+  }))
 }
 
 // A notification for this record's terminal. Anything for another terminal,
@@ -98,45 +114,33 @@ export function withNotification(record: TerminalRecord, notification: TerminalN
       },
     }
   }
+  const { data } = notification.params
   return bounded({
     ...record,
-    live: [...record.live, { text: notification.params.data }],
+    text: record.text + data,
+    received: record.received + data.split("\n").length - 1,
     lastHeardAt: now.toISOString(),
   })
 }
 
-// The phone holds no more than the daemon keeps for a terminal. The oldest
-// text goes first, from the record and then from live output, cut at a line
-// break where one is near so the first line shown is whole.
-function bounded(record: TerminalRecord): TerminalRecord {
-  let excess = record.replay.length + record.live.reduce((total, chunk) => total + chunk.text.length, 0) - maximumTerminalReplayCharacters
-  if (excess <= 0) return record
-  let replay = record.replay
-  const live = [...record.live]
-  if (replay.length > 0) {
-    const cut = Math.min(replay.length, excess)
-    replay = replay.slice(lineBreakAfter(replay, cut))
-    excess -= record.replay.length - replay.length
-  }
-  while (excess > 0 && live.length > 0) {
-    const first = live[0]!
-    if (first.text.length <= excess) {
-      live.shift()
-      excess -= first.text.length
-      continue
-    }
-    const text = first.text.slice(lineBreakAfter(first.text, excess))
-    excess -= first.text.length - text.length
-    if (text) live[0] = { text }
-    else live.shift()
-  }
-  return { ...record, replay, live, phoneDropped: true }
-}
+// How far past the bound a cut may reach for a line break, so the first line
+// shown is whole. Output with no break that near is cut at the bound itself.
+const lineBreakReach = 256
 
-// The index just past the first line break at or after `from`, or the end.
-function lineBreakAfter(text: string, from: number): number {
-  const at = text.indexOf("\n", Math.max(0, from - 1))
-  return at === -1 ? text.length : at + 1
+// The phone holds no more than the daemon keeps for a terminal. The oldest
+// text goes first.
+function bounded(record: TerminalRecord): TerminalRecord {
+  const excess = record.text.length - maximumTerminalReplayCharacters
+  if (excess <= 0) return record
+  const lineBreak = record.text.indexOf("\n", excess - 1)
+  const cut = lineBreak !== -1 && lineBreak + 1 - excess <= lineBreakReach ? lineBreak + 1 : excess
+  return {
+    ...record,
+    text: record.text.slice(cut),
+    // Once the start of live output is cut away, nothing above it is left.
+    liveAt: record.liveAt !== undefined && record.liveAt > cut ? record.liveAt - cut : undefined,
+    phoneDropped: true,
+  }
 }
 
 // What a terminal draws, read as lines. Colour and cursor sequences are
@@ -160,32 +164,32 @@ export function terminalLines(text: string): string[] {
   return lines
 }
 
+// One cell per character, so a character outside the basic plane, two UTF-16
+// units, is overwritten and erased as one.
 function drawnLine(raw: string): string {
-  let line = ""
+  const cells: string[] = []
   let column = 0
   for (const char of raw) {
     if (char === "\r") column = 0
     else if (char === "\b") column = Math.max(0, column - 1)
-    else if (char === "\t" || char >= " ") {
-      line = line.slice(0, column) + char + line.slice(column + 1)
+    else if (char === "\t" || (char >= " " && char !== "\u007f")) {
+      cells[column] = char
       column += 1
     }
   }
   // A backspace moves the cursor without erasing; what stays visible past the
   // cursor at the end of a line is what the person typed over, so a line
   // ended by backspaces ends at the cursor.
-  return raw.endsWith("\b") ? line.slice(0, column) : line
+  return (raw.endsWith("\b") ? cells.slice(0, column) : cells).join("")
 }
 
 export function terminalLineCount(record: TerminalRecord): number {
-  return terminalLines(record.replay).length + terminalLines(liveText(record)).length
-}
-
-function liveText(record: TerminalRecord): string {
-  return record.live.map((chunk) => chunk.text).join("")
+  return terminalLines(record.text).length
 }
 
 // The record, then live output, with the marks the design draws between them.
+// The live mark goes under the record's last whole line; a line the record
+// left unfinished is finished live, so it reads under the mark.
 export function terminalRows(record: TerminalRecord, connected: boolean): TerminalRow[] {
   const rows: TerminalRow[] = []
   if (record.phoneDropped) {
@@ -193,11 +197,16 @@ export function terminalRows(record: TerminalRecord, connected: boolean): Termin
   } else if (record.machineDropped && record.replayStartsAt) {
     rows.push({ kind: "mark", key: "machine-dropped", text: `Earlier output was not kept. The machine's record of this terminal starts at ${clock(record.replayStartsAt)}.` })
   }
-  terminalLines(record.replay).forEach((text, index) => rows.push({ kind: "line", key: `replay-${index}`, text }))
-  if (record.liveFrom && record.replay.length > 0) {
-    rows.push({ kind: "mark", key: "live-from", text: `Recent output above. Live from ${clock(record.liveFrom)}.` })
-  }
-  terminalLines(liveText(record)).forEach((text, index) => rows.push({ kind: "line", key: `live-${index}`, text }))
+  const lines = terminalLines(record.text)
+  const markAt = record.liveFrom && record.liveAt ? wholeLines(record.text.slice(0, record.liveAt)) : undefined
+  const liveMark: TerminalRow | undefined = record.liveFrom
+    ? { kind: "mark", key: "live-from", text: `Recent output above. Live from ${clock(record.liveFrom)}.` }
+    : undefined
+  lines.forEach((text, index) => {
+    if (index === markAt && liveMark) rows.push(liveMark)
+    rows.push({ kind: "line", key: `line-${index}`, text })
+  })
+  if (markAt !== undefined && markAt >= lines.length && liveMark) rows.push(liveMark)
   const { summary } = record
   if (summary.state === "closed") {
     const when = summary.closedAt ? clock(summary.closedAt) : "an unknown time"
@@ -210,10 +219,17 @@ export function terminalRows(record: TerminalRecord, connected: boolean): Termin
           ? `The shell ended on signal ${summary.signal} at ${when}. No more output will arrive.`
           : `The shell closed at ${when}. No more output will arrive.`,
     })
-  } else if (!connected) {
+  } else if (!connected || !record.confirmed) {
     rows.push({ kind: "mark", key: "dropped", text: `Nothing received since ${clock(record.lastHeardAt)}. Reconnecting replays the recent output first.` })
   }
   return rows
+}
+
+// The lines of a text that are finished: all of them when it ends on a line
+// break, all but the last otherwise.
+function wholeLines(text: string): number {
+  const count = terminalLines(text).length
+  return text.endsWith("\n") ? count : Math.max(0, count - 1)
 }
 
 // Failed is a shell that exited with a code other than zero. A shell ended by

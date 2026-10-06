@@ -92,6 +92,13 @@ describe("terminalLines", () => {
     // A shell echoes an erase as back, space, back.
     expect(terminalLines("lss\b \b\n")).toEqual(["ls"])
   })
+
+  // A character outside the basic plane is two UTF-16 units, and a cursor
+  // counts it as one cell.
+  it("keeps a character outside the basic plane whole", () => {
+    expect(terminalLines("🙂 done\n")).toEqual(["🙂 done"])
+    expect(terminalLines("ab🙂\rX\n")).toEqual(["Xb🙂"])
+  })
 })
 
 describe("terminalTitle and terminalSize", () => {
@@ -145,10 +152,27 @@ describe("terminalRows", () => {
   it("shows the recent output, then marks where live output starts", () => {
     const record = watchFrom(watched())
     expect(terminalRows(record, true)).toEqual([
-      { kind: "line", key: "replay-0", text: "$ pnpm vitest run src/webhooks" },
-      { kind: "line", key: "replay-1", text: " ✓ src/webhooks/handler.spec.ts (14 tests) 412ms" },
+      { kind: "line", key: "line-0", text: "$ pnpm vitest run src/webhooks" },
+      { kind: "line", key: "line-1", text: " ✓ src/webhooks/handler.spec.ts (14 tests) 412ms" },
       { kind: "mark", key: "live-from", text: `Recent output above. Live from ${clock("2026-10-06T14:06:12.000Z")}.` },
     ])
+  })
+
+  // The record can stop mid-line, mid-sequence or mid-overwrite, and live
+  // output carries on from exactly there.
+  it("reads a line that spans the record and live output as one line, under the mark", () => {
+    const output = (record: ReturnType<typeof watchFrom>, data: string) =>
+      withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data } }, at)
+    const split = output(watchFrom(watched({ buffer: "first\n$ hel" })), "lo\n")
+    expect(terminalRows(split, true).map((row) => row.text)).toEqual([
+      "first",
+      `Recent output above. Live from ${clock("2026-10-06T14:06:12.000Z")}.`,
+      "$ hello",
+    ])
+    const sequence = output(watchFrom(watched({ buffer: "a\n\u001b[3" })), "2mgreen\u001b[0m\n")
+    expect(terminalRows(sequence, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["a", "green"])
+    const overwrite = output(watchFrom(watched({ buffer: "Progress 10%" })), "\rProgress 100%\n")
+    expect(terminalRows(overwrite, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["Progress 100%"])
   })
 
   // 04c: the machine did not keep the start, and the view says where it starts.
@@ -163,8 +187,9 @@ describe("terminalRows", () => {
 
   it("appends live output under the mark", () => {
     const record = withNotification(watchFrom(watched()), { method: "terminal.output", params: { terminalId: "terminal-1", data: " ❯ replay.spec.ts (5 tests | 1 failed)\n" } }, at)
-    expect(terminalRows(record, true).at(-1)).toEqual({ kind: "line", key: "live-0", text: " ❯ replay.spec.ts (5 tests | 1 failed)" })
+    expect(terminalRows(record, true).at(-1)).toEqual({ kind: "line", key: "line-2", text: " ❯ replay.spec.ts (5 tests | 1 failed)" })
     expect(terminalLineCount(record)).toBe(3)
+    expect(record.received).toBe(1)
   })
 
   // 04b: closed is a state, and the end is stated with its exit code.
@@ -186,7 +211,7 @@ describe("terminalRows", () => {
   it("does not claim live output for a terminal that was already closed when watched", () => {
     const record = watchFrom(watched({ state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 2 }))
     const rows = terminalRows(record, true)
-    expect(rows.map((row) => row.key)).toEqual(["replay-0", "replay-1", "closed"])
+    expect(rows.map((row) => row.key)).toEqual(["line-0", "line-1", "closed"])
     expect(rows.at(-1)?.text).toBe(`The shell exited with code 2 at ${clock("2026-10-06T14:09:40.000Z")}. No more output will arrive.`)
   })
 
@@ -206,11 +231,30 @@ describe("terminalRows", () => {
     for (let index = 0; index < Math.ceil(maximumTerminalReplayCharacters / line.length) + 5; index += 1) {
       record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: line } }, at)
     }
-    const held = record.replay.length + record.live.reduce((total, chunk) => total + chunk.text.length, 0)
-    expect(held).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
+    expect(record.text.length).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
     const rows = terminalRows(record, true)
     expect(rows[0]).toEqual({ kind: "mark", key: "phone-dropped", text: "Earlier output was not kept on this phone." })
     expect(rows.filter((row) => row.kind === "line").every((row) => row.text === "x".repeat(99))).toBe(true)
+    // Counted as it arrived, so cutting the front does not stop the count.
+    expect(record.received).toBe(Math.ceil(maximumTerminalReplayCharacters / line.length) + 5)
+  })
+
+  // Output with no line break, a progress bar or a minified dump, is cut at
+  // the bound rather than all at once.
+  it("keeps the newest output up to the bound when there is no line break to cut at", () => {
+    const full = watchFrom(watched({ buffer: "x".repeat(maximumTerminalReplayCharacters) }))
+    const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "y" } }, at)
+    expect(record.text.length).toBe(maximumTerminalReplayCharacters)
+    expect(record.text.endsWith("xy")).toBe(true)
+  })
+
+  // After a reconnect the daemon's list is current, and the output on screen
+  // is not until the new watch answers.
+  it("marks the gap on a record kept across a reconnect until it is watched again", () => {
+    const kept = withNotification(watchFrom(watched()), { method: "terminal.output", params: { terminalId: "terminal-1", data: "x\n" } }, at)
+    const relisted = listedWatches(new Map([["terminal-1", { state: "watching", record: kept }]]), [summary()]).get("terminal-1")
+    if (relisted?.state !== "watching") throw new Error("a watched terminal stays watched across a list")
+    expect(terminalRows(relisted.record, true).at(-1)?.key).toBe("dropped")
   })
 })
 
@@ -244,8 +288,23 @@ describe("listedWatches", () => {
     ])
     const next = listedWatches(previous, [summary(), summary({ terminalId: "terminal-2" })])
     expect([...next.keys()]).toEqual(["terminal-1", "terminal-2"])
-    expect(next.get("terminal-1")).toBe(kept)
+    const terminal = next.get("terminal-1")
+    if (terminal?.state !== "watching") throw new Error("a watched terminal stays watched across a list")
+    expect(terminal.record.text).toBe(kept.record.text)
     expect(next.get("terminal-2")).toEqual({ state: "reading", summary: summary({ terminalId: "terminal-2" }) })
+  })
+
+  // The list is the daemon's word now; what the phone held is older.
+  it("takes the state and the claimant from the list, not from what was held", () => {
+    const kept: TerminalWatch = { state: "watching", record: watchFrom(watched()) }
+    const failed: TerminalWatch = { state: "failed", summary: summary({ terminalId: "terminal-2" }), message: "no answer" }
+    const closed = summary({ state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 1 })
+    const moved = summary({ terminalId: "terminal-2", owner: { client: "web", clientId: "web-1" } })
+    const next = listedWatches(new Map<string, TerminalWatch>([["terminal-1", kept], ["terminal-2", failed]]), [closed, moved])
+    const first = next.get("terminal-1")
+    if (first?.state !== "watching") throw new Error("a watched terminal stays watched across a list")
+    expect(terminalStatus(first.record.summary, true)).toEqual({ label: "Failed", tone: "failed" })
+    expect(next.get("terminal-2")).toEqual({ state: "reading", summary: moved })
   })
 })
 
