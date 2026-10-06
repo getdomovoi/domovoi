@@ -107,6 +107,17 @@ it("retires a claimable lease with no launch record after a prelaunch failure", 
   } finally { deadline.clear() }
 })
 
+it("does not classify never-supervised legacy configuration as a prelaunch failure", async () => {
+  const f = fixture(), deadline = OperationDeadline.start(2000)
+  rmSync(windowsSupervisorRecordPath(f.home))
+  vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: f.record.loop.bootId, identity: f.record.loop })
+  try {
+    await expect(stopWindowsSupervisor(f.path, deadline)).rejects.toThrow("no startup lease")
+    expect(existsSync(f.path)).toBe(true)
+    expect(existsSync(join(f.home, ".domovoi", "windows-supervisor-lease.sqlite"))).toBe(false)
+  } finally { deadline.clear() }
+})
+
 it("honors a retirement request racing the first record of a new loop", async () => {
   const f = fixture()
   const loop = { ...f.record.loop, pid: 321 }

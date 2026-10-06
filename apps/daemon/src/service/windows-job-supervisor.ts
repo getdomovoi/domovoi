@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { lstatSync, rmSync } from "node:fs"
+import { existsSync, lstatSync, rmSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
@@ -216,6 +216,9 @@ export async function stopWindowsSupervisor(path: string, deadline: OperationDea
   // started. Its caller supplies the exact old configuration digest it read
   // under the service-operation lease, never an arbitrary-record fallback.
   const initial = boundRecord(config, options.previousConfigurationDigest)
+  if (!initial && !existsSync(join(profileDirectory(home), "windows-supervisor-lease.sqlite"))) {
+    throw new Error("Windows supervisor evidence is missing and no startup lease exists; legacy tree shutdown cannot be proved. Configuration retained.")
+  }
   let requester = initial?.loop
   if (!requester) {
     requester = queryWindowsProcess(process.pid).identity ?? undefined
