@@ -122,7 +122,7 @@ export async function superviseWindows(input: {
       try { acceptEmpty(attempt, await job.stop()) } catch { /* Preserve the incomplete evidence. */ }
     }
     try { return finish("failed", "observation-failure") } catch (publication) {
-      throw new AggregateError([error, publication], "Windows supervision failed and its refusal could not be recorded", { cause: error })
+      throw new AggregateError([error, publication], "Windows supervision failed and its refusal could not be recorded", { cause: publication })
     }
   }
 }

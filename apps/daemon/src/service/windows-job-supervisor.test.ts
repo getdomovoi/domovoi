@@ -103,3 +103,11 @@ it("reports a dead loop during backoff as failed even when the old job is empty"
   const backingOff = f.records.find((r) => r.state === "backoff")!
   expect(windowsSupervisorStatus(backingOff, loop.bootId, false)).toMatchObject({ running: false, supervisionFailure: "observation-failure" })
 })
+
+it("preserves both supervision and refusal-publication failures with the caught cause", async () => {
+  const f = fixture(), primary = new Error("initial publication failed"), publication = new Error("refusal publication failed")
+  f.effects.write = (record) => { throw record.state === "failed" ? publication : primary }
+  await expect(superviseWindows(input(), f.effects)).rejects.toMatchObject({
+    errors: [primary, publication], cause: publication,
+  })
+})
