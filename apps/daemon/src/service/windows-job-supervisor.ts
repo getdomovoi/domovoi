@@ -212,7 +212,7 @@ export function readWindowsSupervisorStatus(home: string): ServiceStatus | undef
 }
 
 export async function stopWindowsSupervisor(path: string, deadline: OperationDeadline,
-  options: { retire?: boolean; previousConfigurationDigest?: string; confirmNoLaunch?: () => Promise<boolean> } = {}): Promise<WindowsSupervisorRecord> {
+  options: { retire?: boolean; previousConfigurationDigest?: string; confirmNoLaunch?: () => Promise<boolean>; stopTask?: () => Promise<boolean> } = {}): Promise<WindowsSupervisorRecord> {
   deadline.throwIfExpired()
   const config = configurationAt(path), home = profileLocation(config.homeDirectory, config.profileDirectory)
   // A rollback may have written the new service.json before a new loop ever
@@ -252,9 +252,16 @@ export async function stopWindowsSupervisor(path: string, deadline: OperationDea
         assertWindowsTreeProof(current, queryWindowsProcess(process.pid).bootId)
         writeWindowsSupervisorRecord(home, current)
         deadline.throwIfExpired()
-        // Update holds the service-operation lease and disabled the task. Only
-        // that caller may permit this registration to start again after proof.
-        if (options.retire === false) rmSync(supervisorStopPath(home))
+        if (options.retire === false) {
+          // Hold both the startup lease and retirement marker through scheduler
+          // stop. Queued old instances must not claim and launch at this seam.
+          // Only a disabled task with zero instances permits clearing retirement.
+          if (!await withinServiceDeadline(deadline, async () => options.stopTask?.() ?? false)) {
+            throw new Error("Windows task was not confirmed stopped with no instances; retirement retained")
+          }
+          deadline.throwIfExpired()
+          rmSync(supervisorStopPath(home))
+        }
         return current
       } finally { lease.release() }
     }

@@ -223,8 +223,10 @@ clock changes do not establish a new boot. An unreadable boot identity refuses r
 Malformed history refuses. A pre-existing, claimable startup lease with no record means no launch: every
 launch writes intent first. This permits retry or retirement after a prelaunch failure left only
 a lease file. It assumes the same user has not deleted the profile's evidence. Retirement
-applies to the registration, including a new loop racing the request, until reinstall or an
-update clears it under the startup lease with the task disabled.
+applies to the registration, including a new loop racing the request. Reinstall and update
+retain it while holding the startup lease through the scheduler stop. They clear it only after
+Task Scheduler confirms the task is disabled with zero instances, so a queued old instance
+cannot launch between job-empty proof and task shutdown.
 
 Killing only the Node supervisor closes the helper's stdin. The helper then terminates its
 job, observes it empty, and writes its own receipt even when stdout is already closed.

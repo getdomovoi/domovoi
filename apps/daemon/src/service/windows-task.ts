@@ -151,6 +151,7 @@ export async function stopWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pic
     state = await taskResult(plan.inspect, effects, deadline)
   }
   if (state !== "1") throw new Error(`Task Scheduler did not confirm a disabled, stopped task (state ${state})`)
+  if (!await windowsTaskDisabledAndIdle(plan.name, effects, deadline)) throw new Error("Task Scheduler did not confirm zero instances of the disabled task")
   return "stopped"
 }
 
@@ -162,9 +163,9 @@ export async function disableWindowsTask(plan: WindowsTaskRemovalPlan, effects: 
   if (!["missing", "1", "2", "3", "4"].includes(state)) throw new Error(`Task Scheduler could not disable the task (state ${state})`)
 }
 
-// This is only a no-launch input when the caller has already verified the
-// supervised action and there is no lease or launch history. Task state alone
-// is insufficient: also enumerate instances, and never accept a missing task.
+// A restart needs a disabled task with no queued or running instances. This
+// also supplies no-launch evidence for a verified supervised action without
+// lease/history. Enumerate instances as well, never accept a missing task.
 export async function windowsTaskDisabledAndIdle(name: string, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<boolean> {
   const command = taskCommand(windowsPowerShellPath(), name, `
 if (-not $task.Enabled -and [int]$task.State -eq 1 -and $task.GetInstances(0).Count -eq 0) {

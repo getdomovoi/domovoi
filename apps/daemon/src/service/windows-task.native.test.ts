@@ -12,8 +12,8 @@ import { readLocalOwnerRecord } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { nodeServiceEffects, removeService, runServiceCommand, serviceStatus, type ServiceCommand, type ServiceEffects } from "./install.js"
-import { windowsPowerShellPath, windowsSchtasksPath, windowsTaskRemovalPlan, windowsTaskSettingsCommand } from "./windows-task.js"
-import { readWindowsSupervisorRecord, type WindowsSupervisorRecord } from "./supervisor-record.js"
+import { disableWindowsTask, stopWindowsTask, windowsPowerShellPath, windowsSchtasksPath, windowsTaskRemovalPlan, windowsTaskSettingsCommand } from "./windows-task.js"
+import { readSupervisorStopRequest, readWindowsSupervisorRecord, type WindowsSupervisorRecord } from "./supervisor-record.js"
 import { stopWindowsSupervisor } from "./windows-job-supervisor.js"
 import { queryWindowsProcess, queryWindowsProcesses } from "./windows-job.js"
 import { removeScratchDirectory } from "../test-scratch.js"
@@ -148,7 +148,12 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
       expect(stdout).toHaveBeenCalledWith(expect.stringContaining("supervision exhausted after 4 crashes"))
       expect(stderr).not.toHaveBeenCalled()
     } else {
-      await stopWindowsSupervisor(path, deadline)
+      await disableWindowsTask(plan, effects, deadline)
+      await stopWindowsSupervisor(path, deadline, { retire: false, stopTask: async () => {
+        expect(readSupervisorStopRequest(profile)?.registrationId).toBe(config.registrationId)
+        return await stopWindowsTask(plan, effects, deadline) === "stopped"
+      } })
+      expect(readSupervisorStopRequest(profile)).toBeUndefined()
       expect(record()).toMatchObject({ state: "stopped", reason: "deliberate-stop" })
       await withinServiceDeadline(deadline, () => delay(3_000, undefined, { signal: deadline.signal }))
       expect(record()!.attempts).toHaveLength(1)

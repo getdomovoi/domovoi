@@ -196,7 +196,10 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
     }),
     exists: vi.fn(async (path: string) => files.has(path)),
     remove: vi.fn(async (path: string) => { order.push(`remove ${path}`); files.delete(path) }),
-    stopSupervisor: vi.fn(async () => { order.push(platform === "win32" ? "prove Windows job empty" : "stop guest supervisor") }),
+    stopSupervisor: vi.fn(async (_path, _deadline, options) => {
+      order.push(platform === "win32" ? "prove Windows job empty" : "stop guest supervisor")
+      if (options?.stopTask && !await options.stopTask()) throw new Error("Task remains observable")
+    }),
     ...overrides,
   }
   // A start that works leaves a new daemon instance reporting ready.
@@ -502,9 +505,28 @@ describe("updateDaemonService with a Windows logon task", () => {
     effects.task.running = false; effects.owner = undefined
     effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
       if (!await options?.confirmNoLaunch?.()) throw new Error("No startup history or disabled task proof")
+      if (options.stopTask && !await options.stopTask()) throw new Error("Task remains observable")
     })
     expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task" })
     expect(effects.task.runningDefinition).toContain("runtime-2")
+  })
+
+  it("keeps retirement set while the scheduler retires a queued old instance", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    let retirement = false, queuedLaunch = false
+    const capture = effects.capture
+    effects.capture = vi.fn(async (command, args, deadline) => {
+      if (script(args).includes("$task.Stop(0)") && !retirement) queuedLaunch = true
+      return capture(command, args, deadline)
+    })
+    effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
+      retirement = true
+      if (options?.stopTask && !await options.stopTask()) throw new Error("Task remains observable")
+      if (options?.retire === false) retirement = false
+    })
+    await updateDaemonService({ runtime: windowsRuntime }, effects)
+    expect(queuedLaunch).toBe(false)
+    expect(retirement).toBe(false)
   })
 
   it("retains the task and configuration when neither swap nor rollback can prove the job empty", async () => {
@@ -564,9 +586,9 @@ describe("updateDaemonService with a Windows logon task", () => {
     )
     const restoredTask = vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create").at(-1)![1]
     expect(restoredTask[restoredTask.indexOf("/tr") + 1]).toBe("\"C:\\Program Files\\Domovoi\\runtime-1\\node.exe\" \"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-supervise \"C:\\Users\\dl\\.domovoi\\service.json\"")
-    expect(effects.stopSupervisor).toHaveBeenNthCalledWith(1, "C:\\Users\\dl\\.domovoi\\service.json", expect.any(OperationDeadline), { retire: false, confirmNoLaunch: expect.any(Function) })
+    expect(effects.stopSupervisor).toHaveBeenNthCalledWith(1, "C:\\Users\\dl\\.domovoi\\service.json", expect.any(OperationDeadline), { retire: false, stopTask: expect.any(Function), confirmNoLaunch: expect.any(Function) })
     expect(effects.stopSupervisor).toHaveBeenNthCalledWith(2, "C:\\Users\\dl\\.domovoi\\service.json", expect.any(OperationDeadline), {
-      retire: false, confirmNoLaunch: expect.any(Function), previousConfigurationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+      retire: false, stopTask: expect.any(Function), confirmNoLaunch: expect.any(Function), previousConfigurationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
     })
     expect(effects.order.slice(-3)).toEqual([expect.stringMatching(/^schtasks \/create /), "set task settings", "schtasks /run /tn Domovoi daemon"])
   })

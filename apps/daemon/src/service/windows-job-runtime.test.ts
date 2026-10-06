@@ -70,7 +70,7 @@ it("clears retirement for update only after tree proof", async () => {
     await expect(stopWindowsSupervisor(f.path, deadline, { retire: false })).rejects.toThrow("Restart Windows")
     expect(readSupervisorStopRequest(f.home)).toBeDefined()
     vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: "windows-boot:43", identity: null })
-    await stopWindowsSupervisor(f.path, deadline, { retire: false })
+    await stopWindowsSupervisor(f.path, deadline, { retire: false, stopTask: async () => true })
     expect(readSupervisorStopRequest(f.home)).toBeUndefined()
   } finally { deadline.clear() }
 })
@@ -90,7 +90,7 @@ it("can prove the exact previous generation during rollback before a replacement
     const previous = parseServiceConfiguration(readFileSync(f.path, "utf8"))
     writeFileSync(f.path, serializeServiceConfiguration({ ...previous, port: previous.port + 1 }))
     await expect(stopWindowsSupervisor(f.path, deadline)).rejects.toThrow("does not match")
-    await expect(stopWindowsSupervisor(f.path, deadline, { retire: false, previousConfigurationDigest: f.record.configurationDigest })).resolves.toEqual(f.record)
+    await expect(stopWindowsSupervisor(f.path, deadline, { retire: false, stopTask: async () => true, previousConfigurationDigest: f.record.configurationDigest })).resolves.toEqual(f.record)
     expect(readSupervisorStopRequest(f.home)).toBeUndefined()
   } finally { deadline.clear() }
 })
@@ -257,3 +257,35 @@ it("never accepts a staging receipt as published proof", async () => {
     await expect(stopWindowsSupervisor(f.path, deadline)).rejects.toThrow("Restart Windows")
   } finally { deadline.clear() }
 })
+
+it("keeps retirement and the startup lease until the old task has no instances", async () => {
+  const f = fixture(), deadline = OperationDeadline.start(2000)
+  const stopTask = vi.fn(async () => {
+    expect(readSupervisorStopRequest(f.home)?.registrationId).toBe(f.record.registrationId)
+    const acquired = vi.fn()
+    let competing: ReturnType<typeof claimExclusiveFileLease> | undefined
+    try {
+      expect(() => {
+        competing = claimExclusiveFileLease(join(f.home, ".domovoi", "windows-supervisor-lease.sqlite"), () => new Error("startup held"))
+        acquired()
+      }).toThrow("startup held")
+      expect(acquired).not.toHaveBeenCalled()
+    } finally { competing?.release() }
+    return true
+  })
+  try {
+    await stopWindowsSupervisor(f.path, deadline, { retire: false, stopTask })
+    expect(stopTask).toHaveBeenCalledOnce()
+    expect(readSupervisorStopRequest(f.home)).toBeUndefined()
+  } finally { deadline.clear() }
+})
+
+it.each([undefined, async () => false, async () => { throw new Error("scheduler unavailable") }])(
+  "retains retirement if the old task cannot be proved stopped", async (stopTask) => {
+    const f = fixture(), deadline = OperationDeadline.start(2000)
+    try {
+      await expect(stopWindowsSupervisor(f.path, deadline, { retire: false, ...(stopTask ? { stopTask } : {}) })).rejects.toThrow()
+      expect(readSupervisorStopRequest(f.home)?.registrationId).toBe(f.record.registrationId)
+      expect(existsSync(f.path)).toBe(true)
+    } finally { deadline.clear() }
+  })

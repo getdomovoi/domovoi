@@ -94,6 +94,7 @@ function withoutLaunchHistory(f: ReturnType<typeof fixture>) {
   f.effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
     if (!await options?.confirmNoLaunch?.()) throw new Error("No lease or record and no disabled supervised task proof")
     f.events.push("prove-no-launch")
+    if (options.stopTask && !await options.stopTask()) throw new Error("Task remains observable")
   })
 }
 

@@ -66,7 +66,7 @@ export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
   readConfiguration?: (home: string, platform: string) => ServiceConfiguration | undefined
-  stopSupervisor?: (path: string, deadline: OperationDeadline, options?: { retire?: boolean; previousConfigurationDigest?: string; confirmNoLaunch?: () => Promise<boolean> }) => Promise<unknown>
+  stopSupervisor?: (path: string, deadline: OperationDeadline, options?: { retire?: boolean; previousConfigurationDigest?: string; confirmNoLaunch?: () => Promise<boolean>; stopTask?: () => Promise<boolean> }) => Promise<unknown>
   claimServiceOperation: () => ReturnType<typeof claimServiceOperation>
   claimProfile: (homeDirectory: ProfileLocation) => ProfileLease
   registeredProfile?: (home: string, platform: string) => ProfileLocation | undefined
@@ -727,9 +727,11 @@ async function installWithDeadline(
     if (status?.supervising || status?.running) throw new Error("The Windows supervisor is still active; stop and remove it before installing again")
     if (!status && (owner === "supervised" || effects.readConfiguration?.(assertHome(target.home), "win32") !== undefined)) {
       if (!effects.stopSupervisor) throw new Error("Windows supervisor evidence is missing; replacement refused")
-      await disableWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+      const removal = windowsTaskRemovalPlan(displayName)
+      await disableWindowsTask(removal, effects, deadline)
       await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, {
         retire: false,
+        stopTask: async () => await stopWindowsTask(removal, effects, deadline) === "stopped",
         ...(owner === "supervised" ? { confirmNoLaunch: () => windowsTaskDisabledAndIdle(displayName, effects, deadline) } : {}),
       }))
     }
@@ -1140,9 +1142,9 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       const removal = windowsTaskRemovalPlan(displayName)
       await disableWindowsTask(removal, effects, deadline)
       await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, { retire: false,
+        stopTask: async () => await stopWindowsTask(removal, effects, deadline) === "stopped",
         confirmNoLaunch: () => windowsTaskDisabledAndIdle(displayName, effects, deadline),
         ...(restoring ? { previousConfigurationDigest: createHash("sha256").update(serializeServiceConfiguration(parseServiceConfiguration(previousConfiguration))).digest("hex") } : {}) }))
-      await stopWindowsTask(removal, effects, deadline)
     }
     const stoppedInstance = currentInstance(readOwner, profile)
     let wroteNew = false

@@ -7,3 +7,5 @@ Supervise the Windows logon daemon in a job object with bounded crash restart an
 Allow removal, reinstall, and update of a supervised registration that never launched after Task Scheduler confirms it is disabled with no instances and the startup lease protects the empty launch history.
 
 Recover job-empty proof from private receipts written by the Windows helper after supervisor pipe closure or best-effort session-end handling. Missing proof still refuses same-boot recovery.
+
+Keep Windows retirement active and hold the startup lease until Task Scheduler confirms the old task is disabled with no instances before allowing an update or reinstall to restart it.
