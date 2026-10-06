@@ -3653,15 +3653,25 @@ export class DomovoiDaemon {
   }
 
   #holdApprovalTargets(approvalId: string, held: HeldApproval): void {
-    this.#forgetDepartedFileApprovalTargets()
+    this.#forgetDepartedApprovalContext()
     this.#approvalTargets.set(approvalId, held)
   }
 
   // A card leaves by many routes (a decision, archive, a provider disconnect,
   // session close, emergency stop, expiry), so rather than each route
   // forgetting its request, the held requests are trimmed to the waiting cards
-  // whenever a card is held and whenever state is saved or broadcast.
-  #forgetDepartedFileApprovalTargets(): void {
+  // whenever a card is held and whenever state is saved or broadcast. Origins
+  // survive only while their sessions retain a live turn, so archive, deletion
+  // and project switches cannot retain entries indefinitely.
+  #forgetDepartedApprovalContext(): void {
+    if (this.#approvalTurnOrigins.size > 0) {
+      const activeSessions = new Set(this.#snapshot.sessions
+        .filter((session) => session.state !== "archived" && session.activeTurnId !== undefined)
+        .map((session) => session.id))
+      for (const sessionId of this.#approvalTurnOrigins.keys()) {
+        if (!activeSessions.has(sessionId)) this.#approvalTurnOrigins.delete(sessionId)
+      }
+    }
     if (this.#approvalTargets.size === 0) return
     const waiting = new Set(this.#snapshot.approvals.map((approval) => approval.id))
     for (const approvalId of this.#approvalTargets.keys()) {
@@ -3809,7 +3819,7 @@ export class DomovoiDaemon {
 
   #sendSnapshot(): void {
     this.#snapshotBroadcastHeld = false
-    this.#forgetDepartedFileApprovalTargets()
+    this.#forgetDepartedApprovalContext()
     this.#flushPendingWorkspaceDeltas(true)
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.(
       this.#snapshot.sessions.flatMap((session) => session.providerThreadId && session.activeTurnId
@@ -11694,7 +11704,7 @@ export class DomovoiDaemon {
       if (this.#approvalsAnsweredElsewhere.get(id) === "recorded") this.#approvalsAnsweredElsewhere.delete(id)
     }
     this.#snapshot.workingPlans = next.workingPlans
-    this.#forgetDepartedFileApprovalTargets()
+    this.#forgetDepartedApprovalContext()
     for (const approval of removed) {
       if (!blockedIds.has(approval.id)) continue
       this.#appendAudit({
@@ -13256,7 +13266,7 @@ export class DomovoiDaemon {
   // start is carried by that write. Sharing it keeps the backlog to one
   // running write and one pending write however fast changes arrive.
   async #persistSnapshot(): Promise<void> {
-    this.#forgetDepartedFileApprovalTargets()
+    this.#forgetDepartedApprovalContext()
     this.#syncArtifactWatchActivity()
     const pending = this.#pendingSnapshotPersist ??= this.#serializeSnapshotPersistence(async () => {
       this.#pendingSnapshotPersist = undefined
