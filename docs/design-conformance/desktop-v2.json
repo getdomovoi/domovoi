@@ -2198,6 +2198,11 @@
   ],
   "humanRead": [
     {
+      "id": "composer.effort-levels",
+      "since": "2026-10-06",
+      "note": "Built in the client for Q31, Q34, Q35 and Q36. Two states the menu draws are not reachable from a real daemon yet. Model's own: OpenCode and Kilo discovery reports medium or none rather than unset, so the menu shows Medium or None; the daemon follow-up reports unset and carries stored medium and none values. No default reported by this model: providerModelSchema requires a default among the levels, and the Claude adapter fills in high or the first level; the follow-up lets the protocol carry a missing default and stops the adapter from picking one."
+    },
+    {
       "id": "settings.service-remove",
       "since": "2026-10-02",
       "note": "Built for Q349 A. The body sentence is reordered to the installer's real order: the design says the daemon starts inside the app before the files are deleted; the installer deletes them first and the desktop restarts the daemon after. The Linux REMOVED row says lingering goes off only if Domovoi turned it on, because the window does not read that record. Try removing again after a failure is not drawn; the button keeps Remove."
