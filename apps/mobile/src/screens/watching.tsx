@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import { Pressable, View } from "react-native"
 
 import { ConnectionBanner } from "../components/connection-banner"
@@ -48,30 +48,25 @@ function StatusDot({ tone }: { tone: TerminalTone }) {
 }
 
 // The claimant's lines wrap here, because a phone never resizes the shell.
-// Consecutive lines are one text block with a span per line, so a long record
-// is a handful of native views rather than one per line.
+// Consecutive lines are one text in the terminal face, so a long record is a
+// handful of native views rather than one per line.
 function OutputRows({ rows }: { rows: TerminalRow[] }) {
-  const runs: Array<{ key: string, mark: TerminalRow } | { key: string, lines: TerminalRow[] }> = []
+  const runs: Array<{ key: string, mark: string } | { key: string, lines: string[] }> = []
   for (const row of rows) {
     const last = runs.at(-1)
-    if (row.kind === "line" && last && "lines" in last) last.lines.push(row)
-    else if (row.kind === "line") runs.push({ key: row.key, lines: [row] })
-    else runs.push({ key: row.key, mark: row })
+    if (row.kind === "line" && last && "lines" in last) last.lines.push(row.text)
+    else if (row.kind === "line") runs.push({ key: row.key, lines: [row.text] })
+    else runs.push({ key: row.key, mark: row.text })
   }
   return (
     <>
       {runs.map((run) => "mark" in run ? (
         <View key={run.key} className="my-1.5 border-t border-dashed border-border pt-1.5">
-          <Text className="font-sans text-[11px] leading-[16px] text-muted-foreground">{run.mark.text}</Text>
+          <Text className="font-sans text-[11px] leading-[16px] text-muted-foreground">{run.mark}</Text>
         </View>
       ) : (
         <Text key={run.key} selectable className="font-mono text-[11px] leading-[17.6px] text-foreground">
-          {run.lines.map((line, index) => (
-            <Fragment key={line.key}>
-              {index > 0 ? "\n" : null}
-              <Text>{line.text}</Text>
-            </Fragment>
-          ))}
+          {run.lines.join("\n")}
         </Text>
       ))}
     </>
@@ -121,18 +116,20 @@ export function WatchingScreen({
   const status = terminalStatus(summary, connected)
   const record = watch.state === "watching" ? watch.record : undefined
   const rows = useMemo(() => record ? terminalRows(record, connected) : [], [connected, record])
-  const lineCount = useMemo(() => record ? terminalLineCount(record) : 0, [record])
   const closed = summary.state === "closed"
 
   const output = useRef<PageScrollerHandle>(null)
   const [follow, setFollow] = useState(followStart)
   // What landed since the last render, counted while the view does not follow.
-  const seenLines = useRef(lineCount)
+  // Read from the lines received rather than the lines held: at the bound each
+  // new line pushes an old one out. A new watch starts the count again.
+  const received = record?.received ?? 0
+  const seenLines = useRef(received)
   useEffect(() => {
-    const added = lineCount - seenLines.current
-    seenLines.current = lineCount
+    const added = received - seenLines.current
+    seenLines.current = received
     if (added > 0) setFollow((current) => followAfterOutput(current, added))
-  }, [lineCount])
+  }, [received])
 
   const jump = () => {
     setFollow(followJump)

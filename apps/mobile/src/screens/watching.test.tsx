@@ -1,5 +1,11 @@
 import { describe, expect, it, jest } from "@jest/globals"
-import { terminalListResultSchema, terminalWatchResultSchema, type TerminalSummary, type TerminalWatchResult } from "@getdomovoi/protocol"
+import {
+  maximumTerminalReplayCharacters,
+  terminalListResultSchema,
+  terminalWatchResultSchema,
+  type TerminalSummary,
+  type TerminalWatchResult,
+} from "@getdomovoi/protocol"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
@@ -107,7 +113,8 @@ describe("WatchingScreen", () => {
 
   it("shows the recent output, the mark where live output starts, and what arrived live", async () => {
     await draw(more(watching(), " ❯ src/webhooks/replay.spec.ts (5 tests | 1 failed) 2.41s\n"))
-    expect(screen.getByText("$ pnpm vitest run src/webhooks")).toBeOnTheScreen()
+    // Consecutive lines are one text; each line is still there whole.
+    expect(screen.getByText(/\$ pnpm vitest run src\/webhooks/)).toBeOnTheScreen()
     expect(screen.getByText(/^Recent output above\. Live from \d\d:\d\d:\d\d\.$/)).toBeOnTheScreen()
     expect(screen.getByText(" ❯ src/webhooks/replay.spec.ts (5 tests | 1 failed) 2.41s")).toBeOnTheScreen()
   })
@@ -131,6 +138,18 @@ describe("WatchingScreen", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Jump to latest, 3 new" }))
     expect(screen.getByRole("switch", { name: "Follow output" })).toBeChecked()
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull()
+  })
+
+  // The phone keeps no more than the daemon does, so at the bound each new
+  // line pushes an old one out. What landed is still counted.
+  it("keeps counting what lands once the phone holds all it keeps", async () => {
+    const full = watching({ buffer: "x\n".repeat(maximumTerminalReplayCharacters / 2) })
+    const { redraw } = await draw(full)
+    await fireEvent.press(screen.getByRole("switch", { name: "Follow output" }))
+    const once = more(full, "a\n")
+    await redraw(once)
+    await redraw(more(once, "b\n"))
+    expect(screen.getByRole("button", { name: "Jump to latest, 2 new" })).toBeOnTheScreen()
   })
 
   it("leaves a reader who scrolled up where they are, and offers the jump back", async () => {
