@@ -196,8 +196,12 @@ Parallel with Phase 0. Touches nothing the gates decide.
       already relied on is left as found. **Windows matches WSL's shape.** Logon-only start with no recovery was
       rejected for WSL; rejecting it here is consistency, not a new call. The scheduled
       task gains the same supervisor loop with backoff and loud exhaustion the WSL guest
-      has, so Windows is not the platform that silently stays dead. Both are Codex's after
-      the weekly budget resets; tick when the assessment says so.
+      has, so Windows is not the platform that silently stays dead. Tick when the assessment
+      says so. **State on 2026-10-06:** Linux linger is built (29b78c85, 7f9c5cf6, #698) and
+      tested against a mocked `loginctl` only; a native proof that the unit survives logout
+      and starts at boot is owed. The Windows supervisor was built (f216b53e) and reverted the
+      same day (6a00108f) under ruling Q300 A until a job object contains the daemon's tree.
+      Actual Windows logon acceptance is still open.
 - [x] **S1.2 [CX]** Version negotiation. A v0.9 client against a v1.2 daemon refuses
       clearly rather than half-working. The hello refuses with
       `protocolVersionMismatchErrorCode` (56c6dce3, `server.ts`); exact version parsing and
@@ -247,10 +251,11 @@ Parallel with Phase 0. Touches nothing the gates decide.
       Q284 A): it needs a destination, overwrite rules and a trust step on the receiving
       machine, which is a new cross-machine RPC, so remote skill distribution is a later fleet
       feature (`docs/cli-parity-decision.md`). The 2026-09-10 note that no `domovoi` binary
-      existed was true when written and is superseded by `apps/cli`. Still open on 2026-10-01:
-      install and service status are only on `domovoid`, `domovoi pair` cannot take the code
-      `domovoid pair` prints, and which `domovoid` commands move to `domovoi`, in which
-      package, is not yet decided.
+      existed was true when written and is superseded by `apps/cli`. Still open on 2026-10-06:
+      install and service status are only on `domovoid`, and which `domovoid` commands move to
+      `domovoi`, in which package, is not yet decided. The pairing gap listed here on 2026-10-01
+      is closed: `domovoi pair` reads the code `domovoid pair` prints and redeems it with
+      `device.redeemCode` (e958ca93, Q337 A).
 - [x] **S1.7 [CX]** The accounting and turn-record work lands here — it is daemon bookkeeping and it
       unblocks UI in Phase 3. Usage accounting (4359bcf9) and turn records (e7364720,
       84d90d50, 1991666a); the detail is under "From the work split" below.
@@ -1120,7 +1125,9 @@ Ticked under rule 7: Codex's work, Claude Code's file, so the citation carries C
   turn the daemon actually saw, so the client can refuse to present a floor as a total.
 
 #### Approval execution duration — 1 field
-- [ ] Record how long the approved command ran, distinct from `decided in`.
+- [x] Record how long the approved command ran, distinct from `decided in` (5ee18251). The
+      daemon records `ranForMs` on the approval receipt; the phone draws it (f1b826f1), and the
+      desktop receipt does not yet (S3.10).
       Decision latency answers "how long was the agent blocked"; execution duration answers
       "what did the approval cost". The design asks for the second and the UI currently
       shows the first.
@@ -1318,7 +1325,9 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
 - [ ] **S3.10 [CC]** Desktop chrome pass. **Measured 2026-09-22, after #517 (23ae1342)
       landed v2 client parity:** `node scripts/design-conformance.mjs` reports desktop 61
       built, 18 partial, 0 missing, 4 blocked; phone 20 built, 5 blocked; web 6 built, 5
-      blocked; tablet 7 built, 1 blocked. The rest of this entry is the 2026-09-18 state it
+      blocked; tablet 7 built, 1 blocked. **Re-measured 2026-10-06 at 862f1b3a**, after the
+      inventories were re-derived (2026-09-30) and partials reclassified more strictly
+      (2026-10-02): desktop 38 built, 49 partial, 4 missing, 10 blocked. The rest of this entry is the 2026-09-18 state it
       replaced, kept as history. **Unstarted as of 2026-09-18.** The v2 conversion
       is not landed on any surface, and this plan read as though it were, because the designs
       were converted into itemised change lists and only the items were built; the chrome was
