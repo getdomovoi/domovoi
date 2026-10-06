@@ -146,10 +146,13 @@ function lineBreakAfter(text: string, from: number): number {
 export function terminalLines(text: string): string[] {
   const plain = text
     // Operating system commands, such as a window title.
+    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
     .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
     // Control sequences: colour, cursor movement, erase.
+    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
     // Any other two-character escape.
+    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
     .replace(/\u001b[@-_]/g, "")
     .replace(/\r\n/g, "\n")
   const lines = plain.split("\n").map(drawnLine)
