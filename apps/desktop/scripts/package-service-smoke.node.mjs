@@ -12,6 +12,7 @@ import {
   checkRuntimeCopy,
   copiedRuntime,
   definitionPaths,
+  keepWork,
   launchdLabel,
   managerReadback,
   managerReadbackCommand,
@@ -19,6 +20,7 @@ import {
   packagedResourcesCandidates,
   parseAttachReport,
   parseServiceStatus,
+  serviceGone,
   serviceSmokeEnvironment,
   serviceSmokeRefusal,
   serviceSmokeSkip,
@@ -170,6 +172,36 @@ test("the service manager itself is asked whether the service is loaded", () => 
   assert.deepEqual(managerReadback("linux", { code: 0, stdout: "LoadState=not-found\nActiveState=inactive\nFragmentPath=\n", stderr: "" }), { loaded: false, active: false })
   assert.throws(() => managerReadback("linux", { code: 1, stdout: "", stderr: "Failed to connect to bus" }), /systemctl/u)
   assert.throws(() => managerReadback("linux", { code: 0, stdout: "ActiveState=active\n", stderr: "" }), /LoadState/u)
+  assert.throws(() => managerReadback("linux", { code: 0, stdout: "LoadState=not-found\n", stderr: "" }), /ActiveState/u)
+})
+
+test("a service is gone only when the manager has neither its definition nor a running job", () => {
+  // systemd keeps a unit running after its file is deleted: LoadState and
+  // ActiveState are independent.
+  const orphan = managerReadback("linux", { code: 0, stdout: "LoadState=not-found\nActiveState=active\nFragmentPath=\n", stderr: "" })
+  assert.deepEqual(orphan, { loaded: false, active: true })
+  assert.equal(serviceGone(orphan), false)
+  for (const activeState of ["deactivating", "activating", "reloading"]) {
+    assert.equal(serviceGone(managerReadback("linux", { code: 0, stdout: `LoadState=not-found\nActiveState=${activeState}\n`, stderr: "" })), false, activeState)
+  }
+  assert.equal(serviceGone(managerReadback("linux", { code: 0, stdout: "LoadState=not-found\nActiveState=failed\n", stderr: "" })), true)
+  // Any load state but not-found is something the manager still holds.
+  for (const loadState of ["masked", "error", "bad-setting", "stub"]) {
+    assert.equal(serviceGone(managerReadback("linux", { code: 0, stdout: `LoadState=${loadState}\nActiveState=inactive\n`, stderr: "" })), false, loadState)
+  }
+  const stopped = managerReadback("darwin", { code: 0, stdout: `x = {\n\tpath = /h/a.plist\n\tstate = not running\n}\n`, stderr: "" })
+  assert.deepEqual(stopped, { loaded: true, active: false, path: "/h/a.plist" })
+  assert.equal(serviceGone(stopped), false)
+  assert.equal(serviceGone({ loaded: false, active: false }), true)
+})
+
+test("the work directory is deleted only when nothing was installed or the manager confirms the service gone", () => {
+  assert.equal(keepWork({ attempted: false, state: undefined }), false)
+  assert.equal(keepWork({ attempted: true, state: { loaded: false, active: false } }), false)
+  assert.equal(keepWork({ attempted: true, state: { loaded: true, active: false } }), true)
+  assert.equal(keepWork({ attempted: true, state: { loaded: false, active: true } }), true)
+  // The manager could not be read: keep, never guess.
+  assert.equal(keepWork({ attempted: true, state: undefined }), true)
 })
 
 test("every script that runs electron-builder, package:dir included, loads the signing policy and never publishes", async () => {

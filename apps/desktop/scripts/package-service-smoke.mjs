@@ -160,9 +160,26 @@ export function managerReadback(platform, { code, stdout, stderr }) {
   if (code !== 0) throw new Error(`systemctl --user show exited with ${code}: ${stderr.trim() || stdout.trim()}`)
   const field = (name) => new RegExp(`^${name}=(.*)$`, "mu").exec(stdout)?.[1]
   const loadState = field("LoadState")
+  const activeState = field("ActiveState")
   if (loadState === undefined) throw new Error("systemctl --user show printed no LoadState")
-  if (loadState === "not-found") return { loaded: false, active: false }
-  return { loaded: loadState === "loaded", active: field("ActiveState") === "active", path: field("FragmentPath") ?? "" }
+  if (activeState === undefined) throw new Error("systemctl --user show printed no ActiveState")
+  // Independent in systemd: a unit whose file was deleted can still run, and
+  // any load state but not-found (masked, error, bad-setting) is still held.
+  const active = activeState !== "inactive" && activeState !== "failed"
+  if (loadState === "not-found") return { loaded: false, active }
+  return { loaded: true, active, path: field("FragmentPath") ?? "" }
+}
+
+// Gone means the manager holds neither the definition nor a running job.
+export function serviceGone(state) {
+  return !state.loaded && !state.active
+}
+
+// The work directory holds the runtime copy and profile a loaded service may
+// still run from, so it is deleted only when nothing was installed or the
+// manager confirms the service gone. An unreadable manager (undefined) keeps it.
+export function keepWork({ attempted, state }) {
+  return attempted && (state === undefined || !serviceGone(state))
 }
 
 export function parseAttachReport(stdout) {
@@ -259,8 +276,13 @@ async function main({ argv, env, platform }) {
 
   const readback = managerReadbackCommand(platform, uid)
   const askManager = async () => managerReadback(platform, await runSmokeProcess({ ...readback, cwd: userHome, env, timeoutMs: commandTimeoutMs }))
-  if ((await askManager()).loaded) {
+  if (!serviceGone(await askManager())) {
     throw new Error(`A Domovoi login service is already loaded for ${username}. ${description} will not replace it. Nothing was installed.`)
+  }
+  // On Linux the definition goes in the account's own home, so an earlier one
+  // there is refused before anything is created. A macOS home here is new.
+  if (platform === "linux" && existsSync(join(userHome, definitionPaths.linux))) {
+    throw new Error(`${join(userHome, definitionPaths.linux)} already exists. Nothing was installed.`)
   }
 
   // The work directory holds the profile and the attach script, and on macOS
@@ -272,7 +294,6 @@ async function main({ argv, env, platform }) {
   await mkdir(profileDirectory, { mode: 0o700 })
   const definition = join(home, definitionPaths[platform])
   const configuration = join(home, ".domovoi", "service.json")
-  if (existsSync(definition)) throw new Error(`${definition} already exists. Nothing was installed.`)
   const attachScript = join(work, "attach.mjs")
   await writeFile(attachScript, attachSource, { mode: 0o600 })
   const commandEnv = serviceSmokeEnvironment({ env, home, profileDirectory })
@@ -288,7 +309,6 @@ async function main({ argv, env, platform }) {
 
   let attempted = false
   let removed = false
-  let keep = false
   try {
     attempted = true
     const installed = await service("install", installTimeoutMs)
@@ -337,27 +357,32 @@ async function main({ argv, env, platform }) {
     const gone = parseServiceStatus(after.stdout)
     if (after.code !== 1 || gone?.installed !== false || gone.running) fail(after, "service status did not read the service back removed")
     step(`service status after removal: not installed, not running: ${gone.detail}`)
-    if ((await askManager()).loaded) fail(undefined, "the service manager still has the service loaded after removal")
     for (const path of [definition, configuration]) {
       if (existsSync(path)) fail(undefined, `${path} is still there after removal`)
     }
+    let managerState
     let refused
     for (const until = Date.now() + goneWindowMs; Date.now() < until;) {
+      managerState = await askManager()
       last = await attach()
       refused = last.code === 0 ? parseAttachReport(last.stdout) : undefined
-      if (refused?.kind === "refused") break
+      if (serviceGone(managerState) && refused?.kind === "refused") break
       await delay(1_000)
     }
+    if (!serviceGone(managerState)) fail(undefined, `the service manager still reports ${JSON.stringify(managerState)} ${goneWindowMs}ms after removal`)
     if (refused?.kind !== "refused") fail(last, `a daemon still answered for the profile ${goneWindowMs}ms after removal`)
     step(`after removal: manager has no service, ${definition} and ${configuration} are gone, attach is refused (${refused.reason})`)
     step(successMarker)
   } finally {
-    if (attempted && !removed) {
-      const cleanup = await service("remove", removeTimeoutMs).catch((error) => ({ code: null, stdout: "", stderr: String(error) }))
-      if (cleanup.code !== 0) reportSmokeOutput(cleanup)
-      keep = await askManager().then((state) => state.loaded, () => true)
+    let state
+    if (attempted) {
+      if (!removed) {
+        const cleanup = await service("remove", removeTimeoutMs).catch((error) => ({ code: null, stdout: "", stderr: String(error) }))
+        if (cleanup.code !== 0) reportSmokeOutput(cleanup)
+      }
+      state = await askManager().catch(() => undefined)
     }
-    if (keep) process.stderr.write(`${description} kept ${work}: the service may still be loaded from it.\n`)
+    if (keepWork({ attempted, state })) process.stderr.write(`${description} kept ${work}: the manager reports ${JSON.stringify(state ?? "nothing readable")} for the service, which may still run from it.\n`)
     else await rm(work, { recursive: true, force: true })
   }
 }

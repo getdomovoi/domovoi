@@ -71,8 +71,9 @@ On macOS and Linux, from the unpacked app electron-builder produced on that runn
    profile's owner record names a daemon owner carrying this install's service registration, so
    the daemon that answered is the one the service manager started.
 4. `domovoid service remove` exits cleanly. Status then reads not installed and not running,
-   the service manager has no such job, the definition and `service.json` are gone, and the
-   attach-only acquisition is refused.
+   the service manager holds neither the definition nor a running job (systemd's load and
+   active states are read separately, since a unit can run after its file is gone), the
+   definition and `service.json` are gone, and the attach-only acquisition is refused.
 
 On Windows the step runs the same script, which prints why it skips and installs nothing. Logon
 task supervision is still changing there, so the Windows leg proves nothing about the Windows
@@ -106,6 +107,9 @@ its own lingering systemd manager, from a copy of the unpacked app that account 
 daemon startup may read the native keychain index, as in the launch smoke.
 
 Each command has its own bound: 180 seconds for install, 120 for removal, 30 for status and
-manager reads. The attach is retried for up to 90 seconds after install, and the refusal after
-removal for up to 30. If the run fails after install, it removes the service; if the manager
-still reports it loaded, the work directory is kept and named rather than deleted.
+manager reads. The attach is retried for up to 90 seconds after install. After removal, the
+manager and the attach are read for up to 30 seconds until the manager holds neither the
+definition nor a running job and the attach is refused. If a run fails after install, it
+removes the service. Once anything was installed, the work directory with the runtime copy
+and profile is deleted only when the manager confirms the service gone; otherwise it is kept
+and named.
