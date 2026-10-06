@@ -1753,6 +1753,12 @@ export class DomovoiDaemon {
   #activeAssistantItems = new ActiveAssistantItemCache()
   #providerPlanTurns = new Set<string>()
   #planModeTurns = new Set<string>()
+  // Only successful Domovoi dispatches establish origin. This is not restored
+  // from sessions or guessed from the most recent sender (including steering).
+  #approvalTurnOrigins = new Map<string, {
+    identity: string
+    origin: NonNullable<WorkspaceSnapshot["approvals"][number]["origin"]>
+  }>()
   #consecutiveSaveFailures = 0
   #agentTimeoutMs: number
   #auditReadTimeoutMs: number
@@ -10524,6 +10530,20 @@ export class DomovoiDaemon {
         currentSession.state = "active"
         currentSession.updatedAt = createdAt
         currentSession.activeTurnId = turnId
+        if (!steering) {
+          this.#approvalTurnOrigins.delete(currentSession.id)
+          const connectionId = this.#connectionIds.get(socket)
+          if (authenticatedActor?.kind === "client" && connectionId) {
+            this.#approvalTurnOrigins.set(currentSession.id, {
+              identity: providerTurnIdentity(dispatchRuntime.provider, providerThreadId, turnId),
+              origin: {
+                client: authenticatedActor.client,
+                connectionId,
+                ...(authenticatedActor.clientId === undefined ? {} : { clientId: authenticatedActor.clientId }),
+              },
+            })
+          }
+        }
         if (dispatchRuntime.permissionMode === "plan") {
           this.#planModeTurns.add(providerTurnIdentity(dispatchRuntime.provider, providerThreadId, turnId))
         }
@@ -11148,8 +11168,13 @@ export class DomovoiDaemon {
       // The card, the automatic allow and a standing rule all start from the
       // settled request: its execution resolved and every path on it judged
       // on disk, under one deadline.
+      const turnOrigin = this.#approvalTurnOrigins.get(session.id)
+      const origin = eventTurnId !== undefined
+        && turnOrigin?.identity === providerTurnIdentity(provider, threadId, eventTurnId)
+        ? turnOrigin.origin : undefined
       const settlement = await settleApproval({
         approval: {
+          ...(origin === undefined ? {} : { origin }),
           id: `approval-${randomUUID()}`,
           sessionId: session.id,
           machine: this.#snapshot.machine.name,
@@ -11438,6 +11463,7 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "turn-completed") {
+      this.#approvalTurnOrigins.delete(session.id)
       // A command whose completion never arrived by the end of its turn keeps
       // a receipt without a run time, as ruled 2026-09-23.
       for (const [key, run] of this.#approvedRuns) if (run.sessionId === session.id) this.#approvedRuns.delete(key)

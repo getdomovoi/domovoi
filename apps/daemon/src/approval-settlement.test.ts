@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest"
 import { unrestrictedApprovalScope } from "./approval-facts.js"
 import {
   ApprovalLedger,
+  heldSettlementInput,
+  sealedApproval,
   sameExecution,
   savedSettlementInput,
   settleApproval,
@@ -691,5 +693,113 @@ describe("ApprovalLedger", () => {
       directory: "[REDACTED] in the session worktree",
       command: "cat [REDACTED]",
     })
+  })
+})
+
+describe("approval outside-project facts", () => {
+  it("limits a shell command's fact to its working directory", async () => {
+    const workspace = await worktree()
+    const { approval } = await settleApproval(input(workspace, {
+      request: { workspace, command: "cat /somewhere/else.txt" },
+    }))
+    expect(approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
+  })
+
+  it("uses path containment for a target, including new files and sibling directories", async () => {
+    const parent = await worktree()
+    const workspace = join(parent, "repo")
+    await mkdir(workspace)
+    await mkdir(join(parent, "repo-other"))
+    for (const [path, outside] of [["new.txt", false], ["../repo-other/new.txt", true], [".", false]] as const) {
+      const { approval } = await settleApproval(input(workspace, { request: { workspace, path, command: "Write" } }))
+      expect(approval.outsideProject).toEqual({ outside, basis: "path" })
+    }
+  })
+
+  it("follows links before parent traversal and follows a linked worktree root", async () => {
+    const parent = await worktree()
+    const workspace = join(parent, "repo")
+    await mkdir(workspace)
+    await mkdir(join(parent, "outside", "child"), { recursive: true })
+    await symlink(join(parent, "outside", "child"), join(workspace, "link"), "junction")
+    await symlink(workspace, join(parent, "alias"), "junction")
+    const escaped = await settleApproval(input(workspace, {
+      request: { workspace, path: "link/../new.txt", command: "Write" },
+    }))
+    expect(escaped.approval.outsideProject).toEqual({ outside: true, basis: "path" })
+    const inside = await settleApproval(input(join(parent, "alias"), {
+      request: { workspace: join(parent, "alias"), cwd: workspace, command: "ls" },
+    }))
+    expect(inside.approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
+    const external = await settleApproval(input(workspace, {
+      request: { workspace, cwd: join(workspace, "link"), command: "ls" },
+    }))
+    expect(external.approval.outsideProject).toEqual({ outside: true, basis: "working-directory" })
+  })
+
+  it("omits a fact for opaque tools and unknown command details", async () => {
+    const workspace = await worktree()
+    for (const request of [{ workspace, tool: "opaque", command: "tool.call" }, { workspace }]) {
+      const { approval } = await settleApproval(input(workspace, { request }))
+      expect(approval).not.toHaveProperty("outsideProject")
+    }
+  })
+
+  it("omits the fact when resolution cannot read a path or the deadline expires", async () => {
+    const workspace = await worktree()
+    const unreadable = await settleApproval(input(workspace, {
+      request: { workspace, path: "x".repeat(300), command: "Write" },
+    }))
+    expect(unreadable.approval).not.toHaveProperty("outsideProject")
+    const deadline = OperationDeadline.start(1, { signal: AbortSignal.abort() })
+    const expired = await settleApproval(input(workspace), deadline)
+    expect(expired.approval).not.toHaveProperty("outsideProject")
+  })
+
+  it("recomputes a held path's fact and drops it when the card is sealed", async () => {
+    const workspace = await worktree()
+    const outside = await worktree()
+    await symlink(workspace, join(workspace, "target"), "junction")
+    const request = { workspace, path: "target/new.txt", command: "Write" }
+    const first = await settleApproval(input(workspace, { request }))
+    expect(first.approval.outsideProject).toEqual({ outside: false, basis: "path" })
+    await rm(join(workspace, "target"))
+    await symlink(outside, join(workspace, "target"), "junction")
+    const nextInput = heldSettlementInput(first.approval, request, undefined, "resolve", () => "normal")
+    expect((await settleApproval(nextInput)).approval.outsideProject).toEqual({ outside: true, basis: "path" })
+    expect(sealedApproval(first.approval, undefined)).not.toHaveProperty("outsideProject")
+    expect((await settleApproval(nextInput, OperationDeadline.start(1, { signal: AbortSignal.abort() }))).approval)
+      .not.toHaveProperty("outsideProject")
+  })
+})
+
+describe("saved approval context", () => {
+  it("keeps the recorded origin and recomputes known containment without adding it to legacy cards", async () => {
+    const workspace = await worktree()
+    const origin = { client: "desktop" as const, connectionId: "11111111-1111-4111-8111-111111111111" }
+    const first = input(workspace)
+    const card = (await settleApproval({ ...first, approval: { ...first.approval, origin } })).approval
+    const restored = await settleApproval(savedSettlementInput(card, workspace, undefined, () => "normal"))
+    expect(restored.approval.origin).toEqual(origin)
+    expect(restored.approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
+    const { origin: _origin, outsideProject: _outsideProject, ...legacy } = card
+    const old = await settleApproval(savedSettlementInput(legacy, workspace, undefined, () => "normal"))
+    expect(old.approval).not.toHaveProperty("origin")
+    expect(old.approval).not.toHaveProperty("outsideProject")
+  })
+
+  it("rechecks a saved file fact using the file line and never substitutes its directory", async () => {
+    const workspace = await worktree()
+    const outside = await worktree()
+    const target = join(workspace, "file.txt")
+    await writeFile(target, "ordinary file")
+    const card = (await settleApproval(input(workspace, { request: { workspace, path: "file.txt", command: "Write" } }))).approval
+    expect(card.outsideProject).toEqual({ outside: false, basis: "path" })
+    await rm(target)
+    await symlink(join(outside, "file.txt"), target)
+    const restored = await settleApproval(savedSettlementInput(card, workspace, undefined, () => "normal"))
+    expect(restored.approval.outsideProject).toEqual({ outside: true, basis: "path" })
+    const hidden = await settleApproval(savedSettlementInput({ ...card, affects: "The file [REDACTED] in the session worktree." }, workspace, undefined, () => "normal"))
+    expect(hidden.approval).not.toHaveProperty("outsideProject")
   })
 })
