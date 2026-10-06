@@ -11,7 +11,7 @@ import type { ServiceCommand } from "./install.js"
 
 const preparedSchema = z.object({
   kind: z.literal("prepared"), job: windowsJobNameSchema, bootId: windowsBootIdSchema,
-  child: windowsProcessIdentitySchema, helper: windowsProcessIdentitySchema, killOnClose: z.literal(true),
+  child: windowsProcessIdentitySchema, helper: windowsProcessIdentitySchema, killOnClose: z.literal(true), stdioOnly: z.literal(true),
 }).strict().refine((p) => p.child.bootId === p.bootId && p.helper.bootId === p.bootId)
 const emptySchema = z.object({
   kind: z.literal("empty"), job: windowsJobNameSchema, bootId: windowsBootIdSchema, activeProcesses: z.literal(0), terminated: z.literal(true),

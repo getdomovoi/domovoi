@@ -90,7 +90,7 @@ export async function superviseWindows(input: {
         startedAt: time(), stage: "intent", child: null, helper: null, empty: null, exitCode: null, backoffMs: 0 }
       record.attempts.push(attempt); record.state = "starting"; save()
       job = await effects.launch(attempt)
-      if (job.prepared.job !== attempt.job || job.prepared.bootId !== attempt.bootId || job.prepared.killOnClose !== true) throw new Error("Windows job preparation disagrees with its attempt")
+      if (job.prepared.job !== attempt.job || job.prepared.bootId !== attempt.bootId || job.prepared.killOnClose !== true || job.prepared.stdioOnly !== true) throw new Error("Windows job preparation disagrees with its attempt")
       attempt.child = job.prepared.child; attempt.helper = job.prepared.helper; attempt.stage = "prepared"; save()
       if (!input.signal.aborted) {
         await job.resume()

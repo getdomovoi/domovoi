@@ -115,7 +115,7 @@ it("honors a retirement request racing the first record of a new loop", async ()
     // Stop read the predecessor before this new loop published its identity.
     writeSupervisorStopRequest({ profileDirectory: join(f.home, ".domovoi") }, f.record)
     const receipt = { kind: "empty" as const, job: input.job, bootId: loop.bootId, activeProcesses: 0 as const, terminated: true as const, code: 1, stopped: true }
-    return { prepared: { kind: "prepared", job: input.job, bootId: loop.bootId, child: { ...loop, pid: 322 }, helper: { ...loop, pid: 323 }, killOnClose: true },
+    return { prepared: { kind: "prepared", job: input.job, bootId: loop.bootId, child: { ...loop, pid: 322 }, helper: { ...loop, pid: 323 }, killOnClose: true, stdioOnly: true },
       resume: async () => {}, exited: new Promise(() => {}), stop: async () => receipt }
   })
   let emergencyStop = false

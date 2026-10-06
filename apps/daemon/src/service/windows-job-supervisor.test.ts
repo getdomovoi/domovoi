@@ -13,7 +13,7 @@ function fixture(codes = [9, 9, 9, 9]) {
   const launch = vi.fn(async (attempt: WindowsSupervisorRecord["attempts"][number]): Promise<WindowsJob> => {
     const code = codes.shift() ?? 0
     const prepared = { kind: "prepared" as const, job: attempt.job, bootId: loop.bootId, child: { ...loop, pid: 200 + attempt.number },
-      helper: { ...loop, pid: 300 + attempt.number }, killOnClose: true as const }
+      helper: { ...loop, pid: 300 + attempt.number }, killOnClose: true as const, stdioOnly: true as const }
     const empty = { kind: "empty" as const, job: attempt.job, bootId: loop.bootId, code, stopped: false, terminated: true as const, activeProcesses: 0 as const }
     return { prepared, resume: async () => {
       expect(records.at(-1)?.attempts.at(-1)).toMatchObject({ stage: "prepared", child: prepared.child })

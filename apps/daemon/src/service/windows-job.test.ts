@@ -10,7 +10,7 @@ beforeEach(() => vi.stubEnv("SystemRoot", "C:\\Windows"))
 afterEach(() => vi.unstubAllEnvs())
 const job = `Local\\Domovoi-${randomUUID()}`
 const identity = { pid: 123, start: "456", bootId }
-const prepared = { kind: "prepared", job, bootId, child: identity, helper: { ...identity, pid: 124 }, killOnClose: true }
+const prepared = { kind: "prepared", job, bootId, child: identity, helper: { ...identity, pid: 124 }, killOnClose: true, stdioOnly: true }
 function fixture() {
   const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: vi.fn() })
   let input = ""
@@ -54,9 +54,16 @@ it("does not accept daemon death or helper death as tree proof", async () => {
 it("refuses a different job, missing kill-on-close, and nonempty or unterminated proof", () => {
   expect(() => parseWindowsJobMessage({ ...prepared, job: `Local\\Domovoi-${randomUUID()}` }, job)).toThrow()
   expect(() => parseWindowsJobMessage({ ...prepared, killOnClose: false }, job)).toThrow()
+  expect(() => parseWindowsJobMessage({ ...prepared, stdioOnly: false }, job)).toThrow()
   const empty = { kind: "empty", job, bootId, activeProcesses: 0, terminated: true, code: 0, stopped: true }
   expect(() => parseWindowsJobMessage({ ...empty, activeProcesses: 1 }, job)).toThrow()
   expect(() => parseWindowsJobMessage({ ...empty, terminated: false }, job)).toThrow()
+})
+
+it("requires the helper to confirm restricted handle inheritance before startup", () => {
+  expect(() => parseWindowsJobMessage(prepared, job)).not.toThrow()
+  const { stdioOnly: _omitted, ...unconfirmed } = prepared
+  expect(() => parseWindowsJobMessage(unconfirmed, job)).toThrow()
 })
 
 it("rejects an empty receipt from another boot and requests helper shutdown", async () => {

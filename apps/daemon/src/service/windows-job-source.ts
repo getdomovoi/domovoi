@@ -33,6 +33,7 @@ public static class DomovoiJob {
     public uint X, Y, XSize, YSize, XCount, YCount, Fill, Flags; public ushort Show, ReservedSize;
     public IntPtr ReservedPointer, Input, Output, Error;
   }
+  [StructLayout(LayoutKind.Sequential)] struct StartupEx { public Startup Basic; public IntPtr Attributes; }
   [StructLayout(LayoutKind.Sequential)] struct ProcessInfo { public IntPtr Process, Thread; public uint Pid, Tid; }
   [StructLayout(LayoutKind.Sequential)] struct Security { public int Size; public IntPtr Descriptor; public int Inherit; }
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateJobObject(IntPtr security, string name);
@@ -41,7 +42,10 @@ public static class DomovoiJob {
   [DllImport("kernel32.dll", EntryPoint="QueryInformationJobObject", SetLastError=true)] static extern bool QueryAccounting(IntPtr job, int kind, out Accounting accounting, uint size, IntPtr returned);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateJobObject(IntPtr job, uint code);
-  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcess(string application, StringBuilder command, IntPtr processSecurity, IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string directory, ref Startup startup, out ProcessInfo process);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool CreateProcess(string application, StringBuilder command, IntPtr processSecurity, IntPtr threadSecurity, bool inherit, uint flags, IntPtr environment, string directory, ref StartupEx startup, out ProcessInfo process);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool InitializeProcThreadAttributeList(IntPtr list, int count, uint flags, ref IntPtr size);
+  [DllImport("kernel32.dll", SetLastError=true)] static extern bool UpdateProcThreadAttribute(IntPtr list, uint flags, IntPtr attribute, IntPtr value, IntPtr size, IntPtr previous, IntPtr returned);
+  [DllImport("kernel32.dll")] static extern void DeleteProcThreadAttributeList(IntPtr list);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateFile(string name, uint access, uint sharing, ref Security security, uint disposition, uint flags, IntPtr template);
   [DllImport("kernel32.dll", SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool TerminateProcess(IntPtr process, uint code);
@@ -111,7 +115,8 @@ public static class DomovoiJob {
     if (job == IntPtr.Zero) throw new Win32Exception(createError);
     if (createError == 183) { CloseHandle(job); throw new InvalidOperationException("Job name already exists"); }
     ProcessInfo child = new ProcessInfo(); IntPtr output = IntPtr.Zero, input = IntPtr.Zero;
-    bool assigned = false;
+    IntPtr attributes = IntPtr.Zero, inherited = IntPtr.Zero;
+    bool assigned = false, initialized = false;
     try {
       ExtendedLimits limits = new ExtendedLimits(); limits.Basic.Flags = KILL_ON_CLOSE;
       Check(SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(ExtendedLimits))));
@@ -123,13 +128,27 @@ public static class DomovoiJob {
       if (output == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
       input = CreateFile("NUL", 0x80000000, 3, ref security, 3, 0x80, IntPtr.Zero);
       if (input == new IntPtr(-1)) throw new Win32Exception(Marshal.GetLastWin32Error());
-      Startup startup = new Startup(); startup.Size = (uint)Marshal.SizeOf(typeof(Startup));
-      startup.Flags = 0x100; startup.Input = input; startup.Output = output; startup.Error = output;
+      // Only NUL and the daemon log may cross this boundary. In particular,
+      // the helper's evidence and command pipes must not enter the job tree.
+      IntPtr attributeSize = IntPtr.Zero;
+      bool sized = InitializeProcThreadAttributeList(IntPtr.Zero, 1, 0, ref attributeSize);
+      if (sized || Marshal.GetLastWin32Error() != 122 || attributeSize.ToInt64() <= 0 || attributeSize.ToInt64() > 65536)
+        throw new InvalidOperationException("Handle-list size unavailable");
+      attributes = Marshal.AllocHGlobal(attributeSize);
+      Check(InitializeProcThreadAttributeList(attributes, 1, 0, ref attributeSize)); initialized = true;
+      inherited = Marshal.AllocHGlobal(IntPtr.Size * 2);
+      Marshal.WriteIntPtr(inherited, 0, input); Marshal.WriteIntPtr(inherited, IntPtr.Size, output);
+      // PROC_THREAD_ATTRIBUTE_HANDLE_LIST. bInheritHandles must still be true.
+      Check(UpdateProcThreadAttribute(attributes, 0, new IntPtr(0x20002), inherited, new IntPtr(IntPtr.Size * 2), IntPtr.Zero, IntPtr.Zero));
+      StartupEx startup = new StartupEx(); startup.Basic.Size = (uint)Marshal.SizeOf(typeof(StartupEx));
+      startup.Basic.Flags = 0x100; startup.Basic.Input = input; startup.Basic.Output = output; startup.Basic.Error = output;
+      startup.Attributes = attributes;
       var command = new StringBuilder(Quote(executable)); foreach (string arg in args) command.Append(' ').Append(Quote(arg));
-      Check(CreateProcess(executable, command, IntPtr.Zero, IntPtr.Zero, true, 0x08000004, IntPtr.Zero, null, ref startup, out child));
+      // CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT.
+      Check(CreateProcess(executable, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080004, IntPtr.Zero, null, ref startup, out child));
       Check(AssignProcessToJobObject(job, child.Process)); assigned = true;
       using (Process self = Process.GetCurrentProcess()) {
-        Emit(new { kind="prepared", job=name, bootId=boot.ToString(), child=Identity(child.Process, child.Pid, boot), helper=Identity(self.Handle, (uint)self.Id, boot), killOnClose=true });
+        Emit(new { kind="prepared", job=name, bootId=boot.ToString(), child=Identity(child.Process, child.Pid, boot), helper=Identity(self.Handle, (uint)self.Id, boot), killOnClose=true, stdioOnly=true });
       }
       var commands = new BlockingCollection<string>();
       var reader = new Thread(() => {
@@ -161,6 +180,9 @@ public static class DomovoiJob {
       }
       Emit(new { kind="empty", job=name, bootId=boot.ToString(), activeProcesses=0, terminated=true, code=code, stopped=stopped });
     } finally {
+      if (initialized) DeleteProcThreadAttributeList(attributes);
+      if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
+      if (inherited != IntPtr.Zero) Marshal.FreeHGlobal(inherited);
       // Assignment failure may leave a suspended, unassigned process. Attempt
       // cleanup, but emit no success evidence for an interrupted launch.
       if (child.Process != IntPtr.Zero && !assigned) { TerminateProcess(child.Process, 1); WaitForSingleObject(child.Process, 10000); }
