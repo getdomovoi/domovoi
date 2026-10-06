@@ -252,12 +252,15 @@ export function TerminalBlock({ watch, connected, onOpen }: {
           <Text className="shrink font-sans text-[12px] text-muted-foreground" numberOfLines={1}>{claimantLine(summary, connected)}</Text>
         </View>
       </View>
-      <View className="bg-code px-3 py-2.5">
+      {/* Seven lines tall at most. Wrapped lines can make the tail taller, so
+          the block keeps its bottom and crops the top, as the design does:
+          the newest output is the part that stays. */}
+      <View className="max-h-[143px] justify-end overflow-hidden bg-code px-3 py-2.5">
         {watch.state === "reading" ? <Text variant="meta">Reading the terminal.</Text> : null}
         {watch.state === "failed" ? <Text variant="meta" className="text-destructive">{watch.message}</Text> : null}
         {record && tail.length === 0 ? <Text variant="meta">Nothing printed yet.</Text> : null}
         {tail.length > 0 ? (
-          <Text className="font-mono text-[11px] leading-[17.6px] text-foreground" numberOfLines={tailLines * 3}>
+          <Text className="font-mono text-[11px] leading-[17.6px] text-foreground">
             {tail.map((line) => line.text).join("\n")}
           </Text>
         ) : null}
