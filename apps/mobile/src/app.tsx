@@ -57,7 +57,15 @@ import { SettingsScreen } from "./screens/settings"
 import { ToolsScreen, type ToolsLoad } from "./screens/tools"
 import { UnpairedScreen } from "./screens/unpaired"
 import { WatchingScreen } from "./screens/watching"
-import { listedWatches, watchedSummary, watchFrom, withNotification, type TerminalWatch } from "./terminal-rows"
+import {
+  listedWatches,
+  terminalListIntervalMs,
+  unconfirmedWatches,
+  watchedSummary,
+  watchFrom,
+  withNotification,
+  type TerminalWatch,
+} from "./terminal-rows"
 import { promptProblem, sendReadinessOverSocket, sessionDetail } from "./session-detail"
 import { queuedCancelParams, sendDelivery } from "./session-delivery"
 import { shellState, unreachableShell } from "./shell-state"
@@ -407,16 +415,24 @@ export function App() {
   // Phone v2 frame 04: the open session's terminals, read and never typed
   // into. The session's terminals are listed when it opens and again when the
   // connection comes back, and each is watched, which replays the daemon's
-  // record and then sends live output to this connection. Leaving the
-  // session unwatches them and drops what was read. While the connection is
-  // down what was read stays on screen, marked unconfirmed. The tablet draws
-  // its own Sessions shell, which has no terminal view yet (frame 04f), so
-  // nothing is watched there.
+  // record and then sends live output to this connection. Nothing tells a
+  // client that a terminal opened, so the list is read again while the
+  // session is open, and a terminal it names for the first time is watched.
+  // Leaving the session unwatches them and drops what was read. While the
+  // connection is down, and until the new connection's list answers, what was
+  // read stays on screen marked unconfirmed. The tablet draws its own
+  // Sessions shell, which has no terminal view yet (frame 04f), so nothing is
+  // watched there.
   const [terminals, setTerminals] = useState<ReadonlyMap<string, TerminalWatch>>(new Map())
+  const [terminalsListed, setTerminalsListed] = useState(false)
   const [openTerminalId, setOpenTerminalId] = useState<string | undefined>(undefined)
   const watchedSessionId = openSessionId && !(tablet && tab === "sessions") ? openSessionId : undefined
   // The current run's way to watch one terminal again, for Try again.
   const rewatch = useRef<((terminalId: string) => void) | undefined>(undefined)
+  // Read when a run ends: a connection that has closed took its watches with
+  // it, so there is nothing to unwatch on it.
+  const socketOpen = useRef(status === "open")
+  socketOpen.current = status === "open"
 
   useEffect(() => subscribeTerminal((notification) => {
     const now = new Date()
@@ -436,6 +452,9 @@ export function App() {
   useEffect(() => {
     if (!watchedSessionId || status !== "open") return
     let current = true
+    // This connection holds no watch yet, and has not listed anything.
+    setTerminals(unconfirmedWatches)
+    setTerminalsListed(false)
     // Every terminal a watch was asked for, answered or not: the daemon may
     // have taken a watch whose answer never came back, so leaving ends each.
     const watched = new Set<string>()
@@ -468,16 +487,28 @@ export function App() {
       })
       watchOne(terminalId)
     }
-    // A daemon that cannot list terminals has none to show, and the thread
-    // draws no block for one.
-    call("terminal.list", { sessionId: watchedSessionId }).then((listed) => {
-      if (!current) return
-      setTerminals((held) => listedWatches(held, listed.terminals))
-      for (const terminal of listed.terminals) watchOne(terminal.terminalId)
-    }, () => {})
+    // A list that fails leaves what is held unconfirmed until one answers. A
+    // daemon that cannot list terminals has none to show on a first visit.
+    const list = () => {
+      call("terminal.list", { sessionId: watchedSessionId }).then((listed) => {
+        if (!current) return
+        setTerminalsListed(true)
+        setTerminals((held) => listedWatches(held, listed.terminals))
+        for (const terminal of listed.terminals) {
+          if (!watched.has(terminal.terminalId)) watchOne(terminal.terminalId)
+        }
+      }, () => {
+        if (current) setTerminalsListed(false)
+      })
+    }
+    list()
+    const relist = setInterval(list, terminalListIntervalMs)
     return () => {
       current = false
+      clearInterval(relist)
       rewatch.current = undefined
+      setTerminalsListed(false)
+      if (!socketOpen.current) return
       for (const terminalId of watched) call("terminal.unwatch", { terminalId }).catch(() => {})
     }
   }, [call, status, watchedSessionId])
@@ -490,6 +521,8 @@ export function App() {
 
   const sessionTerminals = useMemo(() => [...terminals.values()], [terminals])
   const openTerminal = openTerminalId ? terminals.get(openTerminalId) : undefined
+  // Whether what the terminal views say is this connection's word.
+  const terminalsConfirmed = status === "open" && terminalsListed
 
   // The open project decides what the daemon reads. A project opened on any
   // client while the screen is up is read again, so the screen never shows
@@ -878,7 +911,7 @@ export function App() {
           <WatchingScreen
             title={openSession.title}
             watch={openTerminal}
-            connected={status === "open"}
+            connected={terminalsConfirmed}
             notice={notice}
             onBack={() => setOpenTerminalId(undefined)}
             onRetry={() => { if (openTerminalId) rewatch.current?.(openTerminalId) }}
@@ -1012,7 +1045,7 @@ export function App() {
             onStartLike={(prompt, mode) => void startLike(openSession.id, prompt, mode)}
             onTellAgent={(text) => tellAgent(openSession.id, text)}
             terminals={sessionTerminals}
-            connected={status === "open"}
+            connected={terminalsConfirmed}
             onOpenTerminal={setOpenTerminalId}
           />
           <SkillSheet

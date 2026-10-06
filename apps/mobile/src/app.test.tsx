@@ -3,6 +3,7 @@ import { demoWorkspace, maximumReviewAnnotations, type WorkspaceSnapshot } from 
 import { act, fireEvent, render, screen } from "@testing-library/react-native"
 
 import { App } from "./app"
+import { terminalListIntervalMs } from "./terminal-rows"
 import { ThemeProvider } from "./theme/theme-provider"
 
 // The phone's root: a stored credential is restored, the daemon is reached
@@ -774,6 +775,50 @@ describe("App", () => {
       await settle()
       expect(screen.getByText("Failed")).toBeOnTheScreen()
       expect(screen.getByText("Last claimed by MacBook Pro")).toBeOnTheScreen()
+    })
+
+    // No notification says a terminal opened, so the open session's list is
+    // read again while it is on screen, and only a new terminal is watched.
+    it("lists again while the session is open and watches a terminal opened since", async () => {
+      jest.useFakeTimers({ advanceTimers: true })
+      try {
+        const { socket } = await openAudit()
+        await watchOne(socket)
+        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
+        await settle()
+        expect(socket.requests("terminal.list")).toHaveLength(2)
+        await act(async () => {
+          socket.answer("terminal.list", { terminals: [terminal, { ...terminal, terminalId: "terminal-2", cwd: "/Users/mira/dev/acme" }] })
+        })
+        await settle()
+        expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-2" }])
+        expect(screen.getByText("zsh · acme")).toBeOnTheScreen()
+      } finally {
+        jest.useRealTimers()
+      }
+    })
+
+    // Until the new connection's list answers, nothing held is the daemon's
+    // word on this connection.
+    it("says Unconfirmed when the list after a reconnect is refused", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await act(async () => { socket.close() })
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_100)) })
+      const next = FakeSocket.made.at(-1)!
+      await act(async () => {
+        next.readyState = 1
+        next.onopen?.()
+      })
+      await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+      await settle()
+      const request = next.requests("terminal.list").at(-1)!
+      await act(async () => {
+        next.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "Method not found" } }) })
+      })
+      await settle()
+      expect(screen.getByText("Unconfirmed")).toBeOnTheScreen()
+      expect(screen.getByText(/^Last heard: claimed by/)).toBeOnTheScreen()
     })
 
     it("says Failed when the watched shell exits with an error", async () => {
