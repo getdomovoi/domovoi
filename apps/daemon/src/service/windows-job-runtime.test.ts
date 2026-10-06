@@ -7,10 +7,10 @@ import { OperationDeadline } from "../operation-deadline.js"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { readSupervisorStopRequest, writeSupervisorStopRequest, writeWindowsSupervisorRecord, windowsSupervisorRecordPath, type WindowsSupervisorRecord } from "./supervisor-record.js"
 import { readWindowsSupervisorStatus, runWindowsSupervisor, stopWindowsSupervisor } from "./windows-job-supervisor.js"
-import { launchWindowsJob, queryWindowsProcess } from "./windows-job.js"
+import { launchWindowsJob, queryWindowsProcess, queryWindowsProcesses } from "./windows-job.js"
 import { claimExclusiveFileLease } from "../file-lease.js"
 
-vi.mock("./windows-job.js", () => ({ queryWindowsProcess: vi.fn(), windowsProcessAlive: vi.fn(() => false), launchWindowsJob: vi.fn() }))
+vi.mock("./windows-job.js", () => ({ queryWindowsProcess: vi.fn(), queryWindowsProcesses: vi.fn(), windowsProcessAlive: vi.fn(() => false), launchWindowsJob: vi.fn() }))
 const homes: string[] = []
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); vi.resetAllMocks() })
 function fixture(unknown = false) {
@@ -27,6 +27,7 @@ function fixture(unknown = false) {
     attempts: unknown ? [{ number: 1, job: `Local\\Domovoi-${randomUUID()}`, bootId, startedAt: now, stage: "intent", child: null, helper: null, empty: null, exitCode: null, backoffMs: 0 }] : [] }
   writeWindowsSupervisorRecord(home, record)
   vi.mocked(queryWindowsProcess).mockReturnValue({ bootId, identity: null })
+  vi.mocked(queryWindowsProcesses).mockReturnValue({ bootId, identities: [null, null] })
   return { home, path, record }
 }
 
@@ -38,6 +39,18 @@ it("uses the same boot-recovery explanation for status and stop and retains conf
     expect(existsSync(f.path)).toBe(true)
     expect(readSupervisorStopRequest(f.home)?.registrationId).toBe(f.record.registrationId)
   } finally { deadline.clear() }
+})
+
+it("observes boot, loop and daemon identities in one helper call for status", () => {
+  const f = fixture(true), child = { ...f.record.loop, pid: 124 }
+  const attempt = f.record.attempts[0]!
+  attempt.stage = "running"; attempt.child = child; attempt.helper = { ...child, pid: 125 }
+  f.record.state = "running"; f.record.reason = null
+  writeWindowsSupervisorRecord(f.home, f.record)
+  vi.mocked(queryWindowsProcesses).mockReturnValue({ bootId: f.record.loop.bootId, identities: [f.record.loop, child] })
+  expect(readWindowsSupervisorStatus(f.home)).toMatchObject({ running: true })
+  expect(queryWindowsProcesses).toHaveBeenCalledExactlyOnceWith([f.record.loop.pid, child.pid])
+  expect(queryWindowsProcess).not.toHaveBeenCalled()
 })
 
 it("settles old attempts only after a successful different-boot observation", async () => {

@@ -43,12 +43,17 @@ export function parseWindowsJobMessage(value: unknown, job: string): z.infer<typ
 
 // A failed/denied query is never evidence of a different boot or a dead PID.
 export function queryWindowsProcess(pid: number): { bootId: string; identity: WindowsProcessIdentity | null } {
-  windowsProcessIdentitySchema.shape.pid.parse(pid)
+  const observation = queryWindowsProcesses([pid])
+  return { bootId: observation.bootId, identity: observation.identities[0]! }
+}
+export function queryWindowsProcesses(pids: number[]): { bootId: string; identities: (WindowsProcessIdentity | null)[] } {
+  z.array(windowsProcessIdentitySchema.shape.pid).min(1).max(8).parse(pids)
   const command = windowsJobCommand()
-  const output = execFileSync(command.command, command.args, { input: JSON.stringify({ mode: "inspect", pid }) + "\n",
+  const output = execFileSync(command.command, command.args, { input: JSON.stringify({ mode: "inspect", pids }) + "\n",
     encoding: "utf8", timeout: 20_000, maxBuffer: 8192, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
-  return z.object({ bootId: windowsBootIdSchema, identity: windowsProcessIdentitySchema.nullable() }).strict()
-    .refine((value) => !value.identity || value.identity.bootId === value.bootId).parse(JSON.parse(output))
+  return z.object({ bootId: windowsBootIdSchema, identities: z.array(windowsProcessIdentitySchema.nullable()).length(pids.length) }).strict()
+    .refine((value) => value.identities.every((identity, i) => !identity || (identity.bootId === value.bootId && identity.pid === pids[i])))
+    .parse(JSON.parse(output))
 }
 export function windowsProcessAlive(identity: WindowsProcessIdentity): boolean {
   const observed = queryWindowsProcess(identity.pid)

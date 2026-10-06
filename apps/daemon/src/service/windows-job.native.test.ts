@@ -41,10 +41,12 @@ it.runIf(process.platform === "win32")("contains descendants, gates resume, refu
     }
     expect(pids?.pid).toBe(job.prepared.child.pid)
     expect(pids?.descendant).toBeGreaterThan(0)
+    const descendant = queryWindowsProcess(pids!.descendant).identity
+    expect(descendant).not.toBeNull()
     // Kill only the root. Descendant cleanup must come from the job helper.
     process.kill(job.prepared.child.pid, "SIGKILL")
     expect(await job.exited).toMatchObject({ activeProcesses: 0, terminated: true, stopped: false, bootId: before.bootId })
-    expect(() => process.kill(pids!.descendant, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
+    expect(queryWindowsProcess(pids!.descendant).identity).not.toEqual(descendant)
     expect(queryWindowsProcess(process.pid)).toEqual(before)
   } finally {
     // Never delete the proof directory if cleanup cannot be established.

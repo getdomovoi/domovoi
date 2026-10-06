@@ -64,19 +64,24 @@ public static class DomovoiJob {
     Check(GetProcessTimes(handle, out created, out exited, out kernel, out user));
     return new { pid=pid, start=created.ToString(System.Globalization.CultureInfo.InvariantCulture), bootId=boot.ToString() };
   }
-  public static void Inspect(uint pid) {
-    string boot = Boot();
+  static object InspectProcess(uint pid, string boot) {
     IntPtr handle = OpenProcess(0x101000, false, pid);
     if (handle == IntPtr.Zero) {
       int error = Marshal.GetLastWin32Error();
       if (error != 87) throw new Win32Exception(error);
-      Emit(new { bootId=boot.ToString(), identity=(object)null }); return;
+      return null;
     }
     try {
       uint waited = WaitForSingleObject(handle, 0);
       if (waited != 0 && waited != 258) throw new Win32Exception(Marshal.GetLastWin32Error());
-      Emit(new { bootId=boot.ToString(), identity=waited == 0 ? null : Identity(handle, pid, boot) });
+      return waited == 0 ? null : Identity(handle, pid, boot);
     } finally { CloseHandle(handle); }
+  }
+  public static void Inspect(uint[] pids) {
+    string boot = Boot();
+    var identities = new System.Collections.Generic.List<object>();
+    foreach (uint pid in pids) identities.Add(InspectProcess(pid, boot));
+    Emit(new { bootId=boot, identities=identities });
   }
   // CommandLineToArgvW/CRT quoting, with an explicit application path. No shell.
   static string Quote(string value) {
@@ -169,7 +174,7 @@ public static class DomovoiJob {
 }
 '@
 $request = [Console]::In.ReadLine() | ConvertFrom-Json
-if ($request.mode -eq 'inspect') { [DomovoiJob]::Inspect([uint32]$request.pid) }
+if ($request.mode -eq 'inspect') { [DomovoiJob]::Inspect([uint32[]]@($request.pids)) }
 elseif ($request.mode -eq 'run') { [DomovoiJob]::Run([string]$request.job, [string]$request.executable, [string[]]@($request.args), [string]$request.log) }
 else { throw 'Unknown helper operation' }
 exit 0

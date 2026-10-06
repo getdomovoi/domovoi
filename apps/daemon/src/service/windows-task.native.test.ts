@@ -14,6 +14,7 @@ import { nodeServiceEffects, removeService, runServiceCommand, serviceStatus, ty
 import { windowsPowerShellPath, windowsSchtasksPath, windowsTaskRemovalPlan, windowsTaskSettingsCommand } from "./windows-task.js"
 import { readWindowsSupervisorRecord, type WindowsSupervisorRecord } from "./supervisor-record.js"
 import { stopWindowsSupervisor } from "./windows-job-supervisor.js"
+import { queryWindowsProcess, queryWindowsProcesses } from "./windows-job.js"
 import { removeScratchDirectory } from "../test-scratch.js"
 
 // Real 1/5/15 second backoffs plus Windows compiler, manager and startup time.
@@ -140,11 +141,13 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
       expect(record()).toMatchObject({ state: "stopped", reason: "deliberate-stop" })
       await withinServiceDeadline(deadline, () => delay(3_000, undefined, { signal: deadline.signal }))
       expect(record()!.attempts).toHaveLength(1)
-      expect(() => process.kill(first.attempts[0]!.child!.pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
+      expect(queryWindowsProcess(first.attempts[0]!.child!.pid).identity).not.toEqual(first.attempts[0]!.child)
     }
     await removeService({ platform: "win32", home: directory }, scoped)
     expect(record()!.attempts.every((a) => a.empty?.activeProcesses === 0 && a.empty.terminated)).toBe(true)
-    for (const attempt of record()!.attempts) expect(() => process.kill(attempt.child!.pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
+    const children = record()!.attempts.map((attempt) => attempt.child!)
+    const observed = queryWindowsProcesses(children.map((child) => child.pid))
+    children.forEach((child, index) => expect(observed.identities[index]).not.toEqual(child))
     expect(await capture(plan.inspect)).toMatchObject({ code: 0, stdout: "domovoi-task:missing\r\n" })
     removed = true
   } finally {

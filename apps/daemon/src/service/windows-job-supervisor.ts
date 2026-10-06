@@ -10,7 +10,7 @@ import type { OperationDeadline } from "../operation-deadline.js"
 import { parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceStatus } from "./install.js"
-import { launchWindowsJob, queryWindowsProcess, windowsProcessAlive, type WindowsJob, type WindowsJobEmpty } from "./windows-job.js"
+import { launchWindowsJob, queryWindowsProcess, queryWindowsProcesses, windowsProcessAlive, type WindowsJob, type WindowsJobEmpty } from "./windows-job.js"
 import { windowsProcessIdentitySchema, prepareSupervisorDirectory, readSupervisorStopRequest, readWindowsSupervisorRecord,
   supervisorBackoffs, supervisorStopPath, writeSupervisorStopRequest, writeWindowsSupervisorRecord, windowsSupervisorRecordSchema,
   type WindowsProcessIdentity, type WindowsSupervisorRecord } from "./supervisor-record.js"
@@ -200,10 +200,11 @@ export function readWindowsSupervisorStatus(home: string): ServiceStatus | undef
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
   const record = config ? boundRecord(config) : readWindowsSupervisorRecord(home)
   if (!record) return undefined
-  const bootId = queryWindowsProcess(process.pid).bootId
-  const loopAlive = record.loop.bootId === bootId && windowsProcessAlive(record.loop)
   const child = record.attempts.at(-1)?.child
-  const status = windowsSupervisorStatus(record, bootId, loopAlive, !!child && loopAlive && windowsProcessAlive(child))
+  const observed = queryWindowsProcesses([record.loop.pid, ...(child ? [child.pid] : [])])
+  const loopAlive = record.loop.bootId === observed.bootId && observed.identities[0]?.start === record.loop.start
+  const childAlive = !!child && child.bootId === observed.bootId && observed.identities[1]?.start === child.start
+  const status = windowsSupervisorStatus(record, observed.bootId, loopAlive, childAlive)
   return config ? status : { ...status, supervisionFailure: "configuration-missing", detail: `service configuration missing; ${status.detail}` }
 }
 
