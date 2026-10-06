@@ -364,7 +364,14 @@ Read these before relying on this guide for a fleet rollout.
   skips outside a session with a per-user launchd domain and refuses to skip on the macOS CI leg.
   A timed-out manager command may already have changed OS state; inspect the manager before
   retrying.
-- Windows crash restart of the logon task is not configured.
+- Windows logon tasks now run a job-object supervisor with 1, 5 and 15 second crash backoffs
+  and exhaustion after the fourth crash. Status exits 1 on exhaustion or unconfirmed tree
+  evidence. Stop/removal require empty-job proof or a verified later Windows boot; otherwise
+  they retain the task and configuration and explain the refusal. The new native restart,
+  exhaustion, removal and task-settings read-back tests still need Windows CI execution.
+  Real user-logon acceptance remains **[H]**, fetzy's hardware run. Windows boot supervision
+  is not provided. Existing direct-daemon tasks lack job evidence and require manual retirement
+  after disabling the task and restarting Windows before installing the supervised service.
 - The [dedicated WSL job](wsl-ci.md) has passed fifteen real proofs on a hosted Windows runner with
   one WSL 2 guest, covering discovery, path boundaries with a non-default Windows-drive mount root
   and literal shell metacharacters, an authenticated route to a daemon installed inside the guest,

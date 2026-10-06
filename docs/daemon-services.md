@@ -187,32 +187,54 @@ case only changes the installing user's own lingering.
 
 ## Windows logon task
 
-The limited-user `ONLOGON` task runs the daemon itself with `--service-config`. It has no crash
-supervision yet: a daemon that crashes stays down until the next logon or a manual start. The
-2026-09-17 decision to give it the WSL guest's supervisor loop was taken out of #698 by ruling
-Q300 A (2026-10-01), after review showed that failing closed on Windows needs per-attempt process
-tree evidence, a startup gate and boot-based recovery. It returns together with a job object that
-contains the daemon's tree.
+The limited-user `ONLOGON` task runs `--service-supervise`. Its Windows supervisor starts
+one daemon attempt at a time inside a Windows job object. A persistent Windows PowerShell
+`Add-Type` helper calls the native job APIs, creates the daemon suspended, assigns it to a
+UUID-named job, and verifies `KILL_ON_JOB_CLOSE` without breakaway permission. An existing job
+name refuses the launch. Runtime values arrive over stdin as JSON, not as script source.
+The daemon resumes only after its job and process birth identities have been published.
 
-The task is created by `schtasks /create /sc onlogon /rl LIMITED`, which cannot set a task's run
-limit or battery rules and leaves Task Scheduler's defaults: a 72 hour execution limit, as
-Microsoft documents it, and battery rules that stop the task. The daemon would end there, with or
-without supervision. So after every
-`/create`, at install, update and an update's restore, a PowerShell step through the Task Scheduler
-COM interface sets what the WSL task sets: `ExecutionTimeLimit` `PT0S` (no limit),
-`DisallowStartIfOnBatteries` and `StopIfGoingOnBatteries` false. It registers the change in place
-(`TASK_UPDATE`) under the task's own principal and logon type, with no password, before the task
-is run. A failure there fails the install after the task was registered, as any step after
-`/create` does. Tests check the generated script only; Task Scheduler has not been seen to accept
-it.
+Each attempt in the profile's `windows-supervisor.json` records the job name, kernel boot GUID,
+helper and daemon PID/creation time, launch phase, exit code, backoff, and empty-job receipt.
+On daemon exit the helper terminates the job, including surviving descendants, and queries
+`JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.ActiveProcesses` on its retained handle until it is zero.
+Only that receipt permits a restart. Backoffs share WSL's policy: 1, 5 and 15 seconds; the fourth
+crash records exhaustion. `domovoid service status` reports exhaustion and exits 1 even when the
+task remains registered. A clean exit or deliberate stop does not restart. Daemon output is
+appended to the profile's `windows-daemon.log`.
+
+An exclusive startup lease gates every loop. Unconfirmed attempts on the same Windows boot
+refuse another launch, stop confirmation, or removal. Helper death closes its non-inherited job
+handle, but neither that event, daemon death, a missing job, nor Task Scheduler state supplies
+an empty-job receipt. Status explains that the task/configuration remain, the tree is unknown,
+and restarting Windows settles the tree from the recorded boot. Boot recovery compares the
+kernel `SystemBootEnvironmentInformation.BootIdentifier` GUID, queried through
+`NtQuerySystemInformation`, not `LastBootUpTime` or wall-clock-minus-uptime. Suspend, logon and
+clock changes do not establish a new boot. An unreadable boot identity refuses recovery.
+Missing or malformed history cannot be treated as a newly empty tree.
+
+Every `schtasks /create /sc onlogon /rl LIMITED` is followed by the Task Scheduler COM settings
+step, before `/run`: `ExecutionTimeLimit` is `PT0S`, and `DisallowStartIfOnBatteries` and
+`StopIfGoingOnBatteries` are false. This replaces Task Scheduler's default run limit and battery
+stops. Install, update and rollback use the same settings step. Failure there fails the operation.
+The Windows native test reads all three values back through `schtasks /query /xml`; execution
+is still owed on Windows CI for this change. Actual logon acceptance remains **[H]**, fetzy's
+hardware run. A manual task start is not logon acceptance.
 
 ## Windows removal
 
-`domovoid service remove` disables the logon task before stopping it, waits for Task Scheduler to
-report that it is disabled with no queued or running instances, and only then removes the task and
-saved configuration. Deleting a registration alone does not stop its running program.
-See [schtasks delete](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-delete)
-and [RegisteredTask.State](https://learn.microsoft.com/en-us/windows/win32/taskschd/registeredtask-state).
+`domovoid service remove` disables future task starts, requests supervisor retirement, and
+requires empty-job evidence for every attempt under the startup lease. A verified later boot
+also settles an earlier boot's tree. Only after that proof does it stop the task, wait for no
+queued or running instances, delete the registration, and remove the configuration. Updates
+and rollback use the same proof before replacing a runtime; their stop permits the registration
+to start again only after proof, with the task disabled meanwhile.
+
+A missing task does not erase the proof obligation of a saved supervised service. Unconfirmed
+trees refuse removal and retain the task and configuration. Legacy `--service-config` tasks
+remain recognized, but have no job evidence: stop, removal and replacement refuse. Disable the
+legacy task, restart Windows, and manually retire that registration before installing the new
+supervised service. Task Scheduler stop or `taskkill` success alone cannot establish tree death.
 
 The Windows path uses the built-in Windows PowerShell Task Scheduler COM interface, not localized
 `schtasks /query` text. The executable is resolved beneath the absolute local `SystemRoot`, never
@@ -226,7 +248,7 @@ bypass, or a task password. Missing or blocked PowerShell refuses removal; there
 fallback. Disable, stop, status observations, deletion, and configuration cleanup share the same
 30-second deadline. Polling cannot renew it, and a late result cannot start a later deletion.
 
-A missing task at the initial lookup is already removed. Once a task has been found, an unknown
+A missing task is already removed only when no saved supervision still requires proof. An unknown
 state or disappearing registration is not proof that its process stopped. Manager failures and
 stop timeouts retain the configuration; a failure during final deletion may have already changed
 OS or filesystem state. The error names the task and asks the operator to inspect Task Scheduler
@@ -236,7 +258,7 @@ disabled with its registration and configuration kept; the error says so. Re-ena
 keeping the service instead of retrying removal. No other process is killed by
 name, and a daemon already orphaned by an older delete-only removal needs manual reconciliation.
 
-Task Scheduler termination is not a graceful daemon shutdown and can leave a ready owner record
+Job termination is not a graceful daemon shutdown and can leave a ready owner record
 after the process lease is released. Removal does not clear that record. Instead, when its saved
 registration UUID and exact owner instance match before and after the manager stop, removal writes
 an owner-only completed-removal receipt while holding the free lease. Desktop can then retire only
@@ -262,13 +284,15 @@ action, including a different shell `HOME`, then reacquisition after normal comp
 CLI. Removing acquisition makes both process tests fail. Releasing exclusion on expiry makes all
 three deadline tests fail. These tests do not exercise native manager jobs after a CLI crash.
 
-Windows removal boundary tests model a live process surviving registration deletion, prove the
-stop-before-delete order, and exercise queued, unknown, absent, refused, silent, and late replies.
-The native Windows-only test creates a UUID-named limited-user task, observes its live Node process,
-runs the real removal subprocesses, and requires both process exit and an absent registration.
-It never replaces the user's Domovoi task. Its private stop marker cleans up even a deliberately
-broken delete-only remover. This test is skipped on other operating systems, so a green Linux run
-does not prove native Windows removal.
+Windows unit tests mock the OS boundary and cover startup acknowledgement, refused tree proof,
+boot recovery, shared backoffs, exhaustion status, and disable/prove/stop/delete ordering.
+The Windows-only native tests use UUID tasks and temporary profiles. They kill a real daemon,
+require one new PID and exactly two attempts that remain stable for three seconds, drive four
+crashes to exhaustion and status exit 1, prove deliberate stop stays stopped, and require empty
+jobs before removal. A separate job test leaves a descendant alive when its root dies and
+requires job cleanup; it also checks suspended startup, name collision refusal and the boot GUID
+read. Native execution is pending on Windows CI for this change. A green macOS/Linux run skips
+these boundaries and cannot establish Windows acceptance. Cleanup retains evidence if proof fails.
 
 A native Linux-only test drives systemd itself through the same install, status and removal
 functions the CLI calls. It installs a UUID-named user unit into the per-boot runtime unit

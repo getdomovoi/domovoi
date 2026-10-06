@@ -11,6 +11,7 @@ const taskStateScript = "[Console]::Out.WriteLine('domovoi-task:' + [int]$task.S
 export type WindowsTaskRemovalPlan = {
   kind: "task"
   name: string
+  disable?: ServiceCommand
   stop: ServiceCommand
   inspect: ServiceCommand
   remove: ServiceCommand
@@ -100,6 +101,9 @@ export function windowsTaskRemovalPlan(name: string): WindowsTaskRemovalPlan {
   const executable = windowsPowerShellPath()
   return {
     kind: "task", name,
+    disable: taskCommand(executable, name, `
+$task.Enabled = $false
+${taskStateScript}`),
     // Disabling first also prevents queued/logon starts between stop and delete.
     // Stop can race normal exit; only SCHED_E_TASK_NOT_RUNNING is benign, and
     // even that must be followed by the same stopped-state proof.
@@ -148,6 +152,14 @@ export async function stopWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pic
   }
   if (state !== "1") throw new Error(`Task Scheduler did not confirm a disabled, stopped task (state ${state})`)
   return "stopped"
+}
+
+// Leave the helper alive while it terminates and observes its job. Scheduler
+// stop alone can destroy the only handle that could publish that proof.
+export async function disableWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<void> {
+  if (!plan.disable) throw new Error("Windows task disable step is unavailable")
+  const state = await taskResult(plan.disable, effects, deadline)
+  if (!["missing", "1", "2", "3", "4"].includes(state)) throw new Error(`Task Scheduler could not disable the task (state ${state})`)
 }
 
 // The program and arguments, whether the task is enabled, and its state.

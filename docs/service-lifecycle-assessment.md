@@ -42,8 +42,8 @@ clean-exit and live-child/backoff-removal evidence independently.
 Actual Windows user logon is still unproved. Neither this wiring nor a manual
 task start closes that gate. S1.1 stays open.
 
-**Decided 2026-09-17; Linux built 2026-10-01, Windows deferred, neither
-accepted** (`SHIP-PLAN.md` S1.1, 6a0be626; owner ruling Q282 A to build them,
+**Decided 2026-09-17; Linux built 2026-10-01, Windows job supervision implemented
+2026-10-06, neither fully accepted** (`SHIP-PLAN.md` S1.1, 6a0be626; owner ruling Q282 A to build them,
 ruling Q300 A to defer Windows). The two policies this assessment left to the
 maintainer are settled. [Daemon service configuration](daemon-services.md)
 has the printed text and failure handling.
@@ -58,18 +58,21 @@ has the printed text and failure handling.
   tests with a mocked command runner, and the distributed-CLI test with a
   shimmed `loginctl` on the Linux CI leg. No test runs a real `loginctl`. Owed:
   a native proof that the unit survives logout and starts at boot.
-- Windows matches WSL's shape: not built. A supervisor loop under the logon
-  task was built on `feat/s1-1-service-policies` and taken out by ruling
-  Q300 A (2026-10-01). Security review of #698 showed that failing closed on
-  Windows needs per-attempt process tree evidence, a startup gate and
-  boot-based recovery, which a job object that contains the daemon's tree
-  would provide; the policy returns with that work. The logon task still runs
-  the daemon itself, with no crash restart. What did land for it: every
-  `schtasks` call names the one under `SystemRoot`, and a step after each
-  `schtasks /create` sets `ExecutionTimeLimit` `PT0S` and both battery rules
-  false, as the WSL task does, replacing the documented 72 hour default. Owed:
-  the supervision itself, a native read-back of those settings (only the
-  generated script is tested), and the actual logon acceptance above.
+- Windows matches WSL's shape: job supervision is implemented. The earlier loop was
+  reverted by Q300 A because PID death and taskkill were not process-tree proof. Each new
+  attempt now has a UUID job held by a persistent PowerShell/P/Invoke helper, a suspended
+  launch and publication gate, and an empty-job receipt queried after job termination.
+  Startup and removal refuse unconfirmed same-boot attempts; a positively read different
+  kernel boot GUID permits boot-based recovery. Unreadable identity refuses. Backoffs are
+  1, 5 and 15 seconds, followed by recorded exhaustion on crash four and status exit 1.
+  Stop/removal require tree proof, and legacy tasks without job evidence refuse removal.
+  All manager executables remain resolved under SystemRoot. The native test reads back
+  `PT0S` and both false battery flags, asserts exactly one restart with a stable new PID,
+  exhaustion status, deliberate-stop non-restart, and empty jobs at removal. Unit tests
+  run on macOS/Linux with the Windows boundary mocked. Owed: execution of the new native
+  tests on Windows CI, plus **[H] real user-logon acceptance on fetzy's hardware**.
+  This change does not provide Windows boot supervision and does not close S1.1.
+
 
 The accepted scope is Unix acceptance, two status-reporting fixes, and Windows
 and WSL lifecycle decisions. Existing Unix adapters already install, supervise

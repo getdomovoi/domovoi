@@ -97,3 +97,10 @@ it("gates startup on every old job, and refuses a live predecessor even with emp
   expect(() => assertWindowsStartup(record, loop.bootId, true, () => false)).toThrow("Restart Windows")
   expect(() => assertWindowsStartup(record, randomUUID(), true, () => { throw new Error("old PID must not be queried") })).not.toThrow()
 })
+
+it("reports a dead loop during backoff as failed even when the old job is empty", async () => {
+  const f = fixture()
+  await superviseWindows(input(), f.effects)
+  const backingOff = f.records.find((r) => r.state === "backoff")!
+  expect(windowsSupervisorStatus(backingOff, loop.bootId, false)).toMatchObject({ running: false, supervisionFailure: "observation-failure" })
+})

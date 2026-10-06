@@ -69,3 +69,21 @@ it("rejects an empty receipt from another boot and requests helper shutdown", as
   expect(f.input()).toContain('"stop"')
   f.child.emit("close", 1)
 })
+
+it("does not accept a receipt followed by a failed helper exit", async () => {
+  const f = fixture()
+  const pending = launchWindowsJob({ job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
+  f.send(prepared)
+  const launched = await pending
+  f.send({ kind: "empty", job, bootId, activeProcesses: 0, terminated: true, code: 0, stopped: true })
+  f.child.emit("close", 1)
+  await expect(launched.exited).rejects.toThrow("job-empty proof")
+})
+
+it("rejects a helper that resumes before acknowledgement", async () => {
+  const f = fixture()
+  const pending = launchWindowsJob({ job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
+  f.send({ kind: "running", job })
+  await expect(pending).rejects.toThrow("invalid")
+  f.child.emit("close", 1)
+})
