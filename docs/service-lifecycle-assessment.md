@@ -71,9 +71,10 @@ has the printed text and failure handling.
   exhaustion status, deliberate-stop non-restart, and empty jobs at removal. Unit tests
   run on macOS/Linux with the Windows boundary mocked. Owed: execution of the new native
   tests on Windows CI, plus **[H] real user-logon acceptance on fetzy's hardware**.
-  Forced sign-out can lose the empty-job receipt and block the next same-boot logon until
-  Windows restarts. The proposed missing-job-name proof is disputed because it does not
-  observe termination completion. Legacy migration also remains a policy decision; exact
+  Signing out (or Task Manager, or `schtasks /end`) can lose the empty-job receipt and block
+  the next same-boot logon until Windows restarts. The proposed missing-job-name proof is
+  disputed because it does not observe termination completion. Legacy migration also remains
+  a policy decision; exact
   manual disable/restart/retirement steps are in [daemon services](daemon-services.md#windows-removal).
   This change does not provide Windows boot supervision and does not close S1.1.
 

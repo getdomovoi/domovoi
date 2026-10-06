@@ -222,7 +222,7 @@ a lease file. It assumes the same user has not deleted the profile's evidence. R
 applies to the registration, including a new loop racing the request, until reinstall or an
 update clears it under the startup lease with the task disabled.
 
-Forced sign-out, Task Manager termination, or `schtasks /end` can kill the helper before it
+Signing out (or Task Manager, or `schtasks /end`) can kill the helper before it
 publishes its empty-job receipt. The next logon on the same Windows boot then refuses startup
 until Windows restarts. This remains an unresolved logon acceptance failure. Missing named jobs
 are not accepted as proof: last-handle closure initiates kill-on-close, but a namespace lookup
