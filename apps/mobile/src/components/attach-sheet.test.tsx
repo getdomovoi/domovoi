@@ -25,9 +25,12 @@ describe("AttachSheet", () => {
     expect(screen.getByText("one shot, sent with the turn, same bound")).toBeOnTheScreen()
     for (const waits of [
       "desktop work: a phone holds no worktree to pick from",
-      "waits on a read-only terminal path, which a phone does not have yet",
+      // A phone reads a terminal since frame 04; picking output to attach
+      // is what is not built (the design's open question 5).
+      "not built: a phone reads a terminal but cannot pick its output to attach",
       "not built: an outbound fetch on a phone's word needs its own gate line",
     ]) expect(screen.getByText(waits)).toBeOnTheScreen()
+    expect(screen.queryByText(/which a phone does not have yet/)).toBeNull()
     // The three that wait are stated, not tappable.
     expect(screen.queryByRole("button", { name: /File from the worktree/ })).toBeNull()
 
