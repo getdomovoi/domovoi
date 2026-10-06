@@ -742,6 +742,40 @@ describe("App", () => {
       expect(socket.requests("terminal.unwatch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }])
     })
 
+    // The daemon may have taken a watch whose answer has not come back. Leaving
+    // ends it anyway, rather than leaving output flowing to no screen.
+    it("unwatches a terminal whose watch is still unanswered when the person leaves", async () => {
+      const { socket } = await openAudit()
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      expect(socket.requests("terminal.watch")).toHaveLength(1)
+
+      await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+      await settle()
+      expect(socket.requests("terminal.unwatch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }])
+    })
+
+    // The list after a reconnect is the daemon's word on the terminal's state.
+    it("takes the state from the list after a reconnect, before the new watch answers", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await act(async () => { socket.close() })
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_100)) })
+      const next = FakeSocket.made.at(-1)!
+      await act(async () => {
+        next.readyState = 1
+        next.onopen?.()
+      })
+      await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+      await settle()
+      await act(async () => {
+        next.answer("terminal.list", { terminals: [{ ...terminal, state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 1 }] })
+      })
+      await settle()
+      expect(screen.getByText("Failed")).toBeOnTheScreen()
+      expect(screen.getByText("Last claimed by MacBook Pro")).toBeOnTheScreen()
+    })
+
     it("says Failed when the watched shell exits with an error", async () => {
       const { socket } = await openAudit()
       await watchOne(socket)

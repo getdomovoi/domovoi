@@ -436,15 +436,17 @@ export function App() {
   useEffect(() => {
     if (!watchedSessionId || status !== "open") return
     let current = true
+    // Every terminal a watch was asked for, answered or not: the daemon may
+    // have taken a watch whose answer never came back, so leaving ends each.
     const watched = new Set<string>()
     const watchOne = (terminalId: string) => {
+      watched.add(terminalId)
       call("terminal.watch", { terminalId }).then((result) => {
         // Answered after the person left: the watch is no one's, so it ends.
         if (!current) {
           call("terminal.unwatch", { terminalId }).catch(() => {})
           return
         }
-        watched.add(terminalId)
         setTerminals((held) => held.has(terminalId) ? new Map(held).set(terminalId, { state: "watching", record: watchFrom(result) }) : held)
       }, (cause: unknown) => {
         if (!current) return
