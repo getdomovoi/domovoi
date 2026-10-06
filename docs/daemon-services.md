@@ -193,6 +193,8 @@ one daemon attempt at a time inside a Windows job object. A persistent Windows P
 UUID-named job, and verifies `KILL_ON_JOB_CLOSE` without breakaway permission. An existing job
 name refuses the launch. Runtime values arrive over stdin as JSON, not as script source.
 The daemon resumes only after its job and process birth identities have been published.
+`STARTUPINFOEX` limits inherited handles to NUL input and the daemon log. The helper restores
+the supervisor's `PSModulePath` before creating the daemon, including an originally absent value.
 
 Each attempt in the profile's `windows-supervisor.json` records the job name, kernel boot counter,
 helper and daemon PID/creation time, launch phase, exit code, backoff, and empty-job receipt.
@@ -214,11 +216,18 @@ Records use `windows-boot:<counter>`; old GUID records are refused. The native t
 this read with `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters`
 `BootId` using a separate registry read under the limited user. Suspend, logon and
 clock changes do not establish a new boot. An unreadable boot identity refuses recovery.
-Malformed history refuses. A claimable startup lease with no record means no launch: every
+Malformed history refuses. A pre-existing, claimable startup lease with no record means no launch: every
 launch writes intent first. This permits retry or retirement after a prelaunch failure left only
 a lease file. It assumes the same user has not deleted the profile's evidence. Retirement
 applies to the registration, including a new loop racing the request, until reinstall or an
 update clears it under the startup lease with the task disabled.
+
+Forced sign-out, Task Manager termination, or `schtasks /end` can kill the helper before it
+publishes its empty-job receipt. The next logon on the same Windows boot then refuses startup
+until Windows restarts. This remains an unresolved logon acceptance failure. Missing named jobs
+are not accepted as proof: last-handle closure initiates kill-on-close, but a namespace lookup
+does not supply the required observation that asynchronous process termination has completed.
+Changing `Local\` to `Global\` alone would address session visibility, not that proof gap.
 
 Every `schtasks /create /sc onlogon /rl LIMITED` is followed by the Task Scheduler COM settings
 step, before `/run`: `ExecutionTimeLimit` is `PT0S`, and `DisallowStartIfOnBatteries` and
@@ -242,6 +251,57 @@ trees refuse removal and retain the task and configuration. Legacy `--service-co
 remain recognized, but have no job evidence: stop, removal and replacement refuse. Disable the
 legacy task, restart Windows, and manually retire that registration before installing the new
 supervised service. Task Scheduler stop or `taskkill` success alone cannot establish tree death.
+
+To retire a legacy task manually, use the same Windows user that installed it. These steps
+require an actual Windows restart after disabling the task, not sleep, hibernation or sign-out.
+
+1. In Windows PowerShell, inspect the action and confirm it is this user's Domovoi daemon with
+   `--service-config`. If it is another program, stop this procedure. Back up the non-secret
+   configuration, then disable the task. Each command must succeed before continuing.
+
+   ```powershell
+   $manager = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+   $configuration = Join-Path $env:USERPROFILE '.domovoi\service.json'
+   & $manager /query /tn 'Domovoi daemon' /xml
+   if ($LASTEXITCODE -ne 0) { throw 'Task inspection failed' }
+   if (Test-Path -LiteralPath "$configuration.pre-supervisor") { throw 'Backup already exists; preserve it before continuing' }
+   Copy-Item -LiteralPath $configuration -Destination "$configuration.pre-supervisor" -ErrorAction Stop
+   & $manager /change /tn 'Domovoi daemon' /disable
+   if ($LASTEXITCODE -ne 0) { throw 'Task disable failed' }
+   ```
+
+2. Close Domovoi Desktop, choose **Restart** in the Windows Start menu, and sign back into the
+   same account. Do not enable or manually start the legacy task.
+3. In a new Windows PowerShell window, inspect the task again. Verify its action is unchanged,
+   that it is disabled and has no instances, then delete only that registration.
+
+   ```powershell
+   $manager = Join-Path $env:SystemRoot 'System32\schtasks.exe'
+   & $manager /query /tn 'Domovoi daemon' /xml
+   if ($LASTEXITCODE -ne 0) { throw 'Task inspection failed' }
+   $scheduler = New-Object -ComObject 'Schedule.Service'
+   $scheduler.Connect()
+   $task = $scheduler.GetFolder('\').GetTask('Domovoi daemon')
+   if ($task.Enabled -or $task.GetInstances(0).Count -ne 0) { throw 'Legacy task was enabled or started; disable it and restart Windows again' }
+   & $manager /delete /tn 'Domovoi daemon' /f
+   if ($LASTEXITCODE -ne 0) { throw 'Task deletion failed' }
+   ```
+
+4. After the restart and task deletion above, remove only the legacy service configuration:
+
+   ```powershell
+   $configuration = Join-Path $env:USERPROFILE '.domovoi\service.json'
+   Remove-Item -LiteralPath $configuration -ErrorAction Stop
+   ```
+
+   Set `DOMOVOI_PROFILE_DIR` to the original profile named in the backup, if customized.
+   If a stale owner blocks the new install, run `domovoid profile recover --confirm-no-supervisor`
+   for that same profile only after confirming that no other supervisor owns or restarts it.
+   Keep the backup, credentials and profile data.
+5. Restore the original non-secret installation environment from the backup, including any
+   custom profile, listener, credential-file and TLS paths. Run `domovoid service install`,
+   then `domovoid service status`. The new task uses job supervision. Automated migration of
+   legacy tasks remains refused pending the maintainer's policy decision.
 
 The Windows path uses the built-in Windows PowerShell Task Scheduler COM interface, not localized
 `schtasks /query` text. The executable is resolved beneath the absolute local `SystemRoot`, never

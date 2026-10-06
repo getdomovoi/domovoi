@@ -370,8 +370,10 @@ Read these before relying on this guide for a fleet rollout.
   they retain the task and configuration and explain the refusal. The new native restart,
   exhaustion, removal and task-settings read-back tests still need Windows CI execution.
   Real user-logon acceptance remains **[H]**, fetzy's hardware run. Windows boot supervision
-  is not provided. Existing direct-daemon tasks lack job evidence and require manual retirement
-  after disabling the task and restarting Windows before installing the supervised service.
+  is not provided. Forced sign-out or helper termination can lose the empty-job receipt and
+  block the next logon on the same boot until Windows restarts. Existing direct-daemon tasks
+  lack job evidence and require [manual retirement](daemon-services.md#windows-removal) after
+  disabling the task and restarting Windows before installing the supervised service.
 - The [dedicated WSL job](wsl-ci.md) has passed fifteen real proofs on a hosted Windows runner with
   one WSL 2 guest, covering discovery, path boundaries with a non-default Windows-drive mount root
   and literal shell metacharacters, an authenticated route to a daemon installed inside the guest,
