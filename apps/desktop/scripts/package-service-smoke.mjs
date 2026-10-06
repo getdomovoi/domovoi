@@ -22,7 +22,7 @@
 // Linux leg runs as a throwaway account the workflow creates, in that
 // account's own home.
 
-import { constants, existsSync, realpathSync } from "node:fs"
+import { constants, existsSync, readdirSync, realpathSync } from "node:fs"
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir, userInfo } from "node:os"
 import { dirname, join, resolve, sep } from "node:path"
@@ -61,8 +61,17 @@ export function serviceSmokeSkip(platform) {
     + "install, attach, status and removal."
 }
 
+// The entries of the account's ~/.domovoi that make it a Domovoi profile:
+// everything but the installer's own service-operation lease, which any
+// service command (and the daemon's scripted launchd tests, earlier in the
+// macOS job) creates there whatever HOME says.
+export function profileEntries(names) {
+  return names.filter((name) => !/^service-operation-lease\.sqlite(?:-journal)?$/u.test(name))
+}
+
 // The reason this host may not run the smoke, or undefined when it may.
-export function serviceSmokeRefusal({ platform, env, username, userHome, home, liveProfileExists }) {
+// profileEntries: what profileEntries() keeps of the account's ~/.domovoi.
+export function serviceSmokeRefusal({ platform, env, username, userHome, home, profileEntries: entries }) {
   if (platform !== "darwin" && platform !== "linux") {
     return `${description} has no login service to install on ${platform}. Nothing was installed.`
   }
@@ -77,8 +86,9 @@ export function serviceSmokeRefusal({ platform, env, username, userHome, home, l
     return `${description} needs HOME to be ${userHome}, the only home the account's systemd user manager reads units from. `
       + "Nothing was installed."
   }
-  if (liveProfileExists) {
-    return `${join(userHome, ".domovoi")} exists. ${description} will not share an account with a Domovoi profile. Nothing was installed.`
+  if (entries.length > 0) {
+    return `${join(userHome, ".domovoi")} holds a Domovoi profile (${entries.slice(0, 3).join(", ")}${entries.length > 3 ? ", ..." : ""}). `
+      + `${description} will not share an account with one. Nothing was installed.`
   }
   return undefined
 }
@@ -247,9 +257,17 @@ async function main({ argv, env, platform }) {
     return
   }
   const { uid, username, homedir: userHome } = userInfo()
-  const refusal = serviceSmokeRefusal({
-    platform, env, username, userHome, home: env.HOME, liveProfileExists: existsSync(join(userHome, ".domovoi")),
-  })
+  // Absent is the only answer that means empty; any other failure to list it
+  // stops the run rather than passing as no profile.
+  const listed = (() => {
+    try {
+      return readdirSync(join(userHome, ".domovoi"))
+    } catch (error) {
+      if (error?.code === "ENOENT") return []
+      throw error
+    }
+  })()
+  const refusal = serviceSmokeRefusal({ platform, env, username, userHome, home: env.HOME, profileEntries: profileEntries(listed) })
   if (refusal) throw new Error(refusal)
 
   const desktopRoot = dirname(dirname(fileURLToPath(import.meta.url)))

@@ -18,6 +18,7 @@ import {
   managerReadbackCommand,
   optInVariable,
   packagedResourcesCandidates,
+  profileEntries,
   parseAttachReport,
   parseServiceStatus,
   serviceGone,
@@ -45,7 +46,7 @@ test("Windows skips with a stated reason; macOS and Linux run", () => {
 })
 
 test("the smoke refuses a host that has not opted in", () => {
-  const macHost = { platform: "darwin", username: "runner", userHome: "/Users/runner", home: "/Users/runner", liveProfileExists: false }
+  const macHost = { platform: "darwin", username: "runner", userHome: "/Users/runner", home: "/Users/runner", profileEntries: [] }
   for (const env of [{}, { CI: "true" }, { [optInVariable]: "1" }, { CI: "1", [optInVariable]: "1" }, { CI: "true", [optInVariable]: "true" }]) {
     const refusal = serviceSmokeRefusal({ ...macHost, env })
     assert.match(refusal, new RegExp(optInVariable, "u"), JSON.stringify(env))
@@ -56,14 +57,29 @@ test("the smoke refuses a host that has not opted in", () => {
 
 test("the smoke refuses a host that already has a Domovoi profile", () => {
   const refusal = serviceSmokeRefusal({
-    platform: "darwin", env: optedIn, username: "runner", userHome: "/Users/runner", home: "/Users/runner", liveProfileExists: true,
+    platform: "darwin", env: optedIn, username: "runner", userHome: "/Users/runner", home: "/Users/runner",
+    profileEntries: profileEntries(["service-operation-lease.sqlite", "state.sqlite", "daemon.token"]),
   })
   assert.match(refusal, /\/Users\/runner\/\.domovoi/u)
+  assert.match(refusal, /state\.sqlite, daemon\.token\)/u)
+  assert.doesNotMatch(refusal, /lease/u)
   assert.match(refusal, /Nothing was installed/u)
 })
 
+test("only the installer's own lease file in ~/.domovoi is not a profile", () => {
+  // The daemon's scripted launchd tests take the real account's lease on the
+  // macOS runner before this step runs, so that file alone must not refuse.
+  assert.deepEqual(profileEntries(["service-operation-lease.sqlite", "service-operation-lease.sqlite-journal"]), [])
+  assert.deepEqual(profileEntries([]), [])
+  assert.deepEqual(profileEntries(["service-operation-lease.sqlite", "profile-lease.sqlite", "local-owner.json"]), ["profile-lease.sqlite", "local-owner.json"])
+  assert.deepEqual(profileEntries(["service-operation-lease.sqlite.bak"]), ["service-operation-lease.sqlite.bak"])
+  assert.equal(serviceSmokeRefusal({
+    platform: "darwin", env: optedIn, username: "runner", userHome: "/Users/runner", home: "/Users/runner", profileEntries: [],
+  }), undefined)
+})
+
 test("on Linux the smoke runs only as the throwaway account in its own home", () => {
-  const linux = { platform: "linux", env: optedIn, liveProfileExists: false }
+  const linux = { platform: "linux", env: optedIn, profileEntries: [] }
   assert.match(
     serviceSmokeRefusal({ ...linux, username: "runner", userHome: "/home/runner", home: "/home/runner" }),
     new RegExp(smokeAccount, "u"),
@@ -77,7 +93,7 @@ test("on Linux the smoke runs only as the throwaway account in its own home", ()
 
 test("a platform with no login service is refused", () => {
   assert.match(
-    serviceSmokeRefusal({ platform: "freebsd", env: optedIn, username: "u", userHome: "/home/u", home: "/home/u", liveProfileExists: false }),
+    serviceSmokeRefusal({ platform: "freebsd", env: optedIn, username: "u", userHome: "/home/u", home: "/home/u", profileEntries: [] }),
     /freebsd/u,
   )
 })

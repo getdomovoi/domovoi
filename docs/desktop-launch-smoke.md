@@ -99,8 +99,10 @@ lease under the account's own home as the password database names it, not `HOME`
 systemd user manager reads units only under the home it started with.
 
 So the script refuses, before it changes anything, unless `CI=true` and
-`DOMOVOI_SERVICE_SMOKE_DISPOSABLE_HOST=1` are set, the account has no `~/.domovoi`, and no
-Domovoi service is loaded for it. Do not run it on a developer machine. On macOS CI it uses a
+`DOMOVOI_SERVICE_SMOKE_DISPOSABLE_HOST=1` are set, the account's `~/.domovoi` is absent or
+holds nothing but that lease file, and no Domovoi service is loaded for it. The daemon's
+scripted launchd tests take the same lease earlier in the macOS job, which is why the lease
+file alone is allowed. Do not run it on a developer machine. On macOS CI it uses a
 temporary HOME and profile, and the lease file stays in the runner account's `~/.domovoi`. On
 Linux CI it runs only as the throwaway `domovoi-smoke` account, which the workflow creates with
 its own lingering systemd manager, from a copy of the unpacked app that account owns. Fresh
