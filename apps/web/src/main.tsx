@@ -50,6 +50,7 @@ createRoot(document.getElementById("root")!).render(
     <WorkspaceErrorBoundary>
       <WebApp
         rpcUrl={rpcUrl}
+        pageOrigin={window.location.origin}
         clientKind={clientKind}
         environment={environment}
         storage={sessionStorage}

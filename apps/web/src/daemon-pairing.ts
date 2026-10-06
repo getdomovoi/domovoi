@@ -215,17 +215,49 @@ export function pairingNextStep(cause: unknown): "reload" | "new-code" | "retry"
 export const daemonCredentialShapeMessage =
   "A daemon credential is one 43 character line. Copy the whole line from ~/.domovoi/daemon.token on the execution machine."
 
+// The names a page on the machine itself is opened under. URL normalizes the
+// host, so an IPv6 literal arrives bracketed and a name arrives lower case.
+const loopbackHostNames = new Set(["localhost", "127.0.0.1", "[::1]"])
+
+// Whether the page was opened on the execution machine: an http or https
+// origin on a loopback name, on any port. Anything else, an opaque "null"
+// origin included, is another machine as far as this page can tell.
+export function isLoopbackPageOrigin(origin: string): boolean {
+  try {
+    const url = new URL(origin)
+    return (url.protocol === "http:" || url.protocol === "https:") && loopbackHostNames.has(url.hostname)
+  } catch {
+    return false
+  }
+}
+
+export class RootCredentialOffLoopbackError extends Error {
+  constructor() {
+    super("The daemon credential is only accepted on a page opened on the machine itself. Pair this browser with a web code, shown on the machine in Settings under Phone and tablet.")
+    this.name = "RootCredentialOffLoopbackError"
+  }
+}
+
 // The pasted credential is the daemon's root bearer: it authenticates every
 // client and cannot be withdrawn on its own. It is spent once, here, to enrol
 // this browser as its own paired device, and only that device credential is
 // handed back for the tab to keep.
+//
+// A page opened from another machine never sends it (Q5, answered A,
+// docs/plans/s3-2-web-over-tailnet.md section 3.6): that would carry the
+// root secret off the execution machine. The page does not offer the prompt
+// there, and this refuses before any connection in case it is reached anyway.
+// The daemon does not refuse it on its side; this is the page's rule only.
 export async function pairBrowserDevice(input: {
   url: string
+  // The page's own origin, location.origin, not the daemon's address.
+  pageOrigin: string
   client: ClientKind
   bearer: string
   label: string
   createClient: PairingClientFactory
 }): Promise<DaemonSession> {
+  if (!isLoopbackPageOrigin(input.pageOrigin)) throw new RootCredentialOffLoopbackError()
   if (!isDaemonCredential(input.bearer)) throw new Error(daemonCredentialShapeMessage)
   const client = input.createClient({ url: input.url, client: input.client, bearer: input.bearer })
   try {

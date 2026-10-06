@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonCredentialShapeMessage, pairBrowserDevice, type BearerPairingClient, type CodePairingClient } from "./daemon-pairing"
+import { daemonCredentialShapeMessage, isLoopbackPageOrigin, pairBrowserDevice, RootCredentialOffLoopbackError, type BearerPairingClient, type CodePairingClient } from "./daemon-pairing"
 
 type PairingClient = BearerPairingClient & CodePairingClient
 
 const deviceId = `device-${"a1b2c3d4".repeat(4)}`
 const bearer = "r".repeat(43)
 const deviceToken = "d".repeat(43)
+const loopbackPage = "http://127.0.0.1:5178"
 
 function pairResult() {
   return {
@@ -36,6 +37,7 @@ describe("browser device pairing", () => {
 
     const session = await pairBrowserDevice({
       url: "wss://daemon.example/rpc",
+      pageOrigin: loopbackPage,
       client: "web",
       bearer,
       label: "Web browser 4f2a1c9d",
@@ -54,6 +56,7 @@ describe("browser device pairing", () => {
 
     await pairBrowserDevice({
       url: "wss://daemon.example/rpc",
+      pageOrigin: loopbackPage,
       client: "tablet",
       bearer,
       label: "Tablet browser 4f2a1c9d",
@@ -68,6 +71,7 @@ describe("browser device pairing", () => {
 
     await expect(pairBrowserDevice({
       url: "wss://daemon.example/rpc",
+      pageOrigin: loopbackPage,
       client: "web",
       bearer,
       label: "Web browser 4f2a1c9d",
@@ -81,12 +85,75 @@ describe("browser device pairing", () => {
 
     await expect(pairBrowserDevice({
       url: "wss://daemon.example/rpc",
+      pageOrigin: loopbackPage,
       client: "web",
       bearer: "pasted-the-wrong-line",
       label: "Web browser 4f2a1c9d",
       createClient,
     })).rejects.toThrow(daemonCredentialShapeMessage)
     expect(createClient).not.toHaveBeenCalled()
+  })
+
+  // Q5, answered A (docs/plans/s3-2-web-over-tailnet.md section 3.6): the
+  // root credential is never sent from a page another machine opened. The
+  // check is on the submission itself, so a page that reached the prompt
+  // some other way still sends nothing.
+  it.each([
+    "https://studio.example.ts.net:47831",
+    "http://192.168.1.20:5178",
+    "http://100.101.102.103:47831",
+    "http://127.0.0.1.studio.example:47831",
+    "http://localhost.studio.example:5178",
+    "http://[::2]:47831",
+    "null",
+    "",
+  ])("refuses the pasted credential on a page whose origin is %j, before it opens a connection", async (pageOrigin) => {
+    const createClient = vi.fn()
+
+    await expect(pairBrowserDevice({
+      url: "ws://127.0.0.1:47831/rpc",
+      pageOrigin,
+      client: "web",
+      bearer,
+      label: "Web browser 4f2a1c9d",
+      createClient,
+    })).rejects.toThrow(RootCredentialOffLoopbackError)
+    expect(createClient).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    "http://127.0.0.1:47831",
+    "http://127.0.0.1:5178",
+    "http://localhost:5178",
+    "https://localhost",
+    "http://[::1]:47831",
+  ])("still spends the pasted credential on a page whose origin is %s", async (pageOrigin) => {
+    const client = fakeClient()
+
+    const session = await pairBrowserDevice({
+      url: "ws://127.0.0.1:47831/rpc",
+      pageOrigin,
+      client: "web",
+      bearer,
+      label: "Web browser 4f2a1c9d",
+      createClient: () => client,
+    })
+
+    expect(session).toEqual({ deviceId, token: deviceToken })
+  })
+})
+
+describe("a loopback page", () => {
+  it("is a page on localhost, 127.0.0.1 or ::1, on any port, over http or https", () => {
+    for (const origin of ["http://127.0.0.1:47831", "http://localhost", "https://localhost:8443", "http://[::1]:5178", "http://LOCALHOST:5178"]) {
+      expect(isLoopbackPageOrigin(origin)).toBe(true)
+    }
+  })
+
+  it("is not a page on any other name or address, or one with no origin", () => {
+    for (const origin of ["https://studio.example.ts.net:47831", "http://10.0.0.2:47831", "http://127.0.0.1.example", "http://[::ffff:7f00:1]:47831", "file://", "null", "", "not an origin", "domovoi-app://desktop"]) {
+      expect(isLoopbackPageOrigin(origin)).toBe(false)
+    }
   })
 })
 

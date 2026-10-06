@@ -7,10 +7,13 @@ import { browserLimits } from "./browser-limits"
 import { browserLimitsSeen, markBrowserLimitsSeen } from "./browser-limits-seen"
 import type { BrowserPlatformEnvironment } from "./browser-platform"
 import { browserDeviceLabel, clearDaemonSession, loadDaemonSession, saveDaemonSession, type DaemonSession } from "./credential"
-import { codeNameFor, pairBrowserDevice, pairingNextStep, pairingOutcomeFor, redeemBrowserCode, type PairingClientFactory } from "./daemon-pairing"
+import { codeNameFor, isLoopbackPageOrigin, pairBrowserDevice, pairingNextStep, pairingOutcomeFor, redeemBrowserCode, type PairingClientFactory } from "./daemon-pairing"
 
 export type WebAppProps = {
   rpcUrl: string
+  // The page's own origin, location.origin. Off loopback the page offers
+  // code pairing only.
+  pageOrigin: string
   clientKind: ClientKind
   environment: BrowserPlatformEnvironment
   // The tab's session storage: it holds the device credential and whether the
@@ -61,8 +64,9 @@ function hostOf(rpcUrl: string): { host: string; secure: boolean } {
 // paired device credential, then the limits unless the person already read
 // them from the connect page, then the session. The code the
 // machine shows is the way in; the daemon's root credential stays reachable
-// for a machine with no desktop to show a code on.
-export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeFromUrl, createClient, labelSuffix, workspace }: WebAppProps) {
+// for a machine with no desktop to show a code on, and only on a page opened
+// on that machine (Q5 A).
+export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, memory, codeFromUrl, createClient, labelSuffix, workspace }: WebAppProps) {
   const [session, setSession] = useState(() => loadDaemonSession(storage))
   const [pairing, setPairing] = useState(false)
   const [pairingError, setPairingError] = useState("")
@@ -95,6 +99,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
     target?.focus()
   }, [limitsOpen])
   const { host, secure } = hostOf(rpcUrl)
+  const credentialOffered = isLoopbackPageOrigin(pageOrigin)
 
   const keep = (next: DaemonSession) => {
     saveDaemonSession(storage, next)
@@ -145,7 +150,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
   }
 
   if (!session) {
-    if (path === "credential") {
+    if (path === "credential" && credentialOffered) {
       return <PreSessionPage label="Connect this browser"><DaemonCredentialPrompt
         pending={pairing}
         error={pairingError}
@@ -154,6 +159,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
           setPairingError("")
           void pairBrowserDevice({
             url: rpcUrl,
+            pageOrigin,
             client: clientKind,
             bearer,
             label: browserDeviceLabel(clientKind, labelSuffix()),
@@ -181,7 +187,7 @@ export function WebApp({ rpcUrl, clientKind, environment, storage, memory, codeF
         setLimitsOpen(true)
         setLimitsSeen(true)
       }}
-      onUseCredential={() => setPath("credential")}
+      {...(credentialOffered ? { onUseCredential: () => setPath("credential") } : {})}
     />
     // The connect page stays mounted under the limits, so a typed code and a
     // drawn outcome are still there on the way back. One bar serves both, so
