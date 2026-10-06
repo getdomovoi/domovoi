@@ -128,10 +128,14 @@ export function ModeChip({
   )
 }
 
-// Scales run to five levels, so the bars keep a fixed height and vary their
-// step rather than growing the row when the harness offers more.
+// The bars keep a fixed 14px track and vary their step rather than growing
+// the row when the model reports more levels. Desktop V2's steps: 3.5px up to
+// three levels, 2.2px for four or five, 1.4px for more. Past eight levels
+// even 1.4px would leave the track, so the step shrinks to keep the tallest
+// bar at 14px.
 function EffortBars({ rank, total, selected }: { rank: number, total: number, selected: boolean }) {
-  const step = total > 3 ? 2.2 : 3.5
+  const designStep = total > 5 ? 1.4 : total > 3 ? 2.2 : 3.5
+  const step = total > 1 ? Math.min(designStep, 10 / (total - 1)) : designStep
   return (
     <span aria-hidden className="mt-0.5 flex h-3.5 flex-none items-end gap-0.5">
       {Array.from({ length: total }, (_, index) => (

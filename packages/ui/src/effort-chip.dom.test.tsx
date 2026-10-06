@@ -172,3 +172,26 @@ it("says when the model reports no default among its levels", async () => {
   view.rerender(<EffortChip runtime={runtime} model={model("codex", ["low", "medium", "high"], "medium")} pending={false} onSetRuntime={vi.fn()} />)
   expect(screen.queryByText("No default reported by this model.")).toBeNull()
 })
+
+// The bars sit in a fixed 14px track. Desktop V2 steps them 3.5px for up to
+// three levels, 2.2px for four or five and 1.4px for more, so six levels top
+// out at 11px; a longer scale still fits the track.
+it("keeps every effort bar inside its 14px track however many levels the model reports", async () => {
+  const user = userEvent.setup()
+  const heights = (row: HTMLElement) => Array.from(row.querySelectorAll<HTMLElement>("[aria-hidden] > span")).map((bar) => Number.parseFloat(bar.style.height))
+  const six = ["none", "minimal", "low", "medium", "high", "xhigh"]
+  const view = render(<EffortChip runtime={runtime} model={model("codex", six, "medium")} pending={false} onSetRuntime={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: "Medium" }))
+  let bars = heights(screen.getAllByRole("menuitemradio")[0]!)
+  expect(bars).toHaveLength(6)
+  expect(bars[5]).toBeCloseTo(11)
+
+  const ten = [...six, "max", "ultra", "ultra-2", "ultra-3"]
+  view.rerender(<EffortChip runtime={runtime} model={model("codex", ten, "medium")} pending={false} onSetRuntime={vi.fn()} />)
+  bars = heights(screen.getAllByRole("menuitemradio")[0]!)
+  expect(bars).toHaveLength(10)
+  expect(Math.max(...bars)).toBeLessThanOrEqual(14)
+
+  view.rerender(<EffortChip runtime={runtime} model={model("codex", ["low", "medium", "high", "xhigh", "max"], "medium")} pending={false} onSetRuntime={vi.fn()} />)
+  expect(heights(screen.getAllByRole("menuitemradio")[0]!)[4]).toBeCloseTo(12.8)
+})
