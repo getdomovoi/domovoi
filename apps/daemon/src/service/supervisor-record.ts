@@ -14,6 +14,11 @@ export const guestProcessIdentitySchema = z.object({
   pid: z.number().int().min(1).max(2_147_483_647), start: z.string().regex(/^[0-9]{1,24}$/), bootId: z.uuid(),
 }).strict()
 export type GuestProcessIdentity = z.infer<typeof guestProcessIdentitySchema>
+// Windows uses the kernel's unsigned per-boot counter, not a BCD loader GUID.
+export const windowsBootIdSchema = z.string().regex(/^windows-boot:(?:0|[1-9][0-9]{0,9})$/)
+  .refine((value) => Number(value.slice(13)) <= 4_294_967_295)
+export const windowsProcessIdentitySchema = guestProcessIdentitySchema.extend({ bootId: windowsBootIdSchema })
+export type WindowsProcessIdentity = z.infer<typeof windowsProcessIdentitySchema>
 const exitSchema = z.object({
   kind: z.enum(["clean", "crash", "stopped", "launch-failed"]),
   code: z.number().int().min(0).max(4_294_967_295).nullable(),
@@ -68,7 +73,7 @@ export function isCrash(exit: SupervisorExit | null): boolean {
 export const supervisorRecordPath = (home: ProfileLocation): string => join(profileDirectory(home), "supervisor.json")
 export const supervisorStopPath = (home: ProfileLocation): string => join(profileDirectory(home), "supervisor-stop.json")
 export const supervisorStopSchema = z.object({
-  version: z.literal(1), supervisorId: z.uuid(), registrationId: z.uuid(), loop: guestProcessIdentitySchema,
+  version: z.literal(1), supervisorId: z.uuid(), registrationId: z.uuid(), loop: z.union([guestProcessIdentitySchema, windowsProcessIdentitySchema]),
 }).strict()
 
 function assertPrivate(path: string, directory: boolean): void {
@@ -131,16 +136,16 @@ export function writeSupervisorStopRequest(home: ProfileLocation, record: Pick<S
 // an empty-job receipt, including when the helper or supervisor disappeared.
 export const windowsJobNameSchema = z.string().regex(/^Local\\Domovoi-[0-9a-f-]{36}$/).refine((name) => z.uuid().safeParse(name.slice(14)).success)
 const windowsAttemptSchema = z.object({
-  number: z.number().int().min(1).max(4), job: windowsJobNameSchema, bootId: z.uuid(), startedAt: z.iso.datetime(),
+  number: z.number().int().min(1).max(4), job: windowsJobNameSchema, bootId: windowsBootIdSchema, startedAt: z.iso.datetime(),
   stage: z.enum(["intent", "prepared", "running", "empty"]),
-  child: guestProcessIdentitySchema.nullable(), helper: guestProcessIdentitySchema.nullable(),
+  child: windowsProcessIdentitySchema.nullable(), helper: windowsProcessIdentitySchema.nullable(),
   empty: z.object({ at: z.iso.datetime(), activeProcesses: z.literal(0), terminated: z.literal(true) }).strict().nullable(),
   exitCode: z.number().int().min(0).max(4_294_967_295).nullable(),
   backoffMs: z.union([z.literal(0), z.literal(1000), z.literal(5000), z.literal(15000)]),
 }).strict()
 export const windowsSupervisorRecordSchema = z.object({
   version: z.literal(1), platform: z.literal("win32"), supervisorId: z.uuid(), registrationId: z.uuid(),
-  configurationDigest: z.string().regex(/^[a-f0-9]{64}$/), loop: guestProcessIdentitySchema,
+  configurationDigest: z.string().regex(/^[a-f0-9]{64}$/), loop: windowsProcessIdentitySchema,
   startedAt: z.iso.datetime(), updatedAt: z.iso.datetime(),
   state: z.enum(["starting", "running", "backoff", "stopping", "stopped", "exhausted", "failed"]),
   attempts: z.array(windowsAttemptSchema).max(4), crashes: count,

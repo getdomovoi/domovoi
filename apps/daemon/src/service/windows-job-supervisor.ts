@@ -11,23 +11,23 @@ import { parseServiceConfiguration, serializeServiceConfiguration, type ServiceC
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceStatus } from "./install.js"
 import { launchWindowsJob, queryWindowsProcess, windowsProcessAlive, type WindowsJob, type WindowsJobEmpty } from "./windows-job.js"
-import { guestProcessIdentitySchema, prepareSupervisorDirectory, readSupervisorStopRequest, readWindowsSupervisorRecord,
+import { windowsProcessIdentitySchema, prepareSupervisorDirectory, readSupervisorStopRequest, readWindowsSupervisorRecord,
   supervisorBackoffs, supervisorStopPath, writeSupervisorStopRequest, writeWindowsSupervisorRecord, windowsSupervisorRecordSchema,
-  type GuestProcessIdentity, type WindowsSupervisorRecord } from "./supervisor-record.js"
+  type WindowsProcessIdentity, type WindowsSupervisorRecord } from "./supervisor-record.js"
 
 export const windowsTreeUnknown = "The Windows daemon tree is unconfirmed. Its job-empty evidence is missing, so another start, stop confirmation, and removal are refused. The task and service configuration are retained. Restart Windows to settle the tree from this recorded boot, then retry."
 const digest = (configuration: ServiceConfiguration) => createHash("sha256").update(serializeServiceConfiguration(configuration)).digest("hex")
 
 export function assertWindowsTreeProof(record: WindowsSupervisorRecord, bootId: string): void {
-  guestProcessIdentitySchema.shape.bootId.parse(bootId)
+  windowsProcessIdentitySchema.shape.bootId.parse(bootId)
   windowsSupervisorRecordSchema.parse(record)
   if (record.loop.bootId !== bootId) return
   if (record.attempts.some((a) => !a.empty)) throw new Error(windowsTreeUnknown)
 }
 
 export function assertWindowsStartup(previous: WindowsSupervisorRecord | undefined, bootId: string, priorLease: boolean,
-  alive: (identity: GuestProcessIdentity) => boolean): void {
-  guestProcessIdentitySchema.shape.bootId.parse(bootId)
+  alive: (identity: WindowsProcessIdentity) => boolean): void {
+  windowsProcessIdentitySchema.shape.bootId.parse(bootId)
   if (!previous) {
     if (priorLease) throw new Error("Windows supervisor history is missing behind an existing lease; startup refused")
     return
@@ -37,7 +37,7 @@ export function assertWindowsStartup(previous: WindowsSupervisorRecord | undefin
 }
 
 export function windowsSupervisorStatus(record: WindowsSupervisorRecord, bootId: string, loopAlive: boolean, childAlive = loopAlive): ServiceStatus {
-  guestProcessIdentitySchema.shape.bootId.parse(bootId)
+  windowsProcessIdentitySchema.shape.bootId.parse(bootId)
   windowsSupervisorRecordSchema.parse(record)
   if ((!loopAlive || record.state === "failed") && record.loop.bootId === bootId && record.attempts.some((a) => !a.empty)) {
     return { installed: null, running: false, treeUnconfirmed: true, supervisionFailure: "observation-failure", detail: windowsTreeUnknown }
@@ -66,7 +66,7 @@ export type WindowsSupervisorEffects = {
   wait(ms: number, signal: AbortSignal): Promise<void>
 }
 export async function superviseWindows(input: {
-  loop: GuestProcessIdentity; registrationId: string; configurationDigest: string; signal: AbortSignal
+  loop: WindowsProcessIdentity; registrationId: string; configurationDigest: string; signal: AbortSignal
 }, effects: WindowsSupervisorEffects): Promise<WindowsSupervisorRecord> {
   const time = () => effects.now().toISOString()
   const began = time()

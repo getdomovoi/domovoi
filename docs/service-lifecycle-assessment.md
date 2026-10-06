@@ -63,7 +63,7 @@ has the printed text and failure handling.
   attempt now has a UUID job held by a persistent PowerShell/P/Invoke helper, a suspended
   launch and publication gate, and an empty-job receipt queried after job termination.
   Startup and removal refuse unconfirmed same-boot attempts; a positively read different
-  kernel boot GUID permits boot-based recovery. Unreadable identity refuses. Backoffs are
+  kernel boot counter (`KUSER_SHARED_DATA.BootId`) permits boot-based recovery. Unreadable identity refuses. Backoffs are
   1, 5 and 15 seconds, followed by recorded exhaustion on crash four and status exit 1.
   Stop/removal require tree proof, and legacy tasks without job evidence refuse removal.
   All manager executables remain resolved under SystemRoot. The native test reads back

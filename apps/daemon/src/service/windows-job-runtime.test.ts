@@ -19,7 +19,7 @@ function fixture(unknown = false) {
   const config = { ...createServiceConfiguration({ DOMOVOI_PROFILE_DIR: directory }, { homeDirectory: home, workingDirectory: home, platform: process.platform }), registrationId: randomUUID() }
   const text = serializeServiceConfiguration(config)
   writeFileSync(path, text, { mode: 0o600 })
-  const now = new Date().toISOString(), bootId = randomUUID()
+  const now = new Date().toISOString(), bootId = "windows-boot:42"
   const record: WindowsSupervisorRecord = { version: 1, platform: "win32", supervisorId: randomUUID(), registrationId: config.registrationId,
     configurationDigest: createHash("sha256").update(serializeServiceConfiguration(parseServiceConfiguration(text))).digest("hex"), loop: { pid: 123, start: "456", bootId },
     startedAt: now, updatedAt: now, state: unknown ? "failed" : "stopped", reason: unknown ? "observation-failure" : "deliberate-stop", crashes: 0,
@@ -45,7 +45,7 @@ it("settles old attempts only after a successful different-boot observation", as
     vi.mocked(queryWindowsProcess).mockImplementationOnce(() => { throw new Error("boot query denied") })
     await expect(stopWindowsSupervisor(f.path, deadline)).rejects.toThrow("boot query denied")
     expect(existsSync(f.path)).toBe(true)
-    vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: randomUUID(), identity: null })
+    vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: "windows-boot:43", identity: null })
     await expect(stopWindowsSupervisor(f.path, deadline)).resolves.toEqual(f.record)
   } finally { deadline.clear() }
 })
@@ -55,7 +55,7 @@ it("clears retirement for update only after tree proof", async () => {
   try {
     await expect(stopWindowsSupervisor(f.path, deadline, { retire: false })).rejects.toThrow("Restart Windows")
     expect(readSupervisorStopRequest(f.home)).toBeDefined()
-    vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: randomUUID(), identity: null })
+    vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: "windows-boot:43", identity: null })
     await stopWindowsSupervisor(f.path, deadline, { retire: false })
     expect(readSupervisorStopRequest(f.home)).toBeUndefined()
   } finally { deadline.clear() }

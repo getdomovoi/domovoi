@@ -5,7 +5,7 @@ import { assertWindowsStartup, assertWindowsTreeProof, superviseWindows, windows
 import { supervisorBackoffs, type WindowsSupervisorRecord } from "./supervisor-record.js"
 import type { WindowsJob } from "./windows-job.js"
 
-const loop = { pid: 123, start: "456", bootId: randomUUID() }
+const loop = { pid: 123, start: "456", bootId: "windows-boot:42" }
 const input = () => ({ loop, registrationId: randomUUID(), configurationDigest: "a".repeat(64), signal: new AbortController().signal })
 function fixture(codes = [9, 9, 9, 9]) {
   const records: WindowsSupervisorRecord[] = []
@@ -53,7 +53,7 @@ it("retains unknown tree evidence and refuses restart when the helper dies", asy
   expect(record.attempts).toHaveLength(1)
   expect(() => assertWindowsTreeProof(record, loop.bootId)).toThrow("Restart Windows")
   expect(windowsSupervisorStatus(record, loop.bootId, false)).toMatchObject({ running: false, supervisionFailure: "observation-failure", detail: expect.stringContaining("Restart Windows") })
-  expect(() => assertWindowsTreeProof(record, randomUUID())).not.toThrow()
+  expect(() => assertWindowsTreeProof(record, "windows-boot:43")).not.toThrow()
   expect(() => assertWindowsTreeProof(record, "")).toThrow()
 })
 
@@ -95,7 +95,7 @@ it("gates startup on every old job, and refuses a live predecessor even with emp
   attempt.stage = "running"; attempt.empty = null; attempt.exitCode = null
   record.state = "failed"; record.reason = "observation-failure"
   expect(() => assertWindowsStartup(record, loop.bootId, true, () => false)).toThrow("Restart Windows")
-  expect(() => assertWindowsStartup(record, randomUUID(), true, () => { throw new Error("old PID must not be queried") })).not.toThrow()
+  expect(() => assertWindowsStartup(record, "windows-boot:43", true, () => { throw new Error("old PID must not be queried") })).not.toThrow()
 })
 
 it("reports a dead loop during backoff as failed even when the old job is empty", async () => {

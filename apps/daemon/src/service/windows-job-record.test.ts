@@ -9,7 +9,7 @@ import { readWindowsSupervisorRecord, writeWindowsSupervisorRecord, windowsSuper
 export function windowsRecordFixture(): WindowsSupervisorRecord {
   return {
     version: 1, platform: "win32", supervisorId: randomUUID(), registrationId: randomUUID(), configurationDigest: "a".repeat(64),
-    loop: { pid: 123, start: "456", bootId: randomUUID() }, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    loop: { pid: 123, start: "456", bootId: "windows-boot:42" }, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
     state: "starting", attempts: [], crashes: 0, reason: null,
   }
 }
@@ -37,4 +37,11 @@ it("allows failed observations to retain unfinished attempts", () => {
     number: 1, job: `Local\\Domovoi-${randomUUID()}`, bootId: record.loop.bootId, startedAt: record.startedAt,
     child: null, helper: null, stage: "intent", empty: null, exitCode: null, backoffMs: 0,
   }] }).success).toBe(true)
+})
+
+it("rejects loader GUIDs and invalid Windows boot counters", () => {
+  const record = windowsRecordFixture()
+  for (const bootId of [randomUUID(), "windows-boot:-1", "windows-boot:4294967296", "windows-boot:01", "windows-boot:NaN"]) {
+    expect(windowsSupervisorRecordSchema.safeParse({ ...record, loop: { ...record.loop, bootId } }).success).toBe(false)
+  }
 })

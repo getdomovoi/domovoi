@@ -194,7 +194,7 @@ UUID-named job, and verifies `KILL_ON_JOB_CLOSE` without breakaway permission. A
 name refuses the launch. Runtime values arrive over stdin as JSON, not as script source.
 The daemon resumes only after its job and process birth identities have been published.
 
-Each attempt in the profile's `windows-supervisor.json` records the job name, kernel boot GUID,
+Each attempt in the profile's `windows-supervisor.json` records the job name, kernel boot counter,
 helper and daemon PID/creation time, launch phase, exit code, backoff, and empty-job receipt.
 On daemon exit the helper terminates the job, including surviving descendants, and queries
 `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.ActiveProcesses` on its retained handle until it is zero.
@@ -208,8 +208,11 @@ refuse another launch, stop confirmation, or removal. Helper death closes its no
 handle, but neither that event, daemon death, a missing job, nor Task Scheduler state supplies
 an empty-job receipt. Status explains that the task/configuration remain, the tree is unknown,
 and restarting Windows settles the tree from the recorded boot. Boot recovery compares the
-kernel `SystemBootEnvironmentInformation.BootIdentifier` GUID, queried through
-`NtQuerySystemInformation`, not `LastBootUpTime` or wall-clock-minus-uptime. Suspend, logon and
+Windows 10+ `KUSER_SHARED_DATA.BootId` unsigned counter, read from the fixed user mapping
+at `0x7FFE02C4`, not the BCD loader GUID, `LastBootUpTime`, or wall-clock-minus-uptime.
+Records use `windows-boot:<counter>`; old GUID records are refused. The native test compares
+this read with `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters`
+`BootId` using a separate registry read under the limited user. Suspend, logon and
 clock changes do not establish a new boot. An unreadable boot identity refuses recovery.
 Missing or malformed history cannot be treated as a newly empty tree.
 
@@ -290,8 +293,8 @@ The Windows-only native tests use UUID tasks and temporary profiles. They kill a
 require one new PID and exactly two attempts that remain stable for three seconds, drive four
 crashes to exhaustion and status exit 1, prove deliberate stop stays stopped, and require empty
 jobs before removal. A separate job test leaves a descendant alive when its root dies and
-requires job cleanup; it also checks suspended startup, name collision refusal and the boot GUID
-read. Native execution is pending on Windows CI for this change. A green macOS/Linux run skips
+requires job cleanup; it also checks suspended startup, name collision refusal and the boot counter
+read against that independent registry source. Native execution is pending on Windows CI for this change. A green macOS/Linux run skips
 these boundaries and cannot establish Windows acceptance. Cleanup retains evidence if proof fails.
 
 A native Linux-only test drives systemd itself through the same install, status and removal

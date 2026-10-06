@@ -4,17 +4,17 @@ import type { Readable, Writable } from "node:stream"
 import { gzipSync } from "node:zlib"
 import { z } from "zod"
 
-import { guestProcessIdentitySchema, windowsJobNameSchema, type GuestProcessIdentity } from "./supervisor-record.js"
+import { windowsBootIdSchema, windowsProcessIdentitySchema, windowsJobNameSchema, type WindowsProcessIdentity } from "./supervisor-record.js"
 import { windowsPowerShellPath } from "./windows-task.js"
 import { windowsJobSource } from "./windows-job-source.js"
 import type { ServiceCommand } from "./install.js"
 
 const preparedSchema = z.object({
-  kind: z.literal("prepared"), job: windowsJobNameSchema, bootId: z.uuid(),
-  child: guestProcessIdentitySchema, helper: guestProcessIdentitySchema, killOnClose: z.literal(true),
+  kind: z.literal("prepared"), job: windowsJobNameSchema, bootId: windowsBootIdSchema,
+  child: windowsProcessIdentitySchema, helper: windowsProcessIdentitySchema, killOnClose: z.literal(true),
 }).strict().refine((p) => p.child.bootId === p.bootId && p.helper.bootId === p.bootId)
 const emptySchema = z.object({
-  kind: z.literal("empty"), job: windowsJobNameSchema, bootId: z.uuid(), activeProcesses: z.literal(0), terminated: z.literal(true),
+  kind: z.literal("empty"), job: windowsJobNameSchema, bootId: windowsBootIdSchema, activeProcesses: z.literal(0), terminated: z.literal(true),
   code: z.number().int().min(0).max(4_294_967_295), stopped: z.boolean(),
 }).strict()
 const messageSchema = z.union([preparedSchema, emptySchema, z.object({ kind: z.literal("running"), job: windowsJobNameSchema }).strict()])
@@ -42,15 +42,15 @@ export function parseWindowsJobMessage(value: unknown, job: string): z.infer<typ
 }
 
 // A failed/denied query is never evidence of a different boot or a dead PID.
-export function queryWindowsProcess(pid: number): { bootId: string; identity: GuestProcessIdentity | null } {
-  guestProcessIdentitySchema.shape.pid.parse(pid)
+export function queryWindowsProcess(pid: number): { bootId: string; identity: WindowsProcessIdentity | null } {
+  windowsProcessIdentitySchema.shape.pid.parse(pid)
   const command = windowsJobCommand()
   const output = execFileSync(command.command, command.args, { input: JSON.stringify({ mode: "inspect", pid }) + "\n",
     encoding: "utf8", timeout: 20_000, maxBuffer: 8192, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
-  return z.object({ bootId: z.uuid(), identity: guestProcessIdentitySchema.nullable() }).strict()
+  return z.object({ bootId: windowsBootIdSchema, identity: windowsProcessIdentitySchema.nullable() }).strict()
     .refine((value) => !value.identity || value.identity.bootId === value.bootId).parse(JSON.parse(output))
 }
-export function windowsProcessAlive(identity: GuestProcessIdentity): boolean {
+export function windowsProcessAlive(identity: WindowsProcessIdentity): boolean {
   const observed = queryWindowsProcess(identity.pid)
   return observed.bootId === identity.bootId && observed.identity?.start === identity.start
 }

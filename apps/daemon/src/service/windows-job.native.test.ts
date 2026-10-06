@@ -1,16 +1,26 @@
 import { randomUUID } from "node:crypto"
+import { execFileSync } from "node:child_process"
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { expect, it } from "vitest"
 import { launchWindowsJob, queryWindowsProcess, type WindowsJob } from "./windows-job.js"
+import { windowsPowerShellPath } from "./windows-task.js"
 
-it.runIf(process.platform === "win32")("contains descendants, gates resume, refuses job collisions, and reads the kernel boot GUID", async () => {
+it.runIf(process.platform === "win32")("contains descendants, gates resume, refuses collisions, and cross-checks the boot counter", async () => {
   const directory = mkdtempSync(join(tmpdir(), "domovoi-job-"))
   const marker = join(directory, "child.json")
   const before = queryWindowsProcess(process.pid)
   expect(before.identity?.pid).toBe(process.pid)
+  // Independent source: the boot counter persisted by Windows prefetching,
+  // compared with the helper's KUSER_SHARED_DATA read. No elevation or skip
+  // on missing registry data: CI must demonstrate both limited-user reads.
+  const registry = String.raw`$key=[Microsoft.Win32.Registry]::LocalMachine.OpenSubKey('SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters');if($null -eq $key){throw 'Boot counter unavailable'};try{$value=$key.GetValue('BootId');if($null -eq $value){throw 'Boot counter unavailable'};[Console]::Out.WriteLine([BitConverter]::ToUInt32([BitConverter]::GetBytes([int]$value),0))}finally{$key.Dispose()}`
+  const counter = execFileSync(windowsPowerShellPath(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(registry, "utf16le").toString("base64")],
+    { encoding: "utf8", timeout: 20_000, windowsHide: true }).trim()
+  expect(counter).toMatch(/^(?:0|[1-9][0-9]*)$/)
+  expect(before.bootId).toBe(`windows-boot:${counter}`)
   const jobName = `Local\\Domovoi-${randomUUID()}`
   let job: WindowsJob | undefined
   try {

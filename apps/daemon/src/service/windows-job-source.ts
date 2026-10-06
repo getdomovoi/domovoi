@@ -16,7 +16,6 @@ using System.Web.Script.Serialization;
 public static class DomovoiJob {
   const uint KILL_ON_CLOSE = 0x2000;
   static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
-  [StructLayout(LayoutKind.Sequential)] struct BootInfo { public Guid Id; public uint Firmware; public ulong Flags; }
   [StructLayout(LayoutKind.Sequential)] struct BasicLimits {
     public long ProcessTime, JobTime; public uint Flags; public UIntPtr MinWorking, MaxWorking;
     public uint ActiveLimit; public UIntPtr Affinity; public uint Priority, Scheduling;
@@ -36,7 +35,6 @@ public static class DomovoiJob {
   }
   [StructLayout(LayoutKind.Sequential)] struct ProcessInfo { public IntPtr Process, Thread; public uint Pid, Tid; }
   [StructLayout(LayoutKind.Sequential)] struct Security { public int Size; public IntPtr Descriptor; public int Inherit; }
-  [DllImport("ntdll.dll")] static extern int NtQuerySystemInformation(int kind, out BootInfo data, int size, out int returned);
   [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateJobObject(IntPtr security, string name);
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job, int kind, ref ExtendedLimits limits, uint size);
   [DllImport("kernel32.dll", EntryPoint="QueryInformationJobObject", SetLastError=true)] static extern bool QueryLimits(IntPtr job, int kind, out ExtendedLimits limits, uint size, IntPtr returned);
@@ -54,22 +52,20 @@ public static class DomovoiJob {
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
   static void Check(bool ok) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error()); }
   static void Emit(object value) { Console.Out.WriteLine(Json.Serialize(value)); Console.Out.Flush(); }
-  static Guid Boot() {
-    BootInfo info; int returned;
-    // SystemBootEnvironmentInformation (90) is a kernel boot-session GUID.
-    // It is not LastBootUpTime or a wall-clock/uptime subtraction. Suspend,
-    // clock adjustment and logon do not create a new kernel boot session.
-    int status = NtQuerySystemInformation(90, out info, Marshal.SizeOf(typeof(BootInfo)), out returned);
-    if (status < 0 || returned < 16 || info.Id == Guid.Empty) throw new InvalidOperationException("Boot identity unavailable");
-    return info.Id;
+  static string Boot() {
+    // KUSER_SHARED_DATA.BootId on Windows 10+: read-only shared kernel data
+    // at the fixed user mapping. This unsigned boot counter does not derive
+    // from wall time, uptime, a logon session, or the BCD OS-loader GUID.
+    uint counter = unchecked((uint)Marshal.ReadInt32(new IntPtr(0x7FFE02C4)));
+    return "windows-boot:" + counter.ToString(System.Globalization.CultureInfo.InvariantCulture);
   }
-  static object Identity(IntPtr handle, uint pid, Guid boot) {
+  static object Identity(IntPtr handle, uint pid, string boot) {
     long created, exited, kernel, user;
     Check(GetProcessTimes(handle, out created, out exited, out kernel, out user));
     return new { pid=pid, start=created.ToString(System.Globalization.CultureInfo.InvariantCulture), bootId=boot.ToString() };
   }
   public static void Inspect(uint pid) {
-    Guid boot = Boot();
+    string boot = Boot();
     IntPtr handle = OpenProcess(0x101000, false, pid);
     if (handle == IntPtr.Zero) {
       int error = Marshal.GetLastWin32Error();
@@ -104,7 +100,7 @@ public static class DomovoiJob {
   public static void Run(string name, string executable, string[] args, string log) {
     Guid id;
     if (!name.StartsWith("Local\\Domovoi-") || !Guid.TryParse(name.Substring(14), out id)) throw new InvalidOperationException("Invalid job name");
-    Guid boot = Boot();
+    string boot = Boot();
     IntPtr job = CreateJobObject(IntPtr.Zero, name);
     int createError = Marshal.GetLastWin32Error();
     if (job == IntPtr.Zero) throw new Win32Exception(createError);

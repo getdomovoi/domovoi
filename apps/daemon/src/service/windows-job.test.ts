@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { launchWindowsJob, parseWindowsJobMessage, windowsJobCommand, type WindowsJobTransport } from "./windows-job.js"
 
-const bootId = randomUUID()
+const bootId = "windows-boot:42"
 beforeEach(() => vi.stubEnv("SystemRoot", "C:\\Windows"))
 afterEach(() => vi.unstubAllEnvs())
 const job = `Local\\Domovoi-${randomUUID()}`
@@ -64,7 +64,7 @@ it("rejects an empty receipt from another boot and requests helper shutdown", as
   const pending = launchWindowsJob({ job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
   f.send(prepared)
   const launched = await pending
-  f.send({ kind: "empty", job, bootId: randomUUID(), activeProcesses: 0, terminated: true, code: 0, stopped: true })
+  f.send({ kind: "empty", job, bootId: "windows-boot:43", activeProcesses: 0, terminated: true, code: 0, stopped: true })
   await expect(launched.exited).rejects.toThrow()
   expect(f.input()).toContain('"stop"')
   f.child.emit("close", 1)
