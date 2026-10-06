@@ -46,11 +46,13 @@ shutdown. `DOMOVOI_LAUNCH_SMOKE_TIMEOUT_MS` can set a positive integer budget, u
 # Packaged login service smoke
 
 `pnpm --filter @getdomovoi/desktop package:dir` builds the unpacked app for the host, and
-`pnpm --filter @getdomovoi/desktop test:package:service` runs
-`apps/desktop/scripts/package-service-smoke.mjs` against it. CI runs both at the end of the
-`verify` job, so the required `verify (macos-latest)` and `verify (ubuntu-latest)` checks carry
-it. The pure parts are unit tested in `scripts/package-service-smoke.node.mjs`, which runs in
-the desktop package's `test` script.
+`node apps/desktop/scripts/package-service-smoke.mjs` runs against it. CI runs both at the end
+of the `verify` job, so the required `verify (macos-latest)` and `verify (ubuntu-latest)` checks
+carry it. The smoke is started with `node`, not `pnpm`: packaging deploys the daemon runtime
+with `pnpm deploy --prod`, which leaves the workspace state marked production, and the next
+`pnpm` run in that checkout would reinstall `node_modules` for production. The pure parts are
+unit tested in `scripts/package-service-smoke.node.mjs`, which runs in the desktop package's
+`test` script.
 
 ## What it proves
 

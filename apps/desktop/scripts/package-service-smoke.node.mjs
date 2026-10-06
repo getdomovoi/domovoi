@@ -140,13 +140,15 @@ test("the service definition runs the copy, never the app's resources", () => {
 })
 
 test("the daemon that answers must be the one the installed service started", () => {
-  const ready = { version: 1, state: "ready", owner: "daemon", serviceRegistrationId: "8a6d2f5e-1b2c-4d3e-9f40-1234567890ab", url: "ws://127.0.0.1:50000" }
+  const ready = { version: 1, state: "ready", owner: "daemon", serviceRegistrationId: "8a6d2f5e-1b2c-4d3e-9f40-1234567890ab", url: "ws://127.0.0.1:50000/rpc" }
   assert.equal(checkOwnerRecord({ record: ready, registrationId: ready.serviceRegistrationId }), undefined)
   assert.match(checkOwnerRecord({ record: { ...ready, owner: "desktop" }, registrationId: ready.serviceRegistrationId }), /owner desktop/u)
   assert.match(checkOwnerRecord({ record: ready, registrationId: "other" }), /registration/u)
   assert.match(checkOwnerRecord({ record: { ...ready, state: "starting" }, registrationId: ready.serviceRegistrationId }), /starting/u)
   assert.match(checkOwnerRecord({ record: ready, registrationId: undefined }), /registration/u)
-  assert.match(checkOwnerRecord({ record: { ...ready, url: "ws://10.0.0.2:50000" }, registrationId: ready.serviceRegistrationId }), /loopback/u)
+  assert.match(checkOwnerRecord({ record: { ...ready, url: "ws://10.0.0.2:50000/rpc" }, registrationId: ready.serviceRegistrationId }), /loopback/u)
+  assert.match(checkOwnerRecord({ record: { ...ready, url: "http://127.0.0.1:50000/rpc" }, registrationId: ready.serviceRegistrationId }), /loopback/u)
+  assert.match(checkOwnerRecord({ record: { ...ready, url: "not a url" }, registrationId: ready.serviceRegistrationId }), /loopback/u)
 })
 
 test("the service manager itself is asked whether the service is loaded", () => {

@@ -135,7 +135,10 @@ export function checkOwnerRecord({ record, registrationId }) {
   if (registrationId === undefined || record.serviceRegistrationId !== registrationId) {
     return "the running daemon does not carry this install's service registration"
   }
-  if (!/^wss?:\/\/127\.0\.0\.1:\d+$/u.test(record.url)) return `the running daemon listens at ${record.url}, not on loopback`
+  const url = URL.canParse(record.url) ? new URL(record.url) : undefined
+  if (url === undefined || !["ws:", "wss:"].includes(url.protocol) || url.hostname !== "127.0.0.1") {
+    return `the running daemon listens at ${record.url}, not on loopback`
+  }
   return undefined
 }
 
@@ -170,32 +173,43 @@ export function parseAttachReport(stdout) {
 // Run by the app's shipped Node, from the shipped daemon module: the same
 // attach-only acquisition the desktop uses after it installs the service
 // (DesktopDaemon.attachOnly), then one explicit system.hello on the endpoint
-// it returns. The bearer stays in this process; only the answer is printed.
-const attachSource = `
+// it returns, speaking the protocol and build version the shipped daemon was
+// built with. The bearer stays in this process; only the answer is printed.
+// A hello that fails is reported as such, so the caller stops waiting.
+export const attachSource = `
+import { createRequire } from "node:module"
+import { pathToFileURL } from "node:url"
 const [moduleUrl, home, budget] = process.argv.slice(2)
 const marker = ${JSON.stringify(attachMarker)}
 const report = (value) => process.stdout.write(marker + JSON.stringify(value) + "\\n", () => process.exit(0))
 const { acquireLocalDaemon } = await import(moduleUrl)
+const { buildVersion, protocolVersion } = await import(pathToFileURL(createRequire(moduleUrl).resolve("@getdomovoi/protocol")).href)
 const handle = await acquireLocalDaemon({ mode: "attach-only", timeoutMs: Number(budget), environment: { ...process.env }, homeDirectory: home })
 if (handle.kind !== "attached") {
   report({ kind: handle.kind, reason: handle.reason })
 } else {
-  const machine = await new Promise((resolve, reject) => {
-    const socket = new WebSocket(handle.endpoint.url)
-    const timer = setTimeout(() => { socket.close(); reject(new Error("system.hello did not answer")) }, Number(budget))
-    socket.addEventListener("open", () => socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "system.hello",
-      params: { client: "desktop", clientVersion: "package-service-smoke", authToken: handle.endpoint.token } })))
-    socket.addEventListener("message", (event) => {
-      const reply = JSON.parse(String(event.data))
-      if (reply.id !== 1) return
-      clearTimeout(timer)
-      socket.close()
-      if (reply.error) reject(new Error("system.hello was refused: " + reply.error.message))
-      else resolve(reply.result.machine)
+  try {
+    const machine = await new Promise((resolve, reject) => {
+      const socket = new WebSocket(handle.endpoint.url)
+      const timer = setTimeout(() => { socket.close(); reject(new Error("system.hello did not answer")) }, Number(budget))
+      socket.addEventListener("open", () => socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "system.hello",
+        params: { client: "desktop", clientVersion: buildVersion, protocolVersion, authToken: handle.endpoint.token } })))
+      socket.addEventListener("message", (event) => {
+        const reply = JSON.parse(String(event.data))
+        if (reply.id !== 1) return
+        clearTimeout(timer)
+        socket.close()
+        if (reply.error) reject(new Error("system.hello was refused: " + reply.error.message))
+        else resolve(reply.result.machine)
+      })
+      socket.addEventListener("error", () => { clearTimeout(timer); reject(new Error("the endpoint socket failed")) })
     })
-    socket.addEventListener("error", () => { clearTimeout(timer); reject(new Error("the endpoint socket failed")) })
-  }).finally(() => handle.detach())
-  report({ kind: "attached", owner: handle.owner, url: handle.endpoint.url, machine: { id: machine.id, version: machine.version } })
+    report({ kind: "attached", owner: handle.owner, url: handle.endpoint.url, machine: { id: machine.id, version: machine.version } })
+  } catch (error) {
+    report({ kind: "hello-failed", message: error instanceof Error ? error.message : String(error) })
+  } finally {
+    handle.detach()
+  }
 }
 `
 
@@ -301,7 +315,9 @@ async function main({ argv, env, platform }) {
     for (const until = Date.now() + attachWindowMs; Date.now() < until;) {
       last = await attach()
       attached = last.code === 0 ? parseAttachReport(last.stdout) : undefined
-      if (attached?.kind === "attached") break
+      // Not ready yet is a refusal; a daemon that answered and failed hello
+      // will not start answering, so the wait ends there.
+      if (attached?.kind === "attached" || attached?.kind === "hello-failed") break
       await delay(1_000)
     }
     if (attached?.kind !== "attached") fail(last, `the desktop attach path did not reach the service within ${attachWindowMs}ms (${JSON.stringify(attached)})`)
@@ -329,10 +345,10 @@ async function main({ argv, env, platform }) {
     for (const until = Date.now() + goneWindowMs; Date.now() < until;) {
       last = await attach()
       refused = last.code === 0 ? parseAttachReport(last.stdout) : undefined
-      if (refused !== undefined && refused.kind !== "attached") break
+      if (refused?.kind === "refused") break
       await delay(1_000)
     }
-    if (refused === undefined || refused.kind === "attached") fail(last, `a daemon still answered for the profile ${goneWindowMs}ms after removal`)
+    if (refused?.kind !== "refused") fail(last, `a daemon still answered for the profile ${goneWindowMs}ms after removal`)
     step(`after removal: manager has no service, ${definition} and ${configuration} are gone, attach is refused (${refused.reason})`)
     step(successMarker)
   } finally {
