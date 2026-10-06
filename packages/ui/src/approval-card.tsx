@@ -3,9 +3,9 @@ import { CircleStopIcon } from "lucide-react"
 import type { ApprovalDecision, ApprovalRequest } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
-import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import { Input } from "./components/ui/input"
+import { cn } from "./lib/utils"
 import { restoreFocusAfterUpdate } from "./restore-focus"
 
 export function ApprovalCard({
@@ -54,15 +54,27 @@ export function ApprovalCard({
     decide(decision)
   }
 
+  // The desktop card is the Desktop v2 gate; the web card keeps the signed web
+  // design's header, which draws no facts.
+  const desktop = surface === "desktop"
+  // Ruling pending (questions.md): the design folds the facts behind What
+  // does this touch?. For a file edit the command reads only the tool's name
+  // and Affects is the fact that names the file, so the disclosure starts
+  // open and nothing sits behind a click until that is decided.
+  const [factsOpen, setFactsOpen] = useState(true)
+  const factsId = `approval-facts-${approval.id}`
   // Agent and mode ride the header line instead of the grid, the way the design
-  // system draws the gate. Nothing is dropped: a desktop shows every fact.
+  // draws the gate. Nothing is dropped: every fact is on the card.
   const facts = [
     ["Machine", approval.machine],
-    ["Directory", approval.directory],
+    ["Working dir", approval.directory],
     ["Affects", approval.affects],
     ["Network", approval.network],
-    ["Est. duration", approval.estimatedDuration],
+    ["Estimated", approval.estimatedDuration],
   ]
+  // The design draws no Hard gate badge on the desktop header, so the risk
+  // rides the meta line: it is an approval fact and stays on the card.
+  const meta = `${approval.agent} · ${approval.mode}${desktop && approval.risk === "hard-gate" ? " · hard gate" : ""}`
   const closeExplanation = () => {
     setExplainOpen(false)
     setExplanation("")
@@ -70,30 +82,58 @@ export function ApprovalCard({
   }
 
   return (
-    <Alert variant="warning" className="mx-auto max-w-3xl gap-3 rounded-xl p-4">
-      <CircleStopIcon />
-      <AlertTitle className="flex items-center gap-2 text-[12.5px]">
-        {surface === "web" && approval.risk === "hard-gate" ? "Approval required, hard gate" : "Approval required"}
-        {surface === "desktop" && approval.risk === "hard-gate" ? <Badge variant="warning">Hard gate</Badge> : null}
-        <span className="ml-auto font-machine text-[10.5px] font-normal text-warn-dim">
-          {approval.agent} · {approval.mode}
-        </span>
-      </AlertTitle>
-      <AlertDescription className="col-span-full flex flex-col gap-3">
-        <p className="text-[13px] font-medium text-warn-foreground">{approval.operation}</p>
-        <code className="break-all whitespace-pre-wrap rounded-md bg-warn-deep px-3 py-2 font-machine text-[11px] text-warn-foreground">
+    <Alert
+      variant="warning"
+      className={cn(
+        "mx-auto max-w-3xl rounded-xl",
+        desktop
+          ? "gap-0 overflow-hidden border-[1.5px] border-warning p-0 shadow-[0_18px_44px_color-mix(in_oklab,var(--warning)_14%,transparent)]"
+          : "gap-3 p-4",
+      )}
+    >
+      {desktop ? null : <CircleStopIcon />}
+      {desktop ? (
+        <AlertTitle className="flex items-center gap-[11px] px-4 pt-3.5 pb-3 text-[15px] font-semibold tracking-[-.01em] text-warn-foreground">
+          {/* The design's pulse: a gate is the one thing on screen that
+              wants a decision. Still when the reader asks for less motion. */}
+          <span aria-hidden className="relative inline-flex size-[9px] shrink-0">
+            <span className="absolute inset-0 rounded-full bg-warning/60 motion-safe:animate-ping motion-safe:[animation-duration:2.4s]" />
+            <span className="relative size-[9px] rounded-full bg-warning" />
+          </span>
+          Waiting on your decision
+          <span className="ml-auto font-machine text-[10.5px] font-normal tracking-normal text-warn-dim">{meta}</span>
+        </AlertTitle>
+      ) : (
+        <AlertTitle className="flex items-center gap-2 text-[12.5px]">
+          {approval.risk === "hard-gate" ? "Approval required, hard gate" : "Approval required"}
+          <span className="ml-auto font-machine text-[10.5px] font-normal text-warn-dim">{meta}</span>
+        </AlertTitle>
+      )}
+      <AlertDescription className={cn("col-span-full flex flex-col", desktop ? "gap-3 px-4 pb-3.5" : "gap-3")}>
+        <p className="m-0 text-[13px] font-medium text-warn-foreground">{approval.operation}</p>
+        <code
+          className={cn(
+            "break-all whitespace-pre-wrap bg-warn-deep font-machine text-warn-foreground",
+            desktop ? "rounded-lg px-[15px] py-[13px] text-[13.5px]" : "rounded-md px-3 py-2 text-[11px]",
+          )}
+        >
           {approval.command}
         </code>
-        <dl className="grid grid-cols-[100px_1fr] gap-x-3 gap-y-1.5 text-[11px]">
-          {facts.map(([label, value]) => (
-            <div className="contents" key={label}>
-              <dt className="text-warn-dim">{label}</dt>
-              <dd className="m-0 min-w-0 break-words font-machine text-warn-foreground">{value}</dd>
-            </div>
-          ))}
-        </dl>
+        {desktop ? null : (
+          <dl className="m-0 grid grid-cols-[100px_1fr] gap-x-3 gap-y-1.5 text-[11px]">
+            {facts.map(([label, value]) => (
+              <div className="contents" key={label}>
+                <dt className="text-warn-dim">{label}</dt>
+                <dd className="m-0 min-w-0 break-words font-machine text-warn-foreground">{value}</dd>
+              </div>
+            ))}
+          </dl>
+        )}
         {refusal ? (
-          <p role="alert" className="m-0 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] leading-[1.5] text-danger-foreground">
+          // The daemon's refusal of the last decision on this gate, such as a
+          // checkpoint it could not take, in the design's danger block.
+          <p role="alert" className="m-0 flex items-start gap-2.5 rounded-lg border border-danger-border bg-danger-background px-[13px] py-[11px] text-[12.5px] leading-[1.55] text-danger-foreground">
+            <span aria-hidden className="mt-1.5 size-[7px] shrink-0 rounded-full bg-destructive" />
             {refusal}
           </p>
         ) : null}
@@ -150,7 +190,7 @@ export function ApprovalCard({
           <div className="flex flex-wrap items-center gap-2">
             {/* Ruled Q372 A: a watching device sees the decisions as drawn,
                 locked, and the note says why. */}
-            <Button variant="warning" size="sm" disabled={locked} onClick={press("allow-once")}>Allow once</Button>
+            <Button variant="warning" size="sm" className={cn(desktop && "h-[38px] px-[18px] text-[13px] font-semibold")} disabled={locked} onClick={press("allow-once")}>Allow once</Button>
             {/* Ruled 2026-09-24: the daemon refuses a standing rule on a hard gate
                 and for a request it could not resolve, so the card offers none.
                 Ruled Q371 A: a rule matches this execution record, not a
@@ -158,9 +198,9 @@ export function ApprovalCard({
                 and web rather than the design's "prisma migrate". The tablet
                 draws its own card and still says "Always here". */}
             {approval.execution.state === "resolved" && approval.risk !== "hard-gate" ? (
-              <Button variant="outline" size="sm" disabled={locked} onClick={press("always-project")}>Always for this command here</Button>
+              <Button variant="outline" size="sm" className={cn(outline, "text-warn-foreground", desktop && "h-[38px] px-[15px] text-[12.5px]")} disabled={locked} onClick={press("always-project")}>Always for this command here</Button>
             ) : null}
-            <Button variant="outline" size="sm" disabled={locked} onClick={press("deny")}>Deny</Button>
+            <Button variant="outline" size="sm" className={cn(outline, "text-warn-dim", desktop && "h-[38px] px-[15px] text-[12.5px]")} disabled={locked} onClick={press("deny")}>Deny</Button>
             {watching ? (
               <span className="text-[11px] text-warn-dim">Locked, this client is watching only.</span>
             ) : (
@@ -168,9 +208,38 @@ export function ApprovalCard({
             )}
             {/* Only a connected tab with full access holds the gate. */}
             {surface === "web" && !locked ? <span className="ml-auto font-machine text-[10.5px] text-warn-dim">This tab holds the gate</span> : null}
+            {/* Reading the facts decides nothing, so a locked card still
+                opens and folds them. */}
+            {desktop ? (
+              <Button
+                variant="ghost"
+                size="xs"
+                aria-expanded={factsOpen}
+                aria-controls={factsId}
+                className="ml-auto px-1 text-[11px] font-normal text-warn-dim hover:bg-transparent hover:text-warn-foreground aria-expanded:bg-transparent aria-expanded:text-warn-dim dark:hover:bg-transparent"
+                onClick={() => setFactsOpen((open) => !open)}
+              >
+                {factsOpen ? "Hide what this touches" : "What does this touch?"}
+              </Button>
+            ) : null}
           </div>
         )}
       </AlertDescription>
+      {desktop && factsOpen ? (
+        // The design's facts: three columns under the decisions, flush with
+        // the card's edges, divided by the gate's own border colour.
+        <dl id={factsId} className="col-span-full m-0 grid grid-cols-1 gap-px border-t border-warn-border bg-warn-border sm:grid-cols-3">
+          {facts.map(([label, value]) => (
+            <div key={label} className="bg-warn-background px-3.5 py-2.5">
+              <dt className="text-[10.5px] tracking-[.13em] text-warn-dim uppercase">{label}</dt>
+              <dd className="m-0 mt-1 min-w-0 break-words font-machine text-[10.5px] leading-[1.4] text-warn-foreground">{value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : null}
     </Alert>
   )
 }
+
+// The design outlines Always and Deny in the gate's own border, on no fill.
+const outline = "border-warn-border bg-transparent hover:bg-warn-deep dark:border-warn-border dark:bg-transparent dark:hover:bg-warn-deep"
