@@ -73,21 +73,32 @@ export function watchedSummary(watch: TerminalWatch): TerminalSummary {
 
 // The daemon's answer to terminal.list, laid over what the phone already
 // reads. The list is the daemon's word now, so every summary comes from it. A
-// terminal still listed keeps its output, marked unconfirmed, until a new
-// watch replaces it; one no longer listed is gone; anything else is read again.
+// terminal still listed keeps its output and how far reading it got; one no
+// longer listed is gone; a new one starts reading.
 export function listedWatches(
   previous: ReadonlyMap<string, TerminalWatch>,
   listed: readonly TerminalSummary[],
 ): Map<string, TerminalWatch> {
   return new Map(listed.map((terminal): [string, TerminalWatch] => {
     const held = previous.get(terminal.terminalId)
-    return [
-      terminal.terminalId,
-      held?.state === "watching"
-        ? { state: "watching", record: { ...held.record, summary: terminal, confirmed: false } }
-        : { state: "reading", summary: terminal },
-    ]
+    if (held?.state === "watching") return [terminal.terminalId, { state: "watching", record: { ...held.record, summary: terminal } }]
+    if (held?.state === "failed") return [terminal.terminalId, { ...held, summary: terminal }]
+    return [terminal.terminalId, { state: "reading", summary: terminal }]
   }))
+}
+
+// How often the open session's terminals are listed again. Nothing tells a
+// client that a terminal opened, so a new one is found by asking.
+export const terminalListIntervalMs = 10_000
+
+// A new connection holds no watch: what was read on the old one stays on
+// screen, marked as the old connection's, until it is watched again.
+export function unconfirmedWatches(previous: ReadonlyMap<string, TerminalWatch>): ReadonlyMap<string, TerminalWatch> {
+  if (![...previous.values()].some((watch) => watch.state === "watching" && watch.record.confirmed)) return previous
+  return new Map([...previous].map(([terminalId, watch]): [string, TerminalWatch] => [
+    terminalId,
+    watch.state === "watching" ? { state: "watching", record: { ...watch.record, confirmed: false } } : watch,
+  ]))
 }
 
 // A notification for this record's terminal. Anything for another terminal,
@@ -148,7 +159,14 @@ function bounded(record: TerminalRecord): TerminalRecord {
 // bar does, and a backspace erases. The line still being written is kept; the
 // empty line after a final newline is not.
 export function terminalLines(text: string): string[] {
-  const plain = text
+  const lines = plainText(text).split("\n").map(drawnLine)
+  if (lines.at(-1) === "") lines.pop()
+  return lines
+}
+
+// The text with escape sequences dropped and line breaks made plain.
+function plainText(text: string): string {
+  return text
     // Operating system commands, such as a window title.
     // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
     .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
@@ -159,9 +177,6 @@ export function terminalLines(text: string): string[] {
     // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
     .replace(/\u001b[@-_]/g, "")
     .replace(/\r\n/g, "\n")
-  const lines = plain.split("\n").map(drawnLine)
-  if (lines.at(-1) === "") lines.pop()
-  return lines
 }
 
 // One cell per character, so a character outside the basic plane, two UTF-16
@@ -208,6 +223,11 @@ export function terminalRows(record: TerminalRecord, connected: boolean): Termin
   })
   if (markAt !== undefined && markAt >= lines.length && liveMark) rows.push(liveMark)
   const { summary } = record
+  // The gap: output held from an older connection, or a live shell whose
+  // connection is down. A shell whose end arrived on this record has none.
+  if (!record.confirmed || (!connected && summary.state === "live")) {
+    rows.push({ kind: "mark", key: "dropped", text: `Nothing received since ${clock(record.lastHeardAt)}. Reconnecting replays the recent output first.` })
+  }
   if (summary.state === "closed") {
     const when = summary.closedAt ? clock(summary.closedAt) : "an unknown time"
     rows.push({
@@ -219,17 +239,15 @@ export function terminalRows(record: TerminalRecord, connected: boolean): Termin
           ? `The shell ended on signal ${summary.signal} at ${when}. No more output will arrive.`
           : `The shell closed at ${when}. No more output will arrive.`,
     })
-  } else if (!connected || !record.confirmed) {
-    rows.push({ kind: "mark", key: "dropped", text: `Nothing received since ${clock(record.lastHeardAt)}. Reconnecting replays the recent output first.` })
   }
   return rows
 }
 
-// The lines of a text that are finished: all of them when it ends on a line
-// break, all but the last otherwise.
+// The lines of a text that are finished: all of them when what it draws ends
+// on a line break, all but the last otherwise.
 function wholeLines(text: string): number {
   const count = terminalLines(text).length
-  return text.endsWith("\n") ? count : Math.max(0, count - 1)
+  return plainText(text).endsWith("\n") ? count : Math.max(0, count - 1)
 }
 
 // Failed is a shell that exited with a code other than zero. A shell ended by

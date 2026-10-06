@@ -22,6 +22,7 @@ import {
   terminalSize,
   terminalStatus,
   terminalTitle,
+  unconfirmedWatches,
   watchFrom,
   withNotification,
   type TerminalWatch,
@@ -252,9 +253,32 @@ describe("terminalRows", () => {
   // is not until the new watch answers.
   it("marks the gap on a record kept across a reconnect until it is watched again", () => {
     const kept = withNotification(watchFrom(watched()), { method: "terminal.output", params: { terminalId: "terminal-1", data: "x\n" } }, at)
-    const relisted = listedWatches(new Map([["terminal-1", { state: "watching", record: kept }]]), [summary()]).get("terminal-1")
+    const relisted = listedWatches(unconfirmedWatches(new Map([["terminal-1", { state: "watching", record: kept }]])), [summary()]).get("terminal-1")
     if (relisted?.state !== "watching") throw new Error("a watched terminal stays watched across a list")
     expect(terminalRows(relisted.record, true).at(-1)?.key).toBe("dropped")
+  })
+
+  // A list after a reconnect can say the shell closed while the phone was
+  // away. The output held is the old connection's, so the gap is still said.
+  it("marks the gap before the end on a record the list says closed", () => {
+    const kept = watchFrom(watched())
+    const closed = summary({ state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 1 })
+    const relisted = listedWatches(unconfirmedWatches(new Map([["terminal-1", { state: "watching", record: kept }]])), [closed]).get("terminal-1")
+    if (relisted?.state !== "watching") throw new Error("a watched terminal stays watched across a list")
+    expect(terminalRows(relisted.record, true).slice(-2).map((row) => row.key)).toEqual(["dropped", "closed"])
+  })
+
+  // The end arrived on this record, so nothing is missing after it, whatever
+  // the connection does next.
+  it("says nothing is missing from a shell whose end it heard", () => {
+    const closed = withNotification(watchFrom(watched()), { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 0 } }, at)
+    expect(terminalRows(closed, false).map((row) => row.key)).not.toContain("dropped")
+  })
+
+  // A record can end on a line break followed by a colour reset.
+  it("places the live mark after a finished line that ends in an escape sequence", () => {
+    const record = withNotification(watchFrom(watched({ buffer: "finished\n\u001b[0m" })), { method: "terminal.output", params: { terminalId: "terminal-1", data: "next\n" } }, at)
+    expect(terminalRows(record, true).map((row) => row.kind === "mark" ? row.key : row.text)).toEqual(["finished", "live-from", "next"])
   })
 })
 
@@ -304,7 +328,28 @@ describe("listedWatches", () => {
     const first = next.get("terminal-1")
     if (first?.state !== "watching") throw new Error("a watched terminal stays watched across a list")
     expect(terminalStatus(first.record.summary, true)).toEqual({ label: "Failed", tone: "failed" })
-    expect(next.get("terminal-2")).toEqual({ state: "reading", summary: moved })
+    // A failed watch stays failed until it is asked again; only its summary is new.
+    expect(next.get("terminal-2")).toEqual({ state: "failed", summary: moved, message: "no answer" })
+  })
+
+  // Listing again on the same connection leaves a watched record current:
+  // its output is still arriving.
+  it("leaves a watched record confirmed on a list from the same connection", () => {
+    const kept: TerminalWatch = { state: "watching", record: watchFrom(watched()) }
+    const next = listedWatches(new Map([["terminal-1", kept]]), [summary()]).get("terminal-1")
+    if (next?.state !== "watching") throw new Error("a watched terminal stays watched across a list")
+    expect(next.record.confirmed).toBe(true)
+  })
+})
+
+describe("unconfirmedWatches", () => {
+  it("marks every held record as the old connection's, and leaves the rest", () => {
+    const reading: TerminalWatch = { state: "reading", summary: summary({ terminalId: "terminal-2" }) }
+    const next = unconfirmedWatches(new Map<string, TerminalWatch>([["terminal-1", { state: "watching", record: watchFrom(watched()) }], ["terminal-2", reading]]))
+    const first = next.get("terminal-1")
+    if (first?.state !== "watching") throw new Error("a watched terminal stays watched")
+    expect(first.record.confirmed).toBe(false)
+    expect(next.get("terminal-2")).toBe(reading)
   })
 })
 
