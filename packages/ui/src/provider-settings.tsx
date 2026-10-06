@@ -37,7 +37,7 @@ export function ProviderSettings({ providers, secrets, localDaemon, printCommand
     <>
       <h2 className="m-0 text-[13px] font-medium">Providers and tokens</h2>
       <p className="mt-1.5 max-w-[68ch] text-[11.5px] leading-relaxed text-muted-foreground">
-        Stored in each machine&apos;s OS keychain. Never in a Domovoi account. Subscription CLIs own their credentials, and direct API keys never pass through a client or relay.
+        Stored on this machine. Domovoi does not send it to another device. Subscription CLIs own their credentials.
       </p>
 
       {localDaemon ? (

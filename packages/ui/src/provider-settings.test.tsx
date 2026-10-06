@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from "vitest"
 
 import {
   ExternalEditorSettings,
+  ProviderSettings,
   providerAccountAction,
   providerAccountCommand,
 } from "./provider-settings.js"
@@ -135,6 +136,14 @@ describe("Settings shell and provider pane", () => {
     expect(markup).not.toMatch(/>Store<\/button|>Replace<\/button|>Remove<\/button/)
     expect(markup).not.toMatch(/sk-|secret@example|key ending/i)
     expect(markup).toContain(">External editor</h1>")
+  })
+
+  it("says provider credentials stay on this machine without claiming an account or relay", () => {
+    const markup = renderToStaticMarkup(<ProviderSettings providers={providers} secrets={[]} />)
+
+    expect(markup).toContain("Stored on this machine. Domovoi does not send it to another device.")
+    expect(markup).toContain("Subscription CLIs own their credentials.")
+    expect(markup).not.toMatch(/Domovoi account|relay/i)
   })
 
   it("shows why a detected provider cannot start sessions instead of the sign-in hint", () => {
