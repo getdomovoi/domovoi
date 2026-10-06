@@ -254,8 +254,9 @@ Parallel with Phase 0. Touches nothing the gates decide.
       existed was true when written and is superseded by `apps/cli`. Still open on 2026-10-06:
       install and service status are only on `domovoid`, and which `domovoid` commands move to
       `domovoi`, in which package, is not yet decided. The pairing gap listed here on 2026-10-01
-      is closed: `domovoi pair` reads the code `domovoid pair` prints and redeems it with
-      `device.redeemCode` (e958ca93, Q337 A).
+      is closed: `domovoi pair` reads the code `domovoid pair --client cli --label <label>`
+      prints and redeems it with `device.redeemCode` (e958ca93, Q337 A). The bare
+      `domovoid pair` code is a machine claim, which `domovoi pair` cannot redeem.
 - [x] **S1.7 [CX]** The accounting and turn-record work lands here — it is daemon bookkeeping and it
       unblocks UI in Phase 3. Usage accounting (4359bcf9) and turn records (e7364720,
       84d90d50, 1991666a); the detail is under "From the work split" below.
@@ -1125,12 +1126,13 @@ Ticked under rule 7: Codex's work, Claude Code's file, so the citation carries C
   turn the daemon actually saw, so the client can refuse to present a floor as a total.
 
 #### Approval execution duration — 1 field
-- [x] Record how long the approved command ran, distinct from `decided in` (5ee18251). The
-      daemon records `ranForMs` on the approval receipt; the desktop receipt draws it
-      (8522648f) and so does the phone (f1b826f1).
+- [ ] Record how long the approved command ran, distinct from `decided in`.
       Decision latency answers "how long was the agent blocked"; execution duration answers
-      "what did the approval cost". The design asks for the second, and until 2026-10-02 the
-      UI showed only the first.
+      "what did the approval cost". The design asks for the second. **State on 2026-10-06:**
+      the daemon records `ranForMs` on the approval receipt (5ee18251) and the desktop
+      receipt draws it (8522648f). The phone (f1b826f1) and tablet draw it only inside the
+      checkpoint line, so a session with no worktree, whose receipt carries
+      `checkpoint: "unavailable"`, shows no run time. Open until they draw it on its own.
 
 #### Record the session-start checkpoint — accepted and landed
 Raised 2026-09-10 while working `CC1`, accepted by Codex the same day (2adb1171, f9cf76bb), and
