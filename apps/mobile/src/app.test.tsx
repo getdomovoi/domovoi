@@ -675,4 +675,125 @@ describe("App", () => {
     expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
     expect(socket.requests("tool.inventory")).toHaveLength(1)
   })
+
+  // Phone v2 frame 04: the phone lists the open session's terminals, watches
+  // each, reads live output, and stops watching when the person leaves.
+  describe("terminals", () => {
+    const owner = { client: "desktop", clientId: "desktop-1", device: { id: `device-${"a".repeat(32)}`, label: "MacBook Pro" } }
+    const terminal = {
+      terminalId: "terminal-1",
+      sessionId: audit.id,
+      cols: 120,
+      rows: 34,
+      shell: "/bin/zsh",
+      cwd: "/Users/mira/dev/acme/.domovoi/worktrees/wt-audit",
+      owner,
+      claimHeld: true,
+      openedAt: "2026-10-06T13:52:04.000Z",
+      state: "live",
+    }
+    const watchResult = {
+      ...terminal,
+      buffer: "$ pnpm audit\nfirst\n",
+      bufferStartsAt: "2026-10-06T13:52:04.000Z",
+      earlierOutputDropped: false,
+      watchedAt: "2026-10-06T14:06:12.000Z",
+    }
+
+    async function openAudit() {
+      const snapshot = workspace()
+      snapshot.approvals = []
+      const opened = await openApp(snapshot)
+      await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+      await settle()
+      return opened
+    }
+
+    async function watchOne(socket: FakeSocket) {
+      expect(socket.requests("terminal.list").at(-1)?.params).toEqual({ sessionId: audit.id })
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      expect(socket.requests("terminal.watch").at(-1)?.params).toEqual({ terminalId: "terminal-1" })
+      await act(async () => { socket.answer("terminal.watch", watchResult) })
+      await settle()
+    }
+
+    it("watches the open session's terminals, reads live output, and unwatches on leave", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      expect(screen.getByText("zsh · wt-audit")).toBeOnTheScreen()
+      expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+
+      await act(async () => { socket.push("terminal.output", { terminalId: "terminal-1", data: "third\n" }) })
+      await settle()
+      await fireEvent.press(screen.getByRole("button", { name: "Show all 3 lines" }))
+      expect(screen.getByText("Read-only. Only the claimant can type or resize.")).toBeOnTheScreen()
+      expect(screen.getByText("Claimed by MacBook Pro")).toBeOnTheScreen()
+      expect(screen.getByText("third")).toBeOnTheScreen()
+      // A phone watches; it never types, resizes or claims.
+      expect(socket.sent.filter((frame) => ["terminal.input", "terminal.resize", "terminal.claim", "terminal.create", "terminal.close"].includes(frame.method))).toEqual([])
+
+      await fireEvent.press(screen.getByRole("button", { name: "Back to the thread" }))
+      expect(screen.getByRole("button", { name: "Show all 3 lines" })).toBeOnTheScreen()
+      expect(socket.requests("terminal.unwatch")).toEqual([])
+
+      await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+      await settle()
+      expect(socket.requests("terminal.unwatch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }])
+    })
+
+    it("says Failed when the watched shell exits with an error", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await act(async () => { socket.push("terminal.closed", { terminalId: "terminal-1", exitCode: 1 }) })
+      await settle()
+      expect(screen.getByText("Failed")).toBeOnTheScreen()
+      expect(screen.getByText("Last claimed by MacBook Pro")).toBeOnTheScreen()
+    })
+
+    it("says Unconfirmed while the connection is down, and watches again once it is back", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await act(async () => { socket.close() })
+      await settle()
+      expect(screen.getByText("Unconfirmed")).toBeOnTheScreen()
+      expect(screen.getByText("Last heard: claimed by MacBook Pro")).toBeOnTheScreen()
+      // What was read stays on screen while the route is down.
+      expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+
+      // The first retry waits a second.
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_100)) })
+      const next = FakeSocket.made.at(-1)!
+      expect(next).not.toBe(socket)
+      await act(async () => {
+        next.readyState = 1
+        next.onopen?.()
+      })
+      await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+      await settle()
+      await watchOne(next)
+      expect(screen.getByText("Live")).toBeOnTheScreen()
+    })
+
+    it("closes the full view when the daemon no longer lists its terminal", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await fireEvent.press(screen.getByRole("button", { name: "Show all 2 lines" }))
+      expect(screen.getByRole("button", { name: "Back to the thread" })).toBeOnTheScreen()
+
+      await act(async () => { socket.close() })
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_100)) })
+      const next = FakeSocket.made.at(-1)!
+      await act(async () => {
+        next.readyState = 1
+        next.onopen?.()
+      })
+      await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+      await settle()
+      await act(async () => { next.answer("terminal.list", { terminals: [] }) })
+      await settle()
+      expect(screen.queryByRole("button", { name: "Back to the thread" })).toBeNull()
+      expect(screen.getByRole("button", { name: "Back to sessions" })).toBeOnTheScreen()
+    })
+  })
 })
