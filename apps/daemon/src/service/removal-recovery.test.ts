@@ -24,11 +24,11 @@ function snapshots() {
     url: "ws://127.0.0.1:47831/rpc", serviceRegistrationId: registrationId,
   }
   const before: ServiceRemovalSnapshot = { owner, registrationId, configurationDigest: "sha256:configuration" }
-  return { owner, before, after: structuredClone(before) }
+  return { owner, before, after: structuredClone(before), registrationId }
 }
 function manager(platform: "linux" | "darwin" | "win32") {
   vi.stubEnv("SystemRoot", "C:\\Windows")
-  const { before, after, owner } = snapshots()
+  const { before, after, owner, registrationId } = snapshots()
   const release = vi.fn()
   const effects: ServiceEffects = {
     claimServiceOperation: vi.fn(() => ({ release: vi.fn() })),
@@ -41,7 +41,7 @@ function manager(platform: "linux" | "darwin" | "win32") {
     ...(platform === "win32"
       ? { stopSupervisor: vi.fn(async () => {}), readConfiguration: vi.fn((home: string) => ({
         ...createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home }),
-        registrationId: before.registrationId,
+        registrationId,
         serviceRuntime: { executable: "C:\\Domovoi\\node.exe", entry: "C:\\Domovoi\\index.js" },
       })) }
       : {}),
@@ -97,7 +97,7 @@ it("retains Windows configuration without a recovery receipt when a missing task
 
 it("refuses legacy Windows removal and never grants a recovery receipt", async () => {
   const { target, effects } = manager("win32"), capture = effects.capture
-  effects.capture = vi.fn(async (...args) => {
+  effects.capture = vi.fn(async (...args: Parameters<ServiceEffects["capture"]>) => {
     const result = await capture(...args)
     return { ...result, stdout: result.stdout.replace("--service-supervise", "--service-config") }
   })
