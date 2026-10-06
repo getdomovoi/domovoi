@@ -370,9 +370,12 @@ Read these before relying on this guide for a fleet rollout.
   they retain the task and configuration and explain the refusal. The new native restart,
   exhaustion, removal and task-settings read-back tests still need Windows CI execution.
   Real user-logon acceptance remains **[H]**, fetzy's hardware run. Windows boot supervision
-  is not provided. Signing out (or Task Manager, or `schtasks /end`) can lose the empty-job
-  receipt and block the next logon on the same boot until Windows restarts. Existing
-  direct-daemon tasks lack job evidence and require
+  is not provided. The helper writes its own bound, flushed job-empty receipt on supervisor
+  stdin EOF and attempts the same through a hidden top-level window at session end. The
+  end-session path is best effort; only fetzy's hardware run proves whether real sign-out
+  allows it time. Without a receipt, the next same-boot logon, stop confirmation, and removal
+  still refuse. The native EOF/restart and synthetic end-session tests await Windows CI.
+  Existing direct-daemon tasks lack job evidence and require
   [manual retirement](daemon-services.md#windows-removal) after
   disabling the task and restarting Windows before installing the supervised service.
 - The [dedicated WSL job](wsl-ci.md) has passed fifteen real proofs on a hosted Windows runner with

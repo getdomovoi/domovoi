@@ -182,3 +182,78 @@ it("rechecks launch evidence under the lease after observing an idle task", asyn
     } })).rejects.toThrow("Restart Windows")
   } finally { deadline.clear() }
 })
+
+function helperReceipt(f: ReturnType<typeof fixture>, changes: Record<string, unknown> = {}) {
+  const attempt = f.record.attempts[0]!
+  const receipt = { version: 1, kind: "empty", job: attempt.job, bootId: attempt.bootId,
+    registrationId: f.record.registrationId, attempt: attempt.number, at: new Date().toISOString(),
+    child: { ...f.record.loop, pid: 124 }, helper: { ...f.record.loop, pid: 125 },
+    activeProcesses: 0, terminated: true, code: 1, stopped: true, ...changes }
+  const path = join(f.home, ".domovoi", `windows-job-${attempt.job.slice(14)}.receipt.json`)
+  writeFileSync(path, JSON.stringify(receipt), { mode: 0o600 })
+  return path
+}
+
+it("recovers job-empty proof from the helper's receipt when the supervisor died before publication", async () => {
+  const f = fixture(true), deadline = OperationDeadline.start(2000)
+  helperReceipt(f)
+  try {
+    const status = readWindowsSupervisorStatus(f.home)
+    expect(status?.treeUnconfirmed).not.toBe(true)
+    expect(status?.detail).toContain("jobs confirmed empty")
+    const stopped = await stopWindowsSupervisor(f.path, deadline)
+    expect(stopped.attempts[0]).toMatchObject({ stage: "empty", empty: { activeProcesses: 0, terminated: true }, child: { pid: 124 } })
+  } finally { deadline.clear() }
+})
+
+it.each([
+  { registrationId: randomUUID() }, { job: `Local\\Domovoi-${randomUUID()}` }, { bootId: "windows-boot:43" },
+  { attempt: 2 }, { activeProcesses: 1 }, { terminated: false },
+  { helper: { pid: 125, start: "456", bootId: "windows-boot:43" } },
+])("refuses a mismatched helper receipt %j", async (changes) => {
+  const f = fixture(true), deadline = OperationDeadline.start(2000)
+  helperReceipt(f, changes)
+  try {
+    await expect(stopWindowsSupervisor(f.path, deadline)).rejects.toThrow()
+    expect(() => readWindowsSupervisorStatus(f.home)).toThrow("receipt")
+    expect(existsSync(f.path)).toBe(true)
+  } finally { deadline.clear() }
+})
+
+it("refuses malformed receipts without treating a partial write as proof", () => {
+  const f = fixture(true), path = helperReceipt(f)
+  writeFileSync(path, "{", { mode: 0o600 })
+  expect(() => readWindowsSupervisorStatus(f.home)).toThrow("receipt")
+})
+
+it("uses the bound helper receipt at the next startup gate", async () => {
+  const f = fixture(true)
+  helperReceipt(f)
+  vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: f.record.loop.bootId, identity: { ...f.record.loop, pid: 321 } })
+  vi.mocked(launchWindowsJob).mockRejectedValue(new Error("test launch boundary"))
+  try {
+    vi.stubGlobal("process", Object.create(process, { platform: { value: "win32" } }))
+    expect(await runWindowsSupervisor(f.path, { executable: "unused", args: [] })).toMatchObject({ state: "failed" })
+    expect(launchWindowsJob).toHaveBeenCalledOnce()
+    const request = vi.mocked(launchWindowsJob).mock.calls[0]![0]
+    expect(request).toMatchObject({ receipt: { registrationId: f.record.registrationId, attempt: 1, bootId: f.record.loop.bootId } })
+    expect(request.receipt.path).toBe(join(f.home, ".domovoi", `windows-job-${request.job.slice(14)}.receipt.json`))
+  } finally { vi.unstubAllGlobals() }
+})
+
+it("refuses a receipt whose process identity disagrees with prepared evidence", () => {
+  const f = fixture(true), attempt = f.record.attempts[0]!
+  attempt.stage = "prepared"; attempt.child = { ...f.record.loop, pid: 124, start: "999" }; attempt.helper = { ...f.record.loop, pid: 125 }
+  writeWindowsSupervisorRecord(f.home, f.record)
+  helperReceipt(f)
+  expect(() => readWindowsSupervisorStatus(f.home)).toThrow("receipt")
+})
+
+it("never accepts a staging receipt as published proof", async () => {
+  const f = fixture(true), path = helperReceipt(f), deadline = OperationDeadline.start(2000)
+  writeFileSync(path + ".partial", readFileSync(path), { mode: 0o600 }); rmSync(path)
+  try {
+    expect(readWindowsSupervisorStatus(f.home)).toMatchObject({ treeUnconfirmed: true })
+    await expect(stopWindowsSupervisor(f.path, deadline)).rejects.toThrow("Restart Windows")
+  } finally { deadline.clear() }
+})

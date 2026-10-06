@@ -25,7 +25,10 @@ export type WindowsJob = {
   exited: Promise<WindowsJobEmpty>
   stop(): Promise<WindowsJobEmpty>
 }
-export type WindowsJobInput = { job: string; executable: string; args: string[]; log: string }
+export type WindowsJobInput = {
+  job: string; executable: string; args: string[]; log: string
+  receipt: { path: string; registrationId: string; attempt: number; bootId: string }
+}
 export type WindowsJobTransport = (command: ServiceCommand) => EventEmitter & { stdin: Writable; stdout: Readable; stderr: Readable; kill(): unknown }
 
 export function windowsJobCommand(): ServiceCommand {

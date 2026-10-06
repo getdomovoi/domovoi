@@ -200,7 +200,11 @@ Each attempt in the profile's `windows-supervisor.json` records the job name, ke
 helper and daemon PID/creation time, launch phase, exit code, backoff, and empty-job receipt.
 On daemon exit the helper terminates the job, including surviving descendants, and queries
 `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.ActiveProcesses` on its retained handle until it is zero.
-Only that receipt permits a restart. Backoffs share WSL's policy: 1, 5 and 15 seconds; the fourth
+The helper flushes a private `windows-job-<uuid>.receipt.json` staging file and atomically
+renames it before emitting stdout. It binds the proof to the job, boot counter, attempt,
+registration, and process birth identities. Startup, status, stop, and removal read that receipt
+if the supervisor died before copying the proof into its own record. Missing or mismatched
+receipts do not settle an unconfirmed tree. Backoffs share WSL's policy: 1, 5 and 15 seconds; the fourth
 crash records exhaustion. `domovoid service status` reports exhaustion and exits 1 even when the
 task remains registered. A clean exit or deliberate stop does not restart. Daemon output is
 appended to the profile's `windows-daemon.log`.
@@ -222,12 +226,16 @@ a lease file. It assumes the same user has not deleted the profile's evidence. R
 applies to the registration, including a new loop racing the request, until reinstall or an
 update clears it under the startup lease with the task disabled.
 
-Signing out (or Task Manager, or `schtasks /end`) can kill the helper before it
-publishes its empty-job receipt. The next logon on the same Windows boot then refuses startup
-until Windows restarts. This remains an unresolved logon acceptance failure. Missing named jobs
-are not accepted as proof: last-handle closure initiates kill-on-close, but a namespace lookup
-does not supply the required observation that asynchronous process termination has completed.
-Changing `Local\` to `Global\` alone would address session visibility, not that proof gap.
+Killing only the Node supervisor closes the helper's stdin. The helper then terminates its
+job, observes it empty, and writes its own receipt even when stdout is already closed.
+For sign-out, a helper thread owns a hidden top-level window. It acknowledges
+`WM_QUERYENDSESSION` and synchronously terminates, observes, and receipts the job on
+`WM_ENDSESSION(TRUE)`. This end-session path is best effort: Windows may terminate the helper
+before publication. Whether real sign-out allows enough time remains **[H]**, fetzy's hardware
+run. Task Manager termination or `schtasks /end` may also end the helper without a receipt.
+Without valid proof, the next same-boot logon still refuses until Windows restarts. Missing
+named jobs are not accepted as proof: last-handle closure initiates kill-on-close, but a
+namespace lookup does not observe termination completion.
 
 Every `schtasks /create /sc onlogon /rl LIMITED` is followed by the Task Scheduler COM settings
 step, before `/run`: `ExecutionTimeLimit` is `PT0S`, and `DisallowStartIfOnBatteries` and

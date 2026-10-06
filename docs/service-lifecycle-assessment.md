@@ -71,11 +71,14 @@ has the printed text and failure handling.
   exhaustion status, deliberate-stop non-restart, and empty jobs at removal. Unit tests
   run on macOS/Linux with the Windows boundary mocked. Owed: execution of the new native
   tests on Windows CI, plus **[H] real user-logon acceptance on fetzy's hardware**.
-  Signing out (or Task Manager, or `schtasks /end`) can lose the empty-job receipt and block
-  the next same-boot logon until Windows restarts. The proposed missing-job-name proof is
-  disputed because it does not observe termination completion. Legacy migration also remains
-  a policy decision; exact
-  manual disable/restart/retirement steps are in [daemon services](daemon-services.md#windows-removal).
+  The helper now flushes and atomically publishes its own bound job-empty receipt before
+  stdout, including on supervisor-pipe EOF. A hidden top-level window handles end-session
+  messages and attempts synchronous termination, empty-job observation, and publication.
+  This is best effort. Only fetzy's **[H] hardware run** proves whether real sign-out gives it
+  time. Without a receipt, same-boot startup, stop confirmation, and removal still refuse.
+  Native EOF/restart and synthetic end-session receipt tests also need Windows CI execution.
+  Legacy migration remains a policy decision; exact manual disable/restart/retirement steps
+  are in [daemon services](daemon-services.md#windows-removal).
   This change does not provide Windows boot supervision and does not close S1.1.
 
 

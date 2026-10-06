@@ -3,9 +3,12 @@
 export const windowsJobSource = String.raw`
 $ErrorActionPreference = 'Stop'
 try {
-Add-Type -ReferencedAssemblies System.Web.Extensions -TypeDefinition @'
+Add-Type -ReferencedAssemblies System.dll,System.Core.dll,System.Web.Extensions.dll -TypeDefinition @'
 using System;
 using System.Text;
+using System.IO;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Threading;
 using System.Collections.Concurrent;
 using System.ComponentModel;
@@ -54,6 +57,25 @@ public static class DomovoiJob {
   [DllImport("kernel32.dll", SetLastError=true)] static extern bool GetProcessTimes(IntPtr process, out long created, out long exited, out long kernel, out long user);
   [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern bool MoveFileEx(string from, string to, uint flags);
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode)] static extern IntPtr GetModuleHandle(string name);
+  delegate IntPtr WindowProcedure(IntPtr hwnd, uint message, IntPtr w, IntPtr l);
+  [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct WindowClass {
+    public uint Size, Style; public IntPtr Procedure; public int ClassExtra, WindowExtra;
+    public IntPtr Instance, Icon, Cursor, Background; public string Menu, Name; public IntPtr SmallIcon;
+  }
+  [StructLayout(LayoutKind.Sequential)] struct WindowMessage {
+    public IntPtr Window; public uint Message; public UIntPtr W; public IntPtr L; public uint Time; public int X, Y; public uint Private;
+  }
+  [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern ushort RegisterClassEx(ref WindowClass cls);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode, SetLastError=true)] static extern IntPtr CreateWindowEx(uint extended, string cls, string title, uint style, int x, int y, int width, int height, IntPtr parent, IntPtr menu, IntPtr instance, IntPtr parameter);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern IntPtr DefWindowProc(IntPtr hwnd, uint message, IntPtr w, IntPtr l);
+  [DllImport("user32.dll", SetLastError=true)] static extern int GetMessage(out WindowMessage message, IntPtr hwnd, uint min, uint max);
+  [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref WindowMessage message);
+  [DllImport("user32.dll", SetLastError=true)] static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr w, IntPtr l);
+  [DllImport("user32.dll")] static extern bool DestroyWindow(IntPtr hwnd);
+  [DllImport("user32.dll")] static extern void PostQuitMessage(int code);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] static extern bool UnregisterClass(string name, IntPtr instance);
   static void Check(bool ok) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error()); }
   static void Emit(object value) { Console.Out.WriteLine(Json.Serialize(value)); Console.Out.Flush(); }
   static string Boot() {
@@ -106,17 +128,114 @@ public static class DomovoiJob {
     if (answer == 258) return false;
     throw new Win32Exception(Marshal.GetLastWin32Error());
   }
-  public static void Run(string name, string executable, string[] args, string log) {
+  // The retained job handle outlives this object. Finish serializes the main
+  // loop, stdin EOF and session-end paths, so only one receipt is published.
+  sealed class JobLifetime : IDisposable {
+    readonly object gate = new object(); readonly IntPtr job; readonly string name, boot, path, registration;
+    readonly int attempt; readonly object child, helper;
+    readonly ManualResetEventSlim ready = new ManualResetEventSlim(false);
+    readonly WindowProcedure procedure;
+    Thread thread; IntPtr window; volatile Exception windowError; bool disposed; object empty;
+    public volatile bool SessionEnded;
+    public JobLifetime(IntPtr handle, string jobName, string bootId, string receiptPath, string registrationId, int number, object childId, object helperId) {
+      job=handle; name=jobName; boot=bootId; path=receiptPath; registration=registrationId; attempt=number; child=childId; helper=helperId;
+      procedure = OnMessage;
+    }
+    void Publish(object receipt) {
+      string staging = path + "." + Guid.NewGuid().ToString() + ".partial";
+      var acl = new FileSecurity();
+      using (var identity = WindowsIdentity.GetCurrent()) {
+        acl.SetOwner(identity.User); acl.SetAccessRuleProtection(true, false);
+        acl.AddAccessRule(new FileSystemAccessRule(identity.User, FileSystemRights.FullControl, AccessControlType.Allow));
+      }
+      try {
+        byte[] bytes = Encoding.UTF8.GetBytes(new JavaScriptSerializer().Serialize(receipt) + "\n");
+        using (var file = new FileStream(staging, FileMode.CreateNew, FileSystemRights.Write | FileSystemRights.Synchronize, FileShare.None, 4096, FileOptions.WriteThrough, acl)) {
+          file.Write(bytes, 0, bytes.Length); file.Flush(true);
+        }
+        // Same-directory atomic rename, no replacement of an existing receipt.
+        // MOVEFILE_WRITE_THROUGH follows the FlushFileBuffers above.
+        Check(MoveFileEx(staging, path, 8));
+      } finally { if (File.Exists(staging)) File.Delete(staging); }
+    }
+    public object Finish(uint code, bool stopped) {
+      lock (gate) {
+        if (disposed) throw new InvalidOperationException("Job observer is closed");
+        if (empty != null) return empty;
+        Check(TerminateJobObject(job, 1));
+        var stopping = Stopwatch.StartNew();
+        while (Active(job) != 0) {
+          if (stopping.ElapsedMilliseconds > 10000) throw new InvalidOperationException("Job remains nonempty");
+          Thread.Sleep(25);
+        }
+        Publish(new { version=1, kind="empty", job=name, bootId=boot, registrationId=registration, attempt=attempt,
+          at=DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ", System.Globalization.CultureInfo.InvariantCulture),
+          child=child, helper=helper, activeProcesses=0, terminated=true, code=code, stopped=stopped });
+        empty = new { kind="empty", job=name, bootId=boot, activeProcesses=0, terminated=true, code=code, stopped=stopped };
+        return empty;
+      }
+    }
+    IntPtr OnMessage(IntPtr hwnd, uint message, IntPtr w, IntPtr l) {
+      // WM_QUERYENDSESSION may be canceled. Acknowledge without killing the
+      // daemon; WM_ENDSESSION(TRUE) does the synchronous proof and publication.
+      if (message == 0x11) return new IntPtr(1);
+      if (message == 0x16 && w != IntPtr.Zero) {
+        try { Finish(1, true); } catch (Exception error) { windowError = error; }
+        finally { SessionEnded = true; }
+        return IntPtr.Zero;
+      }
+      if (message == 0x10) { DestroyWindow(hwnd); window=IntPtr.Zero; PostQuitMessage(0); return IntPtr.Zero; }
+      return DefWindowProc(hwnd, message, w, l);
+    }
+    public void CheckWindow() { if (windowError != null) throw new InvalidOperationException("Session-end observer failed", windowError); }
+    public void StartWindow() {
+      thread = new Thread(() => {
+        string clsName = "DomovoiJob-" + Guid.NewGuid().ToString(); IntPtr instance = GetModuleHandle(null); bool registered=false;
+        try {
+          WindowClass cls = new WindowClass(); cls.Size=(uint)Marshal.SizeOf(typeof(WindowClass)); cls.Name=clsName;
+          cls.Instance=instance; cls.Procedure=Marshal.GetFunctionPointerForDelegate(procedure);
+          Check(RegisterClassEx(ref cls) != 0); registered=true;
+          // Hidden TOP-LEVEL window: no WS_VISIBLE, no parent, never HWND_MESSAGE.
+          // Message-only windows do not receive end-session broadcasts.
+          window=CreateWindowEx(0x80, clsName, name, 0, 0, 0, 0, 0, IntPtr.Zero, IntPtr.Zero, instance, IntPtr.Zero);
+          Check(window != IntPtr.Zero); ready.Set();
+          WindowMessage message; int next;
+          while ((next=GetMessage(out message, IntPtr.Zero, 0, 0)) > 0) DispatchMessage(ref message);
+          Check(next == 0);
+        } catch (Exception error) { windowError=error; SessionEnded=true; }
+        finally {
+          ready.Set();
+          if (window != IntPtr.Zero) { DestroyWindow(window); window=IntPtr.Zero; }
+          if (registered) UnregisterClass(clsName, instance);
+        }
+      });
+      thread.IsBackground=true; thread.Start(); ready.Wait(); CheckWindow();
+    }
+    public void Dispose() {
+      // Wait for any synchronous receipt write before the caller closes the
+      // job. A late window message must never query that closed/reused handle.
+      lock (gate) { disposed=true; }
+      if (window != IntPtr.Zero) PostMessage(window, 0x10, IntPtr.Zero, IntPtr.Zero);
+      if (thread != null) thread.Join(2000);
+      GC.KeepAlive(procedure);
+    }
+  }
+  public static void Run(string name, string executable, string[] args, string log, string receiptPath, string registration, int attempt, string expectedBoot) {
     Guid id;
     if (!name.StartsWith("Local\\Domovoi-") || !Guid.TryParse(name.Substring(14), out id)) throw new InvalidOperationException("Invalid job name");
-    string boot = Boot();
+    string boot = Boot(); Guid registrationId;
+    if (boot != expectedBoot || !Guid.TryParse(registration, out registrationId) || attempt < 1 || attempt > 4)
+      throw new InvalidOperationException("Invalid receipt binding");
+    if (!Path.IsPathRooted(receiptPath) || Path.GetFileName(receiptPath) != "windows-job-" + id.ToString() + ".receipt.json"
+      || (File.GetAttributes(Path.GetDirectoryName(receiptPath)) & FileAttributes.ReparsePoint) != 0)
+      throw new InvalidOperationException("Invalid receipt path");
     IntPtr job = CreateJobObject(IntPtr.Zero, name);
     int createError = Marshal.GetLastWin32Error();
     if (job == IntPtr.Zero) throw new Win32Exception(createError);
     if (createError == 183) { CloseHandle(job); throw new InvalidOperationException("Job name already exists"); }
     ProcessInfo child = new ProcessInfo(); IntPtr output = IntPtr.Zero, input = IntPtr.Zero;
     IntPtr attributes = IntPtr.Zero, inherited = IntPtr.Zero;
-    bool assigned = false, initialized = false;
+    bool assigned = false, initialized = false; JobLifetime lifetime = null;
     try {
       ExtendedLimits limits = new ExtendedLimits(); limits.Basic.Flags = KILL_ON_CLOSE;
       Check(SetInformationJobObject(job, 9, ref limits, (uint)Marshal.SizeOf(typeof(ExtendedLimits))));
@@ -147,17 +266,20 @@ public static class DomovoiJob {
       // CREATE_SUSPENDED | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT.
       Check(CreateProcess(executable, command, IntPtr.Zero, IntPtr.Zero, true, 0x08080004, IntPtr.Zero, null, ref startup, out child));
       Check(AssignProcessToJobObject(job, child.Process)); assigned = true;
-      using (Process self = Process.GetCurrentProcess()) {
-        Emit(new { kind="prepared", job=name, bootId=boot.ToString(), child=Identity(child.Process, child.Pid, boot), helper=Identity(self.Handle, (uint)self.Id, boot), killOnClose=true, stdioOnly=true });
-      }
+      object childId=Identity(child.Process, child.Pid, boot), helperId;
+      using (Process self = Process.GetCurrentProcess()) { helperId=Identity(self.Handle, (uint)self.Id, boot); }
+      lifetime = new JobLifetime(job, name, boot, receiptPath, registration, attempt, childId, helperId);
+      lifetime.StartWindow();
+      Emit(new { kind="prepared", job=name, bootId=boot, child=childId, helper=helperId, killOnClose=true, stdioOnly=true });
       var commands = new BlockingCollection<string>();
       var reader = new Thread(() => {
         try { string line; while ((line = Console.In.ReadLine()) != null) commands.Add(line); }
+        catch (IOException) { /* A broken input pipe also requests cleanup. */ }
         finally { commands.Add("{\"command\":\"stop\"}"); }
       }); reader.IsBackground = true; reader.Start();
       bool resumed = false, stopped = false;
       var handshake = Stopwatch.StartNew();
-      while (!Ended(child.Process)) {
+      while (!Ended(child.Process) && !lifetime.SessionEnded) {
         string message;
         if (commands.TryTake(out message, 50)) {
           var control = Json.Deserialize<System.Collections.Generic.Dictionary<string,string>>(message);
@@ -168,18 +290,18 @@ public static class DomovoiJob {
         }
         if (!resumed && handshake.ElapsedMilliseconds > 15000) throw new InvalidOperationException("Startup acknowledgement expired");
       }
+      lifetime.CheckWindow();
+      stopped = stopped || lifetime.SessionEnded;
       uint code = 1;
       if (!stopped) Check(GetExitCodeProcess(child.Process, out code));
-      // Always terminate the job, including after clean root exit, then read
-      // accounting through the same retained handle. A root exit proves less.
-      Check(TerminateJobObject(job, 1));
-      var stopping = Stopwatch.StartNew();
-      while (Active(job) != 0) {
-        if (stopping.ElapsedMilliseconds > 10000) throw new InvalidOperationException("Job remains nonempty");
-        Thread.Sleep(25);
-      }
-      Emit(new { kind="empty", job=name, bootId=boot.ToString(), activeProcesses=0, terminated=true, code=code, stopped=stopped });
+      // The helper's own flushed receipt precedes stdout, which may already be
+      // closed because the Node supervisor died. Broken stdout cannot lose proof.
+      Emit(lifetime.Finish(code, stopped));
     } finally {
+      if (lifetime != null) {
+        try { lifetime.Finish(1, true); } catch { /* Missing receipt remains unconfirmed. */ }
+        lifetime.Dispose();
+      }
       if (initialized) DeleteProcThreadAttributeList(attributes);
       if (attributes != IntPtr.Zero) Marshal.FreeHGlobal(attributes);
       if (inherited != IntPtr.Zero) Marshal.FreeHGlobal(inherited);
@@ -201,7 +323,7 @@ elseif ($request.mode -eq 'run') {
   # Windows PowerShell rewrites this variable at startup. Restore the Node
   # supervisor's value (including absence) before the daemon inherits it.
   [Environment]::SetEnvironmentVariable('PSModulePath', $request.psModulePath, [EnvironmentVariableTarget]::Process)
-  [DomovoiJob]::Run([string]$request.job, [string]$request.executable, [string[]]@($request.args), [string]$request.log)
+  [DomovoiJob]::Run([string]$request.job, [string]$request.executable, [string[]]@($request.args), [string]$request.log, [string]$request.receipt.path, [string]$request.receipt.registrationId, [int]$request.receipt.attempt, [string]$request.receipt.bootId)
 }
 else { throw 'Unknown helper operation' }
 exit 0

@@ -14,6 +14,7 @@ import { launchWindowsJob, queryWindowsProcess, queryWindowsProcesses, windowsPr
 import { windowsProcessIdentitySchema, prepareSupervisorDirectory, readSupervisorStopRequest, readWindowsSupervisorRecord,
   supervisorBackoffs, supervisorStopPath, writeSupervisorStopRequest, writeWindowsSupervisorRecord, windowsSupervisorRecordSchema,
   type WindowsProcessIdentity, type WindowsSupervisorRecord } from "./supervisor-record.js"
+import { recoverWindowsJobReceipts, windowsJobReceiptPath } from "./windows-job-receipt.js"
 
 export const windowsTreeUnknown = "The Windows daemon tree is unconfirmed. Its job-empty evidence is missing, so another start, stop confirmation, and removal are refused. The task and service configuration are retained. Restart Windows to settle the tree from this recorded boot, then retry."
 const digest = (configuration: ServiceConfiguration) => createHash("sha256").update(serializeServiceConfiguration(configuration)).digest("hex")
@@ -152,7 +153,7 @@ function boundRecord(config: ServiceConfiguration, previousConfigurationDigest?:
     || (record.configurationDigest !== digest(config) && record.configurationDigest !== previousConfigurationDigest))) {
     throw new Error("Windows supervisor evidence does not match the installed service configuration")
   }
-  return record
+  return record ? recoverWindowsJobReceipts(profileLocation(config.homeDirectory, config.profileDirectory), record) : undefined
 }
 
 export async function runWindowsSupervisor(path: string, entry: { executable: string; args: string[] }): Promise<WindowsSupervisorRecord> {
@@ -167,7 +168,7 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
     const observed = queryWindowsProcess(process.pid)
     if (!observed.identity) throw new Error("Windows supervisor birth identity is unavailable")
     const previous = readWindowsSupervisorRecord(home)
-    assertWindowsStartup(previous, observed.bootId, windowsProcessAlive)
+    assertWindowsStartup(previous ? recoverWindowsJobReceipts(home, previous) : undefined, observed.bootId, windowsProcessAlive)
     if (readSupervisorStopRequest(home)?.registrationId === config.registrationId) throw new Error("This Windows supervisor registration was stopped; reinstall before starting it")
     process.on("SIGINT", stop); process.on("SIGTERM", stop)
     monitor = setInterval(() => {
@@ -180,7 +181,8 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
     }, 100)
     const record = await superviseWindows({ loop: observed.identity, registrationId: config.registrationId, configurationDigest: digest(config), signal: controller.signal }, {
       now: () => new Date(), write: (record) => { writeWindowsSupervisorRecord(home, record) },
-      launch: (attempt) => launchWindowsJob({ job: attempt.job, ...entry, log: join(profileDirectory(home), "windows-daemon.log") }),
+      launch: (attempt) => launchWindowsJob({ job: attempt.job, ...entry, log: join(profileDirectory(home), "windows-daemon.log"),
+        receipt: { path: windowsJobReceiptPath(home, attempt.job), registrationId: config.registrationId, attempt: attempt.number, bootId: attempt.bootId } }),
       wait: async (ms, signal) => { await delay(ms, undefined, { signal }) },
     })
     if (monitorError !== undefined) {
@@ -198,8 +200,9 @@ export function readWindowsSupervisorStatus(home: string): ServiceStatus | undef
   let config: ServiceConfiguration | undefined
   try { config = configurationAt(join(home, ".domovoi", "service.json")) }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
-  const record = config ? boundRecord(config) : readWindowsSupervisorRecord(home)
-  if (!record) return undefined
+  const saved = config ? boundRecord(config) : readWindowsSupervisorRecord(home)
+  if (!saved) return undefined
+  const record = config ? saved : recoverWindowsJobReceipts(home, saved)
   const child = record.attempts.at(-1)?.child
   const observed = queryWindowsProcesses([record.loop.pid, ...(child ? [child.pid] : [])])
   const loopAlive = record.loop.bootId === observed.bootId && observed.identities[0]?.start === record.loop.start
@@ -245,9 +248,9 @@ export async function stopWindowsSupervisor(path: string, deadline: OperationDea
           current = { version: 1, platform: "win32", supervisorId: randomUUID(), registrationId: config.registrationId!,
             configurationDigest: digest(config), loop: requester, startedAt: now, updatedAt: now,
             state: "stopped", attempts: [], crashes: 0, reason: "deliberate-stop" }
-          writeWindowsSupervisorRecord(home, current)
         }
         assertWindowsTreeProof(current, queryWindowsProcess(process.pid).bootId)
+        writeWindowsSupervisorRecord(home, current)
         deadline.throwIfExpired()
         // Update holds the service-operation lease and disabled the task. Only
         // that caller may permit this registration to start again after proof.
