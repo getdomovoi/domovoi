@@ -176,8 +176,8 @@ it("carries the effort level across a provider pick by its word", async () => {
         id: "sonnet",
         displayName: "Sonnet",
         description: "",
-        supportedReasoningEfforts: ["think", "think-hard", "ultrathink"],
-        defaultReasoningEffort: "think-hard",
+        supportedReasoningEfforts: ["low", "medium", "high", "max"],
+        defaultReasoningEffort: "medium",
         isDefault: true,
       }]
     : [{
