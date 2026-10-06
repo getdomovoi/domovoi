@@ -146,7 +146,7 @@ export function createWebAppHttpHandler({ bundle, authorities, scheme }: WebAppH
     }
     response.setHeader("cache-control", file.cacheClass === "entry" ? "no-cache" : "private, max-age=31536000, immutable")
     response.setHeader("etag", file.etag)
-    if (file.cacheClass === "entry" && matchesEtag(request.headers["if-none-match"], file.etag)) {
+    if (matchesEtag(request.headers["if-none-match"], file.etag)) {
       response.statusCode = 304
       response.end()
       return

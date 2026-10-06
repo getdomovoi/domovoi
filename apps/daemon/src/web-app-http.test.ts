@@ -222,20 +222,19 @@ describe("web app cache headers", () => {
     expect(response.body).toBe(expected.bytes.toString("utf8"))
     expect(response.headers["content-type"]).toBe(expected.contentType)
     expect(response.headers["cache-control"]).toBe(expected.cacheClass === "entry" ? "no-cache" : "private, max-age=31536000, immutable")
-    if (expected.cacheClass === "entry") expect(response.headers.etag).toBe(expected.etag)
+    expect(response.headers.etag).toBe(expected.etag)
     securityHeaders(response)
   })
 
-  it.each(["GET", "HEAD"])("revalidates every entry for %s with all security headers", async (method) => {
+  it.each(["GET", "HEAD"])("revalidates every file for %s with all security headers", async (method) => {
     const get = await serve()
     for (const [path, entry] of files) {
-      if (entry.cacheClass !== "entry") continue
       for (const validator of [entry.etag, `W/${entry.etag}`, `"old", W/${entry.etag}`, "*"]) {
         const response = await get(path, { method, headers: { "if-none-match": validator } })
         expect(response.status).toBe(304)
         expect(response.body).toBe("")
         expect(response.headers.etag).toBe(entry.etag)
-        expect(response.headers["cache-control"]).toBe("no-cache")
+        expect(response.headers["cache-control"]).toBe(entry.cacheClass === "entry" ? "no-cache" : "private, max-age=31536000, immutable")
         securityHeaders(response)
       }
     }
