@@ -126,6 +126,6 @@ export function launchWindowsJob(input: WindowsJobInput, transport: WindowsJobTr
       rejectResume(new Error("Windows job ended before its resume acknowledgement"))
       resolveExit(receipt)
     })
-    child.stdin.write(JSON.stringify({ mode: "run", ...input }) + "\n")
+    child.stdin.write(JSON.stringify({ mode: "run", ...input, psModulePath: process.env.PSModulePath ?? null }) + "\n")
   })
 }

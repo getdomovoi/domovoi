@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
-import { expect, it } from "vitest"
+import { expect, it, vi } from "vitest"
 import { launchWindowsJob, queryWindowsProcess, type WindowsJob } from "./windows-job.js"
 import { windowsPowerShellPath } from "./windows-task.js"
 
@@ -24,8 +24,9 @@ it.runIf(process.platform === "win32")("contains descendants, gates resume, refu
   const jobName = `Local\\Domovoi-${randomUUID()}`
   let job: WindowsJob | undefined
   try {
+    vi.stubEnv("PSModulePath", "C:\\PowerShell 7\\Modules;C:\\User's Modules")
     const executable = process.execPath
-    const script = `const {spawn}=require('node:child_process');const {writeFileSync}=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});writeFileSync(process.argv[1],JSON.stringify({pid:process.pid,descendant:child.pid}));setInterval(()=>{},1000)`
+    const script = `const {spawn}=require('node:child_process');const {writeFileSync}=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});writeFileSync(process.argv[1],JSON.stringify({pid:process.pid,descendant:child.pid,psModulePath:process.env.PSModulePath}));setInterval(()=>{},1000)`
     job = await launchWindowsJob({ job: jobName, executable, args: ["-e", script, marker], log: join(directory, "daemon.log") })
     expect(job.prepared).toMatchObject({ bootId: before.bootId, killOnClose: true })
     await delay(250)
@@ -34,13 +35,14 @@ it.runIf(process.platform === "win32")("contains descendants, gates resume, refu
     // the live job. It never owns the first helper's handle.
     await expect(launchWindowsJob({ job: jobName, executable, args: ["-e", "process.exit(0)"], log: join(directory, "other.log") })).rejects.toThrow()
     await job.resume()
-    let pids: { pid: number; descendant: number } | undefined
+    let pids: { pid: number; descendant: number; psModulePath: string } | undefined
     for (let i = 0; i < 100 && !pids; ++i) {
       if (existsSync(marker)) pids = JSON.parse(readFileSync(marker, "utf8")) as typeof pids
       else await delay(50)
     }
     expect(pids?.pid).toBe(job.prepared.child.pid)
     expect(pids?.descendant).toBeGreaterThan(0)
+    expect(pids?.psModulePath).toBe(process.env.PSModulePath)
     const descendant = queryWindowsProcess(pids!.descendant).identity
     expect(descendant).not.toBeNull()
     // Kill only the root. Descendant cleanup must come from the job helper.
@@ -49,6 +51,7 @@ it.runIf(process.platform === "win32")("contains descendants, gates resume, refu
     expect(queryWindowsProcess(pids!.descendant).identity).not.toEqual(descendant)
     expect(queryWindowsProcess(process.pid)).toEqual(before)
   } finally {
+    vi.unstubAllEnvs()
     // Never delete the proof directory if cleanup cannot be established.
     if (job) await job.stop()
     rmSync(directory, { recursive: true, force: true })

@@ -87,3 +87,17 @@ it("rejects a helper that resumes before acknowledgement", async () => {
   await expect(pending).rejects.toThrow("invalid")
   f.child.emit("close", 1)
 })
+
+it.each(["C:\\PowerShell 7\\Modules;C:\\User's Modules", undefined])("preserves the supervisor's PSModulePath value %s outside script source", async (value) => {
+  vi.stubEnv("PSModulePath", value)
+  const f = fixture()
+  const pending = launchWindowsJob({ job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
+  f.send(prepared)
+  const launched = await pending
+  // Shut down even when the assertion fails; this test owns the fake helper.
+  const request = JSON.parse(f.input().trim()) as { psModulePath?: string | null }
+  f.send({ kind: "empty", job, bootId, activeProcesses: 0, terminated: true, code: 0, stopped: true })
+  f.child.emit("close", 0)
+  await launched.exited
+  expect(request.psModulePath).toBe(value ?? null)
+})

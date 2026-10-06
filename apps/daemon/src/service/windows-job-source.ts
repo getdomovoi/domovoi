@@ -175,7 +175,12 @@ public static class DomovoiJob {
 '@
 $request = [Console]::In.ReadLine() | ConvertFrom-Json
 if ($request.mode -eq 'inspect') { [DomovoiJob]::Inspect([uint32[]]@($request.pids)) }
-elseif ($request.mode -eq 'run') { [DomovoiJob]::Run([string]$request.job, [string]$request.executable, [string[]]@($request.args), [string]$request.log) }
+elseif ($request.mode -eq 'run') {
+  # Windows PowerShell rewrites this variable at startup. Restore the Node
+  # supervisor's value (including absence) before the daemon inherits it.
+  [Environment]::SetEnvironmentVariable('PSModulePath', $request.psModulePath, [EnvironmentVariableTarget]::Process)
+  [DomovoiJob]::Run([string]$request.job, [string]$request.executable, [string[]]@($request.args), [string]$request.log)
+}
 else { throw 'Unknown helper operation' }
 exit 0
 } catch {
