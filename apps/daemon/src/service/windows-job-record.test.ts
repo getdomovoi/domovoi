@@ -1,0 +1,40 @@
+import { randomUUID } from "node:crypto"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { expect, it } from "vitest"
+
+import { readWindowsSupervisorRecord, writeWindowsSupervisorRecord, windowsSupervisorRecordSchema, type WindowsSupervisorRecord } from "./supervisor-record.js"
+
+export function windowsRecordFixture(): WindowsSupervisorRecord {
+  return {
+    version: 1, platform: "win32", supervisorId: randomUUID(), registrationId: randomUUID(), configurationDigest: "a".repeat(64),
+    loop: { pid: 123, start: "456", bootId: randomUUID() }, startedAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    state: "starting", attempts: [], crashes: 0, reason: null,
+  }
+}
+
+it("round trips private Windows evidence separately from WSL evidence", () => {
+  const home = mkdtempSync(join(tmpdir(), "domovoi-windows-record-"))
+  try {
+    const record = windowsRecordFixture()
+    writeWindowsSupervisorRecord(home, record)
+    expect(readWindowsSupervisorRecord(home)).toEqual(record)
+  } finally { rmSync(home, { recursive: true, force: true }) }
+})
+
+it("rejects successful termination without an empty-job observation", () => {
+  const record = windowsRecordFixture()
+  expect(windowsSupervisorRecordSchema.safeParse({ ...record, state: "stopped", reason: "deliberate-stop", attempts: [{
+    number: 1, job: `Local\\Domovoi-${randomUUID()}`, bootId: record.loop.bootId, startedAt: record.startedAt,
+    child: null, helper: null, stage: "intent", empty: null, exitCode: null, backoffMs: 0,
+  }] }).success).toBe(false)
+})
+
+it("allows failed observations to retain unfinished attempts", () => {
+  const record = windowsRecordFixture()
+  expect(windowsSupervisorRecordSchema.safeParse({ ...record, state: "failed", reason: "observation-failure", attempts: [{
+    number: 1, job: `Local\\Domovoi-${randomUUID()}`, bootId: record.loop.bootId, startedAt: record.startedAt,
+    child: null, helper: null, stage: "intent", empty: null, exitCode: null, backoffMs: 0,
+  }] }).success).toBe(true)
+})
