@@ -5,9 +5,10 @@ import { join } from "node:path"
 import { afterEach, expect, it, vi } from "vitest"
 import { OperationDeadline } from "../operation-deadline.js"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
-import { readSupervisorStopRequest, writeWindowsSupervisorRecord, type WindowsSupervisorRecord } from "./supervisor-record.js"
-import { readWindowsSupervisorStatus, stopWindowsSupervisor } from "./windows-job-supervisor.js"
-import { queryWindowsProcess } from "./windows-job.js"
+import { readSupervisorStopRequest, writeSupervisorStopRequest, writeWindowsSupervisorRecord, windowsSupervisorRecordPath, type WindowsSupervisorRecord } from "./supervisor-record.js"
+import { readWindowsSupervisorStatus, runWindowsSupervisor, stopWindowsSupervisor } from "./windows-job-supervisor.js"
+import { launchWindowsJob, queryWindowsProcess } from "./windows-job.js"
+import { claimExclusiveFileLease } from "../file-lease.js"
 
 vi.mock("./windows-job.js", () => ({ queryWindowsProcess: vi.fn(), windowsProcessAlive: vi.fn(() => false), launchWindowsJob: vi.fn() }))
 const homes: string[] = []
@@ -79,4 +80,36 @@ it("can prove the exact previous generation during rollback before a replacement
     await expect(stopWindowsSupervisor(f.path, deadline, { retire: false, previousConfigurationDigest: f.record.configurationDigest })).resolves.toEqual(f.record)
     expect(readSupervisorStopRequest(f.home)).toBeUndefined()
   } finally { deadline.clear() }
+})
+
+it("retires a claimable lease with no launch record after a prelaunch failure", async () => {
+  const f = fixture(), deadline = OperationDeadline.start(2000)
+  rmSync(windowsSupervisorRecordPath(f.home))
+  const lease = claimExclusiveFileLease(join(f.home, ".domovoi", "windows-supervisor-lease.sqlite"), () => new Error("busy"))
+  lease.release()
+  vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: f.record.loop.bootId, identity: f.record.loop })
+  try {
+    expect(await stopWindowsSupervisor(f.path, deadline)).toMatchObject({ state: "stopped", attempts: [], reason: "deliberate-stop" })
+    expect(readSupervisorStopRequest(f.home)?.registrationId).toBe(f.record.registrationId)
+  } finally { deadline.clear() }
+})
+
+it("honors a retirement request racing the first record of a new loop", async () => {
+  const f = fixture()
+  const loop = { ...f.record.loop, pid: 321 }
+  vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: loop.bootId, identity: loop })
+  vi.mocked(launchWindowsJob).mockImplementation(async (input) => {
+    // Stop read the predecessor before this new loop published its identity.
+    writeSupervisorStopRequest({ profileDirectory: join(f.home, ".domovoi") }, f.record)
+    const receipt = { kind: "empty" as const, job: input.job, bootId: loop.bootId, activeProcesses: 0 as const, terminated: true as const, code: 1, stopped: true }
+    return { prepared: { kind: "prepared", job: input.job, bootId: loop.bootId, child: { ...loop, pid: 322 }, helper: { ...loop, pid: 323 }, killOnClose: true },
+      resume: async () => {}, exited: new Promise(() => {}), stop: async () => receipt }
+  })
+  let emergencyStop = false
+  const timer = setTimeout(() => { emergencyStop = true; process.emit("SIGTERM") }, 1000)
+  try {
+    vi.stubGlobal("process", Object.create(process, { platform: { value: "win32" } }))
+    expect(await runWindowsSupervisor(f.path, { executable: "unused", args: [] })).toMatchObject({ state: "stopped", reason: "deliberate-stop" })
+    expect(emergencyStop).toBe(false)
+  } finally { clearTimeout(timer); vi.unstubAllGlobals() }
 })

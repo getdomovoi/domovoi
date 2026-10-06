@@ -81,21 +81,20 @@ it("never resumes when publishing the prepared identity fails", async () => {
   expect(record.state).toBe("failed")
 })
 
-it("does not erase missing history behind an existing startup lease", () => {
-  expect(() => assertWindowsStartup(undefined, loop.bootId, true, () => false)).toThrow("missing")
-  expect(() => assertWindowsStartup(undefined, loop.bootId, false, () => false)).not.toThrow()
+it("permits retry after a prelaunch failure left only a claimable lease", () => {
+  expect(() => assertWindowsStartup(undefined, loop.bootId, () => false)).not.toThrow()
 })
 
 it("gates startup on every old job, and refuses a live predecessor even with empty jobs", async () => {
   const f = fixture([0])
   const record = await superviseWindows(input(), f.effects)
-  expect(() => assertWindowsStartup(record, loop.bootId, true, () => true)).toThrow("still alive")
-  expect(() => assertWindowsStartup(record, loop.bootId, true, () => false)).not.toThrow()
+  expect(() => assertWindowsStartup(record, loop.bootId, () => true)).toThrow("still alive")
+  expect(() => assertWindowsStartup(record, loop.bootId, () => false)).not.toThrow()
   const attempt = record.attempts[0]!
   attempt.stage = "running"; attempt.empty = null; attempt.exitCode = null
   record.state = "failed"; record.reason = "observation-failure"
-  expect(() => assertWindowsStartup(record, loop.bootId, true, () => false)).toThrow("Restart Windows")
-  expect(() => assertWindowsStartup(record, "windows-boot:43", true, () => { throw new Error("old PID must not be queried") })).not.toThrow()
+  expect(() => assertWindowsStartup(record, loop.bootId, () => false)).toThrow("Restart Windows")
+  expect(() => assertWindowsStartup(record, "windows-boot:43", () => { throw new Error("old PID must not be queried") })).not.toThrow()
 })
 
 it("reports a dead loop during backoff as failed even when the old job is empty", async () => {

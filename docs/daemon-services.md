@@ -214,7 +214,11 @@ Records use `windows-boot:<counter>`; old GUID records are refused. The native t
 this read with `HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Memory Management\PrefetchParameters`
 `BootId` using a separate registry read under the limited user. Suspend, logon and
 clock changes do not establish a new boot. An unreadable boot identity refuses recovery.
-Missing or malformed history cannot be treated as a newly empty tree.
+Malformed history refuses. A claimable startup lease with no record means no launch: every
+launch writes intent first. This permits retry or retirement after a prelaunch failure left only
+a lease file. It assumes the same user has not deleted the profile's evidence. Retirement
+applies to the registration, including a new loop racing the request, until reinstall or an
+update clears it under the startup lease with the task disabled.
 
 Every `schtasks /create /sc onlogon /rl LIMITED` is followed by the Task Scheduler COM settings
 step, before `/run`: `ExecutionTimeLimit` is `PT0S`, and `DisallowStartIfOnBatteries` and

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto"
-import { existsSync, lstatSync, rmSync } from "node:fs"
+import { lstatSync, rmSync } from "node:fs"
 import { join, resolve } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
@@ -25,13 +25,13 @@ export function assertWindowsTreeProof(record: WindowsSupervisorRecord, bootId: 
   if (record.attempts.some((a) => !a.empty)) throw new Error(windowsTreeUnknown)
 }
 
-export function assertWindowsStartup(previous: WindowsSupervisorRecord | undefined, bootId: string, priorLease: boolean,
+export function assertWindowsStartup(previous: WindowsSupervisorRecord | undefined, bootId: string,
   alive: (identity: WindowsProcessIdentity) => boolean): void {
   windowsProcessIdentitySchema.shape.bootId.parse(bootId)
-  if (!previous) {
-    if (priorLease) throw new Error("Windows supervisor history is missing behind an existing lease; startup refused")
-    return
-  }
+  // Called under the exclusive startup lease. Intent is published before any
+  // launch, so absence means no launch, even if an earlier boot query failed.
+  // This relies on the same user not deleting the profile's evidence files.
+  if (!previous) return
   assertWindowsTreeProof(previous, bootId)
   if (previous.loop.bootId === bootId && alive(previous.loop)) throw new Error("A recorded Windows supervisor is still alive")
 }
@@ -158,28 +158,28 @@ function boundRecord(config: ServiceConfiguration, previousConfigurationDigest?:
 export async function runWindowsSupervisor(path: string, entry: { executable: string; args: string[] }): Promise<WindowsSupervisorRecord> {
   if (process.platform !== "win32") throw new Error("Windows job supervision requires Windows")
   const config = configurationAt(path), home = profileLocation(config.homeDirectory, config.profileDirectory)
-  const priorLease = existsSync(join(profileDirectory(home), "windows-supervisor-lease.sqlite"))
   const lease = claim(home)
   const controller = new AbortController()
   const stop = () => controller.abort()
   let monitor: ReturnType<typeof setInterval> | undefined
   let monitorError: unknown
-  let latest: WindowsSupervisorRecord | undefined
   try {
     const observed = queryWindowsProcess(process.pid)
     if (!observed.identity) throw new Error("Windows supervisor birth identity is unavailable")
     const previous = readWindowsSupervisorRecord(home)
-    assertWindowsStartup(previous, observed.bootId, priorLease, windowsProcessAlive)
+    assertWindowsStartup(previous, observed.bootId, windowsProcessAlive)
     if (readSupervisorStopRequest(home)?.registrationId === config.registrationId) throw new Error("This Windows supervisor registration was stopped; reinstall before starting it")
     process.on("SIGINT", stop); process.on("SIGTERM", stop)
     monitor = setInterval(() => {
       try {
         const request = readSupervisorStopRequest(home)
-        if (request && latest && request.registrationId === latest.registrationId && request.supervisorId === latest.supervisorId) stop()
+        // Retirement is sticky for this registration, including when stop
+        // read the predecessor just before this loop published its identity.
+        if (request?.registrationId === config.registrationId) stop()
       } catch (error) { monitorError = error; stop() }
     }, 100)
     const record = await superviseWindows({ loop: observed.identity, registrationId: config.registrationId, configurationDigest: digest(config), signal: controller.signal }, {
-      now: () => new Date(), write: (record) => { writeWindowsSupervisorRecord(home, record); latest = record },
+      now: () => new Date(), write: (record) => { writeWindowsSupervisorRecord(home, record) },
       launch: (attempt) => launchWindowsJob({ job: attempt.job, ...entry, log: join(profileDirectory(home), "windows-daemon.log") }),
       wait: async (ms, signal) => { await delay(ms, undefined, { signal }) },
     })
@@ -215,16 +215,29 @@ export async function stopWindowsSupervisor(path: string, deadline: OperationDea
   // started. Its caller supplies the exact old configuration digest it read
   // under the service-operation lease, never an arbitrary-record fallback.
   const initial = boundRecord(config, options.previousConfigurationDigest)
-  if (!initial) throw new Error("Windows supervisor evidence is missing; tree shutdown cannot be proved. Task and configuration retained.")
-  writeSupervisorStopRequest(home, initial)
+  let requester = initial?.loop
+  if (!requester) {
+    requester = queryWindowsProcess(process.pid).identity ?? undefined
+    if (!requester) throw new Error("Windows retirement requester identity is unavailable")
+  }
+  writeSupervisorStopRequest(home, { registrationId: config.registrationId!, supervisorId: initial?.supervisorId ?? randomUUID(), loop: requester })
   for (;;) {
     deadline.throwIfExpired()
     let lease: FileLease | undefined
     try { lease = claim(home) } catch (error) { if (!(error instanceof WindowsSupervisorBusyError)) throw error }
     if (lease) {
       try {
-        const current = boundRecord(config, options.previousConfigurationDigest)
-        if (!current || current.supervisorId !== initial.supervisorId) throw new Error("Windows supervisor changed during shutdown")
+        let current = boundRecord(config, options.previousConfigurationDigest)
+        if (!current) {
+          if (initial) throw new Error("Windows supervisor evidence disappeared during shutdown")
+          // No active loop and no published intent means no launch. Publish
+          // a terminal record, retaining the registration's retirement marker.
+          const now = new Date().toISOString()
+          current = { version: 1, platform: "win32", supervisorId: randomUUID(), registrationId: config.registrationId!,
+            configurationDigest: digest(config), loop: requester, startedAt: now, updatedAt: now,
+            state: "stopped", attempts: [], crashes: 0, reason: "deliberate-stop" }
+          writeWindowsSupervisorRecord(home, current)
+        }
         assertWindowsTreeProof(current, queryWindowsProcess(process.pid).bootId)
         deadline.throwIfExpired()
         // Update holds the service-operation lease and disabled the task. Only
