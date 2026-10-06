@@ -1,0 +1,288 @@
+import {
+  maximumTerminalReplayCharacters,
+  terminalListResultSchema,
+  terminalWatchResultSchema,
+  type TerminalSummary,
+  type TerminalWatchResult,
+} from "@getdomovoi/protocol"
+import { describe, expect, it } from "vitest"
+
+import {
+  claimantLine,
+  followAfterOutput,
+  followAfterScroll,
+  followJump,
+  followStart,
+  followToggle,
+  listedWatches,
+  showJump,
+  terminalLines,
+  terminalLineCount,
+  terminalRows,
+  terminalSize,
+  terminalStatus,
+  terminalTitle,
+  watchFrom,
+  withNotification,
+  type TerminalWatch,
+} from "./terminal-rows"
+
+// Phone v2 frame 04: what the phone reads from terminal.list and
+// terminal.watch, and how it words it. Fixtures go through the protocol's
+// own schemas, so a shape the daemon could not send cannot pass here.
+
+const owner = { client: "desktop" as const, clientId: "desktop-1", device: { id: `device-${"a".repeat(32)}`, label: "MacBook Pro" } }
+
+function summary(overrides: Partial<TerminalSummary> = {}): TerminalSummary {
+  const [listed] = terminalListResultSchema.parse({
+    terminals: [{
+      terminalId: "terminal-1",
+      sessionId: "session-billing",
+      cols: 120,
+      rows: 34,
+      shell: "/bin/zsh",
+      cwd: "/Users/mira/dev/acme/.domovoi/worktrees/wt-billing-idem",
+      owner,
+      claimHeld: true,
+      openedAt: "2026-10-06T13:52:04.000Z",
+      state: "live",
+      ...overrides,
+    }],
+  }).terminals
+  return listed!
+}
+
+function watched(overrides: Partial<TerminalWatchResult> = {}): TerminalWatchResult {
+  return terminalWatchResultSchema.parse({
+    ...summary(),
+    buffer: "$ pnpm vitest run src/webhooks\n ✓ src/webhooks/handler.spec.ts (14 tests) 412ms\n",
+    bufferStartsAt: "2026-10-06T13:52:04.000Z",
+    earlierOutputDropped: false,
+    watchedAt: "2026-10-06T14:06:12.000Z",
+    ...overrides,
+  })
+}
+
+// Local wall-clock time, as the screen prints it.
+function clock(iso: string): string {
+  const time = new Date(iso)
+  const pad = (value: number) => String(value).padStart(2, "0")
+  return `${pad(time.getHours())}:${pad(time.getMinutes())}:${pad(time.getSeconds())}`
+}
+
+const at = new Date("2026-10-06T14:07:18.000Z")
+
+describe("terminalLines", () => {
+  it("drops colour and cursor sequences and keeps the words", () => {
+    expect(terminalLines("\u001b[32m ✓ passed\u001b[0m\n\u001b]0;title\u0007$ ls\n")).toEqual([" ✓ passed", "$ ls"])
+  })
+
+  it("lets a carriage return overwrite the line, as a progress bar does", () => {
+    expect(terminalLines("Progress: 10%\rProgress: 100%\r\ndone\n")).toEqual(["Progress: 100%", "done"])
+    expect(terminalLines("abcdef\rXY\n")).toEqual(["XYcdef"])
+  })
+
+  it("keeps the line still being written, and no empty line after the last newline", () => {
+    expect(terminalLines("one\ntwo\n$ ")).toEqual(["one", "two", "$ "])
+    expect(terminalLines("one\n")).toEqual(["one"])
+    expect(terminalLines("")).toEqual([])
+  })
+
+  it("erases a character for a backspace", () => {
+    // A shell echoes an erase as back, space, back.
+    expect(terminalLines("lss\b \b\n")).toEqual(["ls"])
+  })
+})
+
+describe("terminalTitle and terminalSize", () => {
+  it("names the shell and the directory it runs in, and the claimant's size", () => {
+    expect(terminalTitle(summary())).toBe("zsh · wt-billing-idem")
+    expect(terminalTitle(summary({ shell: "C:\\Windows\\System32\\cmd.exe", cwd: "C:\\src\\acme\\" }))).toBe("cmd.exe · acme")
+    expect(terminalSize(summary())).toBe("120×34")
+  })
+})
+
+describe("terminalStatus", () => {
+  it("reads Live, Failed and Closed from the state and the exit code", () => {
+    expect(terminalStatus(summary(), true)).toEqual({ label: "Live", tone: "live" })
+    expect(terminalStatus(summary({ state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 1 }), true))
+      .toEqual({ label: "Failed", tone: "failed" })
+    expect(terminalStatus(summary({ state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 0 }), true))
+      .toEqual({ label: "Closed", tone: "closed" })
+    // Ended by a signal is how a desktop closing the shell looks. It is not a failure.
+    expect(terminalStatus(summary({ state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", signal: 1 }), true))
+      .toEqual({ label: "Closed", tone: "closed" })
+  })
+
+  // 04d: a dropped connection is unconfirmed, not failed.
+  it("says Unconfirmed while the connection is down, whatever was last heard", () => {
+    expect(terminalStatus(summary(), false)).toEqual({ label: "Unconfirmed", tone: "unconfirmed" })
+  })
+})
+
+describe("claimantLine", () => {
+  it("names the device that holds the claim", () => {
+    expect(claimantLine(summary(), true)).toBe("Claimed by MacBook Pro")
+  })
+
+  it("says last claimed when the shell closed or its claimant is gone", () => {
+    expect(claimantLine(summary({ state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 0 }), true))
+      .toBe("Last claimed by MacBook Pro")
+    expect(claimantLine(summary({ claimHeld: false }), true)).toBe("Last claimed by MacBook Pro")
+  })
+
+  it("says what was last heard while the connection is down", () => {
+    expect(claimantLine(summary(), false)).toBe("Last heard: claimed by MacBook Pro")
+  })
+
+  // A root bearer has no paired device, so its client kind is what is known.
+  it("names the client kind when the claimant has no paired device", () => {
+    expect(claimantLine(summary({ owner: { client: "desktop", clientId: "desktop-1" } }), true)).toBe("Claimed by a desktop client")
+  })
+})
+
+describe("terminalRows", () => {
+  it("shows the recent output, then marks where live output starts", () => {
+    const record = watchFrom(watched())
+    expect(terminalRows(record, true)).toEqual([
+      { kind: "line", key: "replay-0", text: "$ pnpm vitest run src/webhooks" },
+      { kind: "line", key: "replay-1", text: " ✓ src/webhooks/handler.spec.ts (14 tests) 412ms" },
+      { kind: "mark", key: "live-from", text: `Recent output above. Live from ${clock("2026-10-06T14:06:12.000Z")}.` },
+    ])
+  })
+
+  // 04c: the machine did not keep the start, and the view says where it starts.
+  it("says where the machine's record starts when earlier output was dropped", () => {
+    const rows = terminalRows(watchFrom(watched({ earlierOutputDropped: true })), true)
+    expect(rows[0]).toEqual({
+      kind: "mark",
+      key: "machine-dropped",
+      text: `Earlier output was not kept. The machine's record of this terminal starts at ${clock("2026-10-06T13:52:04.000Z")}.`,
+    })
+  })
+
+  it("appends live output under the mark", () => {
+    const record = withNotification(watchFrom(watched()), { method: "terminal.output", params: { terminalId: "terminal-1", data: " ❯ replay.spec.ts (5 tests | 1 failed)\n" } }, at)
+    expect(terminalRows(record, true).at(-1)).toEqual({ kind: "line", key: "live-0", text: " ❯ replay.spec.ts (5 tests | 1 failed)" })
+    expect(terminalLineCount(record)).toBe(3)
+  })
+
+  // 04b: closed is a state, and the end is stated with its exit code.
+  it("states how the shell ended, from the closed notification", () => {
+    const record = withNotification(watchFrom(watched()), { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 0 } }, at)
+    expect(record.summary.state).toBe("closed")
+    expect(record.summary.claimHeld).toBe(false)
+    expect(terminalRows(record, true).at(-1)).toEqual({
+      kind: "mark",
+      key: "closed",
+      text: `The shell exited with code 0 at ${clock(at.toISOString())}. No more output will arrive.`,
+    })
+    const signalled = withNotification(watchFrom(watched()), { method: "terminal.closed", params: { terminalId: "terminal-1", signal: 1 } }, at)
+    expect(terminalRows(signalled, true).at(-1)?.text).toBe(`The shell ended on signal 1 at ${clock(at.toISOString())}. No more output will arrive.`)
+    const unexplained = withNotification(watchFrom(watched()), { method: "terminal.closed", params: { terminalId: "terminal-1" } }, at)
+    expect(terminalRows(unexplained, true).at(-1)?.text).toBe(`The shell closed at ${clock(at.toISOString())}. No more output will arrive.`)
+  })
+
+  it("does not claim live output for a terminal that was already closed when watched", () => {
+    const record = watchFrom(watched({ state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 2 }))
+    const rows = terminalRows(record, true)
+    expect(rows.map((row) => row.key)).toEqual(["replay-0", "replay-1", "closed"])
+    expect(rows.at(-1)?.text).toBe(`The shell exited with code 2 at ${clock("2026-10-06T14:09:40.000Z")}. No more output will arrive.`)
+  })
+
+  // 04d: the gap is marked where it began.
+  it("marks when output was last heard while the connection is down", () => {
+    const record = withNotification(watchFrom(watched()), { method: "terminal.output", params: { terminalId: "terminal-1", data: "x\n" } }, at)
+    expect(terminalRows(record, false).at(-1)).toEqual({
+      kind: "mark",
+      key: "dropped",
+      text: `Nothing received since ${clock(at.toISOString())}. Reconnecting replays the recent output first.`,
+    })
+  })
+
+  it("keeps no more than the machine keeps, and says the phone dropped the start", () => {
+    const line = `${"x".repeat(99)}\n`
+    let record = watchFrom(watched({ buffer: line.repeat(10) }))
+    for (let index = 0; index < Math.ceil(maximumTerminalReplayCharacters / line.length) + 5; index += 1) {
+      record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: line } }, at)
+    }
+    const held = record.replay.length + record.live.reduce((total, chunk) => total + chunk.text.length, 0)
+    expect(held).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
+    const rows = terminalRows(record, true)
+    expect(rows[0]).toEqual({ kind: "mark", key: "phone-dropped", text: "Earlier output was not kept on this phone." })
+    expect(rows.filter((row) => row.kind === "line").every((row) => row.text === "x".repeat(99))).toBe(true)
+  })
+})
+
+describe("withNotification", () => {
+  it("moves the claimant line when the claim moves", () => {
+    const record = withNotification(
+      watchFrom(watched({ claimHeld: false })),
+      { method: "terminal.ownership", params: { terminalId: "terminal-1", owner: { client: "web", clientId: "web-1", device: { id: `device-${"b".repeat(32)}`, label: "Studio" } } } },
+      at,
+    )
+    expect(claimantLine(record.summary, true)).toBe("Claimed by Studio")
+  })
+
+  it("leaves a record alone for another terminal's notification", () => {
+    const record = watchFrom(watched())
+    expect(withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-2", data: "elsewhere\n" } }, at)).toBe(record)
+  })
+
+  it("adds nothing after the shell closed", () => {
+    const closed = withNotification(watchFrom(watched()), { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 0 } }, at)
+    expect(withNotification(closed, { method: "terminal.output", params: { terminalId: "terminal-1", data: "late\n" } }, at)).toBe(closed)
+  })
+})
+
+describe("listedWatches", () => {
+  it("reads each listed terminal, keeps what is already watched, and drops what the daemon no longer lists", () => {
+    const kept: TerminalWatch = { state: "watching", record: watchFrom(watched()) }
+    const previous = new Map<string, TerminalWatch>([
+      ["terminal-1", kept],
+      ["terminal-gone", { state: "reading", summary: summary({ terminalId: "terminal-gone" }) }],
+    ])
+    const next = listedWatches(previous, [summary(), summary({ terminalId: "terminal-2" })])
+    expect([...next.keys()]).toEqual(["terminal-1", "terminal-2"])
+    expect(next.get("terminal-1")).toBe(kept)
+    expect(next.get("terminal-2")).toEqual({ state: "reading", summary: summary({ terminalId: "terminal-2" }) })
+  })
+})
+
+describe("follow", () => {
+  it("starts following at the end and counts nothing while it follows", () => {
+    expect(followStart).toEqual({ following: true, atEnd: true, unseen: 0 })
+    expect(followAfterOutput(followStart, 4)).toBe(followStart)
+    expect(showJump(followStart, false)).toBe(false)
+  })
+
+  it("counts what lands while follow is off, and offers the jump", () => {
+    const off = followToggle(followStart)
+    expect(off.following).toBe(false)
+    const landed = followAfterOutput(followAfterOutput(off, 3), 15)
+    expect(landed.unseen).toBe(18)
+    expect(showJump(landed, false)).toBe(true)
+  })
+
+  it("counts what lands below a reader who scrolled up, even while following", () => {
+    const reading = followAfterScroll(followStart, false)
+    expect(followAfterOutput(reading, 2).unseen).toBe(2)
+    expect(showJump(reading, false)).toBe(true)
+  })
+
+  it("jumps to the latest: following again, at the end, nothing unseen", () => {
+    const landed = followAfterOutput(followToggle(followStart), 6)
+    expect(followJump(landed)).toEqual({ following: true, atEnd: true, unseen: 0 })
+    expect(followToggle(landed)).toEqual({ following: true, atEnd: true, unseen: 0 })
+  })
+
+  it("clears the count when the reader scrolls back to the end, and does not turn follow back on", () => {
+    const landed = followAfterOutput(followAfterScroll(followToggle(followStart), false), 6)
+    expect(followAfterScroll(landed, true)).toEqual({ following: false, atEnd: true, unseen: 0 })
+  })
+
+  // 04b: a closed terminal sends nothing more, so there is nothing to follow.
+  it("offers no jump on a closed terminal", () => {
+    expect(showJump(followToggle(followStart), true)).toBe(false)
+  })
+})
