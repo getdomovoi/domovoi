@@ -236,8 +236,11 @@ function FileEvidenceRow({
   const wasAsking = useRef(false)
   // A closed ask hands focus back to the control that opened it, so a
   // keyboard user is not dropped at the top of the document.
+  // Only when focus went nowhere: an ask opened in another row has already
+  // taken it, and this row must not take it back.
   useEffect(() => {
-    if (wasAsking.current && !asking) triggerRef.current?.focus()
+    const focusLost = document.activeElement === null || document.activeElement === document.body
+    if (wasAsking.current && !asking && focusLost) triggerRef.current?.focus()
     wasAsking.current = asking
   }, [asking])
   return (
@@ -744,8 +747,11 @@ export function SessionEvidencePanel({
   const visible: EvidenceState = state.sessionId === sessionId
     ? state
     : { loading: connected, error: "" }
+  // Keyed by session: an open revert ask names a path against one session's
+  // base commit, and another session can hold the same path.
   return (
     <SessionEvidenceContent
+      key={sessionId}
       connected={connected}
       {...(visible.evidence ? { evidence: visible.evidence } : {})}
       error={visible.error}

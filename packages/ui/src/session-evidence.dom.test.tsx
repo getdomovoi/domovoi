@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { SessionEvidence } from "@getdomovoi/protocol"
 
-import { SessionEvidenceContent } from "./session-evidence"
+import { SessionEvidenceContent, SessionEvidencePanel } from "./session-evidence"
 
 afterEach(cleanup)
 
@@ -269,5 +269,39 @@ describe("SessionEvidenceContent revert and diff view", () => {
   it("offers no editor where the client has none", () => {
     render(<SessionEvidenceContent connected evidence={evidence} error="" loading={false} onRefresh={vi.fn()} />)
     expect(screen.queryByRole("button", { name: "Open in editor" })).toBeNull()
+  })
+})
+
+describe("the inline revert ask across rows and sessions", () => {
+  it("gives focus to the newer ask when another row's ask was open", async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionEvidenceContent connected evidence={evidence} error="" loading={false} onRefresh={vi.fn()} onRevertFile={vi.fn(async () => {})} />,
+    )
+
+    await user.click(screen.getByRole("button", { name: "Revert src/generated.ts" }))
+    await user.click(screen.getByRole("button", { name: "Revert src/app.ts" }))
+    const ask = screen.getByRole("group", { name: "Confirm: revert src/app.ts" })
+    expect(document.activeElement).toBe(within(ask).getByRole("button", { name: "Keep it" }))
+    expect(screen.getAllByRole("group", { name: /^Confirm:/ })).toHaveLength(1)
+  })
+
+  // An ask names a file in one session's worktree, against that session's base
+  // commit. Another session can hold the same path, so the ask closes rather
+  // than carry over.
+  it("closes an open ask when the session changes", async () => {
+    const user = userEvent.setup()
+    const onLoad = vi.fn(async (sessionId: string) => ({ ...evidence, sessionId }))
+    const onRevertFile = vi.fn(async () => {})
+    const { rerender } = render(
+      <SessionEvidencePanel connected sessionId="session-1" onLoad={onLoad} onRevertFile={onRevertFile} />,
+    )
+    await user.click(await screen.findByRole("button", { name: "Revert src/app.ts" }))
+    expect(screen.getByRole("group", { name: "Confirm: revert src/app.ts" })).toBeTruthy()
+
+    rerender(<SessionEvidencePanel connected sessionId="session-2" onLoad={onLoad} onRevertFile={onRevertFile} />)
+    await screen.findByRole("button", { name: "Revert src/app.ts" })
+    expect(screen.queryByRole("group", { name: /^Confirm:/ })).toBeNull()
+    expect(onRevertFile).not.toHaveBeenCalled()
   })
 })

@@ -1,5 +1,5 @@
 import type { Artifact, WorkingPlan } from "@getdomovoi/protocol"
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
@@ -478,4 +478,24 @@ it("gives focus back to Comment on a step when the form closes", async () => {
   await user.type(screen.getByLabelText("Comment"), "Fine")
   await user.click(screen.getByRole("button", { name: "Post" }))
   expect(document.activeElement).toBe(open)
+})
+
+it("lets a slow post close only its own draft", async () => {
+  window.getSelection()?.removeAllRanges()
+  let finish: () => void = () => {}
+  const onComment = vi.fn()
+    .mockImplementationOnce(() => new Promise<void>((resolve) => { finish = resolve }))
+    .mockResolvedValue(undefined)
+  const { rerender } = render(sheet({ onComment, commentTarget: { sessionId: "session-1", artifactId: "artifact-plan" } }))
+  const user = userEvent.setup()
+  await user.click(screen.getByRole("button", { name: "Comment on a step" }))
+  await user.type(screen.getByLabelText("Comment"), "First")
+  await user.click(screen.getByRole("button", { name: "Post" }))
+
+  rerender(sheet({ onComment, commentTarget: { sessionId: "session-2", artifactId: "plan-session-2" } }))
+  await user.click(screen.getByRole("button", { name: "Comment on a step" }))
+  await user.type(screen.getByLabelText("Comment"), "Second")
+  await act(async () => { finish() })
+
+  expect((screen.getByLabelText("Comment") as HTMLTextAreaElement).value).toBe("Second")
 })

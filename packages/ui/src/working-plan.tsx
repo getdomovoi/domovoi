@@ -517,7 +517,11 @@ export function PlanSheet({
             <PlanCommentForm
               quote={commenting.quote}
               steps={workingPlan?.steps ?? []}
-              onPost={(comment) => onComment({ ...comment, target: commenting.target }).then(() => setCommenting(null))}
+              onPost={(comment) => {
+                const draft = commenting
+                // A slow post closes its own draft, never a newer one.
+                return onComment({ ...comment, target: draft.target }).then(() => setCommenting((current) => (current === draft ? null : current)))
+              }}
               onCancel={() => setCommenting(null)}
             />
           ) : null}
