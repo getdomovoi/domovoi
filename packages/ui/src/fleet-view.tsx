@@ -28,7 +28,6 @@ import {
   type FleetMachine,
   type FleetSnapshotOverflow,
   type PairedDeviceSummary,
-  type ProviderRuntime,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -42,9 +41,18 @@ import { fleetOverflowNotice } from "./fleet-overflow.js"
 import { forgetMachineNotice, type ForgetMachineNotice } from "./forget-machine.js"
 import { machineAttachment } from "./machine-selection.js"
 import { AuthorizeClientDialog } from "./authorize-client-dialog.js"
-import type { FleetAccessState, MachineReading } from "./fleet-access-session.js"
+import {
+  asOf,
+  machineAgents,
+  machineFacts,
+  readingClock,
+  unknownAgentsReason,
+  type FleetAccessState,
+  type MachineFacts,
+  type MachineReading,
+} from "./fleet-access-session.js"
 import { cn } from "./lib/utils"
-import { MachineAgentList, type MachineAgents } from "./provider-settings.js"
+import { MachineAgentList } from "./provider-settings.js"
 import { deviceLabelMismatch, renamedElsewhereNotice } from "./rename-device.js"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -247,78 +255,6 @@ function useNow(intervalMs: number): number {
   return now
 }
 
-// What this client knows about a machine's agents and sessions. Sessions are a
-// list from a reading, or only a count for the machine in use when the shell
-// passed no reading for it. Unknown carries the reason, never a guess.
-type MachineFacts =
-  | { known: true; providers: readonly ProviderRuntime[]; sessions: MachineReading["sessions"] | number; readAt?: string; stale: boolean }
-  | { known: false; reason: string }
-
-const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
-
-function asOf(readAt: string | undefined): string | undefined {
-  return readAt === undefined ? undefined : `as of ${clock.format(new Date(readAt))}`
-}
-
-// A machine the home daemon reports as unreachable still shows what it last
-// said, dated, because that is what is still true about it.
-function machineFacts(
-  machine: FleetMachine,
-  input: {
-    readings: Readonly<Record<string, MachineReading>>
-    access: FleetAccessState | undefined
-    currentMachineId: string
-    providers: readonly ProviderRuntime[] | undefined
-    currentSessionCount: number
-    unread: ReadonlyMap<string, string>
-  },
-): MachineFacts {
-  const unreachable = machine.health === "unreachable"
-  const reading = input.readings[machine.id] ?? (input.access?.state === "admitted" ? input.access.reading : undefined)
-  if (reading) {
-    const stale = unreachable || input.unread.get(machine.id) === reading.readAt
-    return { known: true, providers: reading.providers, sessions: reading.sessions, readAt: reading.readAt, stale }
-  }
-  if (machine.id === input.currentMachineId && input.providers) {
-    return { known: true, providers: input.providers, sessions: input.currentSessionCount, stale: false }
-  }
-  if (input.access?.state === "checking") return { known: false, reason: "verifying client access" }
-  if (!machine.self) return { known: false, reason: "no client credential here" }
-  return { known: false, reason: unreachable ? "daemon unreachable" : "not read yet" }
-}
-
-// The agents panel's reason, as a clause about that machine.
-function unknownAgentsReason(reason: string): string {
-  return reason === "no client credential here" ? "this app holds no client credential for it" : reason
-}
-
-function machineAgents(entries: readonly FleetEntry[], factsOf: (machine: FleetMachine) => MachineFacts): MachineAgents[] {
-  return entries.flatMap((entry) => {
-    if (entry.kind !== "machine") return []
-    const facts = factsOf(entry.machine)
-    const base = { machineId: entry.machine.id, label: entry.machine.label }
-    return [facts.known
-      ? { ...base, providers: facts.providers, stale: facts.stale ? asOf(facts.readAt) : undefined }
-      : { ...base, unknown: unknownAgentsReason(facts.reason) }]
-  })
-}
-
-// The agents of every machine in the fleet as this client knows them, for
-// Settings: the same rows as the Machines surface draws.
-export function fleetAgents(
-  entries: readonly FleetEntry[],
-  input: {
-    readings: Readonly<Record<string, MachineReading>>
-    clientAccess: Readonly<Record<string, FleetAccessState>>
-    currentMachineId: string
-  },
-): MachineAgents[] {
-  return machineAgents(entries, (machine) => machineFacts(machine, {
-    readings: input.readings, access: input.clientAccess[machine.id], currentMachineId: input.currentMachineId,
-    providers: undefined, currentSessionCount: 0, unread: new Map(),
-  }))
-}
-
 // Sessions the drawer lists for that machine: archived and transferred ones are gone from it.
 function listedSessions(sessions: MachineReading["sessions"]): MachineReading["sessions"] {
   return sessions.filter((session) => !["archived", "archiving", "transferred"].includes(session.state))
@@ -414,7 +350,7 @@ function StalledSessions({ id, machine, facts }: { id: string; machine: FleetMac
       </p>
     )
   }
-  const time = facts.readAt === undefined ? "" : ` at ${clock.format(new Date(facts.readAt))}`
+  const time = facts.readAt === undefined ? "" : ` at ${readingClock.format(new Date(facts.readAt))}`
   if (typeof facts.sessions === "number") {
     return (
       <p id={id} className="m-0 px-[15px] pb-3 text-[11.5px] leading-relaxed text-muted-foreground">

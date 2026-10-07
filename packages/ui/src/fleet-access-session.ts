@@ -1,5 +1,6 @@
 import {
   credentialSchema,
+  type FleetEntry,
   type FleetMachine,
   type ProviderRuntime,
   type SessionSearchResult,
@@ -12,6 +13,7 @@ import { ClientAdmissionError } from "./client-admission-policy.js"
 import { Deadline } from "./deadline.js"
 import { fleetAccessError, fleetClient, type FleetAccess } from "./fleet-access.js"
 import type { FleetInventoryReader } from "./fleet-inventories.js"
+import type { MachineAgents } from "./provider-settings.js"
 
 // What a machine's own daemon said about its agents and sessions, and when.
 // The machine card reads agents and session counts from here, so a machine
@@ -34,6 +36,78 @@ export type FleetAccessState =
   | { state: "checking" }
   | { state: "admitted"; deviceId: string; reading: MachineReading }
   | { state: "refused"; message: string }
+
+// What this client knows about a machine's agents and sessions. Sessions are a
+// list from a reading, or only a count for the machine in use when the shell
+// passed no reading for it. Unknown carries the reason, never a guess.
+export type MachineFacts =
+  | { known: true; providers: readonly ProviderRuntime[]; sessions: MachineReading["sessions"] | number; readAt?: string; stale: boolean }
+  | { known: false; reason: string }
+
+export const readingClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+
+export function asOf(readAt: string | undefined): string | undefined {
+  return readAt === undefined ? undefined : `as of ${readingClock.format(new Date(readAt))}`
+}
+
+// A machine the home daemon reports as unreachable still shows what it last
+// said, dated, because that is what is still true about it. A reading whose
+// refresh failed (`unread` holds the readAt it kept) is dated the same way.
+export function machineFacts(
+  machine: FleetMachine,
+  input: {
+    readings: Readonly<Record<string, MachineReading>>
+    access: FleetAccessState | undefined
+    currentMachineId: string
+    providers?: readonly ProviderRuntime[] | undefined
+    currentSessionCount?: number | undefined
+    unread?: ReadonlyMap<string, string> | undefined
+  },
+): MachineFacts {
+  const unreachable = machine.health === "unreachable"
+  const reading = input.readings[machine.id] ?? (input.access?.state === "admitted" ? input.access.reading : undefined)
+  if (reading) {
+    const stale = unreachable || input.unread?.get(machine.id) === reading.readAt
+    return { known: true, providers: reading.providers, sessions: reading.sessions, readAt: reading.readAt, stale }
+  }
+  if (machine.id === input.currentMachineId && input.providers) {
+    return { known: true, providers: input.providers, sessions: input.currentSessionCount ?? 0, stale: false }
+  }
+  if (input.access?.state === "checking") return { known: false, reason: "verifying client access" }
+  if (!machine.self) return { known: false, reason: "no client credential here" }
+  return { known: false, reason: unreachable ? "daemon unreachable" : "not read yet" }
+}
+
+// The agents list's reason, as a clause about that machine.
+export function unknownAgentsReason(reason: string): string {
+  return reason === "no client credential here" ? "this app holds no client credential for it" : reason
+}
+
+export function machineAgents(entries: readonly FleetEntry[], factsOf: (machine: FleetMachine) => MachineFacts): MachineAgents[] {
+  return entries.flatMap((entry) => {
+    if (entry.kind !== "machine") return []
+    const facts = factsOf(entry.machine)
+    const base = { machineId: entry.machine.id, label: entry.machine.label }
+    return [facts.known
+      ? { ...base, providers: facts.providers, stale: facts.stale ? asOf(facts.readAt) : undefined }
+      : { ...base, unknown: unknownAgentsReason(facts.reason) }]
+  })
+}
+
+// Every machine's agents as this client knows them, for Settings: the same
+// rows the Machines surface draws.
+export function fleetAgents(
+  entries: readonly FleetEntry[],
+  input: {
+    readings: Readonly<Record<string, MachineReading>>
+    clientAccess: Readonly<Record<string, FleetAccessState>>
+    currentMachineId: string
+  },
+): MachineAgents[] {
+  return machineAgents(entries, (machine) => machineFacts(machine, {
+    readings: input.readings, access: input.clientAccess[machine.id], currentMachineId: input.currentMachineId,
+  }))
+}
 
 type ClientInputs = Omit<Parameters<typeof fleetClient>[0], "access">
 

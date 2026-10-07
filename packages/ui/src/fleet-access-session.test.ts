@@ -1,6 +1,6 @@
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { demoWorkspace, type FleetEntry, type FleetMachine } from "@getdomovoi/protocol"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
-import { FleetAccessSession } from "./fleet-access-session.js"
+import { asOf, FleetAccessSession, fleetAgents } from "./fleet-access-session.js"
 import { installFakeWebSocket, completeHandshake, respond, sentRequests, workspaceSnapshot } from "./test-support/fake-websocket"
 
 const machineId = demoWorkspace.machine.id
@@ -97,6 +97,37 @@ it("asks an admitted machine directly for a session search and shows nothing wit
   const result = await searching
   expect(result.matches).toHaveLength(1)
   expect(socket.readyState).not.toBe(1)
+})
+
+it("gives Settings each machine's agents from its own reading and says which are unknown", () => {
+  const machine = (id: string, label: string, self: boolean, health: FleetMachine["health"] = "healthy"): FleetEntry => ({ kind: "machine", machine: {
+    id, label, self, health, platform: "linux", arch: "x64", version: "0.1.0", protocolVersion: "0.1.0", connection: self ? "local" : "tailnet",
+    capabilities: ["sessions"], transports: [], heartbeat: { state: "online", lastSeenAt: "2026-10-06T14:00:00.000Z" },
+  } })
+  const codex = { id: "codex", command: "codex", status: "ready" as const, sessionCapable: true }
+  const readAt = "2026-10-06T14:03:00.000Z"
+  const ids = { home: `machine-${"a".repeat(32)}`, studio: `machine-${"b".repeat(32)}`, lab: `machine-${"c".repeat(32)}`, lost: `machine-${"d".repeat(32)}` }
+  const rows = fleetAgents([
+    machine(ids.home, "workshop", true),
+    machine(ids.studio, "studio", false),
+    machine(ids.lab, "lab", false),
+    machine(ids.lost, "lost", false, "unreachable"),
+    { kind: "unenrolled", machineId: `machine-${"e".repeat(32)}` },
+  ], {
+    readings: { [ids.home]: { providers: [codex], sessions: [], readAt } },
+    clientAccess: {
+      [ids.studio]: { state: "admitted", deviceId, reading: { providers: [], sessions: [], readAt } },
+      [ids.lost]: { state: "admitted", deviceId, reading: { providers: [codex], sessions: [], readAt } },
+    },
+    currentMachineId: ids.home,
+  })
+
+  expect(rows).toEqual([
+    { machineId: ids.home, label: "workshop", providers: [codex], stale: undefined },
+    { machineId: ids.studio, label: "studio", providers: [], stale: undefined },
+    { machineId: ids.lab, label: "lab", unknown: "this app holds no client credential for it" },
+    { machineId: ids.lost, label: "lost", providers: [codex], stale: asOf(readAt) },
+  ])
 })
 
 async function admit(snapshot = workspaceSnapshot()): Promise<void> {
