@@ -717,16 +717,12 @@ describe("Attach this output to the composer", () => {
     await act(async () => {
       target.connect(thisClient)
     })
+    // One write that fills the history and then clears it: the clear shrinks
+    // the buffer below full before any batch ends, but the lines that
+    // scrolled out are still gone, so the mark stays.
+    const lines = Array.from({ length: 5_100 }, (_, index) => `line ${index}\r\n`).join("")
     await act(async () => {
-      target.deliverOutput("$ first command\r\n")
-      for (let index = 0; index < 5_100; index += 1) target.deliverOutput(`line ${index}\r\n`)
-      target.deliverOutput("END OF OUTPUT\r\n")
-    })
-    await parsedThrough(container, "END OF OUTPUT")
-    // Clearing the history afterwards shrinks the buffer below full, but the
-    // lines that scrolled out are still gone, so the mark stays.
-    await act(async () => {
-      target.deliverOutput("\x1b[3J$ after the clear\r\n")
+      target.deliverOutput(`$ first command\r\n${lines}\x1b[3J$ after the clear\r\n`)
     })
     await parsedThrough(container, "$ after the clear")
 

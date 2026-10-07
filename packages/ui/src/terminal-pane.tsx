@@ -224,10 +224,11 @@ export function TerminalPane({
         if (active) setError(failure(cause, "Terminal input failed"))
       })
     })
-    // Checked as output is parsed, on the normal buffer (the alternate screen
-    // keeps no history), so the evidence is taken before anything shrinks it.
+    // Checked at every line feed, on the normal buffer (the alternate screen
+    // keeps no history). A line feed is handled inside the parse, so a clear
+    // later in the same write cannot shrink the buffer before this looks.
     historyFilledRef.current = false
-    const parsed = terminal.onWriteParsed(() => {
+    const parsed = terminal.onLineFeed(() => {
       if (terminal.buffer.normal.length >= terminalScrollback + terminal.rows) historyFilledRef.current = true
     })
     // The shell has one grid, the holder's. A pane that does not hold it draws
