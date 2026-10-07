@@ -12308,7 +12308,14 @@ export class DomovoiDaemon {
         }
       }
       const recoveredAt = new Date().toISOString()
-      const session = { ...intent.session, updatedAt: recoveredAt }
+      const session = {
+        ...intent.session,
+        runtime: {
+          ...intent.session.runtime,
+          reasoning: normalizeLegacyEffort(intent.session.runtime.provider, intent.session.runtime.reasoning),
+        },
+        updatedAt: recoveredAt,
+      }
       let detail = intent.cleanupStarted
         ? "Worktree cleanup started but did not record completion; preserve the worktree for inspection."
         : "No durable worktree completion receipt exists; the partial worktree requires inspection."
