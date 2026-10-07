@@ -72,12 +72,13 @@ it("says so when the plan reply is refused", async () => {
   expect(screen.getByText("The session is read only")).toBeTruthy()
 })
 
-// The prose branch renders a read-only quick view. Nothing in it carries a
-// selection or opens the annotation flow, so copy that invites a line comment
-// promises a control this branch does not have.
-it("does not offer a comment the prose branch cannot take", async () => {
+// The prose branch comments through Comment on a step (Q350 A), which quotes
+// the words selected in the document. There is no per-line control, so copy
+// that invites a line comment would promise one.
+it("comments through Comment on a step, not a per-line control", async () => {
   await openProsePlan()
 
+  expect(screen.getByRole("button", { name: "Comment on a step" })).toBeTruthy()
   expect(screen.queryByText(/select any line to comment/iu)).toBeNull()
 })
 
