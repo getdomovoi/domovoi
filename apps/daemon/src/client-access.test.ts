@@ -1,4 +1,10 @@
+import { execFile } from "node:child_process"
 import { once } from "node:events"
+import { mkdir, mkdtemp, readdir } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import { promisify } from "node:util"
 
 import { demoWorkspace, protocolVersion, rpcMethodAuthorizations, rpcMethods, type RpcMethod } from "@getdomovoi/protocol"
 import { WebSocket } from "ws"
@@ -7,6 +13,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { AgentAdapter } from "./agents.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
+import { removeScratchDirectory } from "./test-scratch.js"
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -177,3 +184,42 @@ describe("watching client access", () => {
     expect(errorMessage(await full("terminal.input", {}))).not.toMatch(/Watching-only credentials may only observe/)
   })
 })
+
+// Exercise the actual store-only test in a fresh worker. Its inherited HOME is
+// disposable even when the suite setup is absent, so the red phase is safe.
+it("isolates store-only startup from the inherited home and profile", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-profile-isolation-"))
+  const home = join(root, "home")
+  const profile = join(root, "profile")
+  const runnerHome = join(root, "runner")
+  try {
+    await Promise.all([home, profile, runnerHome].map((path) => mkdir(path)))
+    const { stdout } = await promisify(execFile)(process.execPath, [
+      "--input-type=module", "--eval", `
+        import { startVitest } from "vitest/node"
+        await startVitest(["src/client-access.test.ts"], {
+          run: true,
+          reporters: ["dot"],
+          testNamePattern: "answers model and usage reads from a watching credential without starting a provider",
+          env: { HOME: process.argv[1], USERPROFILE: process.argv[1], DOMOVOI_PROFILE_DIR: process.argv[2] },
+        })
+      `, home, profile,
+    ], {
+      cwd: fileURLToPath(new URL("../", import.meta.url)),
+      // Vitest creates its own API token before worker setup. Keep the runner's
+      // data separate so the worker's inherited home can be asserted empty.
+      env: {
+        ...process.env, HOME: runnerHome, USERPROFILE: runnerHome, DOMOVOI_PROFILE_DIR: profile,
+        XDG_DATA_HOME: join(runnerHome, "data"), LOCALAPPDATA: join(runnerHome, "data"),
+        NO_COLOR: "1", FORCE_COLOR: undefined,
+      },
+      timeout: 30_000,
+    })
+    // A renamed target must fail this regression instead of silently skipping.
+    expect(stdout).toMatch(/Tests\s+1 passed/u)
+    expect(await readdir(home, { recursive: true }), "The inherited HOME must stay empty").toEqual([])
+    expect(await readdir(profile), "The inherited profile must stay empty").toEqual([])
+  } finally {
+    await removeScratchDirectory(root)
+  }
+}, 40_000)
