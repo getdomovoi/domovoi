@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import type { SessionAttachment, TerminalOwnershipNotification, TerminalSession, TerminalWatchResult } from "@getdomovoi/protocol"
 
 import { createComposerInbox, type ComposerInbox } from "./composer-inbox"
+import { dockTabDefinitions } from "./dock-tabs"
 import { TerminalPane, type TerminalControls } from "./terminal-pane"
 
 afterEach(cleanup)
@@ -357,6 +358,16 @@ describe("Attach this output to the composer", () => {
     await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
 
     expect(await screen.findByText(/The composer already holds the most attachments/u)).toBeTruthy()
+  })
+})
+
+// Q340 A: the design's tip says the stream is read-only and the agent owns the
+// shell. The tab is an interactive PTY a person opens, so the tip says that.
+describe("the Terminal tab tip", () => {
+  it("describes the shell this tab really holds", () => {
+    const tip = dockTabDefinitions.find((tab) => tab.id === "terminal")?.note ?? ""
+    expect(tip).toBe("A shell on the machine, in the session's worktree. One device types at a time; the others can read.")
+    expect(tip).not.toMatch(/agent owns|read-only/u)
   })
 })
 
