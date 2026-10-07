@@ -255,6 +255,17 @@ it("keeps reading when the view mounts twice, as StrictMode does in development"
   expect(signals.filter((signal) => !signal.aborted)).toHaveLength(1)
 })
 
+it("counts every session that is not archived in Open its sessions", () => {
+  renderFleet({
+    entries: entries(local),
+    readings: { [local.id]: held(reading({ sessions: [
+      session("s1", "Idle", "idle"), session("s2", "Moved", "transferred"), session("s3", "Going", "archiving"), session("s4", "Gone", "archived"),
+    ] })) },
+  })
+
+  expect(screen.getByRole("button", { name: "Open its 3 sessions on workshop" })).toBeTruthy()
+})
+
 it("dates a snapshot kept after its connection closed and prefers a newer admission reading", () => {
   const kept = "2026-10-06T14:03:00.000Z"
   const newer = "2026-10-06T14:09:00.000Z"

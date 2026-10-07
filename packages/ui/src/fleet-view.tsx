@@ -256,9 +256,10 @@ function useNow(intervalMs: number): number {
   return now
 }
 
-// Sessions the drawer lists for that machine: archived and transferred ones are gone from it.
+// The machine's sessions that are not archived. The drawer also lists archived
+// ones, as history, but there is nothing in them to open.
 function listedSessions(sessions: MachineReading["sessions"]): MachineReading["sessions"] {
-  return sessions.filter((session) => !["archived", "archiving", "transferred"].includes(session.state))
+  return sessions.filter((session) => session.state !== "archived")
 }
 
 function sessionsFact(facts: Extract<MachineFacts, { known: true }>): string {
