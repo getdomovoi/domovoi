@@ -90,6 +90,24 @@ describe("terminalLines", () => {
     expect(terminalLines("")).toEqual([])
   })
 
+  // Output arrives in pieces, and a piece can end partway through a sequence.
+  // Until its end arrives, none of it is drawn.
+  it("draws nothing of an escape sequence still arriving at the end", () => {
+    expect(terminalLines("red \u001b[31")).toEqual(["red "])
+    expect(terminalLines("red \u001b[")).toEqual(["red "])
+    expect(terminalLines("$ \u001b]0;my title")).toEqual(["$ "])
+    expect(terminalLines("$ \u001b]0;my title\u001b")).toEqual(["$ "])
+    expect(terminalLines("red \u001b[31mtext\n")).toEqual(["red text"])
+  })
+
+  // A tab moves the cursor to the next stop, every eight columns, without
+  // writing over what it passes.
+  it("moves a tab to the next tab stop", () => {
+    expect(terminalLines("a\tb\n")).toEqual(["a       b"])
+    expect(terminalLines("a\tb\rXY\n")).toEqual(["XY      b"])
+    expect(terminalLines("abcdefghij\rx\ty\n")).toEqual(["xbcdefghyj"])
+  })
+
   // A backspace only moves the cursor. A shell erases with back, space, back,
   // or with back and an erase to the line's end; a bare backspace erases
   // nothing, and output arriving before the overwrite must not lose cells.

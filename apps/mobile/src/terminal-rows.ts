@@ -251,6 +251,9 @@ const eraseLine = "\u0003"
 // The text with escape sequences dropped and line breaks made plain.
 function plainText(text: string): string {
   return text
+    // A sequence still arriving at the end draws nothing until it ends: output
+    // comes in pieces, and a piece can stop partway through one.
+    .replace(sequenceStillArriving, "")
     // Operating system commands, such as a window title.
     // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
     .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
@@ -262,11 +265,19 @@ function plainText(text: string): string {
     // Other control sequences: colour, cursor movement.
     // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
-    // Any other two-character escape.
+    // Any other two-character escape. "[" and "]" open the longer ones, so a
+    // malformed one is not mistaken for this and its parameters kept.
     // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-    .replace(/\u001b[@-_]/g, "")
+    .replace(/\u001b[@-Z\\^_]/g, "")
     .replace(/\r\n/g, "\n")
 }
+
+// An introducer at the end of the text whose sequence has not ended.
+// eslint-disable-next-line no-control-regex -- the sequences are made of control characters
+const sequenceStillArriving = /\u001b(?:\][^\u0007\u001b]*\u001b?|\[[0-?]*[ -/]*)?$/
+
+// Tab stops every eight columns, as a terminal sets them by default.
+const tabWidth = 8
 
 // One cell per character, so a character outside the basic plane, two UTF-16
 // units, is overwritten and erased as one.
@@ -282,7 +293,11 @@ function drawnLine(raw: string): string {
       const through = char === eraseLine ? cells.length : Math.min(cells.length, column + 1)
       cells = cells.map((cell, at) => at < through ? " " : cell)
       erased = true
-    } else if (char === "\t" || (char >= " " && char !== "\u007f")) {
+    } else if (char === "\t") {
+      // A tab moves to the next stop and writes over nothing it passes.
+      column = (Math.floor(column / tabWidth) + 1) * tabWidth
+      while (cells.length < column) cells.push(" ")
+    } else if (char >= " " && char !== "\u007f") {
       // A cursor past the end, after an erase to the end, leaves blanks.
       while (cells.length < column) cells.push(" ")
       cells[column] = char
