@@ -16,6 +16,8 @@ export function daemonTestScheduling(platform: NodeJS.Platform) {
 export default defineConfig({
   test: {
     ...daemonTestScheduling(process.platform),
+    setupFiles: ["./vitest.setup.ts"],
+    globalSetup: ["./vitest.global-setup.ts"],
     coverage: {
       provider: "v8",
       reporter: ["text-summary"],

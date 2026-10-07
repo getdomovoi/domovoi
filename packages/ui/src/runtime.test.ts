@@ -30,6 +30,15 @@ const model = (supportedReasoningEfforts: ProviderModel["supportedReasoningEffor
 })
 
 describe("selectRuntimeModel", () => {
+  it("keeps unset when switching between Claude models with no reported default", () => {
+    const claude: Runtime = { ...runtime, provider: "claude-code", model: "sonnet", reasoning: "unset" }
+    const target: ProviderModel = {
+      provider: "claude-code", id: "opus", displayName: "Opus", description: "",
+      supportedReasoningEfforts: ["unset", "low", "medium", "high", "max"], isDefault: false,
+    }
+    expect(selectRuntimeModel(claude, target)).toEqual({ ...claude, model: "opus" })
+  })
+
   it("preserves a supported reasoning level", () => {
     expect(selectRuntimeModel(runtime, model(["medium", "high"]))).toMatchObject({
       model: "gpt-5.6-luna",

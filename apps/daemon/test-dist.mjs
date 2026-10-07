@@ -1,8 +1,42 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import { readSourceCommit } from "./source-commit.mjs"
+
+const daemonCommand = await import("./dist/daemon-command.js")
+assert.equal(daemonCommand.daemonWorkerEntry(), realpathSync(new URL("./dist/index.js", import.meta.url)))
+assert.equal((await daemonCommand.nodeDaemonCommandDependencies()).execPath, daemonCommand.daemonWorkerEntry())
+
+const commandProfile = mkdtempSync(join(tmpdir(), "domovoi-dist-command-"))
+try {
+  // Detect SQLite imports even on Node versions that no longer warn about them.
+  const detectSqlite = "data:text/javascript," + encodeURIComponent(`
+    import module from "node:module"
+    // On Node 22.13/22.14, strict stderr catches the SQLite ExperimentalWarning instead.
+    if (typeof module.registerHooks === "function") {
+      module.registerHooks({
+        resolve(specifier, context, next) {
+          if (specifier === "node:sqlite" || specifier === "sqlite") process.stdout.write("node:sqlite\\n")
+          return next(specifier, context)
+        },
+      })
+    }
+  `)
+  const imported = spawnSync(process.execPath, [
+    "--import", detectSqlite,
+    "--input-type=module", "-e", 'await import("./dist/daemon-command.js")',
+  ], {
+    encoding: "utf8", timeout: 2_000,
+    env: { ...process.env, DOMOVOI_PROFILE_DIR: commandProfile },
+  })
+  assert.equal(imported.status, 0, imported.error?.message || imported.stderr)
+  assert.equal(imported.stdout, "")
+  assert.equal(imported.stderr, "")
+  assert.deepEqual(readdirSync(commandProfile), [])
+} finally { rmSync(commandProfile, { recursive: true, force: true }) }
 
 const publicApi = await import("./dist/public.js")
 const { createProductionDaemon } = publicApi
@@ -97,3 +131,13 @@ try {
   assert.ok(events.some((event) => event.kind === "get"))
   assert.ok(events.every((event) => event.isMainThread === false))
 } finally { rmSync(keyringHome, { recursive: true, force: true }) }
+
+const distDirectory = new URL("./dist/", import.meta.url)
+const distSources = readdirSync(distDirectory).filter((name) => name.endsWith(".js"))
+  .map((name) => readFileSync(new URL(name, distDirectory), "utf8"))
+assert.ok(distSources.length > 0, "The daemon dist must contain JavaScript")
+for (const source of distSources) assert.ok(!source.includes("__BUILD_SOURCE_COMMIT__"), "The source commit define must be replaced")
+const expectedCommit = readSourceCommit(fileURLToPath(new URL("../../", import.meta.url)))
+if (expectedCommit) {
+  assert.ok(distSources.some((source) => source.includes(JSON.stringify(expectedCommit))), "The daemon dist must contain its build commit")
+}

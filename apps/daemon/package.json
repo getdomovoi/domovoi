@@ -23,6 +23,10 @@
     ".": {
       "types": "./dist/public.d.ts",
       "import": "./dist/public.js"
+    },
+    "./daemon-command": {
+      "types": "./dist/daemon-command.d.ts",
+      "import": "./dist/daemon-command.js"
     }
   },
   "files": [

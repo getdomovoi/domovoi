@@ -419,7 +419,15 @@ export class FleetEnrollmentService {
       }, entry.credentialDigest, receivedAt)
     } catch (error) {
       if (this.#heartbeats.get(id) === controller && !this.#stopped) {
-        this.#input.registry!.recordFailure(id, entry.credentialDigest, connectionFailure(error, entry.facts.protocolVersion))
+        const registry = this.#input.registry!
+        let failure = connectionFailure(error, entry.facts.protocolVersion)
+        // Grade silence when the attempt finishes using the registry's existing
+        // heartbeat bound. A stored reconnecting override must not outlive it.
+        if (failure === "reconnecting"
+          && registry.lookupMachine(id, this.#input.selfId, this.#now())?.heartbeat.state === "offline") {
+          failure = "unreachable"
+        }
+        registry.recordFailure(id, entry.credentialDigest, failure)
       }
     } finally {
       connection?.close()

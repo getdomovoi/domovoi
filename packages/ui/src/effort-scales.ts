@@ -17,6 +17,7 @@ const effortScales: ReadonlyMap<string, EffortScale> = new Map([
   ["claude-code", {
     kind: "effort",
     levels: [
+      { id: "unset", label: "Model's own", note: "Sends no effort value, so the model uses its own setting." },
       { id: "low", label: "Low", note: "Short thinking. Enough for a single-file edit or a question with one answer." },
       { id: "medium", label: "Medium", note: "Holds a multi-file change in view while it plans." },
       { id: "high", label: "High", note: "Thinks longer before acting. Slower per turn." },

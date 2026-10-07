@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process"
 import { createServer, type Server } from "node:http"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs"
-import { homedir, tmpdir } from "node:os"
+import { tmpdir, userInfo } from "node:os"
 import { delimiter, join } from "node:path"
 
 import type { Runtime } from "@getdomovoi/protocol"
@@ -27,7 +27,7 @@ import { removeScratchDirectories } from "./test-scratch.js"
 const live = process.env.DOMOVOI_LIVE_PROVIDERS === "1"
 const plantedToken = "AKIALIVECONTRACT0000"
 const scratchDirectories: string[] = []
-const realHome = homedir()
+const realHome = userInfo().homedir // Use the account home: setup redirects HOME under tmpdir, which Codex's workspace-write sandbox keeps writable; the escape target must stay outside tmpdir.
 afterAll(async () => removeScratchDirectories(scratchDirectories))
 
 // asked: whether the stand-in ever sent its tool call. A case where it did not

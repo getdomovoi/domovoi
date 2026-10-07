@@ -57,12 +57,12 @@ import { ScrollArea } from "./components/ui/scroll-area"
 import { sessionDraftStore } from "./session-draft"
 import { useThreadFollow } from "./thread-follow"
 import { MachineSwitcher } from "./machine-switcher.js"
-import { fleetMachines } from "./fleet-entries.js"
+import { fleetMachines, transferTargets } from "./fleet-entries.js"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { cn } from "./lib/utils"
 import { DomovoiMark } from "./domovoi-mark"
-import { ApprovalReceipt, receiptCheckpointTaken } from "./approval-receipt"
+import { ApprovalReceipt, receiptCheckpointTaken, type ReceiptDockTab } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
 import { effortName } from "./effort-scales.js"
 import { permissionModeLabel, withPermissionMode } from "./permission-mode.js"
@@ -448,6 +448,7 @@ export function Thread({
   onDiscardPlanEdit,
   onOpenPlanPreview,
   onOpenSheet,
+  onOpenDockTab,
   machineMenuRequest,
   skillNames,
   skillCatalog,
@@ -526,6 +527,9 @@ export function Thread({
   onDiscardPlanEdit?: ((sessionId: string, editId: string) => Promise<void>) | undefined
   onOpenPlanPreview?: (() => void) | undefined
   onOpenSheet?: (() => void) | undefined
+  // The dock tab a decision wrote to: the latest receipt's link and the policy
+  // card's link open it. Without it neither link is drawn.
+  onOpenDockTab?: ((tab: ReceiptDockTab) => void) | undefined
   // Bumped by the sessions drawer's "Move to another machine" so the composer's
   // machine menu opens on the session it just activated.
   machineMenuRequest?: number | undefined
@@ -687,6 +691,13 @@ export function Thread({
   const [restartError, setRestartError] = useState("")
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
   const readOnly = archiveReadOnly || watching
+  // The design follows the latest decision with what to do next. Its move
+  // opens the machine menu the sessions drawer opens. Both request counters
+  // only rise, so their sum changes on either request.
+  const [receiptMoveRequests, setReceiptMoveRequests] = useState(0)
+  const machineMenuOpenRequest = machineMenuRequest === undefined && receiptMoveRequests === 0
+    ? undefined
+    : (machineMenuRequest ?? 0) + receiptMoveRequests
   const activeSessionId = active?.id
   const restoreCheckpoint = useCallback(async (checkpointId: string) => {
     if (!activeSessionId || checkpointRestoreBlocked(pending, readOnly)) return
@@ -763,6 +774,21 @@ export function Thread({
   }
 
   const entries = fleet ?? [localFleetEntry(snapshot)]
+  const latestReceiptId = renderedThread.filter((item) => item.kind === "receipt").at(-1)?.id
+  const receiptActions = {
+    onReviewChanges: onOpenSheet,
+    // The menu's move is the same consent dialog the drawer reaches. It is
+    // drawn only where that menu can move the session: not read-only, with a
+    // daemon to ask, and with a machine to move to, from the menu's own list.
+    onMoveSession: !readOnly && connected && onTransferSession
+      && transferTargets({ entries, transferEntries: transferFleet, currentMachineId: currentMachineId ?? snapshot.machine.id }).length > 0
+      ? () => {
+          focusBeforeMachineMenu.current = document.activeElement
+          setReceiptMoveRequests((count) => count + 1)
+        }
+      : undefined,
+    onOpenDockTab,
+  }
   const machines = fleetMachines(transferFleet ?? entries)
   const sourceMachine = machines.find(
     (machine) => machine.id === (currentMachineId ?? snapshot.machine.id),
@@ -1222,10 +1248,12 @@ export function Thread({
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>System</AlertTitle><AlertDescription><MarkdownQuickView source={[item.body, item.detail].filter(Boolean).join("\n\n")} /></AlertDescription></Alert>
             }
             if (item.kind === "receipt") {
-              return <ApprovalReceipt key={item.id} receipt={item} checkpointTaken={receiptCheckpointTaken(item, renderedThread)} />
+              // As drawn, the follow-up row is for a connected client: offline
+              // the changes sheet cannot read current state and nothing moves.
+              return <ApprovalReceipt key={item.id} receipt={item} checkpointTaken={receiptCheckpointTaken(item, renderedThread)} actions={connected && item.id === latestReceiptId ? receiptActions : undefined} />
             }
             if (item.kind === "policy-refusal") {
-              return <PolicyRefusalCard key={item.id} refusal={item} />
+              return <PolicyRefusalCard key={item.id} refusal={item} onSeeRules={onOpenDockTab ? () => onOpenDockTab("rules") : undefined} />
             }
             if (item.kind === "tool") return null
             return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={stripPlanTags(item.body)} /></div>
@@ -1241,7 +1269,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !archiveReadOnly ? <ApprovalCard key={approval.id} deciding={resolvingApprovalId !== null} surface={surface} approval={approval} watching={watching} connected={connected} refusal={cardShowsRefusal ? approvalRefusal?.message : undefined} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard key={approval.id} deciding={resolvingApprovalId !== null} surface={surface} approval={approval} watching={watching} connected={connected} refusal={cardShowsRefusal ? approvalRefusal?.message : undefined} connectionId={connectionId} plans={snapshot.workingPlans} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (
@@ -1332,7 +1360,7 @@ export function Thread({
             <div className="sr-only" aria-hidden inert>
               <MachineSwitcher
                 entries={entries}
-                openRequest={machineMenuRequest}
+                openRequest={machineMenuOpenRequest}
                 triggerHidden
                 onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: false })}
                 transferEntries={transferFleet}
