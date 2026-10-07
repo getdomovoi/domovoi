@@ -187,14 +187,33 @@ function watchResult(over: Partial<TerminalWatchResult> = {}): TerminalWatchResu
   }
 }
 
+// Each watch call gets its own reply, so a retry is answered on its own.
 function watcher() {
   const target = harness()
-  const watched = deferred<TerminalWatchResult>()
-  const watch = vi.fn(() => watched.promise)
-  const unwatch = vi.fn(async () => undefined)
+  const replies: ReturnType<typeof deferred<TerminalWatchResult>>[] = []
+  const watch = vi.fn((_terminalId: string) => {
+    const reply = deferred<TerminalWatchResult>()
+    replies.push(reply)
+    return reply.promise
+  })
+  const unwatch = vi.fn(async (_terminalId: string) => undefined)
   const create = vi.fn(target.controls.create)
   const controls: TerminalControls = { ...target.controls, create, watch, unwatch }
+  const watched = {
+    resolve: (result: TerminalWatchResult) => replies.at(-1)!.resolve(result),
+    reject: (cause: unknown) => replies.at(-1)!.reject(cause),
+  }
   return { ...target, controls, create, watch, unwatch, watched }
+}
+
+// What xterm drew, row by row, once its write queue has run.
+async function drawnRows(container: HTMLElement): Promise<string[]> {
+  let rows: string[] = []
+  await vi.waitFor(() => {
+    rows = [...container.querySelectorAll(".xterm-rows > div")].map((row) => row.textContent ?? "")
+    expect(rows.join("\n")).toContain("PASS  webhooks")
+  })
+  return rows
 }
 
 describe("TerminalPane claim banner", () => {
@@ -236,7 +255,7 @@ describe("TerminalPane on a watching desktop", () => {
   it("reads the stream through terminal.watch and never opens or types", async () => {
     const user = userEvent.setup()
     const target = watcher()
-    const { unmount } = render(
+    const { container, unmount } = render(
       <TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />,
     )
 
@@ -245,6 +264,19 @@ describe("TerminalPane on a watching desktop", () => {
     await act(async () => {
       target.watched.resolve(watchResult())
     })
+
+    // The kept record and what arrives afterwards both reach the screen.
+    await act(async () => {
+      target.deliverOutput("$ echo after\r\nafter\r\n")
+    })
+    const rows = (await drawnRows(container)).join("\n")
+    expect(rows).toContain("$ pnpm test")
+    await vi.waitFor(() => expect(container.textContent).toContain("$ echo after"))
+
+    // Typing into the stream reaches nothing.
+    const field = container.querySelector<HTMLTextAreaElement>(".xterm-helper-textarea")!
+    await user.type(field, "rm -rf /{enter}")
+    expect(target.write).not.toHaveBeenCalled()
 
     expect(screen.getByText("Claimed by iPhone 16 Pro")).toBeTruthy()
     const take = screen.getByRole<HTMLButtonElement>("button", { name: "Take the shell" })
@@ -302,6 +334,61 @@ describe("TerminalPane on a watching desktop", () => {
     expect(screen.queryByRole("alert")).toBeNull()
     await user.click(screen.getByRole("button", { name: "Check again" }))
     expect(target.watch).toHaveBeenCalledTimes(2)
+
+    // The second answer finds the shell, and the pane reads it.
+    await act(async () => {
+      target.watched.resolve(watchResult())
+    })
+    expect(screen.queryByText("No shell is open in this session")).toBeNull()
+    expect(screen.getByText("Claimed by iPhone 16 Pro")).toBeTruthy()
+  })
+
+  // The daemon replays the holder's grid. Fitting the record to this pane's
+  // width instead would move every cursor-positioned character.
+  it("draws the watched shell at the holder's grid", async () => {
+    const target = watcher()
+    const { container } = render(
+      <TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />,
+    )
+
+    await act(async () => {
+      target.watched.resolve(watchResult({ cols: 132, rows: 40 }))
+    })
+
+    expect((await drawnRows(container)).length).toBe(40)
+  })
+
+  // A shell that exited is a closed record. Its holder can open another one,
+  // so the watcher can look again rather than staying on the old record.
+  it("can look again once the watched shell has exited", async () => {
+    const user = userEvent.setup()
+    const target = watcher()
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.resolve(watchResult({ state: "closed", closedAt: "2026-10-07T14:06:00.000Z", exitCode: 0, claimHeld: false }))
+    })
+
+    await user.click(screen.getByRole("button", { name: "Check again" }))
+
+    expect(target.unwatch).toHaveBeenCalledWith(terminalId)
+    expect(target.watch).toHaveBeenCalledTimes(2)
+  })
+
+  it("stops watching one session's shell when the pane moves to another", async () => {
+    const target = watcher()
+    const view = (id: string) => (
+      <TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={id} />
+    )
+    const { rerender } = render(view(sessionId))
+    await act(async () => {
+      target.watched.resolve(watchResult())
+    })
+
+    rerender(view("session-other"))
+
+    expect(target.unwatch).toHaveBeenCalledTimes(1)
+    expect(target.unwatch).toHaveBeenCalledWith(terminalId)
+    expect(target.watch).toHaveBeenLastCalledWith("terminal-session-other")
   })
 
   it("keeps the watching empty state when this client cannot watch", () => {

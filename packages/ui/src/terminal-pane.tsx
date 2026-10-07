@@ -155,8 +155,14 @@ export function TerminalPane({
       },
       ownership: ({ owner }) => {
         // A watcher never holds the shell, whatever the notification says.
+        const owned = ownsTerminal
         ownsTerminal = !readOnly && owner.clientId === controls.clientId
         terminal.options.disableStdin = !ownsTerminal
+        // Taking the shell makes this pane's grid the shell's grid.
+        if (ownsTerminal && !owned && attached) {
+          fit.fit()
+          void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
+        }
         setClaimHeld(true)
         setMetadata((current) => current ? { ...current, owner } : current)
       },
@@ -167,9 +173,13 @@ export function TerminalPane({
         if (active) setError(cause instanceof Error ? cause.message : "Terminal input failed")
       })
     })
+    // The shell has one grid, the holder's. A pane that does not hold it draws
+    // at that grid rather than its own width, or every cursor-positioned
+    // character the shell prints lands in the wrong column.
     const observer = new ResizeObserver(() => {
+      if (attached && !ownsTerminal) return
       fit.fit()
-      if (!attached || !ownsTerminal) return
+      if (!attached) return
       void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
     })
     observer.observe(container)
@@ -184,6 +194,7 @@ export function TerminalPane({
           const { buffer, claimHeld: held, cols, cwd, owner, rows, shell, state } = record
           setMetadata({ terminalId, sessionId, cols, rows, shell, cwd, buffer, owner })
           setClaimHeld(held)
+          terminal.resize(cols, rows)
           if (buffer) terminal.write(buffer)
           if (state === "closed") {
             setClosed(true)
@@ -209,6 +220,7 @@ export function TerminalPane({
           ownsTerminal = session.owner.clientId === controls.clientId
           terminal.options.disableStdin = !ownsTerminal
           setMetadata(session)
+          if (!ownsTerminal) terminal.resize(session.cols, session.rows)
           if (session.buffer) terminal.write(session.buffer)
           if (ownsTerminal) {
             void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
@@ -375,6 +387,12 @@ export function TerminalPane({
             <Button variant="ghost" size="icon-xs" aria-label="Close terminal" disabled={closed || !connected || !writable} onClick={close}>
               <XIcon />
             </Button>
+          </div>
+        ) : closed ? (
+          // A watched shell that exited is a closed record. Its holder may
+          // open another, which this pane only reads by watching again.
+          <div className="ml-auto flex items-center gap-1">
+            <Button variant="outline" size="xs" disabled={!connected} onClick={restart}>Check again</Button>
           </div>
         ) : null}
       </div>
