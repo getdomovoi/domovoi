@@ -42,7 +42,7 @@ it("uses the same boot-recovery explanation for status and stop and retains conf
   } finally { deadline.clear() }
 })
 
-it("observes boot, loop and daemon identities in one helper call for status", () => {
+it("checks the current boot before batching loop and daemon identity inspection", () => {
   const f = fixture(true), child = { ...f.record.loop, pid: 124 }
   const attempt = f.record.attempts[0]!
   attempt.killOnClose = true; attempt.stage = "running"; attempt.child = child; attempt.helper = { ...child, pid: 125 }
@@ -51,7 +51,7 @@ it("observes boot, loop and daemon identities in one helper call for status", ()
   vi.mocked(queryWindowsProcesses).mockReturnValue({ bootId: f.record.loop.bootId, identities: [f.record.loop, child] })
   expect(readWindowsSupervisorStatus(f.home)).toMatchObject({ running: true })
   expect(queryWindowsProcesses).toHaveBeenCalledExactlyOnceWith([f.record.loop.pid, child.pid], undefined)
-  expect(queryWindowsProcess).not.toHaveBeenCalled()
+  expect(queryWindowsProcess).toHaveBeenCalledExactlyOnceWith(process.pid, undefined)
 })
 
 it("settles old attempts only after a successful different-boot observation", async () => {
@@ -306,4 +306,58 @@ it("uses the stop deadline for a requester with no prior launch record", async (
     expect(queryWindowsProcess).toHaveBeenCalledTimes(2)
     expect(vi.mocked(queryWindowsProcess).mock.calls.every((call) => call[1] === deadline)).toBe(true)
   } finally { deadline.clear() }
+})
+
+it("reports an earlier boot without opening its possibly reused PIDs", () => {
+  const f = preparedFailure()
+  vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: "windows-boot:43", identity: null })
+  vi.mocked(queryWindowsProcesses).mockImplementation(() => { throw new Error("Access denied to reused PID") })
+  expect(readWindowsSupervisorStatus(f.home)).toMatchObject({ running: false, detail: "recorded daemon tree ended with an earlier Windows boot" })
+  expect(queryWindowsProcess).toHaveBeenCalledExactlyOnceWith(process.pid, undefined)
+  expect(queryWindowsProcesses).not.toHaveBeenCalled()
+  expect(queryWindowsJob).not.toHaveBeenCalled()
+})
+
+it.each(["stopped-empty", "stopped-closed", "failed", "exhausted"] as const)("reports %s without inspecting stale process identities", (kind) => {
+  const f = preparedFailure(), attempt = f.record.attempts[0]!
+  if (kind === "stopped-closed") {
+    attempt.stage = "closed"
+    attempt.closure = { at: f.record.updatedAt, jobAbsent: true, daemonDead: true }
+  } else {
+    attempt.stage = "empty"; attempt.empty = { at: f.record.updatedAt, activeProcesses: 0, terminated: true }; attempt.exitCode = 1
+  }
+  if (kind === "exhausted") {
+    f.record.attempts = Array.from({ length: 4 }, (_, index) => ({ ...structuredClone(attempt), job: `Global\\Domovoi-${randomUUID()}`, number: index + 1 }))
+    f.record.crashes = 4
+  }
+  f.record.state = kind.startsWith("stopped") ? "stopped" : kind === "failed" ? "failed" : "exhausted"
+  f.record.reason = kind === "stopped-closed" ? "job-closed" : kind === "failed" ? "observation-failure" : kind === "exhausted" ? "restart-limit" : "deliberate-stop"
+  writeWindowsSupervisorRecord(f.home, f.record)
+  vi.mocked(queryWindowsProcesses).mockImplementation(() => { throw new Error("Access denied to reused PID") })
+  const status = readWindowsSupervisorStatus(f.home)
+  expect(status).toMatchObject({ running: false, supervising: false })
+  expect(status?.treeUnconfirmed).not.toBe(true)
+  expect(status?.supervisionFailure).toBe(kind === "exhausted" ? "exhausted" : kind === "failed" ? "observation-failure" : undefined)
+  expect(queryWindowsProcesses).not.toHaveBeenCalled()
+  expect(queryWindowsJob).not.toHaveBeenCalled()
+})
+
+it("does not inspect a proven-empty child while checking a backoff loop", () => {
+  const f = preparedFailure(), attempt = f.record.attempts[0]!
+  attempt.stage = "empty"; attempt.empty = { at: f.record.updatedAt, activeProcesses: 0, terminated: true }
+  attempt.exitCode = 1; attempt.backoffMs = 1000
+  f.record.state = "backoff"; f.record.reason = null; f.record.crashes = 1
+  writeWindowsSupervisorRecord(f.home, f.record)
+  vi.mocked(queryWindowsProcesses).mockImplementation((pids) => {
+    if (pids.includes(124)) throw new Error("Access denied to reused child PID")
+    return { bootId: f.record.loop.bootId, identities: [f.record.loop] }
+  })
+  expect(readWindowsSupervisorStatus(f.home)).toMatchObject({ running: false, supervising: true })
+  expect(queryWindowsProcesses).toHaveBeenCalledExactlyOnceWith([123], undefined)
+})
+
+it("still refuses denied PID inspection for unresolved same-boot history", () => {
+  const f = preparedFailure()
+  vi.mocked(queryWindowsProcesses).mockImplementation(() => { throw new Error("Access denied") })
+  expect(() => readWindowsSupervisorStatus(f.home)).toThrow("Access denied")
 })

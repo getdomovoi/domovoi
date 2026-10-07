@@ -15,3 +15,5 @@ Preserve Task Scheduler removal for recognized legacy Windows tasks and migrate 
 Retire and stop an existing supervised Windows registration before reinstall writes new configuration, including when its last supervisor stopped or exhausted its retries.
 
 Bound Windows process and job observations by the remaining service-operation deadline, reject expired observations, and retain the 20-second per-query ceiling.
+
+Report Windows status from boot and terminal tree evidence without opening stale recorded PIDs that may have been reused by protected processes.

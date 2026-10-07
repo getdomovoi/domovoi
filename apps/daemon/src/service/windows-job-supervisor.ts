@@ -221,11 +221,22 @@ export function readWindowsSupervisorStatus(home: string, deadline?: OperationDe
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
   const record = config ? boundRecord(config) : readWindowsSupervisorRecord(home)
   if (!record) return undefined
-  const child = record.attempts.at(-1)?.child
-  const observed = queryWindowsProcesses([record.loop.pid, ...(child ? [child.pid] : [])], deadline)
-  const loopAlive = record.loop.bootId === observed.bootId && observed.identities[0]?.start === record.loop.start
-  const childAlive = !!child && child.bootId === observed.bootId && observed.identities[1]?.start === child.start
-  const status = windowsSupervisorStatus(!loopAlive || record.state === "failed" ? recoverWindowsJobClosure(record, observed.bootId, deadline) : record, observed.bootId, loopAlive, childAlive)
+  // Recorded PIDs may now belong to protected processes. Query our own boot
+  // first, then inspect only identities whose liveness can still affect status.
+  const bootId = queryWindowsProcess(process.pid, deadline).bootId
+  const terminalProof = ["stopped", "failed", "exhausted"].includes(record.state)
+    && record.attempts.every((attempt) => attempt.empty || attempt.closure)
+  let observedRecord = record, loopAlive = false, childAlive = false
+  if (record.loop.bootId === bootId && !terminalProof) {
+    const last = record.attempts.at(-1)
+    const child = last?.empty || last?.closure ? undefined : last?.child
+    const observed = queryWindowsProcesses([record.loop.pid, ...(child ? [child.pid] : [])], deadline)
+    if (observed.bootId !== bootId) throw new Error("Windows boot changed during status observation; retry")
+    loopAlive = observed.identities[0]?.start === record.loop.start
+    childAlive = !!child && observed.identities[1]?.start === child.start
+    if (!loopAlive || record.state === "failed") observedRecord = recoverWindowsJobClosure(record, bootId, deadline)
+  }
+  const status = windowsSupervisorStatus(observedRecord, bootId, loopAlive, childAlive)
   return config ? status : { ...status, supervisionFailure: "configuration-missing", detail: `service configuration missing; ${status.detail}` }
 }
 
