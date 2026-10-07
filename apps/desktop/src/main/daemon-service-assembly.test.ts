@@ -146,6 +146,26 @@ describe("the login service assembled for this app's profile", () => {
     const installed = (daemon.installDaemonService.mock.calls[0] as unknown as [{ runtime: { daemonEntryPath: string } }])[0].runtime
     expect(dirname(dirname(dirname(dirname(installed.daemonEntryPath))))).toBe(join(home, ".domovoi", "runtime", "0.9.4"))
   })
+
+  // T24: the unpackaged launch smokes turn the login-service calls off. Each
+  // one takes the service-operation lease under the account's passwd home,
+  // which the smoke's HOME cannot move, so a status read alone wrote the real
+  // ~/.domovoi. Off, no call reaches the daemon module.
+  it("answers every service call without the daemon when the login service is off", async () => {
+    const { resourcesPath, home, profile } = await scratch()
+    const daemon = daemonModule()
+    const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.9.4", home, environment: { DOMOVOI_PROFILE_DIR: profile }, loginService: "off" }, daemon as unknown as DaemonModule)
+    const off = "Login service calls are turned off for this test run."
+    await expect(service.status()).resolves.toEqual({ unavailable: off })
+    for (const outcome of [await service.install(), await service.update(), await service.remove()]) {
+      expect(outcome).toEqual({ ok: false, reason: "check-failed", message: off })
+    }
+    for (const call of [daemon.readDaemonServiceStatus, daemon.serviceProfileMismatch, daemon.installDaemonService, daemon.updateDaemonService,
+      daemon.removeDaemonService, daemon.readDaemonServiceRuntimeCopy, daemon.removeUnusedDaemonRuntimes, daemon.holdServiceHandoffFence]) {
+      expect(call).not.toHaveBeenCalled()
+    }
+    expect(await readdir(profile)).toEqual([])
+  })
 })
 
 function daemonRuntimeLayoutUnder(destination: string) {

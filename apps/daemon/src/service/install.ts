@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, posix, win32 } from "node:path"
 import { userInfo } from "node:os"
@@ -18,9 +18,10 @@ import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, launchdPlistProgram, systemdUnit, systemdUnitProgram } from "./units.js"
 import { isRecordedServiceProgram } from "./restore-target.js"
-import { readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsSchtasksPath, windowsTaskRemovalPlan, windowsTaskSettingsCommand, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { disableWindowsTask, readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsSchtasksPath, windowsTaskDisabledAndIdle, windowsTaskRemovalPlan, windowsTaskSettingsCommand, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
 import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, within, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
+import { readWindowsSupervisorStatus, stopWindowsSupervisor, windowsTreeUnknown } from "./windows-job-supervisor.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
 import { profileDirectory, profileLocation, sameProfileDirectory, type ProfileLocation } from "../profile-directory.js"
 import { bundledServiceRuntime } from "./bundled-runtime.js"
@@ -65,7 +66,7 @@ export type CapturedRun = { code: number; stdout: string; stderr?: string }
 
 export type ServiceEffects = {
   readConfiguration?: (home: string, platform: string) => ServiceConfiguration | undefined
-  stopSupervisor?: (path: string, deadline: OperationDeadline) => Promise<unknown>
+  stopSupervisor?: (path: string, deadline: OperationDeadline, options?: { retire?: boolean; previousConfigurationDigest?: string; confirmNoLaunch?: () => Promise<boolean>; stopTask?: () => Promise<boolean> }) => Promise<unknown>
   claimServiceOperation: () => ReturnType<typeof claimServiceOperation>
   claimProfile: (homeDirectory: ProfileLocation) => ProfileLease
   registeredProfile?: (home: string, platform: string) => ProfileLocation | undefined
@@ -82,13 +83,15 @@ export type ServiceEffects = {
   capture: (command: string, args: string[], deadline: OperationDeadline) => Promise<CapturedRun>
   exists: (path: string, deadline: OperationDeadline) => Promise<boolean>
   remove: (path: string, deadline: OperationDeadline) => Promise<void>
-  supervisorStatus?: (home: string) => Promise<ServiceStatus | undefined>
+  supervisorStatus?: (home: string, deadline?: OperationDeadline) => Promise<ServiceStatus | undefined>
 }
 
 export type ServiceStatus = {
   installed: boolean | null
   running: boolean
   detail: string
+  supervising?: boolean
+  treeUnconfirmed?: boolean
   supervisionFailure?: "exhausted" | "observation-failure" | "configuration-missing"
 }
 
@@ -331,7 +334,7 @@ export function servicePlan({
       if (path?.includes("%")) throw new WindowsTaskPercentSignError(path)
       if (path?.includes("$(")) throw new WindowsTaskArgumentVariableError(path)
     }
-    const taskCommand = `${windowsTaskCommand(execPath, runtime)} --service-config "${assertExecutable(configurationFile.path, "the service configuration")}"`
+    const taskCommand = `${windowsTaskCommand(execPath, runtime)} --service-supervise "${assertExecutable(configurationFile.path, "the service configuration")}"`
     for (const path of [runtime, execPath, configurationFile.path]) {
       if (path !== undefined && !plainWindowsPath(path)) throw new WindowsTaskPathError(path)
     }
@@ -494,7 +497,7 @@ export class DaemonServiceHandoffError extends Error {
   }
 }
 
-type InstallEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "remove" | "registeredProfile" | "readOwner" | "readConfiguration">
+type InstallEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "remove" | "registeredProfile" | "readOwner" | "readConfiguration" | "supervisorStatus" | "stopSupervisor">
 
 // Security review round 3 (#574): what the service files held before this
 // install, so a manager that refuses the new definition leaves the record
@@ -714,88 +717,179 @@ async function installWithDeadline(
   // Security review round 3 (#574): schtasks /create /f replaces a task of
   // the same name, so a task Domovoi did not register refuses the install, by
   // the same check status and removal use, before anything changes.
-  if (target.platform === "win32" && !target.configuration.wsl
-    && await windowsTaskOwner(assertHome(target.home), effects, deadline) === "other") {
-    throw new WindowsTaskNotDomovoiError(displayName)
+  let legacyWindowsCommand: string | undefined
+  let restoreSupervisedWindows: (() => Promise<void>) | undefined
+  if (target.platform === "win32" && !target.configuration.wsl) {
+    const owner = await windowsTaskOwner(assertHome(target.home), effects, deadline)
+    if (owner === "other") throw new WindowsTaskNotDomovoiError(displayName)
+    if (owner === "domovoi") {
+      const action = await readWindowsTaskAction(displayName, effects, deadline)
+      if (action === "missing" || !action.arguments.includes('" --service-config "')) throw new Error("Legacy Windows registration changed before migration")
+      legacyWindowsCommand = domovoiTaskCommand(action, plan.configuration.path, effects.readConfiguration?.(assertHome(target.home), "win32")?.serviceRuntime)
+      if (!legacyWindowsCommand) throw new WindowsTaskNotDomovoiError(displayName)
+      // Q10 B: legacy tasks retain scheduler-only retirement. Keep the stopped
+      // registration until the new files are ready, so a failed write is retryable.
+      if (await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline) !== "stopped") throw new Error("Legacy Windows registration disappeared before migration")
+    } else {
+      if (owner === "supervised" && !effects.supervisorStatus) throw new Error("Windows supervisor status is unavailable")
+      const status = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home), deadline))
+      if (status?.treeUnconfirmed) throw new Error(windowsTreeUnknown)
+      if (status?.supervising || status?.running) throw new Error("The Windows supervisor is still active; stop and remove it before installing again")
+      // Stopped/exhausted history does not disable its logon registration.
+      // Fence and drain the old task before a replacement configuration is visible.
+      if (owner === "supervised" || effects.readConfiguration?.(assertHome(target.home), "win32") !== undefined) {
+        if (!effects.stopSupervisor) throw new Error("Windows supervisor evidence is missing; replacement refused")
+        const removal = windowsTaskRemovalPlan(displayName)
+        let previousTask: { action: WindowsTaskAction; command: string; runtime: ServiceRuntimeRecord | undefined } | undefined
+        if (owner === "supervised") {
+          const action = await readWindowsTaskAction(displayName, effects, deadline)
+          const runtime = effects.readConfiguration?.(assertHome(target.home), "win32")?.serviceRuntime
+          const command = action === "missing" ? undefined : domovoiTaskCommand(action, plan.configuration.path, runtime)
+          if (action === "missing" || !command || !action.arguments.includes('" --service-supervise "')) throw new Error("Windows supervisor registration changed before reinstall")
+          previousTask = { action, command, runtime }
+        }
+        await disableWindowsTask(removal, effects, deadline)
+        await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, {
+          retire: false,
+          stopTask: async () => {
+            // Tree evidence is already proved under the startup lease. A task
+            // deleted outside Domovoi has no registration left to drain.
+            const stopped = await stopWindowsTask(removal, effects, deadline)
+            return stopped === "stopped" || stopped === "missing"
+          },
+          ...(owner === "supervised" ? { confirmNoLaunch: () => windowsTaskDisabledAndIdle(displayName, effects, deadline) } : {}),
+        }))
+        if (previousTask) {
+          const previous = previousTask
+          // Retirement is now cleared and no old instance remains. Rollback
+          // restores the logon registration only, never issues a demand start.
+          restoreSupervisedWindows = async () => {
+            const current = await readWindowsTaskAction(displayName, effects, deadline)
+            if (current !== "missing" && domovoiTaskCommand(current, plan.configuration.path, previous.runtime) !== previous.command) {
+              throw new Error("Windows task action changed during reinstall; restoration refused")
+            }
+            if (current === "missing") {
+              const create = plan.commands.find((command) => command.args[0] === "/create")
+              if (!create) throw new Error("Windows task registration command is unavailable")
+              const args = create.args.map((arg, index) => create.args[index - 1] === "/tr" ? previous.command : arg)
+              await withinServiceDeadline(deadline, () => effects.run(create.command, args, deadline))
+              const settings = windowsTaskSettingsCommand(displayName)
+              await withinServiceDeadline(deadline, () => effects.run(settings.command, settings.args, deadline))
+            }
+            await withinServiceDeadline(deadline, () => effects.run(windowsSchtasksPath(),
+              ["/change", "/tn", displayName, previous.action.enabled ? "/enable" : "/disable"], deadline))
+          }
+        }
+      }
+    }
   }
-  const commands = [...await launchdCommandsBeforeInstall(target, plan, effects, deadline), ...plan.commands]
-  const previousFiles = await readPreviousFiles(plan, effects, deadline)
-  const leases: ProfileLease[] = []
+  let configurationRestored = true
   try {
-    // A profile an earlier registration named is not the in-app daemon's, so
-    // it is claimed before the handoff.
-    if (previous && !sameProfileDirectory(previous, profile, target.platform)) leases.push(effects.claimProfile(previous))
-    // The handoff (ruled 2026-09-23, option B; placed by security review
-    // rounds 1 and 2 on #574): the service-operation lease is held, the plan
-    // is built, the saved registration is read, and the profile is free or
-    // held by an in-app daemon, so every check that can refuse has passed.
-    // The caller's in-app daemon lets the profile go only now, once, and
-    // before the profile is claimed for the service.
-    let released = false
-    if (handoff) {
-      checkProfileBeforeHandoff(profile, effects)
-      await withinServiceDeadline(deadline, handoff)
+    const commands = [...await launchdCommandsBeforeInstall(target, plan, effects, deadline), ...plan.commands]
+    const previousFiles = await readPreviousFiles(plan, effects, deadline)
+    const leases: ProfileLease[] = []
+    try {
+      // A profile an earlier registration named is not the in-app daemon's, so
+      // it is claimed before the handoff.
+      if (previous && !sameProfileDirectory(previous, profile, target.platform)) leases.push(effects.claimProfile(previous))
+      // The handoff (ruled 2026-09-23, option B; placed by security review
+      // rounds 1 and 2 on #574): the service-operation lease is held, the plan
+      // is built, the saved registration is read, and the profile is free or
+      // held by an in-app daemon, so every check that can refuse has passed.
+      // The caller's in-app daemon lets the profile go only now, once, and
+      // before the profile is claimed for the service.
+      let released = false
+      if (handoff) {
+        checkProfileBeforeHandoff(profile, effects)
+        await withinServiceDeadline(deadline, handoff)
+        deadline.throwIfExpired()
+        released = true
+      }
+      try {
+        leases.push(effects.claimProfile(profile))
+      } catch (cause) {
+        // Another daemon took the profile between the check and this claim.
+        if (released && cause instanceof ProfileAlreadyOwnedError) throw new DaemonServiceHandoffError(cause)
+        throw cause
+      }
+      // Every check that can refuse has passed: the profile checks, the
+      // handoff's own check, the caller's fence inside the handoff, and this
+      // claim. The caller's staged runtime goes into place only now, under the
+      // lease, before the first file is written (security review rounds 4 and 5
+      // of #577).
+      if (beforeChanges !== undefined) await withinServiceDeadline(deadline, beforeChanges)
+      await withinServiceDeadline(deadline, () => effects.remove(localOwnerRemovalReceiptPath(profile), deadline))
+      // Decided 2026-09-17 (SHIP-PLAN S1.1): a systemd user unit gets lingering,
+      // turned on before service.json is written, so the one write records
+      // whether Domovoi turned it on (linger.ts).
+      if (target.platform === "linux" && plan.kind === "file") plan = await withLinger(target, plan, effects, deadline)
+      const written = plan
+      try {
+        configurationRestored = false
+        await withinServiceDeadline(deadline, () => effects.write(written.configuration.path, written.configuration.contents, deadline))
+        if (written.kind === "file") await withinServiceDeadline(deadline, () => effects.write(written.path, written.contents, deadline))
+      } catch (cause) {
+        // Security review round 4 (#574): no manager has seen the new files, so
+        // both go back to what they were, under the profile lease. A timed-out
+        // write may still land, so then nothing is put back.
+        if (previousFiles && !deadline.signal.aborted) {
+          await putPreviousFilesBack(previousFiles, effects, deadline, cause)
+          configurationRestored = true
+          if (written.linger?.kind === "enabled") await lingerAfterRestore(target, effects, deadline, cause)
+        }
+        throw cause
+      }
       deadline.throwIfExpired()
-      released = true
+    } finally {
+      // Timed-out filesystem work may still settle. Retain the lease until this
+      // CLI process exits in that case. Otherwise the saved service config now
+      // prevents Desktop fallback, so release before asking the manager to start.
+      if (!deadline.signal.aborted) for (const lease of leases) lease.release()
     }
-    try {
-      leases.push(effects.claimProfile(profile))
-    } catch (cause) {
-      // Another daemon took the profile between the check and this claim.
-      if (released && cause instanceof ProfileAlreadyOwnedError) throw new DaemonServiceHandoffError(cause)
-      throw cause
-    }
-    // Every check that can refuse has passed: the profile checks, the
-    // handoff's own check, the caller's fence inside the handoff, and this
-    // claim. The caller's staged runtime goes into place only now, under the
-    // lease, before the first file is written (security review rounds 4 and 5
-    // of #577).
-    if (beforeChanges !== undefined) await withinServiceDeadline(deadline, beforeChanges)
-    await withinServiceDeadline(deadline, () => effects.remove(localOwnerRemovalReceiptPath(profile), deadline))
-    // Decided 2026-09-17 (SHIP-PLAN S1.1): a systemd user unit gets lingering,
-    // turned on before service.json is written, so the one write records
-    // whether Domovoi turned it on (linger.ts).
-    if (target.platform === "linux" && plan.kind === "file") plan = await withLinger(target, plan, effects, deadline)
-    const written = plan
-    try {
-      await withinServiceDeadline(deadline, () => effects.write(written.configuration.path, written.configuration.contents, deadline))
-      if (written.kind === "file") await withinServiceDeadline(deadline, () => effects.write(written.path, written.contents, deadline))
-    } catch (cause) {
-      // Security review round 4 (#574): no manager has seen the new files, so
-      // both go back to what they were, under the profile lease. A timed-out
-      // write may still land, so then nothing is put back.
-      if (previousFiles && !deadline.signal.aborted) {
-        await putPreviousFilesBack(previousFiles, effects, deadline, cause)
-        if (written.linger?.kind === "enabled") await lingerAfterRestore(target, effects, deadline, cause)
+    const registering = commands.findIndex(registersDefinition)
+    let bootoutSent = false
+    let legacyWindowsRemoved = false
+    for (const [index, { command, args }] of commands.entries()) {
+      try {
+        if (command === "launchctl" && args[0] === "bootout") bootoutSent = true
+        if (legacyWindowsCommand && index === registering) {
+          if (await removeWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline, true) !== "removed") throw new Error("Legacy Windows registration disappeared before migration")
+          legacyWindowsRemoved = true
+        }
+        await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
+      } catch (cause) {
+        // Security review round 3 (#574): the manager kept what it ran before,
+        // so the files go back to what they were and still name it. A timed-out
+        // command may still register late, so then nothing is put back.
+        if (index <= registering && previousFiles && !deadline.signal.aborted) {
+          await putPreviousFilesBack(previousFiles, effects, deadline, cause)
+          configurationRestored = true
+          if (legacyWindowsCommand && legacyWindowsRemoved && index === registering) {
+            // Preserve the old action for a retry if /create failed after deletion.
+            // Do not restart it: legacy descendants have no job-object evidence.
+            const restoreArgs = args.map((arg, position) => args[position - 1] === "/tr" ? legacyWindowsCommand! : arg)
+            await withinServiceDeadline(deadline, () => effects.run(command, restoreArgs, deadline))
+            await disableWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+          }
+          if (bootoutSent) await loadPreviousAgent(target, plan, previousFiles, effects, deadline, cause)
+          if (plan.linger?.kind === "enabled") await lingerAfterRestore(target, effects, deadline, cause)
+        }
+        throw cause
       }
-      throw cause
     }
-    deadline.throwIfExpired()
-  } finally {
-    // Timed-out filesystem work may still settle. Retain the lease until this
-    // CLI process exits in that case. Otherwise the saved service config now
-    // prevents Desktop fallback, so release before asking the manager to start.
-    if (!deadline.signal.aborted) for (const lease of leases) lease.release()
-  }
-  const registering = commands.findIndex(registersDefinition)
-  let bootoutSent = false
-  for (const [index, { command, args }] of commands.entries()) {
-    try {
-      if (command === "launchctl" && args[0] === "bootout") bootoutSent = true
-      await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
-    } catch (cause) {
-      // Security review round 3 (#574): the manager kept what it ran before,
-      // so the files go back to what they were and still name it. A timed-out
-      // command may still register late, so then nothing is put back.
-      if (index <= registering && previousFiles && !deadline.signal.aborted) {
-        await putPreviousFilesBack(previousFiles, effects, deadline, cause)
-        if (bootoutSent) await loadPreviousAgent(target, plan, previousFiles, effects, deadline, cause)
-        if (plan.linger?.kind === "enabled") await lingerAfterRestore(target, effects, deadline, cause)
+    return plan
+  } catch (cause) {
+    // A late write or registration may still settle after deadline expiry.
+    // Failed file rollback must not re-enable a task on replacement inputs.
+    if (restoreSupervisedWindows && configurationRestored && !deadline.signal.aborted) {
+      try { await restoreSupervisedWindows() }
+      catch (restoreCause) {
+        const detail = (error: unknown) => error instanceof Error ? error.message : String(error)
+        throw new AggregateError([cause, restoreCause], `${detail(cause)}. Restoring the previous Windows task also failed: ${detail(restoreCause)}`, { cause: restoreCause })
       }
-      throw cause
     }
+    throw cause
   }
-  return plan
 }
 
 // Lingering for the installing user, and the plan whose service.json records
@@ -857,9 +951,9 @@ const legacyDaemonEntry = /\\(?:@getdomovoi|apps)\\daemon\\dist\\index\.js$/i
 export function isDomovoiTaskAction(action: Pick<WindowsTaskAction, "path" | "arguments">, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): boolean {
   // Task Scheduler may report the program with the quotes schtasks was given.
   const program = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
-  const quoted = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)
+  const quoted = /^"([^"]*)" (--service-config|--service-supervise) "([^"]*)"$/.exec(action.arguments)
   if (!quoted) return false
-  const [, entry = "", saved = ""] = quoted
+  const [, entry = "", , saved = ""] = quoted
   if (saved !== configurationPath || !plainWindowsPath(program) || !plainWindowsPath(entry)) return false
   if (recorded) return program === recorded.executable && entry === recorded.entry
   return win32.basename(program).toLowerCase() === "node.exe" && legacyDaemonEntry.test(entry)
@@ -869,15 +963,16 @@ async function windowsTaskOwner(
   home: string,
   effects: Pick<ServiceEffects, "capture" | "readConfiguration">,
   deadline: OperationDeadline,
-): Promise<"missing" | "domovoi" | "other"> {
+): Promise<"missing" | "domovoi" | "supervised" | "other"> {
   const action = await readWindowsTaskAction(displayName, effects, deadline)
   if (action === "missing") return "missing"
   if (!effects.readConfiguration) throw new Error("checking who registered the Windows task needs the saved service configuration")
   const saved = effects.readConfiguration(home, "win32")
-  return saved !== undefined && isDomovoiTaskAction(action, serviceConfigurationPath(home, "win32"), saved.serviceRuntime) ? "domovoi" : "other"
+  if (saved === undefined || !isDomovoiTaskAction(action, serviceConfigurationPath(home, "win32"), saved.serviceRuntime)) return "other"
+  return action.arguments.includes('" --service-supervise "') ? "supervised" : "domovoi"
 }
 
-export type ServiceUpdateEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "claimServiceOperation" | "readOwner">
+export type ServiceUpdateEffects = Pick<ServiceEffects, "write" | "read" | "run" | "capture" | "exists" | "claimProfile" | "claimServiceOperation" | "readOwner" | "stopSupervisor">
 
 export type ServiceUpdateWaits = {
   // How long a stopped service's daemon has to let the profile go.
@@ -896,11 +991,12 @@ export type ServiceUpdateWaits = {
 // dropped.
 function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): string | undefined {
   const execPath = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
-  const quoted = /^"([^"]*)" --service-config "([^"]*)"$/.exec(action.arguments)
+  const quoted = /^"([^"]*)" (--service-config|--service-supervise) "([^"]*)"$/.exec(action.arguments)
   if (!quoted) return undefined
-  const [, entry = "", saved = ""] = quoted
-  const program = { execPath, args: [entry, "--service-config", saved] }
-  if (!isRecordedServiceProgram(program, { paths: "win32", flag: "--service-config", configurationPath }, recorded)) return undefined
+  const [, entry = "", flag = "", saved = ""] = quoted
+  if (flag !== "--service-config" && flag !== "--service-supervise") return undefined
+  const program = { execPath, args: [entry, flag, saved] }
+  if (!isRecordedServiceProgram(program, { paths: "win32", flag, configurationPath }, recorded)) return undefined
   // Security review round 5: a failed step registers this command again, so
   // it must pass the refusals an install applies to a new one. A recorded
   // path with %, $( or a form Windows would not report refuses the update
@@ -910,7 +1006,7 @@ function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string
   } catch (cause) {
     throw new DaemonServiceUpdateError("nothing-changed", cause)
   }
-  return `"${execPath}" "${entry}" --service-config "${configurationPath}"`
+  return `"${execPath}" "${entry}" ${flag} "${configurationPath}"`
 }
 
 // The install's refusals for one Windows task path (security review rounds
@@ -951,9 +1047,12 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
     const instances = new OwnerInstances(readOwner, profile)
     await instances.note(readDeadline)
     // Starts a service definition and waits for its daemon to report ready.
-    const startIn = (deadline: OperationDeadline) => async (commands: readonly ServiceCommand[]) => {
+    const startIn = (deadline: OperationDeadline) => async (commands: readonly ServiceCommand[], afterCommand?: (command: ServiceCommand) => void) => {
       await instances.note(deadline)
-      for (const command of commands) await runIn(deadline)(command)
+      for (const command of commands) {
+        await runIn(deadline)(command)
+        afterCommand?.(command)
+      }
       await instances.waitUntilReady(registrationId, waits.readinessWaitMs, deadline)
     }
     // Holds the profile once the stopped daemon lets it go, for the step given
@@ -1114,12 +1213,30 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       ...command,
       args: command.args.map((arg, index) => command.args[index - 1] === "/tr" ? previousCommand : arg),
     })
+    const legacy = !previous.arguments.includes('" --service-supervise "')
+    let legacyRemoved = false
+    let newRegistrationSucceeded = false
+    if (!effects.stopSupervisor) throw new DaemonServiceUpdateError("nothing-changed", new Error("Windows supervisor shutdown proof is unavailable"))
+    const stopTask = async (deadline: OperationDeadline, restoring = false) => {
+      const removal = windowsTaskRemovalPlan(displayName)
+      if (legacy && !newRegistrationSucceeded) {
+        const removed = await removeWindowsTask(removal, effects, deadline, true)
+        if (removed === "removed") legacyRemoved = true
+        else if (!restoring || !legacyRemoved) throw new Error("Legacy Windows registration disappeared before migration")
+        return
+      }
+      await disableWindowsTask(removal, effects, deadline)
+      await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, { retire: false,
+        stopTask: async () => await stopWindowsTask(removal, effects, deadline) === "stopped",
+        confirmNoLaunch: () => windowsTaskDisabledAndIdle(displayName, effects, deadline),
+        ...(restoring ? { previousConfigurationDigest: createHash("sha256").update(serializeServiceConfiguration(parseServiceConfiguration(previousConfiguration))).digest("hex") } : {}) }))
+    }
     const stoppedInstance = currentInstance(readOwner, profile)
     let wroteNew = false
     return {
       swap: async (deadline) => {
         try {
-          await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+          await stopTask(deadline)
         } catch (cause) {
           // A refused stop may have changed nothing: the task still enabled,
           // running the command it ran before. Then the service was left as
@@ -1138,14 +1255,16 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
           wroteNew = true
           await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
         })
-        await startIn(deadline)(plan.commands)
+        await startIn(deadline)(plan.commands, (command) => {
+          if (command.args[0] === "/create") newRegistrationSucceeded = true
+        })
         return plan
       },
       restore: async (deadline) => {
         // Whatever instance the swap left running is stopped first: Task
         // Scheduler ignores a run while one runs, and a late start of the new
         // runtime must not pass for the previous service.
-        await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+        await stopTask(deadline, true)
         if (wroteNew) await writeIn(deadline)(plan.configuration.path, previousConfiguration)
         await startIn(deadline)(restoreCommands)
       },
@@ -1155,7 +1274,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
 
 // A service that was never installed is not an error to remove: the end state
 // the caller asked for is the one they get either way.
-type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt" | "claimServiceOperation" | "readConfiguration">
+type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt" | "claimServiceOperation" | "readConfiguration" | "stopSupervisor" | "supervisorStatus">
 type ServiceRemovalResult = ServiceRemovalPlan & {
   profileRecovery: "recorded" | "operator-confirmation-required" | "proof-unavailable" | "not-needed"
   profileRecoveryDetail?: string
@@ -1180,8 +1299,11 @@ async function removeWithDeadline(
   deadline.throwIfExpired()
   // Read before anything is stopped, so a task Domovoi did not register is
   // left running and registered.
-  if (plan.kind === "task" && await windowsTaskOwner(home, effects, deadline) === "other") {
-    throw new WindowsTaskNotDomovoiError(displayName)
+  const windowsOwner = plan.kind === "task" ? await windowsTaskOwner(home, effects, deadline) : undefined
+  if (windowsOwner === "other") throw new WindowsTaskNotDomovoiError(displayName)
+  if (windowsOwner === "missing" && !effects.readConfiguration?.(home, "win32")) {
+    const evidence = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(home, deadline))
+    if (evidence?.treeUnconfirmed || evidence?.supervising || evidence?.running) throw new Error(evidence.detail)
   }
   // Decided 2026-09-17 (SHIP-PLAN S1.1): read before anything changes. Only a
   // record that Domovoi turned lingering on turns it off; a configuration that
@@ -1216,8 +1338,19 @@ async function removeWithDeadline(
   }
   let managerStopped = true
   if (plan.kind === "task") {
+    // A missing task can still have a live supervisor and tree. Configuration
+    // presence keeps the proof obligation even after external task deletion.
+    if (windowsOwner === "supervised" || (windowsOwner === "missing" && effects.readConfiguration?.(home, "win32") !== undefined)) {
+      if (!effects.stopSupervisor) throw new Error("Windows supervisor shutdown proof is unavailable; task and configuration retained")
+      progress.managerHoldsDeadline = true
+      try {
+        await disableWindowsTask(plan, effects, deadline)
+        await withinServiceDeadline(deadline, () => effects.stopSupervisor!(serviceConfigurationPath(home, "win32"), deadline,
+          windowsOwner === "supervised" ? { confirmNoLaunch: () => windowsTaskDisabledAndIdle(plan.name, effects, deadline) } : undefined))
+      } catch (cause) { throw new WindowsTaskRemovalError(plan.name, cause, { stopIssued: true }) }
+    }
     progress.managerHoldsDeadline = true
-    managerStopped = await removeWindowsTask(plan, effects, deadline) === "removed"
+    managerStopped = await removeWindowsTask(plan, effects, deadline, windowsOwner === "domovoi") === "removed"
     progress.managerHoldsDeadline = false
   }
   // Security review round 2 (#574): with no Domovoi service file, the same-
@@ -1301,7 +1434,7 @@ async function statusWithDeadline(
   deadline: OperationDeadline,
 ): Promise<ServiceStatus> {
   if (target.platform === "linux") {
-    const supervisor = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home)))
+    const supervisor = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home), deadline))
     if (supervisor !== undefined) return supervisor
     const path = unitPath(target.home)
     const installed = await withinServiceDeadline(deadline, () => effects.exists(path, deadline))
@@ -1356,20 +1489,20 @@ async function statusWithDeadline(
   }
 
   if (target.platform === "win32") {
-    if (await windowsTaskOwner(assertHome(target.home), effects, deadline) === "other") {
-      // Text ruled 2026-09-25.
-      return { installed: false, running: false, detail: `a task named ${displayName} exists, but Domovoi did not register it` }
-    }
+    const home = assertHome(target.home)
+    const owner = await windowsTaskOwner(home, effects, deadline)
+    if (owner === "other") return { installed: false, running: false, detail: `a task named ${displayName} exists, but Domovoi did not register it` }
     const state = await readWindowsTaskState(displayName, effects, deadline)
     const installed = state !== "missing"
-    const running = state === "4"
-    return {
-      installed,
-      running,
-      detail: installed
-        ? `${displayName} is ${running ? "running" : "registered but not running"}`
-        : `no logon task named ${displayName}`,
+    if (owner === "domovoi") return { installed, running: state === "4", detail: "legacy Windows logon task; no crash supervision or job-object tree evidence" }
+    if (!effects.supervisorStatus) {
+      if (!installed) return { installed: false, running: false, detail: `no logon task named ${displayName}` }
+      throw new Error("Windows supervisor status is unavailable")
     }
+    const supervisor = await withinServiceDeadline(deadline, () => effects.supervisorStatus!(home, deadline))
+    if (!supervisor) return { installed, running: false, detail: installed ? "Windows supervisor has no recorded start; tree evidence unavailable" : `no logon task named ${displayName}`,
+      ...(installed ? { supervisionFailure: "observation-failure" as const } : {}) }
+    return { ...supervisor, installed, detail: `${installed ? "logon task registered" : "logon task missing"}; ${supervisor.detail}` }
   }
 
   throw new Error(`${target.platform} has no service manager this knows how to report on`)
@@ -1525,7 +1658,7 @@ export async function runServiceCommand(
     const installed = status.installed ? "installed" : "not installed"
     const running = status.running ? "running" : "not running"
     dependencies.stdout(`${installed}, ${running}: ${status.detail}\n`)
-    return status.installed ? 0 : 1
+    return status.installed && status.supervisionFailure === undefined ? 0 : 1
   } catch (error) {
     dependencies.stderr(`${error instanceof Error ? error.message : String(error)}\n`)
     return 1
@@ -1546,7 +1679,7 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
       try { return parseServiceConfiguration(readLocalProfileFile(serviceConfigurationPath(home, platform), 64 * 1024)) }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error }
     },
-    stopSupervisor: stopGuestSupervisor,
+    stopSupervisor: process.platform === "win32" ? stopWindowsSupervisor : (path, deadline) => stopGuestSupervisor(path, deadline),
     // Manager names are per OS user, not per caller-selected HOME or profile.
     // An alternate shell HOME must not create a second lock for the same job.
     // The override isolates tests from the operator's actual service lock.
@@ -1561,7 +1694,7 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
     },
     removalSnapshot: readServiceRemovalSnapshot,
     writeRemovalReceipt: writeLocalOwnerRemovalReceipt,
-    supervisorStatus: async (home) => readGuestSupervisorStatus(home),
+    supervisorStatus: async (home, deadline) => process.platform === "win32" ? readWindowsSupervisorStatus(home, deadline) : readGuestSupervisorStatus(home),
     write: writeUnit,
     // A service file or update record is read only as a bounded private
     // regular file owned by this user, without following a link, as

@@ -2,11 +2,15 @@ import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { demoWorkspace, workspaceSnapshotSchema } from "@getdomovoi/protocol"
+import { demoWorkspace as protocolDemoWorkspace, workspaceSnapshotSchema } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
+
+// Load-count tests use current effort labels; store.test.ts covers legacy migration.
+const demoWorkspace = structuredClone(protocolDemoWorkspace)
+demoWorkspace.sessions.find(({ id }) => id === "session-audit")!.runtime.reasoning = "unset"
 
 const scratchDirectories: string[] = []
 
@@ -24,6 +28,30 @@ async function storedWorkspace(): Promise<string> {
 }
 
 describe("reading stored state", () => {
+  it.each(["annotations", "changed title"])("does not reparse non-seed state with %s for legacy comparison", async (difference) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-non-seed-load-"))
+    scratchDirectories.push(scratch)
+    const path = join(scratch, "state.sqlite")
+    const snapshot = structuredClone(demoWorkspace)
+    if (difference === "changed title") {
+      snapshot.annotations = []
+      snapshot.sessions[0]!.title = "The person's changed session"
+    } else {
+      expect(snapshot.annotations.length).toBeGreaterThan(0)
+    }
+    await new SqliteWorkspaceStore(path, snapshot).close()
+    const parse = vi.spyOn(JSON, "parse")
+    const baseline = new SqliteWorkspaceStore(path, demoWorkspace)
+    const baselineCalls = parse.mock.calls.length
+    await baseline.close()
+    parse.mockClear()
+    const store = new SqliteWorkspaceStore(path, demoWorkspace, { legacySnapshots: [demoWorkspace] })
+    try {
+      expect(parse).toHaveBeenCalledTimes(baselineCalls)
+      expect(store.load()).toEqual(snapshot)
+    } finally { await store.close() }
+  })
+
   it("hands the snapshot the constructor migrated to the first load", async () => {
     const store = new SqliteWorkspaceStore(await storedWorkspace(), demoWorkspace)
     try {

@@ -24,6 +24,7 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
+import { normalizeLegacyEffort } from "./legacy-effort.js"
 import { SqliteAuditLog, type AuditLog } from "./audit-log.js"
 import { SqliteDeviceRegistry, storedDeviceRowIsValid, type DeviceRegistry } from "./device-registry.js"
 import { SqliteTransferReceipts, type TransferReceipts } from "./transfer-receipts.js"
@@ -288,7 +289,7 @@ function appendSystemReceipt(
   })
 }
 
-function migrateStoredWorkspace(value: unknown): {
+function migrateStoredWorkspace(value: unknown, options: { repairLegacyEffort?: boolean } = {}): {
   snapshot: WorkspaceSnapshot
   repaired: boolean
   inactivatedRules: Array<{ id: string; projectId: string; inactivatedAt: string }>
@@ -311,6 +312,21 @@ function migrateStoredWorkspace(value: unknown): {
     repaired = true
   }
   const inactivatedRules: Array<{ id: string; projectId: string; inactivatedAt: string }> = []
+  // Before discovery reported unset, OpenCode and Kilo sent no effort value
+  // for medium or none. Normalize these labels on every load; revisit this
+  // repair if either adapter ever sends a real effort value.
+  if (options.repairLegacyEffort !== false && Array.isArray(migrated.sessions)) {
+    for (const session of migrated.sessions) {
+      if (!isRecord(session) || !isRecord(session.runtime)) continue
+      const runtime = session.runtime
+      if (typeof runtime.provider !== "string" || typeof runtime.reasoning !== "string") continue
+      const reasoning = normalizeLegacyEffort(runtime.provider, runtime.reasoning)
+      if (reasoning !== runtime.reasoning) {
+        runtime.reasoning = reasoning
+        repaired = true
+      }
+    }
+  }
   if (Array.isArray(migrated.approvals)) {
     for (const approval of migrated.approvals) {
       if (!isRecord(approval) || executionResolutionSchema.safeParse(approval.execution).success) continue
@@ -1123,10 +1139,21 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       }
     }
     const existingSnapshot = migratedExisting?.snapshot
-    const isLegacySeed = existingSnapshot?.annotations.length === 0 &&
+    const matchesMigratedSeed = existingSnapshot?.annotations.length === 0 &&
       options.legacySnapshots?.some(
         (snapshot) => legacyFingerprint(existingSnapshot) === legacyFingerprint(
-          workspaceSnapshotSchema.parse(snapshot),
+          migrateStoredWorkspace(snapshot).snapshot,
+        ),
+      )
+    // Effort aliases must not erase a person's change when identifying a seed.
+    // Only possible seeds need another migration with effort repair disabled.
+    const seedCandidate = matchesMigratedSeed && existing
+      ? migrateStoredWorkspace(JSON.parse(existing.snapshot), { repairLegacyEffort: false }).snapshot
+      : undefined
+    const isLegacySeed = seedCandidate?.annotations.length === 0 &&
+      options.legacySnapshots?.some(
+        (snapshot) => legacyFingerprint(seedCandidate) === legacyFingerprint(
+          migrateStoredWorkspace(snapshot, { repairLegacyEffort: false }).snapshot,
         ),
     )
     this.recovery = recovery
@@ -1147,11 +1174,11 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       }
     }
     else if (!existing) this.save(initial)
+    else if (isLegacySeed) this.save(initial)
     else if (migratedExisting?.repaired) {
       this.save(migratedExisting.snapshot)
       this.#recordRuleInactivations(migratedExisting.inactivatedRules)
     }
-    else if (isLegacySeed) this.save(initial)
     else if (existingSnapshot) this.#seedProjectRow(existingSnapshot)
     if (!recovery && !isLegacySeed && existingSnapshot) this.#migratedAtOpen = existingSnapshot
     this.#restrictFilePermissions()
@@ -1457,9 +1484,11 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       machine: machine ?? this.load().machine,
       skillEnablements: [],
     } as unknown as WorkspaceSnapshot
-    return projectWorkspaceState(this.transferConflicts.restore(
-      workspaceSnapshotSchema.parse(redactWorkspaceCopies(candidate)),
-    ))
+    const snapshot = workspaceSnapshotSchema.parse(redactWorkspaceCopies(candidate))
+    for (const session of snapshot.sessions) {
+      session.runtime.reasoning = normalizeLegacyEffort(session.runtime.provider, session.runtime.reasoning)
+    }
+    return projectWorkspaceState(this.transferConflicts.restore(snapshot))
   }
 
   #seedProjectRow(snapshot: WorkspaceSnapshot): void {
