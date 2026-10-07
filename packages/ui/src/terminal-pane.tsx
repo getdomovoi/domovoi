@@ -204,18 +204,20 @@ export function TerminalPane({
     // inside the parse so a clear later in the same write cannot hide it, and
     // either side of a resize, whose reflow can push rows out too.
     historyFilledRef.current = false
-    const noteHistory = () => {
-      if (terminal.buffer.normal.length >= terminalScrollback + terminal.rows) historyFilledRef.current = true
+    // A resize to fewer rows lowers the capacity before reflow, so it is
+    // checked against the smaller of the two heights.
+    const noteHistory = (rows = terminal.rows) => {
+      if (terminal.buffer.normal.length >= terminalScrollback + Math.min(rows, terminal.rows)) historyFilledRef.current = true
     }
-    const fed = terminal.onLineFeed(noteHistory)
-    const scrolled = terminal.onScroll(noteHistory)
+    const fed = terminal.onLineFeed(() => noteHistory())
+    const scrolled = terminal.onScroll(() => noteHistory())
     const resizeTo = (cols: number, rows: number) => {
-      noteHistory()
+      noteHistory(rows)
       terminal.resize(cols, rows)
       noteHistory()
     }
     const refit = () => {
-      noteHistory()
+      noteHistory(fit.proposeDimensions()?.rows)
       fit.fit()
       noteHistory()
     }

@@ -796,6 +796,35 @@ describe("Attach this output to the composer", () => {
     expect("content" in attachment ? attachment.content : "").toMatch(/^\[this pane's history filled up; earlier output may be missing from this file\]\n/u)
   })
 
+  // Fewer rows lower the history's capacity before the reflow runs, so a
+  // wider, shorter grid can drop rows that a wider one would then merge.
+  it("marks an attachment whose history filled when the grid got shorter", { timeout: 20_000 }, async () => {
+    const user = userEvent.setup()
+    const composer = createComposerInbox()
+    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
+    composer.open(sessionId, receive)
+    const target = watcher()
+    const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, ...listed } = watchResult({ cols: 160, rows: 5 })
+    const list = vi.fn(async (_sessionId: string) => [listed])
+    const controls: TerminalControls = { ...target.controls, list }
+    const { container } = render(
+      <TerminalPane connected readOnly composer={composer} controls={controls} holderRefreshMs={20} machineName="worktop" sessionId={sessionId} />,
+    )
+    const wrapped = Array.from({ length: 2_506 }, (_, index) => `${String(index).padStart(5, "0")}${"w".repeat(76)}\r\n`).join("")
+    await act(async () => {
+      target.watched.resolve(watchResult({ buffer: `${wrapped}END OF OUTPUT\r\n` }))
+    })
+    await parsedThrough(container, "END OF OUTPUT")
+    await vi.waitFor(() => expect(list).toHaveBeenCalled())
+    await vi.waitFor(() => expect(container.querySelectorAll(".xterm-rows > div").length).toBe(5))
+
+    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+
+    await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1))
+    const [attachment] = receive.mock.calls[0]!
+    expect("content" in attachment ? attachment.content : "").toMatch(/^\[this pane's history filled up; earlier output may be missing from this file\]\n/u)
+  })
+
   // A disconnect disposes the renderer the button reads from, so the button
   // goes with it rather than staying and doing nothing.
   it("is not offered once the renderer is gone", async () => {
