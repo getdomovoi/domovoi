@@ -109,8 +109,10 @@ SmartScreen shows for an unsigned installer. Record what each OS showed and what
      (`schtasks /query /tn "Domovoi daemon"`).
    - Optional, macOS with the app in Applications and Linux from the `.deb`: Settings, "Terminal
      commands", "Link the commands" puts `domovoid` and `domovoi` in `~/.local/bin`, after which
-     `domovoid service status` answers. Domovoi links no commands on Windows, from an AppImage,
-     or from an app still running inside the disk image; there, use the entry point from
+     `~/.local/bin/domovoid service status` answers. Linking does not add `~/.local/bin` to your
+     shell's PATH; until it is there, give the full path, as this walk does. Domovoi links no
+     commands on Windows, from an AppImage, or from an app still running inside the disk image;
+     there, use the entry point from
      [clean-machine setup, Step 2](clean-machine-setup.md#step-2-fix-the-command-you-will-keep-using).
 4. **The service keeps running.** Quit the app (macOS: Domovoi, Quit Domovoi, or ⌘Q; Windows and
    Linux: the window's Close button). The manager check from step 3 still shows the daemon
@@ -272,8 +274,8 @@ saved configuration, not your shell, so these variables reach a provider only th
 started from the shell that sets them. So:
 
 1. Remove the login service (section 1, step 7) and quit the app.
-2. Start the daemon in a terminal with the variables for the case, as below. `domovoid` is the
-   command linked in section 1, step 3, or the entry point from
+2. Start the daemon in a terminal with the variables for the case, as below. `domovoid` there
+   stands for `~/.local/bin/domovoid`, linked in section 1, step 3, or for the entry point from
    [clean-machine setup](clean-machine-setup.md#step-2-fix-the-command-you-will-keep-using).
 3. Open the app. It attaches to that daemon (Settings reads "Not started here").
 4. Before sending, record the worktree: `git -C <repository> worktree list`, then
@@ -348,8 +350,9 @@ disagree. The documents, not this checklist, hold the commands:
 - [Crash recovery](crash-recovery.md). Its interrupted-turn case is section 2, step 7 here.
 
 Route A of Step 1 needs a published release, and none exists yet; walk route B and record route A
-as blocked. Step 7 needs a second machine. **Steps 3, 5, 6, 7 and 8 and the Recovery section
-change the profile**: Step 7 stores the peer's credential in the source machine's keychain and
+as blocked. Step 7 needs a second machine. **Steps 3 to 8 and the Recovery section change the
+profile**: Steps 3 and 4 start a daemon, which writes its credential, leases, owner record and
+logs, Step 7 stores the peer's credential in the source machine's keychain and
 adds a device on the target, and Step 8 creates a separate profile inside the WSL distribution.
 Step 5 also changes the OS.
 
