@@ -37,7 +37,7 @@ describe("runtime discovery over production daemon sockets", () => {
     if (discovered.status !== "ready") throw new Error("No runtime returned")
     expect(discovered.models[0]).not.toHaveProperty("defaultReasoningEffort")
     await target.root.ok("project.open", { path: await harness.repository("no-default-project"), client: "cli" })
-    for (const runtime of [discovered.defaultRuntime, { ...discovered.defaultRuntime, model: "default", reasoning: levels.length > 0 ? "retired" : "medium" }]) {
+    for (const runtime of [discovered.defaultRuntime, { ...discovered.defaultRuntime, model: "default", reasoning: "retired" }]) {
       const created = await target.root.ok("session.create", { title: "Model setting", runtime, client: "cli" })
       expect(created.sessions.find(({ id }) => id === created.activeSessionId)?.runtime).toEqual(discovered.defaultRuntime)
       expect(claude.startThread).toHaveBeenLastCalledWith(expect.objectContaining({ runtime: discovered.defaultRuntime }))
@@ -51,7 +51,22 @@ describe("runtime discovery over production daemon sockets", () => {
     }
   }, budgetMs)
 
-  it.each(["session.create", "session.setRuntime"] as const)("refuses invented effort on %s when the model has no effort support", async (method) => {
+  it("creates a session with unset for default model and xhigh when the model has no effort support", async () => {
+    const claude = agent("claude-code")
+    const { defaultReasoningEffort: _default, ...noDefault } = model("claude-code")
+    claude.listModels.mockResolvedValue([{ ...noDefault, supportedReasoningEfforts: [] }])
+    const target = await harness.machine("default effort fallback", undefined, {
+      agents: { "claude-code": claude }, providerProbe: { inspect: async () => [detection("claude-code")] },
+    })
+    await target.root.ok("project.open", { path: await harness.repository("default-effort-project"), client: "cli" })
+    const runtime = { provider: "claude-code", model: "default", reasoning: "xhigh", permissionMode: "ask", auto: false } as const
+    const created = await target.root.ok("session.create", { title: "Provider switch", runtime, client: "cli" })
+    const resolvedRuntime = { ...runtime, model: "discovered-model", reasoning: "unset" }
+    expect(created.sessions.find(({ id }) => id === created.activeSessionId)?.runtime).toEqual(resolvedRuntime)
+    expect(claude.startThread).toHaveBeenLastCalledWith(expect.objectContaining({ runtime: resolvedRuntime }))
+  }, budgetMs)
+
+  it.each(["session.create", "session.setRuntime"] as const)("refuses invented effort on %s when the explicit model has no effort support", async (method) => {
     const claude = agent("claude-code")
     const { defaultReasoningEffort: _default, ...noDefault } = model("claude-code")
     claude.listModels.mockResolvedValue([{ ...noDefault, supportedReasoningEfforts: [] }])
@@ -64,13 +79,11 @@ describe("runtime discovery over production daemon sockets", () => {
     const sessionId = created.activeSessionId!
     const accepted = await target.root.ok("session.setRuntime", { sessionId, runtime, client: "cli" })
     expect(accepted.sessions.find(({ id }) => id === sessionId)?.runtime).toEqual(runtime)
-    for (const model of ["discovered-model", "default"]) {
-      const invalidRuntime = { ...runtime, model, reasoning: "invented" }
-      const refused = method === "session.create"
-        ? await target.root.call(method, { title: "Invalid effort", runtime: invalidRuntime, client: "cli" })
-        : await target.root.call(method, { sessionId, runtime: invalidRuntime, client: "cli" })
-      expect(refused.error).toEqual({ code: -32602, message: "Reasoning effort is not supported by the selected model" })
-    }
+    const invalidRuntime = { ...runtime, reasoning: "invented" }
+    const refused = method === "session.create"
+      ? await target.root.call(method, { title: "Invalid effort", runtime: invalidRuntime, client: "cli" })
+      : await target.root.call(method, { sessionId, runtime: invalidRuntime, client: "cli" })
+    expect(refused.error).toEqual({ code: -32602, message: "Reasoning effort is not supported by the selected model" })
   }, budgetMs)
 
   it.each(["session.restartProviderThread", "session.setRuntime"] as const)("normalizes stored medium to unset on %s when the model has no effort support", async (method) => {
