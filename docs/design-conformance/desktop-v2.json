@@ -479,8 +479,9 @@
         "outcomeDotClass(entry.outcome)",
         "w-[62px]",
         "{entry.actor.kind}",
-        "md:w-[190px]",
-        "md:w-[150px]",
+        "@container overflow-hidden",
+        "@3xl:w-[190px]",
+        "@3xl:w-[150px]",
         {
           "absent": "<pre className=\"max-h-40",
           "in": "packages/ui/src/audit-log-view.tsx"
@@ -517,6 +518,9 @@
       "evidence": [
         "WHAT THIS LOG IS, AND IS NOT",
         "Retention is by count: 10,000 activity and 1,000 pre-authentication entries.",
+        "Rows name verified credentials, so renaming a device does not rewrite history.\", dot: \"bg-success\"",
+        "Retention is by count: 10,000 activity and 1,000 pre-authentication entries.\", dot: \"bg-info\"",
+        "rounded-full ${dot}",
         {
           "absent": "ShieldCheckIcon",
           "in": "packages/ui/src/audit-log-view.tsx"
@@ -2266,7 +2270,7 @@
     {
       "id": "audit.rows",
       "since": "2026-10-06",
-      "note": "Built by S3.10j. Differences from the drawn row: the design's query window is the last 24 hours and this one is not (the wire has no since), so a row from another day adds the day under its time. The outcome column starts with the outcome word, then target and session, because the wire carries an outcome enum rather than the design's free result phrase. The actor pill names the actor kind. A long detail scrolls inside the row past 10rem (detail is up to 4,096 characters). Below md the who and outcome columns wrap under the action."
+      "note": "Built by S3.10j. Differences from the drawn row: the design's query window is the last 24 hours and this one is not (the wire has no since), so a row from another day adds the day under its time. The outcome column starts with the outcome word, then target and session, because the wire carries an outcome enum rather than the design's free result phrase. The actor pill names the actor kind. A long detail scrolls inside the row past 10rem (detail is up to 4,096 characters). The list is a size container: when it is narrower than 48rem (a narrow window, or a wide one with the drawer open) the who and outcome columns wrap under the action."
     },
     {
       "id": "audit.facts",
