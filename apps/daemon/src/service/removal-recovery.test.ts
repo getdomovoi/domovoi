@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, posix } from "node:path"
 
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -253,7 +253,8 @@ it.each([
 async function launchdRemoval(options: { releaseAfterBootoutMs?: number; loadedFrom?: string } = {}) {
   const home = await mkdtemp(join(tmpdir(), "domovoi-removal-launchd-"))
   homes.push(home)
-  const plist = join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")
+  // launchd paths are POSIX, as install.ts builds them, on every test host.
+  const plist = posix.join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")
   const { effects } = manager("darwin")
   const daemon = claimProfile(home)
   const claim = vi.fn(claimProfile)
