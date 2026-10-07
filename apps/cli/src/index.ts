@@ -49,10 +49,11 @@ Default daemon: ${defaultEndpoint}
 Exit codes, stable across releases so scripts can branch on them:
 ${renderExitCodes()}`
 
-type Options = { positional: string[]; daemon: string; daemonGiven: boolean; credentialFile?: string; label?: string; limit: number; action?: string; outcome?: string; session?: string; before?: string; scope: "user" | "project"; yes: boolean }
+// given: every option named, in order, so a command that takes none can refuse them.
+type Options = { positional: string[]; given: string[]; daemon: string; daemonGiven: boolean; credentialFile?: string; label?: string; limit: number; action?: string; outcome?: string; session?: string; before?: string; scope: "user" | "project"; yes: boolean }
 
 function parse(argv: string[]): Options {
-  const options: Options = { positional: [], daemon: defaultEndpoint, daemonGiven: false, limit: 50, scope: "user", yes: false }
+  const options: Options = { positional: [], given: [], daemon: defaultEndpoint, daemonGiven: false, limit: 50, scope: "user", yes: false }
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!
     const value = () => {
@@ -61,6 +62,7 @@ function parse(argv: string[]): Options {
       index += 1
       return next
     }
+    if (argument.startsWith("-") && argument !== "--help" && argument !== "-h") options.given.push(argument)
     if (argument === "--daemon") { options.daemon = value(); options.daemonGiven = true }
     else if (argument === "--credential-file") options.credentialFile = value()
     else if (argument === "--label") {
@@ -113,6 +115,9 @@ async function main(argv: string[]): Promise<number> {
       throw new UsageError(`domovoi daemon takes one of install, status or remove${verb === undefined ? "" : `; got ${JSON.stringify(verb)}`}`)
     }
     exactly(2, `domovoi daemon ${verb}`)
+    // The login service is this machine's. An option naming another daemon,
+    // or any other, would be dropped, so none is taken.
+    if (options.given.length > 0) throw new UsageError(`domovoi daemon ${verb} acts on this machine's login service and takes no options; got ${options.given.join(", ")}`)
     // The daemon's own command prints its lines and returns its own exit
     // code (see the usage text); this CLI adds nothing to either.
     const { runDaemonCommand } = await loadDaemonCommand()

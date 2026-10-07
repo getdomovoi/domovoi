@@ -260,6 +260,10 @@ describe("domovoi daemon", { timeout: 60_000 }, () => {
         [["start"], /^domovoi daemon takes one of install, status or remove; got "start"\n/],
         [["install", "now"], /^domovoi daemon install takes no further arguments; got "now"\n/],
         [["status", "--verbose"], /^Unknown option --verbose\n/],
+        // The service is this machine's: no option names another daemon, so
+        // none is accepted and silently dropped (review round 1, Major).
+        [["remove", "--daemon", "ws://203.0.113.7:47831/rpc"], /^domovoi daemon remove acts on this machine's login service and takes no options; got --daemon\n/],
+        [["install", "--credential-file", join(home, "x.json"), "--yes"], /^domovoi daemon install acts on this machine's login service and takes no options; got --credential-file, --yes\n/],
       ] as const) {
         const refused = await domovoi([...args], environment)
         expect(refused.code, args.join(" ")).toBe(2)
