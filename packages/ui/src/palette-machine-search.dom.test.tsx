@@ -177,6 +177,9 @@ it("says a machine did not answer in the design's notice", async () => {
   const notice = sentence.closest("[data-palette-notice]") as HTMLElement
   expect(notice.querySelector("[data-status-dot]")).toBeTruthy()
   expect(notice.className).not.toContain("danger")
+  // A long unbroken machine name wraps inside the sentence instead of
+  // running under the button (PR #745 review).
+  expect(sentence.className.split(/\s+/u)).toContain("wrap-anywhere")
 })
 
 it("marks each machine's answer with a dot, and sweeps while it asks", async () => {

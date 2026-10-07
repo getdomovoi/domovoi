@@ -390,7 +390,7 @@ export function CommandPalette({
     // the palette's toggle among them, goes on as usual.
     <div key={key} data-palette-notice onKeyDown={(event) => { if (event.key === "Enter") event.stopPropagation() }} className="mx-0.5 mt-0.5 mb-1.5 flex items-center gap-2.5 rounded-[calc(var(--radius)-2px)] border bg-background px-3 py-[9px]">
       <Dot meaning={meaning} />
-      <span className="min-w-0 flex-1 text-[12px] leading-normal text-strong">{text}</span>
+      <span className="min-w-0 flex-1 text-[12px] leading-normal text-strong wrap-anywhere">{text}</span>
       <Button type="button" variant="outline" size="xs" className="shrink-0" disabled={switchingAway} onClick={onClick}>{action}</Button>
     </div>
   )
