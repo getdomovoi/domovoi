@@ -250,7 +250,7 @@ export function CheckpointsPanel({
           {!loading && !error && page && entries.length === 0 ? (
             <Empty className="min-h-48 border-0"><EmptyHeader><EmptyMedia variant="icon"><GitCommitHorizontalIcon /></EmptyMedia>
               <EmptyTitle>No checkpoints yet</EmptyTitle>
-              <EmptyDescription>The session start is recorded when the worktree is created. The next one comes when you allow a request at a gate, at a restore, a handoff, an archive, or when you ask.</EmptyDescription>
+              <EmptyDescription>The session start is recorded when the worktree is created. In a session with a worktree, the next one comes when you allow a request at a gate, at a restore, a handoff, an archive, or when you ask.</EmptyDescription>
             </EmptyHeader></Empty>
           ) : null}
           {error ? <Alert variant="destructive" className="my-1"><CircleStopIcon /><AlertTitle>Checkpoints unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}

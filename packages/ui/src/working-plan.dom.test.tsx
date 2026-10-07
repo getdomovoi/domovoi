@@ -358,14 +358,25 @@ it("keeps the comment and says why when the daemon refuses it", async () => {
   expect((within(form).getByLabelText("Comment") as HTMLTextAreaElement).value).toBe("Not yet")
 })
 
+// With no selection and no steps there is nothing to quote, so no form opens:
+// the row says what to do, and the button stays live for the second try.
 it("says how to pick a step when there is no selection and no step list", async () => {
   window.getSelection()?.removeAllRanges()
   render(sheet({ workingPlan: undefined }))
-  await userEvent.setup().click(screen.getByRole("button", { name: "Comment on a step" }))
+  const user = userEvent.setup()
+  const open = screen.getByRole("button", { name: "Comment on a step" })
+  await user.click(open)
 
-  const form = screen.getByRole("form", { name: "Comment on a step" })
-  expect(within(form).getByText("Select the words in the plan you want to comment on, then choose Comment on a step again.")).toBeTruthy()
-  expect(within(form).queryByLabelText("Comment")).toBeNull()
+  expect(screen.queryByRole("form", { name: "Comment on a step" })).toBeNull()
+  expect(screen.getByRole("status").textContent).toBe("Select the words in the plan you want to comment on, then choose Comment on a step again.")
+  expect(open.hasAttribute("disabled")).toBe(false)
+
+  const range = document.createRange()
+  range.selectNodeContents(screen.getByText("Retries replay the side effects."))
+  window.getSelection()!.addRange(range)
+  await user.click(open)
+  expect(within(screen.getByRole("form", { name: "Comment on a step" })).getByText("Retries replay the side effects.")).toBeTruthy()
+  expect(screen.queryByRole("status")).toBeNull()
 })
 
 it("offers no comment and no decision to a read-only client", () => {
@@ -409,7 +420,8 @@ it("never takes the rendered steps for the document", () => {
   expect(onlyMirror.document).toBeUndefined()
   expect(onlyMirror.commentTarget?.id).toBe("plan-session-1")
   expect(onlyMirror.all.map((artifact) => artifact.id)).toEqual(["plan-session-1"])
-  expect(planSheetArtifacts([mirror, written], "session-1", undefined).document?.id).toBe("plan-session-1")
+  // Without a working plan the newest plan of any kind is the document.
+  expect(planSheetArtifacts([written, mirror], "session-1", undefined).document?.id).toBe("plan-session-1")
   expect(isWorkingPlanMirror(written, "session-1")).toBe(false)
   expect(isWorkingPlanMirror(planArtifact({ id: "plan-session-1-0001" }), "session-1")).toBe(true)
 })
@@ -498,4 +510,35 @@ it("lets a slow post close only its own draft", async () => {
   await act(async () => { finish() })
 
   expect((screen.getByLabelText("Comment") as HTMLTextAreaElement).value).toBe("Second")
+})
+
+// A plan update that arrives while a draft is open must not change what the
+// draft quotes: an edited step keeps the words chosen, a removed one too.
+it("freezes the chosen step's words while the draft is open", async () => {
+  window.getSelection()?.removeAllRanges()
+  const onComment = vi.fn(async () => {})
+  const { rerender } = render(sheet({ onComment }))
+  const user = userEvent.setup()
+  await user.click(screen.getByRole("button", { name: "Comment on a step" }))
+  await user.type(screen.getByLabelText("Comment"), "Staging first")
+
+  const edited = plan()
+  edited.steps = edited.steps
+    .filter((step) => step.id !== "step-3")
+    .map((step) => (step.id === "step-4" ? { ...step, text: "Assert delivery once" } : step))
+  rerender(sheet({ onComment, workingPlan: edited }))
+  await user.click(screen.getByRole("button", { name: "Post" }))
+
+  expect(onComment).toHaveBeenCalledWith(expect.objectContaining({ quote: "Apply the migration", body: "Staging first" }))
+})
+
+// Revisions count per artifact: a watched file starts at 1 and each change adds
+// one, so two files' revisions say nothing about which is newer. The daemon
+// appends a newly found file, so the later one in the snapshot is the newer.
+it("takes the plan file found last, not the one with the higher revision", () => {
+  const older = planArtifact({ id: "plan-session-1-aaaa", path: "plans/first.md", revision: 3 })
+  const newer = planArtifact({ id: "plan-session-1-bbbb", path: "plans/second.md", revision: 1 })
+
+  expect(planSheetArtifacts([older, newer], "session-1", plan()).document?.id).toBe("plan-session-1-bbbb")
+  expect(planSheetArtifacts([older, newer], "session-1", undefined).document?.id).toBe("plan-session-1-bbbb")
 })

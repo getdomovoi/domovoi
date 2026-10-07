@@ -119,7 +119,7 @@ it("names the checkpoint before each allowed request and a worktree-only revert"
   expect(intro.textContent).toContain("A rule that allows a request takes none.")
   expect(intro.textContent).toContain("The thread keeps its turns.")
   expect(intro.textContent).not.toMatch(/rewinds|thread together/)
-  expect(screen.getByText(/The next one comes when you allow a request at a gate/)).toBeTruthy()
+  expect(screen.getByText(/In a session with a worktree, the next one comes when you allow a request at a gate/)).toBeTruthy()
 })
 
 it("says why an approved-command checkpoint exists in its row", async () => {

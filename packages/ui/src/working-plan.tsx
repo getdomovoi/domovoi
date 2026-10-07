@@ -262,13 +262,17 @@ function PlanCommentForm({
 }) {
   // With nothing selected, the comment anchors to a step's own words. The
   // first step not yet done is the one most likely to be in question.
+  // The chosen step's words are kept as they were when chosen, so a plan
+  // update that edits or removes the step cannot change what the draft quotes.
   const firstOpen = steps.find((step) => step.status !== "completed") ?? steps[0]
-  const [stepId, setStepId] = useState(firstOpen?.id ?? "")
+  const [chosen, setChosen] = useState<{ id: string, text: string } | undefined>(
+    firstOpen ? { id: firstOpen.id, text: firstOpen.text } : undefined,
+  )
   const [body, setBody] = useState("")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState("")
   const fieldId = useId()
-  const anchor = quote ?? steps.find((step) => step.id === stepId)?.text
+  const anchor = quote ?? chosen?.text
 
   const post = () => {
     const text = body.trim()
@@ -308,8 +312,11 @@ function PlanCommentForm({
           spacing={1}
           aria-label="Step"
           className="w-full flex-col items-stretch"
-          value={stepId}
-          onValueChange={(next) => { if (next) setStepId(next) }}
+          value={chosen?.id ?? ""}
+          onValueChange={(next) => {
+            const step = steps.find((candidate) => candidate.id === next)
+            if (step) setChosen({ id: step.id, text: step.text })
+          }}
         >
           {steps.map((step, index) => (
             <ToggleGroupItem
@@ -336,11 +343,7 @@ function PlanCommentForm({
             onChange={(event) => setBody(event.target.value)}
           />
         </Field>
-      ) : (
-        <p className="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
-          Select the words in the plan you want to comment on, then choose Comment on a step again.
-        </p>
-      )}
+      ) : null}
       {error ? <p role="alert" className="m-0 text-[11px] leading-relaxed text-destructive">{error}</p> : null}
       <div className="flex items-center gap-2">
         {anchor ? (
@@ -375,11 +378,12 @@ export function isRenderedStepMirror(artifact: Artifact, sessionId: string): boo
     && (artifact.content === undefined || renderedStepsShape.test(artifact.content))
 }
 
+// Revisions count per artifact (a watched file starts at 1), so they cannot
+// order two artifacts. The daemon appends a newly found plan and updates one
+// in place, so the last in the snapshot is the one found most recently. An
+// older file edited later is not told apart: the wire carries no update time.
 function latestPlanArtifact(candidates: readonly Artifact[]): Artifact | undefined {
-  return candidates.reduce<Artifact | undefined>(
-    (latest, artifact) => (!latest || artifact.revision >= latest.revision ? artifact : latest),
-    undefined,
-  )
+  return candidates.at(-1)
 }
 
 // Q350 A: with a working plan, the document is the newest plan artifact with
@@ -445,6 +449,9 @@ export function PlanSheet({
   // or a session that changes underneath it cannot redirect the comment.
   const [commenting, setCommenting] = useState<{ quote: string | undefined, target: PlanCommentTarget } | null>(null)
   const [editing, setEditing] = useState(false)
+  // Shown instead of a form when there is nothing to quote: no selection and
+  // no step to choose.
+  const [selectHint, setSelectHint] = useState(false)
   const [carryingOn, setCarryingOn] = useState(false)
   const [carryOnError, setCarryOnError] = useState("")
   const wasCommenting = useRef(false)
@@ -555,6 +562,11 @@ export function PlanSheet({
                 onClick={() => {
                   const quote = documentSelection(documentRef.current) ?? pressedQuote.current
                   pressedQuote.current = undefined
+                  if (!quote && !workingPlan?.steps.length) {
+                    setSelectHint(true)
+                    return
+                  }
+                  setSelectHint(false)
                   setCommenting({ quote, target: commentTarget })
                 }}
               >
@@ -562,6 +574,11 @@ export function PlanSheet({
               </Button>
             ) : null}
           </div>
+          {selectHint && !commenting ? (
+            <p role="status" className="m-0 text-[11px] leading-relaxed text-muted-foreground">
+              Select the words in the plan you want to comment on, then choose Comment on a step again.
+            </p>
+          ) : null}
           {/* A button that returns from "Sending" in silence reads as a plan
               the agent took. The refusal belongs next to the control. */}
           {carryOnError ? (
