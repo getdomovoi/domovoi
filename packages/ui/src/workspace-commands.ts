@@ -244,46 +244,51 @@ export function buildWorkspaceCommands({
   // would leave to the browser.
   shortcutsBound?: boolean | undefined
 }): WorkspaceCommand[] {
+  // Desktop V2's COMMANDS lead in the design's order, each with the colour its
+  // dot is drawn in (ruling Q375 A); the commands the design does not draw
+  // follow them (ruling Q376 A) and take the same colours by the same reading:
+  // green opens a screen, blue opens a sheet, a flow or another app, amber can
+  // undo work, red stops it. With an empty query the palette keeps this order.
   return [
-    { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, restoreFocus: false, run: openProject },
-    { id: "new-session", label: "New session", section: "Session", keywords: ["create", "agent"], icon: MessageSquarePlusIcon, disabled: !connected || !hasProject, restoreFocus: false, opensStart: true, run: newSession },
-    ...(activeWorkspacePath && openInEditor ? [
-      { id: "open-in-editor", label: desktopExternalActionLabel(externalEditor ?? "system"), section: "Session" as const, keywords: ["worktree", "file", "external"], icon: ExternalLinkIcon, run: openInEditor },
-    ] : []),
-    ...(activeWorkspacePath && copyWorktreePath ? [
-      { id: "copy-worktree-path", label: "Copy worktree path", section: "Session" as const, keywords: ["clipboard", "folder"], icon: ClipboardIcon, run: copyWorktreePath },
-    ] : []),
-    { id: "pause-all", label: "Pause everything", section: "Session", keywords: ["pause", "turn boundary"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: pauseAll },
-    { id: "emergency-stop", label: "Emergency stop", section: "Session", keywords: ["kill", "stop", "emergency"], icon: CircleStopIcon, disabled: !connected || emergencyStopPending, run: emergencyStop },
     ...(openChanges ? [
-      { id: "open-changes", label: "Open the changes sheet", section: "Session" as const, keywords: ["diff", "files", "review"], icon: DiffIcon, ...(shortcutsBound ? { shortcut: "mod+shift+D" } : {}), run: openChanges },
+      { id: "open-changes", label: "Open the changes sheet", section: "Session" as const, keywords: ["diff", "files", "review"], icon: DiffIcon, tone: "handoff" as const, ...(shortcutsBound ? { shortcut: "mod+shift+D" } : {}), run: openChanges },
     ] : []),
     ...(takeCheckpoint ? [
-      { id: "take-checkpoint", label: "Take a checkpoint", section: "Session" as const, keywords: ["checkpoint", "save", "commit", "snapshot"], icon: GitCommitHorizontalIcon, detail: "manual", disabled: !connected || Boolean(checkpointBlocked), run: takeCheckpoint },
+      { id: "take-checkpoint", label: "Take a checkpoint", section: "Session" as const, keywords: ["checkpoint", "save", "commit", "snapshot"], icon: GitCommitHorizontalIcon, tone: "online" as const, detail: "manual", disabled: !connected || Boolean(checkpointBlocked), run: takeCheckpoint },
     ] : []),
     ...(revertToCheckpoint ? [
-      { id: "revert-checkpoint", label: "Revert to a checkpoint", section: "Session" as const, keywords: ["restore", "rewind", "undo"], icon: RotateCcwIcon, run: revertToCheckpoint },
+      { id: "revert-checkpoint", label: "Revert to a checkpoint", section: "Session" as const, keywords: ["restore", "rewind", "undo"], icon: RotateCcwIcon, tone: "waiting" as const, run: revertToCheckpoint },
     ] : []),
     ...(reviewRules ? [
-      { id: "review-rules", label: "Review what you have allowed", section: "Session" as const, keywords: ["rules", "approvals", "permissions"], icon: ShieldIcon, detail: `${approvalRuleCount ?? 0} ${approvalRuleCount === 1 ? "rule" : "rules"}`, run: reviewRules },
+      { id: "review-rules", label: "Review what you have allowed", section: "Session" as const, keywords: ["rules", "approvals", "permissions"], icon: ShieldIcon, tone: "handoff" as const, detail: `${approvalRuleCount ?? 0} ${approvalRuleCount === 1 ? "rule" : "rules"}`, run: reviewRules },
     ] : []),
     // The machine menu takes the choice of machine and the transfer dialog the
     // decision, so the palette only opens the menu. Focus goes with it.
     ...(moveSession ? [
-      { id: "move-session", label: "Move this session to another machine", section: "Session" as const, keywords: ["transfer", "machine"], icon: MonitorIcon, detail: "handoff", disabled: !connected, restoreFocus: false, run: moveSession },
+      { id: "move-session", label: "Move this session to another machine", section: "Session" as const, keywords: ["transfer", "machine"], icon: MonitorIcon, tone: "handoff" as const, detail: "handoff", disabled: !connected, restoreFocus: false, run: moveSession },
     ] : []),
-    { id: "surface-workspace", label: "Agent workspace", section: "Navigate", keywords: ["chat", "thread"], icon: PanelTopIcon, run: () => setSurface("workspace") },
-    { id: "surface-providers", label: "Provider settings", section: "Navigate", keywords: ["models", "credentials"], icon: SettingsIcon, run: () => setSurface("providers") },
-    { id: "surface-skills", label: "Skills", section: "Navigate", keywords: ["capabilities", "agents"], icon: SparklesIcon, run: () => setSurface("skills") },
-    { id: "surface-fleet", label: "Show all machines", section: "Navigate", keywords: ["fleet", "machines", "devices", "pairing"], icon: ServerIcon, ...(shortcutsBound ? { shortcut: "mod+shift+M" } : {}), run: () => setSurface("fleet") },
+    { id: "surface-fleet", label: "Show all machines", section: "Navigate", keywords: ["fleet", "machines", "devices", "pairing"], icon: ServerIcon, tone: "online", ...(shortcutsBound ? { shortcut: "mod+shift+M" } : {}), run: () => setSurface("fleet") },
     ...(pairDevice ? [
-      { id: "pair-device", label: "Pair a phone or tablet", section: "Navigate" as const, keywords: ["pairing", "phone", "tablet", "device"], icon: SmartphoneIcon, detail: "settings", disabled: !connected, run: pairDevice },
+      { id: "pair-device", label: "Pair a phone or tablet", section: "Navigate" as const, keywords: ["pairing", "phone", "tablet", "device"], icon: SmartphoneIcon, tone: "handoff" as const, detail: "settings", disabled: !connected, run: pairDevice },
     ] : []),
-    { id: "surface-audit", label: "Read the audit log", section: "Navigate", keywords: ["audit log", "history", "receipts"], icon: HistoryIcon, detail: "on this machine", run: () => setSurface("audit") },
+    { id: "surface-audit", label: "Read the audit log", section: "Navigate", keywords: ["audit log", "history", "receipts"], icon: HistoryIcon, tone: "online", detail: "on this machine", run: () => setSurface("audit") },
+    { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, tone: "handoff", restoreFocus: false, run: openProject },
+    { id: "new-session", label: "New session", section: "Session", keywords: ["create", "agent"], icon: MessageSquarePlusIcon, tone: "handoff", disabled: !connected || !hasProject, restoreFocus: false, opensStart: true, run: newSession },
+    ...(activeWorkspacePath && openInEditor ? [
+      { id: "open-in-editor", label: desktopExternalActionLabel(externalEditor ?? "system"), section: "Session" as const, keywords: ["worktree", "file", "external"], icon: ExternalLinkIcon, tone: "handoff" as const, run: openInEditor },
+    ] : []),
+    ...(activeWorkspacePath && copyWorktreePath ? [
+      { id: "copy-worktree-path", label: "Copy worktree path", section: "Session" as const, keywords: ["clipboard", "folder"], icon: ClipboardIcon, tone: "handoff" as const, run: copyWorktreePath },
+    ] : []),
+    { id: "pause-all", label: "Pause everything", section: "Session", keywords: ["pause", "turn boundary"], icon: CircleStopIcon, tone: "waiting", disabled: !connected || emergencyStopPending, run: pauseAll },
+    { id: "emergency-stop", label: "Emergency stop", section: "Session", keywords: ["kill", "stop", "emergency"], icon: CircleStopIcon, tone: "offline", disabled: !connected || emergencyStopPending, run: emergencyStop },
+    { id: "surface-workspace", label: "Agent workspace", section: "Navigate", keywords: ["chat", "thread"], icon: PanelTopIcon, tone: "online", run: () => setSurface("workspace") },
+    { id: "surface-providers", label: "Provider settings", section: "Navigate", keywords: ["models", "credentials"], icon: SettingsIcon, tone: "online", run: () => setSurface("providers") },
+    { id: "surface-skills", label: "Skills", section: "Navigate", keywords: ["capabilities", "agents"], icon: SparklesIcon, tone: "online", run: () => setSurface("skills") },
     ...(openCheckpoints ? [
-      { id: "open-checkpoints", label: "Checkpoints", section: "Navigate" as const, keywords: ["restore", "rewind", "worktree", "history"], icon: RotateCcwIcon, run: openCheckpoints },
+      { id: "open-checkpoints", label: "Checkpoints", section: "Navigate" as const, keywords: ["restore", "rewind", "worktree", "history"], icon: RotateCcwIcon, tone: "handoff" as const, run: openCheckpoints },
     ] : []),
-    ...(connected ? [] : [{ id: "reconnect", label: "Reconnect daemon", section: "Connection" as const, keywords: ["retry", "machine"], icon: RefreshCwIcon, run: reconnect }]),
+    ...(connected ? [] : [{ id: "reconnect", label: "Reconnect daemon", section: "Connection" as const, keywords: ["retry", "machine"], icon: RefreshCwIcon, tone: "handoff" as const, run: reconnect }]),
     // The launcher opens the objects the workspace already holds: a session, a
     // paired machine, a discovered skill. Nothing here fetches anything.
     ...(activateSession ? (sessions ?? []).map((session): WorkspaceCommand => ({
