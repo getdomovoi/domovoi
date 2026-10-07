@@ -34,10 +34,10 @@ export function terminalBufferOutput(
   for (let y = 0; y < buffer.length; y += 1) {
     const line = buffer.getLine(y)
     if (!line) continue
-    // A row the next row continues keeps its trailing blanks: they sit in the
-    // middle of the line. Only the end of a whole line is trimmed.
-    const continued = buffer.getLine(y + 1)?.isWrapped ?? false
-    const text = line.translateToString(!continued)
+    // Trimming drops only cells nothing was written to. A space the shell
+    // printed is content and stays, so a wrap after blanks keeps them, and
+    // the padding xterm adds before a wide character that did not fit does not.
+    const text = line.translateToString(true)
     if (line.isWrapped && lines.length > 0) lines[lines.length - 1] += text
     else lines.push(text)
   }

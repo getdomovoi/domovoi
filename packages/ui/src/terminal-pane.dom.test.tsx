@@ -675,6 +675,27 @@ describe("Attach this output to the composer", () => {
     expect("content" in attachment ? attachment.content : "").toContain("LAST LINE")
   })
 
+  // Read from a real xterm at width 5: blanks the shell printed before a wrap
+  // stay in the line, and the padding xterm adds before a wide character that
+  // did not fit on the row does not.
+  it("keeps printed blanks across a wrap and drops wrap padding", async () => {
+    const user = userEvent.setup()
+    const composer = createComposerInbox()
+    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
+    composer.open(sessionId, receive)
+    const target = watcher()
+    render(<TerminalPane connected readOnly composer={composer} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.resolve(watchResult({ cols: 5, rows: 24, buffer: "abc  def\r\nabcd中\r\n" }))
+    })
+
+    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+
+    await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1))
+    const [attachment] = receive.mock.calls[0]!
+    expect("content" in attachment ? attachment.content : "").toBe("abc  def\nabcd中")
+  })
+
   it("is not offered when no composer is open for this session", async () => {
     const composer = createComposerInbox()
     const other = vi.fn(() => "attached" as const)
