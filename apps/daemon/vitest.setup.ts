@@ -1,11 +1,10 @@
 import assert from "node:assert/strict"
 import { mkdtempSync } from "node:fs"
+import { rm } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { isAbsolute, join, relative, sep } from "node:path"
 
 import { afterAll, afterEach, beforeEach } from "vitest"
-
-import { removeScratchDirectory } from "./src/test-scratch.js"
 
 const inheritedHome = homedir()
 const inheritedProfile = process.env.DOMOVOI_PROFILE_DIR
@@ -36,4 +35,6 @@ beforeEach(assertIsolatedProfile)
 afterEach(assertIsolatedProfile)
 // Registered before test-file hooks, so Vitest's reverse afterAll order lets
 // file-owned daemons and child processes stop before their home is removed.
-afterAll(() => removeScratchDirectory(home))
+// Do not import project helpers here: setup imports are cached before a test
+// file can mock their dependencies. Node retries handles held during cleanup.
+afterAll(() => rm(home, { recursive: true, force: true, maxRetries: 25, retryDelay: 20 }))
