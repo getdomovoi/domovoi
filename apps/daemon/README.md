@@ -1118,7 +1118,8 @@ An unverified Windows registration returns 0 unless supervision failed. Invalid 
 errors return 1 with usage or the error message on stderr.
 
 `daemonWorkerEntry()` synchronously names the packaged `dist/index.js` beside the command module.
-The service registers this Domovoi worker entry, never the calling binary.
+The service registers this Domovoi worker entry, or the worker entry in the runtime copy made
+under the profile when the command runs from an app, never the calling binary.
 `nodeDaemonCommandDependencies()` asynchronously builds the Node dependencies, including that
 worker entry. `ownVersion()` synchronously reads and validates the package version.
 
