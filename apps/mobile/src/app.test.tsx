@@ -684,14 +684,27 @@ describe("App", () => {
     // The app dials again at once when it comes to the foreground, which is
     // how these tests reconnect rather than waiting out the backoff.
     const foreground = new Set<(state: AppStateStatus) => void>()
+    // The preset's AppState.addEventListener is already a mock, which
+    // restoreAllMocks would leave with this implementation, so the one it
+    // had is put back by hand.
+    let restoreForeground: (() => void) | undefined
     beforeEach(() => {
       foreground.clear()
-      jest.spyOn(AppState, "addEventListener").mockImplementation((_type, listener) => {
+      const spy = jest.spyOn(AppState, "addEventListener")
+      const before = spy.getMockImplementation()
+      spy.mockImplementation((_type, listener) => {
         foreground.add(listener as (state: AppStateStatus) => void)
         return { remove: () => { foreground.delete(listener as (state: AppStateStatus) => void) } } as ReturnType<typeof AppState.addEventListener>
       })
+      restoreForeground = () => {
+        if (before) spy.mockImplementation(before)
+        else spy.mockRestore()
+      }
     })
-    afterEach(() => { jest.restoreAllMocks() })
+    afterEach(() => {
+      restoreForeground?.()
+      restoreForeground = undefined
+    })
 
     async function comeBack(old: FakeSocket) {
       await act(async () => { old.close() })
