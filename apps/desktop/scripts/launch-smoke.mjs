@@ -16,7 +16,7 @@ import {
   runSmokeProcess,
   successMarker,
 } from "./desktop-smoke.mjs"
-import { liveProfileChanges, liveProfileFailure, liveProfileSnapshot } from "./launch-smoke-live-profile.mjs"
+import { liveProfileSnapshot, liveProfileVerdict } from "./launch-smoke-live-profile.mjs"
 
 const description = "desktop launch smoke"
 const timeoutMs = launchSmokeTimeoutMs({ platform: process.platform, env: process.env })
@@ -49,11 +49,19 @@ try {
   if (result) reportSmokeOutput(result)
   throw error
 } finally {
-  await rm(profileRoot, { force: true, recursive: true })
-  const changed = liveProfileChanges(liveProfile, await liveProfileSnapshot())
-  // A failure already on its way out keeps its own error; this one is added.
-  if (changed.length > 0) {
-    if (failed) console.error(liveProfileFailure(changed))
-    else throw new Error(liveProfileFailure(changed))
-  }
+  // Taken before the cleanup, so a cleanup failure cannot skip it. It never
+  // throws. A failure already on its way out keeps its own error, and the
+  // others are printed beside it.
+  const touched = await liveProfileVerdict(liveProfile)
+  let cleanup
+  try {
+    await rm(profileRoot, { force: true, recursive: true })
+  } catch (error) { cleanup = error }
+  if (failed) {
+    if (touched) console.error(touched)
+    if (cleanup) console.error("Desktop launch smoke could not remove its profile", cleanup)
+  } else if (touched) {
+    if (cleanup) console.error("Desktop launch smoke could not remove its profile", cleanup)
+    throw new Error(touched)
+  } else if (cleanup) throw cleanup
 }

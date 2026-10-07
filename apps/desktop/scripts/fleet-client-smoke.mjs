@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import electron from "electron"
 import { launchSmokeCommand, launchSmokeElectronArgs, launchSmokeEnvironment } from "./launch-smoke-args.mjs"
 import { executableOnPath, observeSmokeDebugging, smokeDiagnosticLog } from "./desktop-smoke.mjs"
-import { liveProfileChanges, liveProfileFailure, liveProfileSnapshot } from "./launch-smoke-live-profile.mjs"
+import { liveProfileSnapshot, liveProfileVerdict } from "./launch-smoke-live-profile.mjs"
 
 const liveProfile = await liveProfileSnapshot()
 const desktopRoot = fileURLToPath(new URL("../", import.meta.url))
@@ -253,13 +253,17 @@ try {
     ])
   } finally { socket?.terminate(); debugging?.dispose() }
   const failure = retired.find(result => result.status === "rejected")
+  // Checked once the children are retired and before the rest of the cleanup
+  // can fail. It never throws. An error already on its way out keeps its
+  // place, and this one is printed beside it.
+  const touched = await liveProfileVerdict(liveProfile)
+  if (touched && (failed || failure)) console.error(touched)
   if (failure) throw failure.reason
-  await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
-  // Checked once both children are gone. A failure already on its way out
-  // keeps its own error; this one is added.
-  const changed = liveProfileChanges(liveProfile, await liveProfileSnapshot())
-  if (changed.length > 0) {
-    if (failed) console.error(liveProfileFailure(changed))
-    else throw new Error(liveProfileFailure(changed))
+  try {
+    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+  } catch (error) {
+    if (touched && !failed) console.error(touched)
+    throw error
   }
+  if (touched && !failed) throw new Error(touched)
 }

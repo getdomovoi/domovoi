@@ -45,10 +45,16 @@ ignores it, so `test:package` does not use it. The login service itself is not p
 smokes' proof.
 
 Each of those runners also snapshots the real profile before it starts and compares after its
-children exit: whether `~/.domovoi` exists, and the mode, inode, size, modification and change
-time of the lease and its SQLite `-journal`, `-wal` and `-shm` files. A difference fails the
-run and names the paths. The check only reads; a missing profile is never created. It does not
-watch the rest of the profile, which a Domovoi running on the same machine writes in normal use.
+children exit: whether `~/.domovoi` exists and its mode, and the mode, inode, size,
+modification and change time of the lease and its SQLite `-journal`, `-wal` and `-shm` files.
+A difference fails the run and names the paths; a profile that cannot be read afterwards fails
+it too. The check only reads; a missing profile is never created. Its own tests claim the
+daemon's real lease in a scratch home and require the check to see it: on an account with no
+profile everywhere, and on macOS and Linux also a second claim of an existing lease, through
+the change time its chmod moves. On Windows a second claim leaves nothing the check can see.
+It does not compare the directory's times or the rest of the profile, which a Domovoi running
+on the same account writes in normal use. A Domovoi on this account that takes the service
+lease during the run, for example a status read from its Settings, fails the check as well.
 
 The native machine keychain is not isolated by HOME on every host. Fresh-profile startup may
 read its index through the normal factory. This smoke does not enroll a machine, write or
