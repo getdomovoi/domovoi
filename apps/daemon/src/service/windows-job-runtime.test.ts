@@ -8,6 +8,7 @@ import { createServiceConfiguration, parseServiceConfiguration, serializeService
 import { readSupervisorStopRequest, writeSupervisorStopRequest, writeWindowsSupervisorRecord, windowsSupervisorRecordPath, type WindowsSupervisorRecord } from "./supervisor-record.js"
 import { readWindowsSupervisorStatus, runWindowsSupervisor, stopWindowsSupervisor } from "./windows-job-supervisor.js"
 import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, queryWindowsProcesses } from "./windows-job.js"
+import { nodeServiceEffects } from "./install.js"
 import { claimExclusiveFileLease } from "../file-lease.js"
 
 vi.mock("./windows-job.js", () => ({ queryWindowsJob: vi.fn(), queryWindowsProcess: vi.fn(), queryWindowsProcesses: vi.fn(), windowsProcessAlive: vi.fn(() => false), launchWindowsJob: vi.fn() }))
@@ -49,7 +50,7 @@ it("observes boot, loop and daemon identities in one helper call for status", ()
   writeWindowsSupervisorRecord(f.home, f.record)
   vi.mocked(queryWindowsProcesses).mockReturnValue({ bootId: f.record.loop.bootId, identities: [f.record.loop, child] })
   expect(readWindowsSupervisorStatus(f.home)).toMatchObject({ running: true })
-  expect(queryWindowsProcesses).toHaveBeenCalledExactlyOnceWith([f.record.loop.pid, child.pid])
+  expect(queryWindowsProcesses).toHaveBeenCalledExactlyOnceWith([f.record.loop.pid, child.pid], undefined)
   expect(queryWindowsProcess).not.toHaveBeenCalled()
 })
 
@@ -233,7 +234,7 @@ it("accepts Q9 name-absence proof and preserves its weaker completion claim", as
     expect(status?.detail).toContain("completion not observed")
     const stopped = await stopWindowsSupervisor(f.path, deadline)
     expect(stopped.attempts[0]).toMatchObject({ stage: "closed", empty: null, exitCode: null, closure: { jobAbsent: true, daemonDead: true } })
-    expect(queryWindowsJob).toHaveBeenCalledWith(f.record.attempts[0]!.job, 124)
+    expect(queryWindowsJob).toHaveBeenCalledWith(f.record.attempts[0]!.job, 124, deadline)
   } finally { deadline.clear() }
 })
 
@@ -275,4 +276,34 @@ it("allows a new supervisor through the startup gate after Q9 proof", async () =
     expect(await runWindowsSupervisor(f.path, { executable: "unused", args: [] })).toMatchObject({ state: "failed" })
     expect(launchWindowsJob).toHaveBeenCalledOnce()
   } finally { vi.unstubAllGlobals() }
+})
+
+it("shares the status deadline across process and job observations through node effects", async () => {
+  const f = preparedFailure(), deadline = OperationDeadline.start(2000)
+  try {
+    vi.stubGlobal("process", Object.create(process, { platform: { value: "win32" } }))
+    await nodeServiceEffects({ userHomeDirectory: f.home }).supervisorStatus!(f.home, deadline)
+    expect(queryWindowsProcesses).toHaveBeenCalledExactlyOnceWith([123, 124], deadline)
+    expect(queryWindowsJob).toHaveBeenCalledExactlyOnceWith(f.record.attempts[0]!.job, 124, deadline)
+  } finally { deadline.clear(); vi.unstubAllGlobals() }
+})
+
+it("shares the stop deadline across boot and job observations", async () => {
+  const f = preparedFailure(), deadline = OperationDeadline.start(2000)
+  try {
+    await stopWindowsSupervisor(f.path, deadline)
+    expect(queryWindowsProcess).toHaveBeenCalledExactlyOnceWith(process.pid, deadline)
+    expect(queryWindowsJob).toHaveBeenCalledExactlyOnceWith(f.record.attempts[0]!.job, 124, deadline)
+  } finally { deadline.clear() }
+})
+
+it("uses the stop deadline for a requester with no prior launch record", async () => {
+  const f = fixture(), deadline = OperationDeadline.start(2000)
+  rmSync(windowsSupervisorRecordPath(f.home))
+  vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: f.record.loop.bootId, identity: f.record.loop })
+  try {
+    await stopWindowsSupervisor(f.path, deadline, { confirmNoLaunch: async () => true })
+    expect(queryWindowsProcess).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(queryWindowsProcess).mock.calls.every((call) => call[1] === deadline)).toBe(true)
+  } finally { deadline.clear() }
 })

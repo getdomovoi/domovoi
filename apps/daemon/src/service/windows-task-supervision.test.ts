@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import { OperationDeadline } from "../operation-deadline.js"
 import { createServiceConfiguration } from "./configuration.js"
-import { installService, removeService, runServiceCommand, servicePlan, type ServiceEffects } from "./install.js"
+import { installService, removeService, runServiceCommand, servicePlan, serviceStatus, type ServiceEffects } from "./install.js"
 import { windowsTreeUnknown } from "./windows-job-supervisor.js"
 
 beforeEach(() => vi.stubEnv("SystemRoot", "C:\\Windows"))
@@ -205,5 +206,19 @@ it.each(["remove", "install"] as const)("refuses %s without launch history when 
     expect(f.effects.remove).not.toHaveBeenCalled()
     expect(f.events).not.toContain("stop-task")
     expect(f.events).not.toContain("delete-task")
+  }
+})
+
+it.each(["status", "install", "remove"] as const)("passes the original %s deadline to supervisor observation", async (operation) => {
+  const f = fixture()
+  if (operation === "remove") { f.task.exists = false; f.effects.readConfiguration = () => undefined }
+  if (operation === "status") await serviceStatus(target, f.effects)
+  else if (operation === "install") await installService(target, f.effects)
+  else await removeService(target, f.effects)
+  const deadline = vi.mocked(f.effects.capture).mock.calls[0]![2]
+  expect(deadline).toBeInstanceOf(OperationDeadline)
+  expect(f.effects.supervisorStatus).toHaveBeenCalledExactlyOnceWith(home, deadline)
+  if (operation === "install" || operation === "remove") {
+    for (const call of vi.mocked(f.effects.stopSupervisor!).mock.calls) expect(call[1]).toBe(deadline)
   }
 })

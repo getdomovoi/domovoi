@@ -13,3 +13,5 @@ Keep Windows retirement active and hold the startup lease until Task Scheduler c
 Preserve Task Scheduler removal for recognized legacy Windows tasks and migrate them to job supervision on install or update. Scheduler retirement does not prove every legacy descendant dead; profile changes still require the free profile lease.
 
 Retire and stop an existing supervised Windows registration before reinstall writes new configuration, including when its last supervisor stopped or exhausted its retries.
+
+Bound Windows process and job observations by the remaining service-operation deadline, reject expired observations, and retain the 20-second per-query ceiling.

@@ -83,7 +83,7 @@ export type ServiceEffects = {
   capture: (command: string, args: string[], deadline: OperationDeadline) => Promise<CapturedRun>
   exists: (path: string, deadline: OperationDeadline) => Promise<boolean>
   remove: (path: string, deadline: OperationDeadline) => Promise<void>
-  supervisorStatus?: (home: string) => Promise<ServiceStatus | undefined>
+  supervisorStatus?: (home: string, deadline?: OperationDeadline) => Promise<ServiceStatus | undefined>
 }
 
 export type ServiceStatus = {
@@ -731,7 +731,7 @@ async function installWithDeadline(
       if (await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline) !== "stopped") throw new Error("Legacy Windows registration disappeared before migration")
     } else {
       if (owner === "supervised" && !effects.supervisorStatus) throw new Error("Windows supervisor status is unavailable")
-      const status = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home)))
+      const status = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home), deadline))
       if (status?.treeUnconfirmed) throw new Error(windowsTreeUnknown)
       if (status?.supervising || status?.running) throw new Error("The Windows supervisor is still active; stop and remove it before installing again")
       // Stopped/exhausted history does not disable its logon registration.
@@ -1243,7 +1243,7 @@ async function removeWithDeadline(
   const windowsOwner = plan.kind === "task" ? await windowsTaskOwner(home, effects, deadline) : undefined
   if (windowsOwner === "other") throw new WindowsTaskNotDomovoiError(displayName)
   if (windowsOwner === "missing" && !effects.readConfiguration?.(home, "win32")) {
-    const evidence = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(home))
+    const evidence = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(home, deadline))
     if (evidence?.treeUnconfirmed || evidence?.supervising || evidence?.running) throw new Error(evidence.detail)
   }
   // Decided 2026-09-17 (SHIP-PLAN S1.1): read before anything changes. Only a
@@ -1375,7 +1375,7 @@ async function statusWithDeadline(
   deadline: OperationDeadline,
 ): Promise<ServiceStatus> {
   if (target.platform === "linux") {
-    const supervisor = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home)))
+    const supervisor = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home), deadline))
     if (supervisor !== undefined) return supervisor
     const path = unitPath(target.home)
     const installed = await withinServiceDeadline(deadline, () => effects.exists(path, deadline))
@@ -1440,7 +1440,7 @@ async function statusWithDeadline(
       if (!installed) return { installed: false, running: false, detail: `no logon task named ${displayName}` }
       throw new Error("Windows supervisor status is unavailable")
     }
-    const supervisor = await withinServiceDeadline(deadline, () => effects.supervisorStatus!(home))
+    const supervisor = await withinServiceDeadline(deadline, () => effects.supervisorStatus!(home, deadline))
     if (!supervisor) return { installed, running: false, detail: installed ? "Windows supervisor has no recorded start; tree evidence unavailable" : `no logon task named ${displayName}`,
       ...(installed ? { supervisionFailure: "observation-failure" as const } : {}) }
     return { ...supervisor, installed, detail: `${installed ? "logon task registered" : "logon task missing"}; ${supervisor.detail}` }
@@ -1635,7 +1635,7 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
     },
     removalSnapshot: readServiceRemovalSnapshot,
     writeRemovalReceipt: writeLocalOwnerRemovalReceipt,
-    supervisorStatus: async (home) => process.platform === "win32" ? readWindowsSupervisorStatus(home) : readGuestSupervisorStatus(home),
+    supervisorStatus: async (home, deadline) => process.platform === "win32" ? readWindowsSupervisorStatus(home, deadline) : readGuestSupervisorStatus(home),
     write: writeUnit,
     // A service file or update record is read only as a bounded private
     // regular file owned by this user, without following a link, as

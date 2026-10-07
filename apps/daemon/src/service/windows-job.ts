@@ -4,6 +4,7 @@ import type { Readable, Writable } from "node:stream"
 import { gzipSync } from "node:zlib"
 import { z } from "zod"
 
+import { OperationDeadlineExceededError, type OperationDeadline } from "../operation-deadline.js"
 import { windowsBootIdSchema, windowsProcessIdentitySchema, windowsJobNameSchema, type WindowsProcessIdentity } from "./supervisor-record.js"
 import { windowsPowerShellPath } from "./windows-task.js"
 import { windowsJobSource } from "./windows-job-source.js"
@@ -41,25 +42,36 @@ export function parseWindowsJobMessage(value: unknown, job: string): z.infer<typ
   return message
 }
 
+// execFileSync blocks timer delivery. Read the monotonic remaining budget at
+// each spawn and after it returns; zero would mean no timeout to Node.
+function queryTimeout(deadline?: OperationDeadline): number {
+  const timeout = Math.floor(Math.min(20_000, deadline?.remainingMs() ?? 20_000))
+  deadline?.throwIfExpired()
+  if (timeout < 1) throw new OperationDeadlineExceededError()
+  return timeout
+}
+
 // A failed/denied query is never evidence of a different boot or a dead PID.
-export function queryWindowsProcess(pid: number): { bootId: string; identity: WindowsProcessIdentity | null } {
-  const observation = queryWindowsProcesses([pid])
+export function queryWindowsProcess(pid: number, deadline?: OperationDeadline): { bootId: string; identity: WindowsProcessIdentity | null } {
+  const observation = queryWindowsProcesses([pid], deadline)
   return { bootId: observation.bootId, identity: observation.identities[0]! }
 }
-export function queryWindowsProcesses(pids: number[]): { bootId: string; identities: (WindowsProcessIdentity | null)[] } {
+export function queryWindowsProcesses(pids: number[], deadline?: OperationDeadline): { bootId: string; identities: (WindowsProcessIdentity | null)[] } {
   z.array(windowsProcessIdentitySchema.shape.pid).min(1).max(8).parse(pids)
   const command = windowsJobCommand()
   const output = execFileSync(command.command, command.args, { input: JSON.stringify({ mode: "inspect", pids }) + "\n",
-    encoding: "utf8", timeout: 20_000, maxBuffer: 8192, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
+    encoding: "utf8", timeout: queryTimeout(deadline), maxBuffer: 8192, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
+  deadline?.throwIfExpired()
   return z.object({ bootId: windowsBootIdSchema, identities: z.array(windowsProcessIdentitySchema.nullable()).length(pids.length) }).strict()
     .refine((value) => value.identities.every((identity, i) => !identity || (identity.bootId === value.bootId && identity.pid === pids[i])))
     .parse(JSON.parse(output))
 }
-export function queryWindowsJob(job: string, pid: number): { bootId: string; jobExists: boolean; identity: WindowsProcessIdentity | null } {
+export function queryWindowsJob(job: string, pid: number, deadline?: OperationDeadline): { bootId: string; jobExists: boolean; identity: WindowsProcessIdentity | null } {
   windowsJobNameSchema.parse(job); windowsProcessIdentitySchema.shape.pid.parse(pid)
   const command = windowsJobCommand()
   const output = execFileSync(command.command, command.args, { input: JSON.stringify({ mode: "inspect-job", job, pid }) + "\n",
-    encoding: "utf8", timeout: 20_000, maxBuffer: 8192, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
+    encoding: "utf8", timeout: queryTimeout(deadline), maxBuffer: 8192, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
+  deadline?.throwIfExpired()
   return z.object({ bootId: windowsBootIdSchema, jobExists: z.boolean(), identity: windowsProcessIdentitySchema.nullable() }).strict()
     .refine((value) => !value.identity || (value.identity.bootId === value.bootId && value.identity.pid === pid)).parse(JSON.parse(output))
 }

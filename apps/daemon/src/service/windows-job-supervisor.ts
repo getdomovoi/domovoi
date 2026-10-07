@@ -28,12 +28,12 @@ export function assertWindowsTreeProof(record: WindowsSupervisorRecord, bootId: 
 // Q9 A, 2026-10-06: this proof establishes that kill-on-close started, not
 // that all descendants have completed termination. The daemon's profile lease
 // still excludes another owner. Global names remain observable across logons.
-function recoverWindowsJobClosure(record: WindowsSupervisorRecord, bootId: string): WindowsSupervisorRecord {
+function recoverWindowsJobClosure(record: WindowsSupervisorRecord, bootId: string, deadline?: OperationDeadline): WindowsSupervisorRecord {
   if (record.loop.bootId !== bootId) return record
   const recovered = structuredClone(record)
   for (const attempt of recovered.attempts) {
     if (attempt.empty || attempt.closure || !attempt.killOnClose || !attempt.child) continue
-    const observed = queryWindowsJob(attempt.job, attempt.child.pid)
+    const observed = queryWindowsJob(attempt.job, attempt.child.pid, deadline)
     if (observed.bootId !== bootId) throw new Error("Windows boot changed during job observation; retry")
     const daemonAlive = observed.identity?.start === attempt.child.start
     if (observed.jobExists || daemonAlive) continue
@@ -214,17 +214,18 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
   }
 }
 
-export function readWindowsSupervisorStatus(home: string): ServiceStatus | undefined {
+export function readWindowsSupervisorStatus(home: string, deadline?: OperationDeadline): ServiceStatus | undefined {
+  deadline?.throwIfExpired()
   let config: ServiceConfiguration | undefined
   try { config = configurationAt(join(home, ".domovoi", "service.json")) }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
   const record = config ? boundRecord(config) : readWindowsSupervisorRecord(home)
   if (!record) return undefined
   const child = record.attempts.at(-1)?.child
-  const observed = queryWindowsProcesses([record.loop.pid, ...(child ? [child.pid] : [])])
+  const observed = queryWindowsProcesses([record.loop.pid, ...(child ? [child.pid] : [])], deadline)
   const loopAlive = record.loop.bootId === observed.bootId && observed.identities[0]?.start === record.loop.start
   const childAlive = !!child && child.bootId === observed.bootId && observed.identities[1]?.start === child.start
-  const status = windowsSupervisorStatus(!loopAlive || record.state === "failed" ? recoverWindowsJobClosure(record, observed.bootId) : record, observed.bootId, loopAlive, childAlive)
+  const status = windowsSupervisorStatus(!loopAlive || record.state === "failed" ? recoverWindowsJobClosure(record, observed.bootId, deadline) : record, observed.bootId, loopAlive, childAlive)
   return config ? status : { ...status, supervisionFailure: "configuration-missing", detail: `service configuration missing; ${status.detail}` }
 }
 
@@ -246,7 +247,7 @@ export async function stopWindowsSupervisor(path: string, deadline: OperationDea
   }
   let requester = initial?.loop
   if (!requester) {
-    requester = queryWindowsProcess(process.pid).identity ?? undefined
+    requester = queryWindowsProcess(process.pid, deadline).identity ?? undefined
     if (!requester) throw new Error("Windows retirement requester identity is unavailable")
   }
   writeSupervisorStopRequest(home, { registrationId: config.registrationId!, supervisorId: initial?.supervisorId ?? randomUUID(), loop: requester })
@@ -266,8 +267,8 @@ export async function stopWindowsSupervisor(path: string, deadline: OperationDea
             configurationDigest: digest(config), loop: requester, startedAt: now, updatedAt: now,
             state: "stopped", attempts: [], crashes: 0, reason: "deliberate-stop" }
         }
-        const bootId = queryWindowsProcess(process.pid).bootId
-        current = recoverWindowsJobClosure(current, bootId)
+        const bootId = queryWindowsProcess(process.pid, deadline).bootId
+        current = recoverWindowsJobClosure(current, bootId, deadline)
         assertWindowsTreeProof(current, bootId)
         writeWindowsSupervisorRecord(home, current)
         deadline.throwIfExpired()
