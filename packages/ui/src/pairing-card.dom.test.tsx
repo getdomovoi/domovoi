@@ -57,14 +57,24 @@ function acceptedByPairCommand(line: string): boolean {
     && clientKindSchema.safeParse(args[2]).success && deviceRenameLabelSchema.safeParse(args[4]).success
 }
 
-it("prints a pair command the daemon accepts for every kind, issued for that kind", async () => {
+it("prints a pair command the daemon accepts for a phone and a tablet, issued for that kind", async () => {
   const { user } = card()
-  for (const [name, client] of [["Phone", "phone"], ["Tablet", "tablet"], ["Web browser", "web"]] as const) {
+  for (const [name, client] of [["Phone", "phone"], ["Tablet", "tablet"]] as const) {
     await user.click(screen.getByRole("button", { name }))
     const line = screen.getByText(/^domovoid pair /u).textContent ?? ""
     expect(acceptedByPairCommand(line), line).toBe(true)
     expect(line.split(" ")[3]).toBe(client)
   }
+})
+
+// `domovoid pair --client web` prints a QR and a `domovoi-pair:` payload, and
+// a browser's connect page takes the bare word code alone, so no command is
+// the same code for a browser.
+it("names no command for a web browser, whose connect page takes only the bare code", async () => {
+  const { user } = card()
+  await user.click(screen.getByRole("button", { name: "Web browser" }))
+  expect(screen.queryByText(/domovoid pair/u)).toBeNull()
+  expect(screen.queryByText("The same code as")).toBeNull()
 })
 
 it("shows the daemon's code, its address and a countdown, and copies what the device pastes", async () => {
@@ -97,10 +107,9 @@ it("replaces a code on Show another and says the old one is dead, then expires",
   expect(screen.getByRole("button", { name: "Show another" })).toBeTruthy()
 })
 
-it("draws the browser's certificate line and the web flag", async () => {
+it("draws the browser's certificate line and asks for a web code", async () => {
   const { onIssueCode, user } = card()
   await user.click(screen.getByRole("button", { name: "Web browser" }))
-  expect(screen.getByText("domovoid pair --client web --label Browser")).toBeTruthy()
   await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
   expect(onIssueCode).toHaveBeenCalledWith("web")
   expect(await screen.findByText("A certificate warning means the address is not this machine's full tailnet name, or its certificate lapsed. Do not click through.")).toBeTruthy()
