@@ -11,6 +11,7 @@ const taskStateScript = "[Console]::Out.WriteLine('domovoi-task:' + [int]$task.S
 export type WindowsTaskRemovalPlan = {
   kind: "task"
   name: string
+  disable?: ServiceCommand
   stop: ServiceCommand
   inspect: ServiceCommand
   remove: ServiceCommand
@@ -100,6 +101,9 @@ export function windowsTaskRemovalPlan(name: string): WindowsTaskRemovalPlan {
   const executable = windowsPowerShellPath()
   return {
     kind: "task", name,
+    disable: taskCommand(executable, name, `
+$task.Enabled = $false
+${taskStateScript}`),
     // Disabling first also prevents queued/logon starts between stop and delete.
     // Stop can race normal exit; only SCHED_E_TASK_NOT_RUNNING is benign, and
     // even that must be followed by the same stopped-state proof.
@@ -147,7 +151,29 @@ export async function stopWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pic
     state = await taskResult(plan.inspect, effects, deadline)
   }
   if (state !== "1") throw new Error(`Task Scheduler did not confirm a disabled, stopped task (state ${state})`)
+  if (!await windowsTaskDisabledAndIdle(plan.name, effects, deadline)) throw new Error("Task Scheduler did not confirm zero instances of the disabled task")
   return "stopped"
+}
+
+// Leave the helper alive while it terminates and observes its job. Scheduler
+// stop alone can destroy the only handle that could publish that proof.
+export async function disableWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<void> {
+  if (!plan.disable) throw new Error("Windows task disable step is unavailable")
+  const state = await taskResult(plan.disable, effects, deadline)
+  if (!["missing", "1", "2", "3", "4"].includes(state)) throw new Error(`Task Scheduler could not disable the task (state ${state})`)
+}
+
+// A restart needs a disabled task with no queued or running instances. This
+// also supplies no-launch evidence for a verified supervised action without
+// lease/history. Enumerate instances as well, never accept a missing task.
+export async function windowsTaskDisabledAndIdle(name: string, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<boolean> {
+  const command = taskCommand(windowsPowerShellPath(), name, `
+if (-not $task.Enabled -and [int]$task.State -eq 1 -and $task.GetInstances(0).Count -eq 0) {
+  [Console]::Out.WriteLine('domovoi-task:1')
+} else {
+  [Console]::Out.WriteLine('domovoi-task:0')
+}`)
+  return await taskResult(command, effects, deadline) === "1"
 }
 
 // The program and arguments, whether the task is enabled, and its state.
@@ -179,7 +205,7 @@ $action = $task.Definition.Actions.Item(1)
   return action.data
 }
 
-export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<"removed" | "already-missing"> {
+export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline, confirmNoInstances = false): Promise<"removed" | "already-missing"> {
   try {
     let state = await taskResult(plan.stop, effects, deadline)
     // Absence before any stop attempt is idempotent. Once an instance may have
@@ -190,6 +216,7 @@ export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: P
       state = await taskResult(plan.inspect, effects, deadline)
     }
     if (state !== "1") throw new Error(`Task Scheduler did not confirm a disabled, stopped task (state ${state})`)
+    if (confirmNoInstances && !await windowsTaskDisabledAndIdle(plan.name, effects, deadline)) throw new Error("Task Scheduler did not confirm zero instances of the disabled task")
     if (await taskResult(plan.remove, effects, deadline) !== "deleted") {
       throw new Error("Task registration disappeared before removal could be confirmed")
     }

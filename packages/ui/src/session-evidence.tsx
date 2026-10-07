@@ -18,15 +18,6 @@ import type { ChangedFileEvidence, FileEvidenceAssociation, SessionEvidence } fr
 import { coverageLabel, revertPrompt, type RevertPrompt } from "./file-evidence-copy"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
-import {
-  AlertDialog,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "./components/ui/alert-dialog"
 import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
@@ -162,11 +153,67 @@ function fileStage(file: ChangedFileEvidence): string {
   return "unchanged"
 }
 
+type RevertAsk = {
+  pending: boolean
+  error: string
+  onConfirm: () => void
+  onCancel: () => void
+}
+
+function pastTense(verb: "Restore" | "Remove" | "Revert"): string {
+  return verb === "Restore" ? "Restored" : verb === "Remove" ? "Removed" : "Reverted"
+}
+
+// v2 asks inside the file row: the prompt, then the warning action and Keep
+// it, with the list still in view. Keep it is the safe answer, so it takes
+// focus, and Escape gives the same answer.
+function RevertFileAsk({ path, prompt, ask }: { path: string, prompt: RevertPrompt, ask: RevertAsk }) {
+  const keepRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => { keepRef.current?.focus() }, [])
+  const verb = prompt.available ? prompt.verb : "Revert"
+  return (
+    <div
+      role="group"
+      aria-label={`Confirm: ${verb.toLowerCase()} ${path}`}
+      className="flex flex-col gap-2 border-t bg-warn-background px-3 py-2.5"
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || ask.pending) return
+        event.stopPropagation()
+        ask.onCancel()
+      }}
+    >
+      <div className="flex flex-wrap items-center gap-2.5">
+        <p className="m-0 min-w-0 flex-1 basis-48 text-[11.5px] leading-normal text-warn-foreground">
+          {prompt.available ? prompt.confirmation : prompt.reason}
+          {" "}
+          Domovoi takes a recovery checkpoint before it changes the worktree, so this stays
+          restorable.
+        </p>
+        <Button variant="warning" size="sm" disabled={ask.pending || !prompt.available} onClick={ask.onConfirm}>
+          {ask.pending ? "Working" : prompt.available ? `${prompt.verb} this file` : "Unavailable"}
+        </Button>
+        <Button
+          ref={keepRef}
+          variant="outline"
+          size="sm"
+          className="border-warn-border text-warn-dim"
+          disabled={ask.pending}
+          onClick={ask.onCancel}
+        >
+          Keep it
+        </Button>
+      </div>
+      {ask.error ? <p role="alert" className="m-0 text-[11px] leading-normal text-destructive">{ask.error}</p> : null}
+    </div>
+  )
+}
+
 function FileEvidenceRow({
   file,
   association,
   onRevert,
   revertDisabled,
+  revertAsk,
   fileDiff,
   diffTruncated,
   open,
@@ -176,14 +223,28 @@ function FileEvidenceRow({
   association?: FileEvidenceAssociation | undefined
   onRevert?: (() => void) | undefined
   revertDisabled?: boolean
+  // Present while this row is asking whether to revert.
+  revertAsk?: RevertAsk | undefined
   fileDiff?: string | undefined
   diffTruncated?: boolean
   open?: boolean
   onToggle?: (() => void) | undefined
 }) {
   const prompt = revertPrompt(file.path, association?.revertTarget)
+  const asking = revertAsk !== undefined
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const wasAsking = useRef(false)
+  // A closed ask hands focus back to the control that opened it, so a
+  // keyboard user is not dropped at the top of the document.
+  // Only when focus went nowhere: an ask opened in another row has already
+  // taken it, and this row must not take it back.
+  useEffect(() => {
+    const focusLost = document.activeElement === null || document.activeElement === document.body
+    if (wasAsking.current && !asking && focusLost) triggerRef.current?.focus()
+    wasAsking.current = asking
+  }, [asking])
   return (
-    <div className="border-b last:border-b-0">
+    <div data-testid={`evidence-file-${file.path}`} className="border-b last:border-b-0">
     <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 px-3 py-2">
       <div className="min-w-0">
         <div className="flex min-w-0 items-center gap-2">
@@ -223,9 +284,10 @@ function FileEvidenceRow({
             </>
           )}
         </div>
-        {onRevert ? (
+        {onRevert && !asking ? (
           prompt.available ? (
             <Button
+              ref={triggerRef}
               variant="outline"
               size="xs"
               disabled={revertDisabled}
@@ -241,6 +303,7 @@ function FileEvidenceRow({
         ) : null}
       </div>
     </div>
+    {revertAsk ? <RevertFileAsk path={file.path} prompt={prompt} ask={revertAsk} /> : null}
     {open ? (
       fileDiff ? (
         <UnifiedDiff diff={fileDiff} label={`Diff for ${file.path}`} className="max-h-72 border-t py-2" />
@@ -255,52 +318,6 @@ function FileEvidenceRow({
       )
     ) : null}
     </div>
-  )
-}
-
-function RevertFileDialog({
-  path,
-  prompt,
-  pending,
-  error,
-  onCancel,
-  onConfirm,
-}: {
-  path: string
-  prompt: RevertPrompt
-  pending: boolean
-  error: string
-  onCancel: () => void
-  onConfirm: () => void
-}) {
-  return (
-    <AlertDialog open onOpenChange={(open) => { if (!open && !pending) onCancel() }}>
-      <AlertDialogContent>
-        <AlertDialogHeader>
-          <AlertDialogTitle>
-            {prompt.available && prompt.verb === "Remove"
-              ? "Remove this file?"
-              : prompt.available && prompt.verb === "Revert"
-                ? "Revert this file to the session base commit?"
-                : "Restore this file?"}
-          </AlertDialogTitle>
-          <AlertDialogDescription>
-            {prompt.available ? prompt.confirmation : prompt.reason}
-            {" "}
-            Domovoi takes a recovery checkpoint before it changes the worktree, so this stays
-            restorable.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        <p className="m-0 truncate font-machine text-[10px] text-strong" title={path}>{path}</p>
-        {error ? <p role="alert" className="m-0 text-sm text-destructive">{error}</p> : null}
-        <AlertDialogFooter>
-          <AlertDialogCancel disabled={pending}>Keep it</AlertDialogCancel>
-          <Button variant="destructive" disabled={pending || !prompt.available} onClick={onConfirm}>
-            {pending ? "Working" : prompt.available ? `${prompt.verb} this file` : "Unavailable"}
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
   )
 }
 
@@ -393,6 +410,9 @@ export function SessionEvidenceContent({
   const [revertPath, setRevertPath] = useState<string | null>(null)
   const [revertPending, setRevertPending] = useState(false)
   const [revertError, setRevertError] = useState("")
+  // What the last finished revert did. The file usually leaves the list once
+  // the refresh lands, so the row cannot carry the note the design draws.
+  const [revertDone, setRevertDone] = useState("")
   const counts = changedFileCounts(evidence?.workspace.files ?? [])
   const [openFiles, setOpenFiles] = useState<ReadonlySet<string>>(new Set())
   const fileDiffs = useMemo(
@@ -403,12 +423,16 @@ export function SessionEvidenceContent({
     if (!onRevertFile || revertPath === null) return
     setRevertPending(true)
     setRevertError("")
-    const target = associations.get(revertPath)?.revertTarget
+    setRevertDone("")
+    const path = revertPath
+    const target = associations.get(path)?.revertTarget
     const expected = target && target.kind !== "unavailable" ? target.baseCommit : undefined
-    void onRevertFile(revertPath, expected).then(
+    const prompt = revertPrompt(path, target)
+    void onRevertFile(path, expected).then(
       () => {
         setRevertPending(false)
         setRevertPath(null)
+        setRevertDone(`${pastTense(prompt.available ? prompt.verb : "Revert")} ${path}. The recovery checkpoint Domovoi took first is in the Checkpoints tab.`)
       },
       (cause: unknown) => {
         setRevertPending(false)
@@ -485,15 +509,28 @@ export function SessionEvidenceContent({
                   ) : null}
                 </div>
                 <Separator />
+                {revertDone ? (
+                  <p role="status" className="m-0 border-b px-3 py-2 text-[11px] leading-normal text-muted-foreground">{revertDone}</p>
+                ) : null}
                 {evidence.workspace.files.length ? evidence.workspace.files.map((file) => (
                   <FileEvidenceRow
                     key={file.path}
                     file={file}
                     {...(associations.get(file.path) ? { association: associations.get(file.path) } : {})}
                     {...(onRevertFile
-                      ? { onRevert: () => { setRevertError(""); setRevertPath(file.path) } }
+                      ? { onRevert: () => { setRevertError(""); setRevertDone(""); setRevertPath(file.path) } }
                       : {})}
                     revertDisabled={!connected || revertPending}
+                    {...(onRevertFile && revertPath === file.path
+                      ? {
+                          revertAsk: {
+                            pending: revertPending,
+                            error: revertError,
+                            onConfirm: confirmRevert,
+                            onCancel: () => { setRevertPath(null); setRevertError("") },
+                          },
+                        }
+                      : {})}
                     {...(fileDiffs.get(file.path) ? { fileDiff: fileDiffs.get(file.path) } : {})}
                     diffTruncated={evidence.workspace.diffTruncated}
                     open={openFiles.has(file.path)}
@@ -633,16 +670,6 @@ export function SessionEvidenceContent({
           ) : null}
         </div>
       </ScrollArea>
-      {onRevertFile && revertPath !== null ? (
-        <RevertFileDialog
-          path={revertPath}
-          prompt={revertPrompt(revertPath, associations.get(revertPath)?.revertTarget)}
-          pending={revertPending}
-          error={revertError}
-          onCancel={() => { setRevertPath(null); setRevertError("") }}
-          onConfirm={confirmRevert}
-        />
-      ) : null}
     </div>
   )
 }
@@ -720,8 +747,11 @@ export function SessionEvidencePanel({
   const visible: EvidenceState = state.sessionId === sessionId
     ? state
     : { loading: connected, error: "" }
+  // Keyed by session: an open revert ask names a path against one session's
+  // base commit, and another session can hold the same path.
   return (
     <SessionEvidenceContent
+      key={sessionId}
       connected={connected}
       {...(visible.evidence ? { evidence: visible.evidence } : {})}
       error={visible.error}

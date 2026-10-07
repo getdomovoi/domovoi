@@ -150,7 +150,34 @@ it("assigns a fresh registration on every install and invalidates an earlier rec
   const deadline = OperationDeadline.start(operationBudget)
   try {
     const home = await setup(deadline)
-    const effects = { ...withoutLoginctl(nodeServiceEffects({ userHomeDirectory: home })), run: vi.fn(async () => {}) }
+    const node = withoutLoginctl(nodeServiceEffects({ userHomeDirectory: home }))
+    // The fixture never starts a manager task. Model the registration that
+    // /create publishes, including the disabled, zero-instance proof on retry.
+    // Leaving reads real while mocking writes invents a missing registration.
+    let taskCommand: string | undefined
+    let taskEnabled = false
+    const effects: ReturnType<typeof nodeServiceEffects> = {
+      ...node,
+      run: vi.fn(async (_command, args) => {
+        if (process.platform === "win32" && args[0] === "/create") {
+          taskCommand = args[args.indexOf("/tr") + 1]
+          taskEnabled = true
+        }
+      }),
+      capture: async (command, args, operation) => {
+        if (process.platform !== "win32") return node.capture(command, args, operation)
+        if (taskCommand === undefined) return { code: 0, stdout: "domovoi-task:missing" }
+        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+        if (script.includes("domovoi-task-action:")) {
+          const parts = /^"([^"]+)" (.*)$/.exec(taskCommand)
+          if (!parts) throw new Error("Fixture received an invalid task command")
+          return { code: 0, stdout: "domovoi-task-action:" + JSON.stringify({ path: parts[1], arguments: parts[2], enabled: taskEnabled, state: taskEnabled ? 3 : 1 }) }
+        }
+        if (script.includes("$task.Enabled = $false")) taskEnabled = false
+        if (script.includes("$task.GetInstances(0).Count")) return { code: 0, stdout: `domovoi-task:${taskEnabled ? 0 : 1}` }
+        return { code: 0, stdout: `domovoi-task:${taskEnabled ? 3 : 1}` }
+      },
+    }
     const target = serviceTarget(home)
     await beforeDeadline(installService(target, effects), deadline)
     const first = JSON.parse(await readFile(serviceConfigurationPath(home, process.platform), "utf8")) as { registrationId?: string }
