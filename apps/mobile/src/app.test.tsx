@@ -680,7 +680,12 @@ describe("App", () => {
   // Phone v2 frame 04: the phone lists the open session's terminals, watches
   // each, reads live output, and stops watching when the person leaves.
   describe("terminals", () => {
-    const owner = { client: "desktop", clientId: "desktop-1", device: { id: `device-${"a".repeat(32)}`, label: "MacBook Pro" } }
+    // The clock runs as it does in life, and a test jumps it past a reconnect's
+    // backoff or a relist instead of waiting it out.
+    beforeEach(() => { jest.useFakeTimers({ advanceTimers: true }) })
+    afterEach(() => { jest.useRealTimers() })
+
+    const owner ={ client: "desktop", clientId: "desktop-1", device: { id: `device-${"a".repeat(32)}`, label: "MacBook Pro" } }
     const terminal = {
       terminalId: "terminal-1",
       sessionId: audit.id,
@@ -761,7 +766,7 @@ describe("App", () => {
       const { socket } = await openAudit()
       await watchOne(socket)
       await act(async () => { socket.close() })
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_100)) })
+      await act(async () => { jest.advanceTimersByTime(1_100) })
       const next = FakeSocket.made.at(-1)!
       await act(async () => {
         next.readyState = 1
@@ -780,22 +785,17 @@ describe("App", () => {
     // No notification says a terminal opened, so the open session's list is
     // read again while it is on screen, and only a new terminal is watched.
     it("lists again while the session is open and watches a terminal opened since", async () => {
-      jest.useFakeTimers({ advanceTimers: true })
-      try {
-        const { socket } = await openAudit()
-        await watchOne(socket)
-        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
-        await settle()
-        expect(socket.requests("terminal.list")).toHaveLength(2)
-        await act(async () => {
-          socket.answer("terminal.list", { terminals: [terminal, { ...terminal, terminalId: "terminal-2", cwd: "/Users/mira/dev/acme" }] })
-        })
-        await settle()
-        expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-2" }])
-        expect(screen.getByText("zsh · acme")).toBeOnTheScreen()
-      } finally {
-        jest.useRealTimers()
-      }
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
+      await settle()
+      expect(socket.requests("terminal.list")).toHaveLength(2)
+      await act(async () => {
+        socket.answer("terminal.list", { terminals: [terminal, { ...terminal, terminalId: "terminal-2", cwd: "/Users/mira/dev/acme" }] })
+      })
+      await settle()
+      expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-2" }])
+      expect(screen.getByText("zsh · acme")).toBeOnTheScreen()
     })
 
     // Until the new connection's list answers, nothing held is the daemon's
@@ -804,7 +804,7 @@ describe("App", () => {
       const { socket } = await openAudit()
       await watchOne(socket)
       await act(async () => { socket.close() })
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_100)) })
+      await act(async () => { jest.advanceTimersByTime(1_100) })
       const next = FakeSocket.made.at(-1)!
       await act(async () => {
         next.readyState = 1
@@ -858,7 +858,7 @@ describe("App", () => {
       expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
 
       // The first retry waits a second.
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_100)) })
+      await act(async () => { jest.advanceTimersByTime(1_100) })
       const next = FakeSocket.made.at(-1)!
       expect(next).not.toBe(socket)
       await act(async () => {
@@ -878,7 +878,7 @@ describe("App", () => {
       expect(screen.getByRole("button", { name: "Back to the thread" })).toBeOnTheScreen()
 
       await act(async () => { socket.close() })
-      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1_100)) })
+      await act(async () => { jest.advanceTimersByTime(1_100) })
       const next = FakeSocket.made.at(-1)!
       await act(async () => {
         next.readyState = 1
