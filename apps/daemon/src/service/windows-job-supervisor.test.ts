@@ -1,9 +1,15 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { assertWindowsStartup, assertWindowsTreeProof, superviseWindows, windowsSupervisorStatus } from "./windows-job-supervisor.js"
+import { assertWindowsStartup, assertWindowsTreeProof, stopWindowsSupervisor, superviseWindows, windowsSupervisorStatus } from "./windows-job-supervisor.js"
 import { supervisorBackoffs, type WindowsSupervisorRecord } from "./supervisor-record.js"
 import type { WindowsJob } from "./windows-job.js"
+import * as supervisorRecords from "./supervisor-record.js"
+import * as localOwnerRecord from "../local-owner-record.js"
+import { OperationDeadline, OperationDeadlineExceededError } from "../operation-deadline.js"
+import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -201,4 +207,35 @@ it.each(["ENOSPC", undefined])("fails closed without retrying a publication erro
   expect(f.resume).not.toHaveBeenCalled()
   expect(publications).toBe(1)
   expect(f.effects.pause).not.toHaveBeenCalled()
+})
+
+
+it("preserves the deadline error when a stop-request sharing retry expires", async () => {
+  const f = fixture([0]), record = await superviseWindows(input(), f.effects)
+  const home = join(tmpdir(), `domovoi-stop-deadline-${randomUUID()}`)
+  const configuration = { ...createServiceConfiguration({}, { homeDirectory: home, workingDirectory: home, platform: process.platform }),
+    registrationId: record.registrationId }
+  const serialized = serializeServiceConfiguration(configuration)
+  record.configurationDigest = createHash("sha256").update(serializeServiceConfiguration(parseServiceConfiguration(serialized))).digest("hex")
+  vi.spyOn(localOwnerRecord, "readLocalProfileFile").mockReturnValue(serialized)
+  vi.spyOn(supervisorRecords, "readWindowsSupervisorRecord").mockReturnValue(record)
+  const write = vi.spyOn(supervisorRecords, "writeSupervisorStopRequest").mockImplementation(() => {
+    throw Object.assign(new Error("stop request held open"), { code: "EPERM" })
+  })
+  let expire = () => {}
+  const deadline = OperationDeadline.start(60, { scheduler: {
+    setTimeout: (callback) => { expire = callback; return 0 }, clearTimeout: () => {},
+  } })
+  try {
+    const result = stopWindowsSupervisor(join(home, ".domovoi", "service.json"), deadline).catch((error: unknown) => error)
+    // Enter the pending publication pause, then fire the deadline before any
+    // timer can settle. This does not depend on wall-clock timer ordering.
+    await Promise.resolve()
+    expect(write).toHaveBeenCalledTimes(1)
+    vi.spyOn(performance, "now").mockReturnValue(60)
+    expire()
+    expect(await result).toBeInstanceOf(OperationDeadlineExceededError)
+    expect(await result).toBe(deadline.signal.reason)
+    expect(write).toHaveBeenCalledTimes(1)
+  } finally { deadline.clear() }
 })

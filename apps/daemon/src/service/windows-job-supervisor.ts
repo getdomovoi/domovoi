@@ -310,7 +310,7 @@ export async function stopWindowsSupervisor(path: string, deadline: OperationDea
     requester = queryWindowsProcess(process.pid, deadline).identity ?? undefined
     if (!requester) throw new Error("Windows retirement requester identity is unavailable")
   }
-  const pause = (ms: number) => delay(ms, undefined, { signal: deadline.signal })
+  const pause = (ms: number) => withinServiceDeadline(deadline, () => delay(ms))
   const request = { registrationId: config.registrationId!, supervisorId: initial?.supervisorId ?? randomUUID(), loop: requester }
   await publishWindowsRecord(() => { writeSupervisorStopRequest(home, request) }, pause, deadline)
   for (;;) {
