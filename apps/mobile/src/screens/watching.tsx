@@ -24,6 +24,7 @@ import {
   terminalStatus,
   terminalTitle,
   watchedSummary,
+  type TerminalRecord,
   type TerminalRow,
   type TerminalTone,
   type TerminalWatch,
@@ -118,7 +119,15 @@ function WatchingView({ title, watch, connected, notice, onBack, onRetry }: Watc
   const summary = watchedSummary(watch)
   const status = terminalStatus(summary, connected)
   const record = watch.state === "watching" ? watch.record : undefined
-  const rows = useMemo(() => record ? terminalRows(record, connected) : [], [connected, record])
+  // A reader scrolled away from the end reads a record that holds still: at
+  // the bound each new line drops the oldest, which would move the text under
+  // a viewport that keeps its offset. What lands meanwhile is counted, and the
+  // view catches up at the end, by hand or by the jump.
+  const [heldRecord, setHeldRecord] = useState<TerminalRecord | undefined>(undefined)
+  const latestRecord = useRef(record)
+  latestRecord.current = record
+  const shown = record && heldRecord ? heldRecord : record
+  const rows = useMemo(() => shown ? terminalRows(shown, connected) : [], [connected, shown])
   const closed = summary.state === "closed"
 
   const output = useRef<PageScrollerHandle>(null)
@@ -143,12 +152,20 @@ function WatchingView({ title, watch, connected, notice, onBack, onRetry }: Watc
   }, [received, watchedAt])
 
   const jump = () => {
+    setHeldRecord(undefined)
     setFollow(followJump)
     output.current?.scrollToEnd()
   }
   const toggle = () => {
-    if (!follow.following) output.current?.scrollToEnd()
+    if (!follow.following) {
+      setHeldRecord(undefined)
+      output.current?.scrollToEnd()
+    }
     setFollow(followToggle)
+  }
+  const scrolled = (atEnd: boolean) => {
+    setHeldRecord(atEnd ? undefined : (held) => held ?? latestRecord.current)
+    setFollow((current) => followAfterScroll(current, atEnd))
   }
   const jumpOffered = showJump(follow, closed)
 
@@ -190,7 +207,7 @@ function WatchingView({ title, watch, connected, notice, onBack, onRetry }: Watc
           testID="terminal-output"
           contentContainerClassName="px-3.5 py-3"
           followEnd={follow.following}
-          onAtEndChange={(atEnd) => setFollow((current) => followAfterScroll(current, atEnd))}
+          onAtEndChange={scrolled}
         >
           {watch.state === "reading" ? <Text variant="meta">Reading the terminal.</Text> : null}
           {watch.state === "failed" ? (

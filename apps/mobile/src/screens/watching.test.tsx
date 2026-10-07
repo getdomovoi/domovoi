@@ -195,6 +195,28 @@ describe("WatchingScreen", () => {
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull()
   })
 
+  // At the bound each new line drops the oldest. A reader scrolled up keeps
+  // reading what they were reading; the view catches up when they come back
+  // to the end.
+  it("holds what a reader scrolled up is reading while old output is dropped", async () => {
+    // Whole, distinct lines up to the bound: "row 000000" is the oldest.
+    const count = Math.floor(maximumTerminalReplayCharacters / 11)
+    const buffer = Array.from({ length: count }, (_, index) => `row ${String(index).padStart(6, "0")}\n`).join("")
+    const oldest = /\brow 000000\b/
+    const full = watching({ buffer })
+    const { redraw } = await draw(full)
+    expect(screen.getByText(oldest)).toBeOnTheScreen()
+    await scrollUp()
+    await redraw(more(full, "row new\n".repeat(40)))
+    expect(screen.getByText(oldest)).toBeOnTheScreen()
+    expect(screen.queryByText(/\brow new\b/)).toBeNull()
+    expect(screen.getByRole("button", { name: "Jump to latest, 40 new" })).toBeOnTheScreen()
+
+    await fireEvent.press(screen.getByRole("button", { name: "Jump to latest, 40 new" }))
+    expect(screen.queryByText(oldest)).toBeNull()
+    expect(screen.getByText(/\brow new\b/)).toBeOnTheScreen()
+  })
+
   it("leaves a reader who scrolled up where they are, and offers the jump back", async () => {
     const first = watching({ buffer: "line\n".repeat(80) })
     const { redraw } = await draw(first)
