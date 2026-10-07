@@ -107,6 +107,35 @@ it("offers Fork and Revert on a checkpoint, and only Reset on the session start"
   expect(onRestoreCheckpoint).toHaveBeenCalledWith("ckpt-7f24")
 })
 
+// Q341 A: revert stays worktree-only, so the note says what the daemon does.
+// A person's allow at a gate takes a checkpoint first (J34); a rule's allow
+// takes none, and the thread keeps its turns after a revert.
+it("names the checkpoint before each allowed request and a worktree-only revert", async () => {
+  render(panel(vi.fn(async () => ({ sessionId: "session-billing", hasMore: false, items: [] }))))
+  await settle()
+  const intro = screen.getByText(/takes one first/)
+  expect(intro.textContent).toContain("Every request you allow at a gate takes one first.")
+  expect(intro.textContent).toContain("A rule that allows a request takes none.")
+  expect(intro.textContent).toContain("The thread keeps its turns.")
+  expect(intro.textContent).not.toMatch(/rewinds|thread together/)
+  expect(screen.getByText(/The next one comes when you allow a request at a gate/)).toBeTruthy()
+})
+
+it("says why an approved-command checkpoint exists in its row", async () => {
+  render(panel(vi.fn(async () => page({ items: [{
+    id: "thread:ckpt-a11d",
+    sourceId: "ckpt-a11d",
+    sessionId: "session-billing",
+    createdAt: "2026-09-08T14:07:00.000Z",
+    category: "checkpoints",
+    reason: "before-approved-command",
+    label: "a11d0000 · before an approved command",
+    commit: "d".repeat(40),
+  }] }))))
+  await settle()
+  expect(screen.getByTestId("checkpoint-meta").textContent).toBe("14:07 · before an approved command")
+})
+
 it("says why there is nothing, and says when history could not be read", async () => {
   render(panel(vi.fn(async () => ({ sessionId: "session-billing", hasMore: false, items: [] }))))
   await settle()

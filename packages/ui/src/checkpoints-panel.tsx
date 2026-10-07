@@ -15,13 +15,14 @@ type CheckpointEntry = Extract<SessionHistoryEntry, { category: "checkpoints" }>
 
 // The v2 design gives checkpoints a pane of their own beside History. Its
 // intro promises a checkpoint before every approved write and a revert that
-// rewinds the thread with the worktree; the daemon does neither yet. It takes
-// checkpoints at the events in reasonCopy below and on request, and
-// checkpoint.restore resets the worktree after recording a recovery checkpoint
-// while the thread keeps its turns. The copy states what runs; the design's
-// promise is a recorded handoff gap. The rows are the checkpoints category of
-// session history, which the daemon pages oldest first, shown newest first.
-export const checkpointsIntro = "Domovoi takes one at session start, before a restore, a file revert, a provider change or an archive, and when you ask. Reverting resets the worktree to that commit after recording a recovery checkpoint. The thread keeps its turns."
+// rewinds the thread with the worktree. Q341 A keeps revert worktree-only, so
+// the copy states what runs: a person's allow at a gate takes a checkpoint
+// first (J34), a rule's allow takes none, the daemon also takes one at the
+// events in reasonCopy below and on request, and checkpoint.restore resets the
+// worktree after recording a recovery checkpoint while the thread keeps its
+// turns. The rows are the checkpoints category of session history, which the
+// daemon pages oldest first, shown newest first.
+export const checkpointsIntro = "Every request you allow at a gate takes one first. A rule that allows a request takes none. Domovoi also takes one at session start, before a restore, a file revert, a provider change or an archive, and when you ask. Reverting resets the worktree to that commit after recording a recovery checkpoint. The thread keeps its turns."
 
 // The reason names why the checkpoint exists; the design draws it beside the
 // time. Legacy rows carry no reason and say so with nothing rather than a guess.
@@ -248,7 +249,7 @@ export function CheckpointsPanel({
           {!loading && !error && page && entries.length === 0 ? (
             <Empty className="min-h-48 border-0"><EmptyHeader><EmptyMedia variant="icon"><GitCommitHorizontalIcon /></EmptyMedia>
               <EmptyTitle>No checkpoints yet</EmptyTitle>
-              <EmptyDescription>The session start is recorded when the worktree is created. The next one comes at a restore, a handoff, an archive, or when you ask.</EmptyDescription>
+              <EmptyDescription>The session start is recorded when the worktree is created. The next one comes when you allow a request at a gate, at a restore, a handoff, an archive, or when you ask.</EmptyDescription>
             </EmptyHeader></Empty>
           ) : null}
           {error ? <Alert variant="destructive" className="my-1"><CircleStopIcon /><AlertTitle>Checkpoints unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}

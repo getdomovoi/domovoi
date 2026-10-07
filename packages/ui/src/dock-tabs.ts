@@ -62,7 +62,8 @@ export const dockTabDefinitions: readonly DockTabDefinition[] = [
   {
     id: "checkpoints",
     label: "Checkpoints",
-    note: "Every approved write is revertible. Reverting rewinds the worktree and the thread together.",
+    // Q341 A: revert is worktree-only, so the tip does not promise a rewound thread.
+    note: "Every request you allow at a gate takes one first. Reverting resets the worktree; the thread keeps its turns.",
     Icon: HistoryIcon,
   },
   {
