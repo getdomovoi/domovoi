@@ -11,6 +11,14 @@ export function daemonWorkerEntry(moduleUrl = import.meta.url): string {
   return fileURLToPath(new URL("./index.js", moduleUrl))
 }
 
+// The version in this package's manifest, beside dist/.
+export function ownVersion(): string {
+  const manifest = z.object({ version: z.string() }).parse(JSON.parse(
+    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+  ))
+  return manifest.version
+}
+
 export function nodeDaemonCommandDependencies(): ServiceCommandDependencies {
   // The service runs as the user who asked for it, using this process's identity.
   const { uid, username } = userInfo()
@@ -26,14 +34,7 @@ export function nodeDaemonCommandDependencies(): ServiceCommandDependencies {
     workingDirectory: process.cwd(),
     // Q408 A: names the runtime copy an install from an app's runtime
     // makes. Unread, only that install refuses.
-    ...(() => {
-      try {
-        const manifest = z.object({ version: z.string() }).parse(JSON.parse(
-          readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-        ))
-        return { version: manifest.version }
-      } catch { return {} }
-    })(),
+    ...(() => { try { return { version: ownVersion() } } catch { return {} } })(),
     stdout: (text) => process.stdout.write(text),
     stderr: (text) => process.stderr.write(text),
   }

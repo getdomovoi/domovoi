@@ -39,8 +39,8 @@ function command(overrides: Partial<ServiceCommandDependencies> = {}): ServiceCo
 
 describe("daemon command", () => {
   it("resolves the worker beside the distributed command module", () => {
-    const moduleUrl = new URL("../dist/daemon-command.js", import.meta.url)
-    expect(daemonWorkerEntry(moduleUrl.href)).toBe(fileURLToPath(new URL("./index.js", moduleUrl)))
+    expect(daemonWorkerEntry("file:///C:/opt/pkg/dist/daemon-command.js"))
+      .toBe(fileURLToPath("file:///C:/opt/pkg/dist/index.js"))
   })
 
   it("builds dependencies for the worker instead of the invoking binary", () => {

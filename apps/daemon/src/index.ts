@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs"
 import { homedir, hostname } from "node:os"
 
 import { createProductionDaemon } from "./public.js"
@@ -30,7 +29,7 @@ import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
 import { runServiceCommand } from "./service/install.js"
-import { nodeDaemonCommandDependencies } from "./daemon-command.js"
+import { nodeDaemonCommandDependencies, ownVersion } from "./daemon-command.js"
 import { runGuestSupervisor, stopGuestSupervisor } from "./service/supervisor-command.js"
 import { runWindowsSupervisor, stopWindowsSupervisor } from "./service/windows-job-supervisor.js"
 import { runSkillCommand } from "./skill-command.js"
@@ -128,14 +127,6 @@ Environment:
   DOMOVOI_RELAY_CREDENTIAL_FILE   Absolute relay credential file instead of the keychain
   DOMOVOI_WINDOWS_POWERSHELL      Guest path to powershell.exe for WSL service install
 `
-
-// The version in this package's manifest, beside dist/.
-function ownVersion(): string {
-  const manifest = JSON.parse(
-    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-  ) as { version: string }
-  return manifest.version
-}
 
 async function main() {
   const args = process.argv.slice(2)
