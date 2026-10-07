@@ -96,19 +96,22 @@ SmartScreen shows for an unsigned installer. Record what each OS showed and what
    update itself." under the buttons.
 3. **Install the login service.** **Changes the profile and the OS.** Choose "Install the
    service" in setup, or later in Settings (the gear in the title bar, "Settings") under "Daemon
-   on this machine", choose "Install". Expect "Domovoi is running as a login service. It starts
-   when you log in. It answers on loopback only." (Windows says "sign in"). In Settings the row
-   "Keep Domovoi running after I quit" reads "Running", and the card lists what it wrote under
-   "WHAT IT WROTE". Check the OS manager:
+   on this machine", choose "Install". Setup ends with "Domovoi is running as a login service. It
+   starts when you log in. It answers on loopback only." (Windows says "sign in"); Settings says
+   "Installed. Quitting this app now leaves the daemon and its sessions running." Either way the
+   Settings row "Keep Domovoi running after I quit" then reads "Running", and the card lists what
+   it wrote under "WHAT IT WROTE". Check the OS manager:
    - macOS: `launchctl print gui/$(id -u)/sh.domovoi.domovoid` shows `state = running`.
    - Linux: `systemctl --user status domovoid.service` is active, and
      `loginctl show-user $(id -u) --property=Linger --value` prints `yes`. The install turns on
      lingering when it was off and says so ([Linux lingering](daemon-services.md#linux-lingering)).
    - Windows: Task Scheduler lists the task "Domovoi daemon"
      (`schtasks /query /tn "Domovoi daemon"`).
-   - macOS and Linux, optional: Settings, "Terminal commands", "Link the commands" puts `domovoid`
-     and `domovoi` in `~/.local/bin`, after which `domovoid service status` answers. Domovoi links
-     no commands on Windows.
+   - Optional, macOS with the app in Applications and Linux from the `.deb`: Settings, "Terminal
+     commands", "Link the commands" puts `domovoid` and `domovoi` in `~/.local/bin`, after which
+     `domovoid service status` answers. Domovoi links no commands on Windows, from an AppImage,
+     or from an app still running inside the disk image; there, use the entry point from
+     [clean-machine setup, Step 2](clean-machine-setup.md#step-2-fix-the-command-you-will-keep-using).
 4. **The service keeps running.** Quit the app (macOS: Domovoi, Quit Domovoi, or ⌘Q; Windows and
    Linux: the window's Close button). The manager check from step 3 still shows the daemon
    running. Open the app again: Settings shows "Running" and "Quitting this app leaves the daemon
@@ -118,8 +121,9 @@ SmartScreen shows for an unsigned installer. Record what each OS showed and what
    Get new versions from the release page." "Release page" opens
    `https://github.com/getdomovoi/domovoi/releases` in the browser. Record the
    `domovoid <version> · <commit>` label.
-6. **Update by hand.** **Changes the OS.** Build a package from a later commit and install it over
-   the first, as in step 1. Open the app; it attaches to the running service. Settings shows "The
+6. **Update by hand.** **Changes the OS. "Update the service" also changes the profile's runtime
+   copy and service configuration.** Build a package from a later commit and install it over the
+   first, as in step 1. Open the app; it attaches to the running service. Settings shows "The
    login service runs Domovoi X. This app is Y." and "Update the service" only when the service's
    version differs from the app's. Both are `0.0.1` at this commit, so two builds at the same
    version show neither; record which you saw. If the button shows, choose it and record the
@@ -172,8 +176,8 @@ need.
 3. **Review tool activity.** Each turn shows a pill: "Working" while it runs, then "N tool calls".
    Choose it to list the calls, and "Output" on a call to read its output. When files changed,
    "Review all N changed files" opens the "Changes" tab of the sheet with the diff. The sheet's
-   tabs are icons; their names show on hover. The "History" tab filters by "Tools". The machine's audit log is in Settings, "Elsewhere", "Audit
-   log".
+   tabs are icons; their names show on hover. The "History" tab filters by "Tools". The machine's
+   audit log is in Settings, "Elsewhere", "Audit log".
 4. **Annotate a plan.** Set the mode chip to "Plan" and ask for a plan for a small change. Open
    the sheet ("Open the sheet" in the composer) and its "Plan preview" tab. A plan arrives either
    from the provider's own plan mechanism or, in Plan mode when the provider sent none, from the
@@ -260,7 +264,8 @@ of that row: record the provider's own text from the thread.
 
 Never sign out of, or edit, the provider sign-in you use for real work. The methods below act on a
 copy or on a local stand-in for the provider's server. They were not run while writing this
-walk; record what actually happened.
+walk; record what actually happened. **This section changes the profile**: sessions, failed turns
+and the removal in step 1 below are written to it.
 
 Providers inherit the environment of the daemon that starts them. The login service reads its
 saved configuration, not your shell, so these variables reach a provider only through a daemon
@@ -394,8 +399,8 @@ Step 5 also changes the OS.
 on the build under test. Nothing is pushed to a phone yet: gates reach it only while Domovoi is
 open on it, and the phone says so.
 
-1. **Install the phone app.** There is no store or hosted build. Build a development build from
-   this repository on a computer with Xcode or the Android SDK, as
+1. **Install the phone app.** **Changes the phone.** There is no store or hosted build. Build a
+   development build from this repository on a computer with Xcode or the Android SDK, as
    [the mobile README](../apps/mobile/README.md) describes (`npx expo run:ios --device` or
    `npx expo run:android`). A real iPhone needs Developer Mode and a signing team.
 2. **Let the phone reach the daemon.** **Changes the profile.** In the desktop app, Settings, turn
@@ -415,8 +420,9 @@ open on it, and the phone says so.
    terminal with a note that it is watched on the desktop, and the pairing grant says "Terminal
    output is not on a phone yet." Record this row as not built unless the build under test
    includes a phone terminal view, and then record what it showed.
-5. **Answer a gate.** Start a turn on the desktop that raises a gate (section 2, step 5). On the
-   phone, Sessions lists it under "NEEDS YOU"; open it to "Waiting on you" and choose "Allow once".
+5. **Answer a gate.** **Changes the profile**: each answer is an approval receipt. Start a turn
+   on the desktop that raises a gate (section 2, step 5). On the phone, Sessions lists it under
+   "NEEDS YOU"; open it to "Waiting on you" and choose "Allow once".
    The desktop receipt reads "decided from" followed by the phone's name and client. Raise a
    second gate and choose "Deny" on the phone, then "Deny without explanation", or type a reason
    and choose "Send denial". Check the desktop receipt and that the agent was told it was denied.
