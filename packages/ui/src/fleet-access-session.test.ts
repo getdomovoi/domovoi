@@ -1,7 +1,7 @@
 import { demoWorkspace } from "@getdomovoi/protocol"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { FleetAccessSession } from "./fleet-access-session.js"
-import { installFakeWebSocket, completeHandshake, respond, sentRequests } from "./test-support/fake-websocket"
+import { installFakeWebSocket, completeHandshake, respond, sentRequests, workspaceSnapshot } from "./test-support/fake-websocket"
 
 const machineId = demoWorkspace.machine.id
 const deviceId = `device-${"a".repeat(32)}`
@@ -25,7 +25,7 @@ it("keeps controls unadmitted until identity and a client receipt both succeed",
   expect(access.access(machineId)).toBeUndefined()
   respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
   await pending
-  expect(access.snapshot()[machineId]).toEqual({ state: "admitted", deviceId })
+  expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", deviceId })
   expect(access.access(machineId)?.credential).toBe("a".repeat(43))
   expect(JSON.stringify(access.snapshot())).not.toContain("a".repeat(43))
   access.remove(machineId)
@@ -97,4 +97,53 @@ it("asks an admitted machine directly for a session search and shows nothing wit
   const result = await searching
   expect(result.matches).toHaveLength(1)
   expect(socket.readyState).not.toBe(1)
+})
+
+async function admit(snapshot = workspaceSnapshot()): Promise<void> {
+  const pending = access.authorize(machineId, "a".repeat(43), new AbortController().signal)
+  await vi.advanceTimersByTimeAsync(0)
+  completeHandshake(sockets.socket(0), snapshot)
+  await vi.advanceTimersByTimeAsync(0)
+  respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
+  await pending
+}
+
+it("keeps what the admitted machine reported about its agents and sessions, and nothing else", async () => {
+  vi.setSystemTime(new Date("2026-10-06T14:03:00.000Z"))
+  await admit(workspaceSnapshot({
+    machine: { ...demoWorkspace.machine, providers: [{ id: "codex", command: "codex", status: "ready", sessionCapable: true }] },
+  }))
+  const state = access.snapshot()[machineId]
+  expect(state).toMatchObject({ state: "admitted", deviceId, reading: { readAt: "2026-10-06T14:03:00.000Z" } })
+  const reading = state?.state === "admitted" ? state.reading : undefined
+  expect(reading?.providers.map((provider) => provider.id)).toEqual(["codex"])
+  expect(reading?.sessions.map((session) => [session.title, session.state])).toEqual(
+    demoWorkspace.sessions.map((session) => [session.title, session.state]))
+  expect(JSON.stringify(reading)).not.toContain("a".repeat(43))
+})
+
+it("reads an admitted machine again and keeps the last reading when it does not answer", async () => {
+  await expect(access.read(machineId, new AbortController().signal)).rejects.toMatchObject({ reason: "client-credential-required" })
+  expect(sockets.sockets).toHaveLength(0)
+  vi.setSystemTime(new Date("2026-10-06T14:03:00.000Z"))
+  await admit()
+  vi.setSystemTime(new Date("2026-10-06T14:05:00.000Z"))
+  const reading = access.read(machineId, new AbortController().signal)
+  await vi.advanceTimersByTimeAsync(0)
+  const socket = sockets.socket(1)
+  const [billing] = demoWorkspace.sessions
+  completeHandshake(socket, workspaceSnapshot({ sessions: [{ ...billing!, state: "failed" }] }))
+  await vi.advanceTimersByTimeAsync(0)
+  respond(socket, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
+  await reading
+  expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", reading: {
+    readAt: "2026-10-06T14:05:00.000Z", sessions: [{ id: billing!.id, title: billing!.title, state: "failed" }],
+  } })
+  expect(socket.readyState).not.toBe(1)
+
+  const silent = access.read(machineId, new AbortController().signal).catch((error: unknown) => error)
+  await vi.advanceTimersByTimeAsync(11_000)
+  expect(await silent).toBeInstanceOf(Error)
+  expect(access.access(machineId)).toBeDefined()
+  expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", reading: { readAt: "2026-10-06T14:05:00.000Z" } })
 })

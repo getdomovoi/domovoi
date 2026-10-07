@@ -219,7 +219,7 @@ it("offers the active session as a transfer intent on another machine", async ()
   const { user } = renderFleet({
     entries: entries(local, healthyStudio),
     onMoveSessionHere,
-    clientAccess: { [studio.id]: { state: "admitted", deviceId: `device-${"a".repeat(32)}` } },
+    clientAccess: { [studio.id]: { state: "admitted", deviceId: `device-${"a".repeat(32)}`, reading: { providers: [], sessions: [], readAt: "2026-08-31T12:00:00.000Z" } } },
   })
 
   await user.click(screen.getByRole("button", { name: "Move a session here on studio" }))
