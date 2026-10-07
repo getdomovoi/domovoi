@@ -1254,6 +1254,118 @@ describe("ClaudeAgentSdkAdapter", () => {
     }))
     await adapter.close()
   })
+
+  // Claude keeps a session's task list in its own config directory, at
+  // tasks/<session id>/<task id>.json, and a resumed session goes on updating
+  // it by id. Measured 2026-10-07 with Claude Code 2.1.292: a second adapter
+  // resuming the thread saw TaskUpdate succeed for ids 2 and 3 that only the
+  // first adapter had seen created.
+  it("reads a resumed session's task list from Claude before taking updates", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "domovoi-claude-tasks-"))
+    scratchDirectories.push(configDir)
+    const threadId = "6ff6db97-17eb-409b-9b49-a49ffd5c7488"
+    await mkdir(join(configDir, "tasks", threadId), { recursive: true })
+    const task = (id: string, subject: string, status: string) => writeFile(
+      join(configDir, "tasks", threadId, `${id}.json`),
+      JSON.stringify({ id, subject, description: `${subject}.`, status, blocks: [], blockedBy: [] }),
+    )
+    await task("1", "Inspect", "completed")
+    await task("2", "Implement", "pending")
+    await task("10", "Verify", "pending")
+    await writeFile(join(configDir, "tasks", threadId, ".lock"), "")
+    vi.stubEnv("CLAUDE_CONFIG_DIR", configDir)
+    try {
+      const { calls, factory } = factoryHarness()
+      const ids: ClaudeMessageId[] = [
+        "55555555-5555-4555-8555-555555555555",
+        "66666666-6666-4666-8666-666666666666",
+      ]
+      const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+      const event = vi.fn()
+      adapter.onEvent(event)
+      await adapter.resumeThread({ threadId, cwd: "/worktree", runtime: runtime("build") })
+      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go on", runtime: runtime("build") })
+      const query = calls[0]!.query
+      query.emit({
+        type: "assistant",
+        session_id: threadId,
+        message: { content: [{ type: "tool_use", id: "toolu_u", name: "TaskUpdate", input: { taskId: "2", status: "completed" } }] },
+      })
+      query.emit({
+        type: "user",
+        session_id: threadId,
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #2 status" }] },
+        tool_use_result: { success: true, taskId: "2", updatedFields: ["status"], statusChange: { from: "pending", to: "completed" } },
+      })
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
+        type: "plan-updated",
+        threadId,
+        turnId,
+        steps: [
+          { text: "Inspect", status: "completed" },
+          { text: "Implement", status: "completed" },
+          { text: "Verify", status: "pending" },
+        ],
+      }))
+      await adapter.close()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  // In Plan mode the plan is the proposal in Claude's reply, which the daemon
+  // reads when the turn ends unless a provider plan arrived during it. A task
+  // checklist Claude keeps while it researches must not stand in for that
+  // proposal, as Codex refuses update_plan in its own Plan mode. The list is
+  // still followed, so the next Build turn reports all of it.
+  it("reports no working plan from task tools in Plan mode, and the whole list once in Build", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "55555555-5555-4555-8555-555555555555",
+      "66666666-6666-4666-8666-666666666666",
+      "77777777-7777-4777-8777-777777777777",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const event = vi.fn()
+    adapter.onEvent(event)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("plan") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Plan the fix", runtime: runtime("plan") })
+    const query = calls[0]!.query
+    query.emit({
+      type: "assistant",
+      session_id: threadId,
+      message: { content: [{ type: "tool_use", id: "toolu_c", name: "TaskCreate", input: { subject: "Inspect", description: "Inspect." } }] },
+    })
+    query.emit({
+      type: "user",
+      session_id: threadId,
+      message: { content: [{ type: "tool_result", tool_use_id: "toolu_c", content: "Task #1 created successfully: Inspect" }] },
+      tool_use_result: { task: { id: "1", subject: "Inspect" } },
+    })
+    query.emit({ type: "result", subtype: "success", session_id: threadId, is_error: false })
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith(expect.objectContaining({ type: "turn-completed" })))
+    expect(event.mock.calls.map(([emitted]) => (emitted as AgentEvent).type)).not.toContain("plan-updated")
+
+    const buildTurnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Build it", runtime: runtime("build") })
+    query.emit({
+      type: "assistant",
+      session_id: threadId,
+      message: { content: [{ type: "tool_use", id: "toolu_u", name: "TaskUpdate", input: { taskId: "1", status: "in_progress" } }] },
+    })
+    query.emit({
+      type: "user",
+      session_id: threadId,
+      message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
+      tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "in_progress" } },
+    })
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
+      type: "plan-updated",
+      threadId,
+      turnId: buildTurnId,
+      steps: [{ text: "Inspect", status: "in-progress" }],
+    }))
+    await adapter.close()
+  })
 })
 
 describe("changing the mode on a live session", () => {

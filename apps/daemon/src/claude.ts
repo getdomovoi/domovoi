@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto"
-import { isAbsolute, resolve, sep } from "node:path"
+import { readdir, readFile } from "node:fs/promises"
+import { homedir } from "node:os"
+import { isAbsolute, join, resolve, sep } from "node:path"
 
 import {
   query,
@@ -571,7 +573,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     // A start that close overtook while it prepared starts no Claude.
     this.#refuseWhenClosing()
     const preflight = this.#preflight
-    const { instructions, repository } = await this.#prepared((async () => {
+    const env = { ...process.env, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }
+    const { instructions, repository, tasks } = await this.#prepared((async () => {
       if (preflight) await preflight()
       const instructions = await projectInstructions(cwd, "claude")
       // The worktree's verdict, read just before Claude starts: only a
@@ -581,6 +584,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       return {
         instructions,
         repository: verdict.state === "trusted" ? { digest: verdict.configDigest, ...claudeRepositoryLoad(verdict.documents) } : undefined,
+        tasks: resume ? await readClaudeTasks(threadId, env) : new Map<string, ClaudeTask>(),
       }
     })())
     const settings = repository && Object.keys(repository.settings).length > 0 ? repository.settings : undefined
@@ -596,7 +600,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       // Claude Code 2.1.292 offers its task tools (TaskCreate, TaskUpdate,
       // TaskList), and so a working plan, to a current model only with this
       // variable set. The SDK's env replaces the process environment.
-      env: { ...process.env, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" },
+      env,
       ...(instructions
         ? { systemPrompt: { type: "preset", preset: "claude_code", append: instructions } }
         : {}),
@@ -623,7 +627,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       query,
       runtime,
       tools: new Map(),
-      tasks: new Map(),
+      tasks,
       screenedReads: new Map(),
       turnMessageIds: new Set(),
       interruptedMessageIds: new Set(),
@@ -926,7 +930,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       const input = asRecord(block.input) ?? {}
       if (block.name === "TodoWrite") {
         const steps = claudeTodoSteps(input.todos)
-        if (steps) {
+        if (steps && session.runtime.permissionMode !== "plan") {
           this.#emit({
             type: "plan-updated",
             threadId: session.threadId,
@@ -981,7 +985,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       session.tools.delete(block.tool_use_id)
       const failed = block.is_error === true
       if (tracked.type === "task") {
-        if (!failed && updateClaudeTasks(session.tasks, tracked, rawToolResult)) {
+        // Plan mode keeps the checklist, but the final reply supplies its proposal.
+        if (!failed && updateClaudeTasks(session.tasks, tracked, rawToolResult) && session.runtime.permissionMode !== "plan") {
           this.#emit({
             type: "plan-updated",
             threadId: session.threadId,
@@ -1256,6 +1261,40 @@ async function claudeContextOccupancy(
 
 function isClaudeTaskStatus(value: unknown): value is ClaudeTask["status"] {
   return value === "pending" || value === "in_progress" || value === "completed"
+}
+
+async function readClaudeTasks(threadId: string, env: NodeJS.ProcessEnv): Promise<Map<string, ClaudeTask>> {
+  const tasks = new Map<string, ClaudeTask>()
+  // Claude Code 2.1.292 keeps a session's tasks in its own storage, at
+  // <config dir>/tasks/<list id>/<task id>.json, and takes an empty
+  // CLAUDE_CODE_TASK_LIST_ID as unset. Read only, and only on resume.
+  const listId = (env.CLAUDE_CODE_TASK_LIST_ID || threadId).replace(/[^a-zA-Z0-9_-]/g, "-")
+  const directory = join(env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "tasks", listId)
+  try {
+    const files = (await readdir(directory))
+      .filter((name) => name.endsWith(".json") && !name.startsWith("."))
+      .sort()
+      .slice(0, 1000)
+    for (const file of files) {
+      try {
+        const task = asRecord(JSON.parse(await readFile(join(directory, file), "utf8")))
+        if (task && typeof task.id === "string" && typeof task.subject === "string" && isClaudeTaskStatus(task.status)) {
+          tasks.set(task.id, { subject: task.subject, status: task.status })
+        }
+      } catch {
+        // A missing or incomplete task file must not prevent the session opening.
+      }
+    }
+  } catch {
+    return tasks
+  }
+  return new Map([...tasks].sort(([left], [right]) => {
+    if (/^-?\d+$/.test(left) && /^-?\d+$/.test(right)) {
+      const difference = BigInt(left) - BigInt(right)
+      if (difference !== 0n) return difference < 0n ? -1 : 1
+    }
+    return left.localeCompare(right)
+  }))
 }
 
 function updateClaudeTasks(tasks: Map<string, ClaudeTask>, tool: ClaudeTaskTool, rawResult: unknown): boolean {
