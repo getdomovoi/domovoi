@@ -25,10 +25,14 @@ type Kind = "phone" | "tablet" | "browser"
 
 // The browser's line depends on whether the daemon's owner set the web app
 // address, so it is chosen where the code is drawn.
-const kinds: Record<Kind, { label: string; noun: string; client: ClientKind; Icon: typeof SmartphoneIcon; how: string }> = {
-  phone: { label: "Phone", noun: "a phone", client: "phone", Icon: SmartphoneIcon, how: "Scan it with the Domovoi app, or paste the code." },
-  tablet: { label: "Tablet", noun: "a tablet", client: "tablet", Icon: TabletIcon, how: "Scan it with the Domovoi app, or paste the code." },
-  browser: { label: "Web browser", noun: "a browser", client: "web", Icon: GlobeIcon, how: "Open Domovoi in the browser on that device and type the code." },
+// `domovoid pair --client` refuses to run without `--label`, so the command
+// the card prints carries a one-word label (`deviceLabel`) that runs as
+// printed (Q336 A): a placeholder such as `<device label>` would fail in a
+// shell, where `<` is a redirection. A single word needs no quoting.
+const kinds: Record<Kind, { label: string; noun: string; client: ClientKind; deviceLabel: string; Icon: typeof SmartphoneIcon; how: string }> = {
+  phone: { label: "Phone", noun: "a phone", client: "phone", deviceLabel: "Phone", Icon: SmartphoneIcon, how: "Scan it with the Domovoi app, or paste the code." },
+  tablet: { label: "Tablet", noun: "a tablet", client: "tablet", deviceLabel: "Tablet", Icon: TabletIcon, how: "Scan it with the Domovoi app, or paste the code." },
+  browser: { label: "Web browser", noun: "a browser", client: "web", deviceLabel: "Browser", Icon: GlobeIcon, how: "Open Domovoi in the browser on that device and type the code." },
 }
 
 const browserAddressHow = "Open this address in the browser on that device, then type the code."
@@ -245,7 +249,7 @@ export function PairingCard({
               ) : (
                 <div className="flex flex-wrap items-baseline gap-2 text-[11px] text-muted-foreground">
                   <span>The same code as</span>
-                  <span className="font-machine text-foreground">{printedCommand(`domovoid pair --client ${kinds[kind].client}`, links)}</span>
+                  <span className="font-machine text-foreground">{printedCommand(`domovoid pair --client ${kinds[kind].client} --label ${kinds[kind].deviceLabel}`, links)}</span>
                 </div>
               )}
             </>
