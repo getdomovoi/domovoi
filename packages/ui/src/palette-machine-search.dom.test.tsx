@@ -202,6 +202,9 @@ it("shows a remote session's state and age as its meta", async () => {
   const search = vi.fn(async (machineId: string): Promise<SessionSearchResult> => machineId === machines[0]!.id
     ? { query: "billing", truncated: false, matches: [
         { session: { ...session("s-replay", "Replay failed billing events"), state: "active", activeTurnId: "turn-1" }, matchedIn: "title" },
+        // PR #745 review (P2): active is running with or without a turn id, as
+        // sessionTone reads this machine's own session rows.
+        { session: { ...session("s-live", "Billing live without a turn id"), state: "active" }, matchedIn: "title" },
         { session: { ...session("s-drain", "Find why the queue drains"), state: "failed", updatedAt: hourAgo }, matchedIn: "title" },
         // A turn stopped at a gate keeps its turn id; the row says it waits.
         { session: { ...session("s-gate", "Apply the billing migration"), state: "waiting", activeTurnId: "turn-2", updatedAt: new Date(Date.now() - 5 * 60_000).toISOString() }, matchedIn: "title" },
@@ -214,6 +217,7 @@ it("shows a remote session's state and age as its meta", async () => {
   expect(replay.querySelector("[data-status-dot]")).toBeTruthy()
   const drain = screen.getByRole("option", { name: /Find why the queue drains/u })
   expect(drain.querySelector("[data-palette-meta]")?.textContent).toBe("failed 1h ago")
+  expect(screen.getByRole("option", { name: /Billing live without a turn id/u }).querySelector("[data-palette-meta]")?.textContent).toBe("running")
   const gate = screen.getByRole("option", { name: /Apply the billing migration/u })
   expect(gate.querySelector("[data-palette-meta]")?.textContent).toBe("waiting 5m ago")
 })
@@ -300,6 +304,30 @@ it("holds Add it back while a picked row switches the window", async () => {
   await user.click(addBack)
   expect(screen.getByText("wsl-ubuntu-24 is left out, so its sessions stay unsearched until you add it back.")).toBeTruthy()
   expect(screen.getByRole("group", { name: "wsl-ubuntu-24" }).textContent).toContain("not searched, left out")
+})
+
+// PR #745 review (P2): every other action waits too, or its result would be
+// replaced by the session the switch opens when it lands.
+it("runs no other command while a picked row switches the window", async () => {
+  const hits = { query: "billing", truncated: false, matches: [{ session: session("s-replay", "Replay failed billing events"), matchedIn: "title" as const }] }
+  const search = vi.fn(async (machineId: string): Promise<SessionSearchResult> => machineId === machines[0]!.id ? hits : none("billing"))
+  const run = vi.fn()
+  const openElsewhere = vi.fn()
+  const { user, onOpenChange, switching } = palette(search, vi.fn(() => true), [
+    { id: "machine-billing", label: "billing-box", section: "Machines", keywords: [], kind: "MACHINE", openElsewhere, run },
+    { id: "surface-fleet", label: "Show all billing machines", section: "Navigate", keywords: [], run },
+  ])
+  await user.type(screen.getByRole("combobox"), "billing")
+  await user.click(await screen.findByText("Replay failed billing events"))
+  switching({ machineId: machines[0]!.id, sessionId: "s-replay" })
+  const fleet = screen.getByRole("option", { name: /Show all billing machines/u })
+  expect(fleet.getAttribute("aria-disabled")).toBe("true")
+  await user.click(fleet)
+  await user.click(screen.getByRole("option", { name: /billing-box/u }))
+  await user.keyboard("{Meta>}{Enter}{/Meta}")
+  expect(run).not.toHaveBeenCalled()
+  expect(openElsewhere).not.toHaveBeenCalled()
+  expect(onOpenChange).not.toHaveBeenCalled()
 })
 
 // The notice's button keeps Enter to itself, and only Enter: the palette's

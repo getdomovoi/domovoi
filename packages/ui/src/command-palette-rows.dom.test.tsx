@@ -78,6 +78,16 @@ it("puts the scope on the right of the query row", () => {
   expect(within(row as HTMLElement).getByText("sessions, machines, commands, skills")).toBeTruthy()
 })
 
+// PR #745 review (P1): on a narrow client the scope gives way to the query.
+// It truncates rather than holding its width, and the field keeps a floor.
+it("lets the scope give way to the query on a narrow window", () => {
+  palette()
+  const scope = screen.getByText("sessions, machines, commands, skills")
+  expect(scope.className.split(/\s+/u)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]))
+  expect(scope.className.split(/\s+/u)).not.toContain("shrink-0")
+  expect(screen.getByRole("combobox").className).toMatch(/(^|\s)min-w-\[/u)
+})
+
 it("names this machine's sessions apart while other machines are searched", async () => {
   const none = async (): Promise<SessionSearchResult> => ({ query: "billing", truncated: false, matches: [] })
   const user = palette({

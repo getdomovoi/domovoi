@@ -1,6 +1,4 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react"
-import { Command as CommandPrimitive } from "cmdk"
-import { SearchIcon } from "lucide-react"
 
 import { Button } from "./components/ui/button"
 import {
@@ -8,6 +6,7 @@ import {
   CommandDialog,
   CommandEmpty,
   CommandGroup,
+  CommandInput,
   CommandItem,
   CommandList,
 } from "./components/ui/command"
@@ -127,7 +126,9 @@ export function remoteSessionMeta(session: SessionSummary, now: number): { meani
       : session.state === "failed" ? ["offline", "failed"]
         : session.state === "ownership-conflict" ? ["offline", "ownership conflict"]
           : null
-  if (!stated && session.activeTurnId) return { meaning: "online", meta: "running" }
+  // Active is running with or without a turn id, as sessionTone reads this
+  // machine's own session rows in the same list.
+  if (!stated && (session.activeTurnId || session.state === "active")) return { meaning: "online", meta: "running" }
   const [meaning, note]: [StatusMeaning, string] = stated
     ?? (session.state === "transferred" ? ["idle", "moved to another machine"]
       : session.state === "transferring" ? ["waiting", "transferring"]
@@ -301,6 +302,10 @@ export function CommandPalette({
   // was picked among, until it closes.
   const [picked, setPicked] = useState<{ machineId: string; sessionId: string; search: MachineSearch } | null>(null)
   const sawSwitch = useRef(false)
+  // While the window switches, every other action waits: whatever it opened
+  // would be replaced by the session the switch opens when it lands. Escape
+  // still closes the palette.
+  const switchingAway = picked !== null
   const searching = picked?.search ?? machineSearch
   const remote = useMachineSearch(searching, query, open && !choosing, picked !== null)
   const remoteMachines = searching?.machines ?? []
@@ -378,7 +383,7 @@ export function CommandPalette({
     <div key={key} data-palette-notice onKeyDown={(event) => { if (event.key === "Enter") event.stopPropagation() }} className="mx-0.5 mt-0.5 mb-1.5 flex items-center gap-2.5 rounded-[calc(var(--radius)-2px)] border bg-background px-3 py-[9px]">
       <Dot meaning={meaning} />
       <span className="min-w-0 flex-1 text-[12px] leading-normal text-strong">{text}</span>
-      <Button type="button" variant="outline" size="xs" className="shrink-0" disabled={picked !== null} onClick={onClick}>{action}</Button>
+      <Button type="button" variant="outline" size="xs" className="shrink-0" disabled={switchingAway} onClick={onClick}>{action}</Button>
     </div>
   )
 
@@ -413,7 +418,7 @@ export function CommandPalette({
           // Enter's job because this row cannot go elsewhere would be a worse
           // answer than doing nothing, and the footer already says which it is.
           event.preventDefault()
-          if (!elsewhere) return
+          if (!elsewhere || switchingAway) return
           if (canChooseMachine(elsewhere)) {
             // The launcher picks the machine. The preflight takes the decision.
             setChoosingId(elsewhere.id)
@@ -427,17 +432,19 @@ export function CommandPalette({
         }}
       >
         <div data-palette-query className="flex items-center gap-2.5 border-b px-4 py-3.5">
-          <SearchIcon aria-hidden strokeWidth={1.5} className="size-4 shrink-0 text-faint" />
-          <CommandPrimitive.Input
+          <CommandInput
+            variant="plain"
             autoFocus
             aria-label="Search commands"
             placeholder="Search commands"
             value={query}
             onValueChange={setQuery}
-            className="min-w-0 flex-1 bg-transparent text-[14px] text-strong outline-hidden placeholder:text-faint"
+            className="min-w-[8rem] text-[14px] text-strong placeholder:text-faint"
           />
           {!choosing ? (
-            <span className="shrink-0 font-machine text-[10.5px] text-faint">
+            // On a narrow window the scope gives way to the query: it
+            // truncates, and the field keeps a floor.
+            <span className="min-w-0 truncate font-machine text-[10.5px] text-faint">
               {remote.active ? "titles and summaries, every machine" : "sessions, machines, commands, skills"}
             </span>
           ) : null}
@@ -454,12 +461,12 @@ export function CommandPalette({
                   return (
                     <CommandItem
                       key={command.id}
-                      {...(command.disabled === undefined ? {} : { disabled: command.disabled })}
+                      {...(command.disabled === undefined && !switchingAway ? {} : { disabled: Boolean(command.disabled) || switchingAway })}
                       {...(command.opensStart ? { ref: startOpenerRef } : {})}
                       value={command.id}
                       className={rowClass}
                       onSelect={() => {
-                        if (command.disabled) return
+                        if (command.disabled || switchingAway) return
                         shouldRestoreFocus.current = command.restoreFocus !== false
                         close()
                         command.run()
@@ -583,7 +590,8 @@ export function CommandPalette({
         {onOpenFirstRun && !choosing ? (
           <button
             type="button"
-            className="shrink-0 text-[11px] text-primary"
+            className="shrink-0 text-[11px] text-primary disabled:opacity-50"
+            disabled={switchingAway}
             onClick={() => {
               shouldRestoreFocus.current = false
               close()
