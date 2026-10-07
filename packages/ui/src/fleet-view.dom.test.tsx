@@ -1,5 +1,6 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { StrictMode } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary, type ProviderRuntime } from "@getdomovoi/protocol"
@@ -216,6 +217,24 @@ it("reads each admitted machine when the view opens and dates a reading it could
   expect(onReadMachine).toHaveBeenCalledWith(studio.id, expect.any(AbortSignal))
   await waitFor(() => expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS)
     .toBe(`codex · as of ${clock.format(new Date(readAt))}`))
+})
+
+it("keeps reading when the view mounts twice, as StrictMode does in development", () => {
+  const signals: AbortSignal[] = []
+  const onReadMachine = vi.fn((_machineId: string, signal: AbortSignal) => { signals.push(signal); return new Promise<void>(() => {}) })
+  render(
+    <StrictMode>
+      <TooltipProvider>
+        <FleetView connected entries={entries(local, { ...studio, health: "healthy" })} fleetOverflow={null}
+          currentMachineId={local.id} devicesMachineLabel={local.label} currentSessionCount={0} onOpenSkills={() => {}}
+          clientAccess={{ [studio.id]: admitted(reading({ readAt: "2026-10-06T14:03:00.000Z" })) }} onReadMachine={onReadMachine}
+          onListDevices={async () => ({ devices: [] })} onRevokeDevice={vi.fn()} onRotateDevice={vi.fn()} onRenameDevice={vi.fn()}
+        />
+      </TooltipProvider>
+    </StrictMode>,
+  )
+
+  expect(signals.filter((signal) => !signal.aborted)).toHaveLength(1)
 })
 
 it("does not read again a machine it has just read", () => {

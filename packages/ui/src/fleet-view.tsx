@@ -435,7 +435,8 @@ function MachineCard({
           {machine.label}
         </span>
         <span className="flex-1" />
-        <span className={cn("shrink-0 rounded-full px-2 py-0.5 font-machine text-micro", pillTone[tone])}>
+        {/* text-[10.5px], not text-micro: tailwind-merge reads text-micro as a colour and drops it beside the tone. */}
+        <span className={cn("shrink-0 rounded-full px-2 py-0.5 font-machine text-[10.5px]", pillTone[tone])}>
           {healthLabel[machine.health]}
         </span>
       </div>
@@ -1219,20 +1220,27 @@ export function FleetView({
     .sort()
     .join(" ")
   const requested = useRef(new Set<string>())
-  const reads = useRef(new Set<AbortController>())
-  useEffect(() => () => { for (const read of reads.current) read.abort() }, [])
   useEffect(() => {
     if (!onReadMachine || !connected) return
+    const asked = requested.current
+    const reads: [string, AbortController][] = []
     for (const machineId of admittedIds.split(" ").filter(Boolean)) {
       const access = clientAccess[machineId]
-      if (requested.current.has(machineId) || access?.state !== "admitted") continue
-      requested.current.add(machineId)
+      if (asked.has(machineId) || access?.state !== "admitted") continue
+      asked.add(machineId)
       if (Date.now() - Date.parse(access.reading.readAt) < freshReadingMs) continue
       const read = new AbortController()
-      reads.current.add(read)
+      reads.push([machineId, read])
       onReadMachine(machineId, read.signal).catch(() => {
         if (!read.signal.aborted) setUnread((current) => new Map(current).set(machineId, access.reading.readAt))
-      }).finally(() => reads.current.delete(read))
+      })
+    }
+    // A read cut short was never answered, so the next run asks again.
+    return () => {
+      for (const [machineId, read] of reads) {
+        read.abort()
+        asked.delete(machineId)
+      }
     }
     // The ids name the machines to read; a new reading of one must not read it again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
