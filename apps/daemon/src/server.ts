@@ -109,6 +109,7 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
+import { normalizeLegacyEffort } from "./legacy-effort.js"
 import { approvalToolServerFact, type ApprovalScope } from "./approval-facts.js"
 import {
   ApprovalLedger,
@@ -5951,10 +5952,14 @@ export class DomovoiDaemon {
       && !supportedReasoningEfforts.includes(runtime.reasoning)
       ? defaultReasoningEffort
       : runtime.reasoning
-    if (!supportedReasoningEfforts.includes(reasoning)) {
+    const resolvedReasoning = !supportedReasoningEfforts.includes(reasoning)
+      && supportedReasoningEfforts.includes("unset")
+      ? normalizeLegacyEffort(runtime.provider, reasoning)
+      : reasoning
+    if (!supportedReasoningEfforts.includes(resolvedReasoning)) {
       throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")
     }
-    return { ...runtime, model: model.id, reasoning }
+    return { ...runtime, model: model.id, reasoning: resolvedReasoning }
   }
 
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
@@ -12346,7 +12351,14 @@ export class DomovoiDaemon {
         }
       }
       const recoveredAt = new Date().toISOString()
-      const session = { ...intent.session, updatedAt: recoveredAt }
+      const session = {
+        ...intent.session,
+        runtime: {
+          ...intent.session.runtime,
+          reasoning: normalizeLegacyEffort(intent.session.runtime.provider, intent.session.runtime.reasoning),
+        },
+        updatedAt: recoveredAt,
+      }
       let detail = intent.cleanupStarted
         ? "Worktree cleanup started but did not record completion; preserve the worktree for inspection."
         : "No durable worktree completion receipt exists; the partial worktree requires inspection."
