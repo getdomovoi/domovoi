@@ -30,6 +30,11 @@ export async function nativeProfileEntryGuard(home: string, requireAbsent = fals
   }
 }
 
+export function runningInCi(environment: NodeJS.ProcessEnv): boolean {
+  const flag = environment.CI
+  return flag !== undefined && flag !== "" && flag !== "0" && flag.toLowerCase() !== "false"
+}
+
 export default function setup() {
-  return nativeProfileEntryGuard(userInfo().homedir, Boolean(process.env.CI))
+  return nativeProfileEntryGuard(userInfo().homedir, runningInCi(process.env))
 }
