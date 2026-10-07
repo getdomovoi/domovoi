@@ -111,6 +111,14 @@ export function fleetAgents(
 
 type ClientInputs = Omit<Parameters<typeof fleetClient>[0], "access">
 
+// The refusals that say this client's credential or the machine's identity is
+// no longer good, as opposed to a machine that is down or out of route.
+const credentialRefusals: ReadonlySet<ClientAdmissionError["reason"]> = new Set([
+  "client-credential-required",
+  "identity-mismatch",
+  "not-enrolled",
+])
+
 // This object lives only for this home connection in this app. Credentials
 // never enter storage, fleet snapshots, notifications, URLs or the machine store.
 export class FleetAccessSession {
@@ -195,15 +203,17 @@ export class FleetAccessSession {
   // not searched rather than as no results. Identity is checked the way the
   // inventory reader checks it: the answer must come from the machine asked.
   async search(machineId: string, query: string, signal: AbortSignal): Promise<SessionSearchResult> {
-    return this.#ask(machineId, signal, "Search cancelled", (client, deadline) =>
+    return this.#ask(machineId, signal, "Search cancelled", () => true, (client, deadline) =>
       client.searchSessions({ query, limit: 20 }, { deadline, signal }))
   }
 
   // Reads what an admitted machine reports about its agents and sessions now.
-  // A machine that does not answer keeps its last reading, with its time, and
-  // the caller says how old it is; only a refused credential withdraws access.
+  // Machines asks this on its own each time it opens, so a machine that is
+  // down or has no route keeps its access and its last reading, which the
+  // caller dates. Only an answer that refuses this credential or this
+  // identity, or a machine no longer enrolled, withdraws access.
   async read(machineId: string, signal: AbortSignal): Promise<void> {
-    await this.#ask(machineId, signal, "Read cancelled", (_client, _deadline, snapshot, access) => {
+    await this.#ask(machineId, signal, "Read cancelled", (reason) => credentialRefusals.has(reason), (_client, _deadline, snapshot, access) => {
       this.#set(machineId, { state: "admitted", deviceId: access.deviceId, reading: machineReading(snapshot, new Date()) })
       return Promise.resolve()
     })
@@ -211,10 +221,12 @@ export class FleetAccessSession {
 
   // One question on its own connection with the admitted credential, closed
   // when answered. The answer must come from the device that was admitted.
+  // `withdraws` says which admission refusals end this client's access.
   async #ask<T>(
     machineId: string,
     signal: AbortSignal,
     cancelled: string,
+    withdraws: (reason: ClientAdmissionError["reason"]) => boolean,
     question: (client: DomovoiClient, deadline: Deadline, snapshot: WorkspaceSnapshot, access: FleetAccess) => Promise<T>,
   ): Promise<T> {
     const access = this.#access.get(machineId)
@@ -233,7 +245,7 @@ export class FleetAccessSession {
       if (client.admittedDeviceId !== access.deviceId) throw new ClientAdmissionError("identity-mismatch")
       return await question(client, deadline, snapshot, access)
     } catch (cause) {
-      if (cause instanceof ClientAdmissionError && !signal.aborted && this.#access.get(machineId) === access) {
+      if (cause instanceof ClientAdmissionError && withdraws(cause.reason) && !signal.aborted && this.#access.get(machineId) === access) {
         this.refuse(machineId, cause.message)
       }
       throw cause

@@ -7,12 +7,14 @@ const machineId = demoWorkspace.machine.id
 const deviceId = `device-${"a".repeat(32)}`
 let sockets: ReturnType<typeof installFakeWebSocket>
 let access: FleetAccessSession
+let routeDown = false
 beforeEach(() => {
   vi.useFakeTimers()
   sockets = installFakeWebSocket()
-  access = new FleetAccessSession(() => ({ homeUrl: "ws://localhost/rpc", kind: "web", route: async () => ({
-    outcome: "ready", machineId, transport: { kind: "local", endpoint: "ws://localhost/rpc", authenticated: true },
-  }) }))
+  routeDown = false
+  access = new FleetAccessSession(() => ({ homeUrl: "ws://localhost/rpc", kind: "web", route: async () => routeDown
+    ? { outcome: "refused", reason: "client-route-unavailable" }
+    : { outcome: "ready", machineId, transport: { kind: "local", endpoint: "ws://localhost/rpc", authenticated: true } } }))
 })
 afterEach(() => { access.clear(); sockets.uninstall(); vi.useRealTimers() })
 
@@ -177,4 +179,23 @@ it("reads an admitted machine again and keeps the last reading when it does not 
   expect(await silent).toBeInstanceOf(Error)
   expect(access.access(machineId)).toBeDefined()
   expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", reading: { readAt: "2026-10-06T14:05:00.000Z" } })
+
+  // A machine that is down has no route from the home daemon. That is not a
+  // refused credential, so a read nobody asked for keeps access and the reading.
+  routeDown = true
+  expect(await access.read(machineId, new AbortController().signal).catch((error: unknown) => error))
+    .toMatchObject({ reason: "client-route-unavailable" })
+  expect(access.access(machineId)).toBeDefined()
+  expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", reading: { readAt: "2026-10-06T14:05:00.000Z" } })
+})
+
+it("withdraws access when a read finds the credential refused", async () => {
+  await admit()
+  const reading = access.read(machineId, new AbortController().signal).catch((error: unknown) => error)
+  await vi.advanceTimersByTimeAsync(0)
+  sockets.socket(1).open()
+  sockets.socket(1).drop(1008, "revoked")
+  expect(await reading).toMatchObject({ reason: "client-credential-required" })
+  expect(access.access(machineId)).toBeUndefined()
+  expect(access.snapshot()[machineId]).toMatchObject({ state: "refused" })
 })
