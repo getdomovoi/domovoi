@@ -1,8 +1,26 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+
+const daemonCommand = await import("./dist/daemon-command.js")
+assert.equal(daemonCommand.daemonWorkerEntry(), realpathSync(new URL("./dist/index.js", import.meta.url)))
+assert.equal(daemonCommand.nodeDaemonCommandDependencies().execPath, daemonCommand.daemonWorkerEntry())
+
+const commandProfile = mkdtempSync(join(tmpdir(), "domovoi-dist-command-"))
+try {
+  const imported = spawnSync(process.execPath, [
+    "--input-type=module", "-e", 'await import("./dist/daemon-command.js")',
+  ], {
+    encoding: "utf8", timeout: 2_000,
+    env: { ...process.env, DOMOVOI_PROFILE_DIR: commandProfile },
+  })
+  assert.equal(imported.status, 0, imported.error?.message || imported.stderr)
+  assert.equal(imported.stdout, "")
+  assert.equal(imported.stderr, "")
+  assert.deepEqual(readdirSync(commandProfile), [])
+} finally { rmSync(commandProfile, { recursive: true, force: true }) }
 
 const publicApi = await import("./dist/public.js")
 const { createProductionDaemon } = publicApi
