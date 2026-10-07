@@ -34,22 +34,22 @@ export function PolicyRefusalCard({ refusal, className }: { refusal: PolicyRefus
             {refusal.command}
           </code>
         </div>
-        <div className="flex flex-col gap-1.5 px-3.5 pb-[13px] text-[13px] leading-[1.6] text-pretty text-danger-foreground">
+        <div className="flex flex-col gap-1.5 px-3.5 pb-3 text-[13px] leading-[1.6] text-pretty text-danger-foreground">
           <p className="m-0">{refusal.operation}</p>
           <p className="m-0">
             Approving this would not run it. The daemon refuses the command before it starts, so there is no
             override, including from an owner.
           </p>
         </div>
-        <div className="px-3.5 pb-3.5">
+        <div className="px-3.5 pb-4">
           <div role="group" aria-label="The rule it broke" className="rounded-lg border border-danger-border px-3.5 py-3">
             <p aria-hidden className="m-0 text-[10.5px] tracking-[.13em] text-danger-dim">THE RULE IT BROKE</p>
-            <p className="m-0 mt-[5px] text-[14px] leading-[1.45] font-medium text-danger-foreground">{refusal.rule}</p>
-            <dl className="m-0 mt-[9px]">
+            <p className="m-0 mt-[5px] text-sm leading-[1.45] font-medium text-danger-foreground">{refusal.rule}</p>
+            <dl className="m-0 mt-2">
               {chain.map(([label, value], index) => (
                 <div
                   key={label}
-                  className={cn("flex items-baseline gap-3 py-2", index > 0 && "border-t border-danger-border/55")}
+                  className={cn("flex items-baseline gap-3 py-2", index > 0 && "border-t border-danger-border")}
                 >
                   <dt className="shrink-0 text-[11.5px] text-danger-dim">{label}</dt>
                   <dd className="m-0 ml-auto min-w-0 text-right text-[12px] break-words text-danger-foreground">{value}</dd>

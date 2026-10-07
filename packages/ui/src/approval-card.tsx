@@ -71,11 +71,11 @@ export function ApprovalCard({
     // Reading the facts decides nothing, so a locked card still opens and
     // folds them.
     <Button
-      variant="ghost"
+      variant="link"
       size="xs"
       aria-expanded={factsOpen}
       aria-controls={factsId}
-      className="ml-auto px-1 text-[11px] font-normal text-warn-dim hover:bg-transparent hover:text-warn-foreground aria-expanded:bg-transparent aria-expanded:text-warn-dim dark:hover:bg-transparent"
+      className="ml-auto px-1 text-[11px] font-normal text-warn-dim"
       onClick={() => setFoldedRevision(factsOpen ? approval.revision : undefined)}
     >
       {factsOpen ? "Hide what this touches" : "What does this touch?"}
@@ -105,21 +105,18 @@ export function ApprovalCard({
       className={cn(
         "mx-auto max-w-3xl rounded-xl",
         desktop
-          ? "gap-0 overflow-hidden border-[1.5px] border-warning p-0 shadow-[0_18px_44px_color-mix(in_oklab,var(--warning)_14%,transparent)]"
+          ? "gap-0 overflow-hidden border-[1.5px] border-warning p-0 shadow-lg"
           : "gap-3 p-4",
       )}
     >
       {desktop ? null : <CircleStopIcon />}
       {desktop ? (
-        <AlertTitle className="flex items-center gap-[11px] px-4 pt-3.5 pb-3 text-[15px] font-semibold tracking-[-.01em] text-warn-foreground">
+        <AlertTitle className="flex items-center gap-3 px-4 py-3 text-[15px] font-semibold text-warn-foreground">
           {/* The design's pulse: a gate is the one thing on screen that
               wants a decision. Still when the reader asks for less motion. */}
-          <span aria-hidden className="relative inline-flex size-[9px] shrink-0">
-            <span className="absolute inset-0 rounded-full bg-warning/60 motion-safe:animate-ping motion-safe:[animation-duration:2.4s]" />
-            <span className="relative size-[9px] rounded-full bg-warning" />
-          </span>
+          <span aria-hidden className="size-[9px] shrink-0 rounded-full bg-warning motion-safe:animate-pulse" />
           Waiting on your decision
-          <span className="ml-auto font-machine text-[10.5px] font-normal tracking-normal text-warn-dim">{meta}</span>
+          <span className="ml-auto font-machine text-[10.5px] font-normal text-warn-dim">{meta}</span>
         </AlertTitle>
       ) : (
         <AlertTitle className="flex items-center gap-2 text-[12.5px]">
@@ -127,7 +124,7 @@ export function ApprovalCard({
           <span className="ml-auto font-machine text-[10.5px] font-normal text-warn-dim">{meta}</span>
         </AlertTitle>
       )}
-      <AlertDescription className={cn("col-span-full flex flex-col", desktop ? "gap-3 px-4 pb-3.5 [&_p:not(:last-child)]:mb-0" : "gap-3")}>
+      <AlertDescription className={cn("col-span-full flex flex-col", desktop ? "gap-3 px-4 pb-4 [&_p:not(:last-child)]:mb-0" : "gap-3")}>
         <p className="m-0 text-[13px] font-medium text-warn-foreground">{approval.operation}</p>
         <code
           className={cn(
@@ -241,9 +238,9 @@ export function ApprovalCard({
             // The design draws six facts; the wire carries five (OUTSIDE
             // PROJECT waits on protocol), so the last one takes the rest of
             // its row rather than leaving a hole of divider colour.
-            <div key={label} className={cn("bg-warn-background px-3.5 py-2.5", index === facts.length - 1 && lastFactSpan[facts.length % 3])}>
+            <div key={label} className={cn("bg-warn-background px-3.5 py-2.5", index === 4 && "sm:col-span-2")}>
               <dt className="text-[10.5px] tracking-[.13em] text-warn-dim uppercase">{label}</dt>
-              <dd className="m-0 mt-1 min-w-0 break-words font-machine text-[10.5px] leading-[1.4] text-warn-foreground">{value}</dd>
+              <dd className="m-0 mt-1 min-w-0 break-words font-machine text-[10.5px] leading-snug text-warn-foreground">{value}</dd>
             </div>
           ))}
         </dl>
@@ -252,8 +249,5 @@ export function ApprovalCard({
   )
 }
 
-// Indexed by how many facts sit on the last row of three.
-const lastFactSpan = ["", "sm:col-span-3", "sm:col-span-2"] as const
-
 // The design outlines Always and Deny in the gate's own border, on no fill.
-const outline = "border-warn-border bg-transparent hover:bg-warn-deep dark:border-warn-border dark:bg-transparent dark:hover:bg-warn-deep"
+const outline = "border-warn-border bg-transparent hover:bg-warn-deep dark:border-warn-border dark:bg-transparent"
