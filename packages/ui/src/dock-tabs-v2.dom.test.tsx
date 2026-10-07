@@ -122,6 +122,45 @@ describe("the dock's tab list", () => {
     expect(within(planComments).getByText("Run the migration on staging first.")).toBeTruthy()
   })
 
+  // Q350 A: the plan artifact is no longer hidden by the working plan. It is
+  // the document, the card sits under it, and Comment on a step leaves an
+  // annotation on the plan artifact anchored by the step's words.
+  it("draws the plan document beside the working-plan card and comments on a step of it", async () => {
+    const snapshot = workspaceSnapshot()
+    snapshot.artifacts = snapshot.artifacts.map((artifact) => artifact.id === "artifact-plan"
+      ? { ...artifact, content: "## Problem\n\nRetries replay side effects.\n\n## Steps\n\n1. Apply the migration" }
+      : artifact)
+    window.getSelection()?.removeAllRanges()
+    render(<WorkspaceShell />)
+    const socket = harness.socket(0)
+    await act(async () => { completeHandshake(socket, snapshot) })
+    await settle()
+    await openSheet()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("tab", { name: "Plan preview" }))
+    await settle()
+
+    const dock = screen.getByRole("complementary", { name: "Session artifacts" })
+    const document = within(dock).getByRole("article", { name: "Plan document" })
+    expect(within(document).getByText("Retries replay side effects.")).toBeTruthy()
+    expect(within(dock).getByRole("region", { name: "Working plan" })).toBeTruthy()
+    expect(within(dock).getAllByRole("button", { name: "Looks right, carry on" })).toHaveLength(1)
+
+    await user.click(within(dock).getByRole("button", { name: "Comment on a step" }))
+    const form = screen.getByRole("form", { name: "Comment on a step" })
+    const step = snapshot.workingPlans[0]!.steps.find((candidate) => candidate.status !== "completed")!
+    expect(within(form).getByRole("radio", { name: step.text }).getAttribute("aria-checked")).toBe("true")
+    await user.type(within(form).getByLabelText("Comment"), "Run it on staging first")
+    await user.click(within(form).getByRole("button", { name: "Post" }))
+
+    expect(pendingRequest(socket, "annotation.create").params).toMatchObject({
+      sessionId: snapshot.activeSessionId,
+      artifactId: "artifact-plan",
+      anchor: { textQuote: step.text },
+      body: "Run it on staging first",
+    })
+  })
+
   it("keeps the plan's comments reachable when the plan has no content to show", async () => {
     const snapshot = workspaceSnapshot()
     snapshot.workingPlans = []

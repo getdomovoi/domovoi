@@ -12,7 +12,6 @@ import {
 import {
   CircleStopIcon,
   CodeXmlIcon,
-  FileTextIcon,
   DownloadIcon,
   MessageSquarePlusIcon,
   MessageSquareTextIcon,
@@ -82,13 +81,12 @@ import {
 } from "./preview-bridge"
 import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
-import { WorkingPlanCard } from "./working-plan"
+import { PlanSheet } from "./working-plan"
 import { RulesPanel } from "./rules-panel.js"
 import { checkpointBlockedReason } from "./checkpoint-actions.js"
 import { CheckpointsPanel, latestCheckpointRevision } from "./checkpoints-panel.js"
 import type { TerminalControls } from "./terminal-pane"
 import { SessionEvidencePanel } from "./session-evidence"
-import { MarkdownQuickView } from "./markdown-quick-view"
 import { type DesktopWindowBridge } from "./desktop-platform"
 import { HistoryPanel } from "./history-panel"
 import { dockTabDefinitions } from "./dock-tabs"
@@ -328,8 +326,6 @@ export function ArtifactDock({
     setBridgeState(nextBridgeState)
   }
   const [pickerActive, setPickerActive] = useState(false)
-  const [planCarryOnPending, setPlanCarryOnPending] = useState(false)
-  const [planCarryOnError, setPlanCarryOnError] = useState("")
   const [selection, setSelection] = useState<PreviewBridgeSelectionMessage | null>(null)
   const [selectionVisualContext, setSelectionVisualContext] = useState<
     RpcParams<"annotation.create">["visualContextUpload"]
@@ -802,76 +798,28 @@ export function ArtifactDock({
           </section>
         </TabsContent>
         <TabsContent value="plan" className="min-h-0">
-          {workingPlan ? (
-            <ScrollArea className="h-full">
-              <div className="p-3">
-                <WorkingPlanCard
-                  plan={workingPlan}
-                  running={planRunning}
-                  readOnly={readOnly}
-                  {...(onCarryOnPlan ? { onCarryOn: () => onCarryOnPlan().then(closeAfterPlanAnswer) } : {})}
-                  {...(onEditPlan ? { onEditPlan } : {})}
-                  {...(onDiscardPlanEdit ? { onDiscardEdit: onDiscardPlanEdit } : {})}
-                />
-                {planCommentsBlock}
-              </div>
-            </ScrollArea>
-          ) : plan?.content ? (
-            <ScrollArea className="h-full">
-              <article className="p-4">
-                <div className="mb-4 border-b pb-3">
-                  <h2 className="m-0 text-[13px] font-semibold">{plan.title}</h2>
-                  <p className="mt-1 font-machine text-mono-xs text-faint">revision {plan.revision}</p>
-                </div>
-                <MarkdownQuickView source={plan.content} canonicalAvailable={Boolean(preview)} onOpenCanonical={openPreviewTab} />
-                {planCommentsBlock}
-              </article>
-              {/* A plan written as prose carries no steps, so the card that
-                  normally holds this row never renders. The decision belongs to
-                  the plan either way: a plan nobody can answer cannot be
-                  steered. */}
-              {onCarryOnPlan && !readOnly ? (
-                <div className="flex flex-col gap-2 border-t px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <Button
-                      size="sm"
-                      disabled={planCarryOnPending}
-                      onClick={() => {
-                        setPlanCarryOnError("")
-                        setPlanCarryOnPending(true)
-                        void onCarryOnPlan().then(
-                          () => { setPlanCarryOnPending(false); closeAfterPlanAnswer() },
-                          (cause: unknown) => {
-                            setPlanCarryOnPending(false)
-                            setPlanCarryOnError(cause instanceof Error ? cause.message : "The plan reply could not be sent")
-                          },
-                        )
-                      }}
-                    >
-                      {planCarryOnPending ? "Sending" : "Looks right, carry on"}
-                    </Button>
-                  </div>
-                  {/* A button that returns from "Sending" in silence reads as a
-                      plan the agent took. The refusal belongs next to the
-                      control that asked for it. */}
-                  {planCarryOnError ? (
-                    <p role="alert" className="m-0 text-[11px] leading-relaxed text-destructive">{planCarryOnError}</p>
-                  ) : null}
-                </div>
-              ) : null}
-            </ScrollArea>
-          ) : (
-            <ScrollArea className="h-full">
-              <Empty className="min-h-48 border-0">
-                <EmptyHeader>
-                  <EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia>
-                  <EmptyTitle>No plan content yet</EmptyTitle>
-                  <EmptyDescription>Plan updates from the active agent appear here.</EmptyDescription>
-                </EmptyHeader>
-              </Empty>
-              {planCommentsBlock ? <div className="px-3 pb-3">{planCommentsBlock}</div> : null}
-            </ScrollArea>
-          )}
+          {/* Q350 A: a plan artifact is the document and the working plan's
+              card sits under it; PlanSheet draws the decision row once. */}
+          <PlanSheet
+            artifact={plan}
+            workingPlan={workingPlan}
+            running={planRunning}
+            readOnly={readOnly}
+            comments={planCommentsBlock}
+            canonicalAvailable={Boolean(preview)}
+            onOpenCanonical={openPreviewTab}
+            onCarryOn={onCarryOnPlan ? () => onCarryOnPlan().then(closeAfterPlanAnswer) : undefined}
+            onEditPlan={onEditPlan}
+            onDiscardEdit={onDiscardPlanEdit}
+            onComment={plan && snapshot.activeSessionId
+              ? ({ quote, body }) => onCreateAnnotation({
+                  sessionId: snapshot.activeSessionId!,
+                  artifactId: plan.id,
+                  anchor: { textQuote: quote },
+                  body,
+                })
+              : undefined}
+          />
         </TabsContent>
         <TabsContent value="changes" className="min-h-0">
           <SessionEvidencePanel

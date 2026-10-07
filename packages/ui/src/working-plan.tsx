@@ -1,11 +1,18 @@
-import type { PendingWorkingPlanEdit, WorkingPlan, WorkingPlanStep } from "@getdomovoi/protocol"
+import type { Artifact, PendingWorkingPlanEdit, WorkingPlan, WorkingPlanStep } from "@getdomovoi/protocol"
+import { FileTextIcon } from "lucide-react"
 
-import { useState } from "react"
+import { useId, useRef, useState, type ReactNode } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
+import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "@/components/ui/empty"
+import { Field, FieldLabel } from "@/components/ui/field"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import { Separator } from "@/components/ui/separator"
+import { Textarea } from "@/components/ui/textarea"
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group"
 import { cn } from "./lib/utils"
+import { MarkdownQuickView } from "./markdown-quick-view"
 import { PlanStepEditor, type WorkingPlanDraftStep, type WorkingPlanEdit } from "./plan-step-editor.js"
 
 function stepMark(step: WorkingPlanStep, index: number): string {
@@ -100,6 +107,14 @@ export function WorkingPlanCard({
               >
                 {step.text}
               </span>
+              {/* The design marks a gated step with this pill. The wire knows a
+                  gate only once the step is blocked on one, so the pill names
+                  the approval it stopped for, not a gate it will reach. */}
+              {step.blocker ? (
+                <span className="shrink-0 rounded-full border border-warn-border bg-warn-background px-2 py-0.5 font-machine text-[9.5px] text-warn-foreground">
+                  STOPS FOR APPROVAL
+                </span>
+              ) : null}
               {state ? (
                 <span
                   className={cn(
@@ -207,5 +222,282 @@ export function WorkingPlanCard({
         ) : null}
       </div>
     </section>
+  )
+}
+
+// The anchor schema bounds a text quote at 2,000 UTF-16 units.
+const maximumPlanQuoteLength = 2_000
+
+export type PlanComment = { quote: string, body: string }
+
+// The words a person selected inside the plan document, if any. A selection
+// that starts or ends outside the document is not a quote from it.
+function documentSelection(container: HTMLElement | null): string | undefined {
+  if (!container) return undefined
+  const selection = window.getSelection()
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return undefined
+  const range = selection.getRangeAt(0)
+  if (!container.contains(range.startContainer) || !container.contains(range.endContainer)) return undefined
+  const text = selection.toString().replace(/\s+/gu, " ").trim()
+  return text ? text.slice(0, maximumPlanQuoteLength) : undefined
+}
+
+function PlanCommentForm({
+  quote,
+  steps,
+  onPost,
+  onCancel,
+}: {
+  quote: string | undefined
+  steps: readonly WorkingPlanStep[]
+  onPost: (comment: PlanComment) => Promise<void>
+  onCancel: () => void
+}) {
+  // With nothing selected, the comment anchors to a step's own words. The
+  // first step not yet done is the one most likely to be in question.
+  const firstOpen = steps.find((step) => step.status !== "completed") ?? steps[0]
+  const [stepId, setStepId] = useState(firstOpen?.id ?? "")
+  const [body, setBody] = useState("")
+  const [pending, setPending] = useState(false)
+  const [error, setError] = useState("")
+  const fieldId = useId()
+  const anchor = quote ?? steps.find((step) => step.id === stepId)?.text
+
+  const post = () => {
+    const text = body.trim()
+    if (!anchor || !text || pending) return
+    setPending(true)
+    setError("")
+    void onPost({ quote: anchor.slice(0, maximumPlanQuoteLength), body: text }).then(
+      () => setPending(false),
+      (cause: unknown) => {
+        setPending(false)
+        setError(cause instanceof Error ? cause.message : "The comment could not be saved")
+      },
+    )
+  }
+
+  return (
+    <form
+      aria-label="Comment on a step"
+      className="flex flex-col gap-2 rounded-lg border border-primary bg-card p-3"
+      onSubmit={(event) => { event.preventDefault(); post() }}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || pending) return
+        event.stopPropagation()
+        onCancel()
+      }}
+    >
+      {quote ? (
+        <blockquote className="m-0 border-l-2 border-primary pl-2.5 text-[11.5px] leading-relaxed text-muted-foreground">
+          {quote}
+        </blockquote>
+      ) : steps.length > 0 ? (
+        <ToggleGroup
+          type="single"
+          orientation="vertical"
+          variant="outline"
+          size="sm"
+          spacing={1}
+          aria-label="Step"
+          className="w-full flex-col items-stretch"
+          value={stepId}
+          onValueChange={(next) => { if (next) setStepId(next) }}
+        >
+          {steps.map((step, index) => (
+            <ToggleGroupItem
+              key={step.id}
+              value={step.id}
+              aria-label={step.text}
+              className="h-auto justify-start gap-2 py-1.5 text-left text-[11.5px] font-normal whitespace-normal"
+            >
+              <span aria-hidden="true" className="font-machine text-[9.5px] text-faint">{index + 1}</span>
+              <span className="min-w-0 flex-1">{step.text}</span>
+            </ToggleGroupItem>
+          ))}
+        </ToggleGroup>
+      ) : null}
+      {anchor ? (
+        <Field>
+          <FieldLabel htmlFor={fieldId}>Comment</FieldLabel>
+          <Textarea
+            id={fieldId}
+            value={body}
+            rows={3}
+            autoFocus
+            disabled={pending}
+            onChange={(event) => setBody(event.target.value)}
+          />
+        </Field>
+      ) : (
+        <p className="m-0 text-[11.5px] leading-relaxed text-muted-foreground">
+          Select the words in the plan you want to comment on, then choose Comment on a step again.
+        </p>
+      )}
+      {error ? <p role="alert" className="m-0 text-[11px] leading-relaxed text-destructive">{error}</p> : null}
+      <div className="flex items-center gap-2">
+        {anchor ? (
+          <Button type="submit" size="sm" disabled={!body.trim() || pending}>{pending ? "Posting" : "Post"}</Button>
+        ) : null}
+        <Button type="button" variant="outline" size="sm" disabled={pending} onClick={onCancel}>Cancel</Button>
+      </div>
+    </form>
+  )
+}
+
+// The Plan tab. Q350 A: when the agent wrote a plan artifact, it is the
+// document, drawn above the working-plan card rather than hidden by it, and
+// Comment on a step anchors to it by a text quote (annotation.create, client
+// only). The design's PROBLEM, APPROACH and STILL OPEN sections are fields the
+// wire does not carry (Q350 B was not taken), so the document is the agent's
+// own Markdown. The decision row is drawn once: under the document when there
+// is one, in the card when there is not.
+export function PlanSheet({
+  artifact,
+  workingPlan,
+  running,
+  readOnly = false,
+  comments,
+  canonicalAvailable = false,
+  onOpenCanonical,
+  onCarryOn,
+  onEditPlan,
+  onDiscardEdit,
+  onComment,
+}: {
+  artifact: Artifact | undefined
+  workingPlan: WorkingPlan | undefined
+  running: boolean
+  readOnly?: boolean | undefined
+  comments?: ReactNode
+  canonicalAvailable?: boolean | undefined
+  onOpenCanonical?: (() => void) | undefined
+  onCarryOn?: (() => Promise<void>) | undefined
+  onEditPlan?: ((edit: WorkingPlanEdit) => Promise<void>) | undefined
+  onDiscardEdit?: ((editId: string) => Promise<void>) | undefined
+  onComment?: ((comment: PlanComment) => Promise<void>) | undefined
+}) {
+  const documentRef = useRef<HTMLDivElement>(null)
+  // A pointer press can collapse the selection before the click lands, so
+  // the quote is read on press and again on click.
+  const pressedQuote = useRef<string | undefined>(undefined)
+  const [commenting, setCommenting] = useState<{ quote: string | undefined } | null>(null)
+  const [carryingOn, setCarryingOn] = useState(false)
+  const [carryOnError, setCarryOnError] = useState("")
+  const content = artifact?.content
+
+  if (!artifact || !content) {
+    if (workingPlan) {
+      return (
+        <ScrollArea className="h-full">
+          <div className="p-3">
+            <WorkingPlanCard
+              plan={workingPlan}
+              running={running}
+              readOnly={readOnly}
+              onCarryOn={onCarryOn}
+              onEditPlan={onEditPlan}
+              onDiscardEdit={onDiscardEdit}
+            />
+            {comments}
+          </div>
+        </ScrollArea>
+      )
+    }
+    return (
+      <ScrollArea className="h-full">
+        <Empty className="min-h-48 border-0">
+          <EmptyHeader>
+            <EmptyMedia variant="icon"><FileTextIcon /></EmptyMedia>
+            <EmptyTitle>No plan content yet</EmptyTitle>
+            <EmptyDescription>Plan updates from the active agent appear here.</EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+        {comments ? <div className="px-3 pb-3">{comments}</div> : null}
+      </ScrollArea>
+    )
+  }
+
+  const canCarryOn = Boolean(onCarryOn) && !readOnly
+  const canComment = Boolean(onComment) && !readOnly
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <ScrollArea className="min-h-0 flex-1">
+        <article aria-label="Plan document" className="p-4">
+          <div className="mb-4 border-b pb-3">
+            <h2 className="m-0 text-[13px] font-semibold">{artifact.title}</h2>
+            <p className="mt-1 font-machine text-mono-xs text-faint">revision {artifact.revision}</p>
+          </div>
+          <div ref={documentRef}>
+            <MarkdownQuickView source={content} canonicalAvailable={canonicalAvailable} {...(onOpenCanonical ? { onOpenCanonical } : {})} />
+          </div>
+        </article>
+        {workingPlan ? (
+          <div className="px-4 pb-4">
+            <WorkingPlanCard
+              plan={workingPlan}
+              running={running}
+              readOnly={readOnly}
+              onEditPlan={onEditPlan}
+              onDiscardEdit={onDiscardEdit}
+            />
+          </div>
+        ) : null}
+        {comments ? <div className="px-4 pb-4">{comments}</div> : null}
+      </ScrollArea>
+      {canCarryOn || canComment ? (
+        <div className="flex shrink-0 flex-col gap-2 border-t px-4 py-3">
+          {commenting && onComment ? (
+            <PlanCommentForm
+              quote={commenting.quote}
+              steps={workingPlan?.steps ?? []}
+              onPost={(comment) => onComment(comment).then(() => setCommenting(null))}
+              onCancel={() => setCommenting(null)}
+            />
+          ) : null}
+          <div className="flex flex-wrap items-center gap-2">
+            {canCarryOn ? (
+              <Button
+                size="sm"
+                disabled={carryingOn}
+                onClick={() => {
+                  setCarryOnError("")
+                  setCarryingOn(true)
+                  void onCarryOn!().then(
+                    () => setCarryingOn(false),
+                    (cause: unknown) => {
+                      setCarryingOn(false)
+                      setCarryOnError(cause instanceof Error ? cause.message : "The plan reply could not be sent")
+                    },
+                  )
+                }}
+              >
+                {carryingOn ? "Sending" : "Looks right, carry on"}
+              </Button>
+            ) : null}
+            {canComment ? (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={commenting !== null}
+                onPointerDown={() => { pressedQuote.current = documentSelection(documentRef.current) }}
+                onClick={() => {
+                  const quote = documentSelection(documentRef.current) ?? pressedQuote.current
+                  pressedQuote.current = undefined
+                  setCommenting({ quote })
+                }}
+              >
+                Comment on a step
+              </Button>
+            ) : null}
+          </div>
+          {/* A button that returns from "Sending" in silence reads as a plan
+              the agent took. The refusal belongs next to the control. */}
+          {carryOnError ? (
+            <p role="alert" className="m-0 text-[11px] leading-relaxed text-destructive">{carryOnError}</p>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
   )
 }

@@ -1529,20 +1529,13 @@
         "Comment on a step"
       ],
       "evidence": [
-        "PROBLEM",
-        "APPROACH",
+        "<PlanSheet",
+        "aria-label=\"Plan document\"",
         "STOPS FOR APPROVAL",
         "Looks right, carry on",
-        "Comment on a step"
-      ],
-      "presence": [
-        "<WorkingPlanCard",
-        "Looks right, carry on"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the working plan renders as a card with Looks right, carry on (working-plan.tsx); the document is not drawn: no PROBLEM, APPROACH, STOPS FOR APPROVAL, WHAT THIS DOES NOT FIX or STILL OPEN sections and no Comment on a step. A plan artifact is hidden whenever a working plan exists, and WorkingPlan carries text, status and blocker only. Q350 A (2026-10-02): when a plan artifact exists, show it as the document beside the working-plan card, with Comment on a step anchored to it by a text quote (client-only). The footer meta reads revision N where the design says revised once since <time>"
-      }
+        "Comment on a step",
+        "anchor: { textQuote: quote }"
+      ]
     },
     {
       "id": "dock.preview",
@@ -2289,6 +2282,11 @@
       "id": "dock.preview",
       "since": "2026-10-02",
       "note": "Q379 A: the preview authorizes on open, so the drawn authorize to view click is not built; the chip shows authorized and the time left. Q380 A: Print view, Download safe copy, Compare, the filmstrip, the Live badge and the safe-copies line are shipped features the design does not draw; they stay behind one overflow control in the design's toolbar."
+    },
+    {
+      "id": "dock.plan-doc",
+      "since": "2026-10-06",
+      "note": "Q350 A: the plan artifact is the document (title, revision N, the agent's Markdown) with the working-plan card under it, and the decision row (Looks right, carry on; Comment on a step) is drawn once under both. PROBLEM, APPROACH, WHAT THIS DOES NOT FIX and STILL OPEN are not drawn as fixed sections: WorkingPlan carries text, status and blocker only, and Q350 B (protocol fields) was not taken, so whatever sections the agent writes are its own headings. STOPS FOR APPROVAL marks a step while it is blocked on an approval, because the wire knows a gate only then. Comment on a step quotes the words selected in the document, or the chosen step's own words when nothing is selected, as an annotation.create text quote on the plan artifact; the comment lists under COMMENTS ON THE PLAN. The design's footer meta (revised once since <time>) and header meta (project, worktree, base, written and revised times) are not drawn; the header reads revision N."
     },
     {
       "id": "dock.checkpoints",

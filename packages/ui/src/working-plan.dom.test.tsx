@@ -1,9 +1,10 @@
-import type { WorkingPlan } from "@getdomovoi/protocol"
+import type { Artifact, WorkingPlan } from "@getdomovoi/protocol"
 import { cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { WorkingPlanCard } from "./working-plan.js"
+import { PlanSheet, WorkingPlanCard } from "./working-plan.js"
 
 afterEach(cleanup)
 
@@ -253,4 +254,131 @@ it("offers no plan mutation on a read-only session", () => {
 
   expect(screen.queryByRole("button", { name: "Edit plan" })).toBeNull()
   expect(screen.queryByRole("button", { name: "Discard edit" })).toBeNull()
+})
+
+it("marks a step that stopped for an approval the way the design does", () => {
+  render(<WorkingPlanCard plan={plan()} running={false} />)
+
+  const steps = within(screen.getByRole("list", { name: "Plan steps" })).getAllByRole("listitem")
+  expect(within(steps[2]!).getByText("STOPS FOR APPROVAL")).toBeTruthy()
+  expect(within(steps[3]!).queryByText("STOPS FOR APPROVAL")).toBeNull()
+})
+
+// Q350 A: a plan artifact is the document, drawn beside the working-plan card
+// rather than hidden by it, and Comment on a step anchors to that document by
+// a text quote. The decision row is drawn once, under both.
+function planArtifact(overrides: Partial<Artifact> = {}): Artifact {
+  return {
+    id: "artifact-plan",
+    sessionId: "session-1",
+    title: "Make webhook delivery exactly-once",
+    type: "plan",
+    revision: 2,
+    content: "## Problem\n\nRetries replay the side effects.\n\n## Approach\n\nClaim the event first.",
+    ...overrides,
+  }
+}
+
+function sheet(extra: Partial<ComponentProps<typeof PlanSheet>> = {}) {
+  return (
+    <PlanSheet
+      artifact={planArtifact()}
+      workingPlan={plan()}
+      running={false}
+      onCarryOn={vi.fn(async () => {})}
+      onComment={vi.fn(async () => {})}
+      {...extra}
+    />
+  )
+}
+
+it("draws the plan document beside the working-plan card, with one decision row", () => {
+  render(sheet())
+
+  const document = screen.getByRole("article", { name: "Plan document" })
+  expect(within(document).getByRole("heading", { name: "Make webhook delivery exactly-once" })).toBeTruthy()
+  expect(within(document).getByText("Retries replay the side effects.")).toBeTruthy()
+  expect(screen.getByRole("region", { name: "Working plan" })).toBeTruthy()
+  expect(screen.getAllByRole("button", { name: "Looks right, carry on" })).toHaveLength(1)
+  expect(screen.getByRole("button", { name: "Comment on a step" })).toBeTruthy()
+})
+
+it("comments on the words selected in the document", async () => {
+  const onComment = vi.fn(async () => {})
+  render(sheet({ onComment }))
+  const user = userEvent.setup()
+  const words = screen.getByText("Retries replay the side effects.")
+  const range = document.createRange()
+  range.selectNodeContents(words)
+  const selection = window.getSelection()!
+  selection.removeAllRanges()
+  selection.addRange(range)
+
+  await user.click(screen.getByRole("button", { name: "Comment on a step" }))
+  const form = screen.getByRole("form", { name: "Comment on a step" })
+  expect(within(form).getByText("Retries replay the side effects.")).toBeTruthy()
+  await user.type(within(form).getByLabelText("Comment"), "Say which retries")
+  await user.click(within(form).getByRole("button", { name: "Post" }))
+
+  expect(onComment).toHaveBeenCalledWith({ quote: "Retries replay the side effects.", body: "Say which retries" })
+  expect(screen.queryByRole("form", { name: "Comment on a step" })).toBeNull()
+})
+
+it("comments on a chosen step when nothing in the document is selected", async () => {
+  window.getSelection()?.removeAllRanges()
+  const onComment = vi.fn(async () => {})
+  render(sheet({ onComment }))
+  const user = userEvent.setup()
+
+  await user.click(screen.getByRole("button", { name: "Comment on a step" }))
+  const form = screen.getByRole("form", { name: "Comment on a step" })
+  const steps = within(form).getByRole("radiogroup", { name: "Step" })
+  // The first step not yet done is the one most likely to be in question.
+  expect(within(steps).getByRole("radio", { name: "Apply the migration" }).getAttribute("aria-checked")).toBe("true")
+  await user.click(within(steps).getByRole("radio", { name: "Assert exactly-once delivery" }))
+  await user.type(within(form).getByLabelText("Comment"), "Cover the expiry case")
+  await user.click(within(form).getByRole("button", { name: "Post" }))
+
+  expect(onComment).toHaveBeenCalledWith({ quote: "Assert exactly-once delivery", body: "Cover the expiry case" })
+})
+
+it("keeps the comment and says why when the daemon refuses it", async () => {
+  window.getSelection()?.removeAllRanges()
+  const onComment = vi.fn(async () => { throw new Error("The session is read only") })
+  render(sheet({ onComment }))
+  const user = userEvent.setup()
+
+  await user.click(screen.getByRole("button", { name: "Comment on a step" }))
+  const form = screen.getByRole("form", { name: "Comment on a step" })
+  await user.type(within(form).getByLabelText("Comment"), "Not yet")
+  await user.click(within(form).getByRole("button", { name: "Post" }))
+
+  expect(within(form).getByRole("alert").textContent).toBe("The session is read only")
+  expect((within(form).getByLabelText("Comment") as HTMLTextAreaElement).value).toBe("Not yet")
+})
+
+it("says how to pick a step when there is no selection and no step list", async () => {
+  window.getSelection()?.removeAllRanges()
+  render(sheet({ workingPlan: undefined }))
+  await userEvent.setup().click(screen.getByRole("button", { name: "Comment on a step" }))
+
+  const form = screen.getByRole("form", { name: "Comment on a step" })
+  expect(within(form).getByText("Select the words in the plan you want to comment on, then choose Comment on a step again.")).toBeTruthy()
+  expect(within(form).queryByLabelText("Comment")).toBeNull()
+})
+
+it("offers no comment and no decision to a read-only client", () => {
+  render(sheet({ readOnly: true }))
+
+  expect(screen.getByRole("article", { name: "Plan document" })).toBeTruthy()
+  expect(screen.queryByRole("button", { name: "Comment on a step" })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Looks right, carry on" })).toBeNull()
+})
+
+it("keeps the card's own decision row when there is no document", () => {
+  render(sheet({ artifact: planArtifact({ content: undefined }) }))
+
+  expect(screen.queryByRole("article", { name: "Plan document" })).toBeNull()
+  expect(screen.getAllByRole("button", { name: "Looks right, carry on" })).toHaveLength(1)
+  expect(screen.queryByRole("button", { name: "Comment on a step" })).toBeNull()
 })
