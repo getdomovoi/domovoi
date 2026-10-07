@@ -1,7 +1,7 @@
 // Native boundary only. Never load the operator's actual keychain during this
 // test. A synchronous constructor hold models a locked or silent OS service.
 import Module from "node:module"
-import { appendFileSync, existsSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, renameSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { isMainThread, Worker } from "node:worker_threads"
 
@@ -33,8 +33,10 @@ class Entry {
     record("construct", account)
     this.account = account
     if (!existsSync(join(control, "block"))) return
-    writeFileSync(join(control, "entered"), JSON.stringify({ isMainThread }))
+    // Publish entered last so the poll sees complete thread data and an existing native stack.
     writeFileSync(join(control, "native-stack"), new Error("Native fixture entered").stack)
+    writeFileSync(join(control, "entered.tmp"), JSON.stringify({ isMainThread }))
+    renameSync(join(control, "entered.tmp"), join(control, "entered"))
     const until = performance.now() + (process.env.DOMOVOI_TEST_KEYRING_UNSTOPPABLE === "1" ? 60_000 : 20_000)
     const sleeper = new Int32Array(new SharedArrayBuffer(4))
     while (existsSync(join(control, "block"))) {
