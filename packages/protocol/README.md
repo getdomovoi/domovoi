@@ -149,11 +149,14 @@ the actual values returned by the daemon:
   must first be open through `project.open`. `session.create` still returns a workspace
   snapshot, with the created session selected by `activeSessionId`.
 - For a model picker, use `models[].displayName` as the label and `models[].id` as
-  `runtime.model`. On selection, use that model's `defaultReasoningEffort`. Offer its
-  `supportedReasoningEfforts` as choices; an empty array means keep the returned
-  default and show no reasoning selector. These values are opaque provider strings.
+  `runtime.model`. On selection, use that model's `defaultReasoningEffort`, or `unset`
+  when the field is absent: the model reported no default, and `unset` sends no effort
+  value, so the model uses its own setting. Offer its `supportedReasoningEfforts` as
+  choices; an empty array means keep that value and show no reasoning selector. A list
+  can include `unset` (shown as Model's own). These values are opaque provider strings.
 - The daemon picks the first provider-marked default model, or the first returned
-  model if none is marked. It uses that model's default reasoning. Auto is always off.
+  model if none is marked. It uses that model's default reasoning, or `unset` when the
+  model reports none. Auto is always off.
   The default permission mode is Ask when the adapter enforces read-only Ask, otherwise
   Plan. Offer only `permissionModes`; `supportsAuto` permits Auto only in Build.
 - Readiness is probed on each discovery, including when models came from the daemon's
