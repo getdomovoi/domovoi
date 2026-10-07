@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals"
 import { demoWorkspace, maximumReviewAnnotations, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { act, fireEvent, render, screen } from "@testing-library/react-native"
+import { AppState, type AppStateStatus } from "react-native"
 
 import { App } from "./app"
 import { terminalListIntervalMs } from "./terminal-rows"
@@ -680,10 +681,23 @@ describe("App", () => {
   // Phone v2 frame 04: the phone lists the open session's terminals, watches
   // each, reads live output, and stops watching when the person leaves.
   describe("terminals", () => {
-    // The clock runs as it does in life, and a test jumps it past a reconnect's
-    // backoff or a relist instead of waiting it out.
-    beforeEach(() => { jest.useFakeTimers({ advanceTimers: true }) })
-    afterEach(() => { jest.useRealTimers() })
+    // The app dials again at once when it comes to the foreground, which is
+    // how these tests reconnect rather than waiting out the backoff.
+    const foreground = new Set<(state: AppStateStatus) => void>()
+    beforeEach(() => {
+      foreground.clear()
+      jest.spyOn(AppState, "addEventListener").mockImplementation((_type, listener) => {
+        foreground.add(listener as (state: AppStateStatus) => void)
+        return { remove: () => { foreground.delete(listener as (state: AppStateStatus) => void) } } as ReturnType<typeof AppState.addEventListener>
+      })
+    })
+    afterEach(() => { jest.restoreAllMocks() })
+
+    async function comeBack(old: FakeSocket) {
+      await act(async () => { old.close() })
+      await settle()
+      await act(async () => { for (const listener of foreground) listener("active") })
+    }
 
     const owner ={ client: "desktop", clientId: "desktop-1", device: { id: `device-${"a".repeat(32)}`, label: "MacBook Pro" } }
     const terminal = {
@@ -765,8 +779,7 @@ describe("App", () => {
     it("takes the state from the list after a reconnect, before the new watch answers", async () => {
       const { socket } = await openAudit()
       await watchOne(socket)
-      await act(async () => { socket.close() })
-      await act(async () => { jest.advanceTimersByTime(1_100) })
+      await comeBack(socket)
       const next = FakeSocket.made.at(-1)!
       // A new dial, not the old socket opened again.
       expect(next).not.toBe(socket)
@@ -787,17 +800,24 @@ describe("App", () => {
     // No notification says a terminal opened, so the open session's list is
     // read again while it is on screen, and only a new terminal is watched.
     it("lists again while the session is open and watches a terminal opened since", async () => {
-      const { socket } = await openAudit()
-      await watchOne(socket)
-      await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
-      await settle()
-      expect(socket.requests("terminal.list")).toHaveLength(2)
-      await act(async () => {
-        socket.answer("terminal.list", { terminals: [terminal, { ...terminal, terminalId: "terminal-2", cwd: "/Users/mira/dev/acme" }] })
-      })
-      await settle()
-      expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-2" }])
-      expect(screen.getByText("zsh · acme")).toBeOnTheScreen()
+      // Timers only: React's act and the promises it waits on keep their
+      // real microtasks and immediates, so the clock jump is the one change.
+      jest.useFakeTimers({ advanceTimers: true, doNotFake: ["nextTick", "setImmediate", "queueMicrotask"] })
+      try {
+        const { socket } = await openAudit()
+        await watchOne(socket)
+        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
+        await settle()
+        expect(socket.requests("terminal.list")).toHaveLength(2)
+        await act(async () => {
+          socket.answer("terminal.list", { terminals: [terminal, { ...terminal, terminalId: "terminal-2", cwd: "/Users/mira/dev/acme" }] })
+        })
+        await settle()
+        expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-2" }])
+        expect(screen.getByText("zsh · acme")).toBeOnTheScreen()
+      } finally {
+        jest.useRealTimers()
+      }
     })
 
     // Until the new connection's list answers, nothing held is the daemon's
@@ -805,8 +825,7 @@ describe("App", () => {
     it("says Unconfirmed when the list after a reconnect is refused", async () => {
       const { socket } = await openAudit()
       await watchOne(socket)
-      await act(async () => { socket.close() })
-      await act(async () => { jest.advanceTimersByTime(1_100) })
+      await comeBack(socket)
       const next = FakeSocket.made.at(-1)!
       // A new dial, not the old socket opened again.
       expect(next).not.toBe(socket)
@@ -861,8 +880,7 @@ describe("App", () => {
       // What was read stays on screen while the route is down.
       expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
 
-      // The first retry waits a second.
-      await act(async () => { jest.advanceTimersByTime(1_100) })
+      await act(async () => { for (const listener of foreground) listener("active") })
       const next = FakeSocket.made.at(-1)!
       expect(next).not.toBe(socket)
       await act(async () => {
@@ -881,8 +899,7 @@ describe("App", () => {
       await fireEvent.press(screen.getByRole("button", { name: "Show all 2 lines" }))
       expect(screen.getByRole("button", { name: "Back to the thread" })).toBeOnTheScreen()
 
-      await act(async () => { socket.close() })
-      await act(async () => { jest.advanceTimersByTime(1_100) })
+      await comeBack(socket)
       const next = FakeSocket.made.at(-1)!
       // A new dial, not the old socket opened again.
       expect(next).not.toBe(socket)
