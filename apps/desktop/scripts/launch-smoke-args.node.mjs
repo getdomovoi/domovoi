@@ -401,6 +401,33 @@ test("a profile directory whose mode changes is a change", { skip: process.platf
   } finally { await rm(home, { recursive: true, force: true }) }
 })
 
+// What a runner's finally does once the run is over. A failed run's own error
+// always stays the one thrown; the profile verdict and cleanup failures are
+// printed beside it. A run that passed fails on either.
+test("a failed run keeps its own error and prints the profile verdict and cleanup failures", () => {
+  const cleanup = [new Error("child did not exit"), new Error("rm failed")]
+  assert.deepEqual(live.smokeCleanupOutcome({ failed: true, touched: "profile changed", cleanup }),
+    { report: ["profile changed", ...cleanup], error: undefined })
+  assert.deepEqual(live.smokeCleanupOutcome({ failed: true, touched: undefined, cleanup: [cleanup[0]] }),
+    { report: [cleanup[0]], error: undefined })
+})
+
+test("a run that passed throws the profile verdict first, then a cleanup failure", () => {
+  const cleanup = [new Error("rm failed")]
+  const touched = live.smokeCleanupOutcome({ failed: false, touched: "profile changed", cleanup })
+  assert.equal(touched.error.message, "profile changed")
+  assert.deepEqual(touched.report, cleanup)
+  assert.deepEqual(live.smokeCleanupOutcome({ failed: false, touched: undefined, cleanup }), { report: [], error: cleanup[0] })
+  assert.deepEqual(live.smokeCleanupOutcome({ failed: false, touched: undefined, cleanup: [] }), { report: [], error: undefined })
+})
+
+test("both runners settle their finally through the shared outcome", async () => {
+  for (const name of ["launch-smoke.mjs", "fleet-client-smoke.mjs"]) {
+    const source = await readFile(new URL(`./${name}`, import.meta.url), "utf8")
+    assert.match(source, /smokeCleanupOutcome\(\{ failed, touched, cleanup \}\)/u, name)
+  }
+})
+
 test("the verdict names the changed paths, and an unreadable profile is reported, not thrown", async () => {
   const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
   try {

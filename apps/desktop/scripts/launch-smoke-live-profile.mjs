@@ -54,6 +54,17 @@ export function liveProfileChanges(before, after) {
   return after.filter(([path, state]) => earlier.get(path) !== state).map(([path]) => path)
 }
 
+// What a runner's finally prints and throws once the run is over. touched is
+// the verdict below; cleanup holds the errors its own cleanup raised. A failed
+// run's error stays the one thrown, so nothing here is thrown for it; the rest
+// is printed beside it. A run that passed fails on the verdict first.
+export function smokeCleanupOutcome({ failed, touched, cleanup }) {
+  const all = [...(touched ? [touched] : []), ...cleanup]
+  if (failed) return { report: all, error: undefined }
+  if (touched) return { report: cleanup, error: new Error(touched) }
+  return { report: cleanup.slice(1), error: cleanup[0] }
+}
+
 // The check after a run, as a message, or undefined when nothing changed. It
 // never throws, so a runner can take it before its own cleanup and keep the
 // error a failed run is already carrying.

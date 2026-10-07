@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import electron from "electron"
 import { launchSmokeCommand, launchSmokeElectronArgs, launchSmokeEnvironment } from "./launch-smoke-args.mjs"
 import { executableOnPath, observeSmokeDebugging, smokeDiagnosticLog } from "./desktop-smoke.mjs"
-import { liveProfileSnapshot, liveProfileVerdict } from "./launch-smoke-live-profile.mjs"
+import { liveProfileSnapshot, liveProfileVerdict, smokeCleanupOutcome } from "./launch-smoke-live-profile.mjs"
 
 const liveProfile = await liveProfileSnapshot()
 const desktopRoot = fileURLToPath(new URL("../", import.meta.url))
@@ -257,13 +257,15 @@ try {
   // can fail. It never throws. An error already on its way out keeps its
   // place, and this one is printed beside it.
   const touched = await liveProfileVerdict(liveProfile)
-  if (touched && (failed || failure)) console.error(touched)
-  if (failure) throw failure.reason
-  try {
-    await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
-  } catch (error) {
-    if (touched && !failed) console.error(touched)
-    throw error
+  const cleanup = []
+  // A child that did not exit keeps the fixture for inspection.
+  if (failure) cleanup.push(failure.reason)
+  else {
+    try {
+      await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+    } catch (error) { cleanup.push(error) }
   }
-  if (touched && !failed) throw new Error(touched)
+  const outcome = smokeCleanupOutcome({ failed, touched, cleanup })
+  for (const item of outcome.report) console.error(item)
+  if (outcome.error) throw outcome.error
 }

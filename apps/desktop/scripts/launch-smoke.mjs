@@ -16,7 +16,7 @@ import {
   runSmokeProcess,
   successMarker,
 } from "./desktop-smoke.mjs"
-import { liveProfileSnapshot, liveProfileVerdict } from "./launch-smoke-live-profile.mjs"
+import { liveProfileSnapshot, liveProfileVerdict, smokeCleanupOutcome } from "./launch-smoke-live-profile.mjs"
 
 const description = "desktop launch smoke"
 const timeoutMs = launchSmokeTimeoutMs({ platform: process.platform, env: process.env })
@@ -53,15 +53,11 @@ try {
   // throws. A failure already on its way out keeps its own error, and the
   // others are printed beside it.
   const touched = await liveProfileVerdict(liveProfile)
-  let cleanup
+  const cleanup = []
   try {
     await rm(profileRoot, { force: true, recursive: true })
-  } catch (error) { cleanup = error }
-  if (failed) {
-    if (touched) console.error(touched)
-    if (cleanup) console.error("Desktop launch smoke could not remove its profile", cleanup)
-  } else if (touched) {
-    if (cleanup) console.error("Desktop launch smoke could not remove its profile", cleanup)
-    throw new Error(touched)
-  } else if (cleanup) throw cleanup
+  } catch (error) { cleanup.push(error) }
+  const outcome = smokeCleanupOutcome({ failed, touched, cleanup })
+  for (const item of outcome.report) console.error(item)
+  if (outcome.error) throw outcome.error
 }
