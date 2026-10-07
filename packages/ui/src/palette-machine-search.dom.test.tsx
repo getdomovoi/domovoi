@@ -266,6 +266,58 @@ it("keeps the picked row while the query changes during the switch", async () =>
   expect(screen.getByRole("option", { name: /Replay failed billing events/u }).textContent).toContain("switching to hetzner-cx42")
 })
 
+// Review round 2: a row picked while the next query waits out its debounce
+// belongs to the answers on screen, and the waiting search must not replace them.
+it("keeps a row picked during the next query's debounce", async () => {
+  const hits = (query: string) => ({ query, truncated: false, matches: [{ session: session("s-replay", "Replay failed billing events"), matchedIn: "title" as const }] })
+  const search = vi.fn(async (machineId: string, query: string): Promise<SessionSearchResult> => machineId === machines[0]!.id && query === "billing" ? hits(query) : none(query))
+  const { user, switching } = palette(search, vi.fn(() => true))
+  await user.type(screen.getByRole("combobox"), "billing")
+  const row = await screen.findByText("Replay failed billing events")
+  await user.type(screen.getByRole("combobox"), "x")
+  await user.click(row)
+  switching({ machineId: machines[0]!.id, sessionId: "s-replay" })
+  await new Promise((settle) => setTimeout(settle, 400))
+  expect(search).not.toHaveBeenCalledWith(machines[0]!.id, "billingx", expect.anything())
+  expect(screen.getByRole("option", { name: /Replay failed billing events/u }).textContent).toContain("switching to hetzner-cx42")
+})
+
+// The notice's button keeps Enter to itself, and only Enter: the palette's
+// toggle and every other key still reach the window.
+it("lets every key but Enter leave the notice's button", async () => {
+  const search = vi.fn(async (machineId: string): Promise<SessionSearchResult> => {
+    if (machineId === machines[1]!.id) throw new Error("no reply")
+    return none("billing")
+  })
+  const { user } = palette(search)
+  await user.type(screen.getByRole("combobox"), "billing")
+  const button = await screen.findByRole("button", { name: "Search only what answered" })
+  const seen: string[] = []
+  const listen = (event: KeyboardEvent) => { seen.push(event.key) }
+  window.addEventListener("keydown", listen)
+  try {
+    button.focus()
+    await user.keyboard("{Meta>}k{/Meta}")
+    expect(seen).toContain("k")
+  } finally {
+    window.removeEventListener("keydown", listen)
+  }
+})
+
+it("names a finished or moving session by its state", async () => {
+  const search = vi.fn(async (machineId: string): Promise<SessionSearchResult> => machineId === machines[0]!.id
+    ? { query: "billing", truncated: false, matches: [
+        { session: { ...session("s-done", "Billing export finished"), state: "done" }, matchedIn: "title" },
+        { session: { ...session("s-move", "Billing moving over"), state: "transferring" }, matchedIn: "title" },
+      ] }
+    : none("billing"))
+  const { user } = palette(search)
+  await user.type(screen.getByRole("combobox"), "billing")
+  const done = await screen.findByRole("option", { name: /Billing export finished/u })
+  expect(done.querySelector("[data-palette-meta]")?.textContent).toMatch(/^done /u)
+  expect(screen.getByRole("option", { name: /Billing moving over/u }).querySelector("[data-palette-meta]")?.textContent).toMatch(/^transferring /u)
+})
+
 // Picking a row on another machine keeps the palette open on that row while
 // the window switches, and closes it once the shell has opened the session.
 it("shows the switch on the picked row and closes when it lands", async () => {

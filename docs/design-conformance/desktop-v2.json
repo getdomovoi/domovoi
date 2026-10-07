@@ -2034,7 +2034,7 @@
         "export function remoteSessionMeta("
       ],
       "notes": [
-        "2026-10-06 (S3.10 slice o): built as drawn in the grouped layout (paletteSessions A): the notice is the design's (a dot and one sentence on the card's ground, Search only what answered, then Add it back once the machine is left out), each machine header has its answer dot and the asking sweep, a picked row shows switching to <machine> until the session opens there, and row meta is the session's state and age. Ruled differences are in humanRead palette.other-machines, 2026-10-06."
+        "2026-10-06 (S3.10 slice o): built as drawn in the grouped layout (paletteSessions A): the notice is the design's (a dot and one sentence on the card's ground, Search only what answered, then Add it back once the machine is left out), each machine header has its answer dot and the asking sweep, a picked row shows switching to <machine> until the window has arrived there and asked for the session (activation then runs as a drawer click does, with its own errors in the shell), and row meta is the session's state and age. Ruled differences are in humanRead palette.other-machines, 2026-10-06."
       ]
     },
     {

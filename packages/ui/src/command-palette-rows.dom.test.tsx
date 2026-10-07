@@ -49,7 +49,9 @@ it("draws every row on one line: a dot, the label, and the meta on the right", (
 it("draws the design's frame: 660px wide, 96px from the top", () => {
   palette()
   const frame = screen.getByRole("dialog", { name: "Domovoi commands" })
-  expect(frame.className.split(/\s+/u)).toEqual(expect.arrayContaining(["w-[660px]", "sm:max-w-[660px]", "top-24"]))
+  // The width never outgrows the window, at any breakpoint.
+  expect(frame.className.split(/\s+/u)).toEqual(expect.arrayContaining(["w-[660px]", "max-w-[calc(100%-2rem)]", "top-24"]))
+  expect(frame.className).not.toMatch(/sm:max-w-\[660px\]/u)
   expect(frame.className).not.toMatch(/(^|\s)(top-1\/3|sm:max-w-sm)(\s|$)/u)
 })
 

@@ -130,12 +130,15 @@ export function remoteSessionMeta(session: SessionSummary, now: number): { meani
   if (!stated && session.activeTurnId) return { meaning: "online", meta: "running" }
   const [meaning, note]: [StatusMeaning, string] = stated
     ?? (session.state === "transferred" ? ["idle", "moved to another machine"]
-      : session.state === "archiving" || session.state === "archived" ? ["idle", session.state]
-        : ["idle", "idle"])
+      : session.state === "transferring" ? ["waiting", "transferring"]
+        : session.state === "done" || session.state === "archiving" || session.state === "archived" ? ["idle", session.state]
+          : ["idle", "idle"])
   return { meaning, meta: `${note} ${age(session.updatedAt, now)}` }
 }
 
-function useMachineSearch(machineSearch: MachineSearch | undefined, query: string, open: boolean) {
+// While a picked row switches the window, the answers on screen are the ones
+// it was picked from: frozen, nothing is asked and nothing is cleared.
+function useMachineSearch(machineSearch: MachineSearch | undefined, query: string, open: boolean, frozen: boolean) {
   const [answers, setAnswers] = useState<Record<string, MachineAnswer>>({})
   const [askedFor, setAskedFor] = useState("")
   // A machine left out stays out, later queries included, until it is added
@@ -148,9 +151,10 @@ function useMachineSearch(machineSearch: MachineSearch | undefined, query: strin
   // back then is asked by that search, never for the query before it.
   const fired = useRef<{ query: string; controller: AbortController } | null>(null)
   const trimmed = query.trim()
-  const active = Boolean(machineSearch) && open && trimmed.length >= 2
+  const active = Boolean(machineSearch) && open && (frozen || trimmed.length >= 2)
   useEffect(() => {
     fired.current = null
+    if (frozen) return
     if (!machineSearch || !active) {
       setAnswers({})
       setAskedFor("")
@@ -168,7 +172,7 @@ function useMachineSearch(machineSearch: MachineSearch | undefined, query: strin
       }
     }, machineSearchDebounceMs)
     return () => { clearTimeout(timer); current.abort(); fired.current = null }
-  }, [machineSearch, active, trimmed])
+  }, [machineSearch, active, trimmed, frozen])
   const setLeft = (next: ReadonlySet<string>) => { leftOutNow.current = next; setLeftOut(next) }
   const leaveOutSilent = () => {
     setLeft(new Set([...leftOut, ...Object.entries(answers).filter(([, answer]) => answer.state === "silent").map(([id]) => id)]))
@@ -289,12 +293,12 @@ export function CommandPalette({
   const rows = targets ?? ranked
   // A row picked on another machine stays on screen, marked switching, while
   // the window moves. The window's move changes the shell's search targets,
-  // so the palette keeps the ones the row was picked from, and the query it
-  // was found by, until it closes.
-  const [picked, setPicked] = useState<{ machineId: string; sessionId: string; search: MachineSearch; query: string } | null>(null)
+  // so the palette keeps the ones the row was picked from, and the answers it
+  // was picked among, until it closes.
+  const [picked, setPicked] = useState<{ machineId: string; sessionId: string; search: MachineSearch } | null>(null)
   const sawSwitch = useRef(false)
   const searching = picked?.search ?? machineSearch
-  const remote = useMachineSearch(searching, picked?.query ?? query, open && !choosing)
+  const remote = useMachineSearch(searching, query, open && !choosing, picked !== null)
   const remoteMachines = searching?.machines ?? []
   const searched = searching ? [searching.here, ...remoteMachines] : []
   const answered = searched.filter((machine) => ["hits", "none"].includes(remote.answers[machine.id]?.state ?? "")).length
@@ -339,8 +343,9 @@ export function CommandPalette({
     if (choosingId !== null && choosing === null) reset()
   }, [choosingId, choosing])
 
-  // The shell holds the switch until the session opens there or the intent is
-  // dropped; either way the palette's part is over.
+  // The shell holds the switch until the window has arrived and asked for the
+  // session, or until the intent is dropped or refused; either way the
+  // palette's part is over, and activation reports its own errors.
   useEffect(() => {
     if (!picked) return
     if (switching) { sawSwitch.current = true; return }
@@ -363,9 +368,10 @@ export function CommandPalette({
   }, [open, restoreFocusTo])
 
   const notice = (key: string, meaning: StatusMeaning, text: string, action: string, onClick: () => void) => (
-    // The list's own key handling runs the highlighted row on Enter; a key
-    // pressed on the notice's button belongs to the button.
-    <div key={key} data-palette-notice onKeyDown={(event) => event.stopPropagation()} className="mx-0.5 mt-0.5 mb-1.5 flex items-center gap-2.5 rounded-[calc(var(--radius)-2px)] border bg-background px-3 py-[9px]">
+    // The list's own key handling runs the highlighted row on Enter; Enter
+    // pressed on the notice's button belongs to the button. Every other key,
+    // the palette's toggle among them, goes on as usual.
+    <div key={key} data-palette-notice onKeyDown={(event) => { if (event.key === "Enter") event.stopPropagation() }} className="mx-0.5 mt-0.5 mb-1.5 flex items-center gap-2.5 rounded-[calc(var(--radius)-2px)] border bg-background px-3 py-[9px]">
       <Dot meaning={meaning} />
       <span className="min-w-0 flex-1 text-[12px] leading-normal text-strong">{text}</span>
       <Button type="button" variant="outline" size="xs" className="shrink-0" onClick={onClick}>{action}</Button>
@@ -539,7 +545,7 @@ export function CommandPalette({
                               close()
                               return
                             }
-                            setPicked({ machineId: machine.id, sessionId: match.session.id, search: searching, query })
+                            setPicked({ machineId: machine.id, sessionId: match.session.id, search: searching })
                           }}
                         >
                           <Dot meaning={row.meaning} />
