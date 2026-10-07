@@ -126,7 +126,11 @@ function WatchingView({ title, watch, connected, notice, onBack, onRetry }: Watc
   const [heldRecord, setHeldRecord] = useState<TerminalRecord | undefined>(undefined)
   const latestRecord = useRef(record)
   latestRecord.current = record
-  const shown = record && heldRecord ? heldRecord : record
+  // Only the text holds still; how the terminal stands (ended, confirmed,
+  // last heard) is the current record's.
+  const shown = useMemo(() => record && heldRecord
+    ? { ...heldRecord, summary: record.summary, confirmed: record.confirmed, lastHeardAt: record.lastHeardAt }
+    : record, [heldRecord, record])
   const rows = useMemo(() => shown ? terminalRows(shown, connected) : [], [connected, shown])
   const closed = summary.state === "closed"
 

@@ -195,6 +195,17 @@ describe("WatchingScreen", () => {
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull()
   })
 
+  // Only the text holds still for a reader scrolled up; the shell's end is
+  // stated as it happens.
+  it("states the end while a reader scrolled up reads held text", async () => {
+    const first = watching({ buffer: "line\n".repeat(80) })
+    const { redraw } = await draw(first)
+    await scrollUp()
+    if (first.state !== "watching") throw new Error("only a watched terminal closes")
+    await redraw({ state: "watching", record: withNotification(first.record, { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 0 } }, new Date("2026-10-06T14:09:40.000Z")) })
+    expect(screen.getByText("The shell exited with code 0. No more output will arrive.")).toBeOnTheScreen()
+  })
+
   // At the bound each new line drops the oldest. A reader scrolled up keeps
   // reading what they were reading; the view catches up when they come back
   // to the end.
