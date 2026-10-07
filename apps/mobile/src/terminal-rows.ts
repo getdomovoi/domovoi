@@ -23,6 +23,9 @@ export type TerminalRecord = {
   liveAt: number | undefined
   // When live output began, by the daemon's clock.
   liveFrom: string | undefined
+  // When the daemon answered the watch this record came from. A new watch of
+  // the same shell (a reconnect or Try again) is a new record with a new one.
+  watchedAt: string
   replayStartsAt: string | undefined
   // The daemon's record does not start at the shell's start.
   machineDropped: boolean
@@ -64,6 +67,7 @@ export function watchFrom(result: TerminalWatchResult): TerminalRecord {
     text: buffer,
     liveAt: live ? buffer.length : undefined,
     liveFrom: live ? watchedAt : undefined,
+    watchedAt,
     replayStartsAt: bufferStartsAt,
     machineDropped: earlierOutputDropped,
     phoneDropped: false,

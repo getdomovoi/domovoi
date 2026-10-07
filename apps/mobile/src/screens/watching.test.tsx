@@ -156,6 +156,19 @@ describe("WatchingScreen", () => {
     expect(screen.getByRole("button", { name: "Jump to latest, 1 new" })).toBeOnTheScreen()
   })
 
+  // The new watch's replay and its first live line can arrive in one render.
+  it("counts the new watch's first lines when they arrive with its replay", async () => {
+    const first = watching()
+    const { redraw } = await draw(first)
+    await fireEvent.press(screen.getByRole("switch", { name: "Follow output" }))
+    await redraw(more(first, "one\ntwo\n"))
+    expect(screen.getByRole("button", { name: "Jump to latest, 2 new" })).toBeOnTheScreen()
+
+    const again = watching({ buffer: "one\ntwo\n", watchedAt: "2026-10-06T14:08:00.000Z" })
+    await redraw(more(again, "three\n"))
+    expect(screen.getByRole("button", { name: "Jump to latest, 1 new" })).toBeOnTheScreen()
+  })
+
   // The phone keeps no more than the daemon does, so at the bound each new
   // line pushes an old one out. What landed is still counted.
   it("keeps counting what lands once the phone holds all it keeps", async () => {

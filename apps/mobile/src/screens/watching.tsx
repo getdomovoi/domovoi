@@ -126,16 +126,21 @@ function WatchingView({ title, watch, connected, notice, onBack, onRetry }: Watc
   // What landed since the last render, counted while the view does not follow.
   // Read from the lines received rather than the lines held: at the bound each
   // new line pushes an old one out. A new watch of the same shell (a reconnect
-  // or Try again) replays what was counted and starts its own count at zero,
-  // so the count clears and runs from there.
+  // or Try again) replays what was counted, so the count clears and runs from
+  // that watch's own first live line, even one that lands with the replay.
   const received = record?.received ?? 0
-  const seenLines = useRef(received)
+  const watchedAt = record?.watchedAt
+  const seen = useRef({ watchedAt, received })
   useEffect(() => {
-    const added = received - seenLines.current
-    seenLines.current = received
+    // A count that went down can only be a new record, whatever its time.
+    if (seen.current.watchedAt !== watchedAt || received < seen.current.received) {
+      seen.current = { watchedAt, received: 0 }
+      setFollow((current) => ({ ...current, unseen: 0 }))
+    }
+    const added = received - seen.current.received
+    seen.current.received = received
     if (added > 0) setFollow((current) => followAfterOutput(current, added))
-    else if (added < 0) setFollow((current) => ({ ...current, unseen: 0 }))
-  }, [received])
+  }, [received, watchedAt])
 
   const jump = () => {
     setFollow(followJump)
