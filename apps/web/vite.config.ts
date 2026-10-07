@@ -5,9 +5,10 @@ import tailwindcss from "@tailwindcss/vite"
 import { defineConfig } from "vitest/config"
 
 import { vendorChunkFor } from "../../packages/ui/src/vite-chunks"
+import { webBundleManifest } from "./web-bundle-manifest"
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), webBundleManifest()],
   build: {
     rollupOptions: { output: { manualChunks: vendorChunkFor } },
   },

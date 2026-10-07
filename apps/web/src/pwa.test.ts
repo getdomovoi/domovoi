@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises"
 import { fileURLToPath } from "node:url"
+import { createContext, runInContext } from "node:vm"
 
 import { describe, expect, it, vi } from "vitest"
 
@@ -40,6 +41,26 @@ describe("Domovoi PWA", () => {
       expect(icon.readUInt32BE(16)).toBe(size)
       expect(icon.readUInt32BE(20)).toBe(size)
     }
+  })
+
+  // Served by the daemon, the worker's scope "/" covers /artifacts/ on the same
+  // origin too (docs/plans/s3-2-web-over-tailnet.md section 3.3), so it must
+  // never answer a request. It is run here, not only read: a listener added
+  // under any spelling is seen.
+  it("runs a worker that registers no fetch listener", async () => {
+    const source = await readFile(fileURLToPath(new URL("../public/sw.js", import.meta.url)), "utf8")
+    const registered: string[] = []
+    const worker = {
+      addEventListener: (type: string) => { registered.push(type) },
+      skipWaiting: () => Promise.resolve(),
+      clients: { claim: () => Promise.resolve() },
+    }
+    const scope = createContext({ self: worker })
+    runInContext(source, scope)
+
+    expect(registered).toEqual(["install", "activate"])
+    expect(Object.keys(worker)).toEqual(["addEventListener", "skipWaiting", "clients"])
+    expect(Object.keys(scope)).toEqual(["self"])
   })
 
   it("registers the network-only worker only in production", async () => {

@@ -15,10 +15,11 @@ applyStoredAppearanceTheme()
 import { browserPlatformEnvironment, createBrowserPlatform } from "./browser-platform"
 import { clientKindForBrowser } from "./client-kind"
 import { registerDomovoiServiceWorker } from "./pwa"
+import { rpcUrlFor } from "./rpc-url"
 import { forgetSupersededCredential } from "./credential"
 import { WebApp } from "./web-app"
 
-const rpcUrl = import.meta.env.VITE_DOMOVOI_RPC_URL ?? "ws://127.0.0.1:47831/rpc"
+const rpcUrl = rpcUrlFor({ override: import.meta.env.VITE_DOMOVOI_RPC_URL, dev: import.meta.env.DEV, location: window.location })
 const clientKind = clientKindForBrowser({
   coarsePointer: window.matchMedia("(pointer: coarse)").matches,
   maxTouchPoints: navigator.maxTouchPoints,
@@ -49,6 +50,7 @@ createRoot(document.getElementById("root")!).render(
     <WorkspaceErrorBoundary>
       <WebApp
         rpcUrl={rpcUrl}
+        pageOrigin={window.location.origin}
         clientKind={clientKind}
         environment={environment}
         storage={sessionStorage}
