@@ -81,10 +81,34 @@ export function windowsSupervisorStatus(record: WindowsSupervisorRecord, bootId:
   return { installed: null, running, supervising, detail: observed, ...(failure ? { supervisionFailure: failure } : {}) }
 }
 
+// Windows MoveFileEx can refuse replacement while status or stop readers, or
+// antivirus scans, hold the target open. Bound sharing retries to five seconds,
+// well below the helper's 15 second startup acknowledgement for prepared jobs.
+async function publishWindowsRecord(publish: () => void, pause: (ms: number) => Promise<void> = delay,
+  deadline?: OperationDeadline): Promise<void> {
+  const expiresAt = performance.now() + 5_000
+  let backoffMs = 25
+  for (;;) {
+    deadline?.throwIfExpired()
+    try { publish(); return } catch (error) {
+      if (!["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException | null)?.code ?? "")) throw error
+      const remaining = expiresAt - performance.now()
+      if (remaining <= 0) throw error
+      deadline?.throwIfExpired()
+      await pause(Math.min(backoffMs, remaining, deadline?.remainingMs() ?? Infinity))
+      deadline?.throwIfExpired()
+      if (performance.now() >= expiresAt) throw error
+      backoffMs = Math.min(backoffMs * 2, 500)
+    }
+  }
+}
+
 type Attempt = WindowsSupervisorRecord["attempts"][number]
 export type WindowsSupervisorEffects = {
   now(): Date
   write(record: WindowsSupervisorRecord): void
+  // Publication must finish even when a deliberate stop has been requested.
+  pause?(ms: number): Promise<void>
   launch(attempt: Attempt): Promise<WindowsJob>
   wait(ms: number, signal: AbortSignal): Promise<void>
 }
@@ -96,9 +120,13 @@ export async function superviseWindows(input: {
   const record: WindowsSupervisorRecord = { version: 1, platform: "win32", supervisorId: randomUUID(),
     registrationId: input.registrationId, configurationDigest: input.configurationDigest, loop: input.loop,
     startedAt: began, updatedAt: began, state: "starting", attempts: [], crashes: 0, reason: null }
-  const save = () => { record.updatedAt = time(); effects.write(structuredClone(record)) }
-  const finish = (state: "stopped" | "failed" | "exhausted", reason: WindowsSupervisorRecord["reason"]) => {
-    record.state = state; record.reason = reason; save(); return record
+  const save = async () => {
+    record.updatedAt = time()
+    const snapshot = structuredClone(record)
+    await publishWindowsRecord(() => effects.write(snapshot), effects.pause)
+  }
+  const finish = async (state: "stopped" | "failed" | "exhausted", reason: WindowsSupervisorRecord["reason"]) => {
+    record.state = state; record.reason = reason; await save(); return record
   }
   let job: WindowsJob | undefined
   const acceptPrepared = (attempt: Attempt, prepared: WindowsJob["prepared"]) => {
@@ -110,17 +138,17 @@ export async function superviseWindows(input: {
     attempt.empty = { at: time(), activeProcesses: 0, terminated: true }; attempt.exitCode = empty.code; attempt.stage = "empty"
   }
   try {
-    save()
+    await save()
     for (;;) {
-      if (input.signal.aborted) return finish("stopped", "deliberate-stop")
+      if (input.signal.aborted) return await finish("stopped", "deliberate-stop")
       const attempt: Attempt = { number: record.attempts.length + 1, job: `Global\\Domovoi-${randomUUID()}`, bootId: input.loop.bootId,
         startedAt: time(), stage: "intent", child: null, helper: null, empty: null, exitCode: null, backoffMs: 0 }
-      record.attempts.push(attempt); record.state = "starting"; save()
+      record.attempts.push(attempt); record.state = "starting"; await save()
       job = await effects.launch(attempt)
-      acceptPrepared(attempt, job.prepared); save()
+      acceptPrepared(attempt, job.prepared); await save()
       if (!input.signal.aborted) {
         await job.resume()
-        attempt.stage = "running"; record.state = "running"; save()
+        attempt.stage = "running"; record.state = "running"; await save()
       }
       let detach = () => {}
       const interrupted = new Promise<undefined>((yes) => {
@@ -130,14 +158,14 @@ export async function superviseWindows(input: {
       })
       let empty: WindowsJobEmpty | undefined
       try { empty = await Promise.race([interrupted, job.exited]) } finally { detach() }
-      if (!empty) { record.state = "stopping"; save(); empty = await job.stop() }
+      if (!empty) { record.state = "stopping"; await save(); empty = await job.stop() }
       acceptEmpty(attempt, empty); job = undefined
-      if (input.signal.aborted || empty.stopped) return finish("stopped", "deliberate-stop")
-      if (empty.code === 0) return finish("stopped", "clean-exit")
+      if (input.signal.aborted || empty.stopped) return await finish("stopped", "deliberate-stop")
+      if (empty.code === 0) return await finish("stopped", "clean-exit")
       ++record.crashes
       const backoff = supervisorBackoffs[record.crashes - 1]
-      if (backoff === undefined) return finish("exhausted", "restart-limit")
-      attempt.backoffMs = backoff; record.state = "backoff"; save()
+      if (backoff === undefined) return await finish("exhausted", "restart-limit")
+      attempt.backoffMs = backoff; record.state = "backoff"; await save()
       try { await effects.wait(backoff, input.signal) } catch (error) { if (!input.signal.aborted) throw error }
     }
   } catch (error) {
@@ -153,7 +181,7 @@ export async function superviseWindows(input: {
     if (job && attempt) {
       try { acceptEmpty(attempt, await job.stop()) } catch { /* Preserve the incomplete evidence. */ }
     }
-    try { return finish("failed", "observation-failure") } catch (publication) {
+    try { return await finish("failed", "observation-failure") } catch (publication) {
       throw new AggregateError([error, publication], "Windows supervision failed and its refusal could not be recorded", { cause: publication })
     }
   }
@@ -222,9 +250,11 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
       now: () => new Date(), write: (record) => { writeWindowsSupervisorRecord(home, record) },
       launch: (attempt) => launchWindowsJob({ job: attempt.job, ...entry, log: join(profileDirectory(home), "windows-daemon.log") }),
       wait: async (ms, signal) => { await delay(ms, undefined, { signal }) },
+      pause: delay,
     })
     if (monitorError !== undefined) {
-      record.state = "failed"; record.reason = "observation-failure"; record.updatedAt = new Date().toISOString(); writeWindowsSupervisorRecord(home, record)
+      record.state = "failed"; record.reason = "observation-failure"; record.updatedAt = new Date().toISOString()
+      await publishWindowsRecord(() => { writeWindowsSupervisorRecord(home, record) })
     }
     return record
   } finally {
@@ -280,7 +310,9 @@ export async function stopWindowsSupervisor(path: string, deadline: OperationDea
     requester = queryWindowsProcess(process.pid, deadline).identity ?? undefined
     if (!requester) throw new Error("Windows retirement requester identity is unavailable")
   }
-  writeSupervisorStopRequest(home, { registrationId: config.registrationId!, supervisorId: initial?.supervisorId ?? randomUUID(), loop: requester })
+  const pause = (ms: number) => delay(ms, undefined, { signal: deadline.signal })
+  const request = { registrationId: config.registrationId!, supervisorId: initial?.supervisorId ?? randomUUID(), loop: requester }
+  await publishWindowsRecord(() => { writeSupervisorStopRequest(home, request) }, pause, deadline)
   for (;;) {
     deadline.throwIfExpired()
     let lease: FileLease | undefined
@@ -300,7 +332,8 @@ export async function stopWindowsSupervisor(path: string, deadline: OperationDea
         const bootId = queryWindowsProcess(process.pid, deadline).bootId
         current = recoverWindowsJobClosure(current, bootId, deadline)
         assertWindowsTreeProof(current, bootId)
-        writeWindowsSupervisorRecord(home, current)
+        const settled = current
+        await publishWindowsRecord(() => { writeWindowsSupervisorRecord(home, settled) }, pause, deadline)
         deadline.throwIfExpired()
         if (options.retire === false) {
           // Hold both the startup lease and retirement marker through scheduler
