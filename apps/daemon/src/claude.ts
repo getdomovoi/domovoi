@@ -310,18 +310,14 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       signal?.throwIfAborted()
       return models.map((model, index) => {
         const efforts = model.supportsEffort
-          ? [...(model.supportedEffortLevels ?? [])]
+          ? ["unset", ...(model.supportedEffortLevels ?? [])]
           : []
-        const defaultReasoningEffort = efforts.includes("high")
-          ? "high"
-          : efforts[0] ?? "medium"
         return {
           provider: "claude-code",
           id: model.value,
           displayName: model.displayName,
           description: model.description,
           supportedReasoningEfforts: efforts,
-          defaultReasoningEffort,
           isDefault: index === 0,
         }
       })
@@ -595,7 +591,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       ...(settings ? { settings } : {}),
       ...(resume ? { resume: threadId } : { sessionId: threadId }),
       model: runtime.model,
-      effort: claudeEffortFor(runtime.reasoning),
+      ...(runtime.reasoning === "unset" ? {} : { effort: claudeEffortFor(runtime.reasoning) }),
       permissionMode: permission.permissionMode,
       allowDangerouslySkipPermissions: permission.allowDangerouslySkipPermissions,
       canUseTool: (toolName, toolInput, context) =>
@@ -685,7 +681,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     await Promise.all([
       session.query.setModel(runtime.model),
       session.query.setPermissionMode(permission.permissionMode),
-      session.query.applyFlagSettings({ effortLevel: claudeEffortFor(runtime.reasoning) }),
+      // The SDK requires null to clear a prior effort; undefined leaves it set.
+      session.query.applyFlagSettings({ effortLevel: runtime.reasoning === "unset" ? null : claudeEffortFor(runtime.reasoning) }),
     ])
     session.runtime = runtime
   }
