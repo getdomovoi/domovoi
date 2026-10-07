@@ -84,6 +84,38 @@ has the printed text and failure handling.
   retirement path; [daemon services](daemon-services.md#windows-removal) states its limit.
   This change does not provide Windows boot supervision and does not close S1.1.
 
+### Real-hardware acceptance checklist, 2026-10-06
+
+Q4: fetzy runs these on real hardware. Each row stays **[H]** until its result is
+recorded. Use an already configured authenticated observer that sends `system.hello`
+without starting Domovoi, opening Desktop, starting WSL, or logging into the service
+user's Linux session. Record the tested commit and OS version, plus the Windows
+build and WSL distribution/version where applicable. Keep credentials out of the record.
+
+1. On Windows, install the native Windows task and the WSL task from the tested commit.
+   Record their distinct endpoints and confirm both answer authenticated `system.hello`.
+2. Sign out normally, then sign back into the same Windows account. Start nothing by
+   hand. Require both the native daemon and WSL daemon to answer `system.hello` through
+   their logon tasks. Record each result and any refusal separately.
+3. Choose **Restart** in Windows, then sign in normally. Again start nothing by hand
+   and require both daemons to answer. This proves startup after logon following a
+   reboot, not Windows supervision before anyone signs in.
+4. On Linux, run `domovoid service install` as the intended service user. Require no
+   linger warning and confirm `loginctl show-user <uid> --property=Linger --value`
+   reports `yes`. Confirm authenticated `system.hello` before continuing.
+5. Log that Linux user out of every session. From the observer, require the daemon
+   still to answer `system.hello` without a new login or manual service start.
+6. Reboot Linux. Before anyone logs in, require authenticated `system.hello` from the
+   observer. Record failure as failure; logging in to inspect it cannot satisfy this row.
+
+| Hardware run | Date | OS/version | Commit SHA | Result and evidence |
+| --- | --- | --- | --- | --- |
+| Windows sign-out/sign-in, native task | Pending | Pending | Pending | [H] |
+| Windows sign-out/sign-in, WSL task | Pending | Pending | Pending | [H] |
+| Windows reboot then logon, native task | Pending | Pending | Pending | [H] |
+| Windows reboot then logon, WSL task | Pending | Pending | Pending | [H] |
+| Linux logout with linger on | Pending | Pending | Pending | [H] |
+| Linux reboot before any login | Pending | Pending | Pending | [H] |
 
 The accepted scope is Unix acceptance, two status-reporting fixes, and Windows
 and WSL lifecycle decisions. Existing Unix adapters already install, supervise
