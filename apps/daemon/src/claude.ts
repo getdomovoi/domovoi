@@ -102,6 +102,7 @@ type ClaudePermissionContext = {
 
 export type ClaudeQueryOptions = {
   cwd?: string
+  env?: NodeJS.ProcessEnv
   sessionId?: string
   resume?: string
   model?: string
@@ -163,13 +164,21 @@ export type ClaudeQueryFactory = (
   options: ClaudeQueryOptions,
 ) => ClaudeQuery
 
+type ClaudeTask = { subject: string; status: "pending" | "in_progress" | "completed" }
+type ClaudeTaskTool = {
+  type: "task"
+  name: "TaskCreate" | "TaskUpdate" | "TaskList"
+  input: Record<string, unknown>
+}
+
 type Session = {
   threadId: string
   cwd: string
   input: PushStream<ClaudeUserMessage>
   query: ClaudeQuery
   runtime: Runtime
-  tools: Map<string, { type: "command"; command: string } | { type: "file"; path: string }>
+  tools: Map<string, { type: "command"; command: string } | { type: "file"; path: string } | ClaudeTaskTool>
+  tasks: Map<string, ClaudeTask>
   // Tool calls the PreToolUse hook sent to an approval, by tool use id, with
   // the reason the approval card should give.
   screenedReads: Map<string, { reason: string; path?: string }>
@@ -584,6 +593,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const processes: ClaudeProcess[] = []
     const options: ClaudeQueryOptions = {
       ...baseOptions(),
+      // Claude Code 2.1.292 offers its task tools (TaskCreate, TaskUpdate,
+      // TaskList), and so a working plan, to a current model only with this
+      // variable set. The SDK's env replaces the process environment.
+      env: { ...process.env, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" },
       ...(instructions
         ? { systemPrompt: { type: "preset", preset: "claude_code", append: instructions } }
         : {}),
@@ -610,6 +623,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       query,
       runtime,
       tools: new Map(),
+      tasks: new Map(),
       screenedReads: new Map(),
       turnMessageIds: new Set(),
       interruptedMessageIds: new Set(),
@@ -922,6 +936,11 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         }
         continue
       }
+      if (block.name === "TaskCreate" || block.name === "TaskUpdate" || block.name === "TaskList") {
+        // Task tools bypass canUseTool. Match their results by tool use id.
+        session.tools.set(block.id, { type: "task", name: block.name, input })
+        continue
+      }
       if (block.name === "Bash") {
         const command = typeof input.command === "string" ? input.command : "Bash"
         session.tools.set(block.id, { type: "command", command })
@@ -961,6 +980,20 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       if (!tracked) continue
       session.tools.delete(block.tool_use_id)
       const failed = block.is_error === true
+      if (tracked.type === "task") {
+        if (!failed && updateClaudeTasks(session.tasks, tracked, rawToolResult)) {
+          this.#emit({
+            type: "plan-updated",
+            threadId: session.threadId,
+            turnId,
+            steps: [...session.tasks.values()].map(({ subject, status }) => ({
+              text: subject,
+              status: status === "in_progress" ? "in-progress" : status,
+            })),
+          })
+        }
+        continue
+      }
       if (tracked.type === "command") {
         this.#emit({
           type: "item",
@@ -1219,6 +1252,49 @@ async function claudeContextOccupancy(
   } finally {
     if (timeout) clearTimeout(timeout)
   }
+}
+
+function isClaudeTaskStatus(value: unknown): value is ClaudeTask["status"] {
+  return value === "pending" || value === "in_progress" || value === "completed"
+}
+
+function updateClaudeTasks(tasks: Map<string, ClaudeTask>, tool: ClaudeTaskTool, rawResult: unknown): boolean {
+  const result = asRecord(rawResult)
+  if (!result) return false
+  if (tool.name === "TaskCreate") {
+    // The input has no task id. Only the top-level result supplies it.
+    const task = asRecord(result.task)
+    if (!task || typeof task.id !== "string" || typeof task.subject !== "string") return false
+    const previous = tasks.get(task.id)
+    if (previous?.subject === task.subject && previous.status === "pending") return false
+    tasks.set(task.id, { subject: task.subject, status: "pending" })
+    return true
+  }
+  if (tool.name === "TaskUpdate") {
+    const { taskId, subject, status } = tool.input
+    if (result.success !== true || typeof taskId !== "string") return false
+    const previous = tasks.get(taskId)
+    if (!previous) return false
+    if (status === "deleted") return tasks.delete(taskId)
+    const next: ClaudeTask = {
+      subject: typeof subject === "string" ? subject : previous.subject,
+      status: isClaudeTaskStatus(status) ? status : previous.status,
+    }
+    if (previous.subject === next.subject && previous.status === next.status) return false
+    tasks.set(taskId, next)
+    return true
+  }
+  if (!Array.isArray(result.tasks)) return false
+  const listed = new Map<string, ClaudeTask>()
+  for (const candidate of result.tasks) {
+    const task = asRecord(candidate)
+    if (!task || typeof task.id !== "string" || typeof task.subject !== "string" || !isClaudeTaskStatus(task.status)) return false
+    listed.set(task.id, { subject: task.subject, status: task.status })
+  }
+  // TaskList restores the full ordered list, including after a session resume.
+  tasks.clear()
+  for (const [id, task] of listed) tasks.set(id, task)
+  return true
 }
 
 function claudeTodoSteps(value: unknown): AgentWorkingPlanStep[] | undefined {

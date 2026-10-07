@@ -860,6 +860,39 @@ describe("CodexAppServerAdapter", () => {
     await adapter.close()
   })
 
+  // Codex made update_plan opt-in (openai/codex a9519cbcdd, #41744): at
+  // rust-v0.160.1 the tool is registered only when tools.update_plan.enabled
+  // is true. Measured 2026-10-07 with codex-cli 0.160.1: without it the model
+  // reported no update_plan tool and no turn/plan/updated arrived; with it in
+  // the thread config, Codex called update_plan and sent turn/plan/updated.
+  it("turns on Codex's update_plan tool for every thread it starts or resumes", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("build", false) })
+    transport.receive({ id: 2, result: { config: {}, origins: {} } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
+    expect(transport.sent[3]).toMatchObject({
+      method: "thread/start",
+      params: { config: { tools: { update_plan: { enabled: true } } } },
+    })
+    transport.receive({ id: 3, result: { thread: { id: "thread-planned" } } })
+    await expect(starting).resolves.toBe("thread-planned")
+
+    const resuming = adapter.resumeThread({ threadId: "thread-restored", cwd: "/worktree", runtime: runtime("build", false) })
+    await vi.waitFor(() => expect(transport.sent[4]).toBeDefined(), { timeout: 5_000 })
+    expect(transport.sent[4]).toMatchObject({
+      method: "thread/resume",
+      params: { threadId: "thread-restored", config: { tools: { update_plan: { enabled: true } } } },
+    })
+    transport.receive({ id: 4, result: { thread: { id: "thread-restored" } } })
+    await expect(resuming).resolves.toBeUndefined()
+    await adapter.close()
+  })
+
   it("lists visible models from the installed Codex app server", async () => {
     const transport = new FakeTransport()
     const adapter = new CodexAppServerAdapter(() => transport)
