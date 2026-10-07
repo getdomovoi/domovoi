@@ -542,11 +542,13 @@ export function CommandPalette({
                   <div key={machine.id} role="group" aria-label={machine.label} className="flex flex-col">
                     <div className="flex items-center gap-2 px-2.5 py-1.5">
                       <Dot meaning={answerMeaning[answer.state]} />
-                      <span className="font-machine text-[11px] text-strong">{machine.label}</span>
-                      <span className="text-[11px] text-faint">{machine.transport}</span>
+                      {/* A long machine name truncates; the transport and the
+                          machine's answer keep their place on a narrow window. */}
+                      <span className="min-w-0 truncate font-machine text-[11px] text-strong">{machine.label}</span>
+                      <span className="shrink-0 text-[11px] text-faint">{machine.transport}</span>
                       <span className="flex-1" />
                       {answer.state === "asking" ? <Sweep /> : null}
-                      <span className={cn("text-[11px]", answerText[answer.state])}>{answerLabel(answer)}</span>
+                      <span className={cn("shrink-0 text-[11px]", answerText[answer.state])}>{answerLabel(answer)}</span>
                     </div>
                     {answer.state === "hits" ? answer.matches.map((match) => {
                       const row = remoteSessionMeta(match.session, now)

@@ -330,6 +330,19 @@ it("runs no other command while a picked row switches the window", async () => {
   expect(onOpenChange).not.toHaveBeenCalled()
 })
 
+// PR #745 review (P2): a long unbroken machine name truncates, and the
+// transport and the machine's answer keep their place on a narrow window.
+it("truncates a long machine name and keeps its answer in view", async () => {
+  const search = vi.fn(async (_machineId: string, query: string): Promise<SessionSearchResult> => none(query))
+  const { user } = palette(search)
+  await user.type(screen.getByRole("combobox"), "billing")
+  await screen.findByText("searched 3 of 3 machines")
+  const group = within(screen.getByRole("group", { name: "hetzner-cx42" }))
+  expect(group.getByText("hetzner-cx42").className.split(/\s+/u)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]))
+  expect(group.getByText("tailnet").className.split(/\s+/u)).toContain("shrink-0")
+  expect(group.getByText("no matches").className.split(/\s+/u)).toContain("shrink-0")
+})
+
 // The notice's button keeps Enter to itself, and only Enter: the palette's
 // toggle and every other key still reach the window.
 it("lets every key but Enter leave the notice's button", async () => {
