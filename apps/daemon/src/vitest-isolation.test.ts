@@ -1,11 +1,11 @@
 import { execFile } from "node:child_process"
 import { statSync } from "node:fs"
 import { homedir, tmpdir, userInfo } from "node:os"
-import { win32 } from "node:path"
+import { join, win32 } from "node:path"
 import { promisify } from "node:util"
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { runningInCi } from "../vitest.global-setup.js"
-import { daemonTestEnvironment, daemonTestHomePrefix, daemonTestLoginProfile, inheritedPath } from "../vitest.setup.js"
+import { createDaemonTestHome, daemonTestEnvironment, daemonTestHomePrefix, daemonTestLoginProfile, inheritedPath } from "../vitest.setup.js"
 import { loginShellPathCommand } from "./tool-path.js"
 
 const execute = promisify(execFile)
@@ -21,6 +21,44 @@ describe("native profile guard CI detection", () => {
     ["0", false],
   ])("treats CI=%s as %s", (flag, expected) => {
     expect(runningInCi(flag === undefined ? {} : { CI: flag })).toBe(expected)
+  })
+})
+
+describe("daemon test scratch home creation", () => {
+  it("uses the short Windows sibling when its parent is writable", () => {
+    const mkdtemp = vi.fn((prefix: string) => `${prefix}ABCDEF`)
+    expect(createDaemonTestHome("win32", "D:\\Temp", mkdtemp)).toBe("D:\\dv-ABCDEF")
+    expect(mkdtemp).toHaveBeenCalledExactlyOnceWith("D:\\dv-")
+  })
+
+  it.each(["EACCES", "EPERM"])("falls back inside Windows TEMP after %s from its parent", (code) => {
+    const mkdtemp = vi.fn((prefix: string) => `${prefix}ABCDEF`)
+      .mockImplementationOnce(() => { throw Object.assign(new Error("parent is not writable"), { code }) })
+    const home = createDaemonTestHome("win32", "D:\\Temp", mkdtemp)
+    expect(home).toBe("D:\\Temp\\dv-ABCDEF")
+    expect(mkdtemp.mock.calls).toEqual([["D:\\dv-"], ["D:\\Temp\\dv-"]])
+    expect(daemonTestEnvironment("win32", home)).toEqual({ HOME: home, USERPROFILE: home, TEMP: home, TMP: home })
+  })
+
+  it("rethrows other Windows creation errors without a fallback", () => {
+    const error = Object.assign(new Error("disk is full"), { code: "ENOSPC" })
+    const mkdtemp = vi.fn(() => { throw error })
+    expect(() => createDaemonTestHome("win32", "D:\\Temp", mkdtemp)).toThrow(error)
+    expect(mkdtemp).toHaveBeenCalledExactlyOnceWith("D:\\dv-")
+  })
+
+  it.each(["darwin", "linux"] as const)("keeps creation inside the temporary directory on %s", (platform) => {
+    const prefix = join(tmpdir(), "domovoi-vitest-home-")
+    const mkdtemp = vi.fn((prefix: string) => `${prefix}ABCDEF`)
+    expect(createDaemonTestHome(platform, tmpdir(), mkdtemp)).toBe(`${prefix}ABCDEF`)
+    expect(mkdtemp).toHaveBeenCalledExactlyOnceWith(prefix)
+  })
+
+  it.each(["darwin", "linux"] as const)("does not retry a permission error on %s", (platform) => {
+    const error = Object.assign(new Error("temp is not writable"), { code: "EACCES" })
+    const mkdtemp = vi.fn(() => { throw error })
+    expect(() => createDaemonTestHome(platform, tmpdir(), mkdtemp)).toThrow(error)
+    expect(mkdtemp).toHaveBeenCalledExactlyOnceWith(join(tmpdir(), "domovoi-vitest-home-"))
   })
 })
 

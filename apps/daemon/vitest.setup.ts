@@ -14,6 +14,21 @@ export function daemonTestHomePrefix(platform: NodeJS.Platform, temporaryDirecto
     : join(temporaryDirectory, "domovoi-vitest-home-")
 }
 
+export function createDaemonTestHome(
+  platform: NodeJS.Platform,
+  temporaryDirectory: string,
+  mkdtemp: (prefix: string) => string,
+): string {
+  try {
+    return mkdtemp(daemonTestHomePrefix(platform, temporaryDirectory))
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null | undefined)?.code
+    if (platform !== "win32" || (code !== "EACCES" && code !== "EPERM")) throw error
+    // TEMP itself may be writable even when its parent refuses siblings.
+    return mkdtemp(win32.join(temporaryDirectory, "dv-"))
+  }
+}
+
 export function daemonTestEnvironment(platform: NodeJS.Platform, home: string): NodeJS.ProcessEnv {
   return {
     HOME: home, USERPROFILE: home,
@@ -29,7 +44,7 @@ export const inheritedPath = process.env.PATH ?? ""
 const inheritedHome = homedir()
 const inheritedProfile = process.env.DOMOVOI_PROFILE_DIR
 const protectedProfiles = [join(inheritedHome, ".domovoi"), ...(inheritedProfile ? [inheritedProfile] : [])]
-const home = mkdtempSync(daemonTestHomePrefix(process.platform, tmpdir()))
+const home = createDaemonTestHome(process.platform, tmpdir(), mkdtempSync)
 // Login-shell tool PATH must match the runner's. An empty HOME on macOS
 // otherwise falls back to /usr/bin xcrun shims instead of Homebrew tools.
 if (process.platform !== "win32") {
