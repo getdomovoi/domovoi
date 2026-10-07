@@ -906,6 +906,30 @@ describe("App", () => {
       expect(screen.getByText("Live")).toBeOnTheScreen()
     })
 
+    // Another client can replace the workspace with one that no longer holds
+    // the open session. The phone goes back to the list, and stops watching.
+    it("unwatches and stops listing when the open session leaves the snapshot", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      const without = workspace()
+      without.approvals = []
+      without.sessions = without.sessions.filter((session) => session.id !== audit.id)
+      await act(async () => { socket.push("workspace.changed", without) })
+      await settle()
+      expect(screen.queryByRole("button", { name: "Back to sessions" })).toBeNull()
+      expect(socket.requests("terminal.unwatch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }])
+
+      jest.useFakeTimers({ advanceTimers: true, doNotFake: ["nextTick", "setImmediate", "queueMicrotask"] })
+      try {
+        const listed = socket.requests("terminal.list").length
+        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs * 2) })
+        await settle()
+        expect(socket.requests("terminal.list")).toHaveLength(listed)
+      } finally {
+        jest.useRealTimers()
+      }
+    })
+
     it("closes the full view when the daemon no longer lists its terminal", async () => {
       const { socket } = await openAudit()
       await watchOne(socket)

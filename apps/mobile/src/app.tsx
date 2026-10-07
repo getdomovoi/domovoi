@@ -427,7 +427,10 @@ export function App() {
   const [terminals, setTerminals] = useState<ReadonlyMap<string, TerminalWatch>>(new Map())
   const [terminalsListed, setTerminalsListed] = useState(false)
   const [openTerminalId, setOpenTerminalId] = useState<string | undefined>(undefined)
-  const watchedSessionId = openSessionId && !(tablet && tab === "sessions") ? openSessionId : undefined
+  // The session as the daemon's snapshot holds it, not only the id the phone
+  // remembers: a workspace replaced by another client without this session
+  // sends the phone back to the list, and its terminals stop being watched.
+  const watchedSessionId = openSession && !(tablet && tab === "sessions") ? openSession.id : undefined
   // The current run's way to watch one terminal again, for Try again, and to
   // list the session's terminals now rather than at the next interval.
   const rewatch = useRef<((terminalId: string, openedAt: string) => void) | undefined>(undefined)
