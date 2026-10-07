@@ -11,6 +11,8 @@ assert.equal(daemonCommand.nodeDaemonCommandDependencies().execPath, daemonComma
 const commandProfile = mkdtempSync(join(tmpdir(), "domovoi-dist-command-"))
 try {
   const imported = spawnSync(process.execPath, [
+    // Node 22 warns on node:sqlite when the import chain loads it.
+    "--disable-warning=ExperimentalWarning",
     "--input-type=module", "-e", 'await import("./dist/daemon-command.js")',
   ], {
     encoding: "utf8", timeout: 2_000,
