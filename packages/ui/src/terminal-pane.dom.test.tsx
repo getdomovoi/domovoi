@@ -736,6 +736,66 @@ describe("Attach this output to the composer", () => {
     expect(screen.getByText(/The pane's history filled up, so earlier output may be missing\./u)).toBeTruthy()
   })
 
+  // Rows also leave the history without a line feed: an index (ESC D) at the
+  // bottom of the screen scrolls just the same.
+  it("marks an attachment whose history filled through index scrolls", { timeout: 20_000 }, async () => {
+    const user = userEvent.setup()
+    const composer = createComposerInbox()
+    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
+    composer.open(sessionId, receive)
+    const target = harness()
+    const { container } = render(<TerminalPane connected controls={target.controls} composer={composer} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.connect(thisClient)
+    })
+    const rows = Array.from({ length: 5_100 }, (_, index) => `row ${index}\r\x1bD`).join("")
+    await act(async () => {
+      target.deliverOutput(`${rows}\x1b[3J$ after the clear\r\x1bD`)
+    })
+    await parsedThrough(container, "$ after the clear")
+
+    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+
+    await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1))
+    const [attachment] = receive.mock.calls[0]!
+    expect("content" in attachment ? attachment.content : "").toMatch(/^\[this pane's history filled up; earlier output may be missing from this file\]\n/u)
+  })
+
+  // Narrowing the grid reflows long rows into more rows, which can push the
+  // oldest out of the history with no output at all.
+  it("marks an attachment whose history filled when the grid narrowed", { timeout: 20_000 }, async () => {
+    const user = userEvent.setup()
+    const composer = createComposerInbox()
+    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
+    composer.open(sessionId, receive)
+    const target = watcher()
+    const listing = (over: Partial<TerminalWatchResult>) => {
+      const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, ...listed } = watchResult(over)
+      return listed
+    }
+    const list = vi.fn(async (_sessionId: string) => [listing({ cols: 20 })])
+    const controls: TerminalControls = { ...target.controls, list }
+    const { container } = render(
+      <TerminalPane connected readOnly composer={composer} controls={controls} holderRefreshMs={20} machineName="worktop" sessionId={sessionId} />,
+    )
+    const wide = Array.from({ length: 3_000 }, (_, index) => `${String(index).padStart(5, "0")} ${"z".repeat(60)}\r\n`).join("")
+    await act(async () => {
+      target.watched.resolve(watchResult({ buffer: `${wide}END OF OUTPUT\r\n` }))
+    })
+    await parsedThrough(container, "END OF OUTPUT")
+    await vi.waitFor(() => expect(list).toHaveBeenCalled())
+    await act(async () => {
+      target.deliverOutput("\x1b[3J$ after the clear\r\n")
+    })
+    await parsedThrough(container, "$ after the clear")
+
+    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+
+    await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1))
+    const [attachment] = receive.mock.calls[0]!
+    expect("content" in attachment ? attachment.content : "").toMatch(/^\[this pane's history filled up; earlier output may be missing from this file\]\n/u)
+  })
+
   // A disconnect disposes the renderer the button reads from, so the button
   // goes with it rather than staying and doing nothing.
   it("is not offered once the renderer is gone", async () => {

@@ -198,6 +198,27 @@ export function TerminalPane({
     xtermRef.current = terminal
     setRendered(true)
     fit.fit()
+    // Whether the history has filled, so its oldest rows may have gone. Taken
+    // on the normal buffer (the alternate screen keeps no history) at every
+    // point rows can be pushed out: a line feed or any other scroll, both
+    // inside the parse so a clear later in the same write cannot hide it, and
+    // either side of a resize, whose reflow can push rows out too.
+    historyFilledRef.current = false
+    const noteHistory = () => {
+      if (terminal.buffer.normal.length >= terminalScrollback + terminal.rows) historyFilledRef.current = true
+    }
+    const fed = terminal.onLineFeed(noteHistory)
+    const scrolled = terminal.onScroll(noteHistory)
+    const resizeTo = (cols: number, rows: number) => {
+      noteHistory()
+      terminal.resize(cols, rows)
+      noteHistory()
+    }
+    const refit = () => {
+      noteHistory()
+      fit.fit()
+      noteHistory()
+    }
     const unsubscribe = controls.subscribe(terminalId, {
       output: ({ data }) => terminal.write(data),
       closed: ({ exitCode }) => {
@@ -211,7 +232,7 @@ export function TerminalPane({
         terminal.options.disableStdin = !ownsTerminal
         // Taking the shell makes this pane's grid the shell's grid.
         if (ownsTerminal && !owned && attached) {
-          fit.fit()
+          refit()
           void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
         }
         setClaimHeld(true)
@@ -224,19 +245,12 @@ export function TerminalPane({
         if (active) setError(failure(cause, "Terminal input failed"))
       })
     })
-    // Checked at every line feed, on the normal buffer (the alternate screen
-    // keeps no history). A line feed is handled inside the parse, so a clear
-    // later in the same write cannot shrink the buffer before this looks.
-    historyFilledRef.current = false
-    const parsed = terminal.onLineFeed(() => {
-      if (terminal.buffer.normal.length >= terminalScrollback + terminal.rows) historyFilledRef.current = true
-    })
     // The shell has one grid, the holder's. A pane that does not hold it draws
     // at that grid rather than its own width, or every cursor-positioned
     // character the shell prints lands in the wrong column.
     const observer = new ResizeObserver(() => {
       if (attached && !ownsTerminal) return
-      fit.fit()
+      refit()
       if (!attached) return
       void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
     })
@@ -254,7 +268,7 @@ export function TerminalPane({
         if (!current || current.state !== "live") return
         setClaimHeld(current.claimHeld)
         setMetadata((shown) => shown && !sameOwner(shown.owner, current.owner) ? { ...shown, owner: current.owner } : shown)
-        if (terminal.cols !== current.cols || terminal.rows !== current.rows) terminal.resize(current.cols, current.rows)
+        if (terminal.cols !== current.cols || terminal.rows !== current.rows) resizeTo(current.cols, current.rows)
       }, () => undefined)
     }, holderRefreshMs) : undefined
     if (readOnly && watch) {
@@ -268,7 +282,7 @@ export function TerminalPane({
           const { buffer, claimHeld: held, cols, cwd, owner, rows, shell, state } = record
           setMetadata({ terminalId, sessionId, cols, rows, shell, cwd, buffer, owner })
           setClaimHeld(held)
-          terminal.resize(cols, rows)
+          resizeTo(cols, rows)
           setEarlierDropped(record.earlierOutputDropped)
           if (buffer) terminal.write(buffer)
           if (state === "closed") {
@@ -295,7 +309,7 @@ export function TerminalPane({
           ownsTerminal = session.owner.clientId === controls.clientId
           terminal.options.disableStdin = !ownsTerminal
           setMetadata(session)
-          if (!ownsTerminal) terminal.resize(session.cols, session.rows)
+          if (!ownsTerminal) resizeTo(session.cols, session.rows)
           if (session.buffer) terminal.write(session.buffer)
           if (ownsTerminal) {
             void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
@@ -314,7 +328,8 @@ export function TerminalPane({
       unsubscribe()
       observer.disconnect()
       input.dispose()
-      parsed.dispose()
+      fed.dispose()
+      scrolled.dispose()
       terminal.dispose()
       if (xtermRef.current === terminal) xtermRef.current = null
       if (readOnly && unwatch) void unwatch(terminalId).catch(() => undefined)
