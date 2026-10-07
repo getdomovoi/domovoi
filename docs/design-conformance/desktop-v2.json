@@ -474,20 +474,19 @@
       "id": "audit.rows",
       "name": "Audit rows",
       "where": "audit surface: when, what, actor, detail, who, outcome",
-      "presence": [
-        "function AuditEntryRow("
-      ],
       "evidence": [
         "function AuditEntryRow(",
+        "outcomeDotClass(entry.outcome)",
+        "w-[62px]",
+        "{entry.actor.kind}",
+        "@container overflow-hidden",
+        "@3xl:w-[190px]",
+        "@3xl:w-[150px]",
         {
           "absent": "<pre className=\"max-h-40",
           "in": "packages/ui/src/audit-log-view.tsx"
         }
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "rows exist (the earlier evidence was only the component name); they are not the drawn row. The design draws an outcome dot, a 62px time, the action with an actor pill, a detail line, then 190px who and 150px outcome columns. AuditEntryRow draws the action with an outcome Badge, a locale timestamp on the right, an actor line and the detail in a pre block. Every field the design names is in auditEntrySchema, so this is client-only"
-      }
+      ]
     },
     {
       "id": "audit.export",
@@ -501,11 +500,12 @@
       ],
       "evidence": [
         "Export this query",
+        "saves to this device",
         "rows match"
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "export exists; the line under it says N rows loaded where the design says 1,204 rows match, because the query page carries no total (protocol). It also says writes a file on this machine in every client, while a web tab downloads to the browser's device; Q346 A (2026-10-02) makes that copy depend on the client kind (saves to this device in a browser)"
+        "reason": "export exists; the line under it says N rows loaded where the design says 1,204 rows match, because the query page carries no total (protocol, Codex follow-up C1). The Q346 A copy is built in AuditLogView (S3.10j, 2026-10-06): a browser client says saves to this device, a desktop writes a file on this machine. WorkspaceShell does not pass clientKind to it yet, so until that one-line follow-up every client draws the desktop line"
       }
     },
     {
@@ -515,17 +515,17 @@
       "copy": [
         "WHAT THIS LOG IS, AND IS NOT"
       ],
-      "presence": [
-        "WHAT THIS LOG IS, AND IS NOT"
-      ],
       "evidence": [
         "WHAT THIS LOG IS, AND IS NOT",
-        "Retention is by count: 10,000 activity and 1,000 pre-authentication entries."
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the facts block exists; two of its four lines differ. The design's retention line is true (10,000 activity and 1,000 pre-authentication entries are the daemon's fixed defaults in apps/daemon/src/audit-log.ts) while the code says Retention is bounded by the daemon's local audit policy; Q377 A (2026-10-02) takes the design's exact numbers and keeps redacted in the export line as a dated deviation. The dots are ShieldCheck icons, all success-coloured"
-      }
+        "Retention is by count: 10,000 activity and 1,000 pre-authentication entries.",
+        "Rows name verified credentials, so renaming a device does not rewrite history.\", dot: \"bg-success\"",
+        "Retention is by count: 10,000 activity and 1,000 pre-authentication entries.\", dot: \"bg-info\"",
+        "rounded-full ${dot}",
+        {
+          "absent": "ShieldCheckIcon",
+          "in": "packages/ui/src/audit-log-view.tsx"
+        }
+      ]
     },
     {
       "id": "settings.header",
@@ -1529,20 +1529,13 @@
         "Comment on a step"
       ],
       "evidence": [
-        "PROBLEM",
-        "APPROACH",
+        "<PlanSheet",
+        "aria-label=\"Plan document\"",
         "STOPS FOR APPROVAL",
         "Looks right, carry on",
-        "Comment on a step"
-      ],
-      "presence": [
-        "<WorkingPlanCard",
-        "Looks right, carry on"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the working plan renders as a card with Looks right, carry on (working-plan.tsx); the document is not drawn: no PROBLEM, APPROACH, STOPS FOR APPROVAL, WHAT THIS DOES NOT FIX or STILL OPEN sections and no Comment on a step. A plan artifact is hidden whenever a working plan exists, and WorkingPlan carries text, status and blocker only. Q350 A (2026-10-02): when a plan artifact exists, show it as the document beside the working-plan card, with Comment on a step anchored to it by a text quote (client-only). The footer meta reads revision N where the design says revised once since <time>"
-      }
+        "Comment on a step",
+        "anchor: { textQuote: quote }"
+      ]
     },
     {
       "id": "dock.preview",
@@ -1723,15 +1716,11 @@
         "Fork"
       ],
       "evidence": [
-        "Every approved write takes one first"
-      ],
-      "presence": [
-        "export function CheckpointsPanel("
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the tab draws Fork, Revert and Reset as the design does (the design renders Revert, not Revert to here, which the earlier evidence asked for); the gap is the intro note. checkpointsIntro omits the checkpoint the daemon takes before every command you allow (J34, since 5ee18251), and the dock tip says Reverting rewinds the worktree and the thread together, which is false: checkpoint.restore resets the worktree only. Q341 A (2026-10-02) keeps worktree-only revert and corrects the tip and the panel copy, so the design's thread half is not drawn. Row meta cannot say why an approved-command checkpoint exists: the daemon records it with no reason, and the reason enum has no before-approved-command value (protocol)"
-      }
+        "export function CheckpointsPanel(",
+        "In a session with a worktree, every request you allow at a gate takes one first.",
+        "The thread keeps its turns.",
+        "\"before-approved-command\": \"before an approved command\""
+      ]
     },
     {
       "id": "dock.checkpoint-take",
@@ -1788,23 +1777,15 @@
       ],
       "evidence": [
         "EVIDENCE PER FILE",
-        "Revert this file",
+        "re:\\$\\{prompt\\.verb\\} this file",
         "Keep it",
         "Open in editor",
         {
           "absent": "<AlertDialog",
           "in": "packages/ui/src/session-evidence.tsx"
-        }
-      ],
-      "presence": [
-        "<SessionEvidencePanel",
-        "EVIDENCE PER FILE",
-        "Revert this file"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "copy and actions match; the design asks Revert this file / Keep it inline in the file row, the implementation asks in a dialog, and keeps the worktree diff and observed runs below the list instead of in each row"
-      }
+        },
+        "<RevertFileAsk path={file.path}"
+      ]
     },
     {
       "id": "dock.commits",
@@ -2249,7 +2230,7 @@
     {
       "id": "dock.tabs",
       "since": "2026-10-02",
-      "note": "Three tips copy the design's words and are false for the shipped product. Terminal (read-only. The agent owns this shell.): the tab is an interactive daemon PTY, and Q340 A corrects the tip and footer and asks Claude Design to redraw the tab. Checkpoints (Reverting rewinds the worktree and the thread together): checkpoint.restore resets the worktree only, and Q341 A keeps that and corrects the copy. History (Fork from any turn.): fork is checkpoint-only (turn-row fork closed as a design error, f3252e50), so the tip becomes Fork from any checkpoint. A tab that matches the design here is a tab that says something untrue."
+      "note": "Three tips copy the design's words and are false for the shipped product. Terminal (read-only. The agent owns this shell.): the tab is an interactive daemon PTY, and Q340 A corrects the tip and footer and asks Claude Design to redraw the tab. Checkpoints (Reverting rewinds the worktree and the thread together): checkpoint.restore resets the worktree only, and Q341 A keeps that; since 2026-10-06 the tip reads In a session with a worktree, every request you allow at a gate takes one first. Reverting resets the worktree; the thread keeps its turns. History (Fork from any turn.): fork is checkpoint-only (turn-row fork closed as a design error, f3252e50), so the tip becomes Fork from any checkpoint. A tab that matches the design here is a tab that says something untrue."
     },
     {
       "id": "conversation.approval",
@@ -2265,6 +2246,11 @@
       "id": "drawer.row",
       "since": "2026-10-02",
       "note": "The design's drawer mixes sessions from several machines (sample names). Q364 A keeps the M1 drawer to this machine with the machine name in each row's meta; a fleet-wide drawer comes with the replace-herdr work."
+    },
+    {
+      "id": "audit.rows",
+      "since": "2026-10-06",
+      "note": "Built by S3.10j. Differences from the drawn row: the design's query window is the last 24 hours and this one is not (the wire has no since), so a row from another day adds the day under its time. The outcome column starts with the outcome word, then target and session, because the wire carries an outcome enum rather than the design's free result phrase. The actor pill names the actor kind. A long detail scrolls inside the row past 10rem (detail is up to 4,096 characters). The list is a size container: when it is narrower than 48rem (a narrow window, or a wide one with the drawer open) the who and outcome columns wrap under the action."
     },
     {
       "id": "audit.facts",
@@ -2310,6 +2296,21 @@
       "id": "dock.preview",
       "since": "2026-10-02",
       "note": "Q379 A: the preview authorizes on open, so the drawn authorize to view click is not built; the chip shows authorized and the time left. Q380 A: Print view, Download safe copy, Compare, the filmstrip, the Live badge and the safe-copies line are shipped features the design does not draw; they stay behind one overflow control in the design's toolbar."
+    },
+    {
+      "id": "dock.plan-doc",
+      "since": "2026-10-06",
+      "note": "Q350 A: the plan artifact is the document (title, revision N, the agent's Markdown) with the working-plan card under it, and the decision row (Looks right, carry on; Comment on a step) is drawn once under both. PROBLEM, APPROACH, WHAT THIS DOES NOT FIX and STILL OPEN are not drawn as fixed sections: WorkingPlan carries text, status and blocker only, and Q350 B (protocol fields) was not taken, so whatever sections the agent writes are its own headings. STOPS FOR APPROVAL marks a step while it is blocked on an approval, because the wire knows a gate only then. Comment on a step quotes the words selected in the document, or the chosen step's own words when nothing is selected, as an annotation.create text quote on the plan artifact; the comment lists under COMMENTS ON THE PLAN. The daemon mirrors the working plan into its own plan artifact (plan-<sessionId>). When that artifact holds only its rendering of the steps (# Working plan and a numbered list) it is the card's text, never drawn as the document, and a comment anchors to it when no document exists; when it holds a whole plan (a prose plan, or a plan-mode final reply whose steps were extracted) it is the document. A comment is bound to the session and artifact it was opened on, and a chosen step's words are kept as chosen. With several plan files, the document is the one the daemon found last: revisions count per artifact and the wire carries no update time, so an older file edited later is not preferred. The design's footer meta (revised once since <time>) and header meta (project, worktree, base, written and revised times) are not drawn; the header reads revision N."
+    },
+    {
+      "id": "dock.checkpoints",
+      "since": "2026-10-06",
+      "note": "Q341 A: revert stays worktree-only, so the drawn note (Every approved write takes one first. Reverting rewinds the worktree and the thread together.) is not drawn. checkpointsIntro says what the daemon does: a person's allow at a gate takes one first (J34) when the session has a worktree, a rule's allow takes none, the other reasons and on request, and the thread keeps its turns. Rows name before an approved command from the reason the daemon records (df3452f4)."
+    },
+    {
+      "id": "dock.changes",
+      "since": "2026-10-06",
+      "note": "Revert this file / Keep it asks inside the file row as drawn (RevertFileAsk; Keep it takes focus, Escape keeps the file). Differences: the action names what happens to the file (Restore this file, Remove this file for a file the base commit lacks, Revert this file when the daemon describes no target), and the confirm states what the daemon does (the agent does not learn of the revert until its next read) where the design says the agent is told; the reverted note is a status line above the list, because the file leaves the list once the refresh lands. Each row opens its own diff, and the worktree diff and observed runs stay below the list as well: the daemon reports no per-file run association (tests.state is unknown, file-access-not-recorded), so a row cannot list the runs that touched it until the daemon records file access."
     },
     {
       "id": "dock.terminal",

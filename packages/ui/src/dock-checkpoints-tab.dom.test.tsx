@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
 import { checkpointsIntro } from "./checkpoints-panel"
+import { dockTabDefinitions } from "./dock-tabs"
 import { WorkspaceShell } from "./workspace-shell"
 import {
   completeHandshake,
@@ -63,5 +64,16 @@ describe("the dock's Checkpoints tab", () => {
     await user.click(screen.getByRole("button", { name: "Take checkpoint" }))
     await settle()
     expect(sentRequests(socket, "checkpoint.create").at(-1)?.params).toMatchObject({ sessionId: snapshot.activeSessionId, label: "Before the rename" })
+  })
+})
+
+// Q341 A: the hover tip is read before the tab is, so it cannot promise a
+// thread rewind the daemon does not do.
+describe("the Checkpoints tab tip", () => {
+  it("says revert is worktree-only and names the checkpoint before an allowed request", () => {
+    const tip = dockTabDefinitions.find((tab) => tab.id === "checkpoints")?.note ?? ""
+    expect(tip).toContain("In a session with a worktree, every request you allow at a gate takes one first.")
+    expect(tip).toContain("Reverting resets the worktree; the thread keeps its turns.")
+    expect(tip).not.toMatch(/rewinds|thread together|Every approved write/)
   })
 })

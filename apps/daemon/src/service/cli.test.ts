@@ -8,7 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
 import { protocolVersion } from "@getdomovoi/protocol"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
 import { OperationDeadline } from "../operation-deadline.js"
@@ -62,6 +62,7 @@ describe("distributed service CLI", () => {
       const environment = {
         ...process.env,
         HOME: home, USERPROFILE: home, NODE_NO_WARNINGS: "1",
+        DOMOVOI_PROFILE_DIR: join(home, ".domovoi"),
         DOMOVOI_TEST_MANAGER_LOG: managerLog,
         DOMOVOI_HOST: "127.0.0.1", DOMOVOI_PORT: "0",
         DOMOVOI_AUTH_TOKEN: undefined,
@@ -100,7 +101,7 @@ describe("distributed service CLI", () => {
           : join(home, ".config", "systemd", "user", "domovoid.service"), "utf8"))
       expect(launch).toContain(cliPath)
       expect(launch).toContain(process.execPath)
-      expect(launch).toContain("--service-config")
+      expect(launch).toContain(process.platform === "win32" ? "--service-supervise" : "--service-config")
       expect(launch).toContain(configPath)
       // Decided 2026-09-17 (SHIP-PLAN S1.1): the Linux install turned the
       // shim's lingering on and recorded it. The shim answers loginctl.
@@ -228,7 +229,7 @@ describe("distributed service CLI", () => {
       const configPath = join(home, "service.json")
       await within(() => prepare(configPath))
       const refusal = await within(() => run(process.execPath, [cliPath, "--service-config", configPath], {
-        env: { ...process.env, HOME: home, USERPROFILE: home, NODE_NO_WARNINGS: "1" },
+        env: { ...process.env, HOME: home, USERPROFILE: home, DOMOVOI_PROFILE_DIR: join(home, ".domovoi"), NODE_NO_WARNINGS: "1" },
         signal: deadline.signal, timeout: Math.ceil(deadline.remainingMs()),
       })).catch((error: unknown) => error as { code?: unknown; stdout: string; stderr: string })
       expect(refusal).toMatchObject({
@@ -242,4 +243,45 @@ describe("distributed service CLI", () => {
       await removeScratchDirectory(home)
     }
   }, budget + cleanupBudget + 1_000)
+})
+
+describe("supervisor CLI dispatch", () => {
+  // Exercise the source entry point with only the platform boundary mocked.
+  // This does not depend on rebuilding dist or start any daemon/profile.
+  it.each(["exhausted", "failed"] as const)("reports Windows %s loudly with exit 1", async (state) => {
+    vi.resetModules()
+    const windows = await import("./windows-job-supervisor.js")
+    const guest = await import("./supervisor-command.js")
+    const result = { state, crashes: 4, attempts: [{}, {}, {}, {}] }
+    const runWindows = vi.spyOn(windows, "runWindowsSupervisor").mockResolvedValue(result as Awaited<ReturnType<typeof windows.runWindowsSupervisor>>)
+    const runGuest = vi.spyOn(guest, "runGuestSupervisor").mockResolvedValue({ state: "stopped" } as Awaited<ReturnType<typeof guest.runGuestSupervisor>>)
+    const stderr = vi.fn()
+    const cliProcess = { ...process, platform: "win32", argv: [process.execPath, "daemon-entry.js", "--service-supervise", "service.json"],
+      execArgv: [], stderr: { write: stderr }, exitCode: 0 }
+    try {
+      vi.stubGlobal("process", cliProcess)
+      await import("../index.js")
+      expect(runWindows).toHaveBeenCalledWith("service.json", { executable: cliProcess.execPath, args: ["daemon-entry.js", "--service-config", "service.json"] })
+      expect(runGuest).not.toHaveBeenCalled()
+      expect(cliProcess.exitCode).toBe(1)
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining("windows-supervisor.json"))
+      expect(stderr).toHaveBeenCalledWith(expect.stringContaining(state === "exhausted" ? "4 crashes and 4 attempts" : "observation failure"))
+    } finally { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.resetModules() }
+  })
+
+  it.each(["win32", "linux"])("dispatches retirement on %s and prints its proof", async (platform) => {
+    vi.resetModules()
+    const windows = await import("./windows-job-supervisor.js")
+    const guest = await import("./supervisor-command.js")
+    const stopWindows = vi.spyOn(windows, "stopWindowsSupervisor").mockResolvedValue({ state: "stopped", platform: "win32" } as Awaited<ReturnType<typeof windows.stopWindowsSupervisor>>)
+    const stopGuest = vi.spyOn(guest, "stopGuestSupervisor").mockResolvedValue({ state: "stopped" } as Awaited<ReturnType<typeof guest.stopGuestSupervisor>>)
+    const stdout = vi.fn()
+    try {
+      vi.stubGlobal("process", { ...process, platform, argv: [process.execPath, "daemon-entry.js", "--service-supervisor-stop", "service.json"], stdout: { write: stdout } })
+      await import("../index.js")
+      expect(platform === "win32" ? stopWindows : stopGuest).toHaveBeenCalledWith("service.json", expect.objectContaining({ throwIfExpired: expect.any(Function) }))
+      expect(platform === "win32" ? stopGuest : stopWindows).not.toHaveBeenCalled()
+      expect(JSON.parse(stdout.mock.calls[0]![0] as string)).toMatchObject({ state: "stopped" })
+    } finally { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.resetModules() }
+  })
 })

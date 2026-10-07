@@ -64,7 +64,7 @@ type Fake = DaemonServiceDependencies & ServiceEffects & {
   // The Windows logon task: its registered command, whether an instance of it
   // runs, and the command that instance was started from. Task Scheduler
   // ignores a run while an instance runs, and a stop ends the instance.
-  task: { definition: string, running: boolean, runningDefinition: string }
+  task: { definition: string, running: boolean, runningDefinition: string, enabled: boolean }
   // A start whose daemon reports ready only this long after it; a stop before
   // then means it never does.
   lateReadyMs: number
@@ -75,7 +75,7 @@ type Fake = DaemonServiceDependencies & ServiceEffects & {
   bootstrapLoadsFrom: string | undefined
 }
 
-const oldWindowsCommand = "\"C:\\Program Files\\Domovoi\\runtime-1\\node.exe\" \"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-config \"C:\\Users\\dl\\.domovoi\\service.json\""
+const oldWindowsCommand = "\"C:\\Program Files\\Domovoi\\runtime-1\\node.exe\" \"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-supervise \"C:\\Users\\dl\\.domovoi\\service.json\""
 const oldWindowsRecord = {
   executable: "C:\\Program Files\\Domovoi\\runtime-1\\node.exe",
   entry: "C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js",
@@ -119,7 +119,7 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
   const effects: Fake = {
     order,
     files,
-    task: { definition: oldWindowsCommand, running: true, runningDefinition: oldWindowsCommand },
+    task: { definition: oldWindowsCommand, running: true, runningDefinition: oldWindowsCommand, enabled: true },
     lateReadyMs: 0,
     agentLoadedFrom: agent,
     bootstrapLoadsFrom: undefined,
@@ -160,7 +160,7 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
         agentLoaded = true
         effects.agentLoadedFrom = effects.bootstrapLoadsFrom ?? args[2]!
       }
-      if (args[0] === "/create") effects.task.definition = args[args.indexOf("/tr") + 1]!
+      if (args[0] === "/create") { effects.task.definition = args[args.indexOf("/tr") + 1]!; effects.task.enabled = true }
       if (args[0] === "/run") {
         if (effects.task.running) return
         effects.task.running = true
@@ -177,17 +177,19 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
       if (body.includes("domovoi-task-action")) {
         order.push("read task action")
         const [path, ...rest] = effects.task.definition.split("\" ")
-        return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ path: path!.replace(/^"/u, ""), arguments: rest.join("\" "), enabled: true, state: effects.task.running ? 4 : 3 })}\n` }
+        return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ path: path!.replace(/^"/u, ""), arguments: rest.join("\" "), enabled: effects.task.enabled, state: effects.task.running ? 4 : 3 })}\n` }
       }
+      if (body.includes("$task.GetInstances(0).Count")) return { code: 0, stdout: `domovoi-task:${!effects.task.enabled && !effects.task.running ? 1 : 0}` }
       if (body.includes("DeleteTask")) { order.push("delete task"); return { code: 0, stdout: "domovoi-task:deleted\n" } }
       if (body.includes("$task.Stop(0)")) {
         order.push("stop task")
+        effects.task.enabled = false
         effects.task.running = false
         if (pendingReady !== undefined) clearTimeout(pendingReady)
         pendingReady = undefined
         return { code: 0, stdout: "domovoi-task:1\n" }
       }
-      if (body.includes("$task.Enabled = $false")) { order.push("disable task"); return { code: 0, stdout: "domovoi-task:1\n" } }
+      if (body.includes("$task.Enabled = $false")) { effects.task.enabled = false; order.push("disable task"); return { code: 0, stdout: "domovoi-task:1\n" } }
       if (body.includes("RegisterTaskDefinition")) { order.push("register task"); return { code: 0, stdout: "domovoi-task:created\n" } }
       if (body.includes("$task.Run($null)")) { order.push("start task"); start(); return { code: 0, stdout: "domovoi-task:4\n" } }
       order.push(`capture ${command}`)
@@ -195,7 +197,10 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
     }),
     exists: vi.fn(async (path: string) => files.has(path)),
     remove: vi.fn(async (path: string) => { order.push(`remove ${path}`); files.delete(path) }),
-    stopSupervisor: vi.fn(async () => { order.push("stop guest supervisor") }),
+    stopSupervisor: vi.fn(async (_path, _deadline, options) => {
+      order.push(platform === "win32" ? "prove Windows job empty" : "stop guest supervisor")
+      if (options?.stopTask && !await options.stopTask()) throw new Error("Task remains observable")
+    }),
     ...overrides,
   }
   // A start that works leaves a new daemon instance reporting ready.
@@ -496,14 +501,127 @@ describe("updateDaemonService with systemd", () => {
 describe("updateDaemonService with a Windows logon task", () => {
   const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime-2\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index.js" }
 
+  it("updates a supervised task that never claimed its startup lease", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    effects.task.running = false; effects.owner = undefined
+    effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
+      if (!await options?.confirmNoLaunch?.()) throw new Error("No startup history or disabled task proof")
+      if (options.stopTask && !await options.stopTask()) throw new Error("Task remains observable")
+    })
+    expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task" })
+    expect(effects.task.runningDefinition).toContain("runtime-2")
+  })
+
+  it("keeps retirement set while the scheduler retires a queued old instance", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    let retirement = false, queuedLaunch = false
+    const capture = effects.capture
+    effects.capture = vi.fn(async (command, args, deadline) => {
+      if (script(args).includes("$task.Stop(0)") && !retirement) queuedLaunch = true
+      return capture(command, args, deadline)
+    })
+    effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
+      retirement = true
+      if (options?.stopTask && !await options.stopTask()) throw new Error("Task remains observable")
+      if (options?.retire === false) retirement = false
+    })
+    await updateDaemonService({ runtime: windowsRuntime }, effects)
+    expect(queuedLaunch).toBe(false)
+    expect(retirement).toBe(false)
+  })
+
+  it("retains the task and configuration when neither swap nor rollback can prove the job empty", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    effects.stopSupervisor = vi.fn(async () => { throw new Error("Windows daemon tree unconfirmed. Restart Windows to settle it") })
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow("Restart Windows")
+    expect(effects.order).toEqual(["read task action", "disable task", "read task action", "disable task"])
+    expect(effects.task).toMatchObject({ enabled: false, definition: oldWindowsCommand })
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(effects.remove).not.toHaveBeenCalled()
+  })
+
+  it("migrates a legacy direct-daemon task through scheduler retirement", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    effects.task.definition = oldWindowsCommand.replace("--service-supervise", "--service-config")
+    expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task" })
+    expect(effects.task.runningDefinition).toContain("--service-supervise")
+    expect(effects.task.runningDefinition).toContain("runtime-2")
+    expect(effects.order.indexOf("stop task")).toBeLessThan(effects.order.indexOf("delete task"))
+    expect(effects.order.indexOf("delete task")).toBeLessThan(effects.order.findIndex((s) => s.startsWith("write ")))
+    expect(effects.stopSupervisor).not.toHaveBeenCalled()
+  })
+
+  it("restores legacy configuration and registration when replacement creation fails", async () => {
+    const home = "C:\\Users\\dl", effects = fake("win32", home)
+    const legacyCommand = oldWindowsCommand.replace("--service-supervise", "--service-config")
+    effects.task.definition = legacyCommand
+    let exists = true, creates = 0
+    const capture = effects.capture, run = effects.run
+    effects.capture = vi.fn(async (command, args, deadline) => {
+      if (!exists) return { code: 0, stdout: "domovoi-task:missing" }
+      const result = await capture(command, args, deadline)
+      if (script(args).includes("DeleteTask")) exists = false
+      return result
+    })
+    effects.run = vi.fn(async (command, args, deadline) => {
+      if (args[0] === "/create") {
+        if (++creates === 1) throw new Error("create failed")
+        exists = true
+      }
+      await run(command, args, deadline)
+    })
+    effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
+      if (!await options?.confirmNoLaunch?.()) throw new Error("No startup history or disabled task proof")
+      if (!await options.stopTask?.()) throw new Error("Task remains observable")
+    })
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toMatchObject({ outcome: "swap-failed-restored" })
+    expect(effects.files.get(`${home}\\.domovoi\\service.json`)).toBe(serializeServiceConfiguration(saved("win32", home)))
+    expect(effects.task.runningDefinition).toBe(legacyCommand)
+    expect(effects.task.running).toBe(true)
+    expect(exists).toBe(true)
+    expect(effects.stopSupervisor).not.toHaveBeenCalled()
+  })
+
+  it("refuses legacy update and rollback when external deletion races initial retirement", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    effects.task.definition = oldWindowsCommand.replace("--service-supervise", "--service-config")
+    const capture = effects.capture
+    let missing = false
+    effects.capture = vi.fn(async (command, args, deadline) => {
+      if (script(args).includes("$task.Stop(0)")) missing = true
+      if (missing) return { code: 0, stdout: "domovoi-task:missing" }
+      return capture(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow("Legacy Windows registration disappeared before migration")
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(effects.stopSupervisor).not.toHaveBeenCalled()
+  })
+
+  it("requires supervisor proof during legacy rollback after replacement creation succeeded", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    const legacyCommand = oldWindowsCommand.replace("--service-supervise", "--service-config")
+    effects.task.definition = legacyCommand
+    const run = effects.run
+    let settings = 0
+    effects.run = vi.fn(async (command, args, deadline) => {
+      if (script(args).includes("ExecutionTimeLimit") && ++settings === 1) throw new Error("settings failed")
+      await run(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toMatchObject({ outcome: "swap-failed-restored" })
+    expect(effects.stopSupervisor).toHaveBeenCalledOnce()
+    expect(effects.task.runningDefinition).toBe(legacyCommand)
+  })
+
   it("stops the task, holds the profile, re-registers it with the new command and runs it", async () => {
     const effects = fake("win32", "C:\\Users\\dl")
     expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
     const created = vi.mocked(effects.run).mock.calls.find(([, args]) => args[0] === "/create")![1]
-    expect(created[created.indexOf("/tr") + 1]).toMatch(/^"C:\\Program Files\\Domovoi\\runtime-2\\node\.exe" "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index\.js" --service-config /)
+    expect(created[created.indexOf("/tr") + 1]).toMatch(/^"C:\\Program Files\\Domovoi\\runtime-2\\node\.exe" "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index\.js" --service-supervise /)
     expect(created).toContain("/f")
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
-      "read task", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "set task", "schtasks /run",
+      "read task", "disable task", "prove Windows", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "set task", "schtasks /run",
     ])
   })
 
@@ -516,7 +634,7 @@ describe("updateDaemonService with a Windows logon task", () => {
     const publish = vi.fn(async () => { effects.order.push("publish") })
     await updateDaemonService({ runtime: windowsRuntime, staged: { runtime: staged, publish } }, effects)
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
-      "read task", "stop task", "claim", "publish", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "set task", "schtasks /run",
+      "read task", "disable task", "prove Windows", "stop task", "claim", "publish", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "set task", "schtasks /run",
     ])
   })
 
@@ -532,7 +650,11 @@ describe("updateDaemonService with a Windows logon task", () => {
       "Domovoi could not start the service on the new runtime: ERROR: Access is denied. The previous service was put back and is running.",
     )
     const restoredTask = vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create").at(-1)![1]
-    expect(restoredTask[restoredTask.indexOf("/tr") + 1]).toBe("\"C:\\Program Files\\Domovoi\\runtime-1\\node.exe\" \"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-config \"C:\\Users\\dl\\.domovoi\\service.json\"")
+    expect(restoredTask[restoredTask.indexOf("/tr") + 1]).toBe("\"C:\\Program Files\\Domovoi\\runtime-1\\node.exe\" \"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-supervise \"C:\\Users\\dl\\.domovoi\\service.json\"")
+    expect(effects.stopSupervisor).toHaveBeenNthCalledWith(1, "C:\\Users\\dl\\.domovoi\\service.json", expect.any(OperationDeadline), { retire: false, stopTask: expect.any(Function), confirmNoLaunch: expect.any(Function) })
+    expect(effects.stopSupervisor).toHaveBeenNthCalledWith(2, "C:\\Users\\dl\\.domovoi\\service.json", expect.any(OperationDeadline), {
+      retire: false, stopTask: expect.any(Function), confirmNoLaunch: expect.any(Function), previousConfigurationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
+    })
     expect(effects.order.slice(-3)).toEqual([expect.stringMatching(/^schtasks \/create /), "set task settings", "schtasks /run /tn Domovoi daemon"])
   })
 
@@ -717,10 +839,9 @@ describe("review round 2 probes", () => {
     expect(effects.order.slice(-5)).toEqual(["stop task", "write C:\\Users\\dl\\.domovoi\\service.json", expect.stringMatching(/^schtasks \/create /), "set task settings", "schtasks /run /tn Domovoi daemon"])
   })
 
-  // W1 (round 2, then round 3): the stop is refused while the old task runs.
-  // The task still runs the old command, so nothing changed: no restore, and
-  // no text saying the service is not running.
-  it("W1: says nothing changed when the stop is refused and the old task still runs", async () => {
+  // Job proof now precedes scheduler stop. Disabling the task and ending its
+  // job is a change, even if Task Scheduler then refuses to stop its instance.
+  it("W1: restores after a refused task stop only when shutdown can be proved again", async () => {
     for (const refusals of [1, Number.POSITIVE_INFINITY]) {
       const effects = fake("win32", "C:\\Users\\dl")
       const capture = effects.capture
@@ -729,12 +850,18 @@ describe("review round 2 probes", () => {
         if (script(args).includes("$task.Stop(0)") && ++stops <= refusals) { effects.order.push("stop refused"); return { code: 1, stdout: "", stderr: "Access is denied." } }
         return capture(command, args, deadline)
       })
-      await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(
-        "Domovoi could not update the service: Access is denied. Nothing was changed, and the service was left as it was.",
-      )
-      expect(effects.run).not.toHaveBeenCalled()
+      await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toMatchObject({
+        outcome: refusals === 1 ? "swap-failed-restored" : "swap-and-restore-failed",
+      })
+      expect(effects.stopSupervisor).toHaveBeenCalledTimes(2)
       expect(effects.task.runningDefinition).toBe(oldWindowsCommand)
-      expect(effects.owner).toEqual({ instanceId: "instance-old", state: "ready" })
+      if (refusals === 1) {
+        expect(effects.task.enabled).toBe(true)
+        expect(effects.owner?.instanceId).not.toBe("instance-old")
+      } else {
+        expect(effects.run).not.toHaveBeenCalled()
+        expect(effects.task.enabled).toBe(false)
+      }
     }
   })
 
@@ -1182,7 +1309,7 @@ describe("security review round 2", () => {
     effects.capture = vi.fn(async (command: string, args: string[], deadline: OperationDeadline) => {
       if (!script(args).includes("domovoi-task-action")) return capture(command, args, deadline)
       effects.order.push("read task action")
-      return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ path: `"${oldNode}"`, arguments: `"${oldEntry}" --service-config "${windowsConfiguration}"`, enabled: true, state: 4 })}\n` }
+      return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ path: `"${oldNode}"`, arguments: `"${oldEntry}" --service-supervise "${windowsConfiguration}"`, enabled: true, state: 4 })}\n` }
     })
     failFirst(effects, (args) => args[0] === "/run")
     await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
@@ -1510,7 +1637,7 @@ describe("security review round 5", () => {
     const record = { ...oldWindowsRecord, executable }
     const configuration = { ...saved("win32", "C:\\Users\\dl"), serviceRuntime: record }
     const effects = fake("win32", "C:\\Users\\dl", {}, configuration)
-    effects.task = { definition: oldWindowsCommand.replace(oldWindowsRecord.executable, executable), running: true, runningDefinition: oldWindowsCommand }
+    effects.task = { definition: oldWindowsCommand.replace(oldWindowsRecord.executable, executable), running: true, runningDefinition: oldWindowsCommand, enabled: true }
     const refused = updateDaemonService({ runtime: windowsRuntime }, effects)
     await expect(refused).rejects.toMatchObject({ outcome: "nothing-changed", cause: expect.any(refusal) })
     expect(effects.order.filter((entry) => entry !== "read task action")).toEqual([])

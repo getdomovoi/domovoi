@@ -712,14 +712,13 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
 
     return models.map(({ provider, model }) => {
       const id = `${provider.id}/${model.id}`
-      const reasoning = model.capabilities?.reasoning === true ? "medium" : "none"
       return {
         provider: this.#identity.providerId,
         id,
         displayName: `${provider.name} / ${model.name}`,
         description: `${this.#identity.providerName} model from ${provider.name}`,
-        supportedReasoningEfforts: [reasoning],
-        defaultReasoningEffort: reasoning,
+        supportedReasoningEfforts: ["unset"],
+        defaultReasoningEffort: "unset",
         isDefault: id === defaultModel,
       }
     })
