@@ -1096,14 +1096,10 @@
         "Allow once",
         "Deny"
       ],
-      "presence": [
-        "Allow once",
-        "Deny"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the card decides; it is not the drawn card. Its header reads Approval required (with a Hard gate badge) where the design says Waiting on your decision with a pulsing dot and step n of N meta; the facts are always open in two columns where the design folds them behind What does this touch?; the command is 11px; a watching client sees no buttons. Rulings 2026-10-02: Q339 A, Deny decides at once with a quiet Deny with a note secondary whose copy does not promise the agent hears it; Q371 A, the Always button reads Always for this command here (no Always on hard gates or unresolved requests, ruled 2026-09-24); Q372 A, a watching client sees the buttons locked with Locked, this client is watching only. The from-you origin and the OUTSIDE PROJECT fact need protocol fields; step n of N needs the plan step whose blocker names this approval"
-      }
+      "notes": [
+        "2026-10-06 (S3.10h): built for the client parts. The desktop card heads Waiting on your decision with the pulsing dot, the command at 13.5px, Allow once, Always for this command here and Deny at 38px, and the facts in three columns under the decisions behind What does this touch? / Hide what this touches (approval-card.tsx). Rulings 2026-10-02 as built: Q339 A, Deny decides at once with a quiet Deny with a note secondary whose copy does not promise the agent hears it; Q371 A, Always for this command here, never on hard gates or unresolved requests (ruled 2026-09-24); Q372 A, a watching client sees the buttons locked with Locked, this client is watching only.",
+        "Three drawn parts are not read yet: the from-you origin line (You asked for this command from the composer ...) with its requested by you meta, the OUTSIDE PROJECT fact, and step n of N. Since 7d3c60e3 (#740) the wire carries them: approval.origin (compared with this client's own connection), approval.outsideProject, and approvalPlanStep over the session's working plan. Reading them is the client flip that follows: OUTSIDE PROJECT is card-only, while from-you and step n of N need the thread to pass this client's connection and the session plan to the card. Until then the meta reads <agent> · <mode>, and a hard gate adds · hard gate, since the design draws no Hard gate badge and the risk is an approval fact."
+      ]
     },
     {
       "id": "conversation.approval-checkpoint-failed",
@@ -1116,9 +1112,12 @@
       "evidence": [
         "Could not take a checkpoint"
       ],
-      "missing": {
-        "since": "2026-10-02",
-        "reason": "no longer blocked: since 5ee18251 (J34) the daemon takes a checkpoint before every human allow and, when it cannot, refuses the resolve with Domovoi could not take a checkpoint, so the command did not run; decide again. The client shows that refusal as a generic Agent request failed alert above the composer, not in the gate card. Showing it in the card is client-only; naming the cause (the held lock path) needs the daemon to answer with a typed refusal code and the cause instead of internalError"
+      "presence": [
+        "refusal={cardShowsRefusal ? approvalRefusal?.message : undefined}"
+      ],
+      "partial": {
+        "since": "2026-10-06",
+        "reason": "since 5ee18251 (J34) the daemon takes a checkpoint before every human allow and, when it cannot, refuses the resolve with Domovoi could not take a checkpoint, so the command did not run; decide again. The gate card shows that refusal inside the card in the daemon's words (thread.tsx cardShowsRefusal), in the design's danger block with its dot (S3.10h). The drawn lead, Could not take a checkpoint: <lock path> is held by another git process. Nothing ran. Decide again., needs the daemon to answer with a typed refusal code and the cause instead of internalError (Codex follow-up); the client does not parse the daemon's sentence"
       }
     },
     {
@@ -1133,14 +1132,15 @@
       ],
       "evidence": [
         "THE RULE IT BROKE",
-        "What you can do instead"
+        "What you can do instead",
+        "See what a rule can never cover"
       ],
       "presence": [
         "aria-label=\"Policy refusal\""
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "the refusal card exists; the rule chain and the alternatives block are not the design's"
+        "since": "2026-10-06",
+        "reason": "S3.10h draws the card: Refused by policy, there is nothing to approve, the command, why, THE RULE IT BROKE with Set by and Applies to, and the remedy under What you can do instead (policy-refusal-card.tsx). Missing: the See what a rule can never cover → link, which opens the Rules tab and needs the thread to pass that action to the card (thread.tsx, outside the slice). Needs protocol and stays a Codex follow-up: the step n of N meta, the Target it saw row, and tone-coded alternatives (the wire carries one remedy string, so the list has one neutral row). The drawn Recorded as refusal, actor daemon row is not drawn: the audit records provider.policy-refused with a provider actor"
       }
     },
     {
@@ -1163,8 +1163,8 @@
         "Decision receipt"
       ],
       "partial": {
-        "since": "2026-09-23",
-        "reason": "the receipt exists; its Move this session to another machine action is not on the receipt (the string matched the transfer dialog's title). Allowed is info-toned and denied neutral where the design tones them ok and danger; there is no ckpt and duration meta and none of the follow-up actions (Review the changed files, Move this session, See the checkpoints). Both facts are on the wire since 5ee18251: receipt.ranForMs, and for an allow receipt.checkpoint is the approved checkpoint; the comments in approval-receipt.tsx that say otherwise are stale. The rule receipt's Whether later runs under the rule each get a checkpoint is not decided is decided (J34, checkpoints on human allows only): Later runs under the rule do not take a checkpoint"
+        "since": "2026-10-06",
+        "reason": "the receipt draws the design's tones (an allow ok, a denial danger, each with its dot), the checkpoint and ran-for meta and body from receipt.checkpoint and receipt.ranForMs (since 8522648f), and the rule receipt's Later runs under the rule do not take a checkpoint (J34, checkpoints on human allows only; S3.10h). Missing: the follow-up row, Review the changed files, Move this session to another machine, and See the checkpoints → or See the rule you just created →, on the latest receipt. Each opens a surface the thread owns (the changes sheet, the machine menu, a dock tab), so the thread must pass those actions to the receipt (thread.tsx, outside the slice). The design's title suffixes (migration applied, step 3 rewritten) and the follow-up line are the sample session's words"
       }
     },
     {
@@ -2255,7 +2255,7 @@
     {
       "id": "conversation.approval",
       "since": "2026-10-02",
-      "note": "Ruled differences from the drawn card: Q339 A, Deny decides at once as drawn, plus a quiet Deny with a note secondary the design does not draw, whose copy does not promise the agent hears the note (no adapter passes it on); Q371 A, the Always button reads Always for this command here, not the drawn Always for <command family> here, because rules match an execution record, not a family; the 2026-09-24 ruling (#545) hides Always on hard gates and unresolved requests."
+      "note": "Ruled differences from the drawn card: Q339 A, Deny decides at once as drawn, plus a quiet Deny with a note secondary the design does not draw, whose copy does not promise the agent hears the note (no adapter passes it on); Q371 A, the Always button reads Always for this command here, not the drawn Always for <command family> here, because rules match an execution record, not a family; the 2026-09-24 ruling (#545) hides Always on hard gates and unresolved requests. Differences recorded 2026-10-06 (S3.10h): Q7 B, 2026-10-06: the card draws the design's disclosure but starts it open, so it first reads Hide what this touches, because for a file edit the command is the tool's name and Affects is the only fact that names the file; a fold reopens when the daemon revises the gate. The last of the five facts takes the rest of its row, where the design's sixth (OUTSIDE PROJECT) would sit. The card keeps the operation sentence above the command, which the design does not draw, because it is an approval fact and AGENTS.md says clients do not omit approval facts. The card takes DESIGN.md's card radius (the base --radius) where the gate draws 16px. To stay inside the web stylesheet budget (128,000 bytes), the card's shadow is the theme's shadow-lg rather than the drawn amber halo, and its dot fades in place (motion-safe) rather than drawing the 2.4s expanding ring."
     },
     {
       "id": "titlebar.theme",

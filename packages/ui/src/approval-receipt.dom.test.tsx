@@ -69,6 +69,39 @@ it("says plainly when a decision outlives the moment", () => {
   expect(screen.getByText(/Later requests matching it run without asking/)).toBeTruthy()
 })
 
+// J34, ruled 2026-09-23: only a person's allow takes a checkpoint. A command
+// a saved rule lets through later is not one, so the rule receipt says so
+// where the design said it was not decided.
+it("says later runs under a saved rule take no checkpoint", () => {
+  render(<ApprovalReceipt receipt={receipt({ decision: "always-project" })} />)
+  expect(screen.getByText(/Later runs under the rule do not take a checkpoint\./u)).toBeTruthy()
+  expect(screen.queryByText(/not decided/u)).toBeNull()
+})
+
+// The design tones an allow ok and a denial danger, each with its dot.
+it.each([
+  ["allow-once", "ok"],
+  ["always-project", "ok"],
+  ["deny", "danger"],
+  ["deny-explain", "danger"],
+] as const)("tones a %s receipt %s", (decision, tone) => {
+  render(<ApprovalReceipt receipt={receipt({ decision })} />)
+  const region = screen.getByRole("region", { name: "Decision receipt" })
+  expect(region.className).toContain(`bg-${tone}-background`)
+  expect(region.className).toContain(`border-${tone}-border`)
+  expect(region.className).not.toMatch(/\binfo-/u)
+  expect(region.querySelector(`[data-receipt-dot="${tone}"]`)).not.toBeNull()
+})
+
+// The design's body reads as one paragraph: what happened to the files, then
+// whether the decision outlives the moment.
+it("reads the checkpoint and the rule as one body, the checkpoint first", () => {
+  render(<ApprovalReceipt receipt={receipt({ checkpoint: sha, ranForMs: 38_000 })} checkpointTaken />)
+  const rule = screen.getByText(/No rule was saved/u)
+  const body = rule.parentElement!
+  expect(body.textContent).toBe("Checkpoint abcdef10 was taken first, then it ran in 38s. Going back to it restores files in the worktree; it cannot undo effects outside it. No rule was saved, so the next request like it asks again.")
+})
+
 it("claims no checkpoint for a denial, because nothing ran", () => {
   render(<ApprovalReceipt receipt={receipt({ decision: "deny" })} />)
   expect(screen.getByText("Denied")).toBeTruthy()
