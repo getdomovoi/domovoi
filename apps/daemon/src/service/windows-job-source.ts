@@ -3,6 +3,9 @@
 export const windowsJobSource = String.raw`
 $ErrorActionPreference = 'Stop'
 try {
+# Node sends and parses UTF-8 regardless of the Windows console code page.
+[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Add-Type -ReferencedAssemblies System.dll,System.Core.dll,System.Web.Extensions.dll -TypeDefinition @'
 using System;
 using System.Text;

@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { launchWindowsJob, parseWindowsJobMessage, windowsJobCommand, type WindowsJobTransport } from "./windows-job.js"
+import { windowsJobSource } from "./windows-job-source.js"
 
 const bootId = "windows-boot:42"
 beforeEach(() => vi.stubEnv("SystemRoot", "C:\\Windows"))
@@ -23,6 +24,12 @@ it("does not interpolate launch data into the fixed helper program", () => {
   expect(windowsJobCommand()).toEqual(windowsJobCommand())
   expect(windowsJobCommand().command).toMatch(/WindowsPowerShell.*powershell\.exe$/i)
   expect(windowsJobCommand().args.join(" ").length).toBeLessThan(30_000)
+})
+
+it("sets BOM-less UTF-8 for helper input and output before reading requests", () => {
+  const beforeRequest = windowsJobSource.slice(0, windowsJobSource.indexOf("$request ="))
+  expect(beforeRequest).toContain("[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)")
+  expect(beforeRequest).toContain("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)")
 })
 
 it("holds the suspended child until the caller acknowledges durable evidence", async () => {

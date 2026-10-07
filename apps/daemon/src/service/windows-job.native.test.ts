@@ -13,7 +13,7 @@ import { readWindowsSupervisorStatus, stopWindowsSupervisor } from "./windows-jo
 import { OperationDeadline } from "../operation-deadline.js"
 
 it.runIf(process.platform === "win32")("contains descendants, gates resume, refuses collisions, and cross-checks the boot counter", async () => {
-  const directory = mkdtempSync(join(tmpdir(), "domovoi-job-"))
+  const directory = mkdtempSync(join(tmpdir(), "Domovoi-tëst-ü-"))
   const marker = join(directory, "child.json")
   const before = queryWindowsProcess(process.pid)
   expect(before.identity?.pid).toBe(process.pid)
@@ -28,7 +28,7 @@ it.runIf(process.platform === "win32")("contains descendants, gates resume, refu
   const jobName = `Global\\Domovoi-${randomUUID()}`
   let job: WindowsJob | undefined
   try {
-    vi.stubEnv("PSModulePath", "C:\\PowerShell 7\\Modules;C:\\User's Modules")
+    vi.stubEnv("PSModulePath", "C:\\PowerShell 7\\Modules;C:\\Domovoi-tëst-ü\\User's Modules")
     const executable = process.execPath
     const script = `const {spawn}=require('node:child_process');const {writeFileSync}=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});writeFileSync(process.argv[1],JSON.stringify({pid:process.pid,descendant:child.pid,psModulePath:process.env.PSModulePath}));setInterval(()=>{},1000)`
     job = await launchWindowsJob({ job: jobName, executable, args: ["-e", script, marker], log: join(directory, "daemon.log") })
