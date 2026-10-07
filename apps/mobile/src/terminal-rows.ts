@@ -29,6 +29,11 @@ export type TerminalRecord = {
   // The phone cut the front of what it holds, to keep no more than the
   // daemon keeps. Once cut, the machine's start time no longer describes it.
   phoneDropped: boolean
+  // Text may begin partway through a line, or inside an escape sequence: the
+  // daemon keeps its record by size and cuts it anywhere, and the phone cuts
+  // at its bound where no line break is near. The rest of that first line is
+  // not drawn when a line break follows soon after.
+  startsMidLine: boolean
   // Line breaks received live, counted as they arrive and never reduced by a
   // cut, so what landed can be counted for the reader.
   received: number
@@ -61,6 +66,7 @@ export function watchFrom(result: TerminalWatchResult): TerminalRecord {
     replayStartsAt: bufferStartsAt,
     machineDropped: earlierOutputDropped,
     phoneDropped: false,
+    startsMidLine: earlierOutputDropped,
     received: 0,
     lastHeardAt: watchedAt,
     confirmed: true,
@@ -155,7 +161,8 @@ function bounded(record: TerminalRecord): TerminalRecord {
   const excess = record.text.length - maximumTerminalReplayCharacters
   if (excess <= 0) return record
   const lineBreak = record.text.indexOf("\n", excess - 1)
-  let cut = lineBreak !== -1 && lineBreak + 1 - excess <= lineBreakReach ? lineBreak + 1 : excess
+  const atLineBreak = lineBreak !== -1 && lineBreak + 1 - excess <= lineBreakReach
+  let cut = atLineBreak ? lineBreak + 1 : sequenceSafe(record.text, excess)
   // A cut between the two halves of a character outside the basic plane
   // takes the whole character.
   if (isLowSurrogate(record.text.charCodeAt(cut))) cut += 1
@@ -165,11 +172,38 @@ function bounded(record: TerminalRecord): TerminalRecord {
     // Once the start of live output is cut away, nothing above it is left.
     liveAt: record.liveAt !== undefined && record.liveAt > cut ? record.liveAt - cut : undefined,
     phoneDropped: true,
+    startsMidLine: !atLineBreak,
   }
+}
+
+// Escape sequences that draw nothing, each anchored at its introducer.
+// eslint-disable-next-line no-control-regex -- the sequences are made of control characters
+const sequenceAtStart = /^(?:\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[@-_])/
+// A sequence is short; one this far back cannot reach the cut.
+const sequenceReach = 64
+
+// A cut that would fall inside an escape sequence moves to just after it, so
+// what is kept never begins with a sequence's parameters, such as "[31m".
+function sequenceSafe(text: string, cut: number): number {
+  const from = Math.max(0, cut - sequenceReach)
+  const escape = text.lastIndexOf("\u001b", cut - 1)
+  if (escape < from) return cut
+  const sequence = sequenceAtStart.exec(text.slice(escape, escape + sequenceReach * 4))
+  const end = escape + (sequence?.[0].length ?? 0)
+  return end > cut ? end : cut
 }
 
 function isLowSurrogate(code: number): boolean {
   return code >= 0xdc00 && code <= 0xdfff
+}
+
+// Where the drawn text starts: past the rest of a first line that began
+// before the text did, when a line break is near. Without one the line is
+// drawn as it stands rather than dropping a long run of output.
+function drawnStart(record: TerminalRecord): number {
+  if (!record.startsMidLine) return 0
+  const lineBreak = record.text.indexOf("\n")
+  return lineBreak !== -1 && lineBreak < lineBreakReach ? lineBreak + 1 : 0
 }
 
 // What a terminal draws, read as lines. Colour and cursor-movement sequences
@@ -239,7 +273,7 @@ function drawnLine(raw: string): string {
 }
 
 export function terminalLineCount(record: TerminalRecord): number {
-  return terminalLines(record.text).length
+  return terminalLines(record.text.slice(drawnStart(record))).length
 }
 
 // The record, then live output, with the marks the design draws between them.
@@ -252,8 +286,12 @@ export function terminalRows(record: TerminalRecord, connected: boolean): Termin
   } else if (record.machineDropped && record.replayStartsAt) {
     rows.push({ kind: "mark", key: "machine-dropped", text: `Earlier output was not kept. The machine's record of this terminal starts at ${clock(record.replayStartsAt)}.` })
   }
-  const lines = terminalLines(record.text)
-  const markAt = record.liveFrom && record.liveAt ? wholeLines(record.text.slice(0, record.liveAt)) : undefined
+  const start = drawnStart(record)
+  const text = record.text.slice(start)
+  const lines = terminalLines(text)
+  // Live output that began inside the line not drawn has nothing above it.
+  const liveAt = record.liveAt !== undefined ? record.liveAt - start : undefined
+  const markAt = record.liveFrom && liveAt !== undefined && liveAt > 0 ? wholeLines(text.slice(0, liveAt)) : undefined
   const liveMark: TerminalRow | undefined = record.liveFrom
     ? { kind: "mark", key: "live-from", text: `Recent output above. Live from ${clock(record.liveFrom)}.` }
     : undefined

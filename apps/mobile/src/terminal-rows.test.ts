@@ -275,6 +275,26 @@ describe("terminalRows", () => {
   })
 
   // A cut at the bound never splits a character in two.
+  // A cut inside an escape sequence would leave its parameters, "[31m", to
+  // be drawn as text.
+  it("cuts at the bound without splitting an escape sequence", () => {
+    const full = watchFrom(watched({ buffer: `\u001b[31m${"x".repeat(maximumTerminalReplayCharacters - 5)}` }))
+    const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "y" } }, at)
+    expect(record.text.length).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
+    expect(terminalLines(record.text)[0]?.startsWith("x")).toBe(true)
+  })
+
+  // The daemon keeps its record by size and can start it anywhere, even
+  // inside an escape sequence. A record that does not start at the shell's
+  // start begins with the rest of a line, which is not drawn.
+  it("drops the partial first line of a record whose start the daemon did not keep", () => {
+    const record = watchFrom(watched({ buffer: "1mred text\u001b[0m\nnext line\n", earlierOutputDropped: true }))
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["next line"])
+    expect(terminalLineCount(record)).toBe(1)
+    // A record kept from the shell's start is drawn whole.
+    expect(terminalLineCount(watchFrom(watched({ buffer: "1mred text\nnext line\n" })))).toBe(2)
+  })
+
   it("cuts at the bound without splitting a character outside the basic plane", () => {
     const full = watchFrom(watched({ buffer: `🙂${"x".repeat(maximumTerminalReplayCharacters - 2)}` }))
     const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "y" } }, at)
