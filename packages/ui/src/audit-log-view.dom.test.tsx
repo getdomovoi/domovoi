@@ -91,7 +91,9 @@ it("stops the clock on an older-entries query once it settles", async () => {
     />,
   )
   await settle()
-  expect(vi.getTimerCount()).toBe(0)
+  // The one timer a settled view keeps is its midnight date refresh; a query
+  // deadline left running would make it two.
+  expect(vi.getTimerCount()).toBe(1)
 
   await act(async () => {
     screen.getByRole("button", { name: "Load older" }).click()
@@ -103,7 +105,7 @@ it("stops the clock on an older-entries query once it settles", async () => {
     expect.objectContaining({ deadline: expect.anything() }),
   )
   expect(screen.getByText("session.archive")).toBeTruthy()
-  expect(vi.getTimerCount()).toBe(0)
+  expect(vi.getTimerCount()).toBe(1)
 })
 
 function renderAudit(entries: AuditEntry[], clientKind?: "desktop" | "web") {
@@ -176,6 +178,21 @@ it("dates today's rows once the day has turned and the tab is seen again", async
   vi.setSystemTime(new Date(2026, 9, 7, 0, 1, 0))
   await act(async () => {
     window.dispatchEvent(new Event("focus"))
+  })
+  expect(time()).not.toBe("23:58:30")
+  expect(time()).toContain("23:58:30")
+})
+
+it("dates today's rows at local midnight in a view that stays focused", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+  vi.setSystemTime(new Date(2026, 9, 6, 23, 59, 0))
+  renderAudit([{ ...entry, occurredAt: new Date(2026, 9, 6, 23, 58, 30).toISOString() }])
+  await settle()
+  const time = () => screen.getByRole("article").querySelector("time")?.textContent ?? ""
+  expect(time()).toBe("23:58:30")
+
+  await act(async () => {
+    vi.advanceTimersByTime(2 * 60_000)
   })
   expect(time()).not.toBe("23:58:30")
   expect(time()).toContain("23:58:30")

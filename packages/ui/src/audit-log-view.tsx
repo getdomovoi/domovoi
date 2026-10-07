@@ -246,11 +246,15 @@ export function AuditLogView({
   const [outcome, setOutcome] = useState<OutcomeFilter>("all")
   const [actor, setActor] = useState<ActorFilter>("all")
   const [page, setPage] = useState<AuditQueryPage | undefined>(initialPage)
-  // Rows from today show a time only, so "today" is re-read whenever rows land
-  // and when the window regains focus or the tab becomes visible. A view
-  // watched without either across midnight keeps the old day until one comes;
-  // the time's title always carries the full date.
+  // Rows from today show a time only, so "today" is re-read at the next local
+  // midnight, whenever rows land, and when the window regains focus or the tab
+  // becomes visible (a sleeping machine can hold a timer past midnight).
   const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+    const timer = setTimeout(() => setNow(new Date()), Math.max(1_000, midnight.getTime() - Date.now() + 1_000))
+    return () => clearTimeout(timer)
+  }, [now])
   useEffect(() => {
     const refresh = () => setNow((current) => {
       const next = new Date()
