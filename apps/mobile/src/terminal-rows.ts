@@ -81,8 +81,11 @@ export function listedWatches(
 ): Map<string, TerminalWatch> {
   return new Map(listed.map((terminal): [string, TerminalWatch] => {
     const held = previous.get(terminal.terminalId)
-    if (held?.state === "watching") return [terminal.terminalId, { state: "watching", record: { ...held.record, summary: terminal } }]
-    if (held?.state === "failed") return [terminal.terminalId, { ...held, summary: terminal }]
+    // Restart on a desktop reuses the id for a new shell, opened later. What
+    // was held is the old shell's, so the new one is read from its start.
+    const sameShell = held !== undefined && watchedSummary(held).openedAt === terminal.openedAt
+    if (held?.state === "watching" && sameShell) return [terminal.terminalId, { state: "watching", record: { ...held.record, summary: terminal } }]
+    if (held?.state === "failed" && sameShell) return [terminal.terminalId, { ...held, summary: terminal }]
     return [terminal.terminalId, { state: "reading", summary: terminal }]
   }))
 }
@@ -112,14 +115,15 @@ export function withNotification(record: TerminalRecord, notification: TerminalN
   if (record.summary.state === "closed") return record
   if (notification.method === "terminal.closed") {
     const { exitCode, signal } = notification.params
-    const { exitCode: _exitCode, signal: _signal, ...rest } = record.summary
+    // The notification carries no time, and the phone's clock is not the
+    // daemon's, so the close time is left for the daemon's list to give.
+    const { exitCode: _exitCode, signal: _signal, closedAt: _closedAt, ...rest } = record.summary
     return {
       ...record,
       summary: {
         ...rest,
         state: "closed",
         claimHeld: false,
-        closedAt: now.toISOString(),
         ...(exitCode !== undefined ? { exitCode } : {}),
         ...(signal !== undefined ? { signal } : {}),
       },
@@ -229,18 +233,25 @@ export function terminalRows(record: TerminalRecord, connected: boolean): Termin
     rows.push({ kind: "mark", key: "dropped", text: `Nothing received since ${clock(record.lastHeardAt)}. Reconnecting replays the recent output first.` })
   }
   if (summary.state === "closed") {
-    const when = summary.closedAt ? clock(summary.closedAt) : "an unknown time"
+    const at = summary.closedAt ? ` at ${clock(summary.closedAt)}` : ""
+    const signal = endingSignal(summary)
     rows.push({
       kind: "mark",
       key: "closed",
-      text: summary.exitCode !== undefined
-        ? `The shell exited with code ${summary.exitCode} at ${when}. No more output will arrive.`
-        : summary.signal !== undefined
-          ? `The shell ended on signal ${summary.signal} at ${when}. No more output will arrive.`
-          : `The shell closed at ${when}. No more output will arrive.`,
+      text: signal !== undefined
+        ? `The shell ended on signal ${signal}${at}. No more output will arrive.`
+        : summary.exitCode !== undefined
+          ? `The shell exited with code ${summary.exitCode}${at}. No more output will arrive.`
+          : `The shell closed${at}. No more output will arrive.`,
     })
   }
   return rows
+}
+
+// The signal that ended a shell. The daemon sends the exit code with it, and
+// a signal of 0 for a shell that exited on its own, which is no signal.
+function endingSignal(summary: TerminalSummary): number | undefined {
+  return summary.signal !== undefined && summary.signal !== 0 ? summary.signal : undefined
 }
 
 // The lines of a text that are finished: all of them when what it draws ends
@@ -256,7 +267,7 @@ function wholeLines(text: string): number {
 export function terminalStatus(summary: TerminalSummary, connected: boolean): { label: string, tone: TerminalTone } {
   if (!connected) return { label: "Unconfirmed", tone: "unconfirmed" }
   if (summary.state === "live") return { label: "Live", tone: "live" }
-  if (summary.exitCode !== undefined && summary.exitCode !== 0) return { label: "Failed", tone: "failed" }
+  if (endingSignal(summary) === undefined && summary.exitCode !== undefined && summary.exitCode !== 0) return { label: "Failed", tone: "failed" }
   return { label: "Closed", tone: "closed" }
 }
 

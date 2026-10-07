@@ -201,12 +201,35 @@ describe("terminalRows", () => {
     expect(terminalRows(record, true).at(-1)).toEqual({
       kind: "mark",
       key: "closed",
-      text: `The shell exited with code 0 at ${clock(at.toISOString())}. No more output will arrive.`,
+      text: "The shell exited with code 0. No more output will arrive.",
     })
     const signalled = withNotification(watchFrom(watched()), { method: "terminal.closed", params: { terminalId: "terminal-1", signal: 1 } }, at)
-    expect(terminalRows(signalled, true).at(-1)?.text).toBe(`The shell ended on signal 1 at ${clock(at.toISOString())}. No more output will arrive.`)
+    expect(terminalRows(signalled, true).at(-1)?.text).toBe("The shell ended on signal 1. No more output will arrive.")
     const unexplained = withNotification(watchFrom(watched()), { method: "terminal.closed", params: { terminalId: "terminal-1" } }, at)
-    expect(terminalRows(unexplained, true).at(-1)?.text).toBe(`The shell closed at ${clock(at.toISOString())}. No more output will arrive.`)
+    expect(terminalRows(unexplained, true).at(-1)?.text).toBe("The shell closed. No more output will arrive.")
+  })
+
+  // The daemon sends the exit code with the signal for a shell it killed,
+  // and a signal of 0 for one that exited on its own.
+  it("names the signal over the exit code, and calls a signalled shell Closed", () => {
+    const killed = withNotification(watchFrom(watched()), { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 1, signal: 15 } }, at)
+    expect(terminalRows(killed, true).at(-1)?.text).toBe("The shell ended on signal 15. No more output will arrive.")
+    expect(terminalStatus(killed.summary, true)).toEqual({ label: "Closed", tone: "closed" })
+    const exited = withNotification(watchFrom(watched()), { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 2, signal: 0 } }, at)
+    expect(terminalRows(exited, true).at(-1)?.text).toBe("The shell exited with code 2. No more output will arrive.")
+    expect(terminalStatus(exited.summary, true)).toEqual({ label: "Failed", tone: "failed" })
+  })
+
+  // The notification carries no time, and the phone's clock is not the
+  // daemon's. The time comes with the daemon's list.
+  it("states no close time until the daemon's list gives one", () => {
+    const closed = withNotification(watchFrom(watched()), { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 0 } }, at)
+    expect(closed.summary.closedAt).toBeUndefined()
+    const listed = listedWatches(new Map([["terminal-1", { state: "watching", record: closed }]]), [
+      summary({ state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 0 }),
+    ]).get("terminal-1")
+    if (listed?.state !== "watching") throw new Error("a watched terminal stays watched across a list")
+    expect(terminalRows(listed.record, true).at(-1)?.text).toBe(`The shell exited with code 0 at ${clock("2026-10-06T14:09:40.000Z")}. No more output will arrive.`)
   })
 
   it("does not claim live output for a terminal that was already closed when watched", () => {
@@ -334,6 +357,14 @@ describe("listedWatches", () => {
 
   // Listing again on the same connection leaves a watched record current:
   // its output is still arriving.
+  // Restart on a desktop reuses the terminal's id for a new shell. Its output
+  // is not the old shell's, so it is read from the start.
+  it("reads a terminal again when the same id names a new shell", () => {
+    const kept: TerminalWatch = { state: "watching", record: watchFrom(watched()) }
+    const restarted = summary({ openedAt: "2026-10-06T14:20:00.000Z" })
+    expect(listedWatches(new Map([["terminal-1", kept]]), [restarted]).get("terminal-1")).toEqual({ state: "reading", summary: restarted })
+  })
+
   it("leaves a watched record confirmed on a list from the same connection", () => {
     const kept: TerminalWatch = { state: "watching", record: watchFrom(watched()) }
     const next = listedWatches(new Map([["terminal-1", kept]]), [summary()]).get("terminal-1")
