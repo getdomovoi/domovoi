@@ -63,6 +63,16 @@ it("keeps a command's dot out of the row's name and text", () => {
   expect(screen.getByRole("option", { name: /^session, waiting Migrate billing webhooks/u })).toBeTruthy()
 })
 
+// PR #745 review (P2): a long meta (a provider name may run to 64 characters)
+// truncates within a cap, so the row's label always keeps its share.
+it("caps and truncates the meta so the label stays visible", () => {
+  palette({ commands: [{ ...commands[2]!, meta: `${"p".repeat(64)} · waiting` }] })
+  const session = screen.getByRole("option", { name: /Migrate billing webhooks/u })
+  const meta = session.querySelector("[data-palette-meta]")!
+  expect(meta.className.split(/\s+/u)).toEqual(expect.arrayContaining(["truncate", "max-w-[45%]"]))
+  expect(session.querySelector("[data-palette-label]")!.className.split(/\s+/u)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]))
+})
+
 it("lists sessions, commands, machines and skills under their own headings", () => {
   palette()
   expect([...document.querySelectorAll("[cmdk-group-heading]")].map((heading) => heading.textContent))

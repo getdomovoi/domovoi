@@ -238,6 +238,10 @@ const groupClass = "border-t px-2 pt-2 pb-2.5 **:[[cmdk-group-heading]]:px-2.5 *
 // CommandItem appends a check mark for checkable rows; the palette has none,
 // and the hidden mark would hold the meta off the right edge.
 const rowClass = "gap-2.5 px-2.5 py-2 in-data-[slot=dialog-content]:rounded-[calc(var(--radius)-3px)]! data-selected:bg-accent [&>svg:last-child]:hidden"
+// The meta on a row's right truncates within a cap, so a long one (a provider
+// name may run to 64 characters) never takes the label's place on a narrow
+// window.
+const metaClass = "max-w-[45%] shrink-0 truncate font-machine text-[10.5px] text-faint"
 
 function RowLine({ label, inSummary, end }: { label: string; inSummary?: boolean; end?: ReactNode }) {
   return (
@@ -487,9 +491,9 @@ export function CommandPalette({
                         inSummary={inSummary.has(command.id)}
                         end={command.shortcut ? (
                           // The design draws a shortcut in the meta's place.
-                          <kbd data-palette-meta className="shrink-0 font-machine text-[10.5px] text-faint">{shortcutLabel(command.shortcut, platform)}</kbd>
+                          <kbd data-palette-meta className={metaClass}>{shortcutLabel(command.shortcut, platform)}</kbd>
                         ) : meta ? (
-                          <span data-palette-meta className="shrink-0 font-machine text-[10.5px] text-faint">{meta}</span>
+                          <span data-palette-meta className={metaClass}>{meta}</span>
                         ) : null}
                       />
                     </CommandItem>
@@ -566,10 +570,10 @@ export function CommandPalette({
                             end={isPicked ? (
                               <>
                                 <Sweep />
-                                <span className="shrink-0 font-machine text-[10.5px] text-muted-foreground">switching to {machine.label}</span>
+                                <span className={cn(metaClass, "text-muted-foreground")}>switching to {machine.label}</span>
                               </>
                             ) : (
-                              <span data-palette-meta className="shrink-0 font-machine text-[10.5px] text-faint">{row.meta}</span>
+                              <span data-palette-meta className={metaClass}>{row.meta}</span>
                             )}
                           />
                         </CommandItem>
