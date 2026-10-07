@@ -68,6 +68,20 @@ describe("composer inbox", () => {
     expect(newer).toHaveBeenCalledTimes(1)
   })
 
+  // The same receiver function can be opened twice, as a stable callback on a
+  // remount. Each open is its own registration, so the older close leaves the
+  // newer one in place.
+  it("keeps a newer registration of the same receiver when the older closes", () => {
+    const inbox = createComposerInbox()
+    const receiver = vi.fn(() => "attached" as const)
+    const older = inbox.open("session-billing", receiver)
+    inbox.open("session-billing", receiver)
+    older()
+
+    expect(inbox.canReceive("session-billing")).toBe(true)
+    expect(inbox.offer("session-billing", output("kept"))).toBe("attached")
+  })
+
   it("reports a full composer", () => {
     const inbox = createComposerInbox()
     inbox.open("session-billing", () => "full")

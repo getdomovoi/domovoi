@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -650,6 +650,29 @@ describe("Attach this output to the composer", () => {
     expect(attachment).toMatchObject({ kind: "text", name: "terminal-output.txt", mimeType: "text/plain" })
     expect("content" in attachment ? attachment.content : "").toContain("$ echo hi\nhi")
     expect(screen.getByText("Attached to the composer as terminal-output.txt.")).toBeTruthy()
+  })
+
+  // xterm parses writes later. An attach right after output arrives waits for
+  // that parse, so the file holds what was printed, not an older screen.
+  it("attaches output that arrived just before the click", { timeout: 20_000 }, async () => {
+    const composer = createComposerInbox()
+    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
+    composer.open(sessionId, receive)
+    const target = harness()
+    render(<TerminalPane connected controls={target.controls} composer={composer} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.connect(thisClient)
+    })
+    const lines = Array.from({ length: 2_000 }, (_, index) => `line ${index}\r\n`).join("")
+
+    await act(async () => {
+      target.deliverOutput(`${lines}LAST LINE\r\n`)
+      fireEvent.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+    })
+
+    await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1), { timeout: 15_000 })
+    const [attachment] = receive.mock.calls[0]!
+    expect("content" in attachment ? attachment.content : "").toContain("LAST LINE")
   })
 
   it("is not offered when no composer is open for this session", async () => {

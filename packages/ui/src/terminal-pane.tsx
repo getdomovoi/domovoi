@@ -412,9 +412,15 @@ export function TerminalPane({
       },
     )
   }
-  const attachOutput = () => {
+  const attachOutput = async () => {
     const terminal = xtermRef.current
     if (!terminal) return
+    // xterm parses writes later. An empty write's callback runs once every
+    // write queued before it is in the buffer, so the file holds what was
+    // printed up to the click rather than an older screen.
+    await new Promise<void>((resolve) => terminal.write("", resolve))
+    // A disconnect or session switch while waiting disposed this renderer.
+    if (xtermRef.current !== terminal) return
     // At most one marker leads the file: the cut that happened last wins,
     // because what follows starts after it. The longest marker's bytes come
     // out of the limit up front, so the file fits whichever one it carries.
@@ -613,7 +619,7 @@ export function TerminalPane({
               and a renderer holds output to read, so the button never hands
               output to a draft that is not there or reads from nothing. */}
           {canAttach && rendered ? (
-            <Button variant="secondary" size="xs" onClick={attachOutput}>
+            <Button variant="secondary" size="xs" onClick={() => void attachOutput()}>
               Attach this output to the composer
             </Button>
           ) : null}

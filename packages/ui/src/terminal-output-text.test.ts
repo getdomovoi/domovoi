@@ -9,7 +9,10 @@ function buffer(lines: readonly Line[]) {
     length: lines.length,
     getLine: (y: number) => {
       const line = lines[y]
-      return line ? { isWrapped: line.wrapped ?? false, translateToString: () => line.text } : undefined
+      // Like xterm, a row keeps its trailing blanks unless asked to trim them.
+      return line
+        ? { isWrapped: line.wrapped ?? false, translateToString: (trimRight?: boolean) => trimRight ? line.text.trimEnd() : line.text }
+        : undefined
     },
   }
 }
@@ -23,6 +26,12 @@ describe("terminalBufferText", () => {
   // back rather than split where the pane happened to be narrow.
   it("joins a wrapped row onto the line it continues", () => {
     expect(terminalBufferText(buffer([{ text: "a long" }, { text: " line", wrapped: true }, { text: "next" }]))).toBe("a long line\nnext")
+  })
+
+  // Blanks at the end of a row the next row continues are part of the line:
+  // "abc  def" wrapped at width 5 is "abc  " then "def", not "abcdef".
+  it("keeps the blanks where a wrapped line was split", () => {
+    expect(terminalBufferText(buffer([{ text: "abc  " }, { text: "def  ", wrapped: true }, { text: "next " }]))).toBe("abc  def\nnext")
   })
 
   it("drops the empty rows below the last output", () => {

@@ -34,7 +34,10 @@ export function terminalBufferOutput(
   for (let y = 0; y < buffer.length; y += 1) {
     const line = buffer.getLine(y)
     if (!line) continue
-    const text = line.translateToString(true)
+    // A row the next row continues keeps its trailing blanks: they sit in the
+    // middle of the line. Only the end of a whole line is trimmed.
+    const continued = buffer.getLine(y + 1)?.isWrapped ?? false
+    const text = line.translateToString(!continued)
     if (line.isWrapped && lines.length > 0) lines[lines.length - 1] += text
     else lines.push(text)
   }

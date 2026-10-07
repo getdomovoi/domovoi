@@ -20,7 +20,9 @@ export type ComposerInbox = {
 }
 
 export function createComposerInbox(): ComposerInbox {
-  const receivers = new Map<string, ComposerReceiver>()
+  // Each open is its own registration object, so ownership is the
+  // registration, not the receiver function, which a remount may reuse.
+  const registrations = new Map<string, { receiver: ComposerReceiver }>()
   const listeners = new Set<() => void>()
   const notify = () => {
     for (const listener of [...listeners]) listener()
@@ -28,18 +30,19 @@ export function createComposerInbox(): ComposerInbox {
 
   return {
     open: (sessionId, receiver) => {
-      receivers.set(sessionId, receiver)
+      const registration = { receiver }
+      registrations.set(sessionId, registration)
       notify()
       return () => {
         // A remount opens the new composer before the old cleanup runs, so a
-        // close only removes the receiver it opened.
-        if (receivers.get(sessionId) !== receiver) return
-        receivers.delete(sessionId)
+        // close only removes the registration it made.
+        if (registrations.get(sessionId) !== registration) return
+        registrations.delete(sessionId)
         notify()
       }
     },
-    offer: (sessionId, attachment) => receivers.get(sessionId)?.(attachment) ?? "closed",
-    canReceive: (sessionId) => sessionId !== null && receivers.has(sessionId),
+    offer: (sessionId, attachment) => registrations.get(sessionId)?.receiver(attachment) ?? "closed",
+    canReceive: (sessionId) => sessionId !== null && registrations.has(sessionId),
     subscribe: (listener) => {
       listeners.add(listener)
       return () => {
