@@ -1168,14 +1168,14 @@
         "label: \"See the checkpoints\"",
         "label: \"See the rule\"",
         "re:<Thread key=\\{activeThreadKey\\(snapshot\\)\\}[^\\n]*onOpenDockTab=",
-        "actions={item.id === latestReceiptId ? receiptActions : undefined}"
+        "actions={connected && item.id === latestReceiptId ? receiptActions : undefined}"
       ],
       "presence": [
         "Decision receipt"
       ],
       "partial": {
         "since": "2026-10-07",
-        "reason": "S3.10h2 draws the follow-up row under the latest receipt (approval-receipt.tsx, thread.tsx): Review the changed files opens the changes sheet, Move this session to another machine opens the machine menu's move (not read-only, connected, with a move to make), and See the checkpoints → or See the rule → (after an Always) opens that dock tab through Thread's onOpenDockTab. Missing: the shell does not pass onOpenDockTab yet (workspace-shell.tsx, held by #745), so the link is not drawn in the app; the wiring and this entry's flip to built are saved as S3.10h2's shell patch. The link reads See the rule, not the drawn See the rule you just created, because another client may have made the decision. The design's title suffixes (migration applied, step 3 rewritten), the follow-up line and the file count in Review the 7 changed files are the sample session's words"
+        "reason": "S3.10h2 draws the follow-up row under the latest receipt while connected, as the design hides it offline (approval-receipt.tsx, thread.tsx): Review the changed files opens the changes sheet, Move this session to another machine opens the machine menu's move (not read-only, with a machine to move to), and See the checkpoints → or See the rule → (after an Always) opens that dock tab through Thread's onOpenDockTab. Missing: the shell does not pass onOpenDockTab yet (workspace-shell.tsx, held by #745), so the link is not drawn in the app; the wiring and this entry's flip to built are saved as S3.10h2's shell patch. The link reads See the rule, not the drawn See the rule you just created, because another client may have made the decision. The design's title suffixes (migration applied, step 3 rewritten), the follow-up line and the file count in Review the 7 changed files are the sample session's words"
       }
     },
     {

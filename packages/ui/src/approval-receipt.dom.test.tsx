@@ -347,6 +347,15 @@ it.each([
   expect(screen.queryByRole("button", { name: "Move this session to another machine" })).toBeNull()
 })
 
+// As drawn, the follow-up row is for a connected client: offline, the changes
+// sheet cannot read current Git state and nothing can move, so no action
+// would do what it says.
+it("draws no action row while disconnected", () => {
+  receiptThread(["allow-once"], { connected: false })
+  expect(screen.queryByRole("group", { name: "After this decision" })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Review the changed files" })).toBeNull()
+})
+
 it("draws no action row with no action to offer", () => {
   receiptThread(["allow-once"], { onOpenSheet: undefined, onOpenDockTab: undefined, onTransferSession: undefined })
   expect(screen.queryByRole("group", { name: "After this decision" })).toBeNull()

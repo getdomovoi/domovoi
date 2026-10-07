@@ -1248,7 +1248,9 @@ export function Thread({
               return <Alert key={item.id} className="border-[color-mix(in_oklab,var(--info)_30%,transparent)] bg-[color-mix(in_oklab,var(--info)_9%,transparent)] text-info"><BotIcon /><AlertTitle>System</AlertTitle><AlertDescription><MarkdownQuickView source={[item.body, item.detail].filter(Boolean).join("\n\n")} /></AlertDescription></Alert>
             }
             if (item.kind === "receipt") {
-              return <ApprovalReceipt key={item.id} receipt={item} checkpointTaken={receiptCheckpointTaken(item, renderedThread)} actions={item.id === latestReceiptId ? receiptActions : undefined} />
+              // As drawn, the follow-up row is for a connected client: offline
+              // the changes sheet cannot read current state and nothing moves.
+              return <ApprovalReceipt key={item.id} receipt={item} checkpointTaken={receiptCheckpointTaken(item, renderedThread)} actions={connected && item.id === latestReceiptId ? receiptActions : undefined} />
             }
             if (item.kind === "policy-refusal") {
               return <PolicyRefusalCard key={item.id} refusal={item} onSeeRules={onOpenDockTab ? () => onOpenDockTab("rules") : undefined} />
