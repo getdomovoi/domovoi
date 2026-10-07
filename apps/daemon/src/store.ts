@@ -288,7 +288,7 @@ function appendSystemReceipt(
   })
 }
 
-function migrateStoredWorkspace(value: unknown): {
+function migrateStoredWorkspace(value: unknown, options: { repairLegacyEffort?: boolean } = {}): {
   snapshot: WorkspaceSnapshot
   repaired: boolean
   inactivatedRules: Array<{ id: string; projectId: string; inactivatedAt: string }>
@@ -314,7 +314,7 @@ function migrateStoredWorkspace(value: unknown): {
   // Before discovery reported unset, OpenCode and Kilo sent no effort value
   // for medium or none. Normalize these labels on every load; revisit this
   // repair if either adapter ever sends a real effort value.
-  if (Array.isArray(migrated.sessions)) {
+  if (options.repairLegacyEffort !== false && Array.isArray(migrated.sessions)) {
     for (const session of migrated.sessions) {
       if (!isRecord(session) || !isRecord(session.runtime)) continue
       const runtime = session.runtime
@@ -1137,10 +1137,15 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       }
     }
     const existingSnapshot = migratedExisting?.snapshot
-    const isLegacySeed = existingSnapshot?.annotations.length === 0 &&
+    // Effort aliases must not erase a person's change when identifying a seed.
+    // Apply the earlier migrations to both sides, but compare before effort repair.
+    const seedCandidate = existingSnapshot && existing && options.legacySnapshots?.length
+      ? migrateStoredWorkspace(JSON.parse(existing.snapshot), { repairLegacyEffort: false }).snapshot
+      : undefined
+    const isLegacySeed = seedCandidate?.annotations.length === 0 &&
       options.legacySnapshots?.some(
-        (snapshot) => legacyFingerprint(existingSnapshot) === legacyFingerprint(
-          migrateStoredWorkspace(snapshot).snapshot,
+        (snapshot) => legacyFingerprint(seedCandidate) === legacyFingerprint(
+          migrateStoredWorkspace(snapshot, { repairLegacyEffort: false }).snapshot,
         ),
     )
     this.recovery = recovery

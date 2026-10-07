@@ -1225,6 +1225,37 @@ describe("SqliteWorkspaceStore", () => {
     }
   })
 
+  it.each([
+    ["opencode", "medium", "none"], ["opencode", "none", "medium"],
+    ["kilo", "medium", "none"], ["kilo", "none", "medium"],
+  ] as const)("keeps a seed changed only from %s effort %s to %s", async (provider, originalEffort, changedEffort) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-effort-only-change-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const legacySeed = structuredClone(demoWorkspace)
+    legacySeed.protocolVersion = "0.7.0"
+    legacySeed.annotations = []
+    legacySeed.sessions[0]!.runtime = { ...legacySeed.sessions[0]!.runtime, provider, reasoning: originalEffort }
+    const changed = structuredClone(legacySeed)
+    changed.sessions[0]!.runtime.reasoning = changedEffort
+    const original = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    await original.close()
+    const database = new DatabaseSync(databasePath)
+    try {
+      database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(changed))
+    } finally { database.close() }
+    const initial = createEmptyWorkspace(legacySeed.machine)
+    const expected = structuredClone(changed)
+    expected.protocolVersion = protocolVersion
+    expected.sessions[0]!.runtime.reasoning = "unset"
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const reopened = new SqliteWorkspaceStore(databasePath, initial, { legacySnapshots: [legacySeed] })
+      try {
+        expect(reopened.load()).toEqual(expected)
+      } finally { await reopened.close() }
+    }
+  })
+
   it("repairs a legacy project machine reference once without clearing project state", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-store-"))
     scratchDirectories.push(scratch)
