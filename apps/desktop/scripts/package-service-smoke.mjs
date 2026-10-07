@@ -67,9 +67,9 @@ export function serviceSmokeSkip(platform) {
 }
 
 // The entries of the account's ~/.domovoi that make it a Domovoi profile:
-// everything but the installer's own service-operation lease, which any
-// service command (and the daemon's scripted launchd tests, earlier in the
-// macOS job) creates there whatever HOME says.
+// everything but the installer's own service-operation lease. Any service
+// command the account runs creates that file there whatever HOME says, this
+// smoke's own included, and it holds no profile state.
 export function profileEntries(names) {
   return names.filter((name) => !/^service-operation-lease\.sqlite(?:-journal)?$/u.test(name))
 }

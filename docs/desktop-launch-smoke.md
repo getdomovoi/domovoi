@@ -100,9 +100,9 @@ systemd user manager reads units only under the home it started with.
 
 So the script refuses, before it changes anything, unless `CI=true` and
 `DOMOVOI_SERVICE_SMOKE_DISPOSABLE_HOST=1` are set, the account's `~/.domovoi` is absent or
-holds nothing but that lease file, and no Domovoi service is loaded for it. The daemon's
-scripted launchd tests take the same lease earlier in the macOS job, which is why the lease
-file alone is allowed. Do not run it on a developer machine. On macOS CI it uses a
+holds nothing but that lease file, and no Domovoi service is loaded for it. Any service
+command the account runs leaves the lease file behind, and it holds no profile state, so it
+alone does not refuse. Do not run it on a developer machine. On macOS CI it uses a
 temporary HOME and profile, and the lease file stays in the runner account's `~/.domovoi`. On
 Linux CI it runs only as the throwaway `domovoi-smoke` account, which the workflow creates with
 its own lingering systemd manager, from a copy of the unpacked app that account owns. Fresh
@@ -111,7 +111,10 @@ daemon startup may read the native keychain index, as in the launch smoke.
 Each command has its own bound: 180 seconds for install, 120 for removal, 30 for status and
 manager reads. The attach is retried for up to 90 seconds after install. After removal, the
 manager and the attach are read for up to 30 seconds until the manager holds neither the
-definition nor a running job and the attach is refused. If a run fails after install, it
+definition nor a running job and the attach is refused. These windows are checked between
+attempts, not imposed on them, so each can run over by one attempt: up to 20 seconds for an
+attach, plus a 30-second manager read after removal. The step's own CI timeout bounds the whole
+run. If a run fails after install, it
 removes the service. Once anything was installed, the work directory with the runtime copy
 and profile is deleted only when the manager confirms the service gone; otherwise it is kept
 and named.

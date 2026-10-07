@@ -70,8 +70,8 @@ test("the smoke refuses a host that already has a Domovoi profile", () => {
 })
 
 test("only the installer's own lease file in ~/.domovoi is not a profile", () => {
-  // The daemon's scripted launchd tests take the real account's lease on the
-  // macOS runner before this step runs, so that file alone must not refuse.
+  // Any service command the account runs leaves the lease file; it holds no
+  // profile state, so that file alone must not refuse.
   assert.deepEqual(profileEntries(["service-operation-lease.sqlite", "service-operation-lease.sqlite-journal"]), [])
   assert.deepEqual(profileEntries([]), [])
   assert.deepEqual(profileEntries(["service-operation-lease.sqlite", "profile-lease.sqlite", "local-owner.json"]), ["profile-lease.sqlite", "local-owner.json"])
