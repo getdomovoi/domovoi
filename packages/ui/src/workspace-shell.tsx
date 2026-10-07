@@ -105,6 +105,7 @@ import {
 } from "./workspace-persistence"
 import {
   buildWorkspaceCommands,
+  commandPaletteFrame,
   commandPaletteShortcut,
   commandPaletteTitle,
   workspaceShortcut,
@@ -791,7 +792,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       }
     },
     open: (machineId: string, sessionId: string) => {
-      if (windowMachineId && switchMachine(machineId)) setPendingElsewhere({ from: windowMachineId, machineId, sessionId, reached: false })
+      if (!windowMachineId || !switchMachine(machineId)) return false
+      setPendingElsewhere({ from: windowMachineId, machineId, sessionId, reached: false })
+      return true
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(searchTargets), homeMachineId, accessSession, homeSearch, switchMachine])
@@ -1909,7 +1912,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 title={commandPaletteTitle}
                 titleHidden
                 showCloseButton={false}
-                className="top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0"
+                className={commandPaletteFrame}
                 bodyClassName="p-3"
               />
             }
@@ -1919,6 +1922,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onOpenChange={setCommandPaletteOpen}
             restoreFocusTo={commandPaletteFocusRef.current}
             machineSearch={machineSearch}
+            switching={pendingElsewhere}
             {...(firstRunEnabled && !watching ? {
               onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
             } : {})}

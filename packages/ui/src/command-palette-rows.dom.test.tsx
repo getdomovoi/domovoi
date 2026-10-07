@@ -1,0 +1,78 @@
+import type { SessionSearchResult } from "@getdomovoi/protocol"
+import { cleanup, render, screen, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+import { afterEach, expect, it, vi } from "vitest"
+
+import { CommandPalette } from "./command-palette"
+import type { WorkspaceCommand } from "./workspace-commands"
+
+afterEach(cleanup)
+
+// Desktop V2 draws the palette 660px wide with a plain query row, the scope on
+// its right, and one-line rows: a coloured dot, the label, and the meta on the
+// right. Rulings Q375 A and Q376 A (2026-10-02) take that restyle and keep the
+// commands the design does not draw.
+const commands: WorkspaceCommand[] = [
+  { id: "take-checkpoint", label: "Take a checkpoint", section: "Session", keywords: [], tone: "online", detail: "manual", run: vi.fn() },
+  { id: "open-changes", label: "Open the changes sheet", section: "Session", keywords: [], tone: "handoff", shortcut: "mod+shift+D", run: vi.fn() },
+  { id: "session-s1", label: "Migrate billing webhooks", section: "Sessions", keywords: [], kind: "SESSION", tone: "waiting", meta: "codex · waiting", run: vi.fn() },
+  { id: "machine-m1", label: "mac-mini-m4", section: "Machines", keywords: [], kind: "MACHINE", tone: "online", meta: "darwin · this machine", run: vi.fn() },
+  { id: "skill-k1", label: "design-studio", section: "Skills", keywords: [], kind: "SKILL", tone: "handoff", meta: "built-in skill", run: vi.fn() },
+]
+
+function palette(extra: Partial<Parameters<typeof CommandPalette>[0]> = {}) {
+  render(<CommandPalette open platform="darwin" commands={commands} onOpenChange={vi.fn()} restoreFocusTo={null} {...extra} />)
+  return userEvent.setup()
+}
+
+const option = (name: string) => screen.getByRole("option", { name: new RegExp(`^${name}`, "u") })
+const meta = (row: HTMLElement) => row.querySelector("[data-palette-meta]")?.textContent
+
+it("draws every row on one line: a dot, the label, and the meta on the right", () => {
+  palette()
+  const checkpoint = option("Take a checkpoint")
+  expect(checkpoint.querySelector("[data-status-dot]")).toBeTruthy()
+  expect(meta(checkpoint)).toBe("manual")
+  expect(option("Open the changes sheet").querySelector("[data-palette-meta]")?.textContent).toBe("⌘⇧D")
+
+  const session = screen.getByRole("option", { name: /Migrate billing webhooks/u })
+  expect(session.querySelector("[data-status-dot]")).toBeTruthy()
+  expect(meta(session)).toBe("codex · waiting")
+  // The design draws no kind tag; the group heading says what the row is.
+  expect(session.textContent).not.toContain("SESSION")
+  expect(screen.getByRole("option", { name: /mac-mini-m4/u }).textContent).not.toContain("MACHINE")
+  // The label and its meta share one line: nothing sits under the label.
+  expect(checkpoint.querySelectorAll("[data-palette-label]")).toHaveLength(1)
+  expect(checkpoint.querySelector("[data-palette-label]")?.textContent).toBe("Take a checkpoint")
+})
+
+it("lists sessions, commands, machines and skills under their own headings", () => {
+  palette()
+  expect([...document.querySelectorAll("[cmdk-group-heading]")].map((heading) => heading.textContent))
+    .toEqual(["SESSIONS", "COMMANDS", "MACHINES", "SKILLS"])
+  expect(within(screen.getByRole("group", { name: "MACHINES" })).getByText("mac-mini-m4")).toBeTruthy()
+  expect(within(screen.getByRole("group", { name: "SKILLS" })).getByText("design-studio")).toBeTruthy()
+})
+
+it("puts the scope on the right of the query row", () => {
+  palette()
+  const row = screen.getByRole("combobox").closest("[data-palette-query]")
+  expect(row).toBeTruthy()
+  expect(within(row as HTMLElement).getByText("sessions, machines, commands, skills")).toBeTruthy()
+})
+
+it("names this machine's sessions apart while other machines are searched", async () => {
+  const none = async (): Promise<SessionSearchResult> => ({ query: "billing", truncated: false, matches: [] })
+  const user = palette({
+    machineSearch: {
+      here: { id: "machine-here", label: "mac-mini-m4" },
+      machines: [{ id: "machine-other", label: "hetzner-cx42", transport: "tailnet" }],
+      search: vi.fn(none),
+      open: vi.fn(),
+    },
+  })
+  await user.type(screen.getByRole("combobox"), "billing")
+  await screen.findByText("SESSIONS ON OTHER MACHINES")
+  expect(screen.getByRole("group", { name: "SESSIONS ON THIS MACHINE" })).toBeTruthy()
+  expect(screen.queryByRole("group", { name: "SESSIONS" })).toBeNull()
+})

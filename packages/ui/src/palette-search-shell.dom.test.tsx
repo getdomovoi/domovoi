@@ -71,4 +71,17 @@ it("searches an admitted machine from the palette and switches to a picked sessi
   expect(group.textContent).toContain("1 match")
   await user.click(within(group).getByText("Billing webhooks on Studio"))
   await waitFor(() => expect(sentRequests(home, "fleet.clientRoute")).toHaveLength(3))
+  // The palette stays on the picked row while the window moves (Desktop V2,
+  // xmChoose), and closes once the session is open there.
+  const palette = screen.getByRole("dialog", { name: "Domovoi commands" })
+  expect(within(palette).getByRole("option", { name: /Billing webhooks on Studio/u }).textContent).toContain("switching to Studio")
+  await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
+  await settle()
+  const attached = sockets.socket(3)
+  const studioSession = { ...target.sessions[0]!, id: "s-studio", title: "Billing webhooks on Studio" }
+  await act(async () => { completeHandshake(attached, { ...target, sessions: [...target.sessions, studioSession] }) })
+  await settle()
+  await act(async () => { respond(attached, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
+  await settle()
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull())
 }, 15_000)

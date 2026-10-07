@@ -39,6 +39,11 @@ export type CommandPalettePlatform = "darwin" | "linux" | "win32"
 // its code loads carries too.
 export const commandPaletteTitle = "Domovoi commands"
 
+// Desktop V2's palette frame: 660px wide, 96px from the top, on the card. The
+// shell draws its loading frame with the same classes, so the palette's code
+// arriving does not move the box.
+export const commandPaletteFrame = "top-24 w-[660px] max-w-[calc(100%-2rem)] sm:max-w-[660px] gap-0 rounded-[14px]! bg-card ring-border shadow-[var(--shadow-xl)] translate-y-0 overflow-hidden p-0"
+
 type ShortcutEvent = {
   key: string
   metaKey: boolean

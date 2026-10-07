@@ -1997,24 +1997,20 @@
         "detail: \"settings\"",
         "label: \"Read the audit log\"",
         "detail: \"on this machine\"",
-        "re:<CommandDialog[^>]*660px"
+        "re:commandPaletteFrame = \"top-24 w-\\[660px\\]",
+        "re:<CommandDialog\\s+className=\\{commandPaletteFrame\\}",
+        "<Dot meaning={command.tone ?? \"idle\"} />",
+        "data-palette-meta",
+        "SESSIONS ON THIS MACHINE"
       ],
-      "presence": [
-        "Search commands",
-        "label: \"Open the changes sheet\"",
-        "label: \"Read the audit log\""
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the commands and their meta are built; the palette is the shadcn CommandDialog unchanged (about 385px wide at top-1/3, list capped at max-h-72) where the design draws 660px at 96px from the top, with a plain query row and the scope on its right; rows are icons with two-line meta and a kind tag where the design draws a coloured dot, one line and the meta on the right. Q375 A (2026-10-02) takes the dots and right-aligned meta with the 660px restyle; Q376 A keeps the undrawn commands, with the design's COMMANDS first"
-      },
       "notes": [
+        "2026-10-06 (S3.10 slice o, rulings Q375 A and Q376 A): built as drawn: 660px at 96px from the top, a plain query row with the scope on its right, one line per row with a coloured dot, the label and the meta on the right, no icons, two-line meta or kind tag. The design's COMMANDS come first in its order and colours; the undrawn commands follow (humanRead palette, 2026-10-06).",
         "2026-10-01 (S3.10 slice 2, ruling Q288 A): Run a migration on this machine is left out. It is the mockup's sample session acting through the palette, not a command. Its copy stays claimed here so the gate keeps reading it, and no disabled placeholder is drawn.",
         "2026-10-01 (ruling Q288 A): Open a pull request is left out until the git-from-app work lands; dock.changes-pr is blocked on protocol and claims its copy. No disabled placeholder is drawn.",
         "2026-10-01: Revert to a checkpoint draws no count. The design's meta (5 available) needs the checkpoint list, which the snapshot does not carry and the palette does not fetch. The command opens the Checkpoints tab.",
         "2026-10-01: Take a checkpoint keeps its existing action, which takes the checkpoint at once while the design's command opens the Checkpoints tab with its label field.",
         "2026-10-01 (ruling Q291 A): only the desktop app binds the two shortcuts the meta names (mod+shift+D opens the changes sheet, mod+shift+M shows all machines) and draws that meta. A browser window registers neither binding, leaves those keys to the browser, and shows both commands without the shortcut meta. The shell tells the two apart by its clientKind, the signal it already uses for the dock's first tab and the pairing card.",
-        "2026-10-01: Move this session to another machine opens the machine menu on the active session, the same route as a session row's Move, and the transfer dialog follows the choice of machine. Pair a phone or tablet opens settings, and is offered only in a desktop window on its own daemon, where the pairing card is. Rows carry icons where the design draws a coloured dot."
+        "2026-10-01: Move this session to another machine opens the machine menu on the active session, the same route as a session row's Move, and the transfer dialog follows the choice of machine. Pair a phone or tablet opens settings, and is offered only in a desktop window on its own daemon, where the pairing card is. Rows carried icons where the design draws a coloured dot until 2026-10-06 (Q375 A)."
       ]
     },
     {
@@ -2026,17 +2022,20 @@
         "in summary",
         "Matches join this list as each machine answers."
       ],
-      "presence": [
-        "SESSIONS ON OTHER MACHINES"
-      ],
       "evidence": [
         "SESSIONS ON OTHER MACHINES",
-        "Add it back"
+        "Search only what answered",
+        "Add it back",
+        "is left out, so its sessions stay unsearched until you add it back.",
+        "did not answer, so its sessions were not searched.",
+        "<Dot meaning={answerMeaning[answer.state]} />",
+        "{answer.state === \"asking\" ? <Sweep /> : null}",
+        "switching to {machine.label}",
+        "export function remoteSessionMeta("
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the group, per-machine search and Search only what answered are built; leaving a silent machine out has no undo, so Add it back and the notice that the machine is left out until you add it back are not drawn; the machine header has no answer dot or asking sweep; picking a row closes the palette at once instead of showing switching to <machine>; the notice is danger-styled and adds a sentence the design does not draw; row meta is the session state where the design shows running 41m"
-      }
+      "notes": [
+        "2026-10-06 (S3.10 slice o): built as drawn in the grouped layout (paletteSessions A): the notice is the design's (a dot and one sentence on the card's ground, Search only what answered, then Add it back once the machine is left out), each machine header has its answer dot and the asking sweep, a picked row shows switching to <machine> until the session opens there, and row meta is the session's state and age. Ruled differences are in humanRead palette.other-machines, 2026-10-06."
+      ]
     },
     {
       "id": "composer.action-row",
@@ -2296,6 +2295,16 @@
       "id": "palette",
       "since": "2026-10-02",
       "note": "Q376 A: Open project, New session, Pause, Emergency stop, Agent workspace, Provider settings, Skills, Checkpoints, Reconnect, Open in editor, Copy worktree path, First-run setup and the footer hint are not drawn and stay, after the design's COMMANDS."
+    },
+    {
+      "id": "palette",
+      "since": "2026-10-06",
+      "note": "Differences from the drawn palette after the Q375 A restyle. With no kind tag on a row, machine and skill rows sit under MACHINES and SKILLS headings after COMMANDS, where the design draws only SESSIONS and COMMANDS. The undrawn commands take dot colours by the design's own reading (green opens a screen, blue a sheet, flow or other app, amber can undo work, red stops it). A command's dot is decoration and stays out of the accessibility tree; an entity's dot keeps its spoken kind and state. The overlay is the shadcn dialog's, not the design's --overlay, and the list scrolls past min(30rem, viewport less 14rem). Screenshot: ~/.agents/plans/domovoi-autopilot/tasks/S3.10o-palette/."
+    },
+    {
+      "id": "palette.other-machines",
+      "since": "2026-10-06",
+      "note": "Ruled and chosen differences. A running session's meta is running with no duration (Q390 A: no turn start on the wire until protocol 0.8.0); other rows read their state and age from updatedAt (failed 1h ago). A machine with no match says no matches, not no matches in N sessions: session.search returns no count. The asking dot is the status atom's blue because the atom has no primary meaning; the sweep and the word asking carry it. A machine left out stays out for later queries until Add it back, which asks it again for the current query. The States design's second sentence (This is not the same as having no results) is not drawn in the palette, as Desktop V2 draws it. Merged layout B (machine chips, Matches join this list as each machine answers) is not built."
     },
     {
       "id": "dock.preview",
