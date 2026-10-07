@@ -111,3 +111,9 @@ it("preserves both supervision and refusal-publication failures with the caught 
     errors: [primary, publication], cause: publication,
   })
 })
+
+it("persists confirmed kill-on-close in prepared attempt evidence", async () => {
+  const f = fixture([0])
+  await superviseWindows(input(), f.effects)
+  expect(f.records.find((record) => record.attempts.at(-1)?.stage === "prepared")?.attempts[0]).toMatchObject({ killOnClose: true })
+})

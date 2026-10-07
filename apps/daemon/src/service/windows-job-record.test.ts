@@ -26,7 +26,7 @@ it("round trips private Windows evidence separately from WSL evidence", () => {
 it("rejects successful termination without an empty-job observation", () => {
   const record = windowsRecordFixture()
   expect(windowsSupervisorRecordSchema.safeParse({ ...record, state: "stopped", reason: "deliberate-stop", attempts: [{
-    number: 1, job: `Local\\Domovoi-${randomUUID()}`, bootId: record.loop.bootId, startedAt: record.startedAt,
+    number: 1, job: `Global\\Domovoi-${randomUUID()}`, bootId: record.loop.bootId, startedAt: record.startedAt,
     child: null, helper: null, stage: "intent", empty: null, exitCode: null, backoffMs: 0,
   }] }).success).toBe(false)
 })
@@ -34,7 +34,7 @@ it("rejects successful termination without an empty-job observation", () => {
 it("allows failed observations to retain unfinished attempts", () => {
   const record = windowsRecordFixture()
   expect(windowsSupervisorRecordSchema.safeParse({ ...record, state: "failed", reason: "observation-failure", attempts: [{
-    number: 1, job: `Local\\Domovoi-${randomUUID()}`, bootId: record.loop.bootId, startedAt: record.startedAt,
+    number: 1, job: `Global\\Domovoi-${randomUUID()}`, bootId: record.loop.bootId, startedAt: record.startedAt,
     child: null, helper: null, stage: "intent", empty: null, exitCode: null, backoffMs: 0,
   }] }).success).toBe(true)
 })
@@ -44,4 +44,12 @@ it("rejects loader GUIDs and invalid Windows boot counters", () => {
   for (const bootId of [randomUUID(), "windows-boot:-1", "windows-boot:4294967296", "windows-boot:01", "windows-boot:NaN"]) {
     expect(windowsSupervisorRecordSchema.safeParse({ ...record, loop: { ...record.loop, bootId } }).success).toBe(false)
   }
+})
+
+it("requires Global job names so sign-in cannot hide an old session's job", () => {
+  const record = windowsRecordFixture()
+  const attempt = { number: 1, job: `Global\\Domovoi-${randomUUID()}`, bootId: record.loop.bootId,
+    startedAt: record.startedAt, stage: "intent", child: null, helper: null, empty: null, exitCode: null, backoffMs: 0 }
+  expect(windowsSupervisorRecordSchema.safeParse({ ...record, attempts: [attempt] }).success).toBe(true)
+  expect(windowsSupervisorRecordSchema.safeParse({ ...record, attempts: [{ ...attempt, job: attempt.job.replace("Global", "Local") }] }).success).toBe(false)
 })

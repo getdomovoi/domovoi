@@ -69,14 +69,15 @@ has the printed text and failure handling.
   All manager executables remain resolved under SystemRoot. The native test reads back
   `PT0S` and both false battery flags, asserts exactly one restart with a stable new PID,
   exhaustion status, deliberate-stop non-restart, and empty jobs at removal. Unit tests
-  run on macOS/Linux with the Windows boundary mocked. Owed: execution of the new native
-  tests on Windows CI, plus **[H] real user-logon acceptance on fetzy's hardware**.
-  The helper now flushes and atomically publishes its own bound job-empty receipt before
-  stdout, including on supervisor-pipe EOF. A hidden top-level window handles end-session
-  messages and attempts synchronous termination, empty-job observation, and publication.
-  This is best effort. Only fetzy's **[H] hardware run** proves whether real sign-out gives it
-  time. Without a receipt, same-boot startup, stop confirmation, and removal still refuse.
-  Native EOF/restart and synthetic end-session receipt tests also need Windows CI execution.
+  run on macOS/Linux with the Windows boundary mocked. Windows task-native restart,
+  exhaustion, stop, removal and settings read-back passed on `8efda0ef` (2026-10-06).
+  Q9 A (2026-10-06) accepts recorded kill-on-close confirmation, absence of the exact Global
+  job name, and death of the recorded daemon identity. This means termination started,
+  completion not observed; the profile lease guards a second owner. Global names avoid
+  mistaking a new logon session's namespace for proof about the previous one. The helper
+  creates and opens its Global name before resuming the daemon. Receipt files and the hidden
+  session-end window were removed. The replacement helper-death recovery test awaits Windows
+  CI; real sign-out/sign-in and reboot acceptance remain **[H]**, fetzy's hardware run.
   Legacy migration remains a policy decision; exact manual disable/restart/retirement steps
   are in [daemon services](daemon-services.md#windows-removal).
   This change does not provide Windows boot supervision and does not close S1.1.

@@ -200,20 +200,22 @@ Each attempt in the profile's `windows-supervisor.json` records the job name, ke
 helper and daemon PID/creation time, launch phase, exit code, backoff, and empty-job receipt.
 On daemon exit the helper terminates the job, including surviving descendants, and queries
 `JOBOBJECT_BASIC_ACCOUNTING_INFORMATION.ActiveProcesses` on its retained handle until it is zero.
-The helper flushes a private `windows-job-<uuid>.receipt.json` staging file and atomically
-renames it before emitting stdout. It binds the proof to the job, boot counter, attempt,
-registration, and process birth identities. Startup, status, stop, and removal read that receipt
-if the supervisor died before copying the proof into its own record. Missing or mismatched
-receipts do not settle an unconfirmed tree. Backoffs share WSL's policy: 1, 5 and 15 seconds; the fourth
+The supervisor records that observation. If the helper dies before publishing it, Q9 A
+(2026-10-06) also accepts recorded kill-on-close confirmation, absence of the exact
+`Global\Domovoi-<uuid>` job name, and death of the recorded daemon identity. This separate
+`closed` evidence means termination started, completion not observed. The profile lease guards
+a second owner while descendants finish. Backoffs share WSL's policy: 1, 5 and 15 seconds; the fourth
 crash records exhaustion. `domovoid service status` reports exhaustion and exits 1 even when the
 task remains registered. A clean exit or deliberate stop does not restart. Daemon output is
 appended to the profile's `windows-daemon.log`.
 
-An exclusive startup lease gates every loop. Unconfirmed attempts on the same Windows boot
-refuse another launch, stop confirmation, or removal. Helper death closes its non-inherited job
-handle, but neither that event, daemon death, a missing job, nor Task Scheduler state supplies
-an empty-job receipt. Status explains that the task/configuration remain, the tree is unknown,
-and restarting Windows settles the tree from the recorded boot. Boot recovery compares the
+An exclusive startup lease gates every loop. Startup, status, stop and removal accept either
+an empty-job observation or Q9's bound kill-on-close closure evidence. Name lookup uses
+`OpenJobObject` without creating anything; access denial or an unknown result refuses. Global
+names remain visible across logon sessions. Each helper verifies it can create and open its
+Global name before resuming the daemon, including when launched by a limited-user task.
+Absent proof, status explains that the task/configuration remain and the tree is unconfirmed.
+Restarting Windows settles a tree from the recorded earlier boot. Boot recovery compares the
 Windows 10+ `KUSER_SHARED_DATA.BootId` unsigned counter, read from the fixed user mapping
 at `0x7FFE02C4`, not the BCD loader GUID, `LastBootUpTime`, or wall-clock-minus-uptime.
 Records use `windows-boot:<counter>`; old GUID records are refused. The native test compares
@@ -228,29 +230,24 @@ retain it while holding the startup lease through the scheduler stop. They clear
 Task Scheduler confirms the task is disabled with zero instances, so a queued old instance
 cannot launch between job-empty proof and task shutdown.
 
-Killing only the Node supervisor closes the helper's stdin. The helper then terminates its
-job, observes it empty, and writes its own receipt even when stdout is already closed.
-For sign-out, a helper thread owns a hidden top-level window. It acknowledges
-`WM_QUERYENDSESSION` and synchronously terminates, observes, and receipts the job on
-`WM_ENDSESSION(TRUE)`. This end-session path is best effort: Windows may terminate the helper
-before publication. Whether real sign-out allows enough time remains **[H]**, fetzy's hardware
-run. Task Manager termination or `schtasks /end` may also end the helper without a receipt.
-Without valid proof, the next same-boot logon still refuses until Windows restarts. Missing
-named jobs are not accepted as proof: last-handle closure initiates kill-on-close, but a
-namespace lookup does not observe termination completion.
+Signing out, Task Manager termination, or `schtasks /end` may kill the helper before an
+empty-job observation reaches the supervisor. The next sign-in on the same boot can use Q9's
+Global-name and daemon-identity check. Helper-written receipt files and session-end windows
+are not used. Intent-only attempts without prepared kill-on-close confirmation still refuse
+same-boot recovery. Real sign-out/sign-in acceptance remains **[H]**, fetzy's hardware run.
 
 Every `schtasks /create /sc onlogon /rl LIMITED` is followed by the Task Scheduler COM settings
 step, before `/run`: `ExecutionTimeLimit` is `PT0S`, and `DisallowStartIfOnBatteries` and
 `StopIfGoingOnBatteries` are false. This replaces Task Scheduler's default run limit and battery
 stops. Install, update and rollback use the same settings step. Failure there fails the operation.
-The Windows native test reads all three values back through `schtasks /query /xml`; execution
-is still owed on Windows CI for this change. Actual logon acceptance remains **[H]**, fetzy's
-hardware run. A manual task start is not logon acceptance.
+The Windows native task tests passed restart, exhaustion, stop, removal and XML read-back on
+`8efda0ef`. The Global-name helper-death recovery test still needs Windows CI execution.
+Actual logon acceptance remains **[H]**, fetzy's hardware run. A manual task start is not logon acceptance.
 
 ## Windows removal
 
 `domovoid service remove` disables future task starts, requests supervisor retirement, and
-requires empty-job evidence for every attempt under the startup lease. A verified later boot
+requires empty-job or Q9 closure evidence for every attempt under the startup lease. A verified later boot
 also settles an earlier boot's tree. Only after that proof does it stop the task, wait for no
 queued or running instances, delete the registration, and remove the configuration. Updates
 and rollback use the same proof before replacing a runtime; their stop permits the registration

@@ -366,15 +366,15 @@ Read these before relying on this guide for a fleet rollout.
   retrying.
 - Windows logon tasks now run a job-object supervisor with 1, 5 and 15 second crash backoffs
   and exhaustion after the fourth crash. Status exits 1 on exhaustion or unconfirmed tree
-  evidence. Stop/removal require empty-job proof or a verified later Windows boot; otherwise
-  they retain the task and configuration and explain the refusal. The new native restart,
-  exhaustion, removal and task-settings read-back tests still need Windows CI execution.
+  evidence. Stop/removal require empty-job proof, Q9 closure evidence, or a verified later
+  Windows boot; otherwise they retain the task and configuration and explain the refusal.
+  Native task restart, exhaustion, stop, removal and XML read-back passed on `8efda0ef`.
   Real user-logon acceptance remains **[H]**, fetzy's hardware run. Windows boot supervision
-  is not provided. The helper writes its own bound, flushed job-empty receipt on supervisor
-  stdin EOF and attempts the same through a hidden top-level window at session end. The
-  end-session path is best effort; only fetzy's hardware run proves whether real sign-out
-  allows it time. Without a receipt, the next same-boot logon, stop confirmation, and removal
-  still refuse. The native EOF/restart and synthetic end-session tests await Windows CI.
+  is not provided. Q9 A (2026-10-06) accepts prepared kill-on-close confirmation, absence of
+  the exact Global job name, and death of the recorded daemon identity after helper death or
+  sign-out. The limit is termination started, completion not observed; the profile lease
+  guards a second owner. Helper-written receipts and the hidden session-end window are not
+  used. The replacement Global-name/helper-death test still needs Windows CI execution.
   Existing direct-daemon tasks lack job evidence and require
   [manual retirement](daemon-services.md#windows-removal) after
   disabling the task and restarting Windows before installing the supervised service.

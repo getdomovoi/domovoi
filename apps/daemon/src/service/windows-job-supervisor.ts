@@ -10,20 +10,38 @@ import type { OperationDeadline } from "../operation-deadline.js"
 import { parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceStatus } from "./install.js"
-import { launchWindowsJob, queryWindowsProcess, queryWindowsProcesses, windowsProcessAlive, type WindowsJob, type WindowsJobEmpty } from "./windows-job.js"
+import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, queryWindowsProcesses, windowsProcessAlive, type WindowsJob, type WindowsJobEmpty } from "./windows-job.js"
 import { windowsProcessIdentitySchema, prepareSupervisorDirectory, readSupervisorStopRequest, readWindowsSupervisorRecord,
   supervisorBackoffs, supervisorStopPath, writeSupervisorStopRequest, writeWindowsSupervisorRecord, windowsSupervisorRecordSchema,
   type WindowsProcessIdentity, type WindowsSupervisorRecord } from "./supervisor-record.js"
-import { recoverWindowsJobReceipts, windowsJobReceiptPath } from "./windows-job-receipt.js"
 
-export const windowsTreeUnknown = "The Windows daemon tree is unconfirmed. Its job-empty evidence is missing, so another start, stop confirmation, and removal are refused. The task and service configuration are retained. Restart Windows to settle the tree from this recorded boot, then retry."
+export const windowsTreeUnknown = "The Windows daemon tree is unconfirmed. Neither empty-job nor confirmed kill-on-close closure evidence is available, so another start, stop confirmation, and removal are refused. The task and service configuration are retained. Restart Windows to settle the tree from this recorded boot, then retry."
 const digest = (configuration: ServiceConfiguration) => createHash("sha256").update(serializeServiceConfiguration(configuration)).digest("hex")
 
 export function assertWindowsTreeProof(record: WindowsSupervisorRecord, bootId: string): void {
   windowsProcessIdentitySchema.shape.bootId.parse(bootId)
   windowsSupervisorRecordSchema.parse(record)
   if (record.loop.bootId !== bootId) return
-  if (record.attempts.some((a) => !a.empty)) throw new Error(windowsTreeUnknown)
+  if (record.attempts.some((a) => !a.empty && !a.closure)) throw new Error(windowsTreeUnknown)
+}
+
+// Q9 A, 2026-10-06: this proof establishes that kill-on-close started, not
+// that all descendants have completed termination. The daemon's profile lease
+// still excludes another owner. Global names remain observable across logons.
+function recoverWindowsJobClosure(record: WindowsSupervisorRecord, bootId: string): WindowsSupervisorRecord {
+  if (record.loop.bootId !== bootId) return record
+  const recovered = structuredClone(record)
+  for (const attempt of recovered.attempts) {
+    if (attempt.empty || attempt.closure || !attempt.killOnClose || !attempt.child) continue
+    const observed = queryWindowsJob(attempt.job, attempt.child.pid)
+    if (observed.bootId !== bootId) throw new Error("Windows boot changed during job observation; retry")
+    const daemonAlive = observed.identity?.start === attempt.child.start
+    if (observed.jobExists || daemonAlive) continue
+    attempt.closure = { at: new Date().toISOString(), jobAbsent: true, daemonDead: true }
+    attempt.stage = "closed"
+    recovered.state = "stopped"; recovered.reason = "job-closed"
+  }
+  return windowsSupervisorRecordSchema.parse(recovered)
 }
 
 export function assertWindowsStartup(previous: WindowsSupervisorRecord | undefined, bootId: string,
@@ -40,7 +58,7 @@ export function assertWindowsStartup(previous: WindowsSupervisorRecord | undefin
 export function windowsSupervisorStatus(record: WindowsSupervisorRecord, bootId: string, loopAlive: boolean, childAlive = loopAlive): ServiceStatus {
   windowsProcessIdentitySchema.shape.bootId.parse(bootId)
   windowsSupervisorRecordSchema.parse(record)
-  if ((!loopAlive || record.state === "failed") && record.loop.bootId === bootId && record.attempts.some((a) => !a.empty)) {
+  if ((!loopAlive || record.state === "failed") && record.loop.bootId === bootId && record.attempts.some((a) => !a.empty && !a.closure)) {
     return { installed: null, running: false, treeUnconfirmed: true, supervisionFailure: "observation-failure", detail: windowsTreeUnknown }
   }
   const last = record.attempts.at(-1)
@@ -48,6 +66,7 @@ export function windowsSupervisorStatus(record: WindowsSupervisorRecord, bootId:
   const unexpectedLoopExit = !loopAlive && !["stopped", "failed", "exhausted"].includes(record.state)
   const failure = record.state === "exhausted" ? "exhausted" : record.state === "failed" || unexpectedLoopExit ? "observation-failure" : undefined
   const observed = record.loop.bootId !== bootId ? "recorded daemon tree ended with an earlier Windows boot"
+    : last?.closure ? "daemon identity dead and Global job name absent; kill-on-close termination started, completion not observed; profile lease guards a second owner"
     : record.state === "exhausted" ? `supervision exhausted after ${record.crashes} crashes and ${record.attempts.length} attempts; last exit ${last?.exitCode}`
       : record.state === "failed" ? "supervision refused after an observation failure"
         : record.state === "stopped" ? `stopped (${record.reason}); daemon jobs confirmed empty`
@@ -87,12 +106,12 @@ export async function superviseWindows(input: {
     save()
     for (;;) {
       if (input.signal.aborted) return finish("stopped", "deliberate-stop")
-      const attempt: Attempt = { number: record.attempts.length + 1, job: `Local\\Domovoi-${randomUUID()}`, bootId: input.loop.bootId,
+      const attempt: Attempt = { number: record.attempts.length + 1, job: `Global\\Domovoi-${randomUUID()}`, bootId: input.loop.bootId,
         startedAt: time(), stage: "intent", child: null, helper: null, empty: null, exitCode: null, backoffMs: 0 }
       record.attempts.push(attempt); record.state = "starting"; save()
       job = await effects.launch(attempt)
       if (job.prepared.job !== attempt.job || job.prepared.bootId !== attempt.bootId || job.prepared.killOnClose !== true || job.prepared.stdioOnly !== true) throw new Error("Windows job preparation disagrees with its attempt")
-      attempt.child = job.prepared.child; attempt.helper = job.prepared.helper; attempt.stage = "prepared"; save()
+      attempt.killOnClose = true; attempt.child = job.prepared.child; attempt.helper = job.prepared.helper; attempt.stage = "prepared"; save()
       if (!input.signal.aborted) {
         await job.resume()
         attempt.stage = "running"; record.state = "running"; save()
@@ -153,7 +172,7 @@ function boundRecord(config: ServiceConfiguration, previousConfigurationDigest?:
     || (record.configurationDigest !== digest(config) && record.configurationDigest !== previousConfigurationDigest))) {
     throw new Error("Windows supervisor evidence does not match the installed service configuration")
   }
-  return record ? recoverWindowsJobReceipts(profileLocation(config.homeDirectory, config.profileDirectory), record) : undefined
+  return record
 }
 
 export async function runWindowsSupervisor(path: string, entry: { executable: string; args: string[] }): Promise<WindowsSupervisorRecord> {
@@ -168,7 +187,7 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
     const observed = queryWindowsProcess(process.pid)
     if (!observed.identity) throw new Error("Windows supervisor birth identity is unavailable")
     const previous = readWindowsSupervisorRecord(home)
-    assertWindowsStartup(previous ? recoverWindowsJobReceipts(home, previous) : undefined, observed.bootId, windowsProcessAlive)
+    assertWindowsStartup(previous ? recoverWindowsJobClosure(previous, observed.bootId) : undefined, observed.bootId, windowsProcessAlive)
     if (readSupervisorStopRequest(home)?.registrationId === config.registrationId) throw new Error("This Windows supervisor registration was stopped; reinstall before starting it")
     process.on("SIGINT", stop); process.on("SIGTERM", stop)
     monitor = setInterval(() => {
@@ -181,8 +200,7 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
     }, 100)
     const record = await superviseWindows({ loop: observed.identity, registrationId: config.registrationId, configurationDigest: digest(config), signal: controller.signal }, {
       now: () => new Date(), write: (record) => { writeWindowsSupervisorRecord(home, record) },
-      launch: (attempt) => launchWindowsJob({ job: attempt.job, ...entry, log: join(profileDirectory(home), "windows-daemon.log"),
-        receipt: { path: windowsJobReceiptPath(home, attempt.job), registrationId: config.registrationId, attempt: attempt.number, bootId: attempt.bootId } }),
+      launch: (attempt) => launchWindowsJob({ job: attempt.job, ...entry, log: join(profileDirectory(home), "windows-daemon.log") }),
       wait: async (ms, signal) => { await delay(ms, undefined, { signal }) },
     })
     if (monitorError !== undefined) {
@@ -200,14 +218,13 @@ export function readWindowsSupervisorStatus(home: string): ServiceStatus | undef
   let config: ServiceConfiguration | undefined
   try { config = configurationAt(join(home, ".domovoi", "service.json")) }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error }
-  const saved = config ? boundRecord(config) : readWindowsSupervisorRecord(home)
-  if (!saved) return undefined
-  const record = config ? saved : recoverWindowsJobReceipts(home, saved)
+  const record = config ? boundRecord(config) : readWindowsSupervisorRecord(home)
+  if (!record) return undefined
   const child = record.attempts.at(-1)?.child
   const observed = queryWindowsProcesses([record.loop.pid, ...(child ? [child.pid] : [])])
   const loopAlive = record.loop.bootId === observed.bootId && observed.identities[0]?.start === record.loop.start
   const childAlive = !!child && child.bootId === observed.bootId && observed.identities[1]?.start === child.start
-  const status = windowsSupervisorStatus(record, observed.bootId, loopAlive, childAlive)
+  const status = windowsSupervisorStatus(!loopAlive || record.state === "failed" ? recoverWindowsJobClosure(record, observed.bootId) : record, observed.bootId, loopAlive, childAlive)
   return config ? status : { ...status, supervisionFailure: "configuration-missing", detail: `service configuration missing; ${status.detail}` }
 }
 
@@ -249,7 +266,9 @@ export async function stopWindowsSupervisor(path: string, deadline: OperationDea
             configurationDigest: digest(config), loop: requester, startedAt: now, updatedAt: now,
             state: "stopped", attempts: [], crashes: 0, reason: "deliberate-stop" }
         }
-        assertWindowsTreeProof(current, queryWindowsProcess(process.pid).bootId)
+        const bootId = queryWindowsProcess(process.pid).bootId
+        current = recoverWindowsJobClosure(current, bootId)
+        assertWindowsTreeProof(current, bootId)
         writeWindowsSupervisorRecord(home, current)
         deadline.throwIfExpired()
         if (options.retire === false) {

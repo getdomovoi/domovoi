@@ -134,10 +134,12 @@ export function writeSupervisorStopRequest(home: ProfileLocation, record: Pick<S
 
 // Windows evidence is separate from the WSL record. A process exit is never
 // an empty-job receipt, including when the helper or supervisor disappeared.
-export const windowsJobNameSchema = z.string().regex(/^Local\\Domovoi-[0-9a-f-]{36}$/).refine((name) => z.uuid().safeParse(name.slice(14)).success)
+export const windowsJobNameSchema = z.string().regex(/^Global\\Domovoi-[0-9a-f-]{36}$/).refine((name) => z.uuid().safeParse(name.slice(15)).success)
 const windowsAttemptSchema = z.object({
   number: z.number().int().min(1).max(4), job: windowsJobNameSchema, bootId: windowsBootIdSchema, startedAt: z.iso.datetime(),
-  stage: z.enum(["intent", "prepared", "running", "empty"]),
+  stage: z.enum(["intent", "prepared", "running", "empty", "closed"]),
+  killOnClose: z.literal(true).optional(),
+  closure: z.object({ at: z.iso.datetime(), jobAbsent: z.literal(true), daemonDead: z.literal(true) }).strict().optional(),
   child: windowsProcessIdentitySchema.nullable(), helper: windowsProcessIdentitySchema.nullable(),
   empty: z.object({ at: z.iso.datetime(), activeProcesses: z.literal(0), terminated: z.literal(true) }).strict().nullable(),
   exitCode: z.number().int().min(0).max(4_294_967_295).nullable(),
@@ -149,25 +151,28 @@ export const windowsSupervisorRecordSchema = z.object({
   startedAt: z.iso.datetime(), updatedAt: z.iso.datetime(),
   state: z.enum(["starting", "running", "backoff", "stopping", "stopped", "exhausted", "failed"]),
   attempts: z.array(windowsAttemptSchema).max(4), crashes: count,
-  reason: z.enum(["clean-exit", "deliberate-stop", "restart-limit", "observation-failure"]).nullable(),
+  reason: z.enum(["clean-exit", "deliberate-stop", "restart-limit", "observation-failure", "job-closed"]).nullable(),
 }).strict().refine((record) => {
   const last = record.attempts.at(-1)
   if (new Set(record.attempts.map((a) => a.job)).size !== record.attempts.length) return false
   if (!record.attempts.every((a, i) => a.number === i + 1 && a.bootId === record.loop.bootId
     && (a.child === null || a.child.bootId === a.bootId) && (a.helper === null || a.helper.bootId === a.bootId)
+    && ((a.stage === "closed") === (a.closure !== undefined))
+    && (a.stage === "intent" ? a.killOnClose === undefined : a.killOnClose === true)
     && ((a.stage === "empty") === (a.empty !== null))
     && ((a.empty !== null) === (a.exitCode !== null))
     && (a.stage === "intent" || (a.child !== null && a.helper !== null))
     && (a.stage !== "intent" || (a.child === null && a.helper === null))
-    && (i === record.attempts.length - 1 || a.empty !== null)
+    && (i === record.attempts.length - 1 || a.empty !== null || a.closure !== undefined)
     && (a.backoffMs === 0 || (a.empty !== null && a.exitCode !== 0 && a.backoffMs === supervisorBackoffs[i])))) return false
   if (record.crashes > record.attempts.filter((a) => a.exitCode !== null && a.exitCode !== 0).length) return false
   if (record.state === "running" && last?.stage !== "running") return false
   if (record.state === "backoff" && (!last?.empty || !last.backoffMs)) return false
-  if (["stopped", "exhausted"].includes(record.state) && record.attempts.some((a) => !a.empty)) return false
+  if (["stopped", "exhausted"].includes(record.state) && record.attempts.some((a) => !a.empty && !a.closure)) return false
   if (record.state === "exhausted" && (record.crashes !== 4 || record.reason !== "restart-limit")) return false
   if (record.state === "failed" && record.reason !== "observation-failure") return false
-  if (record.state === "stopped" && !["clean-exit", "deliberate-stop"].includes(record.reason ?? "")) return false
+  if (record.state === "stopped" && !["clean-exit", "deliberate-stop", "job-closed"].includes(record.reason ?? "")) return false
+  if (record.reason === "job-closed" && !last?.closure) return false
   if (record.reason === "clean-exit" && last?.exitCode !== 0) return false
   return ["stopped", "exhausted", "failed"].includes(record.state) || record.reason === null
 }, "Windows supervisor state disagrees with its job evidence")

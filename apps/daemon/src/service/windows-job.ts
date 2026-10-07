@@ -25,10 +25,7 @@ export type WindowsJob = {
   exited: Promise<WindowsJobEmpty>
   stop(): Promise<WindowsJobEmpty>
 }
-export type WindowsJobInput = {
-  job: string; executable: string; args: string[]; log: string
-  receipt: { path: string; registrationId: string; attempt: number; bootId: string }
-}
+export type WindowsJobInput = { job: string; executable: string; args: string[]; log: string }
 export type WindowsJobTransport = (command: ServiceCommand) => EventEmitter & { stdin: Writable; stdout: Readable; stderr: Readable; kill(): unknown }
 
 export function windowsJobCommand(): ServiceCommand {
@@ -57,6 +54,14 @@ export function queryWindowsProcesses(pids: number[]): { bootId: string; identit
   return z.object({ bootId: windowsBootIdSchema, identities: z.array(windowsProcessIdentitySchema.nullable()).length(pids.length) }).strict()
     .refine((value) => value.identities.every((identity, i) => !identity || (identity.bootId === value.bootId && identity.pid === pids[i])))
     .parse(JSON.parse(output))
+}
+export function queryWindowsJob(job: string, pid: number): { bootId: string; jobExists: boolean; identity: WindowsProcessIdentity | null } {
+  windowsJobNameSchema.parse(job); windowsProcessIdentitySchema.shape.pid.parse(pid)
+  const command = windowsJobCommand()
+  const output = execFileSync(command.command, command.args, { input: JSON.stringify({ mode: "inspect-job", job, pid }) + "\n",
+    encoding: "utf8", timeout: 20_000, maxBuffer: 8192, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] })
+  return z.object({ bootId: windowsBootIdSchema, jobExists: z.boolean(), identity: windowsProcessIdentitySchema.nullable() }).strict()
+    .refine((value) => !value.identity || (value.identity.bootId === value.bootId && value.identity.pid === pid)).parse(JSON.parse(output))
 }
 export function windowsProcessAlive(identity: WindowsProcessIdentity): boolean {
   const observed = queryWindowsProcess(identity.pid)

@@ -8,8 +8,7 @@ import { launchWindowsJob, parseWindowsJobMessage, windowsJobCommand, type Windo
 const bootId = "windows-boot:42"
 beforeEach(() => vi.stubEnv("SystemRoot", "C:\\Windows"))
 afterEach(() => vi.unstubAllEnvs())
-const job = `Local\\Domovoi-${randomUUID()}`
-const receipt = { path: `C:\\profile\\windows-job-${job.slice(14)}.receipt.json`, registrationId: randomUUID(), attempt: 1, bootId }
+const job = `Global\\Domovoi-${randomUUID()}`
 const identity = { pid: 123, start: "456", bootId }
 const prepared = { kind: "prepared", job, bootId, child: identity, helper: { ...identity, pid: 124 }, killOnClose: true, stdioOnly: true }
 function fixture() {
@@ -28,7 +27,7 @@ it("does not interpolate launch data into the fixed helper program", () => {
 
 it("holds the suspended child until the caller acknowledges durable evidence", async () => {
   const f = fixture()
-  const pending = launchWindowsJob({ job, receipt, executable: "C:\\node.exe", args: ["$(untrusted)'"], log: "C:\\out.log" }, f.transport)
+  const pending = launchWindowsJob({ job, executable: "C:\\node.exe", args: ["$(untrusted)'"], log: "C:\\out.log" }, f.transport)
   f.send(prepared)
   const launched = await pending
   expect(launched.prepared).toEqual(prepared)
@@ -44,7 +43,7 @@ it("holds the suspended child until the caller acknowledges durable evidence", a
 
 it("does not accept daemon death or helper death as tree proof", async () => {
   const f = fixture()
-  const pending = launchWindowsJob({ job, receipt, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
+  const pending = launchWindowsJob({ job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
   f.send(prepared)
   const launched = await pending
   f.child.emit("close", 0)
@@ -53,7 +52,7 @@ it("does not accept daemon death or helper death as tree proof", async () => {
 })
 
 it("refuses a different job, missing kill-on-close, and nonempty or unterminated proof", () => {
-  expect(() => parseWindowsJobMessage({ ...prepared, job: `Local\\Domovoi-${randomUUID()}` }, job)).toThrow()
+  expect(() => parseWindowsJobMessage({ ...prepared, job: `Global\\Domovoi-${randomUUID()}` }, job)).toThrow()
   expect(() => parseWindowsJobMessage({ ...prepared, killOnClose: false }, job)).toThrow()
   expect(() => parseWindowsJobMessage({ ...prepared, stdioOnly: false }, job)).toThrow()
   const empty = { kind: "empty", job, bootId, activeProcesses: 0, terminated: true, code: 0, stopped: true }
@@ -69,7 +68,7 @@ it("requires the helper to confirm restricted handle inheritance before startup"
 
 it("rejects an empty receipt from another boot and requests helper shutdown", async () => {
   const f = fixture()
-  const pending = launchWindowsJob({ job, receipt, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
+  const pending = launchWindowsJob({ job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
   f.send(prepared)
   const launched = await pending
   f.send({ kind: "empty", job, bootId: "windows-boot:43", activeProcesses: 0, terminated: true, code: 0, stopped: true })
@@ -80,7 +79,7 @@ it("rejects an empty receipt from another boot and requests helper shutdown", as
 
 it("does not accept a receipt followed by a failed helper exit", async () => {
   const f = fixture()
-  const pending = launchWindowsJob({ job, receipt, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
+  const pending = launchWindowsJob({ job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
   f.send(prepared)
   const launched = await pending
   f.send({ kind: "empty", job, bootId, activeProcesses: 0, terminated: true, code: 0, stopped: true })
@@ -90,7 +89,7 @@ it("does not accept a receipt followed by a failed helper exit", async () => {
 
 it("rejects a helper that resumes before acknowledgement", async () => {
   const f = fixture()
-  const pending = launchWindowsJob({ job, receipt, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
+  const pending = launchWindowsJob({ job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
   f.send({ kind: "running", job })
   await expect(pending).rejects.toThrow("invalid")
   f.child.emit("close", 1)
@@ -99,7 +98,7 @@ it("rejects a helper that resumes before acknowledgement", async () => {
 it.each(["C:\\PowerShell 7\\Modules;C:\\User's Modules", undefined])("preserves the supervisor's PSModulePath value %s outside script source", async (value) => {
   vi.stubEnv("PSModulePath", value)
   const f = fixture()
-  const pending = launchWindowsJob({ job, receipt, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
+  const pending = launchWindowsJob({ job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
   f.send(prepared)
   const launched = await pending
   // Shut down even when the assertion fails; this test owns the fake helper.

@@ -7,10 +7,10 @@ import { OperationDeadline } from "../operation-deadline.js"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { readSupervisorStopRequest, writeSupervisorStopRequest, writeWindowsSupervisorRecord, windowsSupervisorRecordPath, type WindowsSupervisorRecord } from "./supervisor-record.js"
 import { readWindowsSupervisorStatus, runWindowsSupervisor, stopWindowsSupervisor } from "./windows-job-supervisor.js"
-import { launchWindowsJob, queryWindowsProcess, queryWindowsProcesses } from "./windows-job.js"
+import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, queryWindowsProcesses } from "./windows-job.js"
 import { claimExclusiveFileLease } from "../file-lease.js"
 
-vi.mock("./windows-job.js", () => ({ queryWindowsProcess: vi.fn(), queryWindowsProcesses: vi.fn(), windowsProcessAlive: vi.fn(() => false), launchWindowsJob: vi.fn() }))
+vi.mock("./windows-job.js", () => ({ queryWindowsJob: vi.fn(), queryWindowsProcess: vi.fn(), queryWindowsProcesses: vi.fn(), windowsProcessAlive: vi.fn(() => false), launchWindowsJob: vi.fn() }))
 const homes: string[] = []
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); vi.resetAllMocks() })
 function fixture(unknown = false) {
@@ -24,7 +24,7 @@ function fixture(unknown = false) {
   const record: WindowsSupervisorRecord = { version: 1, platform: "win32", supervisorId: randomUUID(), registrationId: config.registrationId,
     configurationDigest: createHash("sha256").update(serializeServiceConfiguration(parseServiceConfiguration(text))).digest("hex"), loop: { pid: 123, start: "456", bootId },
     startedAt: now, updatedAt: now, state: unknown ? "failed" : "stopped", reason: unknown ? "observation-failure" : "deliberate-stop", crashes: 0,
-    attempts: unknown ? [{ number: 1, job: `Local\\Domovoi-${randomUUID()}`, bootId, startedAt: now, stage: "intent", child: null, helper: null, empty: null, exitCode: null, backoffMs: 0 }] : [] }
+    attempts: unknown ? [{ number: 1, job: `Global\\Domovoi-${randomUUID()}`, bootId, startedAt: now, stage: "intent", child: null, helper: null, empty: null, exitCode: null, backoffMs: 0 }] : [] }
   writeWindowsSupervisorRecord(home, record)
   vi.mocked(queryWindowsProcess).mockReturnValue({ bootId, identity: null })
   vi.mocked(queryWindowsProcesses).mockReturnValue({ bootId, identities: [null, null] })
@@ -44,7 +44,7 @@ it("uses the same boot-recovery explanation for status and stop and retains conf
 it("observes boot, loop and daemon identities in one helper call for status", () => {
   const f = fixture(true), child = { ...f.record.loop, pid: 124 }
   const attempt = f.record.attempts[0]!
-  attempt.stage = "running"; attempt.child = child; attempt.helper = { ...child, pid: 125 }
+  attempt.killOnClose = true; attempt.stage = "running"; attempt.child = child; attempt.helper = { ...child, pid: 125 }
   f.record.state = "running"; f.record.reason = null
   writeWindowsSupervisorRecord(f.home, f.record)
   vi.mocked(queryWindowsProcesses).mockReturnValue({ bootId: f.record.loop.bootId, identities: [f.record.loop, child] })
@@ -183,81 +183,6 @@ it("rechecks launch evidence under the lease after observing an idle task", asyn
   } finally { deadline.clear() }
 })
 
-function helperReceipt(f: ReturnType<typeof fixture>, changes: Record<string, unknown> = {}) {
-  const attempt = f.record.attempts[0]!
-  const receipt = { version: 1, kind: "empty", job: attempt.job, bootId: attempt.bootId,
-    registrationId: f.record.registrationId, attempt: attempt.number, at: new Date().toISOString(),
-    child: { ...f.record.loop, pid: 124 }, helper: { ...f.record.loop, pid: 125 },
-    activeProcesses: 0, terminated: true, code: 1, stopped: true, ...changes }
-  const path = join(f.home, ".domovoi", `windows-job-${attempt.job.slice(14)}.receipt.json`)
-  writeFileSync(path, JSON.stringify(receipt), { mode: 0o600 })
-  return path
-}
-
-it("recovers job-empty proof from the helper's receipt when the supervisor died before publication", async () => {
-  const f = fixture(true), deadline = OperationDeadline.start(2000)
-  helperReceipt(f)
-  try {
-    const status = readWindowsSupervisorStatus(f.home)
-    expect(status?.treeUnconfirmed).not.toBe(true)
-    expect(status?.detail).toContain("jobs confirmed empty")
-    const stopped = await stopWindowsSupervisor(f.path, deadline)
-    expect(stopped.attempts[0]).toMatchObject({ stage: "empty", empty: { activeProcesses: 0, terminated: true }, child: { pid: 124 } })
-  } finally { deadline.clear() }
-})
-
-it.each([
-  { registrationId: randomUUID() }, { job: `Local\\Domovoi-${randomUUID()}` }, { bootId: "windows-boot:43" },
-  { attempt: 2 }, { activeProcesses: 1 }, { terminated: false },
-  { helper: { pid: 125, start: "456", bootId: "windows-boot:43" } },
-])("refuses a mismatched helper receipt %j", async (changes) => {
-  const f = fixture(true), deadline = OperationDeadline.start(2000)
-  helperReceipt(f, changes)
-  try {
-    await expect(stopWindowsSupervisor(f.path, deadline)).rejects.toThrow()
-    expect(() => readWindowsSupervisorStatus(f.home)).toThrow("receipt")
-    expect(existsSync(f.path)).toBe(true)
-  } finally { deadline.clear() }
-})
-
-it("refuses malformed receipts without treating a partial write as proof", () => {
-  const f = fixture(true), path = helperReceipt(f)
-  writeFileSync(path, "{", { mode: 0o600 })
-  expect(() => readWindowsSupervisorStatus(f.home)).toThrow("receipt")
-})
-
-it("uses the bound helper receipt at the next startup gate", async () => {
-  const f = fixture(true)
-  helperReceipt(f)
-  vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: f.record.loop.bootId, identity: { ...f.record.loop, pid: 321 } })
-  vi.mocked(launchWindowsJob).mockRejectedValue(new Error("test launch boundary"))
-  try {
-    vi.stubGlobal("process", Object.create(process, { platform: { value: "win32" } }))
-    expect(await runWindowsSupervisor(f.path, { executable: "unused", args: [] })).toMatchObject({ state: "failed" })
-    expect(launchWindowsJob).toHaveBeenCalledOnce()
-    const request = vi.mocked(launchWindowsJob).mock.calls[0]![0]
-    expect(request).toMatchObject({ receipt: { registrationId: f.record.registrationId, attempt: 1, bootId: f.record.loop.bootId } })
-    expect(request.receipt.path).toBe(join(f.home, ".domovoi", `windows-job-${request.job.slice(14)}.receipt.json`))
-  } finally { vi.unstubAllGlobals() }
-})
-
-it("refuses a receipt whose process identity disagrees with prepared evidence", () => {
-  const f = fixture(true), attempt = f.record.attempts[0]!
-  attempt.stage = "prepared"; attempt.child = { ...f.record.loop, pid: 124, start: "999" }; attempt.helper = { ...f.record.loop, pid: 125 }
-  writeWindowsSupervisorRecord(f.home, f.record)
-  helperReceipt(f)
-  expect(() => readWindowsSupervisorStatus(f.home)).toThrow("receipt")
-})
-
-it("never accepts a staging receipt as published proof", async () => {
-  const f = fixture(true), path = helperReceipt(f), deadline = OperationDeadline.start(2000)
-  writeFileSync(path + ".partial", readFileSync(path), { mode: 0o600 }); rmSync(path)
-  try {
-    expect(readWindowsSupervisorStatus(f.home)).toMatchObject({ treeUnconfirmed: true })
-    await expect(stopWindowsSupervisor(f.path, deadline)).rejects.toThrow("Restart Windows")
-  } finally { deadline.clear() }
-})
-
 it("keeps retirement and the startup lease until the old task has no instances", async () => {
   const f = fixture(), deadline = OperationDeadline.start(2000)
   const stopTask = vi.fn(async () => {
@@ -289,3 +214,65 @@ it.each([undefined, async () => false, async () => { throw new Error("scheduler 
       expect(existsSync(f.path)).toBe(true)
     } finally { deadline.clear() }
   })
+
+
+function preparedFailure() {
+  const f = fixture(true), attempt = f.record.attempts[0]!
+  attempt.stage = "prepared"; attempt.killOnClose = true
+  attempt.child = { ...f.record.loop, pid: 124 }; attempt.helper = { ...f.record.loop, pid: 125 }
+  writeWindowsSupervisorRecord(f.home, f.record)
+  vi.mocked(queryWindowsJob).mockReturnValue({ bootId: f.record.loop.bootId, jobExists: false, identity: null })
+  return f
+}
+
+it("accepts Q9 name-absence proof and preserves its weaker completion claim", async () => {
+  const f = preparedFailure(), deadline = OperationDeadline.start(2000)
+  try {
+    const status = readWindowsSupervisorStatus(f.home)
+    expect(status?.treeUnconfirmed).not.toBe(true)
+    expect(status?.detail).toContain("completion not observed")
+    const stopped = await stopWindowsSupervisor(f.path, deadline)
+    expect(stopped.attempts[0]).toMatchObject({ stage: "closed", empty: null, exitCode: null, closure: { jobAbsent: true, daemonDead: true } })
+    expect(queryWindowsJob).toHaveBeenCalledWith(f.record.attempts[0]!.job, 124)
+  } finally { deadline.clear() }
+})
+
+it.each(["present", "daemon-alive", "wrong-boot", "denied"] as const)("refuses name-absence recovery when observation is %s", async (kind) => {
+  const f = preparedFailure(), deadline = OperationDeadline.start(2000)
+  vi.mocked(queryWindowsJob).mockImplementation(() => {
+    if (kind === "denied") throw new Error("Job lookup denied")
+    return { bootId: kind === "wrong-boot" ? "windows-boot:43" : f.record.loop.bootId,
+      jobExists: kind === "present", identity: kind === "daemon-alive" ? f.record.attempts[0]!.child : null }
+  })
+  try {
+    await expect(stopWindowsSupervisor(f.path, deadline)).rejects.toThrow()
+    expect(existsSync(f.path)).toBe(true)
+  } finally { deadline.clear() }
+})
+
+it("does not turn an intent without prepared kill-on-close into tree proof", async () => {
+  const f = fixture(true), deadline = OperationDeadline.start(2000)
+  vi.mocked(queryWindowsJob).mockReturnValue({ bootId: f.record.loop.bootId, jobExists: false, identity: null })
+  try {
+    await expect(stopWindowsSupervisor(f.path, deadline)).rejects.toThrow("Restart Windows")
+    expect(queryWindowsJob).not.toHaveBeenCalled()
+  } finally { deadline.clear() }
+})
+
+it("compares daemon birth identity when its PID was reused", async () => {
+  const f = preparedFailure(), deadline = OperationDeadline.start(2000)
+  vi.mocked(queryWindowsJob).mockReturnValue({ bootId: f.record.loop.bootId, jobExists: false, identity: { ...f.record.attempts[0]!.child!, start: "999" } })
+  try { expect((await stopWindowsSupervisor(f.path, deadline)).attempts[0]?.closure).toBeDefined() }
+  finally { deadline.clear() }
+})
+
+it("allows a new supervisor through the startup gate after Q9 proof", async () => {
+  const f = preparedFailure()
+  vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: f.record.loop.bootId, identity: { ...f.record.loop, pid: 321 } })
+  vi.mocked(launchWindowsJob).mockRejectedValue(new Error("test launch boundary"))
+  try {
+    vi.stubGlobal("process", Object.create(process, { platform: { value: "win32" } }))
+    expect(await runWindowsSupervisor(f.path, { executable: "unused", args: [] })).toMatchObject({ state: "failed" })
+    expect(launchWindowsJob).toHaveBeenCalledOnce()
+  } finally { vi.unstubAllGlobals() }
+})
