@@ -2,12 +2,12 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary } from "@getdomovoi/protocol"
+import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary, type ProviderRuntime } from "@getdomovoi/protocol"
 
 import { DaemonRpcError } from "./client.js"
-import type { FleetAccessState } from "./fleet-access-session.js"
+import type { FleetAccessState, MachineReading } from "./fleet-access-session.js"
 import { TooltipProvider } from "./components/ui/tooltip"
-import { FleetView, orderedMachineTransports } from "./fleet-view.js"
+import { FleetView } from "./fleet-view.js"
 import { forgetRefusalMessage } from "./forget-machine.js"
 import { remoteControlRefusal } from "./machine-selection.js"
 
@@ -20,7 +20,7 @@ it("shows client authorization next to disabled remote controls and names its au
     onListDevices={async () => ({ devices: [] })} onRevokeDevice={vi.fn()} onRotateDevice={vi.fn()} onRenameDevice={vi.fn()}
     onUseMachine={vi.fn()} onOpenMachineTerminal={vi.fn()} clientKind="desktop" onAuthorizeClient={vi.fn()}
   /></TooltipProvider>)
-  expect(screen.getByRole("button", { name: "Use studio" }).hasAttribute("disabled")).toBe(true)
+  expect(screen.getByRole("button", { name: "Open its sessions on studio" }).hasAttribute("disabled")).toBe(true)
   await user.click(screen.getByRole("button", { name: "Authorize this client for studio" }))
   const dialog = screen.getByRole("dialog")
   // `domovoid pair` prints a one-time pairing code, which this field does not
@@ -76,9 +76,157 @@ it("lists installed providers on the local machine", () => {
     providers={[{ id: "claude-code", command: "claude", status: "ready", sessionCapable: true }]}
     onListDevices={async () => ({ devices: [] })} onRevokeDevice={vi.fn()} onRotateDevice={vi.fn()} onRenameDevice={vi.fn()}
   /></TooltipProvider>)
-  const providers = screen.getByRole("region", { name: "Agents and providers on workshop" })
-  expect(providers.textContent).toContain("Claude")
+  const providers = screen.getByRole("region", { name: "Agents and providers" })
   expect(providers.textContent).toContain("Tokens live in that machine's OS keychain")
+  expect(agentRows(providers)).toEqual([["claude-code", "workshop", "ready"]])
+})
+
+const claude: ProviderRuntime = { id: "claude-code", command: "claude", status: "ready", sessionCapable: true }
+const codex: ProviderRuntime = { id: "codex", command: "codex", status: "ready", sessionCapable: true }
+const aider: ProviderRuntime = { id: "aider", command: "aider", status: "missing", sessionCapable: false }
+
+function reading(input: Partial<MachineReading> = {}): MachineReading {
+  return { providers: [claude, codex], sessions: [], readAt: new Date().toISOString(), ...input }
+}
+
+function session(id: string, title: string, state: MachineReading["sessions"][number]["state"]) {
+  return { id, title, state }
+}
+
+function admitted(machineReading: MachineReading): FleetAccessState {
+  return { state: "admitted", deviceId: `device-${"a".repeat(32)}`, reading: machineReading }
+}
+
+const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+
+// The card's facts as the design draws them: a label and its value per row.
+function facts(card: HTMLElement): Record<string, string> {
+  const terms = within(card).getAllByRole("term")
+  return Object.fromEntries(terms.map((term) => [term.textContent ?? "", term.nextElementSibling?.textContent ?? ""]))
+}
+
+function agentRows(panel: HTMLElement): string[][] {
+  return within(panel).getAllByRole("listitem").map((row) =>
+    [...row.querySelectorAll("[data-agent-cell]")].map((cell) => cell.textContent ?? ""))
+}
+
+it("draws a reachable machine as the design's card: four facts and one way into its sessions", async () => {
+  const workshop = { ...local, heartbeat: { state: "online" as const, lastSeenAt: new Date(Date.now() - 2_000).toISOString() } }
+  const { user, onUseMachine } = renderFleet({
+    entries: entries(workshop, studio),
+    readings: { [local.id]: reading({
+      providers: [claude, codex, aider],
+      sessions: [session("s1", "Billing webhooks", "active"), session("s2", "Replay test", "waiting"), session("s3", "Docs", "idle"), session("s4", "Old", "archived")],
+    }) },
+  })
+
+  const card = screen.getByRole("group", { name: "workshop" })
+  expect(facts(card)).toEqual({
+    TRANSPORT: "loopback · this machine",
+    AGENTS: "claude-code · codex",
+    SESSIONS: "1 running · 1 waiting on you",
+    "LAST HEARD": "just now",
+  })
+  expect(card.className).not.toContain("danger-border")
+  await user.click(within(card).getByRole("button", { name: "Open its 3 sessions on workshop" }))
+  expect(onUseMachine).toHaveBeenCalledWith(local.id)
+})
+
+it("keeps an unreachable machine with a danger border, dates its last reading and shows what was running", async () => {
+  const readAt = "2026-10-06T14:03:00.000Z"
+  const lost = { ...studio, health: "unreachable" as const, heartbeat: { state: "offline" as const, lastSeenAt: new Date(Date.now() - 41_000).toISOString() } }
+  const { user } = renderFleet({
+    entries: entries(local, lost),
+    clientAccess: { [studio.id]: admitted(reading({ providers: [codex], readAt, sessions: [session("s1", "Fix the flaky replay test", "active")] })) },
+  })
+
+  const card = screen.getByRole("group", { name: "studio" })
+  const asOf = `as of ${clock.format(new Date(readAt))}`
+  expect(facts(card)).toEqual({
+    TRANSPORT: "tailnet · not answering",
+    AGENTS: `codex · ${asOf}`,
+    SESSIONS: `1 running · ${asOf}`,
+    "LAST HEARD": "41s ago",
+  })
+  expect(card.className.split(" ")).toContain("border-danger-border")
+  expect(within(card).queryByRole("button", { name: /^Open its/u })).toBeNull()
+  const stalled = within(card).getByRole("button", { name: "See what stalled on studio" })
+  expect(stalled.getAttribute("aria-expanded")).toBe("false")
+  await user.click(stalled)
+  expect(stalled.getAttribute("aria-expanded")).toBe("true")
+  const detail = document.getElementById(stalled.getAttribute("aria-controls") ?? "")
+  expect(detail?.textContent).toContain("Fix the flaky replay test")
+  expect(detail?.textContent).toContain(`when Domovoi last read studio at ${clock.format(new Date(readAt))}`)
+  expect(detail?.textContent).toContain("has not reported them stopped")
+})
+
+it("says a machine this client holds no credential for is unknown rather than guessing", () => {
+  renderFleet({ entries: entries(local, { ...studio, health: "healthy" }), providers: [claude] })
+
+  const card = screen.getByRole("group", { name: "studio" })
+  expect(facts(card).AGENTS).toBe("unknown, no client credential here")
+  expect(facts(card).SESSIONS).toBe("unknown, no client credential here")
+  expect(card.textContent).toContain("This app holds no client credential for studio, so its agents and sessions are unknown here.")
+  expect(within(card).getByRole("button", { name: "Open its sessions on studio" })).toHaveProperty("disabled", true)
+  const panel = screen.getByRole("region", { name: "Agents and providers" })
+  expect(agentRows(panel)).toEqual([
+    ["claude-code", "workshop", "ready"],
+    ["unknown", "studio", "this app holds no client credential for it"],
+  ])
+})
+
+it("never puts the attached machine's agents on this machine's card", () => {
+  renderFleet({ entries: entries(local, { ...studio, health: "healthy" }), currentMachineId: studio.id, providers: [codex] })
+
+  expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS).toBe("codex")
+  expect(facts(screen.getByRole("group", { name: "workshop" })).AGENTS).toBe("unknown, not read yet")
+  expect(agentRows(screen.getByRole("region", { name: "Agents and providers" }))).toEqual([
+    ["unknown", "workshop", "not read yet"],
+    ["codex", "studio", "ready"],
+  ])
+})
+
+it("offers Authenticate there only where an agent needs sign-in, and names the command for that machine", async () => {
+  const { user } = renderFleet({
+    entries: entries(local),
+    readings: { [local.id]: reading({ providers: [{ ...claude, status: "auth-required" }, codex] }) },
+  })
+
+  const panel = screen.getByRole("region", { name: "Agents and providers" })
+  expect(agentRows(panel)).toEqual([
+    ["claude-code", "workshop", "needs sign-in on that machine"],
+    ["codex", "workshop", "ready"],
+  ])
+  expect(within(panel).getAllByRole("button")).toHaveLength(1)
+  const authenticate = within(panel).getByRole("button", { name: "Authenticate there: claude-code on workshop" })
+  await user.click(authenticate)
+  expect(authenticate.getAttribute("aria-expanded")).toBe("true")
+  expect(panel.textContent).toContain("Run claude auth login in a terminal on workshop. Domovoi does not sign in for you.")
+})
+
+it("reads each admitted machine when the view opens and dates a reading it could not refresh", async () => {
+  const readAt = "2026-10-06T14:03:00.000Z"
+  const onReadMachine = vi.fn((_machineId: string, _signal: AbortSignal) => Promise.reject(new Error("studio did not answer")))
+  renderFleet({
+    entries: entries(local, { ...studio, health: "healthy" }),
+    clientAccess: { [studio.id]: admitted(reading({ providers: [codex], readAt })) },
+    onReadMachine,
+  })
+
+  expect(onReadMachine).toHaveBeenCalledWith(studio.id, expect.any(AbortSignal))
+  await waitFor(() => expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS)
+    .toBe(`codex · as of ${clock.format(new Date(readAt))}`))
+})
+
+it("does not read again a machine it has just read", () => {
+  const onReadMachine = vi.fn(() => Promise.resolve())
+  renderFleet({
+    entries: entries(local, { ...studio, health: "healthy" }),
+    clientAccess: { [studio.id]: admitted(reading()) },
+    onReadMachine,
+  })
+
+  expect(onReadMachine).not.toHaveBeenCalled()
 })
 
 const pending: FleetEntry = {
@@ -143,6 +291,9 @@ function renderFleet(overrides: {
   readOnly?: boolean
   onMoveSessionHere?: (machineId: string) => void
   clientAccess?: Readonly<Record<string, FleetAccessState>>
+  readings?: Readonly<Record<string, MachineReading>>
+  onReadMachine?: (machineId: string, signal: AbortSignal) => Promise<void>
+  providers?: ProviderRuntime[]
 } = {}) {
   const devices = overrides.devices ?? [device]
   const onListDevices = vi.fn(overrides.onListDevices ?? (() => Promise.resolve({ devices })))
@@ -197,6 +348,9 @@ function renderFleet(overrides: {
         onMoveSessionHere={onMoveSessionHere}
         {...(overrides.clientAccess ? { clientAccess: overrides.clientAccess } : {})}
         {...(overrides.readOnly !== undefined ? { readOnly: overrides.readOnly } : {})}
+        {...(overrides.readings ? { readings: overrides.readings } : {})}
+        {...(overrides.onReadMachine ? { onReadMachine: overrides.onReadMachine } : {})}
+        providers={overrides.providers ?? [claude]}
       />
     </TooltipProvider>,
   )
@@ -252,12 +406,9 @@ it("describes each machine in the fleet", () => {
   renderFleet()
 
   const machine = screen.getByRole("group", { name: "studio" })
-  expect(machine.textContent).toContain("darwin")
-  expect(machine.textContent).toContain("arm64")
-  expect(machine.textContent).toContain("0.4.1")
-  expect(machine.textContent).toContain("tailnet")
+  expect(within(machine).getByText("studio").getAttribute("title")).toBe("darwin · arm64 · 0.4.1")
+  expect(facts(machine).TRANSPORT).toBe("tailnet")
   expect(machine.textContent).toContain("Upgrade required")
-  expect(machine.textContent).toContain("sessions")
 })
 
 it("names the distribution for a daemon inside WSL", () => {
@@ -273,31 +424,25 @@ it("names the distribution for a daemon inside WSL", () => {
   renderFleet({ entries: entries(local, ubuntu) })
 
   const machine = screen.getByRole("group", { name: "ubuntu-daemon" })
-  expect(machine.textContent).toContain("Ubuntu-24.04 (WSL)")
-  expect(machine.textContent).toContain("x64")
-  expect(screen.getByRole("group", { name: "workshop" }).textContent).not.toContain("(WSL)")
+  expect(within(machine).getByText("ubuntu-daemon").getAttribute("title")).toBe("Ubuntu-24.04 (WSL) · x64 · 0.4.1")
+  expect(within(screen.getByRole("group", { name: "workshop" })).getByText("workshop").getAttribute("title")).not.toContain("(WSL)")
 })
 
 it("counts sessions only for this machine", () => {
   renderFleet()
 
-  expect(screen.getByRole("group", { name: "workshop" }).textContent).toContain("2 sessions")
-  expect(screen.getByRole("group", { name: "studio" }).textContent).not.toContain("2 sessions")
+  expect(facts(screen.getByRole("group", { name: "workshop" })).SESSIONS).toBe("2 running or waiting")
+  expect(facts(screen.getByRole("group", { name: "studio" })).SESSIONS).toBe("unknown, no client credential here")
 })
 
-it("orders transports by preference and never claims a relay", () => {
-  expect(orderedMachineTransports(local).map((transport) => transport.kind))
-    .toEqual(["local", "tailnet"])
-})
+it("names the route a direct connection was verified on", () => {
+  renderFleet({ entries: entries(local, {
+    ...studio,
+    connection: "direct",
+    verifiedRoute: { endpoint: "wss://100.64.0.7:47831/rpc", lastAuthenticatedAt: "2026-08-31T12:00:00.000Z" },
+  }) })
 
-it("shows the transport order without a relay row", () => {
-  renderFleet()
-
-  const transports = within(screen.getByRole("group", { name: "workshop" }))
-    .getByRole("list", { name: "Transports" })
-  expect(transports.textContent).toContain("local")
-  expect(transports.textContent).toContain("tailnet")
-  expect(transports.textContent).not.toContain("relay")
+  expect(facts(screen.getByRole("group", { name: "studio" })).TRANSPORT).toBe("direct · 100.64.0.7:47831")
 })
 
 it("lists paired devices the daemon reports", async () => {
@@ -793,7 +938,7 @@ it("keeps machine, pairing, and device mutations locked while watching", async (
   const row = await screen.findByRole("row", { name: /studio-ipad/ })
 
   expect(screen.getByRole("button", { name: "Pair a machine" })).toHaveProperty("disabled", true)
-  expect(screen.queryByRole("button", { name: "Use studio" })).toBeNull()
+  expect(screen.queryByRole("button", { name: /^Open its/u })).toBeNull()
   expect(within(row).getByRole("button", { name: "Rename studio-ipad" })).toHaveProperty("disabled", true)
   expect(within(row).getByRole("button", { name: "Rotate the credential on studio-ipad" })).toHaveProperty("disabled", true)
   expect(within(row).getByRole("button", { name: "Revoke studio-ipad" })).toHaveProperty("disabled", true)
@@ -803,10 +948,11 @@ it("refuses to open a remote machine and names the missing credential", async ()
   const { user, onUseMachine } = renderFleet()
 
   const card = within(screen.getByRole("group", { name: "studio" }))
-  const use = card.getByRole("button", { name: "Use studio" })
-  expect(use).toHaveProperty("disabled", true)
-  expect(card.getByText(remoteControlRefusal)).toBeTruthy()
-  await user.click(use)
+  const open = card.getByRole("button", { name: "Open its sessions on studio" })
+  expect(open).toHaveProperty("disabled", true)
+  expect(card.getByText(/Machine pairing alone does not grant client access/u)).toBeTruthy()
+  expect(card.queryByText(remoteControlRefusal)).toBeNull()
+  await user.click(open)
   expect(onUseMachine).not.toHaveBeenCalled()
 })
 
@@ -814,18 +960,18 @@ it("opens this machine from its card when the client is attached elsewhere", asy
   const { user, onUseMachine } = renderFleet({ currentMachineId: studio.id })
 
   const card = within(screen.getByRole("group", { name: "workshop" }))
-  await user.click(card.getByRole("button", { name: "Use workshop" }))
+  await user.click(card.getByRole("button", { name: "Open its sessions on workshop" }))
 
   expect(onUseMachine).toHaveBeenCalledWith(local.id)
-  expect(card.queryByText(remoteControlRefusal)).toBeNull()
+  expect(card.queryByText(/Machine pairing alone/u)).toBeNull()
 })
 
-it("says which machine is already in use instead of offering to open it", () => {
-  renderFleet()
+it("opens the sessions of the machine already in use", async () => {
+  const { user, onUseMachine } = renderFleet()
 
   const card = within(screen.getByRole("group", { name: "workshop" }))
-  expect(card.getByText("In use")).toBeTruthy()
-  expect(card.queryByRole("button", { name: /^Use /u })).toBeNull()
+  await user.click(card.getByRole("button", { name: "Open its 2 sessions on workshop" }))
+  expect(onUseMachine).toHaveBeenCalledWith(local.id)
 })
 
 it("refuses a terminal on a remote machine for the same missing credential", async () => {
@@ -876,7 +1022,7 @@ it("does not offer machine actions while the daemon is unreachable", () => {
   )
 
   const card = within(screen.getByRole("group", { name: "workshop" }))
-  expect(card.getByRole("button", { name: "Use workshop" })).toHaveProperty("disabled", true)
+  expect(card.getByRole("button", { name: "Open its sessions on workshop" })).toHaveProperty("disabled", true)
   expect(card.getByRole("button", { name: "Terminal on workshop" })).toHaveProperty("disabled", true)
 })
 
@@ -884,8 +1030,18 @@ it("keeps an unreachable machine listed, dimmed, and names the unknown state", (
   renderFleet({ entries: entries(local, { ...studio, health: "unreachable" }) })
 
   const card = screen.getByRole("group", { name: "studio" })
-  expect(card.className.split(" ")).toContain("opacity-60")
+  expect(card.className.split(" ")).toContain("opacity-[.72]")
   expect(card.textContent).toContain("The daemon reports studio as unreachable. Its sessions are not reported as stopped.")
+  expect(facts(card).SESSIONS).toBe("unknown, no client credential here")
+})
+
+it("says what stalled is unknown when this client never read the machine", async () => {
+  const { user } = renderFleet({ entries: entries(local, { ...studio, health: "unreachable" }) })
+
+  const stalled = screen.getByRole("button", { name: "See what stalled on studio" })
+  await user.click(stalled)
+  expect(document.getElementById(stalled.getAttribute("aria-controls") ?? "")?.textContent)
+    .toBe("What was running on studio is unknown: this app holds no client credential for it.")
 })
 
 it("says the target refused this machine's credential and that pairing again is the fix", () => {

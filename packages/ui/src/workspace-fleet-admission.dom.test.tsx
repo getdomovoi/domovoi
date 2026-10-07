@@ -28,8 +28,10 @@ const machine: FleetMachine = {
 // and renewal. Windows CI exceeded the single-test default even after paste
 // replaced per-character input. Keep each request and observation bound intact.
 const admissionJourneyTimeoutMs = 15_000
+// The card's primary action names the session count it read, when it read one.
+const openStudio = /^Open its (\d+ )?sessions? on Studio$/u
 
-it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and home return with separate client authority", async (action) => {
+it.each(["Open its sessions on Studio", "Terminal on Studio"])("assembles authorization, %s and home return with separate client authority", async (action) => {
   const user = userEvent.setup()
   render(<WorkspaceShell />)
   const home = sockets.socket(0)
@@ -38,7 +40,7 @@ it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and h
   await act(async () => { respond(home, "fleet.list", { entries: [{ kind: "machine", machine }] }) })
   await user.click(screen.getByRole("button", { name: "Settings" }))
   await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
-  const useButton = await screen.findByRole("button", { name: "Use Studio" })
+  const useButton = await screen.findByRole("button", { name: openStudio })
   await user.click(await screen.findByRole("button", { name: "Authorize this client for Studio" }))
   const dialog = screen.getByRole("dialog")
   // Paste the full generated token as one input event.
@@ -56,8 +58,8 @@ it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and h
   await act(async () => { respond(proof, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
   await settle()
   expect(screen.getByText("Client credential verified")).toBeTruthy()
-  expect(screen.getByRole("button", { name: "Use Studio" }).hasAttribute("disabled")).toBe(false)
-  await user.click(screen.getByRole("button", { name: action }))
+  expect(screen.getByRole("button", { name: openStudio }).hasAttribute("disabled")).toBe(false)
+  await user.click(screen.getByRole("button", { name: action === "Terminal on Studio" ? action : openStudio }))
   await settle()
   await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
   await settle()
@@ -72,7 +74,7 @@ it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and h
     await waitFor(() => expect(sentRequests(remote, "terminal.create")).toHaveLength(1), { timeout: 3_000 })
     expect(sentRequests(home, "terminal.create")).toHaveLength(0)
   }
-  if (action === "Use Studio") {
+  if (action !== "Terminal on Studio") {
     await act(async () => { remote.drop(1008) })
     await settle()
     expect(screen.getByText(/Client access is no longer verified for/)).toBeTruthy()
@@ -84,7 +86,7 @@ it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and h
   await user.click(screen.getByRole("button", { name: "Settings" }))
   await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
   if (action === "Terminal on Studio") await user.click(screen.getByRole("button", { name: "Remove local access" }))
-  expect(screen.getByRole("button", { name: "Use Studio" }).hasAttribute("disabled")).toBe(true)
+  expect(screen.getByRole("button", { name: openStudio }).hasAttribute("disabled")).toBe(true)
   if (action === "Terminal on Studio") expect(screen.getByText(/This app no longer holds/).textContent).toContain("Devices list")
   if (action === "Terminal on Studio") {
     await user.click(screen.getByRole("button", { name: "Authorize this client for Studio" }))
@@ -131,6 +133,6 @@ it("renders refusal and leaves Use disabled when the credential is a daemon root
   expect(within(dialog).getByText(/Do not use a machine credential or daemon root token/)).toBeTruthy()
   expect(dialog.textContent).not.toContain("x".repeat(43))
   await user.click(within(dialog).getByRole("button", { name: "Cancel" }))
-  expect(screen.getByRole("button", { name: "Use Studio" }).hasAttribute("disabled")).toBe(true)
+  expect(screen.getByRole("button", { name: openStudio }).hasAttribute("disabled")).toBe(true)
   expect(screen.queryByText("Client credential verified")).toBeNull()
 })

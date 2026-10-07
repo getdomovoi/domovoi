@@ -19,7 +19,6 @@ import {
   deviceRenameLabelSchema,
   machinePlatformLabel,
   maximumPairedDeviceLabelLength,
-  transportPreference,
   type ClientKind,
   type DeviceCredentialBinding,
   type DevicePairResult,
@@ -29,7 +28,7 @@ import {
   type FleetMachine,
   type FleetSnapshotOverflow,
   type PairedDeviceSummary,
-  type TransportCandidate,
+  type ProviderRuntime,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -42,9 +41,10 @@ import {
 import { fleetOverflowNotice } from "./fleet-overflow.js"
 import { forgetMachineNotice, type ForgetMachineNotice } from "./forget-machine.js"
 import { machineAttachment } from "./machine-selection.js"
-import { providerDisplayName } from "./runtime.js"
 import { AuthorizeClientDialog } from "./authorize-client-dialog.js"
-import type { FleetAccessState } from "./fleet-access-session.js"
+import type { FleetAccessState, MachineReading } from "./fleet-access-session.js"
+import { cn } from "./lib/utils"
+import { MachineAgentList, type MachineAgents } from "./provider-settings.js"
 import { deviceLabelMismatch, renamedElsewhereNotice } from "./rename-device.js"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import {
@@ -108,15 +108,6 @@ const healthNote: Record<FleetHealth, ((label: string) => string) | undefined> =
 // the sentence says both before the confirmation opens.
 const forgetConsequence =
   "Deletes the credential this machine holds for it. Sessions there keep running, and revoking this machine on that side may still be yours to do."
-
-// Transports are shown in the order the dialer would try them. The relay is
-// left out because Domovoi runs no relay, and a listed row would claim one.
-export function orderedMachineTransports(machine: FleetMachine): TransportCandidate[] {
-  return [...machine.transports]
-    .filter((transport) => transport.kind !== "relay")
-    .sort((left, right) =>
-      transportPreference.indexOf(left.kind) - transportPreference.indexOf(right.kind))
-}
 
 type DeviceRevocationReason = NonNullable<PairedDeviceSummary["revocationReason"]>
 
@@ -242,13 +233,221 @@ function when(value: string | undefined): string {
   return timestamp.format(new Date(value)).replace(",", "")
 }
 
-function sessionSummary(count: number): string {
-  return `${count} ${count === 1 ? "session" : "sessions"}`
+// A reading younger than this is not read again when the view opens: the
+// machine was just admitted or just read.
+const freshReadingMs = 30_000
+
+// The clock LAST HEARD counts from, ticking while the view is open.
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), intervalMs)
+    return () => clearInterval(timer)
+  }, [intervalMs])
+  return now
+}
+
+// What this client knows about a machine's agents and sessions. Sessions are a
+// list from a reading, or only a count for the machine in use when the shell
+// passed no reading for it. Unknown carries the reason, never a guess.
+type MachineFacts =
+  | { known: true; providers: readonly ProviderRuntime[]; sessions: MachineReading["sessions"] | number; readAt?: string; stale: boolean }
+  | { known: false; reason: string }
+
+const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+
+function asOf(readAt: string | undefined): string | undefined {
+  return readAt === undefined ? undefined : `as of ${clock.format(new Date(readAt))}`
+}
+
+// A machine the home daemon reports as unreachable still shows what it last
+// said, dated, because that is what is still true about it.
+function machineFacts(
+  machine: FleetMachine,
+  input: {
+    readings: Readonly<Record<string, MachineReading>>
+    access: FleetAccessState | undefined
+    currentMachineId: string
+    providers: readonly ProviderRuntime[] | undefined
+    currentSessionCount: number
+    unread: ReadonlyMap<string, string>
+  },
+): MachineFacts {
+  const unreachable = machine.health === "unreachable"
+  const reading = input.readings[machine.id] ?? (input.access?.state === "admitted" ? input.access.reading : undefined)
+  if (reading) {
+    const stale = unreachable || input.unread.get(machine.id) === reading.readAt
+    return { known: true, providers: reading.providers, sessions: reading.sessions, readAt: reading.readAt, stale }
+  }
+  if (machine.id === input.currentMachineId && input.providers) {
+    return { known: true, providers: input.providers, sessions: input.currentSessionCount, stale: false }
+  }
+  if (input.access?.state === "checking") return { known: false, reason: "verifying client access" }
+  if (!machine.self) return { known: false, reason: "no client credential here" }
+  return { known: false, reason: unreachable ? "daemon unreachable" : "not read yet" }
+}
+
+// The agents panel's reason, as a clause about that machine.
+function unknownAgentsReason(reason: string): string {
+  return reason === "no client credential here" ? "this app holds no client credential for it" : reason
+}
+
+function machineAgents(entries: readonly FleetEntry[], factsOf: (machine: FleetMachine) => MachineFacts): MachineAgents[] {
+  return entries.flatMap((entry) => {
+    if (entry.kind !== "machine") return []
+    const facts = factsOf(entry.machine)
+    const base = { machineId: entry.machine.id, label: entry.machine.label }
+    return [facts.known
+      ? { ...base, providers: facts.providers, stale: facts.stale ? asOf(facts.readAt) : undefined }
+      : { ...base, unknown: unknownAgentsReason(facts.reason) }]
+  })
+}
+
+// The agents of every machine in the fleet as this client knows them, for
+// Settings: the same rows as the Machines surface draws.
+export function fleetAgents(
+  entries: readonly FleetEntry[],
+  input: {
+    readings: Readonly<Record<string, MachineReading>>
+    clientAccess: Readonly<Record<string, FleetAccessState>>
+    currentMachineId: string
+  },
+): MachineAgents[] {
+  return machineAgents(entries, (machine) => machineFacts(machine, {
+    readings: input.readings, access: input.clientAccess[machine.id], currentMachineId: input.currentMachineId,
+    providers: undefined, currentSessionCount: 0, unread: new Map(),
+  }))
+}
+
+// Sessions the drawer lists for that machine: archived and transferred ones are gone from it.
+function listedSessions(sessions: MachineReading["sessions"]): MachineReading["sessions"] {
+  return sessions.filter((session) => !["archived", "archiving", "transferred"].includes(session.state))
+}
+
+function sessionsFact(facts: Extract<MachineFacts, { known: true }>): string {
+  const sessions = facts.sessions
+  if (typeof sessions === "number") return `${sessions} running or waiting`
+  const count = (state: string) => sessions.filter((session) => session.state === state).length
+  const parts = [
+    [count("active"), "running"],
+    [count("waiting"), "waiting on you"],
+    [count("failed"), "failed"],
+  ].filter(([n]) => n !== 0).map(([n, word]) => `${n} ${word}`)
+  return parts.length === 0 ? "none running" : parts.join(" · ")
+}
+
+function openLabel(facts: MachineFacts): string {
+  if (!facts.known) return "Open its sessions"
+  const count = typeof facts.sessions === "number" ? facts.sessions : listedSessions(facts.sessions).length
+  return count === 0 ? "Open its sessions" : `Open its ${count} ${count === 1 ? "session" : "sessions"}`
+}
+
+// How this daemon reaches the machine. Its own daemon is reached over
+// loopback; a direct route names the endpoint it was verified on.
+function transportFact(machine: FleetMachine): string {
+  const route = machine.self
+    ? "loopback · this machine"
+    : machine.connection === "direct" && machine.verifiedRoute
+      ? `direct · ${new URL(machine.verifiedRoute.endpoint).host}`
+      : machine.connection === "local" ? "loopback" : machine.connection
+  return machine.health === "unreachable" ? `${route} · not answering` : route
+}
+
+function heardFact(lastSeenAt: string, now: number): string {
+  const seconds = Math.max(0, Math.round((now - Date.parse(lastSeenAt)) / 1_000))
+  if (seconds < 10) return "just now"
+  if (seconds < 60) return `${seconds}s ago`
+  if (seconds < 3_600) return `${Math.floor(seconds / 60)}m ago`
+  if (seconds < 86_400) return `${Math.floor(seconds / 3_600)}h ago`
+  return when(lastSeenAt)
+}
+
+const healthTone: Record<"success" | "warning" | "destructive", string> = {
+  success: "bg-success",
+  warning: "bg-warning",
+  destructive: "bg-destructive",
+}
+
+const pillTone: Record<"success" | "warning" | "destructive", string> = {
+  success: "bg-[color-mix(in_oklab,var(--success)_16%,transparent)] text-success",
+  warning: "bg-[color-mix(in_oklab,var(--warning)_16%,transparent)] text-warning",
+  destructive: "bg-[color-mix(in_oklab,var(--destructive)_16%,transparent)] text-destructive",
+}
+
+// The handoff's card action: 6px 12px on --accent, 11.5px, no border.
+const cardPrimary =
+  "h-auto rounded-sm bg-accent px-3 py-1.5 text-[11.5px] font-normal text-foreground hover:bg-[color-mix(in_oklab,var(--accent),var(--foreground)_8%)]"
+
+// The four facts the design draws, in its order: label in --faint, value in the
+// machine face. A fact this client does not know says unknown and why.
+function MachineFactRows({ machine, facts, now }: { machine: FleetMachine; facts: MachineFacts; now: number }) {
+  const dated = facts.known && facts.stale ? asOf(facts.readAt) : undefined
+  const known = (value: string) => dated ? `${value} · ${dated}` : value
+  const rows: [string, string][] = [
+    ["TRANSPORT", transportFact(machine)],
+    ["AGENTS", facts.known
+      ? known(facts.providers.filter((provider) => provider.status !== "missing").map((provider) => provider.id).join(" · ") || "none found")
+      : `unknown, ${facts.reason}`],
+    ["SESSIONS", facts.known ? known(sessionsFact(facts)) : `unknown, ${facts.reason}`],
+    ["LAST HEARD", heardFact(machine.heartbeat.lastSeenAt, now)],
+  ]
+  return (
+    <dl className="m-0 flex flex-col">
+      {rows.map(([label, value]) => (
+        <div key={label} className="flex items-baseline gap-2.5 border-b px-[15px] py-2">
+          <dt className="w-[92px] shrink-0 text-micro tracking-[.13em] text-faint">{label}</dt>
+          <dd className="m-0 min-w-0 font-machine text-[11px] break-words text-strong">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  )
+}
+
+// See what stalled: what this client last read from a machine that stopped
+// answering. The daemon there may still be running them, so nothing here says
+// they stopped.
+function StalledSessions({ id, machine, facts }: { id: string; machine: FleetMachine; facts: MachineFacts }) {
+  if (!facts.known) {
+    return (
+      <p id={id} className="m-0 px-[15px] pb-3 text-[11.5px] leading-relaxed text-muted-foreground">
+        What was running on {machine.label} is unknown: {unknownAgentsReason(facts.reason)}.
+      </p>
+    )
+  }
+  const time = facts.readAt === undefined ? "" : ` at ${clock.format(new Date(facts.readAt))}`
+  if (typeof facts.sessions === "number") {
+    return (
+      <p id={id} className="m-0 px-[15px] pb-3 text-[11.5px] leading-relaxed text-muted-foreground">
+        {facts.sessions} were running or waiting on you when Domovoi last read {machine.label}{time}. Its daemon has not reported them stopped.
+      </p>
+    )
+  }
+  const open = facts.sessions.filter((session) => session.state === "active" || session.state === "waiting")
+  return (
+    <div id={id} className="px-[15px] pb-3 text-[11.5px] leading-relaxed text-muted-foreground">
+      {open.length === 0 ? (
+        <p className="m-0">Nothing was running when Domovoi last read {machine.label}{time}.</p>
+      ) : (
+        <>
+          <p className="m-0">These were running or waiting on you when Domovoi last read {machine.label}{time}. Its daemon has not reported them stopped.</p>
+          <ul className="m-0 mt-1.5 flex list-none flex-col gap-1 p-0">
+            {open.map((session) => (
+              <li key={session.id} className="flex min-w-0 gap-2">
+                <span className="min-w-0 truncate text-strong">{session.title}</span>
+                <span className="shrink-0 font-machine text-[11px] text-faint">{session.state === "waiting" ? "waiting on you" : "running"}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+    </div>
+  )
 }
 
 function MachineCard({
   machine,
-  sessionCount,
+  facts,
+  now,
   inUse,
   connected,
   onUse,
@@ -258,10 +457,10 @@ function MachineCard({
   clientAccess,
   onAuthorize,
   onRemoveAccess,
-  providers,
 }: {
   machine: FleetMachine
-  sessionCount: number | undefined
+  facts: MachineFacts
+  now: number
   inUse: boolean
   connected: boolean
   onUse?: ((machineId: string) => void) | undefined
@@ -271,128 +470,126 @@ function MachineCard({
   clientAccess?: FleetAccessState | undefined
   onAuthorize?: ((machine: FleetMachine) => void) | undefined
   onRemoveAccess?: ((machine: FleetMachine) => void) | undefined
-  providers?: WorkspaceSnapshot["machine"]["providers"] | undefined
 }) {
-  const transports = orderedMachineTransports(machine)
+  const [stalledOpen, setStalledOpen] = useState(false)
+  const stalledId = useId()
   const note = healthNote[machine.health]?.(machine.label)
-  const attachment = machineAttachment(machine, clientAccess?.state === "admitted")
+  const admitted = clientAccess?.state === "admitted"
+  const attachment = machineAttachment(machine, admitted)
   const canControl = connected && attachment.selectable
   const showsTerminal = onOpenTerminal && machine.capabilities.includes("terminals")
+  const unreachable = machine.health === "unreachable"
+  const credentialMissing = !machine.self && !admitted
+  const tone = healthVariant[machine.health]
   return (
-    <div role="group" aria-label={machine.label} className={`rounded-xl border bg-card p-3.5 ${machine.health === "unreachable" ? "opacity-60" : ""}`}>
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-[13px] font-semibold text-strong">{machine.label}</span>
-        <Badge variant={healthVariant[machine.health]}>{healthLabel[machine.health]}</Badge>
-        {machine.self ? <Badge variant="outline">This machine</Badge> : null}
-        <span className="ml-auto flex flex-wrap items-center gap-1.5">
-          {inUse ? (
-            <span className="font-machine text-[10px] text-faint">In use</span>
-          ) : onUse ? (
-            <Button variant="outline" size="sm" disabled={!canControl} aria-label={`Use ${machine.label}`} onClick={() => onUse(machine.id)}>
-              Use
-            </Button>
-          ) : null}
-          {!inUse && onMoveSessionHere ? (
-            <Button variant="outline" size="sm" disabled={!canControl} aria-label={`Move a session here on ${machine.label}`} onClick={() => onMoveSessionHere(machine.id)}>
-              Move a session here
-            </Button>
-          ) : null}
-          {showsTerminal ? (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!canControl}
-              aria-label={`Terminal on ${machine.label}`}
-              onClick={() => onOpenTerminal(machine.id)}
-            >
-              Terminal
-            </Button>
-          ) : null}
-          {onForget && !machine.self ? (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  className={destructiveControl}
-                  disabled={!connected}
-                  aria-label={`Forget ${machine.label}`}
-                  onClick={() => onForget(machine)}
-                >
-                  Forget
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="left" className="max-w-[38ch] text-[11.5px] leading-relaxed">
-                {forgetConsequence}
-              </TooltipContent>
-            </Tooltip>
-          ) : null}
+    <div
+      role="group"
+      aria-label={machine.label}
+      className={cn(
+        "flex flex-col overflow-hidden rounded-xl border bg-card",
+        unreachable && "border-danger-border opacity-[.72]",
+      )}
+    >
+      <div className="flex items-center gap-[9px] border-b px-[15px] py-[13px]">
+        <span aria-hidden="true" className={cn("size-[7px] shrink-0 rounded-full", healthTone[tone])} />
+        <span
+          className="min-w-0 truncate font-machine text-[12.5px] text-foreground"
+          title={`${machinePlatformLabel(machine)} · ${machine.arch} · ${machine.version}`}
+        >
+          {machine.label}
+        </span>
+        <span className="flex-1" />
+        <span className={cn("shrink-0 rounded-full px-2 py-0.5 font-machine text-micro", pillTone[tone])}>
+          {healthLabel[machine.health]}
         </span>
       </div>
-      {!machine.self ? <div className="mt-2 flex flex-wrap items-center gap-2">
-        {clientAccess?.state === "admitted" ? <>
-          <Badge variant="success">Client credential verified</Badge>
-          {onRemoveAccess ? <Button variant="ghost" size="sm" onClick={() => onRemoveAccess(machine)}>Remove local access</Button> : null}
-        </> : onAuthorize ? <Button variant="outline" size="sm" disabled={!connected || clientAccess?.state === "checking"}
-          aria-label={`Authorize this client for ${machine.label}`} onClick={() => onAuthorize(machine)}>
-          {clientAccess?.state === "checking" ? "Verifying client access" : "Authorize this client"}
-        </Button> : null}
-        {clientAccess?.state === "refused" ? <p role="status" className="basis-full text-sm text-destructive">{clientAccess.message}</p> : null}
-      </div> : null}
-      {!attachment.selectable && (onUse || showsTerminal) && !inUse ? (
-        <p className="mt-1.5 m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">
-          {attachment.reason}
-        </p>
+      <MachineFactRows machine={machine} facts={facts} now={now} />
+      {note || credentialMissing || clientAccess?.state === "refused" || admitted || (!attachment.selectable && !credentialMissing && (onUse || showsTerminal)) ? (
+        <div className="flex flex-col gap-1.5 px-[15px] pt-2.5">
+          {note ? <p className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">{note}</p> : null}
+          {credentialMissing ? (
+            <p className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">
+              This app holds no client credential for {machine.label}, so its agents and sessions are unknown here.
+              Authorize this client to read them, open its sessions or open a terminal there. Machine pairing alone does not grant client access.
+            </p>
+          ) : null}
+          {!attachment.selectable && !credentialMissing && (onUse || showsTerminal) ? (
+            <p className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">{attachment.reason}</p>
+          ) : null}
+          {admitted ? <p className="m-0 font-machine text-[11px] text-success">Client credential verified</p> : null}
+          {clientAccess?.state === "refused" ? <p role="status" className="m-0 text-[11px] leading-relaxed text-destructive">{clientAccess.message}</p> : null}
+        </div>
       ) : null}
+      <div className="flex flex-wrap items-center gap-2 px-[15px] py-[11px]">
+        {unreachable ? (
+          <Button
+            variant="ghost"
+            className={cardPrimary}
+            aria-expanded={stalledOpen}
+            aria-controls={stalledId}
+            aria-label={`See what stalled on ${machine.label}`}
+            onClick={() => setStalledOpen(!stalledOpen)}
+          >
+            See what stalled
+          </Button>
+        ) : onUse ? (
+          <Button
+            variant="ghost"
+            className={cardPrimary}
+            disabled={!canControl}
+            aria-label={`${openLabel(facts)} on ${machine.label}`}
+            onClick={() => onUse(machine.id)}
+          >
+            {openLabel(facts)}
+          </Button>
+        ) : null}
+        {credentialMissing && onAuthorize ? (
+          <Button variant="outline" className={secondaryControl} disabled={!connected || clientAccess?.state === "checking"}
+            aria-label={`Authorize this client for ${machine.label}`} onClick={() => onAuthorize(machine)}>
+            {clientAccess?.state === "checking" ? "Verifying client access" : "Authorize this client"}
+          </Button>
+        ) : null}
+        {!inUse && onMoveSessionHere ? (
+          <Button variant="outline" className={secondaryControl} disabled={!canControl} aria-label={`Move a session here on ${machine.label}`} onClick={() => onMoveSessionHere(machine.id)}>
+            Move a session here
+          </Button>
+        ) : null}
+        <span className="flex-1" />
+        {showsTerminal ? (
+          <Button variant="ghost" className={quietControl} disabled={!canControl} aria-label={`Terminal on ${machine.label}`} onClick={() => onOpenTerminal(machine.id)}>
+            Terminal
+          </Button>
+        ) : null}
+        {admitted && onRemoveAccess ? (
+          <Button variant="ghost" className={quietControl} onClick={() => onRemoveAccess(machine)}>Remove local access</Button>
+        ) : null}
+        {onForget && !machine.self ? (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                className={destructiveControl}
+                disabled={!connected}
+                aria-label={`Forget ${machine.label}`}
+                onClick={() => onForget(machine)}
+              >
+                Forget
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="left" className="max-w-[38ch] text-[11.5px] leading-relaxed">
+              {forgetConsequence}
+            </TooltipContent>
+          </Tooltip>
+        ) : null}
+      </div>
       {onForget && !machine.self ? (
-        <p className={`${coarseFallback} mt-1.5 m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground`}>
+        <p className={`${coarseFallback} m-0 max-w-[68ch] px-[15px] pb-3 text-[11px] leading-relaxed text-muted-foreground`}>
           {forgetConsequence}
         </p>
       ) : null}
-      {note ? (
-        <p className="mt-1.5 m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">{note}</p>
+      {unreachable ? (
+        stalledOpen ? <StalledSessions id={stalledId} machine={machine} facts={facts} /> : <div id={stalledId} hidden />
       ) : null}
-      <p className="mt-1.5 m-0 font-machine text-[10px] text-faint">
-        {machinePlatformLabel(machine)} · {machine.arch} · {machine.version} · {machine.connection}
-        {sessionCount === undefined ? "" : ` · ${sessionSummary(sessionCount)}`}
-      </p>
-      <div className="mt-2 flex flex-wrap gap-1.5">
-        {machine.capabilities.length === 0
-          ? <span className="font-machine text-[10px] text-faint">No capability reported</span>
-          : machine.capabilities.map((capability) => (
-            <Badge key={capability} variant="machine">{capability}</Badge>
-          ))}
-      </div>
-      {machine.self && providers ? (
-        <section aria-label={`Agents and providers on ${machine.label}`} className="mt-3 border-t pt-3">
-          <p className="m-0 text-[11px] font-semibold">Agents and providers</p>
-          <p className="mt-1 m-0 text-[10px] text-muted-foreground">Installed per machine. Tokens live in that machine&apos;s OS keychain.</p>
-          <ul className="mt-2 m-0 grid gap-1 p-0">
-            {providers.map((provider) => (
-              <li key={provider.id} className="flex items-center justify-between gap-3 rounded-md bg-muted/40 px-2 py-1.5">
-                <span className="text-[11px] text-strong">{providerDisplayName(provider.id)}</span>
-                <Badge variant={provider.status === "ready" ? "success" : provider.status === "auth-required" ? "warning" : "outline"}>{provider.status}</Badge>
-              </li>
-            ))}
-          </ul>
-        </section>
-      ) : null}
-      <p className="mt-3 m-0 text-[11px] font-semibold" id={`transports-${machine.id}`}>
-        Transports
-      </p>
-      {transports.length === 0 ? (
-        <p className="m-0 font-machine text-[10px] text-faint">No usable transport advertised</p>
-      ) : (
-        <ol
-          aria-labelledby={`transports-${machine.id}`}
-          className="mt-1 m-0 flex flex-col gap-0.5 pl-4 font-machine text-[10px] text-faint"
-        >
-          {transports.map((transport) => (
-            <li key={`${transport.kind}-${transport.endpoint}`}>
-              {transport.kind} · {transport.endpoint}
-            </li>
-          ))}
-        </ol>
-      )}
     </div>
   )
 }
@@ -1019,14 +1216,24 @@ export function FleetView({
   onAuthorizeClient,
   onRemoveClientAccess,
   readOnly = false,
+  readings = {},
+  onReadMachine,
 }: {
   connected: boolean
   entries: FleetEntry[]
   fleetOverflow: FleetSnapshotOverflow | null
   currentMachineId: string
   devicesMachineLabel: string | undefined
+  // The machine in use: its session count and providers, when the shell has
+  // no reading of it in `readings`.
   currentSessionCount: number
   providers?: WorkspaceSnapshot["machine"]["providers"] | undefined
+  // Readings the shell already holds, keyed by machine id: its own daemon and
+  // the machine it is attached to. Admitted machines' readings come with
+  // `clientAccess`.
+  readings?: Readonly<Record<string, MachineReading>>
+  // Reads an admitted machine again; the answer arrives through `clientAccess`.
+  onReadMachine?: ((machineId: string, signal: AbortSignal) => Promise<void>) | undefined
   onOpenSkills: () => void
   onListDevices: (
     options?: DomovoiRequestOptions,
@@ -1062,6 +1269,44 @@ export function FleetView({
   const [forgetting, setForgetting] = useState<FleetMachine | null>(null)
   const [forgetPending, setForgetPending] = useState(false)
   const [forgetNotice, setForgetNotice] = useState<ForgetMachineNotice | null>(null)
+  const now = useNow(15_000)
+  // The reading each machine kept when a read of it failed, by machine id.
+  const [unread, setUnread] = useState<ReadonlyMap<string, string>>(new Map())
+
+  // Each admitted machine is read once when this view opens, or when it is
+  // admitted, unless its reading is fresh: one connection per machine per
+  // visit, not a poll. A machine that does not answer keeps its last reading,
+  // and the card dates it rather than presenting it as current.
+  const admittedIds = Object.entries(clientAccess)
+    .filter(([, access]) => access.state === "admitted")
+    .map(([machineId]) => machineId)
+    .sort()
+    .join(" ")
+  const requested = useRef(new Set<string>())
+  const reads = useRef(new Set<AbortController>())
+  useEffect(() => () => { for (const read of reads.current) read.abort() }, [])
+  useEffect(() => {
+    if (!onReadMachine || !connected) return
+    for (const machineId of admittedIds.split(" ").filter(Boolean)) {
+      const access = clientAccess[machineId]
+      if (requested.current.has(machineId) || access?.state !== "admitted") continue
+      requested.current.add(machineId)
+      if (Date.now() - Date.parse(access.reading.readAt) < freshReadingMs) continue
+      const read = new AbortController()
+      reads.current.add(read)
+      onReadMachine(machineId, read.signal).catch(() => {
+        if (!read.signal.aborted) setUnread((current) => new Map(current).set(machineId, access.reading.readAt))
+      }).finally(() => reads.current.delete(read))
+    }
+    // The ids name the machines to read; a new reading of one must not read it again.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [admittedIds, connected])
+
+  const agentsHeadingId = useId()
+  const factsOf = (machine: FleetMachine) => machineFacts(machine, {
+    readings, access: clientAccess[machine.id], currentMachineId, providers, currentSessionCount, unread,
+  })
+  const agents = machineAgents(entries, factsOf)
 
   const loadDevices = useCallback(async () => {
     try {
@@ -1223,11 +1468,11 @@ export function FleetView({
                   <MachineCard
                     key={machine.id}
                     machine={machine}
-                    {...(machine.id === currentMachineId ? { sessionCount: currentSessionCount } : { sessionCount: undefined })}
+                    facts={factsOf(machine)}
+                    now={now}
                     inUse={machine.id === currentMachineId}
                     connected={connected}
                     clientAccess={clientAccess[machine.id]}
-                    {...(machine.self && providers ? { providers } : {})}
                     {...(onAuthorizeClient && !readOnly ? { onAuthorize: setAuthorizing } : {})}
                     {...(onRemoveClientAccess && !readOnly ? { onRemoveAccess: (target: FleetMachine) => {
                       onRemoveClientAccess(target.id)
@@ -1241,6 +1486,15 @@ export function FleetView({
                 )))}
               </div>
             )}
+            {agents.length > 0 ? (
+              <section aria-labelledby={agentsHeadingId} className="overflow-hidden rounded-xl border bg-card">
+                <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 border-b px-[15px] py-[11px]">
+                  <h2 id={agentsHeadingId} className="m-0 text-[12.5px] font-medium">Agents and providers</h2>
+                  <p className="m-0 text-[11px] text-muted-foreground">Installed per machine. Tokens live in that machine&apos;s OS keychain.</p>
+                </div>
+                <MachineAgentList machines={agents} />
+              </section>
+            ) : null}
           </section>
 
           <section className="mt-7" aria-labelledby={pairedDevicesHeadingId}>

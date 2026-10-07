@@ -1,3 +1,4 @@
+import { useId, useState } from "react"
 import type { ProviderRuntime } from "@getdomovoi/protocol"
 
 import { Badge } from "@/components/ui/badge"
@@ -336,6 +337,122 @@ function ProviderKeyRow({ status, print }: { status: ProviderSecretStatus; print
         </span>
       </div>
     </Field>
+  )
+}
+
+// One machine's agents as this client knows them. Without providers the
+// machine was never read here, and `unknown` says why instead of a guess.
+export type MachineAgents = {
+  machineId: string
+  label: string
+  providers?: readonly ProviderRuntime[] | undefined
+  unknown?: string | undefined
+  // Set when the providers come from an earlier reading: "as of 14:03".
+  stale?: string | undefined
+}
+
+type AgentTone = "success" | "warning" | "destructive" | "muted" | "faint"
+
+const agentDot: Record<AgentTone, string> = {
+  success: "bg-success",
+  warning: "bg-warning",
+  destructive: "bg-destructive",
+  muted: "bg-muted-foreground",
+  faint: "bg-faint",
+}
+
+function agentState(provider: ProviderRuntime): { state: string; tone: AgentTone } {
+  if (provider.problem !== undefined) return { state: "cannot start", tone: "destructive" }
+  if (provider.status === "auth-required") return { state: "needs sign-in on that machine", tone: "warning" }
+  if (provider.status === "unknown") return { state: "found, sign-in not checked", tone: "muted" }
+  return { state: "ready", tone: "success" }
+}
+
+// A provider the daemon looked for and did not find is not installed there,
+// and the list says what is installed per machine.
+function installedProviders(providers: readonly ProviderRuntime[]): ProviderRuntime[] {
+  return providers.filter((provider) => provider.status !== "missing")
+}
+
+// The design's Agents and providers rows, one per machine and agent: a dot,
+// the agent, the machine, its state, and an action only where one is needed.
+// Signing in happens in that machine's own terminal, so Authenticate there says
+// what to run where; Domovoi never holds or forwards the provider's credential.
+export function MachineAgentList({ machines }: { machines: readonly MachineAgents[] }) {
+  return (
+    <ul className="m-0 list-none p-0">
+      {machines.flatMap((machine) => {
+        if (!machine.providers) {
+          return [<AgentRow key={machine.machineId} name="unknown" machine={machine.label} state={machine.unknown ?? "not read yet"} tone="faint" dimmed />]
+        }
+        const installed = installedProviders(machine.providers)
+        if (installed.length === 0) {
+          return [<AgentRow key={machine.machineId} name="none found" machine={machine.label}
+            state={machine.stale ? `no agent on its PATH · ${machine.stale}` : "no agent on its PATH"} tone="faint" dimmed={machine.stale !== undefined} />]
+        }
+        return installed.map((provider) => {
+          const { state, tone } = agentState(provider)
+          return (
+            <AgentRow
+              key={`${machine.machineId}:${provider.id}`}
+              name={provider.id}
+              machine={machine.label}
+              state={machine.stale ? `${state} · ${machine.stale}` : state}
+              tone={machine.stale ? "faint" : tone}
+              dimmed={machine.stale !== undefined}
+              problem={provider.problem}
+              signIn={provider.status === "auth-required" && provider.problem === undefined && !machine.stale ? provider : undefined}
+            />
+          )
+        })
+      })}
+    </ul>
+  )
+}
+
+function AgentRow({ name, machine, state, tone, dimmed = false, problem, signIn }: {
+  name: string
+  machine: string
+  state: string
+  tone: AgentTone
+  dimmed?: boolean
+  problem?: string | undefined
+  signIn?: ProviderRuntime | undefined
+}) {
+  const [open, setOpen] = useState(false)
+  const noteId = useId()
+  const command = signIn ? providerAccountCommand(signIn) : undefined
+  return (
+    <li className={cn("border-t px-[15px] py-2.5 first:border-t-0", dimmed && "opacity-60")}>
+      <div className="flex flex-wrap items-center gap-x-[11px] gap-y-1">
+        <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", agentDot[tone])} />
+        <span data-agent-cell="" className="w-[150px] shrink-0 truncate font-machine text-[11.5px] text-strong sm:w-[190px]">{name}</span>
+        <span data-agent-cell="" className="w-[120px] shrink-0 truncate font-machine text-micro text-muted-foreground sm:w-[150px]">{machine}</span>
+        <span data-agent-cell="" className="min-w-0 text-[11.5px] text-muted-foreground">{state}</span>
+        <span className="flex-1" />
+        {signIn ? (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={noteId}
+            aria-label={`Authenticate there: ${name} on ${machine}`}
+            onClick={() => setOpen(!open)}
+            className="rounded-full border border-info-border bg-info-background px-2.5 py-[5px] text-[11px] text-info-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            Authenticate there
+          </button>
+        ) : null}
+      </div>
+      {problem ? <p className="m-0 mt-1 pl-[17px] text-micro leading-relaxed text-muted-foreground">{problem}</p> : null}
+      {signIn ? (
+        <p id={noteId} hidden={!open} className="m-0 mt-1.5 pl-[17px] text-[11.5px] leading-relaxed text-info-foreground">
+          {command
+            ? <>Run <code className="font-machine">{command}</code> in a terminal on {machine}.</>
+            : <>Sign in with <code className="font-machine">{signIn.command}</code>&apos;s own instructions in a terminal on {machine}.</>}
+          {" "}Domovoi does not sign in for you.
+        </p>
+      ) : null}
+    </li>
   )
 }
 
