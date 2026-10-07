@@ -2,11 +2,15 @@ import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { demoWorkspace, workspaceSnapshotSchema } from "@getdomovoi/protocol"
+import { demoWorkspace as protocolDemoWorkspace, workspaceSnapshotSchema } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
+
+// Load-count tests use current effort labels; store.test.ts covers legacy migration.
+const demoWorkspace = structuredClone(protocolDemoWorkspace)
+demoWorkspace.sessions.find(({ id }) => id === "session-audit")!.runtime.reasoning = "unset"
 
 const scratchDirectories: string[] = []
 
