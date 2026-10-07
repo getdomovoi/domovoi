@@ -116,7 +116,7 @@ it("gives Settings each machine's agents from its own reading and says which are
     machine(ids.lost, "lost", false, "unreachable"),
     { kind: "unenrolled", machineId: `machine-${"e".repeat(32)}` },
   ], {
-    readings: { [ids.home]: { providers: [codex], sessions: [], readAt } },
+    readings: { [ids.home]: { reading: { providers: [codex], sessions: [], readAt }, live: true } },
     clientAccess: {
       [ids.studio]: { state: "admitted", deviceId, reading: { providers: [], sessions: [], readAt } },
       [ids.lost]: { state: "admitted", deviceId, reading: { providers: [codex], sessions: [], readAt } },

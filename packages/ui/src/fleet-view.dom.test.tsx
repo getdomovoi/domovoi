@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest"
 import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary, type ProviderRuntime } from "@getdomovoi/protocol"
 
 import { DaemonRpcError } from "./client.js"
-import type { FleetAccessState, MachineReading } from "./fleet-access-session.js"
+import type { FleetAccessState, HeldReading, MachineReading } from "./fleet-access-session.js"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { FleetView } from "./fleet-view.js"
 import { forgetRefusalMessage } from "./forget-machine.js"
@@ -94,6 +94,11 @@ function session(id: string, title: string, state: MachineReading["sessions"][nu
   return { id, title, state }
 }
 
+// A snapshot the shell holds; live while its connection is open.
+function held(machineReading: MachineReading, live = true): HeldReading {
+  return { reading: machineReading, live }
+}
+
 function admitted(machineReading: MachineReading): FleetAccessState {
   return { state: "admitted", deviceId: `device-${"a".repeat(32)}`, reading: machineReading }
 }
@@ -115,10 +120,10 @@ it("draws a reachable machine as the design's card: four facts and one way into 
   const workshop = { ...local, heartbeat: { state: "online" as const, lastSeenAt: new Date(Date.now() - 2_000).toISOString() } }
   const { user, onUseMachine } = renderFleet({
     entries: entries(workshop, studio),
-    readings: { [local.id]: reading({
+    readings: { [local.id]: held(reading({
       providers: [claude, codex, aider],
       sessions: [session("s1", "Billing webhooks", "active"), session("s2", "Replay test", "waiting"), session("s3", "Docs", "idle"), session("s4", "Old", "archived")],
-    }) },
+    })) },
   })
 
   const card = screen.getByRole("group", { name: "workshop" })
@@ -190,7 +195,7 @@ it("never puts the attached machine's agents on this machine's card", () => {
 it("offers Authenticate there only where an agent needs sign-in, and names the command for that machine", async () => {
   const { user } = renderFleet({
     entries: entries(local),
-    readings: { [local.id]: reading({ providers: [{ ...claude, status: "auth-required" }, codex] }) },
+    readings: { [local.id]: held(reading({ providers: [{ ...claude, status: "auth-required" }, codex] })) },
   })
 
   const panel = screen.getByRole("region", { name: "Agents and providers" })
@@ -248,6 +253,44 @@ it("keeps reading when the view mounts twice, as StrictMode does in development"
   )
 
   expect(signals.filter((signal) => !signal.aborted)).toHaveLength(1)
+})
+
+it("dates a snapshot kept after its connection closed and prefers a newer admission reading", () => {
+  const kept = "2026-10-06T14:03:00.000Z"
+  const newer = "2026-10-06T14:09:00.000Z"
+  renderFleet({
+    entries: entries(local, { ...studio, health: "healthy" }),
+    readings: {
+      [local.id]: held(reading({ providers: [claude], readAt: kept }), false),
+      [studio.id]: held(reading({ providers: [claude], readAt: kept }), false),
+    },
+    clientAccess: { [studio.id]: admitted(reading({ providers: [codex], readAt: newer })) },
+  })
+
+  expect(facts(screen.getByRole("group", { name: "workshop" })).AGENTS).toBe(`claude-code · as of ${clock.format(new Date(kept))}`)
+  expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS).toBe("codex")
+})
+
+it("does not read a machine again when another one leaves", async () => {
+  const lab = { ...studio, id: `machine-${"f".repeat(32)}`, label: "lab", health: "healthy" as const }
+  const old = reading({ readAt: "2026-10-06T14:03:00.000Z" })
+  const onReadMachine = vi.fn((_machineId: string, _signal: AbortSignal) => Promise.reject(new Error("no answer")))
+  const view = (clientAccess: Readonly<Record<string, FleetAccessState>>) => (
+    <TooltipProvider>
+      <FleetView connected entries={entries(local, { ...studio, health: "healthy" }, lab)} fleetOverflow={null}
+        currentMachineId={local.id} devicesMachineLabel={local.label} currentSessionCount={0} onOpenSkills={() => {}}
+        clientAccess={clientAccess} onReadMachine={onReadMachine}
+        onListDevices={async () => ({ devices: [] })} onRevokeDevice={vi.fn()} onRotateDevice={vi.fn()} onRenameDevice={vi.fn()}
+      />
+    </TooltipProvider>
+  )
+  const { rerender } = render(view({ [studio.id]: admitted(old), [lab.id]: admitted(old) }))
+  await waitFor(() => expect(onReadMachine).toHaveBeenCalledTimes(2))
+  await act(async () => { await Promise.resolve() })
+
+  rerender(view({ [studio.id]: admitted(old) }))
+  await act(async () => { await Promise.resolve() })
+  expect(onReadMachine).toHaveBeenCalledTimes(2)
 })
 
 it("does not read again a machine it has just read", () => {
@@ -323,7 +366,7 @@ function renderFleet(overrides: {
   readOnly?: boolean
   onMoveSessionHere?: (machineId: string) => void
   clientAccess?: Readonly<Record<string, FleetAccessState>>
-  readings?: Readonly<Record<string, MachineReading>>
+  readings?: Readonly<Record<string, HeldReading>>
   onReadMachine?: (machineId: string, signal: AbortSignal) => Promise<void>
   providers?: ProviderRuntime[]
 } = {}) {

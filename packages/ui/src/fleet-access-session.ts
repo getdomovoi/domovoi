@@ -55,13 +55,19 @@ export function asOf(readAt: string | undefined): string | undefined {
 // said is dated rather than shown as current.
 const silentHealth: ReadonlySet<FleetMachine["health"]> = new Set(["unreachable", "reconnecting", "degraded"])
 
+// A snapshot the shell holds for a machine: its own home daemon, or the
+// machine it is attached to. Live while that connection is open; a closed
+// connection leaves the last snapshot, which is only what the machine said then.
+export type HeldReading = { reading: MachineReading; live: boolean }
+
 // A machine that is not answering still shows what it last said, dated,
 // because that is what is still true about it: one the home daemon is not
-// hearing from, or one that did not answer this client's last read.
+// hearing from, one that did not answer this client's last read, or one whose
+// held connection closed.
 export function machineFacts(
   machine: FleetMachine,
   input: {
-    readings: Readonly<Record<string, MachineReading>>
+    readings: Readonly<Record<string, HeldReading>>
     access: FleetAccessState | undefined
     currentMachineId: string
     providers?: readonly ProviderRuntime[] | undefined
@@ -70,13 +76,15 @@ export function machineFacts(
 ): MachineFacts {
   const unreachable = machine.health === "unreachable"
   const admitted = input.access?.state === "admitted" ? input.access : undefined
-  const live = input.readings[machine.id]
-  const reading = live ?? admitted?.reading
+  const held = input.readings[machine.id]
+  // An open connection is the current answer. Otherwise the newer of a kept
+  // snapshot and the admission's own reading.
+  const useHeld = held !== undefined && (held.live || !admitted || Date.parse(held.reading.readAt) >= Date.parse(admitted.reading.readAt))
+  const reading = useHeld ? held.reading : admitted?.reading
   if (reading) {
-    // A live snapshot is this client's own connection, current unless the
-    // machine is unreachable; a stored reading is current only while the
-    // home daemon hears the machine and the machine answered the last read.
-    const stale = live ? unreachable : silentHealth.has(machine.health) || admitted?.unanswered === true
+    const stale = useHeld
+      ? !held.live || unreachable
+      : silentHealth.has(machine.health) || admitted?.unanswered === true
     return { known: true, providers: reading.providers, sessions: reading.sessions, readAt: reading.readAt, stale }
   }
   if (machine.id === input.currentMachineId && input.providers) {
@@ -108,7 +116,7 @@ export function machineAgents(entries: readonly FleetEntry[], factsOf: (machine:
 export function fleetAgents(
   entries: readonly FleetEntry[],
   input: {
-    readings: Readonly<Record<string, MachineReading>>
+    readings: Readonly<Record<string, HeldReading>>
     clientAccess: Readonly<Record<string, FleetAccessState>>
     currentMachineId: string
   },

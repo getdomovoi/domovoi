@@ -48,6 +48,7 @@ import {
   readingClock,
   unknownAgentsReason,
   type FleetAccessState,
+  type HeldReading,
   type MachineFacts,
   type MachineReading,
 } from "./fleet-access-session.js"
@@ -1165,10 +1166,10 @@ export function FleetView({
   // no reading of it in `readings`.
   currentSessionCount: number
   providers?: WorkspaceSnapshot["machine"]["providers"] | undefined
-  // Readings the shell already holds, keyed by machine id: its own daemon and
+  // Snapshots the shell already holds, keyed by machine id: its own daemon and
   // the machine it is attached to. Admitted machines' readings come with
   // `clientAccess`.
-  readings?: Readonly<Record<string, MachineReading>>
+  readings?: Readonly<Record<string, HeldReading>>
   // Reads an admitted machine again; the answer arrives through `clientAccess`.
   onReadMachine?: ((machineId: string, signal: AbortSignal) => Promise<void>) | undefined
   onOpenSkills: () => void
@@ -1218,26 +1219,33 @@ export function FleetView({
     .sort()
     .join(" ")
   const requested = useRef(new Set<string>())
+  const pending = useRef(new Map<string, AbortController>())
+  // Leaving the view cancels the reads still waiting. A read cut short was
+  // never answered, so a remount (StrictMode does one in development) asks again.
   useEffect(() => {
-    if (!onReadMachine || !connected) return
     const asked = requested.current
-    const reads: [string, AbortController][] = []
-    for (const machineId of admittedIds.split(" ").filter(Boolean)) {
-      const access = clientAccess[machineId]
-      if (asked.has(machineId) || access?.state !== "admitted") continue
-      asked.add(machineId)
-      if (Date.now() - Date.parse(access.reading.readAt) < freshReadingMs) continue
-      const read = new AbortController()
-      reads.push([machineId, read])
-      // The answer, or the lack of one, arrives through clientAccess.
-      onReadMachine(machineId, read.signal).catch(() => {})
-    }
-    // A read cut short was never answered, so the next run asks again.
+    const waiting = pending.current
     return () => {
-      for (const [machineId, read] of reads) {
+      for (const [machineId, read] of waiting) {
         read.abort()
         asked.delete(machineId)
       }
+      waiting.clear()
+    }
+  }, [])
+  useEffect(() => {
+    if (!onReadMachine || !connected) return
+    for (const machineId of admittedIds.split(" ").filter(Boolean)) {
+      const access = clientAccess[machineId]
+      if (requested.current.has(machineId) || access?.state !== "admitted") continue
+      requested.current.add(machineId)
+      if (Date.now() - Date.parse(access.reading.readAt) < freshReadingMs) continue
+      const read = new AbortController()
+      pending.current.set(machineId, read)
+      // The answer, or the lack of one, arrives through clientAccess.
+      onReadMachine(machineId, read.signal).catch(() => {}).finally(() => {
+        if (pending.current.get(machineId) === read) pending.current.delete(machineId)
+      })
     }
     // The ids name the machines to read; a new reading of one must not read it again.
     // eslint-disable-next-line react-hooks/exhaustive-deps
