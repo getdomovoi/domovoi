@@ -79,6 +79,25 @@ function taskManager() {
 }
 
 describe("Windows service removal", () => {
+  it.each(["supervisor", "task"])("uses supplied commands after a %s removal failure", async (failure) => {
+    const { effects } = taskManager()
+    if (failure === "supervisor") vi.mocked(effects.stopSupervisor!).mockRejectedValue(new Error("Stop refused"))
+    else {
+      const capture = effects.capture
+      effects.capture = vi.fn(async (command, args, deadline) => {
+        if (Buffer.from(args.at(-1)!, "base64").toString("utf16le").includes("$folder.DeleteTask(")) throw new Error("Delete refused")
+        return capture(command, args, deadline)
+      })
+    }
+    const stderr = vi.fn()
+    expect(await runServiceCommand(["service", "remove"], {
+      ...effects, platform: "win32", home: "C:\\Users\\dl", execPath: "C:\\Domovoi\\index.js", stdout: vi.fn(), stderr,
+      words: { install: "custom install", status: "custom status", remove: "custom remove", profileRecover: "custom recover" },
+    })).toBe(1)
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("reinstall it with custom install. Otherwise retry custom remove."))
+    expect(effects.remove).not.toHaveBeenCalled()
+  })
+
   it("stops the live task before unregistering it and deleting its configuration", async () => {
     const { task, effects } = taskManager()
     vi.mocked(effects.remove).mockImplementation(async () => {

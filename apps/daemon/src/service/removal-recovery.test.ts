@@ -302,6 +302,28 @@ it("does not wait on macOS when nothing Domovoi loaded was booted out", async ()
   } finally { daemon.release() }
 })
 
+it.each([undefined, "domovoi daemon remove"])("gives removal-specific timeout advice and succeeds after daemon exit (%s)", async (remove) => {
+  const { target, effects, daemon, plist } = await launchdRemoval()
+  const { owner } = snapshots()
+  effects.readOwner = () => owner
+  const options = { profileReleaseWaitMs: 300, ...(remove === undefined ? {} : {
+    words: { install: "domovoi daemon install", status: "domovoi daemon status", remove, profileRecover: "custom recover" },
+  }) }
+  try {
+    await expect(removeService(target, effects, options)).rejects.toThrow(
+      `The service was stopped, but its daemon did not let the profile go within 1 second. The launch agent file and saved configuration were kept. Run ${remove ?? "domovoid service remove"} again once that daemon has exited.`,
+    )
+    expect(effects.remove).not.toHaveBeenCalled()
+    expect(effects.writeRemovalReceipt).not.toHaveBeenCalled()
+    daemon.release()
+    // The first bootout removed the loaded job even though its daemon was still exiting.
+    vi.mocked(effects.capture).mockResolvedValue({ code: 113, stdout: "Could not find service sh.domovoi.domovoid" })
+    await expect(removeService(target, effects, options)).resolves.toBeDefined()
+    expect(effects.remove).toHaveBeenCalledWith(plist, expect.anything())
+    expect(effects.remove).toHaveBeenCalledWith(serviceConfigurationPath(target.home, "darwin"), expect.anything())
+  } finally { daemon.release() }
+})
+
 it("still claims a Linux profile once after systemd has waited for the stop", async () => {
   const home = await mkdtemp(join(tmpdir(), "domovoi-removal-systemd-"))
   homes.push(home)

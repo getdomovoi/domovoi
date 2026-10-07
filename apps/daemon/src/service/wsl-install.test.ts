@@ -224,6 +224,15 @@ describe("WSL service installation", () => {
   describe("after an interrupted update", () => {
     const intentPath = home + "/.domovoi/service.json.update-intent.json"
 
+    it.each(["install", "status"])("uses supplied removal words for interrupted %s", async (verb) => {
+      const deps: ServiceCommandDependencies = { ...dependencies(), readConfiguration: () => configuration,
+        exists: vi.fn(async (path) => path === intentPath),
+        words: { install: "custom install", status: "custom status", remove: "custom remove", profileRecover: "custom recover" } }
+      expect(await runServiceCommand(["service", verb], deps)).toBe(1)
+      expect(verb === "install" ? deps.stderr : deps.stdout).toHaveBeenCalledWith(expect.stringContaining("or custom remove,"))
+      expect(deps.run).not.toHaveBeenCalled()
+    })
+
     it("reports it from status and exits 1", async () => {
       const deps: ServiceCommandDependencies = { ...dependencies(), environment: {}, readConfiguration: () => configuration,
         exists: vi.fn(async (path: string) => path === intentPath) }

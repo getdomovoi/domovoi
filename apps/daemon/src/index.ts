@@ -239,10 +239,10 @@ async function main() {
     const label = windows ? "Windows" : "Guest"
     const evidence = windows ? "windows-supervisor.json" : "supervisor.json"
     if (record.state === "exhausted") {
-      process.stderr.write(`${label} supervision exhausted after ${record.crashes} crashes and ${record.attempts.length} attempts. See the profile's ${evidence} and domovoid service status.\n`)
+      process.stderr.write(`${label} supervision exhausted after ${record.crashes} crashes and ${record.attempts.length} attempts. See the profile's ${evidence}, and domovoi daemon status or domovoid service status.\n`)
       process.exitCode = 1
     } else if (record.state === "failed") {
-      process.stderr.write(`${label} supervision refused after an observation failure. See the profile's ${evidence} and domovoid service status.\n`)
+      process.stderr.write(`${label} supervision refused after an observation failure. See the profile's ${evidence}, and domovoi daemon status or domovoid service status.\n`)
       process.exitCode = 1
     }
     return
