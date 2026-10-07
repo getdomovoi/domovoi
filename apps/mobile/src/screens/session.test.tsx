@@ -547,18 +547,6 @@ describe("SessionScreen terminals", () => {
     expect(screen.getByRole("button", { name: "Show all 1 line" })).toBeOnTheScreen()
   })
 
-  // A block grows as output arrives and a new one appears when a terminal
-  // opens. Below the history, neither can move the message being read.
-  it("draws terminal blocks after the thread's messages, so their growth cannot shift history", async () => {
-    const { props } = await draw({ terminals: [watched("line\n")] })
-    const last = props.detail.entries.filter((entry) => entry.kind === "message").at(-1)
-    if (!last || last.kind !== "message") throw new Error("fixture needs a message")
-    const tree = JSON.stringify(screen.toJSON())
-    const words = last.body.split(/\s+/).find((word) => word.length > 6)!
-    expect(tree.indexOf(words)).toBeGreaterThan(-1)
-    expect(tree.indexOf("zsh · wt-billing-idem")).toBeGreaterThan(tree.indexOf(words))
-  })
-
   it("draws no terminal block for a session with none", async () => {
     await draw()
     expect(screen.queryByText(/Show all/)).toBeNull()

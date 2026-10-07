@@ -743,6 +743,18 @@ export function SessionScreen({
 
           {artifacts.length > 0 ? <ArtifactList rows={artifacts} onOpen={onOpenArtifact} /> : null}
 
+          {terminals.map((watch) => {
+            const terminalId = watchedSummary(watch).terminalId
+            return (
+              <TerminalBlock
+                key={terminalId}
+                watch={watch}
+                connected={connected}
+                onOpen={() => onOpenTerminal?.(terminalId)}
+              />
+            )
+          })}
+
           {detail.omitted > 0 ? (
             <Text variant="note" className="text-center">
               {detail.omitted} earlier item{detail.omitted === 1 ? "" : "s"} are not on this phone.
@@ -774,21 +786,6 @@ export function SessionScreen({
           {detail.entries.map((entry) => (
             <Entry key={entry.id} entry={entry} onWatch={watchReceipt} />
           ))}
-
-          {/* Below the messages: a block grows as output arrives and a new
-              one appears when a terminal opens, and here neither can move the
-              history a reader scrolled up into. */}
-          {terminals.map((watch) => {
-            const terminalId = watchedSummary(watch).terminalId
-            return (
-              <TerminalBlock
-                key={terminalId}
-                watch={watch}
-                connected={connected}
-                onOpen={() => onOpenTerminal?.(terminalId)}
-              />
-            )
-          })}
 
           {access === "full" ? <Card className="gap-2">
             <Text variant="label">Session control</Text>
