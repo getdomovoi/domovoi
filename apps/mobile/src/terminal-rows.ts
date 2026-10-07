@@ -176,34 +176,50 @@ function bounded(record: TerminalRecord): TerminalRecord {
   }
 }
 
-// Escape sequences that draw nothing, each anchored at its introducer.
+// Escape sequences that draw nothing, each anchored at its introducer. The
+// two-character form leaves out "[" and "]", which open the longer ones.
 // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-const sequenceAtStart = /^(?:\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[@-_])/
-// A sequence is short; one this far back cannot reach the cut.
-const sequenceReach = 64
+const sequenceAtStart = /^(?:\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[@-Z\\^_])/
+// A sequence still arriving: an introducer whose end has not come yet, so it
+// runs to the end of the text.
+// eslint-disable-next-line no-control-regex -- the sequences are made of control characters
+const sequenceUnfinished = /^\u001b(?:\][^\u0007\u001b]*|\[[0-?]*[ -/]*)?$/
+// The longest unfinished sequence kept whole across a cut, so the phone holds
+// at most this much past its bound. Longer, and the bound wins.
+const unfinishedSequenceReach = 4_096
 
-// A cut that would fall inside an escape sequence moves to just after it, so
-// what is kept never begins with a sequence's parameters, such as "[31m".
+// A cut that would fall inside an escape sequence, however long, moves to
+// just after it, so what is kept never begins with a sequence's parameters,
+// such as "[31m", or a window title's text. One still arriving is kept whole
+// from its introducer, so it is read once its end comes.
 function sequenceSafe(text: string, cut: number): number {
-  const from = Math.max(0, cut - sequenceReach)
   const escape = text.lastIndexOf("\u001b", cut - 1)
-  if (escape < from) return cut
-  const sequence = sequenceAtStart.exec(text.slice(escape, escape + sequenceReach * 4))
-  const end = escape + (sequence?.[0].length ?? 0)
-  return end > cut ? end : cut
+  if (escape === -1) return cut
+  const rest = text.slice(escape)
+  const sequence = sequenceAtStart.exec(rest)
+  if (sequence) return Math.max(cut, escape + sequence[0].length)
+  return sequenceUnfinished.test(rest) && cut - escape <= unfinishedSequenceReach ? escape : cut
 }
 
 function isLowSurrogate(code: number): boolean {
   return code >= 0xdc00 && code <= 0xdfff
 }
 
-// Where the drawn text starts: past the rest of a first line that began
-// before the text did, when a line break is near. Without one the line is
-// drawn as it stands rather than dropping a long run of output.
+// Where the drawn text starts when it began partway through a line: past the
+// rest of a window title it began inside, then past the rest of that line
+// when a line break is near. Without one the line is drawn as it stands
+// rather than dropping a long run of output.
 function drawnStart(record: TerminalRecord): number {
   if (!record.startsMidLine) return 0
-  const lineBreak = record.text.indexOf("\n")
-  return lineBreak !== -1 && lineBreak < lineBreakReach ? lineBreak + 1 : 0
+  let start = 0
+  // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
+  const titleEnd = /\u0007|\u001b\\/.exec(record.text.slice(0, unfinishedSequenceReach))
+  // A title's end with no introducer and no line break before it closes a
+  // title that began before the text did.
+  // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
+  if (titleEnd && !/[\u001b\n]/.test(record.text.slice(0, titleEnd.index))) start = titleEnd.index + titleEnd[0].length
+  const lineBreak = record.text.indexOf("\n", start)
+  return lineBreak !== -1 && lineBreak - start < lineBreakReach ? lineBreak + 1 : start
 }
 
 // What a terminal draws, read as lines. Colour and cursor-movement sequences
