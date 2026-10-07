@@ -474,20 +474,19 @@
       "id": "audit.rows",
       "name": "Audit rows",
       "where": "audit surface: when, what, actor, detail, who, outcome",
-      "presence": [
-        "function AuditEntryRow("
-      ],
       "evidence": [
         "function AuditEntryRow(",
+        "outcomeDotClass(entry.outcome)",
+        "w-[62px]",
+        "{entry.actor.kind}",
+        "@container overflow-hidden",
+        "@3xl:w-[190px]",
+        "@3xl:w-[150px]",
         {
           "absent": "<pre className=\"max-h-40",
           "in": "packages/ui/src/audit-log-view.tsx"
         }
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "rows exist (the earlier evidence was only the component name); they are not the drawn row. The design draws an outcome dot, a 62px time, the action with an actor pill, a detail line, then 190px who and 150px outcome columns. AuditEntryRow draws the action with an outcome Badge, a locale timestamp on the right, an actor line and the detail in a pre block. Every field the design names is in auditEntrySchema, so this is client-only"
-      }
+      ]
     },
     {
       "id": "audit.export",
@@ -501,11 +500,12 @@
       ],
       "evidence": [
         "Export this query",
+        "saves to this device",
         "rows match"
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "export exists; the line under it says N rows loaded where the design says 1,204 rows match, because the query page carries no total (protocol). It also says writes a file on this machine in every client, while a web tab downloads to the browser's device; Q346 A (2026-10-02) makes that copy depend on the client kind (saves to this device in a browser)"
+        "reason": "export exists; the line under it says N rows loaded where the design says 1,204 rows match, because the query page carries no total (protocol, Codex follow-up C1). The Q346 A copy is built in AuditLogView (S3.10j, 2026-10-06): a browser client says saves to this device, a desktop writes a file on this machine. WorkspaceShell does not pass clientKind to it yet, so until that one-line follow-up every client draws the desktop line"
       }
     },
     {
@@ -515,17 +515,17 @@
       "copy": [
         "WHAT THIS LOG IS, AND IS NOT"
       ],
-      "presence": [
-        "WHAT THIS LOG IS, AND IS NOT"
-      ],
       "evidence": [
         "WHAT THIS LOG IS, AND IS NOT",
-        "Retention is by count: 10,000 activity and 1,000 pre-authentication entries."
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the facts block exists; two of its four lines differ. The design's retention line is true (10,000 activity and 1,000 pre-authentication entries are the daemon's fixed defaults in apps/daemon/src/audit-log.ts) while the code says Retention is bounded by the daemon's local audit policy; Q377 A (2026-10-02) takes the design's exact numbers and keeps redacted in the export line as a dated deviation. The dots are ShieldCheck icons, all success-coloured"
-      }
+        "Retention is by count: 10,000 activity and 1,000 pre-authentication entries.",
+        "Rows name verified credentials, so renaming a device does not rewrite history.\", dot: \"bg-success\"",
+        "Retention is by count: 10,000 activity and 1,000 pre-authentication entries.\", dot: \"bg-info\"",
+        "rounded-full ${dot}",
+        {
+          "absent": "ShieldCheckIcon",
+          "in": "packages/ui/src/audit-log-view.tsx"
+        }
+      ]
     },
     {
       "id": "settings.header",
@@ -2247,6 +2247,11 @@
       "id": "drawer.row",
       "since": "2026-10-02",
       "note": "The design's drawer mixes sessions from several machines (sample names). Q364 A keeps the M1 drawer to this machine with the machine name in each row's meta; a fleet-wide drawer comes with the replace-herdr work."
+    },
+    {
+      "id": "audit.rows",
+      "since": "2026-10-06",
+      "note": "Built by S3.10j. Differences from the drawn row: the design's query window is the last 24 hours and this one is not (the wire has no since), so a row from another day adds the day under its time. The outcome column starts with the outcome word, then target and session, because the wire carries an outcome enum rather than the design's free result phrase. The actor pill names the actor kind. A long detail scrolls inside the row past 10rem (detail is up to 4,096 characters). The list is a size container: when it is narrower than 48rem (a narrow window, or a wide one with the drawer open) the who and outcome columns wrap under the action."
     },
     {
       "id": "audit.facts",
