@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, writeFileSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { isAbsolute, join, relative, sep, win32 } from "node:path"
@@ -21,10 +21,23 @@ export function daemonTestEnvironment(platform: NodeJS.Platform, home: string): 
   }
 }
 
+export function daemonTestLoginProfile(path: string): string {
+  return `export PATH='${path.replaceAll("'", "'\\''")}'\n`
+}
+
+export const inheritedPath = process.env.PATH ?? ""
 const inheritedHome = homedir()
 const inheritedProfile = process.env.DOMOVOI_PROFILE_DIR
 const protectedProfiles = [join(inheritedHome, ".domovoi"), ...(inheritedProfile ? [inheritedProfile] : [])]
 const home = mkdtempSync(daemonTestHomePrefix(process.platform, tmpdir()))
+// Login-shell tool PATH must match the runner's. An empty HOME on macOS
+// otherwise falls back to /usr/bin xcrun shims instead of Homebrew tools.
+if (process.platform !== "win32") {
+  const profile = daemonTestLoginProfile(inheritedPath)
+  for (const name of [".profile", ".bash_profile", ".zprofile"]) {
+    writeFileSync(join(home, name), profile, { mode: 0o600 })
+  }
+}
 const environment = daemonTestEnvironment(process.platform, home)
 // Windows staging stays inside USERPROFILE. Reuse the created home as TEMP
 // itself so the redirect adds no further directory components.
