@@ -1,4 +1,4 @@
-import { demoWorkspace, type ThreadItem } from "@getdomovoi/protocol"
+import { demoWorkspace, type FleetEntry, type FleetMachine, type ThreadItem } from "@getdomovoi/protocol"
 import { cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { ComponentProps } from "react"
@@ -252,6 +252,8 @@ function receiptThread(
       onQueuedChange={vi.fn()}
       snapshot={snapshot}
       connected
+      fleet={twoMachines(snapshot)}
+      currentMachineId={snapshot.machine.id}
       onResolve={vi.fn(async () => {})}
       onSetRuntime={vi.fn(async () => {})}
       onForkSession={vi.fn(async () => {})}
@@ -266,6 +268,33 @@ function receiptThread(
     />,
   )
   return handlers
+}
+
+// This machine and one more, so a move has somewhere to go.
+function twoMachines(snapshot: typeof demoWorkspace): FleetEntry[] {
+  const local: FleetMachine = {
+    id: snapshot.machine.id,
+    label: snapshot.machine.name,
+    platform: snapshot.machine.platform,
+    arch: snapshot.machine.arch,
+    version: snapshot.machine.version,
+    connection: "local",
+    capabilities: ["sessions"],
+    protocolVersion: "0.1.0",
+    transports: [{ kind: "local", endpoint: "ws://127.0.0.1:47831/rpc", authenticated: true }],
+    heartbeat: { state: "online", lastSeenAt: "2026-08-31T12:00:00.000Z" },
+    health: "healthy",
+    self: true,
+  }
+  const studio: FleetMachine = {
+    ...local,
+    id: `machine-${"b".repeat(32)}`,
+    label: "studio",
+    connection: "tailnet",
+    transports: [{ kind: "tailnet", endpoint: "wss://studio.tailnet:47831/rpc", authenticated: true }],
+    self: false,
+  }
+  return [local, studio].map((machine) => ({ kind: "machine" as const, machine }))
 }
 
 it("follows only the latest receipt with the design's actions", async () => {
@@ -295,7 +324,8 @@ it("opens the machine menu to move the session", async () => {
   receiptThread(["allow-once"])
   expect(screen.queryByRole("menu")).toBeNull()
   await user.click(screen.getByRole("button", { name: "Move this session to another machine" }))
-  expect(await screen.findByRole("menu")).toBeTruthy()
+  const menu = await screen.findByRole("menu")
+  expect(within(menu).getByRole("menuitem", { name: "Move this session to studio" })).toBeTruthy()
 })
 
 // Each action shows only where its surface can open: no shell route to the
@@ -310,6 +340,8 @@ it.each([
   ["watching", { clientAccess: "watching" as const }],
   ["disconnected", { connected: false }],
   ["without a move", { onTransferSession: undefined }],
+  // The menu would list no destination: the button would lead nowhere.
+  ["with no other machine", { fleet: undefined }],
 ])("offers no move when %s", (_, props) => {
   receiptThread(["allow-once"], props)
   expect(screen.queryByRole("button", { name: "Move this session to another machine" })).toBeNull()

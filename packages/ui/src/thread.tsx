@@ -57,7 +57,7 @@ import { ScrollArea } from "./components/ui/scroll-area"
 import { sessionDraftStore } from "./session-draft"
 import { useThreadFollow } from "./thread-follow"
 import { MachineSwitcher } from "./machine-switcher.js"
-import { fleetMachines } from "./fleet-entries.js"
+import { fleetMachines, transferTargets } from "./fleet-entries.js"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { cn } from "./lib/utils"
@@ -698,19 +698,6 @@ export function Thread({
   const machineMenuOpenRequest = machineMenuRequest === undefined && receiptMoveRequests === 0
     ? undefined
     : (machineMenuRequest ?? 0) + receiptMoveRequests
-  const latestReceiptId = renderedThread.filter((item) => item.kind === "receipt").at(-1)?.id
-  const receiptActions = {
-    onReviewChanges: onOpenSheet,
-    // The menu's move is the same consent dialog the drawer reaches, and it
-    // is drawn only where that menu is: not read-only, with a daemon to ask.
-    onMoveSession: !readOnly && connected && onTransferSession
-      ? () => {
-          focusBeforeMachineMenu.current = document.activeElement
-          setReceiptMoveRequests((count) => count + 1)
-        }
-      : undefined,
-    onOpenDockTab,
-  }
   const activeSessionId = active?.id
   const restoreCheckpoint = useCallback(async (checkpointId: string) => {
     if (!activeSessionId || checkpointRestoreBlocked(pending, readOnly)) return
@@ -787,6 +774,21 @@ export function Thread({
   }
 
   const entries = fleet ?? [localFleetEntry(snapshot)]
+  const latestReceiptId = renderedThread.filter((item) => item.kind === "receipt").at(-1)?.id
+  const receiptActions = {
+    onReviewChanges: onOpenSheet,
+    // The menu's move is the same consent dialog the drawer reaches. It is
+    // drawn only where that menu can move the session: not read-only, with a
+    // daemon to ask, and with a machine to move to, from the menu's own list.
+    onMoveSession: !readOnly && connected && onTransferSession
+      && transferTargets({ entries, transferEntries: transferFleet, currentMachineId: currentMachineId ?? snapshot.machine.id }).length > 0
+      ? () => {
+          focusBeforeMachineMenu.current = document.activeElement
+          setReceiptMoveRequests((count) => count + 1)
+        }
+      : undefined,
+    onOpenDockTab,
+  }
   const machines = fleetMachines(transferFleet ?? entries)
   const sourceMachine = machines.find(
     (machine) => machine.id === (currentMachineId ?? snapshot.machine.id),
