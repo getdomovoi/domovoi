@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
+import { runDaemonCommand } from "../daemon-command.js"
 import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import { createServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import { nodeServiceEffects, removeService, runServiceCommand, type ServiceEffects } from "./install.js"
@@ -77,6 +78,36 @@ function taskManager() {
   }
   return { task, effects }
 }
+
+describe("Windows legacy task migration", () => {
+  it.each(["daemon", "service"])("keeps the %s command vocabulary when legacy task deletion fails during install", async (entry) => {
+    const { effects, task } = taskManager()
+    const capture = effects.capture
+    effects.capture = vi.fn(async (command, args, deadline) => {
+      if (Buffer.from(args.at(-1)!, "base64").toString("utf16le").includes("$folder.DeleteTask(")) {
+        expect(task).toEqual({ registered: true, enabled: false, running: false })
+        throw new Error("Legacy task deletion refused")
+      }
+      const result = await capture(command, args, deadline)
+      return { ...result, stdout: result.stdout.replace("--service-supervise", "--service-config") }
+    })
+    const stderr = vi.fn()
+    const stdout = vi.fn()
+    const dependencies = {
+      ...effects, platform: "win32", user: "dl", home: "C:\\Users\\dl", workingDirectory: "C:\\Users\\dl", environment: {},
+      runtime: "C:\\Domovoi\\node.exe", execPath: "C:\\Domovoi\\index.js", stdout, stderr,
+    }
+    expect(await (entry === "daemon"
+      ? runDaemonCommand(["install"], dependencies)
+      : runServiceCommand(["service", "install"], dependencies))).toBe(1)
+    const prefix = entry === "daemon" ? "domovoi daemon" : "domovoid service"
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("Legacy task deletion refused"))
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining(`reinstall it with ${prefix} install. Otherwise retry ${prefix} remove.`))
+    expect(task).toEqual({ registered: true, enabled: false, running: false })
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(stdout).not.toHaveBeenCalled()
+  })
+})
 
 describe("Windows service removal", () => {
   it.each(["supervisor", "task"])("uses supplied commands after a %s removal failure", async (failure) => {

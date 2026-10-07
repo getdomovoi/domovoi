@@ -686,6 +686,7 @@ async function installWithDeadline(
   target: ServiceTarget,
   effects: InstallEffects,
   deadline: OperationDeadline,
+  words: ServiceCommandWords,
   handoff: (() => Promise<void>) | undefined,
   callerProfile?: ProfileLocation,
   beforeChanges?: () => Promise<void>,
@@ -853,7 +854,7 @@ async function installWithDeadline(
       try {
         if (command === "launchctl" && args[0] === "bootout") bootoutSent = true
         if (legacyWindowsCommand && index === registering) {
-          if (await removeWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline, true) !== "removed") throw new Error("Legacy Windows registration disappeared before migration")
+          if (await removeWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline, true, words) !== "removed") throw new Error("Legacy Windows registration disappeared before migration")
           legacyWindowsRemoved = true
         }
         await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
@@ -913,9 +914,9 @@ async function withLinger(target: ServiceTarget, plan: ServicePlan, effects: Ins
 export function installService(
   target: ServiceTarget,
   effects: InstallEffects & Pick<ServiceEffects, "claimServiceOperation">,
-  options: { handoff?: () => Promise<void>; callerProfile?: ProfileLocation; beforeChanges?: () => Promise<void> } = {},
+  options: { handoff?: () => Promise<void>; callerProfile?: ProfileLocation; beforeChanges?: () => Promise<void>; words?: ServiceCommandWords } = {},
 ): Promise<InstalledService> {
-  return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff, options.callerProfile, options.beforeChanges))
+  return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.words ?? domovoidServiceWords, options.handoff, options.callerProfile, options.beforeChanges))
 }
 
 // Security review rounds 1 and 2 (#574): any program can register a Windows
@@ -1620,8 +1621,8 @@ export async function runServiceCommand(
     }
     if (configuration !== undefined) {
       const plan = bundled === undefined
-        ? await installService({ ...target, configuration }, dependencies)
-        : await installService({ ...target, execPath: bundled.runtime.daemonEntryPath, runtime: bundled.runtime.nodePath, configuration }, dependencies, { beforeChanges: bundled.publish })
+        ? await installService({ ...target, configuration }, dependencies, { words })
+        : await installService({ ...target, execPath: bundled.runtime.daemonEntryPath, runtime: bundled.runtime.nodePath, configuration }, dependencies, { beforeChanges: bundled.publish, words })
       if (bundled !== undefined) {
         dependencies.stdout(`Copied the daemon runtime out of the app to ${bundled.copy}, so the service does not run from inside the app.\n`)
         // #635: the app's Install removes unused copies once it has reached
