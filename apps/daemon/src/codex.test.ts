@@ -1252,6 +1252,32 @@ describe("CodexAppServerAdapter", () => {
     await adapter.close()
   })
 
+  it.each([undefined, "", "/reported-command-dir"])("marks only a per-request command cwd: %s", async (cwd) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+    try {
+      transport.receive({
+        id: 42,
+        method: "item/commandExecution/requestApproval",
+        params: { threadId: "thread-cwd", turnId: "turn-cwd", command: "pwd", ...(cwd === undefined ? {} : { cwd }) },
+      })
+      const approval = events.find((event) => event.type === "approval-requested")!
+      expect(approval).toMatchObject({ type: "approval-requested", requestId: 42, command: "pwd" })
+      if (cwd) expect(approval).toMatchObject({ cwd, cwdSource: "request" })
+      else expect(approval).not.toHaveProperty("cwdSource")
+      // Keep the existing cwd transport behavior, including an empty string.
+      if (cwd === undefined) expect(approval).not.toHaveProperty("cwd")
+      else expect(approval).toHaveProperty("cwd", cwd)
+    } finally {
+      await adapter.close()
+    }
+  })
+
   // Codex 0.157 asks before a tool server's tool runs with an MCP elicitation
   // marked codex_approval_kind mcp_tool_call, after the call's mcpToolCall item
   // has started. The card names the server; an answer never asks Codex to

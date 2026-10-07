@@ -887,7 +887,10 @@ export class CodexAppServerAdapter implements AgentAdapter {
         ...common,
         ...(typeof params.itemId === "string" ? { itemId: params.itemId } : {}),
         ...(typeof params.command === "string" ? { command: params.command } : {}),
-        ...(typeof params.cwd === "string" ? { cwd: params.cwd } : {}),
+        ...(typeof params.cwd === "string" ? {
+          cwd: params.cwd,
+          ...(params.cwd.length > 0 ? { cwdSource: "request" as const } : {}),
+        } : {}),
         ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
       })
     } else if (message.method === "mcpServer/elicitation/request" && message.id !== undefined) {
