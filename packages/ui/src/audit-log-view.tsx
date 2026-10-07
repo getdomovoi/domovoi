@@ -174,12 +174,13 @@ function mergeAuditPages(current: AuditQueryPage | undefined, older: AuditQueryP
 }
 
 // The design's row: outcome dot, time, the action with an actor pill over a
-// detail line, then who and outcome columns. Below md the two columns wrap
-// under the action instead of squeezing it.
-function AuditEntryRow({ entry }: { entry: AuditEntry }) {
-  const when = auditEntryTime(entry.occurredAt)
+// detail line, then who and outcome columns. The list is a size container, so
+// when the pane (not the window) is narrower than 48rem the two columns wrap
+// under the action instead of squeezing it or running out of the pane.
+function AuditEntryRow({ entry, now }: { entry: AuditEntry; now: Date }) {
+  const when = auditEntryTime(entry.occurredAt, now)
   return (
-    <article className="flex flex-wrap items-start gap-3 border-b px-[15px] py-3 last:border-b-0 md:flex-nowrap">
+    <article className="flex flex-wrap items-start gap-3 border-b px-[15px] py-3 last:border-b-0 @3xl:flex-nowrap">
       <span aria-hidden className={`mt-[5px] size-1.5 shrink-0 rounded-full ${outcomeDotClass(entry.outcome)}`} />
       <time className="mt-px flex w-[62px] shrink-0 flex-col font-machine text-[10.5px] text-faint" dateTime={entry.occurredAt} title={new Date(entry.occurredAt).toLocaleString()}>
         <span>{when.time}</span>
@@ -196,10 +197,10 @@ function AuditEntryRow({ entry }: { entry: AuditEntry }) {
           </div>
         ) : null}
       </div>
-      <div className="flex basis-full flex-col pl-[92px] font-machine text-[10.5px] leading-normal text-muted-foreground [overflow-wrap:anywhere] md:w-[190px] md:shrink-0 md:basis-auto md:pl-0">
+      <div className="flex basis-full flex-col pl-[92px] font-machine text-[10.5px] leading-normal text-muted-foreground [overflow-wrap:anywhere] @3xl:w-[190px] @3xl:shrink-0 @3xl:basis-auto @3xl:pl-0">
         <span>{auditActorLabel(entry.actor)}</span>
       </div>
-      <div className="flex basis-full flex-col pl-[92px] font-machine text-[10.5px] leading-normal text-faint [overflow-wrap:anywhere] md:w-[150px] md:shrink-0 md:basis-auto md:pl-0">
+      <div className="flex basis-full flex-col pl-[92px] font-machine text-[10.5px] leading-normal text-faint [overflow-wrap:anywhere] @3xl:w-[150px] @3xl:shrink-0 @3xl:basis-auto @3xl:pl-0">
         <span>{entry.outcome}</span>
         {entry.target ? <span>target · {entry.target}</span> : null}
         {entry.sessionId ? <span>session · {entry.sessionId}</span> : null}
@@ -245,6 +246,24 @@ export function AuditLogView({
   const [outcome, setOutcome] = useState<OutcomeFilter>("all")
   const [actor, setActor] = useState<ActorFilter>("all")
   const [page, setPage] = useState<AuditQueryPage | undefined>(initialPage)
+  // Rows from today show a time only, so "today" is re-read whenever rows land
+  // and when the window regains focus or the tab becomes visible. A view
+  // watched without either across midnight keeps the old day until one comes;
+  // the time's title always carries the full date.
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const refresh = () => setNow((current) => {
+      const next = new Date()
+      return next.toDateString() === current.toDateString() ? current : next
+    })
+    refresh()
+    window.addEventListener("focus", refresh)
+    document.addEventListener("visibilitychange", refresh)
+    return () => {
+      window.removeEventListener("focus", refresh)
+      document.removeEventListener("visibilitychange", refresh)
+    }
+  }, [page])
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState("")
@@ -386,8 +405,8 @@ export function AuditLogView({
 
         {error ? <Alert variant="destructive"><CircleStopIcon /><AlertTitle>Audit log unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
 
-        <section aria-label="Audit entries" className="overflow-hidden rounded-xl border bg-card">
-          {page?.entries.map((entry) => <AuditEntryRow key={entry.id} entry={entry} />)}
+        <section aria-label="Audit entries" className="@container overflow-hidden rounded-xl border bg-card">
+          {page?.entries.map((entry) => <AuditEntryRow key={entry.id} entry={entry} now={now} />)}
           {!loading && !error && page?.entries.length === 0 ? (
             <Empty className="min-h-52 border-0">
               <EmptyHeader>

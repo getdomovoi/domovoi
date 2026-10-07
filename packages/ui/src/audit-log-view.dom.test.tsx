@@ -158,6 +158,27 @@ it("states the daemon's retention counts and draws no shield icons in the facts"
   expect(within(facts).getByText("Export writes a redacted file here. Moving it is your decision.")).toBeTruthy()
   expect(within(facts).queryByText(/local audit policy/)).toBeNull()
   expect(facts.querySelector("svg")).toBeNull()
+  // The design's dots: the first fact success, the other three info.
+  const dots = [...facts.querySelectorAll("[aria-hidden]")].map((dot) => dot.className)
+  expect(dots).toHaveLength(4)
+  expect(dots[0]).toContain("bg-success")
+  for (const dot of dots.slice(1)) expect(dot).toContain("bg-info")
+})
+
+it("dates today's rows once the day has turned and the tab is seen again", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+  vi.setSystemTime(new Date(2026, 9, 6, 23, 59, 0))
+  renderAudit([{ ...entry, occurredAt: new Date(2026, 9, 6, 23, 58, 30).toISOString() }])
+  await settle()
+  const time = () => screen.getByRole("article").querySelector("time")?.textContent ?? ""
+  expect(time()).toBe("23:58:30")
+
+  vi.setSystemTime(new Date(2026, 9, 7, 0, 1, 0))
+  await act(async () => {
+    window.dispatchEvent(new Event("focus"))
+  })
+  expect(time()).not.toBe("23:58:30")
+  expect(time()).toContain("23:58:30")
 })
 
 it("says where the export lands for the client kind", async () => {
