@@ -90,6 +90,26 @@ it("searches an admitted machine from the palette and switches to a picked sessi
   await act(async () => { respond(attached, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
   await settle()
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull())
+  await waitFor(() => expect(sentRequests(attached, "session.activate").map((request) => request.params)).toContainEqual(expect.objectContaining({ sessionId: "s-studio" })))
+}, 15_000)
+
+// PR #745 review (P2): Escape during the switch is "never mind". The window
+// still arrives, but the picked session is not opened behind a palette the
+// person closed, so a reopened palette has nothing pending to guard against.
+it("cancels the picked session when the palette is closed during the switch", async () => {
+  const user = userEvent.setup()
+  const { home } = await pickOnStudio()
+  await user.keyboard("{Escape}")
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull())
+  await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
+  await settle()
+  const attached = sockets.socket(3)
+  const studioSession = { ...target.sessions[0]!, id: "s-studio", title: "Billing webhooks on Studio" }
+  await act(async () => { completeHandshake(attached, { ...target, sessions: [...target.sessions, studioSession] }) })
+  await settle()
+  await act(async () => { respond(attached, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
+  await settle()
+  expect(sentRequests(attached, "session.activate").map((request) => request.params)).not.toContainEqual(expect.objectContaining({ sessionId: "s-studio" }))
 }, 15_000)
 
 // A switch that cannot finish does not leave the palette spinning over the

@@ -263,6 +263,7 @@ export function CommandPalette({
   restoreFocusTo,
   machineSearch,
   switching,
+  onCancelSwitch,
 }: {
   open: boolean
   platform: CommandPalettePlatform
@@ -273,6 +274,10 @@ export function CommandPalette({
   // The shell's switch from a row picked on another machine, until it lands
   // on the session or is dropped.
   switching?: PaletteSwitch | null | undefined
+  // Closing the palette while that switch is in flight means never mind: the
+  // shell drops the pick, so the session does not open behind a closed or
+  // reopened palette.
+  onCancelSwitch?: (() => void) | undefined
   // Setting a machine up is not a command: it is the thing you reach for when
   // no command here can help yet.
   onOpenFirstRun?: (() => void) | undefined
@@ -349,7 +354,12 @@ export function CommandPalette({
   const reset = () => { setQuery(""); setChoosingId(null); setHighlighted(""); setPicked(null); sawSwitch.current = false }
   // Every way out closes the same way: nothing chosen and nothing typed is
   // left behind for the next open, whichever side asked for the close.
-  const close = () => { reset(); remote.forget(); onOpenChange(false) }
+  const close = () => {
+    // A switch still in flight is cancelled; one that has landed (switching
+    // already cleared) closes as usual.
+    if (picked && switching) onCancelSwitch?.()
+    reset(); remote.forget(); onOpenChange(false)
+  }
   const now = Date.now()
 
   useEffect(() => {

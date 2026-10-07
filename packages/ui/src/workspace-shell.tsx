@@ -1932,6 +1932,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             // A switch the target refused is over for the palette, so the
             // banner under it can say why.
             switching={pendingElsewhere && !authenticationRequired && !protocolError ? pendingElsewhere : null}
+            onCancelSwitch={() => setPendingElsewhere(null)}
             {...(firstRunEnabled && !watching ? {
               onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
             } : {})}
