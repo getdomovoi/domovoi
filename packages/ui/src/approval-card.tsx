@@ -192,7 +192,7 @@ export function ApprovalCard({
                 }
               }}
             />
-            <div className="flex items-center justify-end gap-2">
+            <div className="flex flex-wrap items-center justify-end gap-2">
               {/* The facts stay within reach while the note is written. */}
               {factsToggle ? <span className="mr-auto">{factsToggle}</span> : null}
               <Button variant="ghost" size="sm" onClick={closeExplanation}>Cancel</Button>
