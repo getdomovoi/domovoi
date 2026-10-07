@@ -1,12 +1,13 @@
 # @getdomovoi/cli
 
 `domovoi` is the terminal client for a Domovoi daemon. It pairs with a daemon once, then talks to
-it over the daemon's WebSocket JSON-RPC endpoint with its own client credential. It runs nothing on
-the machine itself; the daemon does that.
+it over the daemon's WebSocket JSON-RPC endpoint with its own client credential. Apart from
+`domovoi daemon`, it runs nothing on the machine itself; the daemon does that.
 
-The daemon's own binary is `domovoid`, in `@getdomovoi/daemon`. Installing, supervising and
-pairing a daemon are `domovoid` commands. See [`docs/cli-parity-decision.md`](../../docs/cli-parity-decision.md)
-for which commands live where.
+The daemon's own binary is `domovoid`, in `@getdomovoi/daemon`, which this package depends on.
+`domovoi daemon install|status|remove` runs that package's own service installer; issuing a
+pairing code and the other daemon-side commands are still `domovoid` commands. See
+[`docs/cli-parity-decision.md`](../../docs/cli-parity-decision.md) for which commands live where.
 
 ## Commands
 
@@ -16,6 +17,7 @@ domovoi status [--daemon <ws-url>] [--credential-file <path>]
 domovoi doctor [--daemon <ws-url>] [--credential-file <path>]
 domovoi logs   [--limit <n>] [--action <name>] [--outcome <o>] [--session <id>] [--before <id>]
 domovoi skill install <path> [--scope user|project] [--yes]
+domovoi daemon install|status|remove
 ```
 
 - `pair` redeems a pairing code and stores the client credential the daemon mints for one
@@ -46,6 +48,15 @@ domovoi skill install <path> [--scope user|project] [--yes]
   previews the files, digests, signature, trust state and target, asks before installing unless
   `--yes` is given, then installs the previewed digest into the chosen scope. Enabling the skill is
   a separate decision made on the daemon.
+- `daemon install`, `daemon status` and `daemon remove` register, report on or remove the login
+  service that runs this machine's daemon for your user: a systemd user unit, a launch agent, or a
+  Windows logon task. They call `runDaemonCommand` from `@getdomovoi/daemon/daemon-command`, the
+  same code as `domovoid service install|status|remove`, so the service runs the daemon's
+  `dist/index.js`, never this CLI. `install` saves the non-secret daemon settings of the shell it
+  runs in. Their follow-up lines name `domovoi daemon` commands. Where the daemon package is not
+  installed beside this CLI, as in the desktop app's runtime, the CLI loads the one daemon at
+  `../../daemon/dist/daemon-command.js` from its own `dist`, and refuses when that is absent too.
+  See [`docs/daemon-services.md`](../../docs/daemon-services.md).
 
 `--daemon` defaults to the local daemon's loopback endpoint. `--help` prints the same usage.
 
@@ -87,6 +98,9 @@ for 1 says a log path is printed; this CLI keeps no log, so that clause is left 
 What the commands that exist today return: `pair`, `status`, `doctor`, `logs` and
 `skill install` exit 0, 2, 3 and 5 as the table says. `doctor` exits 1 on a failed probe, and
 `skill install` exits 1 when the install is declined or refused; `pair` exits 1 when the daemon
-refuses the code or the credential cannot be stored. Codes 4 and 10 to 130 belong to the session
-commands (`session new`, `send`, `watch`, `approve`, `deny`), which are not built yet; the numbers
-are fixed here so they do not move when those land.
+refuses the code or the credential cannot be stored. `daemon install`, `daemon status` and
+`daemon remove` keep the exit codes of `domovoid service`: `status` exits 0 when the service is
+installed, even if it is stopped, and 1 when it is not or its supervision failed; `install` and
+`remove` exit 0 on success and 1 on failure. A verb they do not have exits 2. Codes 4 and 10 to
+130 belong to the session commands (`session new`, `send`, `watch`, `approve`, `deny`), which are
+not built yet; the numbers are fixed here so they do not move when those land.
