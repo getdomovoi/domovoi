@@ -345,15 +345,53 @@ function PlanCommentForm({
   )
 }
 
+// The daemon mirrors a working plan into a plan artifact of its own, id
+// plan-<sessionId> with no path (isWorkingPlanArtifact in
+// apps/daemon/src/working-plan.ts), so annotations have an artifact to anchor
+// to. A provider's prose plan lands in the same artifact when there are no
+// steps. Its text is the card's steps, so beside the card it is not a
+// document; it is where a comment on a step goes when no document exists.
+export function isWorkingPlanMirror(artifact: Artifact, sessionId: string): boolean {
+  const mirrorId = `plan-${sessionId}`
+  return artifact.sessionId === sessionId
+    && artifact.type === "plan"
+    && (artifact.id === mirrorId || (artifact.path === undefined && artifact.id.startsWith(`${mirrorId}-`)))
+}
+
+function latestPlanArtifact(candidates: readonly Artifact[]): Artifact | undefined {
+  return candidates.reduce<Artifact | undefined>(
+    (latest, artifact) => (!latest || artifact.revision >= latest.revision ? artifact : latest),
+    undefined,
+  )
+}
+
+// Q350 A: with a working plan, the document is the newest plan artifact the
+// agent wrote (a watched file), never the mirror. Without one, the newest plan
+// artifact of any kind is the document, which is how a prose plan reads. A
+// comment anchors to the document, or to the mirror when only the card shows.
+export function planSheetArtifacts(
+  artifacts: readonly Artifact[],
+  sessionId: string | null | undefined,
+  workingPlan: WorkingPlan | undefined,
+): { document: Artifact | undefined, commentTarget: Artifact | undefined, all: Artifact[] } {
+  if (!sessionId) return { document: undefined, commentTarget: undefined, all: [] }
+  const all = artifacts.filter((artifact) => artifact.sessionId === sessionId && artifact.type === "plan")
+  const mirror = latestPlanArtifact(all.filter((artifact) => isWorkingPlanMirror(artifact, sessionId)))
+  const document = workingPlan
+    ? latestPlanArtifact(all.filter((artifact) => artifact.content && !isWorkingPlanMirror(artifact, sessionId)))
+    : latestPlanArtifact(all)
+  const commentTarget = document?.content ? document : workingPlan ? mirror : undefined
+  return { document, commentTarget, all }
+}
+
 // The Plan tab. Q350 A: when the agent wrote a plan artifact, it is the
 // document, drawn above the working-plan card rather than hidden by it, and
-// Comment on a step anchors to it by a text quote (annotation.create, client
-// only). The design's PROBLEM, APPROACH and STILL OPEN sections are fields the
-// wire does not carry (Q350 B was not taken), so the document is the agent's
-// own Markdown. The decision row is drawn once: under the document when there
-// is one, in the card when there is not.
+// Comment on a step anchors by a text quote (annotation.create, client only).
+// The design's PROBLEM, APPROACH and STILL OPEN sections are fields the wire
+// does not carry (Q350 B was not taken), so the document is the agent's own
+// Markdown. The decision row is drawn once, under the document and the card.
 export function PlanSheet({
-  artifact,
+  document,
   workingPlan,
   running,
   readOnly = false,
@@ -365,7 +403,7 @@ export function PlanSheet({
   onDiscardEdit,
   onComment,
 }: {
-  artifact: Artifact | undefined
+  document: Artifact | undefined
   workingPlan: WorkingPlan | undefined
   running: boolean
   readOnly?: boolean | undefined
@@ -384,26 +422,11 @@ export function PlanSheet({
   const [commenting, setCommenting] = useState<{ quote: string | undefined } | null>(null)
   const [carryingOn, setCarryingOn] = useState(false)
   const [carryOnError, setCarryOnError] = useState("")
-  const content = artifact?.content
+  const content = document?.content
+  const canCarryOn = Boolean(onCarryOn) && !readOnly
+  const canComment = Boolean(onComment) && !readOnly
 
-  if (!artifact || !content) {
-    if (workingPlan) {
-      return (
-        <ScrollArea className="h-full">
-          <div className="p-3">
-            <WorkingPlanCard
-              plan={workingPlan}
-              running={running}
-              readOnly={readOnly}
-              onCarryOn={onCarryOn}
-              onEditPlan={onEditPlan}
-              onDiscardEdit={onDiscardEdit}
-            />
-            {comments}
-          </div>
-        </ScrollArea>
-      )
-    }
+  if (!content && !workingPlan) {
     return (
       <ScrollArea className="h-full">
         <Empty className="min-h-48 border-0">
@@ -418,31 +441,32 @@ export function PlanSheet({
     )
   }
 
-  const canCarryOn = Boolean(onCarryOn) && !readOnly
-  const canComment = Boolean(onComment) && !readOnly
   return (
     <div className="flex h-full min-h-0 flex-col">
       <ScrollArea className="min-h-0 flex-1">
-        <article aria-label="Plan document" className="p-4">
-          <div className="mb-4 border-b pb-3">
-            <h2 className="m-0 text-[13px] font-semibold">{artifact.title}</h2>
-            <p className="mt-1 font-machine text-mono-xs text-faint">revision {artifact.revision}</p>
-          </div>
-          <div ref={documentRef}>
-            <MarkdownQuickView source={content} canonicalAvailable={canonicalAvailable} {...(onOpenCanonical ? { onOpenCanonical } : {})} />
-          </div>
-        </article>
-        {workingPlan ? (
-          <div className="px-4 pb-4">
-            <WorkingPlanCard
-              plan={workingPlan}
-              running={running}
-              readOnly={readOnly}
-              onEditPlan={onEditPlan}
-              onDiscardEdit={onDiscardEdit}
-            />
-          </div>
-        ) : null}
+        {/* What a selection can quote: the document and the card's steps. */}
+        <div ref={documentRef}>
+          {document && content ? (
+            <article aria-label="Plan document" className="p-4">
+              <div className="mb-4 border-b pb-3">
+                <h2 className="m-0 text-[13px] font-semibold">{document.title}</h2>
+                <p className="mt-1 font-machine text-mono-xs text-faint">revision {document.revision}</p>
+              </div>
+              <MarkdownQuickView source={content} canonicalAvailable={canonicalAvailable} {...(onOpenCanonical ? { onOpenCanonical } : {})} />
+            </article>
+          ) : null}
+          {workingPlan ? (
+            <div className={content ? "px-4 pb-4" : "p-3"}>
+              <WorkingPlanCard
+                plan={workingPlan}
+                running={running}
+                readOnly={readOnly}
+                onEditPlan={onEditPlan}
+                onDiscardEdit={onDiscardEdit}
+              />
+            </div>
+          ) : null}
+        </div>
         {comments ? <div className="px-4 pb-4">{comments}</div> : null}
       </ScrollArea>
       {canCarryOn || canComment ? (

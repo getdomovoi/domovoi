@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event"
 import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { PlanSheet, WorkingPlanCard } from "./working-plan.js"
+import { isWorkingPlanMirror, planSheetArtifacts, PlanSheet, WorkingPlanCard } from "./working-plan.js"
 
 afterEach(cleanup)
 
@@ -282,7 +282,7 @@ function planArtifact(overrides: Partial<Artifact> = {}): Artifact {
 function sheet(extra: Partial<ComponentProps<typeof PlanSheet>> = {}) {
   return (
     <PlanSheet
-      artifact={planArtifact()}
+      document={planArtifact()}
       workingPlan={plan()}
       running={false}
       onCarryOn={vi.fn(async () => {})}
@@ -375,10 +375,40 @@ it("offers no comment and no decision to a read-only client", () => {
   expect(screen.queryByRole("button", { name: "Looks right, carry on" })).toBeNull()
 })
 
-it("keeps the card's own decision row when there is no document", () => {
-  render(sheet({ artifact: planArtifact({ content: undefined }) }))
+it("draws the same decision row under the card when there is no document", () => {
+  render(sheet({ document: undefined }))
 
   expect(screen.queryByRole("article", { name: "Plan document" })).toBeNull()
+  expect(screen.getByRole("region", { name: "Working plan" })).toBeTruthy()
+  expect(screen.getAllByRole("button", { name: "Looks right, carry on" })).toHaveLength(1)
+  expect(screen.getByRole("button", { name: "Comment on a step" })).toBeTruthy()
+})
+
+it("offers no comment when nothing can take one", () => {
+  render(sheet({ document: undefined, onComment: undefined }))
+
   expect(screen.getAllByRole("button", { name: "Looks right, carry on" })).toHaveLength(1)
   expect(screen.queryByRole("button", { name: "Comment on a step" })).toBeNull()
+})
+
+// The daemon mirrors the working plan into plan-<sessionId>. Beside the card
+// that mirror is the card's own text, so it is never the document; it is where
+// a comment goes when no document exists. A prose plan (no steps) lands in the
+// same artifact and is the document then.
+it("never takes the working plan's mirror for the document", () => {
+  const mirror = planArtifact({ id: "plan-session-1", title: "Working plan", revision: 9, content: "1. Add a replay table" })
+  const written = planArtifact({ id: "plan-session-1-a6638da8", path: "plans/webhook.md", revision: 1 })
+  const other = planArtifact({ id: "plan-session-2", sessionId: "session-2", revision: 12 })
+
+  expect(planSheetArtifacts([mirror, written, other], "session-1", plan())).toMatchObject({
+    document: { id: "plan-session-1-a6638da8" },
+    commentTarget: { id: "plan-session-1-a6638da8" },
+  })
+  const onlyMirror = planSheetArtifacts([mirror, other], "session-1", plan())
+  expect(onlyMirror.document).toBeUndefined()
+  expect(onlyMirror.commentTarget?.id).toBe("plan-session-1")
+  expect(onlyMirror.all.map((artifact) => artifact.id)).toEqual(["plan-session-1"])
+  expect(planSheetArtifacts([mirror, written], "session-1", undefined).document?.id).toBe("plan-session-1")
+  expect(isWorkingPlanMirror(written, "session-1")).toBe(false)
+  expect(isWorkingPlanMirror(planArtifact({ id: "plan-session-1-0001" }), "session-1")).toBe(true)
 })

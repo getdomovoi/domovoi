@@ -161,6 +161,37 @@ describe("the dock's tab list", () => {
     })
   })
 
+  it("shows the working plan's mirror as the card, not as a document, and comments on it", async () => {
+    const snapshot = workspaceSnapshot()
+    const steps = snapshot.workingPlans[0]!.steps
+    snapshot.artifacts = [
+      ...snapshot.artifacts,
+      { id: `plan-${snapshot.activeSessionId}`, sessionId: snapshot.activeSessionId!, title: "Working plan", type: "plan", revision: 9, mimeType: "text/markdown", content: steps.map((step, index) => `${index + 1}. ${step.text}`).join("\n") },
+    ]
+    window.getSelection()?.removeAllRanges()
+    render(<WorkspaceShell />)
+    const socket = harness.socket(0)
+    await act(async () => { completeHandshake(socket, snapshot) })
+    await settle()
+    await openSheet()
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("tab", { name: "Plan preview" }))
+    await settle()
+
+    const dock = screen.getByRole("complementary", { name: "Session artifacts" })
+    expect(within(dock).queryByRole("article", { name: "Plan document" })).toBeNull()
+    expect(within(dock).getAllByRole("region", { name: "Working plan" })).toHaveLength(1)
+    await user.click(within(dock).getByRole("button", { name: "Comment on a step" }))
+    const form = within(dock).getByRole("form", { name: "Comment on a step" })
+    await user.type(within(form).getByLabelText("Comment"), "Staging first")
+    await user.click(within(form).getByRole("button", { name: "Post" }))
+
+    expect(pendingRequest(socket, "annotation.create").params).toMatchObject({
+      artifactId: `plan-${snapshot.activeSessionId}`,
+      anchor: { textQuote: steps.find((step) => step.status !== "completed")!.text },
+    })
+  })
+
   it("keeps the plan's comments reachable when the plan has no content to show", async () => {
     const snapshot = workspaceSnapshot()
     snapshot.workingPlans = []
