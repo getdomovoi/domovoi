@@ -166,7 +166,7 @@ describe("servicePlan", () => {
   it("launches a script through Node rather than letting Windows pick an interpreter", () => {
     const plan = servicePlan(windowsScript)
     const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
-    expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "C:\\Users\\dl\\.domovoi\\service.json"')
+    expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"')
   })
 
   // The daemon runs for the whole logon session. schtasks /create
@@ -192,7 +192,7 @@ describe("servicePlan", () => {
   it("passes a real executable straight through", () => {
     const plan = servicePlan(windows)
     const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
-    expect(target).toBe('"C:\\Program Files\\Domovoi\\domovoid.exe" --service-config "C:\\Users\\dl\\.domovoi\\service.json"')
+    expect(target).toBe('"C:\\Program Files\\Domovoi\\domovoid.exe" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"')
   })
 
   it("refuses a script with no runtime to run it", () => {
@@ -429,6 +429,7 @@ describe("serviceRemovalPlan", () => {
       expect(serviceRemovalPlan({ platform: "win32" })).toEqual({
         kind: "task",
         name: "Domovoi daemon",
+        disable: { command, args: expect.any(Array) },
         stop: { command, args: expect.any(Array) },
         inspect: { command, args: expect.any(Array) },
         remove: { command, args: expect.any(Array) },
@@ -550,7 +551,7 @@ describe("serviceStatus", () => {
     await expect(serviceStatus({ platform: "win32", home: "C:\\Users\\dl" }, dependencies)).resolves.toEqual({
       installed: true,
       running: true,
-      detail: "Domovoi daemon is running",
+      detail: "legacy Windows logon task; no crash supervision or job-object tree evidence",
     })
     // The ownership read, then the state read; neither is schtasks text.
     expect(dependencies.capture).toHaveBeenCalledTimes(2)
@@ -706,7 +707,7 @@ describe("runServiceCommand", () => {
     const launch = target.platform === "win32"
       ? vi.mocked(dependencies.run).mock.calls[0]?.[1].join(" ")
       : vi.mocked(dependencies.write).mock.calls.find(([path]) => !path.endsWith("service.json"))?.[1]
-    expect(launch).toContain("--service-config")
+    expect(launch).toContain(target.platform === "win32" ? "--service-supervise" : "--service-config")
     expect(launch).toContain(configuration![0])
   })
 
@@ -778,10 +779,19 @@ describe("runServiceCommand", () => {
 it("reinstalls over the logon task Domovoi registered, lifting its run limit before it runs", async () => {
   vi.stubEnv("SystemRoot", "C:\\Windows")
   const configurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
-  const action = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "${configurationPath}"`, enabled: true, state: 3 }
+  const action = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-supervise "${configurationPath}"`, enabled: true, state: 3 }
   const dependencies = effects({
+    stopSupervisor: vi.fn(async (_path, _deadline, options) => {
+      if (!await options?.stopTask?.()) throw new Error("Task remains observable")
+    }),
+    supervisorStatus: vi.fn(async () => ({ installed: true, running: false, supervising: false, detail: "stopped; jobs empty" })),
     readConfiguration: vi.fn(() => ({ ...windows.configuration, serviceRuntime: { executable: "C:\\Program Files\\nodejs\\node.exe", entry: "C:\\Program Files\\Domovoi\\dist\\index.js" } })),
-    capture: vi.fn(async () => ({ code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}\r\n` })),
+    capture: vi.fn(async (_command, args) => {
+      const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+      if (script.includes("domovoi-task-action:")) return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}` }
+      if (script.includes("$task.Enabled = $false")) { action.enabled = false; action.state = 1 }
+      return { code: 0, stdout: `domovoi-task:${action.state}` }
+    }),
   })
   await expect(installService(windowsScript, dependencies)).resolves.toMatchObject({ kind: "task" })
   expect(vi.mocked(dependencies.run).mock.calls.map(([command, args]) => command === "C:\\Windows\\System32\\schtasks.exe" ? args[0] : "settings")).toEqual(["/create", "settings", "/run"])
