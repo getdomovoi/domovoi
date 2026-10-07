@@ -714,3 +714,126 @@ it.each(["desktop", "web"] as const)("offers no Always on the %s card for a requ
   expect(screen.queryByRole("button", { name: /^Always/u })).toBeNull()
 })
 
+
+// S3.10h2: the facts #740 put on the wire. Each is drawn only when the daemon
+// sent it, and a client never claims a turn as its own before it knows its id.
+function factsThread(
+  mutate: (snapshot: typeof demoWorkspace) => void,
+  props: Partial<ComponentProps<typeof Thread>> = {},
+) {
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals[0]!.risk = "normal"
+  mutate(snapshot)
+  render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+      {...props}
+    />,
+  )
+  return { approval: snapshot.approvals[0]!, card: screen.getByRole("alert") }
+}
+
+const thisConnection = "3f0a2b9c-4d5e-4f60-8a71-b2c3d4e5f607"
+const otherConnection = "9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a"
+
+it("says a turn this client started is from you, once it knows its own connection", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.origin = { client: "desktop", connectionId: thisConnection }
+  }, { connectionId: thisConnection })
+  expect(card.textContent).toContain("You started this turn from this desktop.")
+})
+
+it("names the client kind for a turn another connection started", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.origin = { client: "phone", connectionId: otherConnection, clientId: "device-phone" }
+  }, { connectionId: thisConnection })
+  expect(card.textContent).toContain("This turn started from a phone.")
+  expect(card.textContent).not.toMatch(/You started/u)
+})
+
+// A connection id is new on every reconnect, so a different one does not
+// prove another client: the line names the kind, which stays true either way.
+it("never claims a turn before this client knows its connection, and names only the kind", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.origin = { client: "desktop", connectionId: thisConnection }
+  }, { connectionId: null })
+  expect(card.textContent).toContain("This turn started from a desktop.")
+  expect(card.textContent).not.toMatch(/You started/u)
+  expect(card.textContent).not.toMatch(/another/u)
+})
+
+it("draws no origin line when the daemon sent no origin", () => {
+  const { card } = factsThread(() => {}, { connectionId: thisConnection })
+  expect(card.textContent).not.toMatch(/started this turn|turn started from/u)
+})
+
+it("names the command line for a turn the CLI started", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.origin = { client: "cli", connectionId: otherConnection }
+  }, { connectionId: thisConnection, surface: "web" })
+  expect(card.textContent).toContain("This turn started from the command line.")
+})
+
+it("says a turn this browser tab started is from you on the web card", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.origin = { client: "web", connectionId: thisConnection }
+  }, { connectionId: thisConnection, surface: "web" })
+  expect(card.textContent).toContain("You started this turn from this browser.")
+})
+
+function outsideFact(card: HTMLElement) {
+  const term = [...card.querySelectorAll("dt")].find((candidate) => candidate.textContent === "Outside project")
+  return term?.nextElementSibling?.textContent
+}
+
+it.each([
+  [{ outside: true, basis: "path" }, "yes, by the path it names"],
+  [{ outside: false, basis: "path" }, "no, by the path it names"],
+  [{ outside: true, basis: "working-directory" }, "yes, by where it runs"],
+  [{ outside: false, basis: "working-directory" }, "no, by where it runs, not by what it reaches"],
+] as const)("draws Outside project %j with its basis", (fact, text) => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.outsideProject = { ...fact }
+  })
+  expect(outsideFact(card)).toBe(text)
+  // The sixth fact fills the drawn three by two grid.
+  expect([...card.querySelectorAll("dt")].map((term) => term.textContent))
+    .toEqual(["Machine", "Working dir", "Affects", "Network", "Estimated", "Outside project"])
+})
+
+it("draws Outside project on the web card too", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.outsideProject = { outside: true, basis: "path" }
+  }, { surface: "web" })
+  expect(outsideFact(card)).toBe("yes, by the path it names")
+})
+
+// Absent means the daemon could not decide. Neither yes nor no is true then.
+it("draws no Outside project fact when the daemon could not decide", () => {
+  const { card } = factsThread(() => {})
+  expect(outsideFact(card)).toBeUndefined()
+  expect(card.textContent).not.toMatch(/Outside project/iu)
+})
+
+it("leads the meta line with step n of N when a plan step waits on this gate", () => {
+  const { approval, card } = factsThread((snapshot) => {
+    snapshot.workingPlans[0]!.steps[2]!.blocker = { kind: "approval", approvalId: snapshot.approvals[0]!.id }
+  })
+  expect(card.textContent).toContain(`step 3 of 4 · ${approval.agent} · ${approval.mode}`)
+})
+
+it("draws no step when no plan step waits on this gate", () => {
+  const { card } = factsThread(() => {})
+  expect(card.textContent).not.toMatch(/step \d+ of \d+/u)
+})
