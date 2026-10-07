@@ -55,8 +55,8 @@ export function fleetMachineHealth(input: {
   if (compatibility === "machine-behind") return "upgrade-required"
   if (compatibility === "machine-ahead") return "version-mismatch"
 
-  if (input.connection === "reconnecting") return "reconnecting"
   if (input.heartbeat === "offline") return "unreachable"
+  if (input.connection === "reconnecting") return "reconnecting"
   if (input.heartbeat === "stale") return "degraded"
   return "healthy"
 }
