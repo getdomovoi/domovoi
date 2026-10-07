@@ -10,6 +10,7 @@ import { WebApp, type WebAppProps } from "./web-app"
 Reflect.set(globalThis, "IS_REACT_ACT_ENVIRONMENT", true)
 
 const rpcUrl = "ws://127.0.0.1:47831/rpc"
+const loopbackPage = "http://127.0.0.1:5178"
 const bearer = "a".repeat(43)
 const deviceToken = "b".repeat(43)
 const deviceId = `device-${"c".repeat(32)}`
@@ -54,11 +55,12 @@ afterEach(async () => {
   container.remove()
 })
 
-function draw(storage: Storage, createClient: PairingClientFactory, extra: Partial<Pick<WebAppProps, "rpcUrl" | "memory" | "codeFromUrl" | "clientKind">> = {}) {
+function draw(storage: Storage, createClient: PairingClientFactory, extra: Partial<Pick<WebAppProps, "rpcUrl" | "pageOrigin" | "memory" | "codeFromUrl" | "clientKind">> = {}) {
   return act(async () => {
     root.render(
       <WebApp
         rpcUrl={extra.rpcUrl ?? rpcUrl}
+        pageOrigin={extra.pageOrigin ?? loopbackPage}
         {...(extra.memory ? { memory: extra.memory } : {})}
         {...(extra.codeFromUrl ? { codeFromUrl: extra.codeFromUrl } : {})}
         clientKind={extra.clientKind ?? "web"}
@@ -141,6 +143,41 @@ describe("WebApp", () => {
     expect(text()).not.toContain("Workspace open")
     await useCredentialPath()
     expect(text()).toContain("Connect to this daemon")
+  })
+
+  // Q5, answered A (docs/plans/s3-2-web-over-tailnet.md section 3.6): a page
+  // the daemon served to another machine offers code pairing only, so the
+  // daemon's root credential never leaves the machine through it.
+  it("offers no way to paste the daemon credential on a page served off loopback", async () => {
+    const createClient = vi.fn(() => pairingClient("pairs"))
+    await draw(memoryStorage(), createClient, { rpcUrl: "wss://studio.example.ts.net:47831/rpc", pageOrigin: "https://studio.example.ts.net:47831" })
+    expect(text()).toContain("Connect this browser to")
+    expect(text()).not.toContain("Paste the daemon credential instead")
+    expect(container.querySelector("#daemon-credential")).toBeNull()
+    // The code still pairs.
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain("This browser is paired with studio.example.ts.net:47831")
+  })
+
+  it("drops the credential prompt when the page is no longer on loopback", async () => {
+    const createClient = vi.fn(() => pairingClient("pairs"))
+    await draw(memoryStorage(), createClient)
+    await useCredentialPath()
+    expect(container.querySelector("#daemon-credential")).not.toBeNull()
+    await draw(memoryStorage(), createClient, { pageOrigin: "http://192.168.1.20:5178" })
+    expect(container.querySelector("#daemon-credential")).toBeNull()
+    expect(text()).toContain("Connect this browser to")
+    expect(text()).not.toContain("Paste the daemon credential instead")
+    expect(createClient).not.toHaveBeenCalled()
+  })
+
+  it.each(["http://127.0.0.1:47831", "http://localhost:5178", "http://[::1]:47831"])("keeps the daemon credential one link away on a loopback page at %s", async (pageOrigin) => {
+    const createClient = vi.fn(() => pairingClient("pairs"))
+    await draw(memoryStorage(), createClient, { pageOrigin })
+    await useCredentialPath()
+    await submitCredential(bearer)
+    expect(createClient).toHaveBeenCalledWith({ url: rpcUrl, client: "web", bearer })
+    expect(text()).toContain("Continue to the session")
   })
 
   // Q382 A: every page before the session carries the Web v2 bar, with the
@@ -240,6 +277,7 @@ describe("WebApp", () => {
       root.render(
         <WebApp
           rpcUrl={rpcUrl}
+          pageOrigin={loopbackPage}
           clientKind="web"
           environment={{ ...environment, reloadPage }}
           storage={memoryStorage()}
@@ -278,6 +316,7 @@ describe("WebApp", () => {
       root.render(
         <WebApp
           rpcUrl={rpcUrl}
+          pageOrigin={loopbackPage}
           clientKind="web"
           environment={{ ...environment, reloadPage }}
           storage={memoryStorage()}
@@ -304,6 +343,7 @@ describe("WebApp", () => {
       root.render(
         <WebApp
           rpcUrl={rpcUrl}
+          pageOrigin={loopbackPage}
           clientKind="web"
           environment={{ ...environment, reloadPage: vi.fn() }}
           storage={memoryStorage()}

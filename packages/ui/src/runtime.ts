@@ -1,6 +1,6 @@
 import type { ProviderModel, ProviderRuntime, Runtime } from "@getdomovoi/protocol"
 
-import { effortLevel } from "./effort-scales.js"
+import { effortLevel, effortRank } from "./effort-scales.js"
 
 const providerNames: Readonly<Record<string, string>> = {
   "claude-code": "Claude Code",
@@ -24,8 +24,7 @@ export function selectRuntimeModel(runtime: Runtime, model: ProviderModel, from:
 }
 
 // Desktop V2's effort on a model change. The level stays when the new model
-// reports it, read by its shared word, so claude-code's "think-hard" and
-// codex's "medium" are the same level. A raw id is kept first only on the
+// reports it, read by its shared word rather than the raw value. A raw id is kept first only on the
 // same provider: across providers the same id can name another level or none,
 // so the shared word decides before it. Otherwise it moves to the new model's
 // default, and only a model that names no default among its levels gets the
@@ -43,20 +42,16 @@ function carriedEffort(reasoning: string, from: string, model: ProviderModel): s
   return nearestEffort(word, model.provider, levels) ?? levels[0] ?? model.defaultReasoningEffort
 }
 
-// The shared words in order of effort. "Default" is not a step on the scale,
-// so it has no rank.
-const effortOrder: readonly string[] = ["Low", "Medium", "High", "Max"]
-
 // The reported level whose shared word is closest in rank, the lower one on
 // a tie. Undefined when the level or every reported level has no ranked
 // word; the caller then takes the first level the model reports.
 function nearestEffort(word: string | undefined, provider: string, levels: readonly string[]): string | undefined {
-  const rank = word === undefined ? -1 : effortOrder.indexOf(word)
+  const rank = word === undefined ? -1 : effortRank.indexOf(word)
   if (rank < 0) return undefined
   let nearest: { id: string, distance: number, rank: number } | undefined
   for (const id of levels) {
     const label = effortLevel(provider, id).label
-    const candidate = label === undefined ? -1 : effortOrder.indexOf(label)
+    const candidate = label === undefined ? -1 : effortRank.indexOf(label)
     if (candidate < 0) continue
     const distance = Math.abs(candidate - rank)
     if (!nearest || distance < nearest.distance || (distance === nearest.distance && candidate < nearest.rank)) {

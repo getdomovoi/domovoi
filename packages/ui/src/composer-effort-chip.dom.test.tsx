@@ -19,9 +19,9 @@ const models: ProviderModel[] = [
   model("sonnet-4.6", ["low", "medium", "high", "max"], "high"),
   model("claude-opus-4.2", ["low", "medium", "high"], "high"),
   model("claude-haiku-4.1", [], "medium"),
-  // Reports the harness's own words for its levels, so a level carries by
-  // its shared word rather than by the value sent.
-  model("claude-think-1", ["think", "think-hard", "ultrathink"], "ultrathink"),
+  // Reports Extra high, which claude-code's scale does not name, and Medium,
+  // which it does.
+  model("claude-extra-1", ["low", "medium", "xhigh"], "xhigh"),
   // Names no default among its levels.
   model("claude-legacy-1", ["low", "medium", "high"], "none"),
 ]
@@ -108,8 +108,8 @@ it("says the effort moved when a model change could not carry it, until a level 
   expect(screen.getByText("Applies from the next turn. A turn already in flight keeps the effort it started with.")).toBeTruthy()
 })
 
-// The new model reports the same level under its own value, so the effort
-// keeps its level and nothing moved.
+// The new model reports the same level, so the effort keeps its level and
+// nothing moved.
 it("keeps the effort's level when the new model reports the same level", async () => {
   const user = userEvent.setup()
   const onSetRuntime = vi.fn(async () => {})
@@ -117,11 +117,11 @@ it("keeps the effort's level when the new model reports the same level", async (
   await settle()
   await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
-  await user.click(screen.getByRole("option", { name: "claude-think-1, claude-code" }))
+  await user.click(screen.getByRole("option", { name: "claude-extra-1, claude-code" }))
   await user.click(screen.getByRole("button", { name: "Switch here" }))
   await settle()
-  expect(onSetRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ model: "claude-think-1", reasoning: "think-hard" }))
-  view.rerender(thread(workspace({ model: "claude-think-1", reasoning: "think-hard" }), onSetRuntime))
+  expect(onSetRuntime).toHaveBeenLastCalledWith(expect.objectContaining({ model: "claude-extra-1", reasoning: "medium" }))
+  view.rerender(thread(workspace({ model: "claude-extra-1", reasoning: "medium" }), onSetRuntime))
   await user.click(screen.getByRole("button", { name: "Medium" }))
   expect(screen.queryByText(/so this moved to/)).toBeNull()
   expect(screen.getByText("Applies from the next turn. A turn already in flight keeps the effort it started with.")).toBeTruthy()

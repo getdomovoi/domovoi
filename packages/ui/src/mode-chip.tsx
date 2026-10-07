@@ -128,10 +128,14 @@ export function ModeChip({
   )
 }
 
-// Scales run to five levels, so the bars keep a fixed height and vary their
-// step rather than growing the row when the harness offers more.
+// The bars keep a fixed 14px track and vary their step rather than growing
+// the row when the model reports more levels. Desktop V2's steps: 3.5px up to
+// three levels, 2.2px for four or five, 1.4px for more. Past eight levels
+// even 1.4px would leave the track, so the step shrinks to keep the tallest
+// bar at 14px.
 function EffortBars({ rank, total, selected }: { rank: number, total: number, selected: boolean }) {
-  const step = total > 3 ? 2.2 : 3.5
+  const designStep = total > 5 ? 1.4 : total > 3 ? 2.2 : 3.5
+  const step = total > 1 ? Math.min(designStep, 10 / (total - 1)) : designStep
   return (
     <span aria-hidden className="mt-0.5 flex h-3.5 flex-none items-end gap-0.5">
       {Array.from({ length: total }, (_, index) => (
@@ -171,6 +175,12 @@ export function EffortChip({
   if (efforts.length === 0) return null
   const provider = runtime.provider
   const kind = effortScaleKind(provider)
+  // Each model reports its own default, so the marker follows the model. The
+  // protocol requires the default among the reported levels; a model outside
+  // that gets no marker and the menu says so (ruling Q36).
+  const modelDefault = model?.defaultReasoningEffort
+  const defaultReported = modelDefault !== undefined && efforts.includes(modelDefault)
+  const current = effortLevel(provider, runtime.reasoning)
   return (
     <DropdownMenu open={open} onOpenChange={setOpen} modal={false}>
       <DropdownMenuTrigger asChild>
@@ -184,7 +194,7 @@ export function EffortChip({
           )}
         >
           <BrainIcon aria-hidden className="size-3.5 flex-none text-muted-foreground" />
-          <span className="text-[11px]">{effortName(provider, runtime.reasoning)}</span>
+          <span className={current.label ? "text-[11px]" : "font-machine text-[10.5px]"}>{effortName(provider, runtime.reasoning)}</span>
           <ChevronDownIcon aria-hidden className={cn("size-3 text-faint transition-transform", open && "rotate-180")} />
         </button>
       </DropdownMenuTrigger>
@@ -199,7 +209,7 @@ export function EffortChip({
           onValueChange={(reasoning) => { if (!pending && reasoning !== runtime.reasoning) onSetRuntime({ ...runtime, reasoning }) }}
         >
           {efforts.map((id, index) => {
-            const level = effortLevel(provider, id, model?.defaultReasoningEffort)
+            const level = effortLevel(provider, id)
             const selected = id === runtime.reasoning
             return (
               <DropdownMenuRadioItem
@@ -212,22 +222,30 @@ export function EffortChip({
                 <span className="min-w-0 flex-1">
                   <span className="flex flex-wrap items-baseline gap-2">
                     {level.label
-                      ? <><span className="text-[12.5px] text-foreground">{level.label}</span><span className="font-machine text-[10px] text-faint">{id}</span></>
-                      : <span className="font-machine text-[12px] text-foreground">{id}</span>}
+                      ? <><span className="text-[12.5px] text-foreground">{level.label}</span><span className="font-machine text-[10.5px] text-faint">{id}</span></>
+                      : <><span className="font-machine text-[11.5px] text-foreground">{id}</span><span className="rounded-full border border-dashed px-[7px] text-[10.5px] text-muted-foreground">No word yet</span></>}
+                    {defaultReported && id === modelDefault
+                      ? <span className="rounded-full bg-muted px-[7px] text-[10.5px] text-muted-foreground">Model default</span>
+                      : null}
                   </span>
-                  {level.note ? <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">{level.note}</span> : null}
+                  {level.label === undefined
+                    ? <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">Reported by the model. Domovoi has no word for this level yet, so it shows the value it sends.</span>
+                    : level.note ? <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">{level.note}</span> : null}
                 </span>
               </DropdownMenuRadioItem>
             )
           })}
         </DropdownMenuRadioGroup>
-        <p className={cn("m-0 border-t px-3 py-2.5 text-[11px] leading-normal", dropped ? "bg-warn-background text-warn-foreground" : "text-muted-foreground")}>
+        <p className={cn("m-0 border-t px-3 py-2.5 text-[11px] leading-normal", dropped ? "bg-accent text-foreground" : "text-muted-foreground")}>
           {dropped
             ? dropped.toDefault
               ? `${provider} has no ${dropped.from}, so this moved to the model's default, ${dropped.to}. It stays until you pick a level.`
               : `${provider} has no ${dropped.from}, so this moved to ${dropped.to}. It stays until you pick a level.`
             : "Applies from the next turn. A turn already in flight keeps the effort it started with."}
         </p>
+        {defaultReported
+          ? null
+          : <p className="m-0 border-t px-3 py-2.5 text-[11px] leading-normal text-muted-foreground">No default reported by this model.</p>}
       </DropdownMenuContent>
     </DropdownMenu>
   )
