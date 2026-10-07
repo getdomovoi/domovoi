@@ -304,6 +304,67 @@ describe("AcpAgentAdapter", () => {
     expect(peer.cancel).toHaveBeenCalledWith("acp-session")
   })
 
+  it.each(["interrupt", "stop"] as const)("cancels late permissions after %s without emitting approvals", async (action) => {
+    const { adapter, peer } = createHarness()
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    let finishPrompt!: (value: { stopReason: string }) => void
+    let finishCancel!: () => void
+    peer.prompt.mockImplementation(() => new Promise((resolve) => { finishPrompt = resolve }))
+    peer.cancel.mockImplementation(() => new Promise<undefined>((resolve) => {
+      finishCancel = () => resolve(undefined)
+    }))
+    await adapter.connect()
+    await adapter.startThread({ cwd: "/repo", runtime })
+    const input = { threadId: "acp-session", cwd: "/repo", prompt: "Work", runtime }
+    const turnId = await adapter.startTurn(input)
+    const request = (sessionId = "acp-session") => peer.handlers!.onPermission({
+      sessionId, toolCallId: "tool-late", title: "Run command", command: "pwd",
+      options: [{ id: "reject", kind: "reject_once" }],
+    })
+    const pending = request()
+    const cancellation = action === "interrupt"
+      ? adapter.interruptTurn("acp-session", turnId)
+      : adapter.stopThread("acp-session")
+    try {
+      await expect(pending).resolves.toEqual({ cancelled: true })
+      expect(peer.cancel).toHaveBeenCalledWith("acp-session")
+      const expectCancelled = async () => {
+        const before = events.length
+        let result: unknown
+        void request().then((value) => { result = value })
+        await Promise.resolve()
+        expect(result).toEqual({ cancelled: true })
+        expect(events).toHaveLength(before)
+      }
+      await expectCancelled() // While session/cancel is still in flight.
+      finishCancel()
+      await cancellation
+      await expectCancelled() // The prompt has not returned yet.
+      finishPrompt({ stopReason: "cancelled" })
+      await Promise.resolve()
+      await expectCancelled()
+
+      const other = request("other-session")
+      const otherApproval = events.findLast((event) => event.type === "approval-requested")!
+      expect(otherApproval.threadId).toBe("other-session")
+      adapter.resolveApproval(otherApproval.requestId, "deny")
+      await expect(other).resolves.toEqual({ optionId: "reject" })
+
+      const nextTurnId = await adapter.startTurn(input)
+      const next = request()
+      const nextApproval = events.findLast((event) => event.type === "approval-requested")!
+      expect(nextApproval).toMatchObject({ threadId: "acp-session", turnId: nextTurnId })
+      adapter.resolveApproval(nextApproval.requestId, "deny")
+      await expect(next).resolves.toEqual({ optionId: "reject" })
+    } finally {
+      finishCancel()
+      finishPrompt({ stopReason: "cancelled" })
+      await cancellation
+      await adapter.close()
+    }
+  })
+
   it("cancels an active turn before closing a session", async () => {
     const { adapter, peer } = createHarness()
     peer.prompt.mockImplementation(() => new Promise(() => {}))

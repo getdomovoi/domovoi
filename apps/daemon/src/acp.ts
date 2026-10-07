@@ -83,6 +83,7 @@ export class AcpAgentAdapter implements AgentAdapter {
   readonly #listeners = new Set<(event: AgentEvent) => void>()
   readonly #activeTurns = new Map<string, ActiveTurn>()
   readonly #pendingPermissions = new Map<number, PendingPermission>()
+  readonly #cancelledSessions = new Set<string>()
   #nextPermissionId = 1
   #peer: AcpPeer | undefined
   #disconnected = false
@@ -179,6 +180,7 @@ export class AcpAgentAdapter implements AgentAdapter {
   }): Promise<string> {
     if (this.#activeTurns.has(input.threadId)) throw new Error("ACP session already has an active turn")
     const turnId = this.#createId()
+    this.#cancelledSessions.delete(input.threadId)
     this.#activeTurns.set(input.threadId, { id: turnId })
     void this.#runPrompt(input.threadId, turnId, input.prompt)
     return turnId
@@ -209,6 +211,7 @@ export class AcpAgentAdapter implements AgentAdapter {
     this.#pendingPermissions.clear()
     const peer = this.#peer
     this.#peer = undefined
+    this.#cancelledSessions.clear()
     if (peer) await peer.close()
   }
 
@@ -263,6 +266,7 @@ export class AcpAgentAdapter implements AgentAdapter {
   }
 
   #requestPermission(request: AcpPermissionRequest): Promise<AcpPermissionResult> {
+    if (this.#cancelledSessions.has(request.sessionId)) return Promise.resolve({ cancelled: true })
     const requestId = this.#nextPermissionId++
     const turnId = this.#activeTurns.get(request.sessionId)?.id
     return new Promise((resolve) => {
@@ -282,6 +286,9 @@ export class AcpAgentAdapter implements AgentAdapter {
   }
 
   #cancelPermissions(sessionId: string): void {
+    // Requests already in flight can arrive after session/cancel. Keep cancelling
+    // them until a new prompt starts, including after the old prompt returns.
+    this.#cancelledSessions.add(sessionId)
     for (const [requestId, pending] of this.#pendingPermissions) {
       if (pending.request.sessionId !== sessionId) continue
       this.#pendingPermissions.delete(requestId)
@@ -328,6 +335,7 @@ export class AcpAgentAdapter implements AgentAdapter {
     if (this.#disconnected) return
     this.#disconnected = true
     this.#activeTurns.clear()
+    this.#cancelledSessions.clear()
     for (const pending of this.#pendingPermissions.values()) pending.resolve({ cancelled: true })
     this.#pendingPermissions.clear()
     this.#emit({
