@@ -1,16 +1,60 @@
 import { randomUUID } from "node:crypto"
-import { execFileSync, spawn } from "node:child_process"
+import { execFileSync, spawn, spawnSync } from "node:child_process"
 import { closeSync, openSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { expect, it, vi } from "vitest"
-import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, type WindowsJob } from "./windows-job.js"
+import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, windowsJobCommand, type WindowsJob } from "./windows-job.js"
 import { windowsPowerShellPath } from "./windows-task.js"
 import { createServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { readWindowsSupervisorRecord } from "./supervisor-record.js"
 import { readWindowsSupervisorStatus, stopWindowsSupervisor } from "./windows-job-supervisor.js"
 import { OperationDeadline } from "../operation-deadline.js"
+
+it.runIf(process.platform === "win32")("inspects a live process without module progress on stderr", () => {
+  const command = windowsJobCommand()
+  const result = spawnSync(command.command, command.args, {
+    input: JSON.stringify({ mode: "inspect", pids: [process.pid] }) + "\n",
+    encoding: "utf8", timeout: 90_000, windowsHide: true,
+  })
+  expect(result.error).toBeUndefined()
+  expect(result.status).toBe(0)
+  expect(JSON.parse(result.stdout)).toMatchObject({ identities: [{ pid: process.pid }] })
+  expect(result.stderr).toBe("")
+}, 120_000)
+
+it.runIf(process.platform === "win32").each([
+  { mode: "unknown" },
+  { mode: 1 },
+  { mode: "inspect", pids: [String(process.pid)] },
+  { mode: "inspect", pids: process.pid },
+  { mode: "inspect", pids: [] },
+  { mode: "inspect", pids: Array.from({ length: 9 }, () => process.pid) },
+  { mode: "inspect", pids: [-1] },
+  { mode: "inspect", pids: [4_294_967_296] },
+  { mode: "inspect", pids: [1.5] },
+  { mode: "inspect", pids: [null] },
+  { mode: "inspect", pids: [true] },
+  { mode: "inspect-job", job: 1, pid: process.pid },
+  { mode: "inspect-job", job: `Global\\Domovoi-${randomUUID()}`, pid: String(process.pid) },
+  ...[
+    { job: null }, { executable: 1 }, { log: null }, { args: "argument" },
+    { args: [1] }, { args: [null] }, { psModulePath: false }, { psModulePath: undefined },
+  ].map((invalid) => ({
+    mode: "run", job: `Global\\Domovoi-${randomUUID()}`, executable: process.execPath,
+    log: "NUL", args: [], psModulePath: null, ...invalid,
+  })),
+])("rejects invalid request %j without stdout evidence", (request) => {
+  const command = windowsJobCommand()
+  const result = spawnSync(command.command, command.args, {
+    input: JSON.stringify(request) + "\n", encoding: "utf8", timeout: 90_000, windowsHide: true,
+  })
+  expect(result.error).toBeUndefined()
+  expect(result.status).toBe(1)
+  expect(result.stdout).toBe("")
+  expect(result.stderr).toContain("Windows job helper failed; no shutdown proof. Error ")
+}, 120_000)
 
 it.runIf(process.platform === "win32")("contains descendants, gates resume, refuses collisions, and cross-checks the boot counter", async () => {
   const directory = mkdtempSync(join(tmpdir(), "Domovoi-tëst-ü-"))
