@@ -154,6 +154,10 @@ Use the packaged app from section 1, with or without the login service. Walk it 
 Code and once with Codex; add OpenCode if it is installed at a tested version. Record the provider
 and its CLI version (`claude --version`, `codex --version`, `opencode --version`) in the notes.
 
+**Every step here changes the profile.** Projects, sessions, worktrees, comments, approval
+receipts and checkpoints are written to it. Use the throwaway repository, not one with work you
+need.
+
 1. **Open a repository.** With no project open the thread reads "No project is open". Choose "Open
    project", pick the throwaway repository in the folder dialog "Open a project", and confirm with
    "Open project". Repository hooks, tool servers and Git filters stay held back until trusted. If
@@ -183,12 +187,16 @@ and its CLI version (`claude --version`, `codex --version`, `opencode --version`
    working plan during a turn. The Plan-mode fallback above is the path this step relies on. If
    "Plan preview" still reads "No plan content yet" after a Plan turn ends, record a fail with the
    provider, its CLI version, the mode, and what the thread showed instead.
-5. **Approve and deny consequential work.** In "Build" with "Auto" off, ask the agent to run a
-   shell command that writes a file. The card reads "Waiting on your decision" and lists what the
-   command touches. Choose "Allow once"; the receipt reads "Allowed once". Ask for a second
-   command and choose "Deny" (or "Deny with a note", then "Deny with this note"); the receipt reads
-   "Denied" or "Denied with a note". In "Ask", only Codex raises a gate; the other providers refuse
-   instead.
+5. **Approve and deny consequential work.** Ask the agent to run a shell command that writes a
+   file, for example `touch walk-gate.txt`. What raises a gate depends on the provider:
+   - Claude Code and OpenCode: "Build" with "Auto" off.
+   - Codex: "Ask". Codex runs Ask in its read-only sandbox, so a write asks to run outside it. In
+     "Build" Codex runs writes inside the worktree in its sandbox without asking.
+
+   The card reads "Waiting on your decision" and lists what the command touches. Choose "Allow
+   once"; the receipt reads "Allowed once". Ask for a second command and choose "Deny" (or "Deny
+   with a note", then "Deny with this note"); the receipt reads "Denied" or "Denied with a note".
+   If no card appears, record the provider, mode and what ran.
 6. **Restore a checkpoint.** Open the sheet's "Checkpoints" tab and choose "Take a checkpoint",
    then "Take checkpoint". Let the agent change a file, or change one yourself in the worktree.
    Choose "Revert" on the checkpoint row (the thread's checkpoint row says "Restore worktree"),
@@ -222,21 +230,31 @@ and its CLI version (`claude --version`, `codex --version`, `opencode --version`
 
 ### What to expect
 
-The daemon classifies every provider failure from the provider's error text
-(`apps/daemon/src/provider-failures.ts`). The session stays, and the thread shows the class as an
-alert. There is no sign-in or retry button in the thread; the alert names the action.
+The daemon sorts a provider failure into one of the classes below
+(`apps/daemon/src/provider-failures.ts`). All but the last are read from the provider's error
+text. The session stays, and the thread shows the class as an alert with an action line and no
+button: the action is resending a message, or what the line names.
 
 | Failure | Thread alert | Action line |
 | --- | --- | --- |
 | Authentication expired | "Provider authentication expired" | "Open Provider settings and sign in again." |
 | Rate limit | "Provider rate limit reached" | "Retry the message after the provider cooldown." |
 | Quota exhausted | "Provider quota is exhausted" | "Check the provider quota or billing plan, then retry." |
+| Context window exceeded | "Turn exceeded the model context window" | "Shorten the turn, or start a new session from a checkpoint." |
+| Model unavailable | "Selected model is unavailable" | "Choose another model in the runtime controls, then retry." |
+| Connection failed | "Provider connection failed" | "Retry the message after the provider reconnects." |
 | Text that matches no class | "Provider request failed" | "Retry the message, or review Provider settings if the failure continues." |
+| Approval answered elsewhere (OpenCode only) | "An approval was answered outside Domovoi" | Starts "A program on this machine used the provider server's password to answer an approval". |
+
+When a session has failed and the daemon has let go of its provider thread, the thread shows
+"Could not read this session" instead, with the action line, "The worktree and complete session
+history remain on this machine." and a "Try again" button that starts the provider again for the
+same session.
 
 A provider that is not signed in before a session starts shows "Sign in required" in the
-launcher and in Settings, "Providers and tokens", and new sessions on it are refused. A
-"Provider request failed" alert for an auth or rate-limit case is a fail of this row: record the
-provider's own text from the thread.
+launcher and in Settings, "Providers and tokens", and new sessions on it are refused. An alert
+of the wrong class, for example "Provider request failed" for an authentication case, is a fail
+of that row: record the provider's own text from the thread.
 
 ### Provoke each failure safely
 
@@ -259,38 +277,60 @@ started from the shell that sets them. So:
 6. Stop the daemon with Ctrl-C, start it again without the variables, send another message in the
    same session, and record whether it continues. Delete any scratch copy you made.
 
-For the stand-in server, in a separate terminal, with `401` or `429` as the last argument (pick
-another port if `lsof -nP -iTCP:48400 -sTCP:LISTEN` shows one in use):
+The stand-in server answers every request with one HTTP status and an error message, both given
+as arguments. Run it in a separate terminal (pick another port if
+`lsof -nP -iTCP:48400 -sTCP:LISTEN` shows one in use):
 
 ```bash
-node -e 'const status=Number(process.argv[1]);const type=status===401?"authentication_error":"rate_limit_error";const message=status===401?"invalid x-api-key":"This request would exceed your rate limit.";require("node:http").createServer((req,res)=>{res.writeHead(status,{"content-type":"application/json"});res.end(JSON.stringify({type:"error",error:{type,message}}))}).listen(48400,"127.0.0.1",()=>console.log("answering "+status+" on http://127.0.0.1:48400"))' 429
+node -e 'const status=Number(process.argv[1]);const message=process.argv[2];const type={400:"invalid_request_error",401:"authentication_error",404:"not_found_error",429:"rate_limit_error"}[status]??"api_error";require("node:http").createServer((req,res)=>{res.writeHead(status,{"content-type":"application/json"});res.end(JSON.stringify({type:"error",error:{type,message}}))}).listen(48400,"127.0.0.1",()=>console.log("answering "+status+" on http://127.0.0.1:48400"))' 429 "This request would exceed your rate limit."
 ```
 
-It answers every request with that status. A CLI may retry a `429` several times before it gives
-up.
+| Failure | Stand-in arguments |
+| --- | --- |
+| Authentication expired | `401 "invalid x-api-key"` |
+| Rate limit | `429 "This request would exceed your rate limit."` |
+| Quota exhausted | `429 "insufficient_quota: You exceeded your current quota."` |
+| Context window exceeded | `400 "prompt is too long: 300000 tokens > 200000 maximum"` |
+| Model unavailable | `404 "model: not-a-model not found"` |
+| Text that matches no class | `500 "Internal server error"` |
+| Connection failed | No stand-in: leave the port with nothing listening. |
 
-| Provider | Authentication expired | Rate limit |
-| --- | --- | --- |
-| Claude Code | Start the stand-in with `401`, then `ANTHROPIC_BASE_URL=http://127.0.0.1:48400 ANTHROPIC_API_KEY=not-a-key domovoid`. | The same with the stand-in on `429`. |
-| Codex | `cp -R ~/.codex <scratch>/codex-home`, then `printf %s not-a-key \| CODEX_HOME=<scratch>/codex-home codex login --with-api-key` (this changes only the copy). Start the stand-in with `401`, then `CODEX_HOME=<scratch>/codex-home OPENAI_BASE_URL=http://127.0.0.1:48400/v1 domovoid`. | The same with the stand-in on `429`. |
-| OpenCode | Copy `~/.local/share/opencode` to `<scratch>/data/opencode` and `~/.config/opencode` to `<scratch>/config/opencode`. In the copied config, point the provider of the model you use at the stand-in, for example `"provider": {"anthropic": {"options": {"baseURL": "http://127.0.0.1:48400/v1"}}}`. Start the stand-in with `401`, then `XDG_DATA_HOME=<scratch>/data XDG_CONFIG_HOME=<scratch>/config domovoid`. | The same with the stand-in on `429`. |
+A CLI may retry several times before it gives up, and it decides what text it passes on, which
+may not include the stand-in's message. Record the alert you got.
+
+Point each provider at the stand-in through a daemon started like this:
+
+| Provider | Daemon command |
+| --- | --- |
+| Claude Code | `ANTHROPIC_BASE_URL=http://127.0.0.1:48400 ANTHROPIC_API_KEY=not-a-key domovoid` |
+| Codex | First `cp -R ~/.codex <scratch>/codex-home`, then `printf %s not-a-key \| CODEX_HOME=<scratch>/codex-home codex login --with-api-key`, which changes only the copy. Then `CODEX_HOME=<scratch>/codex-home OPENAI_BASE_URL=http://127.0.0.1:48400/v1 domovoid` |
+| OpenCode | First copy `~/.local/share/opencode` to `<scratch>/data/opencode` and `~/.config/opencode` to `<scratch>/config/opencode`, and in the copied config point the provider of the model you use at the stand-in, for example `"provider": {"anthropic": {"options": {"baseURL": "http://127.0.0.1:48400/v1"}}}`. Then `XDG_DATA_HOME=<scratch>/data XDG_CONFIG_HOME=<scratch>/config domovoid` |
 
 `XDG_CONFIG_HOME` also moves where other tools the daemon starts, Git among them, look for
 configuration under `~/.config`. A changed `CODEX_HOME` can change what Domovoi's repository trust
 reads for Codex; if the repository is held back again, record it.
 
-The stand-in proves Domovoi's handling of a provider's `401` and `429` answers. A real expired
-sign-in or a real usage limit can arrive with different text. When one happens in normal use,
-record the provider's text and the alert in the notes of this table.
+The approval-answered-elsewhere failure cannot be provoked by hand: it needs a program holding
+the password Domovoi gives the OpenCode server it starts. Record it as not walked.
 
-| Case | Alert shown | Worktree intact | Continues after restart | Notes |
-| --- | --- | --- | --- | --- |
-| Claude Code, authentication expired | | | | |
-| Claude Code, rate limit | | | | |
-| Codex, authentication expired | | | | |
-| Codex, rate limit | | | | |
-| OpenCode, authentication expired | | | | |
-| OpenCode, rate limit | | | | |
+The stand-in proves Domovoi's handling of a provider's error answers. A real expired sign-in or a
+real usage limit can arrive with different text. When one happens in normal use, record the
+provider's text and the alert in the notes.
+
+Authentication expired and rate limit are the minimum for each provider. The other rows complete
+"every supported provider failure". In each cell record the alert shown, whether the worktree was
+intact, and whether the session continued after the restart in step 6.
+
+| Failure | Claude Code | Codex | OpenCode |
+| --- | --- | --- | --- |
+| Authentication expired | | | |
+| Rate limit | | | |
+| Quota exhausted | | | |
+| Context window exceeded | | | |
+| Model unavailable | | | |
+| Connection failed | | | |
+| Text that matches no class | | | |
+| Approval answered elsewhere | not applicable | not applicable | not walked |
 
 ## 4. Install and recovery docs
 
@@ -303,8 +343,10 @@ disagree. The documents, not this checklist, hold the commands:
 - [Crash recovery](crash-recovery.md). Its interrupted-turn case is section 2, step 7 here.
 
 Route A of Step 1 needs a published release, and none exists yet; walk route B and record route A
-as blocked. Step 7 needs a second machine. **Steps 3, 5 and 6 and the Recovery section change the
-profile**, and Step 5 also changes the OS.
+as blocked. Step 7 needs a second machine. **Steps 3, 5, 6, 7 and 8 and the Recovery section
+change the profile**: Step 7 stores the peer's credential in the source machine's keychain and
+adds a device on the target, and Step 8 creates a separate profile inside the WSL distribution.
+Step 5 also changes the OS.
 
 ### macOS
 

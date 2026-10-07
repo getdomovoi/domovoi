@@ -2094,7 +2094,7 @@ when all of these are proven:
 - Installation and recovery documentation has been tested on Linux, macOS, and Windows.
 
 The bullets only a person can prove are walked on real machines with
-[`docs/m1-acceptance-walk.md`](docs/m1-acceptance-walk.md), which records each run.
+[the M1 acceptance walk](docs/m1-acceptance-walk.md), which records each run.
 
 ## Critical path
 
