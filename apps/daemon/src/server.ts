@@ -5885,7 +5885,7 @@ export class DomovoiDaemon {
       const ask = agent.permissionCapabilities?.ask === "read-only"
       return rpcMethods["runtime.discover"].result.parse({
         ...identity, status: "ready", models,
-        defaultRuntime: { provider, model: model.id, reasoning: model.defaultReasoningEffort, permissionMode: ask ? "ask" : "plan", auto: false },
+        defaultRuntime: { provider, model: model.id, reasoning: model.defaultReasoningEffort ?? "unset", permissionMode: ask ? "ask" : "plan", auto: false },
         permissionModes: ask ? ["ask", "plan", "build"] : ["plan", "build"],
         supportsAuto: agent.permissionCapabilities?.buildAuto === "pre-execution",
       })
@@ -5938,12 +5938,18 @@ export class DomovoiDaemon {
       ? models.find((candidate) => candidate.isDefault) ?? models[0]
       : models.find((candidate) => candidate.id === runtime.model)
     if (!model) throw new RuntimeValidationError(`Model is not available from ${runtime.provider}`)
+    const defaultReasoningEffort = model.defaultReasoningEffort ?? "unset"
+    // Old sessions can carry an invented effort for a model with no effort
+    // support. Normalize it so restarting or changing modes remains possible.
+    if (model.supportedReasoningEfforts.length === 0 && model.defaultReasoningEffort === undefined) {
+      return { ...runtime, model: model.id, reasoning: "unset" }
+    }
     const supportedReasoningEfforts = model.supportedReasoningEfforts.length > 0
-      ? model.supportedReasoningEfforts
-      : [model.defaultReasoningEffort]
+      ? [...model.supportedReasoningEfforts, ...(model.defaultReasoningEffort === undefined ? ["unset"] : [])]
+      : [defaultReasoningEffort]
     const reasoning = runtime.model === "default"
       && !supportedReasoningEfforts.includes(runtime.reasoning)
-      ? model.defaultReasoningEffort
+      ? defaultReasoningEffort
       : runtime.reasoning
     if (!supportedReasoningEfforts.includes(reasoning)) {
       throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")

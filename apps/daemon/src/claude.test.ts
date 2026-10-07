@@ -146,12 +146,45 @@ describe("ClaudeAgentSdkAdapter", () => {
       displayName: "Sonnet 5",
       description: "Balanced coding model",
       supportedReasoningEfforts: ["low", "medium", "high", "max"],
-      defaultReasoningEffort: "high",
       isDefault: true,
     }])
     expect(calls[0]?.query.supportedModels).toHaveBeenCalledOnce()
     expect(calls[0]?.query.close).toHaveBeenCalledOnce()
     expect(calls[0]?.options.settingSources).toEqual([])
+  })
+
+  it.each([true, false])("reports no default when supportsEffort is %s", async (supportsEffort) => {
+    const { factory } = factoryHarness((query) => {
+      query.supportedModels.mockResolvedValue([{ value: "sonnet", resolvedModel: "claude-sonnet-5",
+        displayName: "Sonnet", description: "", supportsEffort, supportedEffortLevels: ["low", "medium", "high", "max"] }])
+    })
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+    try {
+      const models = await adapter.listModels()
+      expect(models[0]).not.toHaveProperty("defaultReasoningEffort")
+      expect(models[0]?.supportedReasoningEfforts).toEqual(supportsEffort ? ["low", "medium", "high", "max"] : [])
+    } finally { await adapter.close() }
+  })
+
+  it("omits effort when opening an unset runtime", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+    try {
+      await adapter.startThread({ cwd: "/worktree", runtime: { ...runtime("build"), reasoning: "unset" } })
+      expect(calls[0]?.options).not.toHaveProperty("effort")
+    } finally { await adapter.close() }
+  })
+
+  it("clears a selected effort on the next turn with unset", async () => {
+    const { calls, factory } = factoryHarness()
+    const adapter = new ClaudeAgentSdkAdapter(factory)
+    try {
+      const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+      await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Continue", runtime: { ...runtime("build"), reasoning: "unset" } })
+      expect(calls[0]?.query.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: null })
+      await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Continue", runtime: runtime("build") })
+      expect(calls[0]?.query.applyFlagSettings).toHaveBeenLastCalledWith({ effortLevel: "high" })
+    } finally { await adapter.close() }
   })
 
   it("rejects malformed model metadata", async () => {

@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { devicePairResultSchema, protocolVersion, type ProviderModel } from "@getdomovoi/protocol"
+import { demoWorkspace, devicePairResultSchema, protocolVersion, type ProviderModel } from "@getdomovoi/protocol"
 
 import type { AgentAdapter } from "./agents.js"
 import type { ProviderDetection } from "./providers.js"
 import { fleetProductionHarness, sessionAgent } from "./test-fleet-production.js"
 import { waitForDaemon } from "./test-wait-for.js"
+import { DomovoiDaemon } from "./server.js"
 
 const harness = fleetProductionHarness()
 afterEach(harness.cleanup)
@@ -24,6 +25,62 @@ function detection(id: string, status: ProviderDetection["status"] = "ready"): P
 }
 
 describe("runtime discovery over production daemon sockets", () => {
+  it.each([{ levels: ["low", "high"] }, { levels: [] }])("uses unset without a reported default with $levels", async ({ levels }) => {
+    const claude = agent("claude-code")
+    const { defaultReasoningEffort: _default, ...noDefault } = model("claude-code")
+    claude.listModels.mockResolvedValue([{ ...noDefault, supportedReasoningEfforts: levels }])
+    const target = await harness.machine("no effort default", undefined, {
+      agents: { "claude-code": claude }, providerProbe: { inspect: async () => [detection("claude-code")] },
+    })
+    const discovered = await target.root.ok("runtime.discover", { provider: "claude-code", client: "cli" })
+    expect(discovered).toMatchObject({ status: "ready", defaultRuntime: { reasoning: "unset" } })
+    if (discovered.status !== "ready") throw new Error("No runtime returned")
+    expect(discovered.models[0]).not.toHaveProperty("defaultReasoningEffort")
+    await target.root.ok("project.open", { path: await harness.repository("no-default-project"), client: "cli" })
+    for (const runtime of [discovered.defaultRuntime, { ...discovered.defaultRuntime, model: "default", reasoning: "retired" }]) {
+      const created = await target.root.ok("session.create", { title: "Model setting", runtime, client: "cli" })
+      expect(created.sessions.find(({ id }) => id === created.activeSessionId)?.runtime).toEqual(discovered.defaultRuntime)
+      expect(claude.startThread).toHaveBeenLastCalledWith(expect.objectContaining({ runtime: discovered.defaultRuntime }))
+    }
+    if (levels.length > 0) {
+      const created = await target.root.ok("session.create", { title: "Explicit effort", client: "cli",
+        runtime: { ...discovered.defaultRuntime, reasoning: "high" } })
+      expect(created.sessions.find(({ id }) => id === created.activeSessionId)?.runtime.reasoning).toBe("high")
+      expect((await target.root.call("session.create", { title: "Invalid effort", client: "cli",
+        runtime: { ...discovered.defaultRuntime, reasoning: "invented" } })).error?.code).toBe(-32602)
+    }
+  }, budgetMs)
+
+  it.each(["session.restartProviderThread", "session.setRuntime"] as const)("normalizes stored medium to unset on %s when the model has no effort support", async (method) => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.runtime = { provider: "claude-code", model: "discovered-model", reasoning: "medium", permissionMode: "build", auto: false }
+    session.state = "idle"
+    session.workspacePath = await harness.scratch()
+    delete session.providerThreadId
+    delete session.activeTurnId
+    const claude = agent("claude-code")
+    const { defaultReasoningEffort: _default, ...noDefault } = model("claude-code")
+    claude.listModels.mockResolvedValue([{ ...noDefault, supportedReasoningEfforts: [] }])
+    const daemon = new DomovoiDaemon({ port: 0,
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+      agents: { "claude-code": claude }, providerProbe: { inspect: async () => [detection("claude-code")] },
+    })
+    try {
+      const address = await daemon.start()
+      const client = await harness.connect(`ws://${address.host}:${address.port}/rpc`)
+      await client.ok("system.hello", { client: "cli", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken })
+      const updated = method === "session.setRuntime"
+        ? await client.ok(method, { sessionId: session.id, client: "cli", runtime: session.runtime })
+        : await client.ok(method, { sessionId: session.id, client: "cli" })
+      expect(updated.sessions.find(({ id }) => id === session.id)?.runtime.reasoning).toBe("unset")
+      if (method === "session.restartProviderThread") {
+        expect(claude.startThread).toHaveBeenLastCalledWith(expect.objectContaining({ runtime: { ...session.runtime, reasoning: "unset" } }))
+      }
+      client.socket.terminate()
+    } finally { await daemon.stop() }
+  }, budgetMs)
+
   it("lets a paired phone choose a runtime, create a real Git worktree and recover it from SQLite", async () => {
     const codex = agent()
     codex.listModels.mockResolvedValue([{ ...model("codex", "alternate"), isDefault: false }, model()])

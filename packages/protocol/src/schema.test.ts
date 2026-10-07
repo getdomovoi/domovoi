@@ -1539,6 +1539,15 @@ describe("workspace protocol", () => {
     }).success).toBe(true)
   })
 
+  it.each([{ levels: ["low", "high"] }, { levels: [] }])("accepts an absent model default with $levels", ({ levels }) => {
+    const model = {
+      provider: "claude-code", id: "sonnet", displayName: "Sonnet", description: "",
+      supportedReasoningEfforts: levels, isDefault: true,
+    }
+    expect(providerModelSchema.parse(model)).toEqual(model)
+    expect(providerModelSchema.parse(model)).not.toHaveProperty("defaultReasoningEffort")
+  })
+
   it("says per model whether an image attachment is delivered to it", () => {
     // Phone v2 frames 13 and 13b: "takes image input, as its harness reports".
     // Absent means the daemon did not say, which is an older daemon, not a no.
