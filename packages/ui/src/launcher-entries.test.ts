@@ -159,7 +159,9 @@ describe("launcher entries", () => {
       selectMachine: vi.fn(),
       openSkill: vi.fn(),
     })
-    expect(commands[0]?.id).toBe("open-project")
+    const firstEntity = commands.findIndex((command) => command.kind)
+    expect(commands.slice(firstEntity).every((command) => command.kind)).toBe(true)
+    expect(commands.slice(0, firstEntity).map(({ id }) => id)).toContain("open-project")
     expect(commands.filter((command) => command.section === "Sessions")).toHaveLength(1)
     expect(commands.filter((command) => command.section === "Machines")).toHaveLength(1)
     expect(commands.filter((command) => command.section === "Skills")).toHaveLength(1)

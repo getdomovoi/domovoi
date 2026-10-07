@@ -105,3 +105,45 @@ it("does not dress a refusal as a waiting gate", () => {
   // waiting here, so no warn token may appear.
   expect(container.innerHTML).not.toMatch(/warn|warning/)
 })
+
+// S3.10h2: the design links What you can do instead to the rules surface,
+// where the hard gates no rule can cover are listed.
+it("links to what a rule can never cover when the rules tab can open", () => {
+  const onSeeRules = vi.fn()
+  render(<PolicyRefusalCard refusal={refusal} onSeeRules={onSeeRules} />)
+  const instead = screen.getByRole("region", { name: "What you can do instead" })
+  within(instead).getByRole("button", { name: "See what a rule can never cover" }).click()
+  expect(onSeeRules).toHaveBeenCalledOnce()
+})
+
+it("opens the rules tab from the thread's refusal card", () => {
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals = []
+  snapshot.thread.push({
+    id: "policy-refusal-1",
+    sessionId: snapshot.activeSessionId!,
+    kind: "policy-refusal",
+    ...refusal,
+    createdAt: "2026-09-19T20:00:00.000Z",
+  })
+  const onOpenDockTab = vi.fn()
+  render(
+    <Thread
+      snapshot={snapshot}
+      connected
+      onQueuedChange={vi.fn()}
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+      onOpenDockTab={onOpenDockTab}
+    />,
+  )
+  screen.getByRole("button", { name: "See what a rule can never cover" }).click()
+  expect(onOpenDockTab).toHaveBeenCalledWith("rules")
+})

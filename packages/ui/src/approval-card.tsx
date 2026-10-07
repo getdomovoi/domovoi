@@ -1,7 +1,8 @@
 import { useRef, useState, type MouseEvent } from "react"
 import { CircleStopIcon } from "lucide-react"
-import type { ApprovalDecision, ApprovalRequest } from "@getdomovoi/protocol"
+import { approvalPlanStep, type ApprovalDecision, type ApprovalRequest, type WorkingPlan } from "@getdomovoi/protocol"
 
+import { approvalOriginLine, outsideProjectText } from "./approval-facts"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
 import { Input } from "./components/ui/input"
@@ -16,8 +17,16 @@ export function ApprovalCard({
   connected,
   refusal,
   deciding = false,
+  connectionId,
+  plans,
 }: {
   approval: ApprovalRequest
+  // The connection this client holds now, from the daemon's hello. The card
+  // says a turn is from you only when the origin names it.
+  connectionId?: string | null | undefined
+  // The working plans in the snapshot, read fresh so a rewritten plan cannot
+  // leave a stale step number on the card.
+  plans?: readonly WorkingPlan[] | undefined
   onResolve: (
     decision: ApprovalDecision,
     explanation?: string,
@@ -83,16 +92,27 @@ export function ApprovalCard({
   ) : null
   // Agent and mode ride the header line instead of the grid, the way the design
   // draws the gate. Nothing is dropped: every fact is on the card.
+  // Outside project is drawn only when the daemon decided it: absent means it
+  // could not tell, and neither yes nor no would be true.
   const facts = [
     ["Machine", approval.machine],
     ["Working dir", approval.directory],
     ["Affects", approval.affects],
     ["Network", approval.network],
     ["Estimated", approval.estimatedDuration],
+    ...(approval.outsideProject ? [["Outside project", outsideProjectText(approval.outsideProject)]] : []),
   ]
-  // The design draws no Hard gate badge on the desktop header, so the risk
-  // rides the meta line: it is an approval fact and stays on the card.
-  const meta = `${approval.agent} · ${approval.mode}${desktop && approval.risk === "hard-gate" ? " · hard gate" : ""}`
+  const origin = approvalOriginLine(approval.origin, connectionId, surface)
+  // The design leads the meta line with the plan step the gate holds, and
+  // draws no Hard gate badge on the desktop header, so the risk rides the meta
+  // line too: it is an approval fact and stays on the card.
+  const step = approvalPlanStep(plans ?? [], approval)
+  const meta = [
+    step ? `step ${step.step} of ${step.of}` : undefined,
+    approval.agent,
+    approval.mode,
+    desktop && approval.risk === "hard-gate" ? "hard gate" : undefined,
+  ].filter(Boolean).join(" · ")
   const closeExplanation = () => {
     setExplainOpen(false)
     setExplanation("")
@@ -125,6 +145,8 @@ export function ApprovalCard({
         </AlertTitle>
       )}
       <AlertDescription className={cn("col-span-full flex flex-col", desktop ? "gap-3 px-4 pb-4 [&_p:not(:last-child)]:mb-0" : "gap-3")}>
+        {/* The design's origin line, under the header. */}
+        {origin ? <p className="m-0 text-[12px] leading-[1.55] text-warn-dim">{origin}</p> : null}
         <p className="m-0 text-[13px] font-medium text-warn-foreground">{approval.operation}</p>
         <code
           className={cn(
@@ -235,10 +257,10 @@ export function ApprovalCard({
         // they stay mounted and hidden, so the toggle's aria-controls holds.
         <dl id={factsId} hidden={!factsOpen} className="col-span-full m-0 grid grid-cols-1 gap-px border-t border-warn-border bg-warn-border sm:grid-cols-3">
           {facts.map(([label, value], index) => (
-            // The design draws six facts; the wire carries five (OUTSIDE
-            // PROJECT waits on protocol), so the last one takes the rest of
-            // its row rather than leaving a hole of divider colour.
-            <div key={label} className={cn("bg-warn-background px-3.5 py-2.5", index === 4 && "sm:col-span-2")}>
+            // The design draws six facts. Without Outside project there are
+            // five, and the last takes the rest of its row rather than
+            // leaving a hole of divider colour.
+            <div key={label} className={cn("bg-warn-background px-3.5 py-2.5", index === 4 && facts.length === 5 && "sm:col-span-2")}>
               <dt className="text-[10.5px] tracking-[.13em] text-warn-dim uppercase">{label}</dt>
               <dd className="m-0 mt-1 min-w-0 break-words font-machine text-[10.5px] leading-snug text-warn-foreground">{value}</dd>
             </div>
