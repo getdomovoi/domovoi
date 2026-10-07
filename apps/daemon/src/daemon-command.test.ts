@@ -79,7 +79,7 @@ describe("daemon command", () => {
 
   it("returns one when supervision failed", async () => {
     const dependencies = command({ supervisorStatus: vi.fn(async () => ({
-      installed: true, running: false, detail: "crashes exhausted", supervisionFailure: "exhausted",
+      installed: true, running: false, detail: "crashes exhausted", supervisionFailure: "exhausted" as const,
     })) })
     expect(await runDaemonCommand(["status"], dependencies)).toBe(1)
     expect(dependencies.stdout).toHaveBeenCalledWith(expect.stringContaining("crashes exhausted"))

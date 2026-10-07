@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { readFileSync } from "node:fs"
-import { homedir, hostname, userInfo } from "node:os"
+import { homedir, hostname } from "node:os"
 
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
@@ -29,7 +29,8 @@ import { rpcMethods, type ClientKind, type DeviceIssueCodeResult } from "@getdom
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
-import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
+import { runServiceCommand } from "./service/install.js"
+import { nodeDaemonCommandDependencies } from "./daemon-command.js"
 import { runGuestSupervisor, stopGuestSupervisor } from "./service/supervisor-command.js"
 import { runWindowsSupervisor, stopWindowsSupervisor } from "./service/windows-job-supervisor.js"
 import { runSkillCommand } from "./skill-command.js"
@@ -186,25 +187,7 @@ async function main() {
     return
   }
   if (args[0] === "service") {
-    // The service runs as the user who asked for it, so the plan is built from
-    // this process's own identity rather than anything a caller passes in.
-    const { uid, username } = userInfo()
-    process.exitCode = await runServiceCommand(args, {
-      ...nodeServiceEffects(),
-      platform: process.platform,
-      execPath: process.argv[1] ?? process.execPath,
-      runtime: process.execPath,
-      home: homedir(),
-      uid,
-      user: username,
-      environment: process.env,
-      workingDirectory: process.cwd(),
-      // Q408 A: names the runtime copy an install from an app's runtime
-      // makes. Unread, only that install refuses.
-      ...(() => { try { return { version: ownVersion() } } catch { return {} } })(),
-      stdout: (text) => process.stdout.write(text),
-      stderr: (text) => process.stderr.write(text),
-    })
+    process.exitCode = await runServiceCommand(args, nodeDaemonCommandDependencies())
     return
   }
   if (args[0] === "open") {

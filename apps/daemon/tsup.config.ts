@@ -3,6 +3,7 @@ import { defineConfig } from "tsup"
 export default defineConfig({
   entry: {
     index: "src/index.ts",
+    "daemon-command": "src/daemon-command.ts",
     public: "src/public.ts",
     "workspace-redaction": "src/workspace-redaction.ts",
     "machine-keyring-worker": "src/machine-keyring-worker.ts",
