@@ -26,23 +26,19 @@ const inheritedProfile = process.env.DOMOVOI_PROFILE_DIR
 const protectedProfiles = [join(inheritedHome, ".domovoi"), ...(inheritedProfile ? [inheritedProfile] : [])]
 const home = mkdtempSync(daemonTestHomePrefix(process.platform, tmpdir()))
 const environment = daemonTestEnvironment(process.platform, home)
-// ONE-OFF CI-2 bisection. Retain scratch allocation and cleanup, but leave
-// Darwin's inherited HOME in place for one CI run. Restore isolation after it.
-const isolateHome = process.platform !== "darwin"
 // Windows staging stays inside USERPROFILE. Reuse the created home as TEMP
 // itself so the redirect adds no further directory components.
 
 // setupFiles run before each test file is imported. Assign directly so a test's
 // vi.unstubAllEnvs() restores this scratch home, never the runner's live home.
 // DomovoiDaemon's direct constructor reads homedir(), not DOMOVOI_PROFILE_DIR.
-if (isolateHome) Object.assign(process.env, environment)
+Object.assign(process.env, environment)
 // An inherited explicit profile would escape HOME isolation in production
 // entry points and override the homes supplied by child-process fixtures.
 delete process.env.DOMOVOI_PROFILE_DIR
-if (isolateHome) assert.equal(homedir(), home, "Daemon tests must resolve the scratch HOME")
+assert.equal(homedir(), home, "Daemon tests must resolve the scratch HOME")
 
 function assertIsolatedProfile() {
-  if (!isolateHome) return
   assert.notEqual(homedir(), inheritedHome, "Daemon tests must not restore the inherited HOME")
   const profile = process.env.DOMOVOI_PROFILE_DIR ?? join(homedir(), ".domovoi")
   for (const protectedProfile of protectedProfiles) {
