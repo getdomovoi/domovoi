@@ -39,8 +39,8 @@ On each machine:
 - For section 5: Tailscale on the computer and the phone, signed in to the same tailnet.
 
 Record the build. For a package you built, that is `git rev-parse HEAD` in the checkout you
-packaged from. Settings also shows it under "About this build" as `domovoid <version> ·
-<commit>`.
+packaged from. Settings, "About this build", shows only `domovoid <version>` at `017307b5`, so the
+checkout is the only place to read the commit.
 
 ### Run record
 
@@ -50,7 +50,7 @@ Add one line per run. A section passes only when every row in it says what the s
 | --- | --- | --- | --- | --- | --- | --- |
 | 1 | | | | | | |
 
-Use pass, fail or blocked in every result cell, and say in the notes what the screen showed.
+Use pass, fail or blocked in every result cell (a cell printed "not applicable" stays as printed), and say in the notes what the screen showed.
 Keep credentials, tokens and pairing codes out of every note.
 
 ## 1. Packaged desktop and its service
@@ -121,15 +121,18 @@ SmartScreen shows for an unsigned installer. Record what each OS showed and what
 5. **The product says it is unsigned and updated by hand.** Settings, "About this build": the chip
    reads "Not signed" and the line reads "This build is not signed and does not update itself.
    Get new versions from the release page." "Release page" opens
-   `https://github.com/getdomovoi/domovoi/releases` in the browser. Record the
-   `domovoid <version> · <commit>` label.
+   `https://github.com/getdomovoi/domovoi/releases` in the browser. Record the `domovoid <version>`
+   label. The label adds a commit only when the daemon reports one, and at `017307b5` it never
+   does, so expect no commit.
 6. **Update by hand.** **Changes the OS. "Update the service" also changes the profile's runtime
    copy and service configuration.** Build a package from a later commit and install it over the
    first, as in step 1. Open the app; it attaches to the running service. Settings shows "The
    login service runs Domovoi X. This app is Y." and "Update the service" only when the service's
    version differs from the app's. Both are `0.0.1` at this commit, so two builds at the same
    version show neither; record which you saw. If the button shows, choose it and record the
-   result.
+   result. With both builds at `0.0.1` and no commit in "About this build", nothing on screen proves
+   the later build is the one running. Record this row as blocked, with "no build identity shown"
+   in the notes, unless "Update the service" showed and succeeded.
 7. **Remove the login service.** **Changes the profile and the OS.** Settings, "Daemon on this
    machine", "Remove", then "Remove the service" in the dialog "Remove the login service?". Expect
    "Removed. Quitting Domovoi now stops the daemon and every session on it." The manager check
@@ -317,8 +320,12 @@ Point each provider at the stand-in through a daemon started like this:
 configuration under `~/.config`. A changed `CODEX_HOME` can change what Domovoi's repository trust
 reads for Codex; if the repository is held back again, record it.
 
-The approval-answered-elsewhere failure cannot be provoked by hand: it needs a program holding
-the password Domovoi gives the OpenCode server it starts. Record it as not walked.
+The approval-answered-elsewhere failure is OpenCode only and cannot be provoked by hand: it needs
+a program holding the password Domovoi gives the OpenCode server it starts, so its row stays
+blocked. The nearest automated evidence is `apps/daemon/src/opencode.test.ts` ("ends a turn stopped
+twice with the approval answered elsewhere"): it simulates the outside answer arriving during a
+stop and checks that the turn ends failed. It does not assert the failure kind, show the desktop
+alert, or check the worktree.
 
 The stand-in proves Domovoi's handling of a provider's error answers. A real expired sign-in or a
 real usage limit can arrive with different text. When one happens in normal use, record the
@@ -337,7 +344,7 @@ intact, and whether the session continued after the restart in step 6.
 | Model unavailable | | | |
 | Connection failed | | | |
 | Text that matches no class | | | |
-| Approval answered elsewhere | not applicable | not applicable | not walked |
+| Approval answered elsewhere | not applicable | not applicable | blocked: cannot be provoked by hand |
 
 ## 4. Install and recovery docs
 
@@ -421,8 +428,9 @@ open on it, and the phone says so.
    Sessions". The code lasts three minutes and works once.
 4. **Watch a terminal (design frame 04).** Not built on the phone at `017307b5`: the phone lists a
    terminal with a note that it is watched on the desktop, and the pairing grant says "Terminal
-   output is not on a phone yet." Record this row as not built unless the build under test
-   includes a phone terminal view, and then record what it showed.
+   output is not on a phone yet." Record this row as blocked, with "not built" in the notes, unless
+   the build under test includes a phone terminal view; then record pass or fail and what it
+   showed.
 5. **Answer a gate.** **Changes the profile**: each answer is an approval receipt. Start a turn
    on the desktop that raises a gate (section 2, step 5). On the phone, Sessions lists it under
    "NEEDS YOU"; open it to "Waiting on you" and choose "Allow once".
