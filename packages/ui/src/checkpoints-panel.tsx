@@ -17,12 +17,13 @@ type CheckpointEntry = Extract<SessionHistoryEntry, { category: "checkpoints" }>
 // intro promises a checkpoint before every approved write and a revert that
 // rewinds the thread with the worktree. Q341 A keeps revert worktree-only, so
 // the copy states what runs: a person's allow at a gate takes a checkpoint
-// first (J34), a rule's allow takes none, the daemon also takes one at the
+// first (J34) when the session has a worktree (with none, the receipt says
+// unavailable), a rule's allow takes none, the daemon also takes one at the
 // events in reasonCopy below and on request, and checkpoint.restore resets the
 // worktree after recording a recovery checkpoint while the thread keeps its
 // turns. The rows are the checkpoints category of session history, which the
 // daemon pages oldest first, shown newest first.
-export const checkpointsIntro = "Every request you allow at a gate takes one first. A rule that allows a request takes none. Domovoi also takes one at session start, before a restore, a file revert, a provider change or an archive, and when you ask. Reverting resets the worktree to that commit after recording a recovery checkpoint. The thread keeps its turns."
+export const checkpointsIntro = "In a session with a worktree, every request you allow at a gate takes one first. A rule that allows a request takes none. Domovoi also takes one at session start, before a restore, a file revert, a provider change or an archive, and when you ask. Reverting resets the worktree to that commit after recording a recovery checkpoint. The thread keeps its turns."
 
 // The reason names why the checkpoint exists; the design draws it beside the
 // time. Legacy rows carry no reason and say so with nothing rather than a guess.

@@ -1,7 +1,7 @@
 import type { Artifact, PendingWorkingPlanEdit, WorkingPlan, WorkingPlanStep } from "@getdomovoi/protocol"
 import { FileTextIcon } from "lucide-react"
 
-import { useId, useRef, useState, type ReactNode } from "react"
+import { useEffect, useId, useRef, useState, type ReactNode } from "react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -41,6 +41,7 @@ export function WorkingPlanCard({
   onEditPlan,
   onDiscardEdit,
   readOnly = false,
+  onEditingChange,
 }: {
   plan: WorkingPlan | undefined
   running: boolean
@@ -48,11 +49,16 @@ export function WorkingPlanCard({
   onCarryOn?: (() => Promise<void>) | undefined
   onEditPlan?: ((edit: WorkingPlanEdit) => Promise<void>) | undefined
   onDiscardEdit?: ((editId: string) => Promise<void>) | undefined
+  // Tells a parent that draws the decision row whether an edit is open.
+  onEditingChange?: ((editing: boolean) => void) | undefined
 }) {
   const [edit, setEdit] = useState<{ structureRevision: number, steps: { id: string, text: string }[] } | null>(null)
   const [discarding, setDiscarding] = useState(false)
   const [carryingOn, setCarryingOn] = useState(false)
   const [editError, setEditError] = useState("")
+  const editOpen = edit !== null
+  useEffect(() => { onEditingChange?.(editOpen) }, [editOpen, onEditingChange])
+  useEffect(() => () => onEditingChange?.(false), [onEditingChange])
   if (!plan) return null
   const stepCount = plan.steps.length
   const baseSteps = plan.steps.map((step) => ({ id: step.id, text: step.text }))
@@ -229,6 +235,7 @@ export function WorkingPlanCard({
 const maximumPlanQuoteLength = 2_000
 
 export type PlanComment = { quote: string, body: string }
+export type PlanCommentTarget = { sessionId: string, artifactId: string }
 
 // The words a person selected inside the plan document, if any. A selection
 // that starts or ends outside the document is not a quote from it.
@@ -348,14 +355,24 @@ function PlanCommentForm({
 // The daemon mirrors a working plan into a plan artifact of its own, id
 // plan-<sessionId> with no path (isWorkingPlanArtifact in
 // apps/daemon/src/working-plan.ts), so annotations have an artifact to anchor
-// to. A provider's prose plan lands in the same artifact when there are no
-// steps. Its text is the card's steps, so beside the card it is not a
+// to. Its text is either the daemon's rendering of the steps
+// (renderWorkingPlanMarkdown: "# Working plan" and a numbered list), which is
+// the card's own text, or a whole plan a provider wrote: a prose plan with no
+// steps, or a plan-mode final reply whose steps were extracted from it
+// (server.ts, finalizedPlanMarkdown). Only the rendering stays out of the
 // document; it is where a comment on a step goes when no document exists.
 export function isWorkingPlanMirror(artifact: Artifact, sessionId: string): boolean {
   const mirrorId = `plan-${sessionId}`
   return artifact.sessionId === sessionId
     && artifact.type === "plan"
     && (artifact.id === mirrorId || (artifact.path === undefined && artifact.id.startsWith(`${mirrorId}-`)))
+}
+
+const renderedStepsShape = /^# Working plan\n\n(?:\d+\. [^\n]*\n(?: {3}[^\n]*\n)*)*$/u
+
+export function isRenderedStepMirror(artifact: Artifact, sessionId: string): boolean {
+  return isWorkingPlanMirror(artifact, sessionId)
+    && (artifact.content === undefined || renderedStepsShape.test(artifact.content))
 }
 
 function latestPlanArtifact(candidates: readonly Artifact[]): Artifact | undefined {
@@ -365,10 +382,11 @@ function latestPlanArtifact(candidates: readonly Artifact[]): Artifact | undefin
   )
 }
 
-// Q350 A: with a working plan, the document is the newest plan artifact the
-// agent wrote (a watched file), never the mirror. Without one, the newest plan
-// artifact of any kind is the document, which is how a prose plan reads. A
-// comment anchors to the document, or to the mirror when only the card shows.
+// Q350 A: with a working plan, the document is the newest plan artifact with
+// content that is not the daemon's rendering of the steps (a watched file, or
+// a whole plan a provider wrote). Without one, the newest plan artifact of any
+// kind is the document, which is how a prose plan reads. A comment anchors to
+// the document, or to the mirror when only the card shows.
 export function planSheetArtifacts(
   artifacts: readonly Artifact[],
   sessionId: string | null | undefined,
@@ -378,7 +396,7 @@ export function planSheetArtifacts(
   const all = artifacts.filter((artifact) => artifact.sessionId === sessionId && artifact.type === "plan")
   const mirror = latestPlanArtifact(all.filter((artifact) => isWorkingPlanMirror(artifact, sessionId)))
   const document = workingPlan
-    ? latestPlanArtifact(all.filter((artifact) => artifact.content && !isWorkingPlanMirror(artifact, sessionId)))
+    ? latestPlanArtifact(all.filter((artifact) => artifact.content && !isRenderedStepMirror(artifact, sessionId)))
     : latestPlanArtifact(all)
   const commentTarget = document?.content ? document : workingPlan ? mirror : undefined
   return { document, commentTarget, all }
@@ -402,6 +420,7 @@ export function PlanSheet({
   onEditPlan,
   onDiscardEdit,
   onComment,
+  commentTarget,
 }: {
   document: Artifact | undefined
   workingPlan: WorkingPlan | undefined
@@ -413,18 +432,40 @@ export function PlanSheet({
   onCarryOn?: (() => Promise<void>) | undefined
   onEditPlan?: ((edit: WorkingPlanEdit) => Promise<void>) | undefined
   onDiscardEdit?: ((editId: string) => Promise<void>) | undefined
-  onComment?: ((comment: PlanComment) => Promise<void>) | undefined
+  onComment?: ((comment: PlanComment & { target: PlanCommentTarget }) => Promise<void>) | undefined
+  // The plan artifact a comment opened now would land on.
+  commentTarget?: PlanCommentTarget | undefined
 }) {
   const documentRef = useRef<HTMLDivElement>(null)
+  const commentButtonRef = useRef<HTMLButtonElement>(null)
   // A pointer press can collapse the selection before the click lands, so
   // the quote is read on press and again on click.
   const pressedQuote = useRef<string | undefined>(undefined)
-  const [commenting, setCommenting] = useState<{ quote: string | undefined } | null>(null)
+  // A draft is bound to the plan it was opened on, so a document that appears
+  // or a session that changes underneath it cannot redirect the comment.
+  const [commenting, setCommenting] = useState<{ quote: string | undefined, target: PlanCommentTarget } | null>(null)
+  const [editing, setEditing] = useState(false)
   const [carryingOn, setCarryingOn] = useState(false)
   const [carryOnError, setCarryOnError] = useState("")
+  const wasCommenting = useRef(false)
   const content = document?.content
-  const canCarryOn = Boolean(onCarryOn) && !readOnly
-  const canComment = Boolean(onComment) && !readOnly
+  // Carrying on answers the plan as it stands, so it waits while the card
+  // holds an unsaved edit, as the card's own row always did.
+  const canCarryOn = Boolean(onCarryOn) && !readOnly && !editing
+  const canComment = Boolean(onComment) && Boolean(commentTarget) && !readOnly
+  const targetSession = commentTarget?.sessionId
+
+  // A draft from another session is never shown in this one.
+  useEffect(() => {
+    setCommenting((current) => (current && current.target.sessionId !== targetSession ? null : current))
+  }, [targetSession])
+
+  // A closed form hands focus back to the control that opened it.
+  useEffect(() => {
+    const open = commenting !== null
+    if (wasCommenting.current && !open) commentButtonRef.current?.focus()
+    wasCommenting.current = open
+  }, [commenting])
 
   if (!content && !workingPlan) {
     return (
@@ -463,6 +504,7 @@ export function PlanSheet({
                 readOnly={readOnly}
                 onEditPlan={onEditPlan}
                 onDiscardEdit={onDiscardEdit}
+                onEditingChange={setEditing}
               />
             </div>
           ) : null}
@@ -475,7 +517,7 @@ export function PlanSheet({
             <PlanCommentForm
               quote={commenting.quote}
               steps={workingPlan?.steps ?? []}
-              onPost={(comment) => onComment(comment).then(() => setCommenting(null))}
+              onPost={(comment) => onComment({ ...comment, target: commenting.target }).then(() => setCommenting(null))}
               onCancel={() => setCommenting(null)}
             />
           ) : null}
@@ -499,8 +541,9 @@ export function PlanSheet({
                 {carryingOn ? "Sending" : "Looks right, carry on"}
               </Button>
             ) : null}
-            {canComment ? (
+            {canComment && commentTarget ? (
               <Button
+                ref={commentButtonRef}
                 variant="outline"
                 size="sm"
                 disabled={commenting !== null}
@@ -508,7 +551,7 @@ export function PlanSheet({
                 onClick={() => {
                   const quote = documentSelection(documentRef.current) ?? pressedQuote.current
                   pressedQuote.current = undefined
-                  setCommenting({ quote })
+                  setCommenting({ quote, target: commentTarget })
                 }}
               >
                 Comment on a step

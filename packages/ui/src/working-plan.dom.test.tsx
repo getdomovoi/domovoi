@@ -287,6 +287,7 @@ function sheet(extra: Partial<ComponentProps<typeof PlanSheet>> = {}) {
       running={false}
       onCarryOn={vi.fn(async () => {})}
       onComment={vi.fn(async () => {})}
+      commentTarget={{ sessionId: "session-1", artifactId: "artifact-plan" }}
       {...extra}
     />
   )
@@ -320,7 +321,7 @@ it("comments on the words selected in the document", async () => {
   await user.type(within(form).getByLabelText("Comment"), "Say which retries")
   await user.click(within(form).getByRole("button", { name: "Post" }))
 
-  expect(onComment).toHaveBeenCalledWith({ quote: "Retries replay the side effects.", body: "Say which retries" })
+  expect(onComment).toHaveBeenCalledWith({ quote: "Retries replay the side effects.", body: "Say which retries", target: { sessionId: "session-1", artifactId: "artifact-plan" } })
   expect(screen.queryByRole("form", { name: "Comment on a step" })).toBeNull()
 })
 
@@ -339,7 +340,7 @@ it("comments on a chosen step when nothing in the document is selected", async (
   await user.type(within(form).getByLabelText("Comment"), "Cover the expiry case")
   await user.click(within(form).getByRole("button", { name: "Post" }))
 
-  expect(onComment).toHaveBeenCalledWith({ quote: "Assert exactly-once delivery", body: "Cover the expiry case" })
+  expect(onComment).toHaveBeenCalledWith({ quote: "Assert exactly-once delivery", body: "Cover the expiry case", target: { sessionId: "session-1", artifactId: "artifact-plan" } })
 })
 
 it("keeps the comment and says why when the daemon refuses it", async () => {
@@ -391,12 +392,12 @@ it("offers no comment when nothing can take one", () => {
   expect(screen.queryByRole("button", { name: "Comment on a step" })).toBeNull()
 })
 
-// The daemon mirrors the working plan into plan-<sessionId>. Beside the card
-// that mirror is the card's own text, so it is never the document; it is where
-// a comment goes when no document exists. A prose plan (no steps) lands in the
-// same artifact and is the document then.
-it("never takes the working plan's mirror for the document", () => {
-  const mirror = planArtifact({ id: "plan-session-1", title: "Working plan", revision: 9, content: "1. Add a replay table" })
+// The daemon renders the working plan's steps into plan-<sessionId>. Beside the
+// card that rendering is the card's own text, so it is never the document; it
+// is where a comment goes when no document exists. A prose plan (no steps)
+// lands in the same artifact and is the document then.
+it("never takes the rendered steps for the document", () => {
+  const mirror = planArtifact({ id: "plan-session-1", title: "Working plan", revision: 9, content: "# Working plan\n\n1. Add a replay table\n" })
   const written = planArtifact({ id: "plan-session-1-a6638da8", path: "plans/webhook.md", revision: 1 })
   const other = planArtifact({ id: "plan-session-2", sessionId: "session-2", revision: 12 })
 
@@ -411,4 +412,70 @@ it("never takes the working plan's mirror for the document", () => {
   expect(planSheetArtifacts([mirror, written], "session-1", undefined).document?.id).toBe("plan-session-1")
   expect(isWorkingPlanMirror(written, "session-1")).toBe(false)
   expect(isWorkingPlanMirror(planArtifact({ id: "plan-session-1-0001" }), "session-1")).toBe(true)
+})
+
+// A plan-mode turn's final reply becomes both the steps and a full Markdown
+// plan in plan-<sessionId> (server.ts finalizedPlanMarkdown). Only the text the
+// daemon renders from the steps ("# Working plan" and a numbered list) is the
+// card's own text; a full plan there is a document.
+it("draws a full plan the daemon wrote to the mirror as the document", () => {
+  const fullPlan = planArtifact({ id: "plan-session-1", title: "Working plan", revision: 2, content: "## Problem\n\nRetries replay.\n\n## Steps\n\n1. Add a replay table" })
+  const generated = planArtifact({ id: "plan-session-1", title: "Working plan", revision: 2, content: "# Working plan\n\n1. Add a replay table\n2. Claim before side effects\n   across two lines\n" })
+
+  expect(planSheetArtifacts([fullPlan], "session-1", plan()).document?.id).toBe("plan-session-1")
+  const onlyGenerated = planSheetArtifacts([generated], "session-1", plan())
+  expect(onlyGenerated.document).toBeUndefined()
+  expect(onlyGenerated.commentTarget?.id).toBe("plan-session-1")
+})
+
+it("binds an open comment to the plan it was opened on", async () => {
+  window.getSelection()?.removeAllRanges()
+  const onComment = vi.fn(async () => {})
+  const target = { sessionId: "session-1", artifactId: "artifact-plan" }
+  const { rerender } = render(sheet({ onComment, commentTarget: target }))
+  const user = userEvent.setup()
+  await user.click(screen.getByRole("button", { name: "Comment on a step" }))
+  await user.type(screen.getByLabelText("Comment"), "Keep this")
+
+  // A new document appears in the same session while the draft is open.
+  rerender(sheet({ onComment, commentTarget: { sessionId: "session-1", artifactId: "artifact-plan-2" } }))
+  await user.click(screen.getByRole("button", { name: "Post" }))
+  expect(onComment).toHaveBeenCalledWith(expect.objectContaining({ target, body: "Keep this" }))
+})
+
+it("drops an open comment when the session changes", async () => {
+  window.getSelection()?.removeAllRanges()
+  const { rerender } = render(sheet({ commentTarget: { sessionId: "session-1", artifactId: "artifact-plan" } }))
+  const user = userEvent.setup()
+  await user.click(screen.getByRole("button", { name: "Comment on a step" }))
+  expect(screen.getByRole("form", { name: "Comment on a step" })).toBeTruthy()
+
+  rerender(sheet({ commentTarget: { sessionId: "session-2", artifactId: "plan-session-2" } }))
+  expect(screen.queryByRole("form", { name: "Comment on a step" })).toBeNull()
+})
+
+it("holds Looks right, carry on back while the plan is being edited", async () => {
+  render(sheet({ onEditPlan: vi.fn(async () => {}) }))
+  const user = userEvent.setup()
+  await user.click(screen.getByRole("button", { name: "Edit plan" }))
+
+  expect(screen.queryByRole("button", { name: "Looks right, carry on" })).toBeNull()
+  await user.click(screen.getByRole("button", { name: "Cancel" }))
+  expect(screen.getByRole("button", { name: "Looks right, carry on" })).toBeTruthy()
+})
+
+it("gives focus back to Comment on a step when the form closes", async () => {
+  window.getSelection()?.removeAllRanges()
+  render(sheet())
+  const user = userEvent.setup()
+  const open = screen.getByRole("button", { name: "Comment on a step" })
+
+  await user.click(open)
+  await user.keyboard("{Escape}")
+  expect(document.activeElement).toBe(open)
+
+  await user.click(open)
+  await user.type(screen.getByLabelText("Comment"), "Fine")
+  await user.click(screen.getByRole("button", { name: "Post" }))
+  expect(document.activeElement).toBe(open)
 })

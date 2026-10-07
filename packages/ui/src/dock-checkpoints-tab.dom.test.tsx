@@ -72,7 +72,7 @@ describe("the dock's Checkpoints tab", () => {
 describe("the Checkpoints tab tip", () => {
   it("says revert is worktree-only and names the checkpoint before an allowed request", () => {
     const tip = dockTabDefinitions.find((tab) => tab.id === "checkpoints")?.note ?? ""
-    expect(tip).toContain("Every request you allow at a gate takes one first.")
+    expect(tip).toContain("In a session with a worktree, every request you allow at a gate takes one first.")
     expect(tip).toContain("Reverting resets the worktree; the thread keeps its turns.")
     expect(tip).not.toMatch(/rewinds|thread together|Every approved write/)
   })

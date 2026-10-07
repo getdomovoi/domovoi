@@ -813,14 +813,15 @@ export function ArtifactDock({
             onCarryOn={onCarryOnPlan ? () => onCarryOnPlan().then(closeAfterPlanAnswer) : undefined}
             onEditPlan={onEditPlan}
             onDiscardEdit={onDiscardPlanEdit}
-            onComment={planArtifacts.commentTarget && snapshot.activeSessionId
-              ? ({ quote, body }) => onCreateAnnotation({
-                  sessionId: snapshot.activeSessionId!,
-                  artifactId: planArtifacts.commentTarget!.id,
-                  anchor: { textQuote: quote },
-                  body,
-                })
+            commentTarget={planArtifacts.commentTarget && snapshot.activeSessionId
+              ? { sessionId: snapshot.activeSessionId, artifactId: planArtifacts.commentTarget.id }
               : undefined}
+            onComment={({ quote, body, target }) => onCreateAnnotation({
+              sessionId: target.sessionId,
+              artifactId: target.artifactId,
+              anchor: { textQuote: quote },
+              body,
+            })}
           />
         </TabsContent>
         <TabsContent value="changes" className="min-h-0">

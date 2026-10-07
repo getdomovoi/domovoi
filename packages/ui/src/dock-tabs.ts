@@ -63,7 +63,7 @@ export const dockTabDefinitions: readonly DockTabDefinition[] = [
     id: "checkpoints",
     label: "Checkpoints",
     // Q341 A: revert is worktree-only, so the tip does not promise a rewound thread.
-    note: "Every request you allow at a gate takes one first. Reverting resets the worktree; the thread keeps its turns.",
+    note: "In a session with a worktree, every request you allow at a gate takes one first. Reverting resets the worktree; the thread keeps its turns.",
     Icon: HistoryIcon,
   },
   {

@@ -166,7 +166,7 @@ describe("the dock's tab list", () => {
     const steps = snapshot.workingPlans[0]!.steps
     snapshot.artifacts = [
       ...snapshot.artifacts,
-      { id: `plan-${snapshot.activeSessionId}`, sessionId: snapshot.activeSessionId!, title: "Working plan", type: "plan", revision: 9, mimeType: "text/markdown", content: steps.map((step, index) => `${index + 1}. ${step.text}`).join("\n") },
+      { id: `plan-${snapshot.activeSessionId}`, sessionId: snapshot.activeSessionId!, title: "Working plan", type: "plan", revision: 9, mimeType: "text/markdown", content: `# Working plan\n\n${steps.map((step, index) => `${index + 1}. ${step.text}\n`).join("")}` },
     ]
     window.getSelection()?.removeAllRanges()
     render(<WorkspaceShell />)
@@ -190,6 +190,27 @@ describe("the dock's tab list", () => {
       artifactId: `plan-${snapshot.activeSessionId}`,
       anchor: { textQuote: steps.find((step) => step.status !== "completed")!.text },
     })
+  })
+
+  // A plan-mode final reply leaves its whole plan in plan-<sessionId> and its
+  // steps in the working plan (server.ts finalizedPlanMarkdown). The whole
+  // plan is the document, not the card's text.
+  it("draws a whole plan the daemon kept in the mirror as the document beside the card", async () => {
+    const snapshot = workspaceSnapshot()
+    snapshot.artifacts = [
+      ...snapshot.artifacts,
+      { id: `plan-${snapshot.activeSessionId}`, sessionId: snapshot.activeSessionId!, title: "Working plan", type: "plan", revision: 9, mimeType: "text/markdown", content: "## Approach\n\nClaim first, then work.\n\n## Steps\n\n1. Add a replay table" },
+    ]
+    render(<WorkspaceShell />)
+    await act(async () => { completeHandshake(harness.socket(0), snapshot) })
+    await settle()
+    await openSheet()
+    await userEvent.setup().click(screen.getByRole("tab", { name: "Plan preview" }))
+    await settle()
+
+    const dock = screen.getByRole("complementary", { name: "Session artifacts" })
+    expect(within(within(dock).getByRole("article", { name: "Plan document" })).getByText("Claim first, then work.")).toBeTruthy()
+    expect(within(dock).getByRole("region", { name: "Working plan" })).toBeTruthy()
   })
 
   it("keeps the plan's comments reachable when the plan has no content to show", async () => {

@@ -109,12 +109,13 @@ it("offers Fork and Revert on a checkpoint, and only Reset on the session start"
 
 // Q341 A: revert stays worktree-only, so the note says what the daemon does.
 // A person's allow at a gate takes a checkpoint first (J34); a rule's allow
-// takes none, and the thread keeps its turns after a revert.
+// takes none, and the thread keeps its turns after a revert. A session with no
+// worktree has nothing to checkpoint, and its allow records none.
 it("names the checkpoint before each allowed request and a worktree-only revert", async () => {
   render(panel(vi.fn(async () => ({ sessionId: "session-billing", hasMore: false, items: [] }))))
   await settle()
   const intro = screen.getByText(/takes one first/)
-  expect(intro.textContent).toContain("Every request you allow at a gate takes one first.")
+  expect(intro.textContent).toContain("In a session with a worktree, every request you allow at a gate takes one first.")
   expect(intro.textContent).toContain("A rule that allows a request takes none.")
   expect(intro.textContent).toContain("The thread keeps its turns.")
   expect(intro.textContent).not.toMatch(/rewinds|thread together/)
