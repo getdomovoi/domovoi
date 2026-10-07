@@ -4,7 +4,7 @@ import { join } from "node:path"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
+import { configureLaunchSmokeProfile, loginServiceOffSwitch, loginServiceTurnedOff } from "./launch-smoke-profile.js"
 
 const roots: string[] = []
 // One removal that throws must not abandon the rest, and no root leaves this
@@ -53,6 +53,39 @@ describe("launch smoke profile", () => {
     const setPath = vi.fn()
     expect(() => configureLaunchSmokeProfile({ setPath }, profile, profile)).toThrow("own empty profile")
     expect(setPath).not.toHaveBeenCalled()
+  })
+})
+
+// T24: the login-service calls take a lease under the passwd home, which no
+// smoke environment can move. Unpackaged smokes turn the calls off with a
+// command-line switch. A packaged app ignores it, and no environment variable
+// can stand in for it.
+describe("the test-only login service switch", () => {
+  const app = (argument: string) => ["/electron", argument, "/desktop"]
+
+  it("is the exact switch the smoke runner passes", () => {
+    expect(loginServiceOffSwitch).toBe("--domovoi-test-no-login-service")
+  })
+
+  it("turns the login service off only for an unpackaged app given the switch", () => {
+    expect(loginServiceTurnedOff({ isPackaged: false, argv: app(loginServiceOffSwitch) })).toBe(true)
+    expect(loginServiceTurnedOff({ isPackaged: false, argv: app("--headless") })).toBe(false)
+    expect(loginServiceTurnedOff({ isPackaged: false, argv: app(`${loginServiceOffSwitch}=0`) })).toBe(false)
+  })
+
+  it("is ignored by a packaged app", () => {
+    expect(loginServiceTurnedOff({ isPackaged: true, argv: app(loginServiceOffSwitch) })).toBe(false)
+  })
+
+  it("cannot be set from the environment", () => {
+    vi.stubEnv("DOMOVOI_TEST_NO_LOGIN_SERVICE", "1")
+    vi.stubEnv("ELECTRON_EXTRA_LAUNCH_ARGS", loginServiceOffSwitch)
+    try {
+      expect(loginServiceTurnedOff({ isPackaged: false, argv: app("--headless") })).toBe(false)
+    } finally { vi.unstubAllEnvs() }
+    const index = readFileSync(join(import.meta.dirname, "index.ts"), "utf8")
+    expect(index).toContain("loginServiceTurnedOff({ isPackaged: app.isPackaged, argv: process.argv })")
+    expect(readFileSync(join(import.meta.dirname, "launch-smoke-profile.ts"), "utf8")).not.toMatch(/process\.env|\benv\b/u)
   })
 })
 
