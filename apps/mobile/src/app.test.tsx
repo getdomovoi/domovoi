@@ -821,6 +821,23 @@ describe("App", () => {
       expect(screen.getByText(/^Last heard: claimed by/)).toBeOnTheScreen()
     })
 
+    // A shell's end carries no time, and Restart on a desktop reuses the id
+    // for a new shell, so an end is followed by asking the daemon at once.
+    it("lists again when a shell ends, and watches the new shell Restart opened under its id", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await act(async () => { socket.push("terminal.closed", { terminalId: "terminal-1", exitCode: 0 }) })
+      await settle()
+      expect(socket.requests("terminal.list")).toHaveLength(2)
+      await act(async () => { socket.answer("terminal.list", { terminals: [{ ...terminal, openedAt: "2026-10-06T14:20:00.000Z" }] }) })
+      await settle()
+      expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-1" }])
+      await act(async () => { socket.answer("terminal.watch", { ...watchResult, openedAt: "2026-10-06T14:20:00.000Z", buffer: "$ \n", watchedAt: "2026-10-06T14:20:01.000Z" }) })
+      await settle()
+      expect(screen.getByText("Live")).toBeOnTheScreen()
+      expect(screen.getByRole("button", { name: "Show all 1 line" })).toBeOnTheScreen()
+    })
+
     it("says Failed when the watched shell exits with an error", async () => {
       const { socket } = await openAudit()
       await watchOne(socket)

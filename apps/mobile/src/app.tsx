@@ -427,8 +427,10 @@ export function App() {
   const [terminalsListed, setTerminalsListed] = useState(false)
   const [openTerminalId, setOpenTerminalId] = useState<string | undefined>(undefined)
   const watchedSessionId = openSessionId && !(tablet && tab === "sessions") ? openSessionId : undefined
-  // The current run's way to watch one terminal again, for Try again.
-  const rewatch = useRef<((terminalId: string) => void) | undefined>(undefined)
+  // The current run's way to watch one terminal again, for Try again, and to
+  // list the session's terminals now rather than at the next interval.
+  const rewatch = useRef<((terminalId: string, openedAt: string) => void) | undefined>(undefined)
+  const relistNow = useRef<(() => void) | undefined>(undefined)
   // Read when a run ends: a connection that has closed took its watches with
   // it, so there is nothing to unwatch on it.
   const socketOpen = useRef(status === "open")
@@ -442,6 +444,9 @@ export function App() {
       const record = withNotification(watch.record, notification, now)
       return record === watch.record ? current : new Map(current).set(notification.params.terminalId, { state: "watching", record })
     })
+    // An end carries no time, and Restart on a desktop opens a new shell under
+    // the same id, so the daemon is asked for the list at once.
+    if (notification.method === "terminal.closed") relistNow.current?.()
   }), [subscribeTerminal])
 
   useEffect(() => () => {
@@ -455,23 +460,30 @@ export function App() {
     // This connection holds no watch yet, and has not listed anything.
     setTerminals(unconfirmedWatches)
     setTerminalsListed(false)
-    // Every terminal a watch was asked for, answered or not: the daemon may
-    // have taken a watch whose answer never came back, so leaving ends each.
-    const watched = new Set<string>()
-    const watchOne = (terminalId: string) => {
-      watched.add(terminalId)
+    // Every terminal a watch was asked for, answered or not, by the shell it
+    // was asked for: the daemon may have taken a watch whose answer never came
+    // back, so leaving ends each, and a new shell under the same id (Restart)
+    // is watched again.
+    const watched = new Map<string, string>()
+    // An answer is for the shell it was asked for; one that lands after the
+    // list named a newer shell under the id is dropped.
+    const sameShell = (watch: TerminalWatch | undefined, openedAt: string) => watch !== undefined && watchedSummary(watch).openedAt === openedAt
+    const watchOne = (terminalId: string, openedAt: string) => {
+      watched.set(terminalId, openedAt)
       call("terminal.watch", { terminalId }).then((result) => {
         // Answered after the person left: the watch is no one's, so it ends.
         if (!current) {
           call("terminal.unwatch", { terminalId }).catch(() => {})
           return
         }
-        setTerminals((held) => held.has(terminalId) ? new Map(held).set(terminalId, { state: "watching", record: watchFrom(result) }) : held)
+        setTerminals((held) => sameShell(held.get(terminalId), result.openedAt)
+          ? new Map(held).set(terminalId, { state: "watching", record: watchFrom(result) })
+          : held)
       }, (cause: unknown) => {
         if (!current) return
         setTerminals((held) => {
           const watch = held.get(terminalId)
-          if (!watch) return held
+          if (!watch || !sameShell(watch, openedAt)) return held
           return new Map(held).set(terminalId, {
             state: "failed",
             summary: watchedSummary(watch),
@@ -480,12 +492,12 @@ export function App() {
         })
       })
     }
-    rewatch.current = (terminalId) => {
+    rewatch.current = (terminalId, openedAt) => {
       setTerminals((held) => {
         const watch = held.get(terminalId)
         return watch ? new Map(held).set(terminalId, { state: "reading", summary: watchedSummary(watch) }) : held
       })
-      watchOne(terminalId)
+      watchOne(terminalId, openedAt)
     }
     // A list that fails leaves what is held unconfirmed until one answers. A
     // daemon that cannot list terminals has none to show on a first visit.
@@ -495,21 +507,23 @@ export function App() {
         setTerminalsListed(true)
         setTerminals((held) => listedWatches(held, listed.terminals))
         for (const terminal of listed.terminals) {
-          if (!watched.has(terminal.terminalId)) watchOne(terminal.terminalId)
+          if (watched.get(terminal.terminalId) !== terminal.openedAt) watchOne(terminal.terminalId, terminal.openedAt)
         }
       }, () => {
         if (current) setTerminalsListed(false)
       })
     }
+    relistNow.current = list
     list()
     const relist = setInterval(list, terminalListIntervalMs)
     return () => {
       current = false
       clearInterval(relist)
       rewatch.current = undefined
+      relistNow.current = undefined
       setTerminalsListed(false)
       if (!socketOpen.current) return
-      for (const terminalId of watched) call("terminal.unwatch", { terminalId }).catch(() => {})
+      for (const terminalId of watched.keys()) call("terminal.unwatch", { terminalId }).catch(() => {})
     }
   }, [call, status, watchedSessionId])
 
@@ -914,7 +928,7 @@ export function App() {
             connected={terminalsConfirmed}
             notice={notice}
             onBack={() => setOpenTerminalId(undefined)}
-            onRetry={() => { if (openTerminalId) rewatch.current?.(openTerminalId) }}
+            onRetry={() => rewatch.current?.(watchedSummary(openTerminal).terminalId, watchedSummary(openTerminal).openedAt)}
           />
         </SafeAreaView>
       </SafeAreaProvider>
