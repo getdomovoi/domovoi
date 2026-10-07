@@ -32,8 +32,8 @@ export type TerminalRecord = {
   // Text may begin inside an escape sequence or a window title: the daemon
   // keeps its record by size and cuts it anywhere. The rest of that first
   // line is not drawn when a line break follows soon after. The phone's own
-  // cut never lands inside a sequence (sequenceSafe), so once it has cut, the
-  // text is drawn from its start.
+  // cut never lands inside a sequence it can see (sequenceSafe), so once its
+  // cut has passed that uncertain start, the text is drawn from its start.
   startsMidLine: boolean
   // Line breaks received live, counted as they arrive and never reduced by a
   // cut, so what landed can be counted for the reader.
@@ -173,7 +173,9 @@ function bounded(record: TerminalRecord): TerminalRecord {
     // Once the start of live output is cut away, nothing above it is left.
     liveAt: record.liveAt !== undefined && record.liveAt > cut ? record.liveAt - cut : undefined,
     phoneDropped: true,
-    startsMidLine: false,
+    // The phone's cut cannot see a sequence whose introducer the daemon cut,
+    // so the uncertain start stays hidden until the cut passes it.
+    startsMidLine: record.startsMidLine && cut < drawnStart(record),
   }
 }
 

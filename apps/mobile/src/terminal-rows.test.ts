@@ -314,6 +314,16 @@ describe("terminalRows", () => {
     expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["done"])
   })
 
+  // The phone's cut is sequence-safe only for what it can see. A title whose
+  // introducer the daemon already cut stays hidden until the cut passes it.
+  it("keeps hiding a title the daemon cut into when the phone cuts before its end", () => {
+    const head = `${"t".repeat(300)}\u0007out\n`
+    const full = watchFrom(watched({ buffer: `${head}${"x".repeat(maximumTerminalReplayCharacters - head.length)}`, earlierOutputDropped: true }))
+    const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "y" } }, at)
+    const lines = terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)
+    expect(lines.some((line) => line.includes("t"))).toBe(false)
+  })
+
   // The daemon's record can start inside a window title.
   it("does not draw the rest of a window title a record starts inside", () => {
     const record = watchFrom(watched({ buffer: `${"t".repeat(300)}\u0007prompt\nnext\n`, earlierOutputDropped: true }))
