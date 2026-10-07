@@ -14,7 +14,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { ScrollArea } from "@/components/ui/scroll-area"
-import { AppearanceSettings, ExternalEditorSettings, ProviderSettings, type ProviderSecretStatus } from "./provider-settings.js"
+import { AppearanceSettings, ExternalEditorSettings, ProviderSettings, type MachineAgents, type ProviderSecretStatus } from "./provider-settings.js"
 import type { WorkspaceTheme } from "./appearance.js"
 import { DaemonRpcError } from "./client.js"
 import type { DaemonServiceOutcome, DaemonServiceStatusReport, DesktopExternalEditor, WorkspaceWindowDecoration } from "./desktop-platform.js"
@@ -576,6 +576,9 @@ function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCar
 
 export type SettingsShellProps = {
   providers: readonly ProviderRuntime[]
+  // Every machine's agents as this client knows them; without it the pane
+  // lists `providers` for this machine alone.
+  providerMachines?: readonly MachineAgents[] | undefined
   about?: AboutBuild | undefined
   pairing?: PairingSettings | undefined
   secrets: readonly ProviderSecretStatus[]
@@ -601,6 +604,7 @@ export type SettingsShellProps = {
 
 export function SettingsShell({
   providers,
+  providerMachines,
   secrets,
   about,
   pairing,
@@ -653,7 +657,7 @@ export function SettingsShell({
           {tailnet && !daemonSection ? <TailnetReachCard controller={tailnet} /> : null}
 
           <section aria-label="Providers and tokens">
-            <ProviderSettings providers={providers} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
+            <ProviderSettings providers={providers} machines={providerMachines} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
           </section>
 
           {about && !daemonSection ? <AboutBuildSection about={about} /> : null}
