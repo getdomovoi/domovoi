@@ -833,6 +833,27 @@ describe("App", () => {
       }
     })
 
+    // A relist that fails while the watches on this connection still deliver
+    // says nothing about them: the terminal stays Live.
+    it("stays Live when a later list fails on the same connection", async () => {
+      jest.useFakeTimers({ advanceTimers: true, doNotFake: ["nextTick", "setImmediate", "queueMicrotask"] })
+      try {
+        const { socket } = await openAudit()
+        await watchOne(socket)
+        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
+        await settle()
+        const request = socket.requests("terminal.list").at(-1)!
+        await act(async () => {
+          socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: "busy" } }) })
+        })
+        await settle()
+        expect(screen.getByText("Live")).toBeOnTheScreen()
+        expect(screen.queryByText("Unconfirmed")).toBeNull()
+      } finally {
+        jest.useRealTimers()
+      }
+    })
+
     // Until the new connection's list answers, nothing held is the daemon's
     // word on this connection.
     it("says Unconfirmed when the list after a reconnect is refused", async () => {

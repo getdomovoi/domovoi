@@ -503,8 +503,10 @@ export function App() {
       })
       watchOne(terminalId, openedAt)
     }
-    // A list that fails leaves what is held unconfirmed until one answers. A
-    // daemon that cannot list terminals has none to show on a first visit.
+    // Until this connection's first list answers, what is held stays
+    // unconfirmed. A later list that fails says nothing about the watches on
+    // this connection, which still deliver, so it changes nothing. A daemon
+    // that cannot list terminals has none to show on a first visit.
     const list = () => {
       call("terminal.list", { sessionId: watchedSessionId }).then((listed) => {
         if (!current) return
@@ -513,9 +515,7 @@ export function App() {
         for (const terminal of listed.terminals) {
           if (watched.get(terminal.terminalId) !== terminal.openedAt) watchOne(terminal.terminalId, terminal.openedAt)
         }
-      }, () => {
-        if (current) setTerminalsListed(false)
-      })
+      }, () => {})
     }
     relistNow.current = list
     list()
