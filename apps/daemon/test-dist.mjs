@@ -3,6 +3,8 @@ import { spawnSync } from "node:child_process"
 import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { fileURLToPath } from "node:url"
+import { readSourceCommit } from "./source-commit.mjs"
 
 const daemonCommand = await import("./dist/daemon-command.js")
 assert.equal(daemonCommand.daemonWorkerEntry(), realpathSync(new URL("./dist/index.js", import.meta.url)))
@@ -129,3 +131,13 @@ try {
   assert.ok(events.some((event) => event.kind === "get"))
   assert.ok(events.every((event) => event.isMainThread === false))
 } finally { rmSync(keyringHome, { recursive: true, force: true }) }
+
+const distDirectory = new URL("./dist/", import.meta.url)
+const distSources = readdirSync(distDirectory).filter((name) => name.endsWith(".js"))
+  .map((name) => readFileSync(new URL(name, distDirectory), "utf8"))
+assert.ok(distSources.length > 0, "The daemon dist must contain JavaScript")
+for (const source of distSources) assert.ok(!source.includes("__BUILD_SOURCE_COMMIT__"), "The source commit define must be replaced")
+const expectedCommit = readSourceCommit(fileURLToPath(new URL("../../", import.meta.url)))
+if (expectedCommit) {
+  assert.ok(distSources.some((source) => source.includes(JSON.stringify(expectedCommit))), "The daemon dist must contain its build commit")
+}
