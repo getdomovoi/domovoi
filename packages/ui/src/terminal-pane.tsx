@@ -388,9 +388,10 @@ export function TerminalPane({
               <XIcon />
             </Button>
           </div>
-        ) : closed ? (
-          // A watched shell that exited is a closed record. Its holder may
-          // open another, which this pane only reads by watching again.
+        ) : closed || error ? (
+          // A watched shell that exited is a closed record, and a refused
+          // watch may be transient. Either way the holder's shell is read
+          // again only by watching again.
           <div className="ml-auto flex items-center gap-1">
             <Button variant="outline" size="xs" disabled={!connected} onClick={restart}>Check again</Button>
           </div>
@@ -401,7 +402,9 @@ export function TerminalPane({
           className={`flex shrink-0 items-center gap-2.5 border-b px-3.5 py-2.5 ${writable ? "bg-ok-background" : "bg-info-background"}`}
         >
           <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${writable ? "bg-success" : "bg-info"}`} />
-          <div className="min-w-0 flex-1">
+          {/* A status region, so a change of holder is announced and not only
+              redrawn: it decides whether typing here reaches the shell. */}
+          <div role="status" className="min-w-0 flex-1">
             <p className={`text-xs ${writable ? "text-ok-foreground" : "text-info-foreground"}`}>{claimText}</p>
             <p className={`text-[11px] leading-snug ${writable ? "text-ok-dim" : "text-info-dim"}`}>{claimNote}</p>
           </div>
@@ -421,13 +424,15 @@ export function TerminalPane({
       {/* The controls above go inert on disconnect, Restart included once the
           process has exited. A disabled control with no reason reads as broken
           rather than unavailable, so the reason is on screen beside them. */}
-      {!connected && !readOnly ? (
+      {!connected ? (
         <p className="border-b bg-sidebar px-3 py-1.5 text-[11px] text-muted-foreground">
-          {primaryAction === "restart"
-            ? "Reconnect to the execution machine to restart this terminal."
-            : claimable
-              ? "Reconnect to the execution machine to take the shell or close this terminal."
-              : "Reconnect to the execution machine to interrupt or close this terminal."}
+          {readOnly
+            ? "Reconnect to the execution machine to read this shell."
+            : primaryAction === "restart"
+              ? "Reconnect to the execution machine to restart this terminal."
+              : claimable
+                ? "Reconnect to the execution machine to take the shell or close this terminal."
+                : "Reconnect to the execution machine to interrupt or close this terminal."}
         </p>
       ) : null}
       {error ? (

@@ -352,10 +352,56 @@ describe("TerminalPane on a watching desktop", () => {
     )
 
     await act(async () => {
-      target.watched.resolve(watchResult({ cols: 132, rows: 40 }))
+      target.watched.resolve(watchResult({ cols: 132, rows: 40, buffer: " PASS  webhooks\x1b[1;120HX" }))
     })
 
-    expect((await drawnRows(container)).length).toBe(40)
+    const rows = await drawnRows(container)
+    expect(rows.length).toBe(40)
+    // Column 120 exists only at the holder's width; at the default 80 the
+    // cursor move would clamp and put the X at column 80.
+    expect(rows[0]!.replace(/\u00a0/gu, " ").indexOf("X")).toBe(119)
+  })
+
+  it("offers to look again after a watch the daemon refused", async () => {
+    const user = userEvent.setup()
+    const target = watcher()
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.reject(new Error("Daemon connection is not open"))
+    })
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Daemon connection is not open")
+    await user.click(screen.getByRole("button", { name: "Check again" }))
+    expect(target.watch).toHaveBeenCalledTimes(2)
+  })
+
+  it("says why a watcher's controls are inert while disconnected", async () => {
+    const target = watcher()
+    const view = (connected: boolean) => (
+      <TerminalPane connected={connected} readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />
+    )
+    const { rerender } = render(view(true))
+    await act(async () => {
+      target.watched.reject(new Error("Terminal does not exist"))
+    })
+
+    rerender(view(false))
+
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Check again" }).disabled).toBe(true)
+    expect(screen.getByText("Reconnect to the execution machine to read this shell.")).toBeTruthy()
+  })
+
+  it("announces who holds the shell", async () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.resolve(watchResult({ claimHeld: false }))
+    })
+    await act(async () => {
+      target.deliverOwnership(otherClient)
+    })
+
+    expect(screen.getAllByRole("status").some((region) => region.textContent?.includes("Claimed by a browser"))).toBe(true)
   })
 
   // A shell that exited is a closed record. Its holder can open another one,
