@@ -41,10 +41,10 @@ function isContextWindowExceeded(detail: string): boolean {
 }
 
 function isRateLimit(detail: string): boolean {
-  if (/\b429\b|\brate[_ -]?limit\b|\btoo many requests\b|\btokens?[- ]per[- ](?:minute|second) limit\b/i.test(detail)) {
+  if (/\b429\b|\brate[_ -]?limit(?:ed)?\b|\btoo many requests\b|\btokens?[- ]per[- ](?:minute|second) limit\b/i.test(detail)) {
     return true
   }
-  const claudeLimit = /you(?:'ve| have) (?:hit|reached) your(?: [\w-]+){0,4} limit/i.exec(detail)?.[0]
+  const claudeLimit = /you(?:['’]ve| have) (?:hit|reached) your(?: [\w-]+){0,4} limit/i.exec(detail)?.[0]
   return Boolean(claudeLimit && !/\b(?:context|conversation|input|output|length|tokens?)\b/i.test(claudeLimit))
 }
 

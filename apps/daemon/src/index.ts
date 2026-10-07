@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs"
-import { homedir, hostname, userInfo } from "node:os"
+import { homedir, hostname } from "node:os"
 
 import { createProductionDaemon } from "./public.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
@@ -29,8 +28,10 @@ import { rpcMethods, type ClientKind, type DeviceIssueCodeResult } from "@getdom
 import { parseDaemonEnvironment } from "./config.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
 import { readHiddenSecret, runProviderSecretCommand } from "./secret-command.js"
-import { nodeServiceEffects, runServiceCommand } from "./service/install.js"
+import { runServiceCommand } from "./service/install.js"
+import { nodeDaemonCommandDependencies, ownVersion } from "./daemon-command.js"
 import { runGuestSupervisor, stopGuestSupervisor } from "./service/supervisor-command.js"
+import { runWindowsSupervisor, stopWindowsSupervisor } from "./service/windows-job-supervisor.js"
 import { runSkillCommand } from "./skill-command.js"
 import { readServiceConfiguration, serviceEnvironment, type ServiceConfiguration } from "./service/configuration.js"
 
@@ -100,8 +101,8 @@ Options:
   -h, --help       Show this help
   -v, --version    Show the installed version
   --service-config <path>  Run with the installed non-secret service configuration
-  --service-supervise <path>  Run the installed guest crash supervisor
-  --service-supervisor-stop <path>  Retire that guest supervisor and prove shutdown
+  --service-supervise <path>  Run the installed Windows or WSL crash supervisor
+  --service-supervisor-stop <path>  Retire that supervisor and prove shutdown
 
 Environment:
   DOMOVOI_HOST                    Listener host (default: 127.0.0.1)
@@ -126,14 +127,6 @@ Environment:
   DOMOVOI_RELAY_CREDENTIAL_FILE   Absolute relay credential file instead of the keychain
   DOMOVOI_WINDOWS_POWERSHELL      Guest path to powershell.exe for WSL service install
 `
-
-// The version in this package's manifest, beside dist/.
-function ownVersion(): string {
-  const manifest = JSON.parse(
-    readFileSync(new URL("../package.json", import.meta.url), "utf8"),
-  ) as { version: string }
-  return manifest.version
-}
 
 async function main() {
   const args = process.argv.slice(2)
@@ -185,25 +178,7 @@ async function main() {
     return
   }
   if (args[0] === "service") {
-    // The service runs as the user who asked for it, so the plan is built from
-    // this process's own identity rather than anything a caller passes in.
-    const { uid, username } = userInfo()
-    process.exitCode = await runServiceCommand(args, {
-      ...nodeServiceEffects(),
-      platform: process.platform,
-      execPath: process.argv[1] ?? process.execPath,
-      runtime: process.execPath,
-      home: homedir(),
-      uid,
-      user: username,
-      environment: process.env,
-      workingDirectory: process.cwd(),
-      // Q408 A: names the runtime copy an install from an app's runtime
-      // makes. Unread, only that install refuses.
-      ...(() => { try { return { version: ownVersion() } } catch { return {} } })(),
-      stdout: (text) => process.stdout.write(text),
-      stderr: (text) => process.stderr.write(text),
-    })
+    process.exitCode = await runServiceCommand(args, await nodeDaemonCommandDependencies())
     return
   }
   if (args[0] === "open") {
@@ -256,19 +231,26 @@ async function main() {
   let serviceConfig: ServiceConfiguration | undefined
   if (args.length === 2 && args[0] === "--service-supervise") {
     const entry = process.argv[1]
-    if (!entry) throw new Error("Guest supervision requires an installed daemon entry point")
-    const record = await runGuestSupervisor(args[1]!, {
+    if (!entry) throw new Error("Service supervision requires an installed daemon entry point")
+    const windows = process.platform === "win32"
+    const record = await (windows ? runWindowsSupervisor : runGuestSupervisor)(args[1]!, {
       executable: process.execPath, args: [...process.execArgv, entry, "--service-config", args[1]!],
     })
+    const label = windows ? "Windows" : "Guest"
+    const evidence = windows ? "windows-supervisor.json" : "supervisor.json"
     if (record.state === "exhausted") {
-      process.stderr.write(`Guest supervision exhausted after ${record.crashes} crashes and ${record.attemptCount} attempts. See the profile's supervisor.json and domovoid service status.\n`)
+      process.stderr.write(`${label} supervision exhausted after ${record.crashes} crashes and ${record.attempts.length} attempts. See the profile's ${evidence} and domovoid service status.\n`)
+      process.exitCode = 1
+    } else if (record.state === "failed") {
+      process.stderr.write(`${label} supervision refused after an observation failure. See the profile's ${evidence} and domovoid service status.\n`)
       process.exitCode = 1
     }
     return
   }
   if (args.length === 2 && args[0] === "--service-supervisor-stop") {
-    const deadline = OperationDeadline.start(15_000)
-    try { process.stdout.write(JSON.stringify(await stopGuestSupervisor(args[1]!, deadline)) + "\n") }
+    const windows = process.platform === "win32"
+    const deadline = OperationDeadline.start(windows ? 30_000 : 15_000)
+    try { process.stdout.write(JSON.stringify(await (windows ? stopWindowsSupervisor : stopGuestSupervisor)(args[1]!, deadline)) + "\n") }
     finally { deadline.clear() }
     return
   }

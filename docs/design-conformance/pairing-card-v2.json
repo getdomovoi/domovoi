@@ -201,6 +201,11 @@
     },
     {
       "id": "pairing-card.code",
+      "since": "2026-10-07",
+      "note": "Differs from the drawn line on purpose, settling the --label gap the 2026-10-03 note names. The design draws The same code as domovoid pair --client <kind>, which domovoid refuses without --label. On the Phone and Tablet tabs the card keeps the drawn look and words and prints domovoid pair --client phone --label Phone or --client tablet --label Tablet, so the line runs as printed (Q336 A). A placeholder such as <device label> was not used: a copied line would fail in a shell, where < is a redirection. The Web browser tab draws no command line, though the design draws one: domovoid pair --client web --label Browser prints a QR and a domovoi-pair: payload, and the browser's connect page takes the bare word code alone, so no command gives a browser the same code until domovoid pair prints the bare code for web."
+    },
+    {
+      "id": "pairing-card.code",
       "since": "2026-10-03",
       "note": "The Web browser path landed with #704 (merge 0595a1bd): a browser code draws no QR, the slot says No QR for a browser. Type the code there., the code column says to open this address and type the code and shows webAppUrl as text when the daemon has one, and Copy hands over the bare code. The entry stays partial for the two open gaps the 2026-10-03 open-gaps note names first, now held as evidence: Show another inside the box, and a problem known before a code is spent."
     },

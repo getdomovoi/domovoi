@@ -109,6 +109,7 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
+import { normalizeLegacyEffort } from "./legacy-effort.js"
 import { approvalToolServerFact, type ApprovalScope } from "./approval-facts.js"
 import {
   ApprovalLedger,
@@ -1753,6 +1754,12 @@ export class DomovoiDaemon {
   #activeAssistantItems = new ActiveAssistantItemCache()
   #providerPlanTurns = new Set<string>()
   #planModeTurns = new Set<string>()
+  // Only successful Domovoi dispatches establish origin. This is not restored
+  // from sessions or guessed from the most recent sender (including steering).
+  #approvalTurnOrigins = new Map<string, {
+    identity: string
+    origin: NonNullable<WorkspaceSnapshot["approvals"][number]["origin"]>
+  }>()
   #consecutiveSaveFailures = 0
   #agentTimeoutMs: number
   #auditReadTimeoutMs: number
@@ -3647,15 +3654,25 @@ export class DomovoiDaemon {
   }
 
   #holdApprovalTargets(approvalId: string, held: HeldApproval): void {
-    this.#forgetDepartedFileApprovalTargets()
+    this.#forgetDepartedApprovalContext()
     this.#approvalTargets.set(approvalId, held)
   }
 
   // A card leaves by many routes (a decision, archive, a provider disconnect,
   // session close, emergency stop, expiry), so rather than each route
   // forgetting its request, the held requests are trimmed to the waiting cards
-  // whenever a card is held and whenever state is saved or broadcast.
-  #forgetDepartedFileApprovalTargets(): void {
+  // whenever a card is held and whenever state is saved or broadcast. Origins
+  // survive only while their sessions retain a live turn, so archive, deletion
+  // and project switches cannot retain entries indefinitely.
+  #forgetDepartedApprovalContext(): void {
+    if (this.#approvalTurnOrigins.size > 0) {
+      const activeSessions = new Set(this.#snapshot.sessions
+        .filter((session) => session.state !== "archived" && session.activeTurnId !== undefined)
+        .map((session) => session.id))
+      for (const sessionId of this.#approvalTurnOrigins.keys()) {
+        if (!activeSessions.has(sessionId)) this.#approvalTurnOrigins.delete(sessionId)
+      }
+    }
     if (this.#approvalTargets.size === 0) return
     const waiting = new Set(this.#snapshot.approvals.map((approval) => approval.id))
     for (const approvalId of this.#approvalTargets.keys()) {
@@ -3803,7 +3820,7 @@ export class DomovoiDaemon {
 
   #sendSnapshot(): void {
     this.#snapshotBroadcastHeld = false
-    this.#forgetDepartedFileApprovalTargets()
+    this.#forgetDepartedApprovalContext()
     this.#flushPendingWorkspaceDeltas(true)
     this.#updateUsageAccounting(() => this.#usageLedger.interruptPending?.(
       this.#snapshot.sessions.flatMap((session) => session.providerThreadId && session.activeTurnId
@@ -5869,7 +5886,7 @@ export class DomovoiDaemon {
       const ask = agent.permissionCapabilities?.ask === "read-only"
       return rpcMethods["runtime.discover"].result.parse({
         ...identity, status: "ready", models,
-        defaultRuntime: { provider, model: model.id, reasoning: model.defaultReasoningEffort, permissionMode: ask ? "ask" : "plan", auto: false },
+        defaultRuntime: { provider, model: model.id, reasoning: model.defaultReasoningEffort ?? "unset", permissionMode: ask ? "ask" : "plan", auto: false },
         permissionModes: ask ? ["ask", "plan", "build"] : ["plan", "build"],
         supportsAuto: agent.permissionCapabilities?.buildAuto === "pre-execution",
       })
@@ -5922,17 +5939,30 @@ export class DomovoiDaemon {
       ? models.find((candidate) => candidate.isDefault) ?? models[0]
       : models.find((candidate) => candidate.id === runtime.model)
     if (!model) throw new RuntimeValidationError(`Model is not available from ${runtime.provider}`)
+    const defaultReasoningEffort = model.defaultReasoningEffort ?? "unset"
+    // Default model selection falls back from effort carried across providers.
+    // Explicit models accept unset or the old Claude adapter's legacy medium.
+    if (model.supportedReasoningEfforts.length === 0 && model.defaultReasoningEffort === undefined) {
+      if (runtime.model !== "default" && runtime.reasoning !== "unset" && runtime.reasoning !== "medium") {
+        throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")
+      }
+      return { ...runtime, model: model.id, reasoning: "unset" }
+    }
     const supportedReasoningEfforts = model.supportedReasoningEfforts.length > 0
-      ? model.supportedReasoningEfforts
-      : [model.defaultReasoningEffort]
+      ? [...model.supportedReasoningEfforts, ...(model.defaultReasoningEffort === undefined ? ["unset"] : [])]
+      : [defaultReasoningEffort]
     const reasoning = runtime.model === "default"
       && !supportedReasoningEfforts.includes(runtime.reasoning)
-      ? model.defaultReasoningEffort
+      ? defaultReasoningEffort
       : runtime.reasoning
-    if (!supportedReasoningEfforts.includes(reasoning)) {
+    const resolvedReasoning = !supportedReasoningEfforts.includes(reasoning)
+      && supportedReasoningEfforts.includes("unset")
+      ? normalizeLegacyEffort(runtime.provider, reasoning)
+      : reasoning
+    if (!supportedReasoningEfforts.includes(resolvedReasoning)) {
       throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")
     }
-    return { ...runtime, model: model.id, reasoning }
+    return { ...runtime, model: model.id, reasoning: resolvedReasoning }
   }
 
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
@@ -10524,6 +10554,20 @@ export class DomovoiDaemon {
         currentSession.state = "active"
         currentSession.updatedAt = createdAt
         currentSession.activeTurnId = turnId
+        if (!steering) {
+          this.#approvalTurnOrigins.delete(currentSession.id)
+          const connectionId = this.#connectionIds.get(socket)
+          if (authenticatedActor?.kind === "client" && connectionId) {
+            this.#approvalTurnOrigins.set(currentSession.id, {
+              identity: providerTurnIdentity(dispatchRuntime.provider, providerThreadId, turnId),
+              origin: {
+                client: authenticatedActor.client,
+                connectionId,
+                ...(authenticatedActor.clientId === undefined ? {} : { clientId: authenticatedActor.clientId }),
+              },
+            })
+          }
+        }
         if (dispatchRuntime.permissionMode === "plan") {
           this.#planModeTurns.add(providerTurnIdentity(dispatchRuntime.provider, providerThreadId, turnId))
         }
@@ -11127,6 +11171,7 @@ export class DomovoiDaemon {
       const request: ApprovalRequest = {
         workspace: session.workspacePath ?? project.path,
         cwd: requestCwd,
+        cwdSource: event.cwdSource,
         path: event.path,
         command,
         reason: event.reason,
@@ -11148,8 +11193,13 @@ export class DomovoiDaemon {
       // The card, the automatic allow and a standing rule all start from the
       // settled request: its execution resolved and every path on it judged
       // on disk, under one deadline.
+      const turnOrigin = this.#approvalTurnOrigins.get(session.id)
+      const origin = eventTurnId !== undefined
+        && turnOrigin?.identity === providerTurnIdentity(provider, threadId, eventTurnId)
+        ? turnOrigin.origin : undefined
       const settlement = await settleApproval({
         approval: {
+          ...(origin === undefined ? {} : { origin }),
           id: `approval-${randomUUID()}`,
           sessionId: session.id,
           machine: this.#snapshot.machine.name,
@@ -11438,6 +11488,7 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "turn-completed") {
+      this.#approvalTurnOrigins.delete(session.id)
       // A command whose completion never arrived by the end of its turn keeps
       // a receipt without a run time, as ruled 2026-09-23.
       for (const [key, run] of this.#approvedRuns) if (run.sessionId === session.id) this.#approvedRuns.delete(key)
@@ -11668,7 +11719,7 @@ export class DomovoiDaemon {
       if (this.#approvalsAnsweredElsewhere.get(id) === "recorded") this.#approvalsAnsweredElsewhere.delete(id)
     }
     this.#snapshot.workingPlans = next.workingPlans
-    this.#forgetDepartedFileApprovalTargets()
+    this.#forgetDepartedApprovalContext()
     for (const approval of removed) {
       if (!blockedIds.has(approval.id)) continue
       this.#appendAudit({
@@ -12303,7 +12354,14 @@ export class DomovoiDaemon {
         }
       }
       const recoveredAt = new Date().toISOString()
-      const session = { ...intent.session, updatedAt: recoveredAt }
+      const session = {
+        ...intent.session,
+        runtime: {
+          ...intent.session.runtime,
+          reasoning: normalizeLegacyEffort(intent.session.runtime.provider, intent.session.runtime.reasoning),
+        },
+        updatedAt: recoveredAt,
+      }
       let detail = intent.cleanupStarted
         ? "Worktree cleanup started but did not record completion; preserve the worktree for inspection."
         : "No durable worktree completion receipt exists; the partial worktree requires inspection."
@@ -13230,7 +13288,7 @@ export class DomovoiDaemon {
   // start is carried by that write. Sharing it keeps the backlog to one
   // running write and one pending write however fast changes arrive.
   async #persistSnapshot(): Promise<void> {
-    this.#forgetDepartedFileApprovalTargets()
+    this.#forgetDepartedApprovalContext()
     this.#syncArtifactWatchActivity()
     const pending = this.#pendingSnapshotPersist ??= this.#serializeSnapshotPersistence(async () => {
       this.#pendingSnapshotPersist = undefined

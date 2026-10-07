@@ -1,10 +1,14 @@
 import assert from "node:assert/strict"
+import { execFile } from "node:child_process"
 import { EventEmitter } from "node:events"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir, userInfo } from "node:os"
 import { delimiter, join, sep } from "node:path"
+import { createRequire } from "node:module"
 import { PassThrough } from "node:stream"
 import test from "node:test"
+import { pathToFileURL } from "node:url"
+import { promisify } from "node:util"
 
 import {
   launchSmokeElectronArgs,
@@ -14,8 +18,12 @@ import {
   packagedAsarPath,
 } from "./launch-smoke-args.mjs"
 import * as launch from "./launch-smoke-args.mjs"
+import * as live from "./launch-smoke-live-profile.mjs"
 import { executableOnPath } from "./desktop-smoke.mjs"
 import * as smoke from "./desktop-smoke.mjs"
+
+const execFileAsync = promisify(execFile)
+const daemonRequire = createRequire(new URL("../../daemon/package.json", import.meta.url))
 
 // Both path builders name a target platform's output directories, but the
 // paths themselves are opened and spawned on the machine doing the packaging,
@@ -314,4 +322,189 @@ test("isolates production paths and listener settings from the parent environmen
     "NODE_OPTIONS", "home", "userprofile", "appdata"]) {
     assert.equal(env[key], undefined, key)
   }
+})
+
+// T24: the login-service calls take their lease under the passwd home, which
+// the smoke's HOME cannot move. Smokes that start the application turn those
+// calls off with the main process's test-only switch, which only an
+// unpackaged app reads (src/main/launch-smoke-profile.ts).
+test("passes the test-only login service switch before the application directory", () => {
+  const args = launchSmokeElectronArgs({ platform: "darwin", ci: false, desktopRoot: "/desktop", loginServiceOff: true })
+  assert.deepEqual(args, ["--headless", "--disable-gpu", "--domovoi-test-no-login-service", "/desktop"])
+  assert.equal(launch.loginServiceOffSwitch, "--domovoi-test-no-login-service")
+})
+
+test("refuses the login service switch for a packaged build, which ignores it", () => {
+  assert.throws(
+    () => launchSmokeElectronArgs({ platform: "linux", ci: true, desktopRoot: "/desktop", packaged: true, loginServiceOff: true }),
+    /packaged/u,
+  )
+})
+
+test("the main process reads the same switch the runner passes", async () => {
+  const source = await readFile(new URL("../src/main/launch-smoke-profile.ts", import.meta.url), "utf8")
+  assert.ok(source.includes(`"${launch.loginServiceOffSwitch}"`))
+})
+
+test("both smokes that start the application turn the login service off and guard the live profile", async () => {
+  for (const name of ["launch-smoke.mjs", "fleet-client-smoke.mjs"]) {
+    const source = await readFile(new URL(`./${name}`, import.meta.url), "utf8")
+    assert.match(source, /loginServiceOff: true/u, name)
+    assert.match(source, /liveProfileSnapshot\(/u, name)
+    assert.match(source, /liveProfileVerdict\(/u, name)
+  }
+})
+
+// The daemon's own lease, from its source, claimed and released in a child
+// with a scratch passwd home standing in for the real one.
+async function claimRealLease(home) {
+  const lease = new URL("../../daemon/src/service/operation-lease.ts", import.meta.url).href
+  const tsx = pathToFileURL(daemonRequire.resolve("tsx")).href
+  await execFileAsync(process.execPath, ["--no-warnings", "--import", tsx, "--input-type=module", "-e",
+    `const { claimServiceOperation } = await import(${JSON.stringify(lease)}); claimServiceOperation(process.env.LEASE_HOME).release()`,
+  ], { env: { ...process.env, LEASE_HOME: home }, timeout: 30_000 })
+}
+
+test("sees the daemon's real lease claimed on an account with no profile", { timeout: 60_000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  try {
+    const before = await live.liveProfileSnapshot(home)
+    await claimRealLease(home)
+    const changed = live.liveProfileChanges(before, await live.liveProfileSnapshot(home))
+    assert.ok(changed.includes(join(home, ".domovoi")), changed.join(", "))
+    assert.ok(changed.includes(join(home, ".domovoi", "service-operation-lease.sqlite")), changed.join(", "))
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+// Windows has no mode for the lease's chmod to touch, and an empty database
+// claimed and released again leaves nothing else behind there.
+test("sees the daemon's real lease claimed again where it already exists", { timeout: 60_000, skip: process.platform === "win32" }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  try {
+    await claimRealLease(home)
+    const before = await live.liveProfileSnapshot(home)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    await claimRealLease(home)
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)),
+      [join(home, ".domovoi", "service-operation-lease.sqlite")])
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test("a profile directory whose mode changes is a change", { skip: process.platform === "win32" }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  try {
+    await mkdir(join(home, ".domovoi"), { mode: 0o755 })
+    await chmod(join(home, ".domovoi"), 0o755)
+    const before = await live.liveProfileSnapshot(home)
+    await chmod(join(home, ".domovoi"), 0o700)
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)), [join(home, ".domovoi")])
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+// What a runner's finally does once the run is over. A failed run's own error
+// always stays the one thrown; the profile verdict and cleanup failures are
+// printed beside it. A run that passed fails on either.
+test("a failed run keeps its own error and prints the profile verdict and cleanup failures", () => {
+  const cleanup = [new Error("child did not exit"), new Error("rm failed")]
+  assert.deepEqual(live.smokeCleanupOutcome({ failed: true, touched: "profile changed", cleanup }),
+    { report: ["profile changed", ...cleanup], error: undefined })
+  assert.deepEqual(live.smokeCleanupOutcome({ failed: true, touched: undefined, cleanup: [cleanup[0]] }),
+    { report: [cleanup[0]], error: undefined })
+})
+
+test("a run that passed throws the profile verdict first, then a cleanup failure", () => {
+  const cleanup = [new Error("rm failed")]
+  const touched = live.smokeCleanupOutcome({ failed: false, touched: "profile changed", cleanup })
+  assert.equal(touched.error.message, "profile changed")
+  assert.deepEqual(touched.report, cleanup)
+  assert.deepEqual(live.smokeCleanupOutcome({ failed: false, touched: undefined, cleanup }), { report: [], error: cleanup[0] })
+  assert.deepEqual(live.smokeCleanupOutcome({ failed: false, touched: undefined, cleanup: [] }), { report: [], error: undefined })
+})
+
+test("both runners settle their finally through the shared outcome", async () => {
+  for (const name of ["launch-smoke.mjs", "fleet-client-smoke.mjs"]) {
+    const source = await readFile(new URL(`./${name}`, import.meta.url), "utf8")
+    assert.match(source, /smokeCleanupOutcome\(\{ failed, touched, cleanup \}\)/u, name)
+  }
+})
+
+test("the verdict names the changed paths", async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  try {
+    const before = await live.liveProfileSnapshot(home)
+    assert.equal(await live.liveProfileVerdict(before, home), undefined)
+    await mkdir(join(home, ".domovoi"))
+    assert.match(await live.liveProfileVerdict(before, home), /changed during the smoke: .*\.domovoi\./u)
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+// A home that is a file cannot be looked into: lstat fails with ENOTDIR.
+// Windows answers ENOENT for the same path, so it has no such case to test.
+test("an unreadable profile is reported, not thrown", { skip: process.platform === "win32" }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  try {
+    const file = join(home, "not-a-directory")
+    await writeFile(file, "")
+    const before = await live.liveProfileSnapshot(home)
+    assert.match(await live.liveProfileVerdict(before, file), /could not be read after the smoke/u)
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test("a live profile that does not exist is never created by the snapshot, and its creation is a change", async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  try {
+    const before = await live.liveProfileSnapshot(home)
+    await assert.rejects(readFile(join(home, ".domovoi")), { code: "ENOENT" })
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)), [])
+    await mkdir(join(home, ".domovoi"))
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)), [join(home, ".domovoi")])
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test("names every change to the service-operation lease and its SQLite files", async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  const profile = join(home, ".domovoi")
+  const lease = join(profile, "service-operation-lease.sqlite")
+  try {
+    await mkdir(profile)
+    await writeFile(lease, "")
+    const before = await live.liveProfileSnapshot(home)
+    await writeFile(lease, "written")
+    await writeFile(`${lease}-journal`, "")
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)), [lease, `${lease}-journal`])
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+// The lease writes nothing into its empty database. What it leaves on the
+// file itself is the chmod to 0600, which moves the change time even when the
+// mode was already 0600. Windows has no such mode.
+test("a chmod to the same mode still counts as a change to the lease", { skip: process.platform === "win32" }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  const lease = join(home, ".domovoi", "service-operation-lease.sqlite")
+  try {
+    await mkdir(join(home, ".domovoi"))
+    await writeFile(lease, "")
+    await chmod(lease, 0o600)
+    const before = await live.liveProfileSnapshot(home)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    await chmod(lease, 0o600)
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)), [lease])
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test("ignores files a running daemon on the live profile writes", async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  const profile = join(home, ".domovoi")
+  try {
+    await mkdir(profile)
+    await writeFile(join(profile, "service-operation-lease.sqlite"), "")
+    const before = await live.liveProfileSnapshot(home)
+    await writeFile(join(profile, "state.sqlite"), "written by a running daemon")
+    await writeFile(join(profile, "profile-lease.sqlite-journal"), "")
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)), [])
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test("the live profile is the passwd home's, not HOME's", () => {
+  assert.equal(live.liveProfileHome(), userInfo().homedir)
 })

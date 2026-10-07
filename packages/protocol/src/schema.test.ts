@@ -72,6 +72,11 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
+  it("leaves the demo OpenCode session effort unset", () => {
+    expect(demoWorkspace.sessions.find((session) => session.id === "session-audit")?.runtime)
+      .toMatchObject({ provider: "opencode", reasoning: "unset" })
+  })
+
   it("uses a breaking minor for client access, refusals, and queued sends", () => {
     expect(protocolVersion).toBe("0.8.0")
     expect(demoWorkspace.protocolVersion).toBe(protocolVersion)
@@ -1532,6 +1537,15 @@ describe("workspace protocol", () => {
       defaultReasoningEffort: "medium",
       isDefault: false,
     }).success).toBe(true)
+  })
+
+  it.each([{ levels: ["low", "high"] }, { levels: [] }])("accepts an absent model default with $levels", ({ levels }) => {
+    const model = {
+      provider: "claude-code", id: "sonnet", displayName: "Sonnet", description: "",
+      supportedReasoningEfforts: levels, isDefault: true,
+    }
+    expect(providerModelSchema.parse(model)).toEqual(model)
+    expect(providerModelSchema.parse(model)).not.toHaveProperty("defaultReasoningEffort")
   })
 
   it("says per model whether an image attachment is delivered to it", () => {

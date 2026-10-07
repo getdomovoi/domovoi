@@ -55,6 +55,44 @@ describe("provider failure classification", () => {
     })
   })
 
+  // Wordings collected for T32. "rate limited" is the OpenCode adapter fixture
+  // (opencode.test.ts) and the M1 acceptance walk report; the curly-apostrophe
+  // lines are Codex 0.160.1's usage-limit text, which uses U+2019; the
+  // retry-limit line is Codex's exhausted-retry text.
+  it.each([
+    "rate limited",
+    "Rate limited, retry later",
+    "APIError: rate-limited",
+    "rate_limited",
+    "You’ve hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits",
+    "You’ve hit your usage limit for gpt-5.5. Switch to another model now",
+    "exceeded retry limit, last status: 429 Too Many Requests",
+  ])("classifies a provider rate-limit wording: %s", (detail) => {
+    expect(classifyProviderFailure(new Error(detail))).toEqual({
+      kind: "rate-limit",
+      action: "retry",
+      message: "Provider rate limit reached",
+      retryable: true,
+    })
+  })
+
+  it.each([
+    "You’ve reached your context limit",
+    "You’ve hit your maximum conversation length limit",
+  ])("keeps a curly-apostrophe context limit out of the rate-limit class: %s", (detail) => {
+    expect(classifyProviderFailure(new Error(detail)).kind).toBe("context-window-exceeded")
+  })
+
+  it.each([
+    "overloaded",
+    "Server overloaded; retry later.",
+    "500 Internal server error",
+    "client rate limiter delayed a request",
+    "Failed to generate limited preview",
+  ])("leaves unrelated text in the generic class: %s", (detail) => {
+    expect(classifyProviderFailure(new Error(detail)).kind).toBe("unknown")
+  })
+
   it("never returns raw provider text or embedded secrets", () => {
     const failure = classifyProviderFailure(new Error(
       "401 token=super-secret account=secret@example.com",

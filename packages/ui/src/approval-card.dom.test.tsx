@@ -4,6 +4,7 @@ import { demoWorkspace } from "@getdomovoi/protocol"
 import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { ApprovalCard } from "./approval-card"
 import { DaemonRpcError } from "./client"
 import { Thread } from "./workspace-shell.js"
 
@@ -343,6 +344,10 @@ it.each(["desktop", "web"] as const)("shows the rewritten file target on the %s 
   )
   const { rerender } = render(thread(snapshot))
   const affects = () => {
+    // The desktop draws the facts behind a disclosure; open it if a fact is
+    // hidden. The web card has none and shows them all.
+    const open = screen.queryByRole("button", { name: "What does this touch?" })
+    if (open) fireEvent.click(open)
     const terms = [...screen.getByRole("alert").querySelectorAll("dt")]
     return terms.find((term) => term.textContent === "Affects")?.nextElementSibling?.textContent
   }
@@ -458,11 +463,14 @@ it("denies at once, and keeps a note as a quiet secondary that promises the agen
       onPauseSession={vi.fn(async () => {})}
     />,
   )
+  // The design's weights: Allow once is the one filled button, Always and
+  // Deny are outlined in the gate's own border, and the note is a quiet
+  // ghost with no outline.
   const weight = (name: string) => screen.getByRole("button", { name }).className
   expect(weight("Allow once")).toContain("bg-warning")
-  expect(weight("Always for this command here")).toContain("border-border")
-  expect(weight("Deny")).toContain("border-border")
-  expect(weight("Deny with a note")).not.toContain("border-border")
+  expect(weight("Always for this command here")).toContain("border-warn-border")
+  expect(weight("Deny")).toContain("border-warn-border")
+  expect(weight("Deny with a note")).not.toContain("border-warn-border")
 
   await user.click(screen.getByRole("button", { name: "Deny" }))
   expect(onResolve).toHaveBeenCalledWith(snapshot.approvals[0]!.id, "deny", undefined, 0)
@@ -562,7 +570,119 @@ it("names the agent and mode on the header line", () => {
   expect(terms).not.toContain("Agent")
   expect(terms).not.toContain("Mode")
   expect(terms).toContain("Machine")
-  expect(terms).toContain("Est. duration")
+  expect(terms).toContain("Estimated")
+})
+
+// S3.10h: the desktop card is the drawn card. Its header says what it wants
+// from the reader. The design draws no Hard gate badge there, so the risk
+// rides the meta line rather than leaving the card.
+it("heads the desktop gate Waiting on your decision, with a hard gate named on the meta line", () => {
+  const approval = renderThread("desktop", "hard-gate")
+  const card = screen.getByRole("alert")
+  expect(card.textContent).toContain("Waiting on your decision")
+  expect(card.textContent).not.toContain("Approval required")
+  expect(card.textContent).toContain(`${approval.agent} · ${approval.mode} · hard gate`)
+  cleanup()
+
+  const normal = renderThread("desktop", "normal")
+  const plain = screen.getByRole("alert")
+  expect(plain.textContent).toContain(`${normal.agent} · ${normal.mode}`)
+  expect(plain.textContent).not.toContain("hard gate")
+})
+
+// The design folds the facts under the decisions behind What does this
+// touch?. Ruled Q7 B (2026-10-06): the disclosure starts open, so no fact
+// sits behind a click: for a file edit the command reads only the tool's
+// name and Affects is the line that names the file.
+it("draws the desktop facts under the decisions, behind a disclosure that starts open", async () => {
+  const user = userEvent.setup()
+  const approval = renderThread("desktop", "normal")
+  const card = screen.getByRole("alert")
+  const hide = within(card).getByRole("button", { name: "Hide what this touches" })
+  expect(hide.getAttribute("aria-expanded")).toBe("true")
+  const facts = card.querySelector("dl")!
+  expect(hide.getAttribute("aria-controls")).toBe(facts.id)
+  expect([...facts.querySelectorAll("dt")].map((term) => term.textContent))
+    .toEqual(["Machine", "Working dir", "Affects", "Network", "Estimated"])
+  for (const value of [approval.machine, approval.directory, approval.affects, approval.network, approval.estimatedDuration]) {
+    expect(within(facts).getByText(value)).toBeTruthy()
+  }
+  const allow = within(card).getByRole("button", { name: "Allow once" })
+  expect(allow.compareDocumentPosition(facts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+  await user.click(hide)
+  // Folded, not removed: the control's aria-controls still names it.
+  expect(facts.hidden).toBe(true)
+  const show = within(card).getByRole("button", { name: "What does this touch?" })
+  expect(show.getAttribute("aria-expanded")).toBe("false")
+  expect(show.getAttribute("aria-controls")).toBe(facts.id)
+  await user.click(show)
+  expect(facts.hidden).toBe(false)
+  expect(within(card).getByText(approval.affects)).toBeTruthy()
+})
+
+// Folding is a choice about the facts the card showed. When the daemon
+// revises the gate, the decision would answer facts the reader has not seen,
+// so the facts open again on the new revision.
+it("opens folded facts again when the daemon revises the gate", async () => {
+  const user = userEvent.setup()
+  const approval = structuredClone(demoWorkspace).approvals[0]!
+  approval.risk = "normal"
+  approval.affects = "The file one/file in the session worktree."
+  const { container, rerender } = render(<ApprovalCard approval={approval} onResolve={vi.fn()} surface="desktop" connected />)
+  const facts = () => container.querySelector("dl")!
+  await user.click(screen.getByRole("button", { name: "Hide what this touches" }))
+  expect(facts().hidden).toBe(true)
+
+  // The same revision redrawn stays folded.
+  rerender(<ApprovalCard approval={structuredClone(approval)} onResolve={vi.fn()} surface="desktop" connected />)
+  expect(screen.getByRole("button", { name: "What does this touch?" })).toBeTruthy()
+  expect(facts().hidden).toBe(true)
+
+  const revised = { ...structuredClone(approval), revision: approval.revision + 1, affects: "The file two/file in the session worktree." }
+  rerender(<ApprovalCard approval={revised} onResolve={vi.fn()} surface="desktop" connected />)
+  expect(screen.getByRole("button", { name: "Hide what this touches" }).getAttribute("aria-expanded")).toBe("true")
+  expect(facts().hidden).toBe(false)
+  expect(within(facts()).getByText("The file two/file in the session worktree.")).toBeTruthy()
+})
+
+// Writing a note does not take the facts away: the disclosure stays beside
+// the note's controls, and the note survives a fold and an unfold.
+it("keeps the facts disclosure while a denial note is written", async () => {
+  const user = userEvent.setup()
+  const approval = structuredClone(demoWorkspace).approvals[0]!
+  render(<ApprovalCard approval={approval} onResolve={vi.fn()} surface="desktop" connected />)
+  await user.click(screen.getByRole("button", { name: "Deny with a note" }))
+  await user.type(screen.getByLabelText("Note on this denial"), "Not on production")
+  await user.click(screen.getByRole("button", { name: "Hide what this touches" }))
+  expect(document.querySelector("dl")!.hidden).toBe(true)
+  await user.click(screen.getByRole("button", { name: "What does this touch?" }))
+  expect(document.querySelector("dl")!.hidden).toBe(false)
+  expect((screen.getByLabelText("Note on this denial") as HTMLInputElement).value).toBe("Not on production")
+})
+
+// Reading the facts decides nothing, so a watching client, whose decisions
+// are locked (Q372 A), can still open and fold them.
+it("lets a watching client open and fold the facts while the decisions stay locked", async () => {
+  const user = userEvent.setup()
+  const approval = structuredClone(demoWorkspace).approvals[0]!
+  const onResolve = vi.fn()
+  render(<ApprovalCard approval={approval} onResolve={onResolve} surface="desktop" watching connected />)
+  expect((screen.getByRole("button", { name: "Allow once" }) as HTMLButtonElement).disabled).toBe(true)
+  const hide = screen.getByRole("button", { name: "Hide what this touches" }) as HTMLButtonElement
+  expect(hide.disabled).toBe(false)
+  await user.click(hide)
+  expect(screen.getByRole("button", { name: "What does this touch?" })).toBeTruthy()
+  expect(onResolve).not.toHaveBeenCalled()
+})
+
+// The signed web design draws no facts and no disclosure. The web card keeps
+// every fact open, since a client does not omit approval facts.
+it("keeps every fact open on the web card, with no disclosure", () => {
+  const approval = renderThread("web")
+  const card = screen.getByRole("alert")
+  expect(within(card).queryByRole("button", { name: /what this touches|What does this touch/u })).toBeNull()
+  expect(within(card).getByText(approval.affects)).toBeTruthy()
 })
 
 // Ruled by fetzy 2026-09-24: a request the daemon could not resolve cannot
@@ -594,3 +714,126 @@ it.each(["desktop", "web"] as const)("offers no Always on the %s card for a requ
   expect(screen.queryByRole("button", { name: /^Always/u })).toBeNull()
 })
 
+
+// S3.10h2: the facts #740 put on the wire. Each is drawn only when the daemon
+// sent it, and a client never claims a turn as its own before it knows its id.
+function factsThread(
+  mutate: (snapshot: typeof demoWorkspace) => void,
+  props: Partial<ComponentProps<typeof Thread>> = {},
+) {
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals[0]!.risk = "normal"
+  mutate(snapshot)
+  render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+      {...props}
+    />,
+  )
+  return { approval: snapshot.approvals[0]!, card: screen.getByRole("alert") }
+}
+
+const thisConnection = "3f0a2b9c-4d5e-4f60-8a71-b2c3d4e5f607"
+const otherConnection = "9e8d7c6b-5a49-4382-9170-6f5e4d3c2b1a"
+
+it("says a turn this client started is from you, once it knows its own connection", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.origin = { client: "desktop", connectionId: thisConnection }
+  }, { connectionId: thisConnection })
+  expect(card.textContent).toContain("You started this turn from this desktop.")
+})
+
+it("names the client kind for a turn another connection started", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.origin = { client: "phone", connectionId: otherConnection, clientId: "device-phone" }
+  }, { connectionId: thisConnection })
+  expect(card.textContent).toContain("This turn started from a phone.")
+  expect(card.textContent).not.toMatch(/You started/u)
+})
+
+// A connection id is new on every reconnect, so a different one does not
+// prove another client: the line names the kind, which stays true either way.
+it("never claims a turn before this client knows its connection, and names only the kind", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.origin = { client: "desktop", connectionId: thisConnection }
+  }, { connectionId: null })
+  expect(card.textContent).toContain("This turn started from a desktop.")
+  expect(card.textContent).not.toMatch(/You started/u)
+  expect(card.textContent).not.toMatch(/another/u)
+})
+
+it("draws no origin line when the daemon sent no origin", () => {
+  const { card } = factsThread(() => {}, { connectionId: thisConnection })
+  expect(card.textContent).not.toMatch(/started this turn|turn started from/u)
+})
+
+it("names the command line for a turn the CLI started", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.origin = { client: "cli", connectionId: otherConnection }
+  }, { connectionId: thisConnection, surface: "web" })
+  expect(card.textContent).toContain("This turn started from the command line.")
+})
+
+it("says a turn this browser tab started is from you on the web card", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.origin = { client: "web", connectionId: thisConnection }
+  }, { connectionId: thisConnection, surface: "web" })
+  expect(card.textContent).toContain("You started this turn from this browser.")
+})
+
+function outsideFact(card: HTMLElement) {
+  const term = [...card.querySelectorAll("dt")].find((candidate) => candidate.textContent === "Outside project")
+  return term?.nextElementSibling?.textContent
+}
+
+it.each([
+  [{ outside: true, basis: "path" }, "yes, by the path it names"],
+  [{ outside: false, basis: "path" }, "no, by the path it names"],
+  [{ outside: true, basis: "working-directory" }, "yes, by where it runs"],
+  [{ outside: false, basis: "working-directory" }, "no, by where it runs, not by what it reaches"],
+] as const)("draws Outside project %j with its basis", (fact, text) => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.outsideProject = { ...fact }
+  })
+  expect(outsideFact(card)).toBe(text)
+  // The sixth fact fills the drawn three by two grid.
+  expect([...card.querySelectorAll("dt")].map((term) => term.textContent))
+    .toEqual(["Machine", "Working dir", "Affects", "Network", "Estimated", "Outside project"])
+})
+
+it("draws Outside project on the web card too", () => {
+  const { card } = factsThread((snapshot) => {
+    snapshot.approvals[0]!.outsideProject = { outside: true, basis: "path" }
+  }, { surface: "web" })
+  expect(outsideFact(card)).toBe("yes, by the path it names")
+})
+
+// Absent means the daemon could not decide. Neither yes nor no is true then.
+it("draws no Outside project fact when the daemon could not decide", () => {
+  const { card } = factsThread(() => {})
+  expect(outsideFact(card)).toBeUndefined()
+  expect(card.textContent).not.toMatch(/Outside project/iu)
+})
+
+it("leads the meta line with step n of N when a plan step waits on this gate", () => {
+  const { approval, card } = factsThread((snapshot) => {
+    snapshot.workingPlans[0]!.steps[2]!.blocker = { kind: "approval", approvalId: snapshot.approvals[0]!.id }
+  })
+  expect(card.textContent).toContain(`step 3 of 4 · ${approval.agent} · ${approval.mode}`)
+})
+
+it("draws no step when no plan step waits on this gate", () => {
+  const { card } = factsThread(() => {})
+  expect(card.textContent).not.toMatch(/step \d+ of \d+/u)
+})

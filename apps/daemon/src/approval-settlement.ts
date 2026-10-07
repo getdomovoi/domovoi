@@ -8,6 +8,7 @@ import {
   approvalDirectory,
   approvalFacts,
   approvalOperands,
+  approvalOutsideProjectFact,
   executionRecordPaths,
   executionRecordText,
   hiddenAffects,
@@ -67,7 +68,7 @@ export type Approval = WorkspaceSnapshot["approvals"][number]
 declare const settledApproval: unique symbol
 export type SettledApproval = Approval & { readonly [settledApproval]: true }
 
-type DerivedField = "risk" | "operation" | "command" | "directory" | "affects" | "network" | "execution"
+type DerivedField = "risk" | "operation" | "command" | "directory" | "affects" | "network" | "execution" | "outsideProject"
 export type ApprovalIdentity = Omit<Approval, DerivedField>
 
 // The request as the agent gave it, held in memory while its card waits. The
@@ -76,6 +77,8 @@ export type ApprovalIdentity = Omit<Approval, DerivedField>
 export type ApprovalRequest = Readonly<{
   workspace: string
   cwd?: string | undefined
+  // A session/display fallback is not evidence of the command's own cwd.
+  cwdSource?: "request" | undefined
   path?: string | undefined
   command?: string | undefined
   reason?: string | undefined
@@ -85,6 +88,7 @@ export type ApprovalRequest = Readonly<{
 }>
 
 export type SavedCard = Readonly<{
+  outsideProject?: NonNullable<Approval["outsideProject"]>
   directory: string
   affects: string
   network: string
@@ -131,7 +135,7 @@ function mint(approval: Approval): SettledApproval {
 }
 
 function identityOf(approval: Approval): ApprovalIdentity {
-  const { risk: _risk, operation: _operation, command: _command, directory: _directory, affects: _affects, network: _network, execution: _execution, ...identity } = approval
+  const { risk: _risk, operation: _operation, command: _command, directory: _directory, affects: _affects, network: _network, execution: _execution, outsideProject: _outsideProject, ...identity } = approval
   return identity
 }
 
@@ -332,6 +336,9 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
   const blockedHidden = request.blockedPath !== undefined && blockedSpellings !== undefined
     && (namesCredential(blockedSpellings) || redactDurableText(request.blockedPath).redacted)
 
+  const resolvedPath = request.path === undefined
+    ? undefined
+    : await resolveApprovalPath(request.workspace, request.path, request.cwd, deadline)
   let facts: { affects: string; network: string; redacted: boolean; sensitive: boolean; hiddenPaths: string[] }
   if (request.path !== undefined) {
     facts = approvalFacts({
@@ -339,7 +346,7 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
       workspace: request.workspace,
       cwd: request.cwd,
       scope: input.scope,
-      resolved: await resolveApprovalPath(request.workspace, request.path, request.cwd, deadline),
+      resolved: resolvedPath,
       spellings: fileSpellings,
     })
   } else if (saved !== undefined) {
@@ -357,6 +364,29 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
     }
   } else {
     facts = approvalFacts({ workspace: request.workspace, cwd: request.cwd, scope: input.scope })
+  }
+
+  // Old saved cards keep an unknown fact. Saved path facts can be rechecked
+  // from an unambiguous file line. A saved display directory cannot establish
+  // request cwd provenance, even if the card once held a working-directory fact.
+  let outsideProject: Approval["outsideProject"]
+  if (request.tool === undefined && input.approval.toolServer === undefined && (saved === undefined || saved.outsideProject !== undefined)) {
+    if (request.path !== undefined) {
+      outsideProject = approvalOutsideProjectFact(resolvedPath, realWorkspace, "path")
+    } else if (saved?.outsideProject?.basis === "path") {
+      const path = savedRequestPath(saved.affects)
+      if (path !== undefined) {
+        outsideProject = approvalOutsideProjectFact(
+          await resolveApprovalPath(request.workspace, path, undefined, deadline), realWorkspace, "path",
+        )
+      }
+    } else if (saved === undefined && !directoryHidden && request.cwdSource === "request"
+      && request.cwd !== undefined && request.cwd.length > 0
+      && request.command !== undefined && !resolutionReadsFilePath(request.command)) {
+      outsideProject = approvalOutsideProjectFact(
+        await resolveApprovalPath(request.workspace, ".", request.cwd, deadline), realWorkspace, "working-directory",
+      )
+    }
   }
 
   // A lookup that ran out of time gave no answer to trust.
@@ -434,6 +464,7 @@ async function settleWithin(input: SettlementInput, deadline: OperationDeadline)
     || (saved !== undefined && sensitive)
   const approval = mint({
     ...input.approval,
+    ...(outsideProject === undefined ? {} : { outsideProject }),
     risk: sensitive || !recordMatches ? "hard-gate" : input.risk(execution),
     operation: hider.hide(operation.value),
     command: hider.hide(command.value),
@@ -460,7 +491,8 @@ export async function settleApproval(input: SettlementInput, deadline?: Operatio
 // The settlement input for a card read back from disk: its command and
 // operation as saved, its directory unless the saved card hid it, its saved
 // file and network lines, and the record it held. Its execution is resolved
-// again from these.
+// again from these. The display directory is not the original reported cwd,
+// so this request deliberately has no cwdSource marker.
 export function savedSettlementInput(
   approval: Approval,
   workspace: string,
@@ -475,7 +507,13 @@ export function savedSettlementInput(
       command: approval.command,
       reason: approval.operation,
     },
-    saved: { directory: approval.directory, affects: approval.affects, network: approval.network, execution: approval.execution },
+    saved: {
+      ...(approval.outsideProject === undefined ? {} : { outsideProject: approval.outsideProject }),
+      directory: approval.directory,
+      affects: approval.affects,
+      network: approval.network,
+      execution: approval.execution,
+    },
     scope,
     execution: "resolve",
     risk,
@@ -509,7 +547,7 @@ export function sealedApproval(approval: Approval, workspace: string | undefined
     ...textOperands(operation, namesSecretPath).filter(namesSecretPath),
   ])
   return mint({
-    ...approval,
+    ...identityOf(approval),
     risk: "hard-gate",
     operation: hider.hide(operation),
     command: hider.hide(command),

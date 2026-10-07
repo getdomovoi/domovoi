@@ -11,6 +11,7 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
+import { normalizeLegacyEffort } from "./legacy-effort.js"
 import { redactThreadCopies, redactWorkspaceCopies } from "./workspace-redaction.js"
 
 export class SessionTransferStateError extends Error {
@@ -156,7 +157,11 @@ export function importSessionTransferState(
     projectId: input.targetProjectId,
     title: state.session.title,
     state: "idle",
-    runtime: { ...state.session.runtime, auto: false },
+    runtime: {
+      ...state.session.runtime,
+      reasoning: normalizeLegacyEffort(state.session.runtime.provider, state.session.runtime.reasoning),
+      auto: false,
+    },
     changedFiles: state.session.changedFiles,
     testsPassed: state.session.testsPassed,
     testsFailed: state.session.testsFailed,

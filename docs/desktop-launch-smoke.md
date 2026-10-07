@@ -31,6 +31,31 @@ The factory binds `127.0.0.1` on port `0`; IPC returns the actual bound port. Th
 refuses an existing Domovoi profile. Its temporary profile is removed after the run, including
 the test identity, bearer, device registry and workspace store.
 
+HOME does not move everything. The login-service calls (status, install, update, remove)
+take the service-operation lease at `.domovoi/service-operation-lease.sqlite` under the
+account's passwd home, on purpose, so a changed HOME cannot split that lock. The fleet client
+proof runs the full WorkspaceShell, whose Settings reads the service status on mount, and that
+read used to write the real `~/.domovoi`. Both smokes that start the app now pass the
+test-only `--domovoi-test-no-login-service` switch. An unpackaged app given it makes no
+login-service call: status reads as unavailable and a service change stops at its first check.
+The fleet client proof asserts that status answer, so a switch that never reaches the main
+process fails the run.
+The switch is read from the command line only, never the environment, and a packaged app
+ignores it, so `test:package` does not use it. The login service itself is not part of these
+smokes' proof.
+
+Each of those runners also snapshots the real profile before it starts and compares after its
+children exit: whether `~/.domovoi` exists and its mode, and the mode, inode, size,
+modification and change time of the lease and its SQLite `-journal`, `-wal` and `-shm` files.
+A difference fails the run and names the paths; a profile that cannot be read afterwards fails
+it too. The check only reads; a missing profile is never created. Its own tests claim the
+daemon's real lease in a scratch home and require the check to see it: on an account with no
+profile everywhere, and on macOS and Linux also a second claim of an existing lease, through
+the change time its chmod moves. On Windows a second claim leaves nothing the check can see.
+It does not compare the directory's times or the rest of the profile, which a Domovoi running
+on the same account writes in normal use. A Domovoi on this account that takes the service
+lease during the run, for example a status read from its Settings, fails the check as well.
+
 The native machine keychain is not isolated by HOME on every host. Fresh-profile startup may
 read its index through the normal factory. This smoke does not enroll a machine, write or
 remove native machine credentials, contact enrolled peers, or start a provider turn.

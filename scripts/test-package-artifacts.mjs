@@ -87,6 +87,8 @@ const contracts = [
       "LICENSE",
       "package.json",
       "dist/index.js",
+      "dist/daemon-command.js",
+      "dist/daemon-command.d.ts",
       "dist/public.js",
       "dist/public.d.ts",
       // The bootstrap installer ships inside the daemon so an installed
@@ -97,7 +99,7 @@ const contracts = [
       "runtime/package.json",
       "runtime/protocol.tgz",
     ],
-    exports: ["."],
+    exports: [".", "./daemon-command"],
     // The retired ./internal entry point. An unpublished package keeps no
     // compatibility surface, and a stale build must not bring it back.
     absentFiles: ["dist/server.js", "dist/server.d.ts"],

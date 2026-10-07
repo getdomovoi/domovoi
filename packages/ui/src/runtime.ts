@@ -38,8 +38,8 @@ function carriedEffort(reasoning: string, from: string, model: ProviderModel): s
   const same = word === undefined ? undefined : levels.find((id) => effortLevel(model.provider, id).label === word)
   if (same !== undefined) return same
   if (levels.includes(reasoning)) return reasoning
-  if (levels.length === 0 || levels.includes(model.defaultReasoningEffort)) return model.defaultReasoningEffort
-  return nearestEffort(word, model.provider, levels) ?? levels[0] ?? model.defaultReasoningEffort
+  if (levels.length === 0 || (model.defaultReasoningEffort !== undefined && levels.includes(model.defaultReasoningEffort))) return model.defaultReasoningEffort ?? "unset"
+  return nearestEffort(word, model.provider, levels) ?? levels[0] ?? model.defaultReasoningEffort ?? "unset"
 }
 
 // The reported level whose shared word is closest in rank, the lower one on

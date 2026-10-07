@@ -53,8 +53,8 @@ export const runtimeDiscoverResultSchema = z.discriminatedUnion("status", [
   }
   const runtime = result.defaultRuntime
   const selected = result.models.find((model) => model.id === runtime.model)
-  if (runtime.provider !== result.provider || !selected || runtime.reasoning !== selected.defaultReasoningEffort) {
-    context.addIssue({ code: "custom", path: ["defaultRuntime"], message: "Default runtime must use a discovered model and its default reasoning effort" })
+  if (runtime.provider !== result.provider || !selected || runtime.reasoning !== (selected.defaultReasoningEffort ?? "unset")) {
+    context.addIssue({ code: "custom", path: ["defaultRuntime"], message: "Default runtime must use a discovered model and its reported default reasoning effort, or unset when absent" })
   }
   if (runtime.auto || !result.permissionModes.includes(runtime.permissionMode)) {
     context.addIssue({ code: "custom", path: ["defaultRuntime"], message: "Default runtime must use a supported permission mode with Auto off" })

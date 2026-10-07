@@ -78,7 +78,8 @@ export const providerModelSchema = z.object({
   displayName: z.string().min(1),
   description: z.string(),
   supportedReasoningEfforts: z.array(reasoningEffortSchema),
-  defaultReasoningEffort: reasoningEffortSchema,
+  // Absent when the provider reports no default; runtimes start at unset.
+  defaultReasoningEffort: reasoningEffortSchema.optional(),
   // Whether an image attachment on a send to this model is delivered. Absent
   // when the daemon did not say, which a client treats as not known rather
   // than as no. Phone v2 frames 13 and 13b.
@@ -87,6 +88,7 @@ export const providerModelSchema = z.object({
 }).superRefine((model, context) => {
   if (
     model.supportedReasoningEfforts.length > 0
+    && model.defaultReasoningEffort !== undefined
     && !model.supportedReasoningEfforts.includes(model.defaultReasoningEffort)
   ) {
     context.addIssue({
@@ -527,9 +529,26 @@ export const sessionSummarySchema = z.object({
   }
 })
 
+export const workingPlanClientAttributionSchema = z.object({
+  client: clientKindSchema,
+  connectionId: connectionIdSchema,
+  clientId: clientIdentityIdSchema.optional(),
+}).strict()
+
+// Containment describes only this path or working directory, never the full
+// reach of a shell command. Absence means the daemon could not decide.
+export const approvalOutsideProjectSchema = z.object({
+  outside: z.boolean(),
+  basis: z.enum(["path", "working-directory"]),
+}).strict()
+
 export const approvalRevisionSchema = z.number().int().nonnegative().safe()
 
 export const approvalRequestSchema = z.object({
+  // The client that started the provider turn. Each viewer compares this with
+  // its own identity; the daemon never labels a broadcast card as "from you".
+  origin: workingPlanClientAttributionSchema.optional(),
+  outsideProject: approvalOutsideProjectSchema.optional(),
   id: z.string().min(1),
   sessionId: z.string().min(1),
   risk: approvalRiskSchema,
@@ -853,12 +872,6 @@ export const workingPlanStructureSchema = z.array(workingPlanStructureStepSchema
 export const workingPlanStepsSchema = z.array(workingPlanStepSchema)
   .max(maximumWorkingPlanSteps)
   .superRefine(validateWorkingPlanStepList)
-
-export const workingPlanClientAttributionSchema = z.object({
-  client: clientKindSchema,
-  connectionId: connectionIdSchema,
-  clientId: clientIdentityIdSchema.optional(),
-}).strict()
 
 export const pendingWorkingPlanEditSchema = z.object({
   id: workingPlanReferenceSchema,
