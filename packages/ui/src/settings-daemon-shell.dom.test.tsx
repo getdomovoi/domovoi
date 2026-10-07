@@ -1,13 +1,16 @@
 import { demoWorkspace } from "@getdomovoi/protocol"
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
 
 import type { DesktopWindowBridge } from "./desktop-platform"
 import { WorkspaceShell } from "./workspace-shell"
 import { completeHandshake, installFakeWebSocket, workspaceSnapshot, type FakeWebSocketHarness } from "./test-support/fake-websocket"
 
 let harness: FakeWebSocketHarness
+// The lazy Settings chunk's first import is not what these tests measure.
+// On a Windows runner it can use the whole find window.
+beforeAll(async () => { await import("./settings-shell") })
 beforeEach(() => { harness = installFakeWebSocket() })
 afterEach(() => { cleanup(); harness.uninstall() })
 // A desktop with a bridge opens first-run setup over the shell; this test is
