@@ -1207,13 +1207,11 @@ export function FleetView({
   const [forgetPending, setForgetPending] = useState(false)
   const [forgetNotice, setForgetNotice] = useState<ForgetMachineNotice | null>(null)
   const now = useNow(15_000)
-  // The reading each machine kept when a read of it failed, by machine id.
-  const [unread, setUnread] = useState<ReadonlyMap<string, string>>(new Map())
 
   // Each admitted machine is read once when this view opens, or when it is
   // admitted, unless its reading is fresh: one connection per machine per
   // visit, not a poll. A machine that does not answer keeps its last reading,
-  // and the card dates it rather than presenting it as current.
+  // marked unanswered in `clientAccess`, and the card dates it.
   const admittedIds = Object.entries(clientAccess)
     .filter(([, access]) => access.state === "admitted")
     .map(([machineId]) => machineId)
@@ -1231,9 +1229,8 @@ export function FleetView({
       if (Date.now() - Date.parse(access.reading.readAt) < freshReadingMs) continue
       const read = new AbortController()
       reads.push([machineId, read])
-      onReadMachine(machineId, read.signal).catch(() => {
-        if (!read.signal.aborted) setUnread((current) => new Map(current).set(machineId, access.reading.readAt))
-      })
+      // The answer, or the lack of one, arrives through clientAccess.
+      onReadMachine(machineId, read.signal).catch(() => {})
     }
     // A read cut short was never answered, so the next run asks again.
     return () => {
@@ -1248,7 +1245,7 @@ export function FleetView({
 
   const agentsHeadingId = useId()
   const factsOf = (machine: FleetMachine) => machineFacts(machine, {
-    readings, access: clientAccess[machine.id], currentMachineId, providers, currentSessionCount, unread,
+    readings, access: clientAccess[machine.id], currentMachineId, providers, currentSessionCount,
   })
   const agents = machineAgents(entries, factsOf)
 

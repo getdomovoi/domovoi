@@ -34,7 +34,8 @@ export function machineReading(snapshot: WorkspaceSnapshot, readAt: Date): Machi
 
 export type FleetAccessState =
   | { state: "checking" }
-  | { state: "admitted"; deviceId: string; reading: MachineReading }
+  // `unanswered` marks a reading the machine did not answer a later read of.
+  | { state: "admitted"; deviceId: string; reading: MachineReading; unanswered?: true }
   | { state: "refused"; message: string }
 
 // What this client knows about a machine's agents and sessions. Sessions are a
@@ -50,9 +51,13 @@ export function asOf(readAt: string | undefined): string | undefined {
   return readAt === undefined ? undefined : `as of ${readingClock.format(new Date(readAt))}`
 }
 
-// A machine the home daemon reports as unreachable still shows what it last
-// said, dated, because that is what is still true about it. A reading whose
-// refresh failed (`unread` holds the readAt it kept) is dated the same way.
+// The home daemon is not hearing from these machines now, so what they last
+// said is dated rather than shown as current.
+const silentHealth: ReadonlySet<FleetMachine["health"]> = new Set(["unreachable", "reconnecting", "degraded"])
+
+// A machine that is not answering still shows what it last said, dated,
+// because that is what is still true about it: one the home daemon is not
+// hearing from, or one that did not answer this client's last read.
 export function machineFacts(
   machine: FleetMachine,
   input: {
@@ -61,13 +66,17 @@ export function machineFacts(
     currentMachineId: string
     providers?: readonly ProviderRuntime[] | undefined
     currentSessionCount?: number | undefined
-    unread?: ReadonlyMap<string, string> | undefined
   },
 ): MachineFacts {
   const unreachable = machine.health === "unreachable"
-  const reading = input.readings[machine.id] ?? (input.access?.state === "admitted" ? input.access.reading : undefined)
+  const admitted = input.access?.state === "admitted" ? input.access : undefined
+  const live = input.readings[machine.id]
+  const reading = live ?? admitted?.reading
   if (reading) {
-    const stale = unreachable || input.unread?.get(machine.id) === reading.readAt
+    // A live snapshot is this client's own connection, current unless the
+    // machine is unreachable; a stored reading is current only while the
+    // home daemon hears the machine and the machine answered the last read.
+    const stale = live ? unreachable : silentHealth.has(machine.health) || admitted?.unanswered === true
     return { known: true, providers: reading.providers, sessions: reading.sessions, readAt: reading.readAt, stale }
   }
   if (machine.id === input.currentMachineId && input.providers) {
@@ -213,10 +222,19 @@ export class FleetAccessSession {
   // caller dates. Only an answer that refuses this credential or this
   // identity, or a machine no longer enrolled, withdraws access.
   async read(machineId: string, signal: AbortSignal): Promise<void> {
-    await this.#ask(machineId, signal, "Read cancelled", (reason) => credentialRefusals.has(reason), (_client, _deadline, snapshot, access) => {
-      this.#set(machineId, { state: "admitted", deviceId: access.deviceId, reading: machineReading(snapshot, new Date()) })
-      return Promise.resolve()
-    })
+    const before = this.#states[machineId]
+    try {
+      await this.#ask(machineId, signal, "Read cancelled", (reason) => credentialRefusals.has(reason), (_client, _deadline, snapshot, access) => {
+        this.#set(machineId, { state: "admitted", deviceId: access.deviceId, reading: machineReading(snapshot, new Date()) })
+        return Promise.resolve()
+      })
+    } catch (cause) {
+      // Still the admission this read started from, so its reading is the
+      // one that went unanswered. A refusal or a new admission replaced it.
+      const current = this.#states[machineId]
+      if (!signal.aborted && current === before && current?.state === "admitted") this.#set(machineId, { ...current, unanswered: true })
+      throw cause
+    }
   }
 
   // One question on its own connection with the admitted credential, closed

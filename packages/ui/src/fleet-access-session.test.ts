@@ -178,7 +178,7 @@ it("reads an admitted machine again and keeps the last reading when it does not 
   await vi.advanceTimersByTimeAsync(11_000)
   expect(await silent).toBeInstanceOf(Error)
   expect(access.access(machineId)).toBeDefined()
-  expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", reading: { readAt: "2026-10-06T14:05:00.000Z" } })
+  expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", unanswered: true, reading: { readAt: "2026-10-06T14:05:00.000Z" } })
 
   // A machine that is down has no route from the home daemon. That is not a
   // refused credential, so a read nobody asked for keeps access and the reading.
@@ -186,7 +186,18 @@ it("reads an admitted machine again and keeps the last reading when it does not 
   expect(await access.read(machineId, new AbortController().signal).catch((error: unknown) => error))
     .toMatchObject({ reason: "client-route-unavailable" })
   expect(access.access(machineId)).toBeDefined()
-  expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", reading: { readAt: "2026-10-06T14:05:00.000Z" } })
+  expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", unanswered: true, reading: { readAt: "2026-10-06T14:05:00.000Z" } })
+
+  // An answer clears it.
+  routeDown = false
+  const again = access.read(machineId, new AbortController().signal)
+  await vi.advanceTimersByTimeAsync(0)
+  const answering = sockets.socket(sockets.sockets.length - 1)
+  completeHandshake(answering)
+  await vi.advanceTimersByTimeAsync(0)
+  respond(answering, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
+  await again
+  expect(access.snapshot()[machineId]).not.toHaveProperty("unanswered")
 })
 
 it("withdraws access when a read finds the credential refused", async () => {

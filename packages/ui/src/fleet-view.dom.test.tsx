@@ -205,18 +205,31 @@ it("offers Authenticate there only where an agent needs sign-in, and names the c
   expect(panel.textContent).toContain("Run claude auth login in a terminal on workshop. Domovoi does not sign in for you.")
 })
 
-it("reads each admitted machine when the view opens and dates a reading it could not refresh", async () => {
-  const readAt = "2026-10-06T14:03:00.000Z"
+it("reads each admitted machine when the view opens", () => {
   const onReadMachine = vi.fn((_machineId: string, _signal: AbortSignal) => Promise.reject(new Error("studio did not answer")))
   renderFleet({
     entries: entries(local, { ...studio, health: "healthy" }),
-    clientAccess: { [studio.id]: admitted(reading({ providers: [codex], readAt })) },
+    clientAccess: { [studio.id]: admitted(reading({ providers: [codex], readAt: "2026-10-06T14:03:00.000Z" })) },
     onReadMachine,
   })
 
   expect(onReadMachine).toHaveBeenCalledWith(studio.id, expect.any(AbortSignal))
-  await waitFor(() => expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS)
-    .toBe(`codex · as of ${clock.format(new Date(readAt))}`))
+})
+
+it("dates a reading the machine did not answer, and one from a machine the home daemon is not hearing", () => {
+  const readAt = "2026-10-06T14:03:00.000Z"
+  const asOf = `as of ${clock.format(new Date(readAt))}`
+  const lab = { ...studio, id: `machine-${"f".repeat(32)}`, label: "lab", health: "reconnecting" as const }
+  renderFleet({
+    entries: entries(local, { ...studio, health: "healthy" }, lab),
+    clientAccess: {
+      [studio.id]: { ...admitted(reading({ providers: [codex], readAt })), unanswered: true } as FleetAccessState,
+      [lab.id]: admitted(reading({ providers: [codex], readAt })),
+    },
+  })
+
+  expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS).toBe(`codex · ${asOf}`)
+  expect(facts(screen.getByRole("group", { name: "lab" })).SESSIONS).toBe(`none running · ${asOf}`)
 })
 
 it("keeps reading when the view mounts twice, as StrictMode does in development", () => {
