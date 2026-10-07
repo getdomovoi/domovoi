@@ -38,7 +38,7 @@ async function timedGit(root: string, env: NodeJS.ProcessEnv, label: string, arg
   } catch (error) {
     status = (error as { code?: string | number }).code ?? "unknown"
     // Missing default identity is itself useful data, not a probe failure.
-    if (label !== "default-ident") throw new Error(`Diagnostic ${label} failed (status ${status})`)
+    if (label !== "default-ident") throw new Error(`Diagnostic ${label} failed (status ${status})`, { cause: error })
     return undefined
   } finally {
     report({ ...context, operation: label, ms: Math.round(performance.now() - started), status })
