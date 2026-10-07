@@ -173,7 +173,7 @@ test("domovoi daemon from the installed packages registers the daemon's worker e
   // refuses it first. The runner's own temporary directory, D:\a\_temp, is
   // shorter than the user's, so the node, entry and configuration paths fit.
   const scratch = process.platform === "win32" && process.env.RUNNER_TEMP ? process.env.RUNNER_TEMP : tmpdir()
-  const root = await realpath(await mkdtemp(join(scratch, "dmv-cli-")))
+  const root = await realpath(await mkdtemp(join(scratch, "domovoi-cli-")))
   t.after(() => rm(root, { recursive: true, force: true }))
   const archives = []
   for (const selector of ["@getdomovoi/protocol", "@getdomovoi/credential-store", "@getdomovoi/daemon", "@getdomovoi/cli"]) {
