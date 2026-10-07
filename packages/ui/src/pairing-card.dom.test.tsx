@@ -67,7 +67,7 @@ it("prints a pair command the daemon accepts for a phone and a tablet, issued fo
   }
 })
 
-// `domovoid pair --client web` prints a QR and a `domovoi-pair:` payload, and
+// `domovoid pair --client web --label <label>` prints a QR and a `domovoi-pair:` payload, and
 // a browser's connect page takes the bare word code alone, so no command is
 // the same code for a browser.
 it("names no command for a web browser, whose connect page takes only the bare code", async () => {

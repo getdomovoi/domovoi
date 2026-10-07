@@ -28,8 +28,8 @@ type Kind = "phone" | "tablet" | "browser"
 // `command` is the terminal's way to the same code. `domovoid pair --client`
 // refuses to run without `--label`, so it carries a one-word label that runs
 // as printed (Q336 A): a placeholder such as `<device label>` would fail in a
-// shell, where `<` is a redirection. A browser has none: for `--client web`
-// the command prints a QR and a `domovoi-pair:` payload, and the browser's
+// shell, where `<` is a redirection. A browser has none: with `--client web`
+// and a label, the command prints a QR and a `domovoi-pair:` payload, and the browser's
 // connect page takes the bare word code alone.
 const kinds: Record<Kind, { label: string; noun: string; client: ClientKind; command?: string; Icon: typeof SmartphoneIcon; how: string }> = {
   phone: { label: "Phone", noun: "a phone", client: "phone", command: "domovoid pair --client phone --label Phone", Icon: SmartphoneIcon, how: "Scan it with the Domovoi app, or paste the code." },
