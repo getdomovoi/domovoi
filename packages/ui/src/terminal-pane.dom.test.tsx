@@ -705,6 +705,35 @@ describe("Attach this output to the composer", () => {
     expect(screen.getByText(/The start was cut to fit the attachment limit\./u)).toBeTruthy()
   })
 
+  // The pane keeps 5,000 lines of history. Past that xterm drops the oldest,
+  // well inside the byte limit, and the file says so.
+  it("marks an attachment once the pane's history is full", { timeout: 20_000 }, async () => {
+    const user = userEvent.setup()
+    const composer = createComposerInbox()
+    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
+    composer.open(sessionId, receive)
+    const target = harness()
+    const { container } = render(<TerminalPane connected controls={target.controls} composer={composer} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.connect(thisClient)
+    })
+    await act(async () => {
+      target.deliverOutput("$ first command\r\n")
+      for (let index = 0; index < 5_100; index += 1) target.deliverOutput(`line ${index}\r\n`)
+      target.deliverOutput("END OF OUTPUT\r\n")
+    })
+    await parsedThrough(container, "END OF OUTPUT")
+
+    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+
+    await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1))
+    const [attachment] = receive.mock.calls[0]!
+    const content = "content" in attachment ? attachment.content : ""
+    expect(content).toMatch(/^\[this pane keeps the last 5,000 lines; anything earlier is not in this file\]\n/u)
+    expect(content).not.toContain("$ first command")
+    expect(screen.getByText(/The pane keeps the last 5,000 lines\./u)).toBeTruthy()
+  })
+
   // A disconnect disposes the renderer the button reads from, so the button
   // goes with it rather than staying and doing nothing.
   it("is not offered once the renderer is gone", async () => {

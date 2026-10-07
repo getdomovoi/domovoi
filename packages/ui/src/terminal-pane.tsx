@@ -68,6 +68,12 @@ export const terminalHolderRefreshMs = 5_000
 const droppedRecordMarker = "[earlier output was not kept; the record starts here]"
 // Put ahead of an attachment whose start the attachment byte limit cut.
 const cutToLimitMarker = "[earlier lines were cut to fit the attachment limit]"
+// The pane's xterm history. Once the buffer holds this many lines plus the
+// screen, xterm drops the oldest line for each new one.
+const terminalScrollback = 5_000
+// Put ahead of an attachment read from a full history. It does not say lines
+// were lost, because a buffer exactly full may have lost none.
+const fullHistoryMarker = "[this pane keeps the last 5,000 lines; anything earlier is not in this file]"
 
 function sameOwner(left: TerminalOwner, right: TerminalOwner): boolean {
   return left.client === right.client && left.clientId === right.clientId && left.device?.id === right.device?.id
@@ -175,7 +181,7 @@ export function TerminalPane({
       fontSize: 11,
       lineHeight: 1.85,
       screenReaderMode: true,
-      scrollback: 5_000,
+      scrollback: terminalScrollback,
       theme: {
         background: styles.getPropertyValue("--code").trim() || "#151515",
         foreground: styles.getPropertyValue("--foreground").trim() || "#eeeeec",
@@ -381,22 +387,29 @@ export function TerminalPane({
   const attachOutput = () => {
     const terminal = xtermRef.current
     if (!terminal) return
-    // Both markers' bytes come out of the limit up front, so the file fits
-    // whichever of them it ends up carrying.
-    const dropped = earlierDropped ? `${droppedRecordMarker}\n` : ""
-    const cut = `${cutToLimitMarker}\n`
-    const { text, truncated } = terminalBufferOutput(
-      terminal.buffer.active,
-      maximumTextAttachmentBytes - new TextEncoder().encode(`${dropped}${cut}`).byteLength,
-    )
+    // At most one marker leads the file: the cut that happened last wins,
+    // because what follows starts after it. The longest marker's bytes come
+    // out of the limit up front, so the file fits whichever one it carries.
+    const reserve = Math.max(...[cutToLimitMarker, fullHistoryMarker, droppedRecordMarker]
+      .map((marker) => new TextEncoder().encode(`${marker}\n`).byteLength))
+    const buffer = terminal.buffer.active
+    const { text, truncated } = terminalBufferOutput(buffer, maximumTextAttachmentBytes - reserve)
     if (!text) {
       setAttachNote({ tone: "refused", text: "Nothing has been printed yet." })
       return
     }
-    const outcome = composer.offer(sessionId, terminalOutputAttachment(`${truncated ? cut : dropped}${text}`))
+    const historyFull = buffer.length >= terminalScrollback + terminal.rows
+    const marker = truncated ? cutToLimitMarker : historyFull ? fullHistoryMarker : earlierDropped ? droppedRecordMarker : undefined
+    const outcome = composer.offer(sessionId, terminalOutputAttachment(marker ? `${marker}\n${text}` : text))
+    const attached = "Attached to the composer as terminal-output.txt."
     setAttachNote(
       outcome === "attached"
-        ? { tone: "done", text: truncated ? "Attached to the composer as terminal-output.txt. The start was cut to fit the attachment limit." : "Attached to the composer as terminal-output.txt." }
+        ? {
+            tone: "done",
+            text: truncated
+              ? `${attached} The start was cut to fit the attachment limit.`
+              : historyFull ? `${attached} The pane keeps the last 5,000 lines.` : attached,
+          }
         : outcome === "full"
           ? { tone: "refused", text: "The composer already holds the most attachments. Remove one to attach this output." }
           : { tone: "refused", text: "The composer for this session is not open." },
