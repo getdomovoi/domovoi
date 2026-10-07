@@ -5,7 +5,7 @@ import { join, relative, resolve, sep } from "node:path"
 import { demoWorkspace, type Runtime } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { approvalDirectory, approvalFacts, resolveApprovalPath, unrestrictedApprovalScope } from "./approval-facts.js"
+import { approvalDirectory, approvalFacts, approvalOutsideProjectFact, resolveApprovalPath, unrestrictedApprovalScope } from "./approval-facts.js"
 import { pathHider } from "./approval-path-text.js"
 import { codexApprovalScope } from "./codex.js"
 
@@ -390,5 +390,15 @@ describe("approvalFacts", () => {
       }
     }
     expect(missed).toEqual([])
+  })
+})
+
+
+describe("approvalOutsideProjectFact", () => {
+  it("compares the target with the root from the same completed path walk", () => {
+    const workspace = join("/", "repo")
+    const target = join(workspace, "file.txt")
+    expect(approvalOutsideProjectFact({ workspace, target, hops: [], canonical: target }, join("/", "REPO"), "path"))
+      .toEqual({ outside: false, basis: "path" })
   })
 })

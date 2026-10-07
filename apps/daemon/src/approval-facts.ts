@@ -1,6 +1,6 @@
 import { isAbsolute, join, relative, resolve, sep } from "node:path"
 
-import { approvalToolServerSchema, type ApprovalToolServer, type ExecutionResolution } from "@getdomovoi/protocol"
+import { approvalToolServerSchema, type ApprovalToolServer, type ExecutionResolution, type ApprovalRequest } from "@getdomovoi/protocol"
 
 import {
   canonicalPath,
@@ -132,6 +132,17 @@ export async function resolveApprovalPath(
   } finally {
     if (deadline === undefined) clock.clear()
   }
+}
+
+// Only a completed real-path lookup can establish containment. The lexical
+// fallback used to hide unreadable paths must never turn into a safety fact.
+export function approvalOutsideProjectFact(
+  resolved: ResolvedApprovalPath | undefined,
+  realWorkspace: RealPath,
+  basis: NonNullable<ApprovalRequest["outsideProject"]>["basis"],
+): ApprovalRequest["outsideProject"] {
+  if (resolved === undefined || typeof resolved.canonical !== "string" || typeof realWorkspace !== "string") return undefined
+  return { outside: !inWorktree(resolved.workspace, resolved.target), basis }
 }
 
 // A path that names a credential file is hidden whole on the card; the line
