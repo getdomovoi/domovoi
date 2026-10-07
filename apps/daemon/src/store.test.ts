@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
-import { createEmptyWorkspace, demoWorkspace, machineIdSchema, protocolVersion, workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { createEmptyWorkspace, demoWorkspace as protocolDemoWorkspace, machineIdSchema, protocolVersion, workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { resolveCommandExecution } from "./execution-resolution.js"
@@ -17,6 +17,11 @@ import {
   type WorkspaceWriter,
 } from "./store.js"
 
+// General store tests use current runtime labels. Migration tests below
+// explicitly seed legacy labels, including the original protocol demo.
+const demoWorkspace = structuredClone(protocolDemoWorkspace)
+demoWorkspace.sessions.find(({ id }) => id === "session-audit")!.runtime.reasoning = "unset"
+
 const scratchDirectories: string[] = []
 const currentMachineId = `machine-${"c".repeat(32)}`
 const retiredMachineId = `machine-${"7".repeat(32)}`
@@ -26,6 +31,47 @@ afterEach(async () => {
 })
 
 describe("SqliteWorkspaceStore", () => {
+  it("silently maps stored OpenCode and Kilo effort labels to unset and persists the repair", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-effort-migration-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const seeded = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    await seeded.close()
+    const legacy = structuredClone(demoWorkspace)
+    const cases = [
+      ["opencode", "medium", "unset"], ["opencode", "none", "unset"],
+      ["kilo", "medium", "unset"], ["kilo", "none", "unset"],
+      ["opencode", "unset", "unset"], ["kilo", "unset", "unset"],
+      ["opencode", "high", "high"], ["kilo", "high", "high"],
+      ["codex", "medium", "medium"], ["claude-code", "medium", "medium"],
+      ["codex", "none", "none"], ["claude-code", "none", "none"],
+    ] as const
+    const expected = structuredClone(legacy.sessions)
+    for (const [index, [provider, reasoning, normalized]] of cases.entries()) {
+      const session = structuredClone(legacy.sessions[0]!)
+      session.id = `session-effort-${index}`
+      session.runtime = { ...session.runtime, provider, reasoning }
+      legacy.sessions.push(session)
+      expected.push({ ...session, runtime: { ...session.runtime, reasoning: normalized } })
+    }
+    const database = new DatabaseSync(databasePath)
+    try {
+      database.prepare("UPDATE workspace_state SET snapshot = ? WHERE id = 1").run(JSON.stringify(legacy))
+    } finally { database.close() }
+
+    const reopened = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    try {
+      const loaded = reopened.load()
+      expect(loaded.sessions).toEqual(expected)
+      expect(loaded.thread).toEqual(legacy.thread)
+    } finally { await reopened.close() }
+    const persisted = new DatabaseSync(databasePath)
+    try {
+      const row = persisted.prepare("SELECT snapshot FROM workspace_state WHERE id = 1").get()!
+      expect(workspaceSnapshotSchema.parse(JSON.parse(String(row.snapshot))).sessions).toEqual(expected)
+    } finally { persisted.close() }
+  })
+
   it("migrates protocol 0.6 rule counts without retiring active rules", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-rule-count-migration-"))
     scratchDirectories.push(scratch)
@@ -1149,6 +1195,34 @@ describe("SqliteWorkspaceStore", () => {
 
     expect(upgraded.load()).toEqual(empty)
     upgraded.close()
+  })
+
+  it.each(["medium", "none"])("replaces a legacy effort %s seed after repair but keeps changed state", async (reasoning) => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-effort-seed-"))
+    scratchDirectories.push(scratch)
+    const legacySeed = structuredClone(protocolDemoWorkspace)
+    legacySeed.annotations = []
+    legacySeed.sessions[0]!.runtime = { ...legacySeed.sessions[0]!.runtime, provider: "opencode", reasoning }
+    legacySeed.sessions[1]!.runtime = { ...legacySeed.sessions[1]!.runtime, provider: "kilo", reasoning }
+    const initial = createEmptyWorkspace(legacySeed.machine)
+    for (const changed of [false, true]) {
+      const databasePath = join(scratch, changed ? "changed.sqlite" : "seed.sqlite")
+      const stored = structuredClone(legacySeed)
+      if (changed) stored.sessions[0]!.title = "Preserve the person's session"
+      const original = new SqliteWorkspaceStore(databasePath, stored)
+      await original.close()
+      const expected = changed ? structuredClone(stored) : initial
+      // All three legacy fixture sessions use OpenCode or Kilo here.
+      for (const session of expected.sessions) session.runtime.reasoning = "unset"
+      const reopened = new SqliteWorkspaceStore(databasePath, initial, { legacySnapshots: [legacySeed] })
+      try {
+        expect(reopened.load()).toEqual(expected)
+      } finally { await reopened.close() }
+      const again = new SqliteWorkspaceStore(databasePath, initial, { legacySnapshots: [legacySeed] })
+      try {
+        expect(again.load()).toEqual(expected)
+      } finally { await again.close() }
+    }
   })
 
   it("repairs a legacy project machine reference once without clearing project state", async () => {

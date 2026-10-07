@@ -5936,7 +5936,7 @@ export class DomovoiDaemon {
     if (!supportedReasoningEfforts.includes(reasoning) && !legacyModelDefault) {
       throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")
     }
-    return { ...runtime, model: model.id, reasoning }
+    return { ...runtime, model: model.id, reasoning: legacyModelDefault ? "unset" : reasoning }
   }
 
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {

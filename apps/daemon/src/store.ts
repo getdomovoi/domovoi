@@ -311,6 +311,17 @@ function migrateStoredWorkspace(value: unknown): {
     repaired = true
   }
   const inactivatedRules: Array<{ id: string; projectId: string; inactivatedAt: string }> = []
+  if (Array.isArray(migrated.sessions)) {
+    for (const session of migrated.sessions) {
+      if (!isRecord(session) || !isRecord(session.runtime)) continue
+      const runtime = session.runtime
+      if ((runtime.provider === "opencode" || runtime.provider === "kilo")
+        && (runtime.reasoning === "medium" || runtime.reasoning === "none")) {
+        runtime.reasoning = "unset"
+        repaired = true
+      }
+    }
+  }
   if (Array.isArray(migrated.approvals)) {
     for (const approval of migrated.approvals) {
       if (!isRecord(approval) || executionResolutionSchema.safeParse(approval.execution).success) continue
@@ -1126,7 +1137,7 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
     const isLegacySeed = existingSnapshot?.annotations.length === 0 &&
       options.legacySnapshots?.some(
         (snapshot) => legacyFingerprint(existingSnapshot) === legacyFingerprint(
-          workspaceSnapshotSchema.parse(snapshot),
+          migrateStoredWorkspace(snapshot).snapshot,
         ),
     )
     this.recovery = recovery
@@ -1147,11 +1158,11 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       }
     }
     else if (!existing) this.save(initial)
+    else if (isLegacySeed) this.save(initial)
     else if (migratedExisting?.repaired) {
       this.save(migratedExisting.snapshot)
       this.#recordRuleInactivations(migratedExisting.inactivatedRules)
     }
-    else if (isLegacySeed) this.save(initial)
     else if (existingSnapshot) this.#seedProjectRow(existingSnapshot)
     if (!recovery && !isLegacySeed && existingSnapshot) this.#migratedAtOpen = existingSnapshot
     this.#restrictFilePermissions()

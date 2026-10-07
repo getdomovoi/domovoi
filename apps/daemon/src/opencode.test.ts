@@ -728,7 +728,10 @@ describe.each([
   ["opencode", OpenCodeSdkAdapter],
   ["kilo", KiloSdkAdapter],
 ] as const)("%s stored reasoning compatibility", (provider, Adapter) => {
-  it.each(["medium", "none", "unset"])("resumes stored %s reasoning and sends no effort override", async (reasoning) => {
+  it.each([
+    ["medium", "setRuntime"], ["none", "setRuntime"], ["unset", "setRuntime"],
+    ["medium", "restartProviderThread"],
+  ] as const)("normalizes %s through %s, then sends no effort override", async (reasoning, method) => {
     const directory = await mkdtemp(join(tmpdir(), "domovoi-effort-"))
     scratchDirectories.push(directory)
     const { client, factory, stream } = harness()
@@ -743,7 +746,8 @@ describe.each([
     session.runtime = { ...runtime("build"), provider, reasoning }
     session.state = "idle"
     session.workspacePath = directory
-    session.providerThreadId = "open-session"
+    if (method === "restartProviderThread") delete session.providerThreadId
+    else session.providerThreadId = "open-session"
     delete session.activeTurnId
     snapshot.approvals = []
     snapshot.approvalRules = []
@@ -777,18 +781,26 @@ describe.each([
       })).error).toBeUndefined()
       const loaded = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
         .sessions.find(({ id }) => id === session.id)!
-      expect(loaded.runtime.reasoning).toBe(reasoning)
+      expect.soft(loaded.runtime.reasoning).toBe("unset")
       expect((await rpc("session.setRuntime", {
         sessionId: session.id, runtime: { ...loaded.runtime, reasoning: "high" }, client: "desktop",
       })).error?.message).toBe("Reasoning effort is not supported by the selected model")
-      expect((await rpc("session.setRuntime", {
-        sessionId: session.id, runtime: loaded.runtime, client: "desktop",
+      expect((await rpc(`session.${method}`, {
+        sessionId: session.id, runtime: { ...loaded.runtime, reasoning }, client: "desktop",
       })).error).toBeUndefined()
+      const updated = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+        .sessions.find(({ id }) => id === session.id)!
+      expect(updated.runtime.reasoning).toBe("unset")
       expect((await rpc("session.send", {
         sessionId: session.id, prompt: "Hello", client: "desktop",
       })).error).toBeUndefined()
-      expect(client.session.get).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "open-session" } }))
-      expect(client.session.create).not.toHaveBeenCalled()
+      if (method === "restartProviderThread") {
+        expect(client.session.create).toHaveBeenCalledOnce()
+        expect(client.session.get).not.toHaveBeenCalled()
+      } else {
+        expect(client.session.get).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "open-session" } }))
+        expect(client.session.create).not.toHaveBeenCalled()
+      }
       await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledOnce())
       // Exact body equality also catches new effort or variant fields.
       expect(client.session.promptAsync).toHaveBeenCalledWith(expect.objectContaining({
