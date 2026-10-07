@@ -254,61 +254,22 @@ and rollback use the same proof before replacing a runtime; their stop permits t
 to start again only after proof, with the task disabled meanwhile.
 
 A missing task does not erase the proof obligation of a saved supervised service. Unconfirmed
-trees refuse removal and retain the task and configuration. Legacy `--service-config` tasks
-remain recognized, but have no job evidence: stop, removal and replacement refuse. Disable the
-legacy task, restart Windows, and manually retire that registration before installing the new
-supervised service. Task Scheduler stop or `taskkill` success alone cannot establish tree death.
+trees refuse removal and retain the task and configuration.
 
-To retire a legacy task manually, use the same Windows user that installed it. These steps
-require an actual Windows restart after disabling the task, not sleep, hibernation or sign-out.
+Q10 B (2026-10-06) preserves the legacy `--service-config` removal path: Domovoi disables
+future starts, stops the task, confirms it is disabled with no queued or running instances,
+then deletes it and removes the saved configuration. This is Task Scheduler retirement,
+not job-object tree proof. Legacy descendants that escaped the task may remain; the profile
+lease must be free before Domovoi changes the profile. The same-user configuration and task
+ownership checks still apply.
 
-1. In Windows PowerShell, inspect the action and confirm it is this user's Domovoi daemon with
-   `--service-config`. If it is another program, stop this procedure. Back up the non-secret
-   configuration, then disable the task. Each command must succeed before continuing.
-
-   ```powershell
-   $manager = Join-Path $env:SystemRoot 'System32\schtasks.exe'
-   $configuration = Join-Path $env:USERPROFILE '.domovoi\service.json'
-   & $manager /query /tn 'Domovoi daemon' /xml
-   if ($LASTEXITCODE -ne 0) { throw 'Task inspection failed' }
-   if (Test-Path -LiteralPath "$configuration.pre-supervisor") { throw 'Backup already exists; preserve it before continuing' }
-   Copy-Item -LiteralPath $configuration -Destination "$configuration.pre-supervisor" -ErrorAction Stop
-   & $manager /change /tn 'Domovoi daemon' /disable
-   if ($LASTEXITCODE -ne 0) { throw 'Task disable failed' }
-   ```
-
-2. Close Domovoi Desktop, choose **Restart** in the Windows Start menu, and sign back into the
-   same account. Do not enable or manually start the legacy task.
-3. In a new Windows PowerShell window, inspect the task again. Verify its action is unchanged,
-   that it is disabled and has no instances, then delete only that registration.
-
-   ```powershell
-   $manager = Join-Path $env:SystemRoot 'System32\schtasks.exe'
-   & $manager /query /tn 'Domovoi daemon' /xml
-   if ($LASTEXITCODE -ne 0) { throw 'Task inspection failed' }
-   $scheduler = New-Object -ComObject 'Schedule.Service'
-   $scheduler.Connect()
-   $task = $scheduler.GetFolder('\').GetTask('Domovoi daemon')
-   if ($task.Enabled -or $task.GetInstances(0).Count -ne 0) { throw 'Legacy task was enabled or started; disable it and restart Windows again' }
-   & $manager /delete /tn 'Domovoi daemon' /f
-   if ($LASTEXITCODE -ne 0) { throw 'Task deletion failed' }
-   ```
-
-4. After the restart and task deletion above, remove only the legacy service configuration:
-
-   ```powershell
-   $configuration = Join-Path $env:USERPROFILE '.domovoi\service.json'
-   Remove-Item -LiteralPath $configuration -ErrorAction Stop
-   ```
-
-   Set `DOMOVOI_PROFILE_DIR` to the original profile named in the backup, if customized.
-   If a stale owner blocks the new install, run `domovoid profile recover --confirm-no-supervisor`
-   for that same profile only after confirming that no other supervisor owns or restarts it.
-   Keep the backup, credentials and profile data.
-5. Restore the original non-secret installation environment from the backup, including any
-   custom profile, listener, credential-file and TLS paths. Run `domovoid service install`,
-   then `domovoid service status`. The new task uses job supervision. Automated migration of
-   legacy tasks remains refused pending the maintainer's policy decision.
+`domovoid service install` and Desktop service update retire a recognized legacy task through
+that path and register the replacement with `--service-supervise`. New attempts then use job
+supervision. Install keeps the stopped legacy registration until replacement files are ready;
+if registration fails, it restores the previous configuration and a disabled legacy action
+for retry. Update rollback uses the prior runtime and action, which can still be legacy; it refuses
+if it cannot settle any new supervised attempt. A successful migration uses supervision from then on. No manual
+configuration deletion or Windows restart is required for legacy migration.
 
 The Windows path uses the built-in Windows PowerShell Task Scheduler COM interface, not localized
 `schtasks /query` text. The executable is resolved beneath the absolute local `SystemRoot`, never

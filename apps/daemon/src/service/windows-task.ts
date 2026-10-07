@@ -205,7 +205,7 @@ $action = $task.Definition.Actions.Item(1)
   return action.data
 }
 
-export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline): Promise<"removed" | "already-missing"> {
+export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline, confirmNoInstances = false): Promise<"removed" | "already-missing"> {
   try {
     let state = await taskResult(plan.stop, effects, deadline)
     // Absence before any stop attempt is idempotent. Once an instance may have
@@ -216,6 +216,7 @@ export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: P
       state = await taskResult(plan.inspect, effects, deadline)
     }
     if (state !== "1") throw new Error(`Task Scheduler did not confirm a disabled, stopped task (state ${state})`)
+    if (confirmNoInstances && !await windowsTaskDisabledAndIdle(plan.name, effects, deadline)) throw new Error("Task Scheduler did not confirm zero instances of the disabled task")
     if (await taskResult(plan.remove, effects, deadline) !== "deleted") {
       throw new Error("Task registration disappeared before removal could be confirmed")
     }

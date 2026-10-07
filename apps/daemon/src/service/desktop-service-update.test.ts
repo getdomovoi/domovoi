@@ -183,6 +183,7 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
       if (body.includes("DeleteTask")) { order.push("delete task"); return { code: 0, stdout: "domovoi-task:deleted\n" } }
       if (body.includes("$task.Stop(0)")) {
         order.push("stop task")
+        effects.task.enabled = false
         effects.task.running = false
         if (pendingReady !== undefined) clearTimeout(pendingReady)
         pendingReady = undefined
@@ -540,13 +541,15 @@ describe("updateDaemonService with a Windows logon task", () => {
     expect(effects.remove).not.toHaveBeenCalled()
   })
 
-  it("refuses a legacy direct-daemon task before any change", async () => {
+  it("migrates a legacy direct-daemon task through scheduler retirement", async () => {
     const effects = fake("win32", "C:\\Users\\dl")
     effects.task.definition = oldWindowsCommand.replace("--service-supervise", "--service-config")
-    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow("legacy Windows task")
-    expect(effects.order).toEqual(["read task action"])
+    expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task" })
+    expect(effects.task.runningDefinition).toContain("--service-supervise")
+    expect(effects.task.runningDefinition).toContain("runtime-2")
+    expect(effects.order.indexOf("stop task")).toBeLessThan(effects.order.indexOf("delete task"))
+    expect(effects.order.indexOf("delete task")).toBeLessThan(effects.order.findIndex((s) => s.startsWith("write ")))
     expect(effects.stopSupervisor).not.toHaveBeenCalled()
-    expect(effects.write).not.toHaveBeenCalled()
   })
 
   it("stops the task, holds the profile, re-registers it with the new command and runs it", async () => {

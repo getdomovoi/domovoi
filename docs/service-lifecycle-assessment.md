@@ -65,7 +65,9 @@ has the printed text and failure handling.
   Startup and removal refuse unconfirmed same-boot attempts; a positively read different
   kernel boot counter (`KUSER_SHARED_DATA.BootId`) permits boot-based recovery. Unreadable identity refuses. Backoffs are
   1, 5 and 15 seconds, followed by recorded exhaustion on crash four and status exit 1.
-  Stop/removal require tree proof, and legacy tasks without job evidence refuse removal.
+  Supervised stop/removal require tree proof. Q10 B (2026-10-06) keeps legacy task removal
+  through Task Scheduler: disable, stop, confirm no instances, then delete. That does not
+  prove every legacy descendant dead; profile changes still require the free profile lease.
   All manager executables remain resolved under SystemRoot. The native test reads back
   `PT0S` and both false battery flags, asserts exactly one restart with a stable new PID,
   exhaustion status, deliberate-stop non-restart, and empty jobs at removal. Unit tests
@@ -78,8 +80,8 @@ has the printed text and failure handling.
   creates and opens its Global name before resuming the daemon. Receipt files and the hidden
   session-end window were removed. The replacement helper-death recovery test awaits Windows
   CI; real sign-out/sign-in and reboot acceptance remain **[H]**, fetzy's hardware run.
-  Legacy migration remains a policy decision; exact manual disable/restart/retirement steps
-  are in [daemon services](daemon-services.md#windows-removal).
+  Install and update migrate recognized legacy tasks to supervised registrations through that
+  retirement path; [daemon services](daemon-services.md#windows-removal) states its limit.
   This change does not provide Windows boot supervision and does not close S1.1.
 
 

@@ -392,14 +392,14 @@ describe("the CLI and a same-named Windows task", () => {
     ["an npm install", { path: '"C:\\Program Files\\nodejs\\node.exe"', arguments: `"C:\\Users\\dl\\AppData\\Roaming\\npm\\node_modules\\@getdomovoi\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }],
     ["a pnpm install", { path: "C:\\Users\\dl\\AppData\\Local\\fnm\\node.exe", arguments: `"C:\\Users\\dl\\AppData\\Local\\pnpm\\global\\5\\.pnpm\\@getdomovoi+daemon@0.7.0\\node_modules\\@getdomovoi\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }],
     ["a checkout", { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\src\\domovoi\\apps\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }],
-  ])("remove refuses an older install without job evidence from %s", async (_shape, action) => {
+  ])("remove retires an older install through Task Scheduler from %s", async (_shape, action) => {
     const { task, effects, cli, stdout, stderr } = scheduler(action, saved)
-    expect(await runServiceCommand(["service", "remove"], cli)).toBe(1)
-    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("legacy Windows task has no job-object tree evidence"))
-    expect(stdout).not.toHaveBeenCalled()
-    expect(task.registered).toBe(true)
-    expect(task.stopIssued).toBe(false)
-    expect(effects.remove).not.toHaveBeenCalled()
+    expect(await runServiceCommand(["service", "remove"], cli)).toBe(0)
+    expect(stderr).not.toHaveBeenCalled()
+    expect(stdout).toHaveBeenCalled()
+    expect(task.registered).toBe(false)
+    expect(task.stopIssued).toBe(true)
+    expect(effects.remove).toHaveBeenCalled()
   })
 
   // Security review round 2: the reviewer's shape, an unrelated absolute

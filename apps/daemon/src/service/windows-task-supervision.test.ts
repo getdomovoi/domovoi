@@ -75,10 +75,62 @@ it("refuses replacing a task while its supervisor is backing off or its tree is 
   expect(f.effects.write).not.toHaveBeenCalled()
 })
 
-it("recognizes but refuses legacy task removal without job evidence", async () => {
+it("retires a legacy task using the scheduler before removing configuration", async () => {
   const f = fixture(); f.task.flag = "--service-config"
-  await expect(removeService(target, f.effects)).rejects.toThrow("legacy")
+  await removeService(target, f.effects)
+  expect(f.events).toEqual(["disable", "stop-task", "delete-task", "remove-config"])
+  expect(f.effects.stopSupervisor).not.toHaveBeenCalled()
+})
+
+it("migrates a legacy install to a supervised action after retiring it", async () => {
+  const f = fixture(); f.task.flag = "--service-config"
+  f.effects.supervisorStatus = vi.fn(async () => undefined)
+  await installService(target, f.effects)
+  expect(f.events.indexOf("stop-task")).toBeLessThan(f.events.indexOf("write"))
+  expect(f.events).toContain("delete-task")
+  const creation = vi.mocked(f.effects.run).mock.calls.find(([, args]) => args[0] === "/create")
+  expect(creation?.[1].join(" ")).toContain("--service-supervise")
+  expect(f.effects.stopSupervisor).not.toHaveBeenCalled()
+})
+
+it("refuses legacy migration if the re-read action changed to supervision", async () => {
+  const f = fixture(); f.task.flag = "--service-config"
+  const capture = f.effects.capture
+  let actions = 0
+  f.effects.capture = vi.fn(async (command, args, deadline) => {
+    const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+    if (script.includes("domovoi-task-action:") && ++actions === 2) f.task.flag = "--service-supervise"
+    return capture(command, args, deadline)
+  })
+  await expect(installService(target, f.effects)).rejects.toThrow("registration changed")
   expect(f.events).toEqual([])
+})
+
+it("keeps a stopped legacy registration when writing the replacement fails", async () => {
+  const f = fixture(); f.task.flag = "--service-config"
+  f.effects.write = vi.fn(async () => { throw new Error("write failed") })
+  await expect(installService(target, f.effects)).rejects.toThrow("write failed")
+  expect(f.task).toMatchObject({ exists: true, enabled: false, running: false })
+  expect(f.effects.run).not.toHaveBeenCalled()
+})
+
+it("restores a disabled legacy registration if supervised registration fails", async () => {
+  const f = fixture(); f.task.flag = "--service-config"
+  f.effects.run = vi.fn(async (_command, args) => {
+    if (args[0] === "/create" && args.join(" ").includes("--service-supervise")) throw new Error("create failed")
+    if (args[0] === "/create") { f.task.exists = true; f.task.enabled = true }
+  })
+  await expect(installService(target, f.effects)).rejects.toThrow("create failed")
+  expect(f.task).toMatchObject({ exists: true, enabled: false, running: false })
+  expect(vi.mocked(f.effects.run).mock.calls.some(([, args]) => args[0] === "/create" && args.join(" ").includes("--service-config"))).toBe(true)
+})
+
+it.each(["remove", "install"] as const)("retains a legacy task and config if %s cannot confirm zero instances", async (operation) => {
+  const f = fixture(); f.task.flag = "--service-config"; f.task.instances = 1
+  await expect(operation === "remove" ? removeService(target, f.effects) : installService(target, f.effects)).rejects.toThrow("zero instances")
+  expect(f.events).not.toContain("delete-task")
+  expect(f.events).not.toContain("write")
+  expect(f.events).not.toContain("remove-config")
 })
 
 it("does not lose unconfirmed evidence when both task and configuration disappeared", async () => {

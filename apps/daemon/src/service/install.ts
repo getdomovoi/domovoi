@@ -717,23 +717,33 @@ async function installWithDeadline(
   // Security review round 3 (#574): schtasks /create /f replaces a task of
   // the same name, so a task Domovoi did not register refuses the install, by
   // the same check status and removal use, before anything changes.
+  let legacyWindowsCommand: string | undefined
   if (target.platform === "win32" && !target.configuration.wsl) {
     const owner = await windowsTaskOwner(assertHome(target.home), effects, deadline)
     if (owner === "other") throw new WindowsTaskNotDomovoiError(displayName)
-    if (owner === "domovoi") throw new Error(legacyWindowsTreeUnknown)
-    if (owner === "supervised" && !effects.supervisorStatus) throw new Error("Windows supervisor status is unavailable")
-    const status = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home)))
-    if (status?.treeUnconfirmed) throw new Error(windowsTreeUnknown)
-    if (status?.supervising || status?.running) throw new Error("The Windows supervisor is still active; stop and remove it before installing again")
-    if (!status && (owner === "supervised" || effects.readConfiguration?.(assertHome(target.home), "win32") !== undefined)) {
-      if (!effects.stopSupervisor) throw new Error("Windows supervisor evidence is missing; replacement refused")
-      const removal = windowsTaskRemovalPlan(displayName)
-      await disableWindowsTask(removal, effects, deadline)
-      await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, {
-        retire: false,
-        stopTask: async () => await stopWindowsTask(removal, effects, deadline) === "stopped",
-        ...(owner === "supervised" ? { confirmNoLaunch: () => windowsTaskDisabledAndIdle(displayName, effects, deadline) } : {}),
-      }))
+    if (owner === "domovoi") {
+      const action = await readWindowsTaskAction(displayName, effects, deadline)
+      if (action === "missing" || !action.arguments.includes('" --service-config "')) throw new Error("Legacy Windows registration changed before migration")
+      legacyWindowsCommand = domovoiTaskCommand(action, plan.configuration.path, effects.readConfiguration?.(assertHome(target.home), "win32")?.serviceRuntime)
+      if (!legacyWindowsCommand) throw new WindowsTaskNotDomovoiError(displayName)
+      // Q10 B: legacy tasks retain scheduler-only retirement. Keep the stopped
+      // registration until the new files are ready, so a failed write is retryable.
+      if (await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline) !== "stopped") throw new Error("Legacy Windows registration disappeared before migration")
+    } else {
+      if (owner === "supervised" && !effects.supervisorStatus) throw new Error("Windows supervisor status is unavailable")
+      const status = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home)))
+      if (status?.treeUnconfirmed) throw new Error(windowsTreeUnknown)
+      if (status?.supervising || status?.running) throw new Error("The Windows supervisor is still active; stop and remove it before installing again")
+      if (!status && (owner === "supervised" || effects.readConfiguration?.(assertHome(target.home), "win32") !== undefined)) {
+        if (!effects.stopSupervisor) throw new Error("Windows supervisor evidence is missing; replacement refused")
+        const removal = windowsTaskRemovalPlan(displayName)
+        await disableWindowsTask(removal, effects, deadline)
+        await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, {
+          retire: false,
+          stopTask: async () => await stopWindowsTask(removal, effects, deadline) === "stopped",
+          ...(owner === "supervised" ? { confirmNoLaunch: () => windowsTaskDisabledAndIdle(displayName, effects, deadline) } : {}),
+        }))
+      }
     }
   }
   const commands = [...await launchdCommandsBeforeInstall(target, plan, effects, deadline), ...plan.commands]
@@ -797,9 +807,14 @@ async function installWithDeadline(
   }
   const registering = commands.findIndex(registersDefinition)
   let bootoutSent = false
+  let legacyWindowsRemoved = false
   for (const [index, { command, args }] of commands.entries()) {
     try {
       if (command === "launchctl" && args[0] === "bootout") bootoutSent = true
+      if (legacyWindowsCommand && index === registering) {
+        if (await removeWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline, true) !== "removed") throw new Error("Legacy Windows registration disappeared before migration")
+        legacyWindowsRemoved = true
+      }
       await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
     } catch (cause) {
       // Security review round 3 (#574): the manager kept what it ran before,
@@ -807,6 +822,13 @@ async function installWithDeadline(
       // command may still register late, so then nothing is put back.
       if (index <= registering && previousFiles && !deadline.signal.aborted) {
         await putPreviousFilesBack(previousFiles, effects, deadline, cause)
+        if (legacyWindowsCommand && legacyWindowsRemoved && index === registering) {
+          // Preserve the old action for a retry if /create failed after deletion.
+          // Do not restart it: legacy descendants have no job-object evidence.
+          const restoreArgs = args.map((arg, position) => args[position - 1] === "/tr" ? legacyWindowsCommand! : arg)
+          await withinServiceDeadline(deadline, () => effects.run(command, restoreArgs, deadline))
+          await disableWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
+        }
         if (bootoutSent) await loadPreviousAgent(target, plan, previousFiles, effects, deadline, cause)
         if (plan.linger?.kind === "enabled") await lingerAfterRestore(target, effects, deadline, cause)
       }
@@ -869,8 +891,6 @@ function plainWindowsPath(path: string | undefined): boolean {
     && !path.includes("\x7f")
     && win32.normalize(path) === path
 }
-
-const legacyWindowsTreeUnknown = "The legacy Windows task has no job-object tree evidence. Stop, removal, and replacement are refused; task and configuration retained. Disable the legacy task and restart Windows before manually retiring that registration."
 
 const legacyDaemonEntry = /\\(?:@getdomovoi|apps)\\daemon\\dist\\index\.js$/i
 
@@ -1136,10 +1156,15 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       ...command,
       args: command.args.map((arg, index) => command.args[index - 1] === "/tr" ? previousCommand : arg),
     })
-    if (!previous.arguments.includes('" --service-supervise "')) throw new DaemonServiceUpdateError("nothing-changed", new Error(legacyWindowsTreeUnknown))
+    const legacy = !previous.arguments.includes('" --service-supervise "')
+    let newRegistrationAttempted = false
     if (!effects.stopSupervisor) throw new DaemonServiceUpdateError("nothing-changed", new Error("Windows supervisor shutdown proof is unavailable"))
     const stopTask = async (deadline: OperationDeadline, restoring = false) => {
       const removal = windowsTaskRemovalPlan(displayName)
+      if (legacy && !newRegistrationAttempted) {
+        await removeWindowsTask(removal, effects, deadline, true)
+        return
+      }
       await disableWindowsTask(removal, effects, deadline)
       await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, { retire: false,
         stopTask: async () => await stopWindowsTask(removal, effects, deadline) === "stopped",
@@ -1170,6 +1195,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
           wroteNew = true
           await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
         })
+        newRegistrationAttempted = true
         await startIn(deadline)(plan.commands)
         return plan
       },
@@ -1214,7 +1240,6 @@ async function removeWithDeadline(
   // left running and registered.
   const windowsOwner = plan.kind === "task" ? await windowsTaskOwner(home, effects, deadline) : undefined
   if (windowsOwner === "other") throw new WindowsTaskNotDomovoiError(displayName)
-  if (windowsOwner === "domovoi") throw new Error(legacyWindowsTreeUnknown)
   if (windowsOwner === "missing" && !effects.readConfiguration?.(home, "win32")) {
     const evidence = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(home))
     if (evidence?.treeUnconfirmed || evidence?.supervising || evidence?.running) throw new Error(evidence.detail)
@@ -1254,7 +1279,7 @@ async function removeWithDeadline(
   if (plan.kind === "task") {
     // A missing task can still have a live supervisor and tree. Configuration
     // presence keeps the proof obligation even after external task deletion.
-    if (windowsOwner === "supervised" || effects.readConfiguration?.(home, "win32") !== undefined) {
+    if (windowsOwner === "supervised" || (windowsOwner === "missing" && effects.readConfiguration?.(home, "win32") !== undefined)) {
       if (!effects.stopSupervisor) throw new Error("Windows supervisor shutdown proof is unavailable; task and configuration retained")
       progress.managerHoldsDeadline = true
       try {
@@ -1264,7 +1289,7 @@ async function removeWithDeadline(
       } catch (cause) { throw new WindowsTaskRemovalError(plan.name, cause, { stopIssued: true }) }
     }
     progress.managerHoldsDeadline = true
-    managerStopped = await removeWindowsTask(plan, effects, deadline) === "removed"
+    managerStopped = await removeWindowsTask(plan, effects, deadline, windowsOwner === "domovoi") === "removed"
     progress.managerHoldsDeadline = false
   }
   // Security review round 2 (#574): with no Domovoi service file, the same-
