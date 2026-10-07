@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { OperationDeadline } from "../operation-deadline.js"
-import { createServiceConfiguration } from "./configuration.js"
+import { createServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { installService, removeService, runServiceCommand, servicePlan, serviceStatus, type ServiceEffects } from "./install.js"
 import { windowsTreeUnknown } from "./windows-job-supervisor.js"
 
@@ -13,7 +13,7 @@ const target = { platform: "win32", home, user: "test", execPath: "C:\\Domovoi\\
     registrationId: randomUUID(), serviceRuntime: { executable: "C:\\Domovoi\\node.exe", entry: "C:\\Domovoi\\index.js" } } }
 function fixture() {
   const events: string[] = []
-  const task = { enabled: true, running: true, queued: false, instances: 0, exists: true, flag: "--service-supervise" }
+  const task = { enabled: true, running: true, queued: false, instances: 0, exists: true, flag: "--service-supervise", path: target.runtime, entry: target.execPath }
   const effects: ServiceEffects = {
     readConfiguration: () => target.configuration,
     claimServiceOperation: () => ({ release() {} }), claimProfile: () => ({ release() {} }),
@@ -26,7 +26,7 @@ function fixture() {
       const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
       if (!task.exists) return { code: 0, stdout: "domovoi-task:missing" }
       if (script.includes("domovoi-task-action:")) return { code: 0, stdout: "domovoi-task-action:" + JSON.stringify({
-        path: target.runtime, arguments: `"${target.execPath}" ${task.flag} "${home}\\.domovoi\\service.json"`, enabled: task.enabled, state: task.running ? 4 : 1,
+        path: task.path, arguments: `"${task.entry}" ${task.flag} "${home}\\.domovoi\\service.json"`, enabled: task.enabled, state: task.running ? 4 : 1,
       }) }
       if (script.includes("$task.GetInstances(0).Count")) return { code: 0, stdout: `domovoi-task:${!task.enabled && !task.running && !task.queued && task.instances === 0 ? 1 : 0}` }
       if (script.includes("$task.Enabled = $false")) { events.push("disable"); task.enabled = false }
@@ -221,4 +221,66 @@ it.each(["status", "install", "remove"] as const)("passes the original %s deadli
   if (operation === "install" || operation === "remove") {
     for (const call of vi.mocked(f.effects.stopSupervisor!).mock.calls) expect(call[1]).toBe(deadline)
   }
+})
+
+it.each([
+  [true, "publish"], [false, "publish"], [true, "write"], [false, "write"],
+  [true, "register"], [false, "register"], [true, "register-deleted"], [false, "register-deleted"],
+] as const)("restores supervised registration enabled=%s after %s failure without starting it", async (enabled, phase) => {
+  const f = fixture(); f.task.enabled = enabled; f.task.running = false
+  const oldConfiguration = serializeServiceConfiguration(target.configuration)
+  let configuration = oldConfiguration
+  const replacement = { ...target, runtime: "C:\\Domovoi-next\\node.exe", execPath: "C:\\Domovoi-next\\index.js" }
+  f.effects.read = vi.fn(async () => configuration)
+  f.effects.write = vi.fn(async (_path, contents) => {
+    if (phase === "write" && contents !== oldConfiguration) throw new Error("write failed")
+    configuration = contents
+  })
+  let retired = true
+  f.effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
+    expect(options?.retire).toBe(false)
+    if (!await options?.stopTask?.()) throw new Error("Task remains observable")
+    retired = false
+  })
+  let registrationFailed = false
+  f.effects.run = vi.fn(async (_command, args) => {
+    if (args[0] === "/create") {
+      if (phase.startsWith("register") && !registrationFailed) {
+        registrationFailed = true
+        if (phase === "register-deleted") f.task.exists = false
+        throw new Error("register failed")
+      }
+      const action = /^"([^"]+)" "([^"]+)" --service-supervise /.exec(args[args.indexOf("/tr") + 1]!)
+      if (!action) throw new Error("Invalid restored action")
+      f.task.path = action[1]!; f.task.entry = action[2]!; f.task.exists = true; f.task.enabled = true
+    }
+    if (args[0] === "/change") f.task.enabled = args.includes("/enable")
+    if (args[0] === "/run") throw new Error("Rollback must not start the task")
+  })
+  await expect(installService(replacement, f.effects, { beforeChanges: async () => {
+    if (phase === "publish") throw new Error("publish failed")
+  } })).rejects.toThrow(`${phase.startsWith("register") ? "register" : phase} failed`)
+  expect(configuration).toBe(oldConfiguration)
+  expect(f.task).toMatchObject({ exists: true, enabled, running: false, path: target.runtime, entry: target.execPath })
+  expect(retired).toBe(false)
+  expect(vi.mocked(f.effects.run).mock.calls.some(([, args]) => args[0] === "/run")).toBe(false)
+})
+
+it("keeps the old task disabled if configuration restoration fails", async () => {
+  const f = fixture(); f.task.running = false
+  f.effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
+    if (!await options?.stopTask?.()) throw new Error("Task remains observable")
+  })
+  f.effects.write = vi.fn(async () => { throw new Error("disk full") })
+  await expect(installService(target, f.effects)).rejects.toThrow("Putting back the previous service files also failed")
+  expect(f.task.enabled).toBe(false)
+  expect(f.effects.run).not.toHaveBeenCalled()
+})
+
+it("reports a failed task restoration together with the original reinstall failure", async () => {
+  const f = fixture(); f.task.running = false
+  f.effects.run = vi.fn(async () => { throw new Error("scheduler denied restoration") })
+  await expect(installService(target, f.effects, { beforeChanges: async () => { throw new Error("publication failed") } }))
+    .rejects.toThrow("publication failed. Restoring the previous Windows task also failed: scheduler denied restoration")
+  expect(f.task.enabled).toBe(false)
 })
