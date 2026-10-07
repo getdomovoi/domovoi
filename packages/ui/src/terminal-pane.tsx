@@ -10,6 +10,7 @@ import type {
   TerminalOwner,
   TerminalOwnershipNotification,
   TerminalSession,
+  TerminalSummary,
   TerminalWatchResult,
 } from "@getdomovoi/protocol"
 
@@ -48,7 +49,20 @@ export type TerminalControls = {
   // empty state rather than a stream it cannot fill.
   watch?(terminalId: string): Promise<TerminalWatchResult>
   unwatch?(terminalId: string): Promise<void>
+  // terminal.list: who holds each of a session's shells, whether that
+  // connection is still there, and the grid it set.
+  list?(sessionId: string): Promise<TerminalSummary[]>
 }
+
+// How often a pane that does not hold the shell reads the holder again. The
+// daemon sends no notice when the holder's connection drops or the holder
+// resizes, so for up to this long the banner can name a holder that has gone
+// and output can draw at the holder's previous grid.
+export const terminalHolderRefreshMs = 5_000
+
+// Written ahead of a watched record that does not start at the shell's start,
+// so the stream and anything attached from it say what is missing.
+const droppedRecordMarker = "[earlier output was not kept; the record starts here]"
 
 // The states the pane can be in, each with the atom's meaning for it. Keyed on
 // the union the status is computed from, so another state fails typecheck
@@ -90,6 +104,7 @@ export function TerminalPane({
   composer = composerInbox,
   connected,
   controls,
+  holderRefreshMs = terminalHolderRefreshMs,
   readOnly = false,
   machineName,
   sessionId,
@@ -97,6 +112,7 @@ export function TerminalPane({
   composer?: ComposerInbox
   connected: boolean
   controls: TerminalControls
+  holderRefreshMs?: number
   readOnly?: boolean
   machineName: string
   sessionId: string | null
@@ -114,6 +130,9 @@ export function TerminalPane({
   const [closed, setClosed] = useState(false)
   const [restartKey, setRestartKey] = useState(0)
   const [attachNote, setAttachNote] = useState<AttachNote>()
+  // Whether an xterm is mounted to read output from. A disconnect disposes it
+  // while the last metadata stays on screen.
+  const [rendered, setRendered] = useState(false)
   const watching = readOnly && controls.watch !== undefined
   const canAttach = useSyncExternalStore(
     composer.subscribe,
@@ -156,6 +175,7 @@ export function TerminalPane({
     terminal.loadAddon(fit)
     terminal.open(container)
     xtermRef.current = terminal
+    setRendered(true)
     fit.fit()
     const unsubscribe = controls.subscribe(terminalId, {
       output: ({ data }) => terminal.write(data),
@@ -193,6 +213,22 @@ export function TerminalPane({
       void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
     })
     observer.observe(container)
+    // Nothing on the wire says when the holder's connection drops or the
+    // holder resizes, so a pane that does not hold the shell reads both from
+    // terminal.list on an interval. Replies come in order on one connection,
+    // so a reply never undoes an ownership notice that arrived before it.
+    const list = controls.list
+    const holderRefresh = list ? setInterval(() => {
+      if (!attached || ownsTerminal) return
+      void list(sessionId).then((terminals) => {
+        if (!active || ownsTerminal) return
+        const current = terminals.find((candidate) => candidate.terminalId === terminalId)
+        if (!current || current.state !== "live") return
+        setClaimHeld(current.claimHeld)
+        setMetadata((shown) => shown && shown.owner.clientId !== current.owner.clientId ? { ...shown, owner: current.owner } : shown)
+        if (terminal.cols !== current.cols || terminal.rows !== current.rows) terminal.resize(current.cols, current.rows)
+      }, () => undefined)
+    }, holderRefreshMs) : undefined
     if (readOnly && watch) {
       // The watching desktop reads the shell the way the phone does: the
       // daemon's kept record, then what it prints from here on. Nothing it
@@ -205,6 +241,7 @@ export function TerminalPane({
           setMetadata({ terminalId, sessionId, cols, rows, shell, cwd, buffer, owner })
           setClaimHeld(held)
           terminal.resize(cols, rows)
+          if (record.earlierOutputDropped) terminal.write(`${droppedRecordMarker}\r\n`)
           if (buffer) terminal.write(buffer)
           if (state === "closed") {
             setClosed(true)
@@ -244,6 +281,8 @@ export function TerminalPane({
     }
     return () => {
       active = false
+      if (holderRefresh !== undefined) clearInterval(holderRefresh)
+      setRendered(false)
       unsubscribe()
       observer.disconnect()
       input.dispose()
@@ -251,7 +290,7 @@ export function TerminalPane({
       if (xtermRef.current === terminal) xtermRef.current = null
       if (readOnly && unwatch) void unwatch(terminalId).catch(() => undefined)
     }
-  }, [connected, controls, readOnly, restartKey, sessionId, terminalId])
+  }, [connected, controls, holderRefreshMs, readOnly, restartKey, sessionId, terminalId])
 
   if (!sessionId) {
     return (
@@ -501,9 +540,10 @@ export function TerminalPane({
       ) : null}
       {metadata ? (
         <div className="flex shrink-0 flex-wrap items-center gap-2 border-t bg-sidebar px-3 py-2.5">
-          {/* Shown only while this session's composer is open to receive it,
-              so the button never hands output to a draft that is not there. */}
-          {canAttach ? (
+          {/* Shown only while this session's composer is open to receive it
+              and a renderer holds output to read, so the button never hands
+              output to a draft that is not there or reads from nothing. */}
+          {canAttach && rendered ? (
             <Button variant="secondary" size="xs" onClick={attachOutput}>
               Attach this output to the composer
             </Button>

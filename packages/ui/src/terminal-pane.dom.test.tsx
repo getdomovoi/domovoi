@@ -477,6 +477,48 @@ describe("TerminalPane on a watching desktop", () => {
     expect(target.watch).toHaveBeenLastCalledWith("terminal-session-other")
   })
 
+  // The daemon sends nothing when the holder's connection drops, and nothing
+  // when the holder resizes. terminal.list carries both, so a pane that does
+  // not hold the shell reads it again on a short interval.
+  it("rereads the holder and its grid while it does not hold the shell", async () => {
+    const target = watcher()
+    const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, ...listed } = watchResult({ cols: 132, rows: 40, claimHeld: false })
+    const list = vi.fn(async (_sessionId: string) => [listed])
+    const controls: TerminalControls = { ...target.controls, list }
+    const { container } = render(
+      <TerminalPane connected readOnly controls={controls} holderRefreshMs={20} machineName="worktop" sessionId={sessionId} />,
+    )
+    await act(async () => {
+      target.watched.resolve(watchResult())
+    })
+
+    expect(await screen.findByText("Nobody holds this shell")).toBeTruthy()
+    expect(list).toHaveBeenCalledWith(sessionId)
+    await vi.waitFor(() => expect(container.querySelectorAll(".xterm-rows > div").length).toBe(40))
+  })
+
+  // The daemon keeps a bounded record. When the start of the shell's output
+  // is gone, the stream says so, and so does anything attached from it.
+  it("marks a watched record whose start the daemon no longer keeps", async () => {
+    const user = userEvent.setup()
+    const composer = createComposerInbox()
+    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
+    composer.open(sessionId, receive)
+    const target = watcher()
+    const { container } = render(
+      <TerminalPane connected readOnly composer={composer} controls={target.controls} machineName="worktop" sessionId={sessionId} />,
+    )
+    await act(async () => {
+      target.watched.resolve(watchResult({ earlierOutputDropped: true }))
+    })
+
+    await drawnRows(container)
+    expect(container.textContent).toContain("[earlier output was not kept; the record starts here]")
+    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+    const [attachment] = receive.mock.calls[0]!
+    expect("content" in attachment ? attachment.content : "").toMatch(/^\[earlier output was not kept; the record starts here\]/u)
+  })
+
   it("keeps the watching empty state when this client cannot watch", () => {
     const target = harness()
     render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
@@ -531,6 +573,26 @@ describe("Attach this output to the composer", () => {
     await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
 
     expect(await screen.findByText(/The composer already holds the most attachments/u)).toBeTruthy()
+  })
+
+  // A disconnect disposes the renderer the button reads from, so the button
+  // goes with it rather than staying and doing nothing.
+  it("is not offered once the renderer is gone", async () => {
+    const composer = createComposerInbox()
+    composer.open(sessionId, () => "attached")
+    const target = harness()
+    const view = (connected: boolean) => (
+      <TerminalPane connected={connected} controls={target.controls} composer={composer} machineName="worktop" sessionId={sessionId} />
+    )
+    const { rerender } = render(view(true))
+    await act(async () => {
+      target.connect(thisClient)
+    })
+    expect(screen.getByRole("button", { name: "Attach this output to the composer" })).toBeTruthy()
+
+    rerender(view(false))
+
+    expect(screen.queryByRole("button", { name: "Attach this output to the composer" })).toBeNull()
   })
 })
 
