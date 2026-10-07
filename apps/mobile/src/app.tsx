@@ -62,6 +62,7 @@ import {
   terminalListIntervalMs,
   unconfirmedWatches,
   watchedSummary,
+  watchesFor,
   watchFrom,
   withNotification,
   type TerminalWatch,
@@ -533,8 +534,10 @@ export function App() {
     if (openTerminalId && !terminals.has(openTerminalId)) setOpenTerminalId(undefined)
   }, [openTerminalId, terminals])
 
-  const sessionTerminals = useMemo(() => [...terminals.values()], [terminals])
-  const openTerminal = openTerminalId ? terminals.get(openTerminalId) : undefined
+  // Only the open session's: another session's records are dropped by an
+  // effect, after the first frame of the session that replaced it.
+  const sessionTerminals = useMemo(() => watchesFor(terminals, watchedSessionId), [terminals, watchedSessionId])
+  const openTerminal = openTerminalId ? sessionTerminals.find((watch) => watchedSummary(watch).terminalId === openTerminalId) : undefined
   // Whether what the terminal views say is this connection's word.
   const terminalsConfirmed = status === "open" && terminalsListed
 
