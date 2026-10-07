@@ -140,6 +140,22 @@ describe("WatchingScreen", () => {
     expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull()
   })
 
+  // A reconnect or Try again watches the same shell again, and the new
+  // record replays what the old count was counting.
+  it("clears the count when the same shell is watched again, and counts from there", async () => {
+    const first = watching()
+    const { redraw } = await draw(first)
+    await fireEvent.press(screen.getByRole("switch", { name: "Follow output" }))
+    await redraw(more(first, "one\ntwo\n"))
+    expect(screen.getByRole("button", { name: "Jump to latest, 2 new" })).toBeOnTheScreen()
+
+    const again = watching({ buffer: "$ pnpm vitest run src/webhooks\none\ntwo\n" })
+    await redraw(again)
+    expect(screen.getByRole("button", { name: "Jump to latest" })).toBeOnTheScreen()
+    await redraw(more(again, "three\n"))
+    expect(screen.getByRole("button", { name: "Jump to latest, 1 new" })).toBeOnTheScreen()
+  })
+
   // The phone keeps no more than the daemon does, so at the bound each new
   // line pushes an old one out. What landed is still counted.
   it("keeps counting what lands once the phone holds all it keeps", async () => {
