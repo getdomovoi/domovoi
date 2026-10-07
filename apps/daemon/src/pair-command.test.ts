@@ -29,7 +29,7 @@ describe("runPairCommand", () => {
     const io = recorder()
     const issue = vi.fn(async () => issued)
     expect(await runPairCommand(["pair", "--client", "phone", "--label", "iPhone"], { ...io, issue })).toBe(0)
-    expect(issue).toHaveBeenCalledWith("phone")
+    expect(issue).toHaveBeenCalledWith("phone", "iPhone")
     const out = io.out.join("")
     // The symbol carries a code and an address, never a credential.
     const drawn = /<qr>(.*)<\/qr>/.exec(out)
@@ -82,6 +82,61 @@ describe("runPairCommand", () => {
     expect(io.out.join("")).toContain(issued.code)
     expect(io.err.join("")).toContain("names no host a device could dial")
     expect(io.out.join("")).not.toContain("<qr>")
+  })
+
+  it("asks the daemon to name the device with the label", async () => {
+    const io = recorder()
+    const issue = vi.fn(async () => issued)
+    expect(await runPairCommand(["pair", "--client", "tablet", "--label", "  Kitchen iPad "], { ...io, issue })).toBe(0)
+    expect(issue).toHaveBeenCalledWith("tablet", "Kitchen iPad")
+    expect(io.out.join("")).toContain("The device appears in this daemon's Devices list as \"Kitchen iPad\" once it pairs.")
+  })
+
+  it("says an older daemon refuses the label, without repeating what the daemon sent", async () => {
+    const io = recorder()
+    const issue = vi.fn(async () => { throw new Error("Method parameters are invalid") })
+    expect(await runPairCommand(["pair", "--client", "web", "--label", "Studio browser"], { ...io, issue })).toBe(1)
+    const err = io.err.join("")
+    // The command cannot tell an old daemon's refusal from any other, so the
+    // line is a condition, not a diagnosis.
+    expect(err).toContain("A daemon older than this command refuses the device label, so if this daemon is older, update and restart it, then run this again.")
+    expect(err).toContain("Otherwise check that the daemon is running and that this command uses its own credential.")
+    expect(err).not.toContain("Method parameters are invalid")
+    expect(io.out.join("")).toBe("")
+  })
+
+  it("prints the word code a browser types, not a symbol or a payload", async () => {
+    const io = recorder()
+    const issue = vi.fn(async () => issued)
+    expect(await runPairCommand(["pair", "--client", "web", "--label", "Studio browser"], { ...io, issue })).toBe(0)
+    expect(issue).toHaveBeenCalledWith("web", "Studio browser")
+    const out = io.out.join("")
+    expect(out).toContain(`Web code: ${issued.code}\n`)
+    expect(out).toContain("Open Domovoi in the browser on that device and type the code.")
+    expect(out).not.toContain("<qr>")
+    expect(out).not.toContain("domovoi-pair:")
+    expect(out).not.toContain("A paired web can:")
+    expect(out).toContain("It works once, and only for a web browser.")
+    expect(out).toContain("It lasts 3 minutes. Run this again for a fresh one, which stops the old code.")
+    expect(out).toContain("The device appears in this daemon's Devices list as \"Studio browser\" once it pairs.")
+  })
+
+  it("names the web app address when the daemon's owner set one", async () => {
+    const io = recorder()
+    const issue = vi.fn(async () => ({ ...issued, webAppUrl: "https://app.example.test/domovoi" }))
+    expect(await runPairCommand(["pair", "--client", "web", "--label", "Studio browser"], { ...io, issue })).toBe(0)
+    const out = io.out.join("")
+    expect(out).toContain("Open this address in the browser on that device, then type the code:\n  https://app.example.test/domovoi\n")
+    expect(out).not.toContain("Open Domovoi in the browser on that device")
+  })
+
+  it("says a browser elsewhere cannot reach a daemon on loopback", async () => {
+    const io = recorder()
+    const issue = vi.fn(async () => ({ ...issued, pairingAddress: { url: "ws://127.0.0.1:47831/rpc", loopback: true } }))
+    expect(await runPairCommand(["pair", "--client", "web", "--label", "Studio browser"], { ...io, issue })).toBe(0)
+    const out = io.out.join("")
+    expect(out).toContain(`Web code: ${issued.code}`)
+    expect(out).toContain("This daemon answers on ws://127.0.0.1:47831/rpc, which only this machine can reach. A browser on another device needs the daemon on an address it can dial.")
   })
 
   it("rejects invalid client grants before contacting the daemon", async () => {

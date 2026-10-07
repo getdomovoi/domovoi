@@ -7905,7 +7905,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, daemonAuthenticationErrorCode, desktopPairingRefusal)
           return
         }
-        const { replacedPairingId, ...issued } = this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess)
+        const { replacedPairingId, ...issued } = this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess, params.label)
         this.#codeReplaced(replacedPairingId)
         // Only a client code reports its outcome, and only to this connection.
         // Issuance can wait in the mutation queue past this connection's close,

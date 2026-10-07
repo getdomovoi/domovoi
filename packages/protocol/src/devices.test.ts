@@ -149,6 +149,18 @@ describe("devicePairParamsSchema", () => {
       .toBe("watching")
   })
 
+  it("lets the issuer of a client code name the device it pairs", () => {
+    expect(deviceIssueCodeParamsSchema.parse({ targetClient: "web", label: "  Studio browser " }))
+      .toEqual({ targetClient: "web", label: "Studio browser" })
+    // Without a label the code is the one the desktop card has always issued.
+    expect(deviceIssueCodeParamsSchema.parse({ targetClient: "phone" })).not.toHaveProperty("label")
+    for (const label of ["", "   ", "line\nbreak", "x".repeat(129)]) {
+      expect(deviceIssueCodeParamsSchema.safeParse({ targetClient: "phone", label }).success, JSON.stringify(label)).toBe(false)
+    }
+    // A machine pairing names itself when it claims, so a label there would name nothing.
+    expect(deviceIssueCodeParamsSchema.safeParse({ label: "Desk" }).success).toBe(false)
+  })
+
   it("names each issued code, so its outcome can say which code it was", () => {
     const issued = {
       pairingId: `pairing-${"c".repeat(32)}`,

@@ -62,6 +62,23 @@ describe("PairingCodeService", () => {
     })
   })
 
+  it("names the paired device with the label its issuer gave the code", () => {
+    const { pairing, devices, start } = service()
+    const issued = pairing.issue(start, "web", undefined, "Studio browser")
+    const paired = pairing.redeem(issued.code, { label: "Firefox on Linux" }, start)
+
+    // The issuer named the device on purpose; the redeeming device's own
+    // name is its text and does not replace the issuer's.
+    expect(paired.device.label).toBe("Studio browser")
+    expect(devices.list().map((device) => device.label)).toEqual(["Studio browser"])
+  })
+
+  it("names the paired device with its own label when the issuer gave none", () => {
+    const { pairing, start } = service()
+    const issued = pairing.issue(start, "phone")
+    expect(pairing.redeem(issued.code, { label: "iPhone" }, start).device.label).toBe("iPhone")
+  })
+
   it("spends a code on the first successful pairing", () => {
     const { pairing, start } = service()
     const issued = pairing.issue(start)

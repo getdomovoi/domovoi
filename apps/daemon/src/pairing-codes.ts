@@ -60,6 +60,7 @@ type OpenPairing = {
   // it is shown and cannot be talked up when it is spent.
   targetClient?: ClientKind
   clientAccess?: ClientAccess
+  label?: string
 }
 
 function digestOf(code: string): string {
@@ -86,7 +87,7 @@ export class PairingCodeService {
 
   // Issuing ends any code still open; replacedPairingId names it so its issuer
   // can be told.
-  issue(nowMs: number, targetClient?: ClientKind, clientAccess?: ClientAccess): {
+  issue(nowMs: number, targetClient?: ClientKind, clientAccess?: ClientAccess, label?: string): {
     pairingId: string
     code: string
     expiresAt: string
@@ -106,6 +107,7 @@ export class PairingCodeService {
       attempts: 0,
       ...(targetClient === undefined ? {} : { targetClient }),
       ...(clientAccess === undefined ? {} : { clientAccess }),
+      ...(label === undefined ? {} : { label }),
     }
     return {
       pairingId,
@@ -150,7 +152,9 @@ export class PairingCodeService {
     let paired: DevicePairing
     try {
       paired = this.#devices.pair({
-        label: input.label,
+        // The daemon owner named the device on purpose. The redeeming
+        // device's name is that device's own text, so the issuer's label wins.
+        label: open.label ?? input.label,
         binding: {
           kind: "client",
           client: open.targetClient,
