@@ -1,7 +1,8 @@
+import * as fs from "node:fs"
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { unrestrictedApprovalScope } from "./approval-facts.js"
 import {
@@ -777,14 +778,42 @@ describe("approval outside-project facts", () => {
     }
   })
 
-  it("omits the fact when resolution cannot read a path or the deadline expires", async () => {
+  it("omits the fact when a path lookup fails with permission denied", async () => {
+    const workspace = await worktree()
+    const request = input(workspace, { request: { workspace, path: "unreadable.txt", command: "Write" } })
+    expect((await settleApproval(request)).approval.outsideProject).toEqual({ outside: false, basis: "path" })
+    const target = join(workspace, "unreadable.txt")
+    const nativeRealpath = fs.realpath.native
+    const lookup = vi.spyOn(fs.realpath, "native").mockImplementation(((
+      path: string, callback: (error: NodeJS.ErrnoException | null, resolved: string) => void,
+    ) => {
+      if (path === target) callback(Object.assign(new Error("permission denied"), { code: "EACCES" }), "")
+      else nativeRealpath(path, callback)
+    }) as never)
+    try {
+      const unreadable = await settleApproval(request)
+      expect(lookup).toHaveBeenCalledWith(target, expect.any(Function))
+      expect(unreadable.approval).not.toHaveProperty("outsideProject")
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
+  // Windows can report an overlong component as missing instead of unreadable.
+  it.skipIf(process.platform === "win32")("omits the fact for an unreadable overlong path component", async () => {
     const workspace = await worktree()
     const unreadable = await settleApproval(input(workspace, {
       request: { workspace, path: "x".repeat(300), command: "Write" },
     }))
     expect(unreadable.approval).not.toHaveProperty("outsideProject")
+  })
+
+  it("omits the fact when the deadline expires", async () => {
+    const workspace = await worktree()
     const deadline = OperationDeadline.start(1, { signal: AbortSignal.abort() })
-    const expired = await settleApproval(input(workspace), deadline)
+    const expired = await settleApproval(input(workspace, {
+      request: { workspace, path: "new.txt", command: "Write" },
+    }), deadline)
     expect(expired.approval).not.toHaveProperty("outsideProject")
   })
 
