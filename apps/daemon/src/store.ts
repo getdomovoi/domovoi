@@ -24,6 +24,7 @@ import {
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
+import { normalizeLegacyEffort } from "./legacy-effort.js"
 import { SqliteAuditLog, type AuditLog } from "./audit-log.js"
 import { SqliteDeviceRegistry, storedDeviceRowIsValid, type DeviceRegistry } from "./device-registry.js"
 import { SqliteTransferReceipts, type TransferReceipts } from "./transfer-receipts.js"
@@ -318,9 +319,10 @@ function migrateStoredWorkspace(value: unknown, options: { repairLegacyEffort?: 
     for (const session of migrated.sessions) {
       if (!isRecord(session) || !isRecord(session.runtime)) continue
       const runtime = session.runtime
-      if ((runtime.provider === "opencode" || runtime.provider === "kilo")
-        && (runtime.reasoning === "medium" || runtime.reasoning === "none")) {
-        runtime.reasoning = "unset"
+      if (typeof runtime.provider !== "string" || typeof runtime.reasoning !== "string") continue
+      const reasoning = normalizeLegacyEffort(runtime.provider, runtime.reasoning)
+      if (reasoning !== runtime.reasoning) {
+        runtime.reasoning = reasoning
         repaired = true
       }
     }

@@ -109,6 +109,7 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
+import { normalizeLegacyEffort } from "./legacy-effort.js"
 import { approvalToolServerFact, type ApprovalScope } from "./approval-facts.js"
 import {
   ApprovalLedger,
@@ -5929,15 +5930,14 @@ export class DomovoiDaemon {
       && !supportedReasoningEfforts.includes(runtime.reasoning)
       ? model.defaultReasoningEffort
       : runtime.reasoning
-    // OpenCode and Kilo never sent effort overrides for these stored labels.
-    const legacyModelDefault = (runtime.provider === "opencode" || runtime.provider === "kilo")
-      && (reasoning === "medium" || reasoning === "none")
-      && !supportedReasoningEfforts.includes(reasoning)
+    const resolvedReasoning = !supportedReasoningEfforts.includes(reasoning)
       && supportedReasoningEfforts.includes("unset")
-    if (!supportedReasoningEfforts.includes(reasoning) && !legacyModelDefault) {
+      ? normalizeLegacyEffort(runtime.provider, reasoning)
+      : reasoning
+    if (!supportedReasoningEfforts.includes(resolvedReasoning)) {
       throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")
     }
-    return { ...runtime, model: model.id, reasoning: legacyModelDefault ? "unset" : reasoning }
+    return { ...runtime, model: model.id, reasoning: resolvedReasoning }
   }
 
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
