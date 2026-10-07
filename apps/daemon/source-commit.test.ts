@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
 
-import { readSourceCommit } from "./source-commit.js"
+import { readSourceCommit } from "./source-commit.mjs"
 import { removeScratchDirectories } from "./src/test-scratch.js"
 
 const directories: string[] = []
