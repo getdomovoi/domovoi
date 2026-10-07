@@ -41,6 +41,9 @@ export type TerminalRecord = {
   // Line breaks received live, counted as they arrive and never reduced by a
   // cut, so what landed can be counted for the reader.
   received: number
+  // Pieces of output received live. A piece with no line break adds no line
+  // to count but can still wrap below the reader, so it is counted here.
+  pieces: number
   // The last time anything was heard for this terminal: the watch, then each
   // piece of output. The gap a dropped connection leaves starts here.
   lastHeardAt: string
@@ -73,6 +76,7 @@ export function watchFrom(result: TerminalWatchResult): TerminalRecord {
     phoneDropped: false,
     startsMidLine: earlierOutputDropped,
     received: 0,
+    pieces: 0,
     lastHeardAt: watchedAt,
     confirmed: true,
   }
@@ -153,6 +157,7 @@ export function withNotification(record: TerminalRecord, notification: TerminalN
     ...record,
     text: record.text + data,
     received: record.received + data.split("\n").length - 1,
+    pieces: record.pieces + 1,
     lastHeardAt: now.toISOString(),
   })
 }
@@ -449,9 +454,10 @@ export function followToggle(follow: Follow): Follow {
 }
 
 // A closed terminal sends nothing more, so following means nothing there; the
-// jump stays only while lines are below the reader (scrolled up, or landed
-// just before it closed).
-export function showJump(follow: Follow, closed: boolean): boolean {
-  if (closed) return !follow.atEnd || follow.unseen > 0
+// jump stays only while output is below the reader: scrolled up, lines that
+// landed just before it closed, or a last piece with no line break that can
+// still wrap past the end of the view (outputBelow).
+export function showJump(follow: Follow, closed: boolean, outputBelow = false): boolean {
+  if (closed) return !follow.atEnd || follow.unseen > 0 || outputBelow
   return !follow.following || !follow.atEnd
 }

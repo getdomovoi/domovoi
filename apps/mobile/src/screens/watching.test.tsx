@@ -236,6 +236,20 @@ describe("WatchingScreen", () => {
     expect(screen.getByRole("button", { name: "Jump to latest, 1 new" })).toBeOnTheScreen()
   })
 
+  // A last piece of output without a line break can still wrap below the
+  // reader before the shell ends.
+  it("keeps the jump after a final piece of output with no line break", async () => {
+    const first = watching()
+    const { redraw } = await draw(first)
+    await fireEvent.press(screen.getByRole("switch", { name: "Follow output" }))
+    const landed = more(first, "x".repeat(500))
+    await redraw(landed)
+    if (landed.state !== "watching") throw new Error("only a watched terminal closes")
+    await redraw({ state: "watching", record: withNotification(landed.record, { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 0 } }, new Date("2026-10-06T14:09:40.000Z")) })
+    await fireEvent.press(screen.getByRole("button", { name: "Jump to latest" }))
+    expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull()
+  })
+
   // The last lines can land below the reader just before the shell ends.
   it("keeps the jump to the last lines after the shell closes", async () => {
     const first = watching()

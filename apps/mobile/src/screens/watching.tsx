@@ -155,23 +155,44 @@ function WatchingView({ title, watch, connected, notice, onBack, onRetry }: Watc
     if (added > 0) setFollow((current) => followAfterOutput(current, added))
   }, [received, watchedAt])
 
+  // Any piece of output that lands while the view does not follow to the end
+  // may sit below it, even one with no line break to count, so the jump to it
+  // stays after the shell closes until the reader is taken to the end.
+  const [outputBelow, setOutputBelow] = useState(false)
+  const followNow = useRef(follow)
+  followNow.current = follow
+  const pieces = record?.pieces ?? 0
+  const seenPieces = useRef({ watchedAt, pieces })
+  useEffect(() => {
+    if (seenPieces.current.watchedAt !== watchedAt || pieces < seenPieces.current.pieces) {
+      seenPieces.current = { watchedAt, pieces: 0 }
+      setOutputBelow(false)
+    }
+    const added = pieces - seenPieces.current.pieces
+    seenPieces.current.pieces = pieces
+    if (added > 0 && !(followNow.current.following && followNow.current.atEnd)) setOutputBelow(true)
+  }, [pieces, watchedAt])
+
   const jump = () => {
     setHeldRecord(undefined)
+    setOutputBelow(false)
     setFollow(followJump)
     output.current?.scrollToEnd()
   }
   const toggle = () => {
     if (!follow.following) {
       setHeldRecord(undefined)
+      setOutputBelow(false)
       output.current?.scrollToEnd()
     }
     setFollow(followToggle)
   }
   const scrolled = (atEnd: boolean) => {
     setHeldRecord(atEnd ? undefined : (held) => held ?? latestRecord.current)
+    if (atEnd) setOutputBelow(false)
     setFollow((current) => followAfterScroll(current, atEnd))
   }
-  const jumpOffered = showJump(follow, closed)
+  const jumpOffered = showJump(follow, closed, outputBelow)
 
   return (
     <View className="flex-1 bg-background">

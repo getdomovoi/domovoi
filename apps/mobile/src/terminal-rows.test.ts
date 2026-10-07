@@ -565,5 +565,7 @@ describe("follow", () => {
     expect(showJump(followAfterOutput(followToggle(followStart), 3), true)).toBe(true)
     expect(showJump(followAfterScroll(followStart, false), true)).toBe(true)
     expect(showJump(followJump(followAfterOutput(followToggle(followStart), 3)), true)).toBe(false)
+    // A last piece with no line break counts no line but may still be below.
+    expect(showJump(followToggle(followStart), true, true)).toBe(true)
   })
 })
