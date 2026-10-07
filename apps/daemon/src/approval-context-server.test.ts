@@ -89,6 +89,32 @@ async function fixture() {
 }
 
 describe("approval turn context", () => {
+  it("attributes an ACP-style permission event and preserves its plan blocker and settlement", async () => {
+    const context = await fixture()
+    const client = await context.connect("desktop", "acp-origin")
+    expect(await client.rpc("session.send", { sessionId: context.sessionId, prompt: "Start", client: "desktop" }))
+      .not.toHaveProperty("error")
+    context.emit({ type: "plan-updated", threadId: "thread-context", turnId: "turn-1", steps: [
+      { text: "Publish", status: "in-progress" },
+    ] })
+    context.emit({
+      type: "approval-requested", requestId: 42, threadId: "thread-context", turnId: "turn-1",
+      itemId: "acp-tool", command: "git push", reason: "Run command",
+    })
+    await waitForDaemon(() => expect(context.durable().approvals).toHaveLength(1))
+    const snapshot = workspaceSnapshotSchema.parse((await client.rpc("workspace.get", {})).result)
+    const approval = snapshot.approvals[0]!
+    expect(approval.origin).toEqual({ client: "desktop", clientId: "acp-origin", connectionId: client.connectionId })
+    expect(approvalPlanStep(snapshot.workingPlans, approval)).toEqual({ step: 1, of: 1 })
+    expect(approval).not.toHaveProperty("outsideProject")
+    expect(approval).toMatchObject({ directory: context.workspace, execution: { state: "resolved", record: { cwd: "." } } })
+    expect(await client.rpc("approval.resolve", { approvalId: approval.id, decision: "deny", client: "desktop" }))
+      .not.toHaveProperty("error")
+    expect(context.agent.resolveApproval).toHaveBeenCalledWith(42, "deny")
+    expect(context.durable().approvals).toEqual([])
+    expect(context.durable().workingPlans[0]!.steps[0]).not.toHaveProperty("blocker")
+  })
+
   it.each(["session", "request"] as const)("uses only request cwd provenance for command facts: %s", async (source) => {
     const context = await fixture()
     const client = await context.connect("desktop")

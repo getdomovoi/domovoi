@@ -264,12 +264,14 @@ export class AcpAgentAdapter implements AgentAdapter {
 
   #requestPermission(request: AcpPermissionRequest): Promise<AcpPermissionResult> {
     const requestId = this.#nextPermissionId++
+    const turnId = this.#activeTurns.get(request.sessionId)?.id
     return new Promise((resolve) => {
       this.#pendingPermissions.set(requestId, { request, resolve })
       this.#emit({
         type: "approval-requested",
         requestId,
         threadId: request.sessionId,
+        ...(turnId === undefined ? {} : { turnId }),
         itemId: request.toolCallId,
         ...(request.command ? { command: request.command } : {}),
         ...(request.tool !== undefined ? { tool: request.tool } : {}),
