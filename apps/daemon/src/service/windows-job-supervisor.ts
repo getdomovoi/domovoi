@@ -168,11 +168,19 @@ function configurationAt(path: string) {
 }
 function boundRecord(config: ServiceConfiguration, previousConfigurationDigest?: string): WindowsSupervisorRecord | undefined {
   const record = readWindowsSupervisorRecord(profileLocation(config.homeDirectory, config.profileDirectory))
+  // A settled predecessor is not launch history for a replacement registration.
+  // Stop still claims the startup lease and re-reads history before proving no launch.
+  if (record && record.registrationId !== config.registrationId && terminalWindowsTreeProof(record)) return undefined
   if (record && (record.registrationId !== config.registrationId
     || (record.configurationDigest !== digest(config) && record.configurationDigest !== previousConfigurationDigest))) {
     throw new Error("Windows supervisor evidence does not match the installed service configuration")
   }
   return record
+}
+
+function terminalWindowsTreeProof(record: WindowsSupervisorRecord): boolean {
+  return ["stopped", "failed", "exhausted"].includes(record.state)
+    && record.attempts.every((attempt) => attempt.empty || attempt.closure)
 }
 
 export async function runWindowsSupervisor(path: string, entry: { executable: string; args: string[] }): Promise<WindowsSupervisorRecord> {
@@ -224,8 +232,7 @@ export function readWindowsSupervisorStatus(home: string, deadline?: OperationDe
   // Recorded PIDs may now belong to protected processes. Query our own boot
   // first, then inspect only identities whose liveness can still affect status.
   const bootId = queryWindowsProcess(process.pid, deadline).bootId
-  const terminalProof = ["stopped", "failed", "exhausted"].includes(record.state)
-    && record.attempts.every((attempt) => attempt.empty || attempt.closure)
+  const terminalProof = terminalWindowsTreeProof(record)
   let observedRecord = record, loopAlive = false, childAlive = false
   if (record.loop.bootId === bootId && !terminalProof) {
     const last = record.attempts.at(-1)

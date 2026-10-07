@@ -85,6 +85,51 @@ it("refuses configuration drift before writing a stop request", async () => {
   } finally { deadline.clear() }
 })
 
+it.each([
+  ["remove", "no-attempts"], ["reinstall", "no-attempts"],
+  ["remove", "empty"], ["reinstall", "empty"],
+  ["remove", "closed"], ["reinstall", "closed"],
+] as const)("allows status and %s after replacing a settled %s registration before startup", async (operation, proof) => {
+  const f = proof === "no-attempts" ? fixture() : preparedFailure(), deadline = OperationDeadline.start(2000)
+  if (proof === "empty") {
+    const attempt = f.record.attempts[0]!
+    attempt.stage = "empty"; attempt.empty = { at: f.record.updatedAt, activeProcesses: 0, terminated: true }; attempt.exitCode = 0
+    f.record.state = "stopped"; f.record.reason = "clean-exit"
+    writeWindowsSupervisorRecord(f.home, f.record)
+  }
+  try {
+    // Reinstall drains the old task under the lease, then writes a new registration.
+    await stopWindowsSupervisor(f.path, deadline, { retire: false, stopTask: async () => true })
+    const previous = parseServiceConfiguration(readFileSync(f.path, "utf8"))
+    const replacement = { ...previous, registrationId: randomUUID(), port: previous.port + 1 }
+    writeFileSync(f.path, serializeServiceConfiguration(replacement))
+    vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: f.record.loop.bootId, identity: { ...f.record.loop, pid: 321 } })
+    expect(readWindowsSupervisorStatus(f.home)).toBeUndefined()
+    await expect(stopWindowsSupervisor(f.path, deadline, {
+      retire: operation === "remove", stopTask: async () => true,
+    })).resolves.toMatchObject({
+      registrationId: replacement.registrationId, state: "stopped", attempts: [],
+      configurationDigest: createHash("sha256").update(serializeServiceConfiguration(replacement)).digest("hex"),
+    })
+    expect(readSupervisorStopRequest(f.home)?.registrationId).toBe(operation === "remove" ? replacement.registrationId : undefined)
+  } finally { deadline.clear() }
+})
+
+it.each(["unproven", "nonterminal"] as const)("refuses a different registration with %s history", async (kind) => {
+  const f = fixture(kind === "unproven"), deadline = OperationDeadline.start(2000)
+  if (kind === "nonterminal") {
+    f.record.state = "starting"; f.record.reason = null
+    writeWindowsSupervisorRecord(f.home, f.record)
+  }
+  const previous = parseServiceConfiguration(readFileSync(f.path, "utf8"))
+  writeFileSync(f.path, serializeServiceConfiguration({ ...previous, registrationId: randomUUID() }))
+  try {
+    expect(() => readWindowsSupervisorStatus(f.home)).toThrow("does not match")
+    await expect(stopWindowsSupervisor(f.path, deadline)).rejects.toThrow("does not match")
+    expect(readSupervisorStopRequest(f.home)).toBeUndefined()
+  } finally { deadline.clear() }
+})
+
 it("can prove the exact previous generation during rollback before a replacement started", async () => {
   const f = fixture(), deadline = OperationDeadline.start(2000)
   try {
