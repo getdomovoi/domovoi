@@ -144,8 +144,8 @@ function outcomeDotClass(outcome: AuditOutcome): string {
 
 const twoDigits = (value: number) => String(value).padStart(2, "0")
 
-// The design draws a 24-hour time in a 62px column. Its query window is the
-// last 24 hours; this one is not, so a row from another day also names the day.
+// The design draws a 24-hour time in a 62px column. Its query window is one
+// day; this query has no window, so a row from another day also names the day.
 function auditEntryTime(occurredAt: string, now = new Date()): { time: string; day?: string } {
   const at = new Date(occurredAt)
   const time = [at.getHours(), at.getMinutes(), at.getSeconds()].map(twoDigits).join(":")
