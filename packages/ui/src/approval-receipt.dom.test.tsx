@@ -1,5 +1,7 @@
 import { demoWorkspace, type ThreadItem } from "@getdomovoi/protocol"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, within } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { ApprovalReceipt } from "./approval-receipt"
@@ -222,4 +224,98 @@ it("finds the checkpoint row taken at the decision in the thread", () => {
   expect(receipts[0]!.textContent).toContain("Checkpoint abcdef10 was taken first, then it ran in 38s.")
   expect(receipts[1]!.textContent).not.toContain("was taken first")
   expect(receipts[1]!.textContent).toContain("Recorded against bbbbbbb.")
+})
+
+// S3.10h2: the design follows the latest receipt with what to do next. Each
+// action opens a surface that already exists: the changes sheet, the machine
+// menu's move, and the dock tab the decision wrote to.
+function receiptThread(
+  decisions: Receipt["decision"][],
+  props: Partial<ComponentProps<typeof Thread>> = {},
+) {
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals = []
+  const sessionId = snapshot.activeSessionId!
+  snapshot.thread = decisions.map((decision, index) => receipt({
+    id: `receipt-${index}`,
+    sessionId,
+    decision,
+    createdAt: `2026-10-02T1${index}:00:00.000Z`,
+  }))
+  const handlers = {
+    onOpenSheet: vi.fn(),
+    onOpenDockTab: vi.fn(),
+    onTransferSession: vi.fn(async () => ({ state: "transferred" }) as never),
+  }
+  render(
+    <Thread
+      onQueuedChange={vi.fn()}
+      snapshot={snapshot}
+      connected
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+      {...handlers}
+      {...props}
+    />,
+  )
+  return handlers
+}
+
+it("follows only the latest receipt with the design's actions", async () => {
+  const user = userEvent.setup()
+  const { onOpenSheet, onOpenDockTab } = receiptThread(["deny", "allow-once"])
+  const actions = screen.getAllByRole("group", { name: "After this decision" })
+  expect(actions).toHaveLength(1)
+  const [latest] = screen.getAllByRole("region", { name: "Decision receipt" }).slice(-1)
+  expect(latest!.compareDocumentPosition(actions[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+  await user.click(within(actions[0]!).getByRole("button", { name: "Review the changed files" }))
+  expect(onOpenSheet).toHaveBeenCalledOnce()
+  await user.click(within(actions[0]!).getByRole("button", { name: "See the checkpoints" }))
+  expect(onOpenDockTab).toHaveBeenCalledWith("checkpoints")
+})
+
+it("links a rule's receipt to the rule", async () => {
+  const user = userEvent.setup()
+  const { onOpenDockTab } = receiptThread(["always-project"])
+  await user.click(screen.getByRole("button", { name: "See the rule" }))
+  expect(onOpenDockTab).toHaveBeenCalledWith("rules")
+  expect(screen.queryByRole("button", { name: "See the checkpoints" })).toBeNull()
+})
+
+it("opens the machine menu to move the session", async () => {
+  const user = userEvent.setup()
+  receiptThread(["allow-once"])
+  expect(screen.queryByRole("menu")).toBeNull()
+  await user.click(screen.getByRole("button", { name: "Move this session to another machine" }))
+  expect(await screen.findByRole("menu")).toBeTruthy()
+})
+
+// Each action shows only where its surface can open: no shell route to the
+// dock tab, no move for a watching or disconnected client.
+it("draws no link without a route to the dock tab", () => {
+  receiptThread(["allow-once"], { onOpenDockTab: undefined })
+  expect(screen.queryByRole("button", { name: /^See the/u })).toBeNull()
+  expect(screen.getByRole("button", { name: "Review the changed files" })).toBeTruthy()
+})
+
+it.each([
+  ["watching", { clientAccess: "watching" as const }],
+  ["disconnected", { connected: false }],
+  ["without a move", { onTransferSession: undefined }],
+])("offers no move when %s", (_, props) => {
+  receiptThread(["allow-once"], props)
+  expect(screen.queryByRole("button", { name: "Move this session to another machine" })).toBeNull()
+})
+
+it("draws no action row with no action to offer", () => {
+  receiptThread(["allow-once"], { onOpenSheet: undefined, onOpenDockTab: undefined, onTransferSession: undefined })
+  expect(screen.queryByRole("group", { name: "After this decision" })).toBeNull()
 })

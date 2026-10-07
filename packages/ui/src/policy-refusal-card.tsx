@@ -1,6 +1,7 @@
 import type { PolicyRefusalThreadItem } from "@getdomovoi/protocol"
 import { useId } from "react"
 
+import { Button } from "./components/ui/button"
 import { cn } from "./lib/utils"
 
 export type PolicyRefusal = Pick<
@@ -12,7 +13,17 @@ export type PolicyRefusal = Pick<
 // it broke, then a plain card with what to do instead. The design's step n of
 // N meta, the target the agent saw and tone-coded alternatives need fields
 // the wire does not carry; the one remedy the daemon sends is the list.
-export function PolicyRefusalCard({ refusal, className }: { refusal: PolicyRefusal; className?: string }) {
+// onSeeRules opens the rules surface, which lists the hard gates no rule can
+// cover; the link is drawn only when the caller can open it.
+export function PolicyRefusalCard({
+  refusal,
+  className,
+  onSeeRules,
+}: {
+  refusal: PolicyRefusal
+  className?: string
+  onSeeRules?: (() => void) | undefined
+}) {
   const insteadId = useId()
   const chain = [
     ["Set by", refusal.setBy],
@@ -60,7 +71,14 @@ export function PolicyRefusalCard({ refusal, className }: { refusal: PolicyRefus
         </div>
       </section>
       <section aria-labelledby={insteadId} className="overflow-hidden rounded-xl border bg-card">
-        <h4 id={insteadId} className="m-0 border-b px-3.5 py-[11px] text-[13px] font-semibold">What you can do instead</h4>
+        <div className="flex flex-wrap items-center gap-2.5 border-b px-3.5 py-[11px]">
+          <h4 id={insteadId} className="m-0 text-[13px] font-semibold">What you can do instead</h4>
+          {onSeeRules ? (
+            <Button variant="link" size="xs" className="ml-auto h-auto px-0 text-[11px] font-normal" onClick={onSeeRules}>
+              See what a rule can never cover<span aria-hidden> →</span>
+            </Button>
+          ) : null}
+        </div>
         <ul className="m-0 list-none p-0">
           <li className="flex items-start gap-2.5 px-3.5 py-2.5 text-[12px] leading-[1.55] text-strong">
             <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-muted-foreground" />
