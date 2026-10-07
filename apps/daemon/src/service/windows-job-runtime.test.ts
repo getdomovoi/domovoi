@@ -11,7 +11,7 @@ import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, queryWindowsPro
 import { nodeServiceEffects } from "./install.js"
 import { claimExclusiveFileLease } from "../file-lease.js"
 
-vi.mock("./windows-job.js", () => ({ queryWindowsJob: vi.fn(), queryWindowsProcess: vi.fn(), queryWindowsProcesses: vi.fn(), windowsProcessAlive: vi.fn(() => false), launchWindowsJob: vi.fn() }))
+vi.mock("./windows-job.js", async (original) => ({ ...await original<typeof import("./windows-job.js")>(), queryWindowsJob: vi.fn(), queryWindowsProcess: vi.fn(), queryWindowsProcesses: vi.fn(), windowsProcessAlive: vi.fn(() => false), launchWindowsJob: vi.fn() }))
 const homes: string[] = []
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); vi.resetAllMocks() })
 function fixture(unknown = false) {

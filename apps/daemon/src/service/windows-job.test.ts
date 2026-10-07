@@ -5,10 +5,12 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { launchWindowsJob, parseWindowsJobMessage, windowsJobCommand, type WindowsJobTransport } from "./windows-job.js"
 import { windowsJobSource } from "./windows-job-source.js"
+import { assertWindowsTreeProof, superviseWindows } from "./windows-job-supervisor.js"
+import { windowsSupervisorRecordSchema, type WindowsSupervisorRecord } from "./supervisor-record.js"
 
 const bootId = "windows-boot:42"
 beforeEach(() => vi.stubEnv("SystemRoot", "C:\\Windows"))
-afterEach(() => vi.unstubAllEnvs())
+afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers() })
 const job = `Global\\Domovoi-${randomUUID()}`
 const identity = { pid: 123, start: "456", bootId }
 const prepared = { kind: "prepared", job, bootId, child: identity, helper: { ...identity, pid: 124 }, killOnClose: true, stdioOnly: true }
@@ -46,6 +48,59 @@ it("holds the suspended child until the caller acknowledges durable evidence", a
   f.send({ kind: "empty", job, bootId, activeProcesses: 0, terminated: true, code: 9, stopped: false })
   f.child.emit("close", 0)
   expect(await launched.exited).toMatchObject({ code: 9, activeProcesses: 0, terminated: true })
+})
+
+it("collects late preparation and empty proof during startup timeout cleanup without resuming", async () => {
+  vi.useFakeTimers()
+  const f = fixture(), rejected = vi.fn()
+  const pending = launchWindowsJob({ job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport)
+  void pending.catch(rejected)
+  try {
+    await vi.advanceTimersByTimeAsync(25_000)
+    expect(f.input()).toContain('"stop"')
+    expect(rejected).not.toHaveBeenCalled()
+    f.send(prepared)
+    const receipt = { kind: "empty", job, bootId, activeProcesses: 0, terminated: true, code: 1, stopped: true }
+    f.send(receipt)
+    f.child.emit("close", 0)
+    await expect(pending).rejects.toMatchObject({ prepared, receipt })
+    expect(f.input()).not.toContain('"resume"')
+    expect(f.child.kill).not.toHaveBeenCalled()
+    expect(vi.getTimerCount()).toBe(0)
+  } finally { f.child.emit("close", 1) }
+})
+
+it.each(["empty", "no-preparation", "no-proof", "deadline", "receipt-without-close", "failed-close", "invalid"] as const)("persists startup timeout evidence with %s cleanup", async (cleanup) => {
+  vi.useFakeTimers()
+  const f = fixture(), records: WindowsSupervisorRecord[] = []
+  const pending = superviseWindows({ loop: identity, registrationId: randomUUID(), configurationDigest: "a".repeat(64), signal: new AbortController().signal }, {
+    now: () => new Date(), write: (record) => { records.push(windowsSupervisorRecordSchema.parse(record)) },
+    launch: (attempt) => launchWindowsJob({ job: attempt.job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport),
+    wait: async () => { throw new Error("A timed-out launch must not restart") },
+  })
+  const request = JSON.parse(f.input().trim()) as { job: string }
+  try {
+    await vi.advanceTimersByTimeAsync(25_000)
+    if (cleanup !== "no-preparation") f.send({ ...prepared, job: request.job })
+    if (!["no-proof", "no-preparation", "deadline"].includes(cleanup)) {
+      f.send({ kind: "empty", job: request.job, bootId, activeProcesses: 0, terminated: true, code: 1, stopped: true })
+    }
+    if (cleanup === "invalid") f.child.stdout.write("invalid\n")
+    const stopExpired = cleanup === "deadline" || cleanup === "receipt-without-close"
+    if (stopExpired) await vi.advanceTimersByTimeAsync(15_000)
+    else f.child.emit("close", cleanup === "failed-close" ? 1 : 0)
+    const record = await pending
+    expect(record).toMatchObject({ state: "failed", reason: "observation-failure", crashes: 0 })
+    expect(record.attempts).toHaveLength(1)
+    if (cleanup === "no-preparation") expect(record.attempts[0]).toMatchObject({ child: null, helper: null, stage: "intent", empty: null })
+    else expect(record.attempts[0]).toMatchObject({ child: prepared.child, helper: prepared.helper, killOnClose: true,
+      stage: cleanup === "empty" ? "empty" : "prepared", empty: cleanup === "empty" ? { activeProcesses: 0, terminated: true } : null })
+    expect(records.at(-1)).toEqual(record)
+    if (cleanup === "empty") expect(() => assertWindowsTreeProof(record, bootId)).not.toThrow()
+    else expect(() => assertWindowsTreeProof(record, bootId)).toThrow("Restart Windows")
+    expect(f.input()).not.toContain('"resume"')
+    expect(f.child.kill).toHaveBeenCalledTimes(stopExpired ? 1 : 0)
+  } finally { f.child.emit("close", 1) }
 })
 
 it("does not accept daemon death or helper death as tree proof", async () => {

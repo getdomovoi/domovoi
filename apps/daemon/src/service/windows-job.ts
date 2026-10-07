@@ -26,6 +26,11 @@ export type WindowsJob = {
   exited: Promise<WindowsJobEmpty>
   stop(): Promise<WindowsJobEmpty>
 }
+export class WindowsJobStartupError extends Error {
+  constructor(readonly prepared: WindowsJob["prepared"] | undefined, readonly receipt: WindowsJobEmpty | undefined, cause: unknown) {
+    super(`Windows job startup handshake expired; ${receipt ? "job confirmed empty" : "tree unconfirmed"}`, { cause })
+  }
+}
 export type WindowsJobInput = { job: string; executable: string; args: string[]; log: string }
 export type WindowsJobTransport = (command: ServiceCommand) => EventEmitter & { stdin: Writable; stdout: Readable; stderr: Readable; kill(): unknown }
 
@@ -87,7 +92,7 @@ export function launchWindowsJob(input: WindowsJobInput, transport: WindowsJobTr
     const child = transport(windowsJobCommand())
     let prepared: z.infer<typeof preparedSchema> | undefined
     let receipt: WindowsJobEmpty | undefined
-    let closed = false, resumed = false, running = false, failed = false
+    let closed = false, resumed = false, running = false, failed = false, startupExpired = false
     let buffer = ""
     let resolveExit!: (value: WindowsJobEmpty) => void, rejectExit!: (error: unknown) => void
     let resolveResume!: () => void, rejectResume!: (error: unknown) => void
@@ -100,14 +105,22 @@ export function launchWindowsJob(input: WindowsJobInput, transport: WindowsJobTr
       send("stop")
       stopTimer ??= setTimeout(() => { child.kill(); fail(new Error("Windows helper did not provide job-empty proof before the stop deadline")) }, 15_000)
     }
-    const fail = (error: unknown) => {
+    const fail = (cause: unknown, empty?: WindowsJobEmpty) => {
       if (failed) return
       failed = true
       clearTimeout(startTimer)
-      reject(error); rejectResume(error); rejectExit(error)
+      const error = startupExpired ? new WindowsJobStartupError(prepared, empty, cause) : cause
+      reject(error); rejectResume(error)
+      if (empty) resolveExit(empty)
+      else rejectExit(error)
       if (!closed) requestStop()
     }
-    const startTimer = setTimeout(() => fail(new Error("Windows job startup handshake expired; tree unconfirmed")), 25_000)
+    const startTimer = setTimeout(() => {
+      // Stop without abandoning the evidence stream. Late preparation and
+      // empty proof remain useful, but this launch can no longer resume.
+      startupExpired = true
+      requestStop()
+    }, 25_000)
     child.stdin.on("error", (error) => fail(error))
     child.on("error", (error) => fail(error))
     child.stderr.resume()
@@ -125,6 +138,7 @@ export function launchWindowsJob(input: WindowsJobInput, transport: WindowsJobTr
           if (message.kind === "prepared") {
             if (prepared) throw new Error("Windows helper repeated its preparation")
             prepared = message; clearTimeout(startTimer)
+            if (startupExpired) continue
             resolve({ prepared, exited, resume: () => {
               if (resumed || receipt || failed) return Promise.reject(new Error("Windows job cannot resume twice or after termination"))
               resumed = true; send("resume"); return resumeResult
@@ -143,6 +157,7 @@ export function launchWindowsJob(input: WindowsJobInput, transport: WindowsJobTr
       closed = true; clearTimeout(startTimer); clearTimeout(stopTimer)
       if (failed) return
       if (code !== 0 || !receipt || buffer.trim()) { fail(new Error("Windows helper exited without job-empty proof")); return }
+      if (startupExpired) { fail(new Error("Windows job startup handshake expired"), receipt); return }
       rejectResume(new Error("Windows job ended before its resume acknowledgement"))
       resolveExit(receipt)
     })

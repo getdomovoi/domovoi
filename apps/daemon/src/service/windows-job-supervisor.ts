@@ -10,7 +10,7 @@ import type { OperationDeadline } from "../operation-deadline.js"
 import { parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceStatus } from "./install.js"
-import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, queryWindowsProcesses, windowsProcessAlive, type WindowsJob, type WindowsJobEmpty } from "./windows-job.js"
+import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, queryWindowsProcesses, windowsProcessAlive, WindowsJobStartupError, type WindowsJob, type WindowsJobEmpty } from "./windows-job.js"
 import { windowsProcessIdentitySchema, prepareSupervisorDirectory, readSupervisorStopRequest, readWindowsSupervisorRecord,
   supervisorBackoffs, supervisorStopPath, writeSupervisorStopRequest, writeWindowsSupervisorRecord, windowsSupervisorRecordSchema,
   type WindowsProcessIdentity, type WindowsSupervisorRecord } from "./supervisor-record.js"
@@ -101,6 +101,10 @@ export async function superviseWindows(input: {
     record.state = state; record.reason = reason; save(); return record
   }
   let job: WindowsJob | undefined
+  const acceptPrepared = (attempt: Attempt, prepared: WindowsJob["prepared"]) => {
+    if (prepared.job !== attempt.job || prepared.bootId !== attempt.bootId || prepared.killOnClose !== true || prepared.stdioOnly !== true) throw new Error("Windows job preparation disagrees with its attempt")
+    attempt.killOnClose = true; attempt.child = prepared.child; attempt.helper = prepared.helper; attempt.stage = "prepared"
+  }
   const acceptEmpty = (attempt: Attempt, empty: WindowsJobEmpty) => {
     if (empty.job !== attempt.job || empty.bootId !== attempt.bootId || empty.activeProcesses !== 0 || empty.terminated !== true) throw new Error(windowsTreeUnknown)
     attempt.empty = { at: time(), activeProcesses: 0, terminated: true }; attempt.exitCode = empty.code; attempt.stage = "empty"
@@ -113,8 +117,7 @@ export async function superviseWindows(input: {
         startedAt: time(), stage: "intent", child: null, helper: null, empty: null, exitCode: null, backoffMs: 0 }
       record.attempts.push(attempt); record.state = "starting"; save()
       job = await effects.launch(attempt)
-      if (job.prepared.job !== attempt.job || job.prepared.bootId !== attempt.bootId || job.prepared.killOnClose !== true || job.prepared.stdioOnly !== true) throw new Error("Windows job preparation disagrees with its attempt")
-      attempt.killOnClose = true; attempt.child = job.prepared.child; attempt.helper = job.prepared.helper; attempt.stage = "prepared"; save()
+      acceptPrepared(attempt, job.prepared); save()
       if (!input.signal.aborted) {
         await job.resume()
         attempt.stage = "running"; record.state = "running"; save()
@@ -141,6 +144,12 @@ export async function superviseWindows(input: {
     // Cleanup can supply an empty receipt, never a guessed successful exit.
     // Even successful cleanup does not turn an observation failure into retry.
     const attempt = record.attempts.at(-1)
+    if (error instanceof WindowsJobStartupError && error.prepared && attempt) {
+      try {
+        acceptPrepared(attempt, error.prepared)
+        if (error.receipt) acceptEmpty(attempt, error.receipt)
+      } catch { /* Preserve incomplete evidence when cleanup does not match this attempt. */ }
+    }
     if (job && attempt) {
       try { acceptEmpty(attempt, await job.stop()) } catch { /* Preserve the incomplete evidence. */ }
     }
