@@ -13,12 +13,15 @@ try {
   // Detect SQLite imports even on Node versions that no longer warn about them.
   const detectSqlite = "data:text/javascript," + encodeURIComponent(`
     import module from "node:module"
-    module.registerHooks({
-      resolve(specifier, context, next) {
-        if (specifier === "node:sqlite" || specifier === "sqlite") process.stdout.write("node:sqlite\\n")
-        return next(specifier, context)
-      },
-    })
+    // On Node 22.13/22.14, strict stderr catches the SQLite ExperimentalWarning instead.
+    if (typeof module.registerHooks === "function") {
+      module.registerHooks({
+        resolve(specifier, context, next) {
+          if (specifier === "node:sqlite" || specifier === "sqlite") process.stdout.write("node:sqlite\\n")
+          return next(specifier, context)
+        },
+      })
+    }
   `)
   const imported = spawnSync(process.execPath, [
     "--import", detectSqlite,
