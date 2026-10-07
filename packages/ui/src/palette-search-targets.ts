@@ -48,3 +48,11 @@ export function advancePendingElsewhere(pending: PendingElsewhere, now: {
   if (now.snapshotMachineId !== pending.machineId) return { next: pending.reached ? pending : { ...pending, reached: true } }
   return now.sessionIds.includes(pending.sessionId) ? { next: null, open: pending.sessionId } : { next: null }
 }
+
+// Whether the window's daemon has just refused this client. The workspace hook
+// keeps the last machine's error for a render after a switch, so the error the
+// window already showed is not a refusal of the new pick; only one that
+// appears, or changes, is.
+export function freshRefusal(previous: string | null, current: string | null): boolean {
+  return current !== null && current !== previous
+}

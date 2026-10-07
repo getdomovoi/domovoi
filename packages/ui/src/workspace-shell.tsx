@@ -55,7 +55,7 @@ import { FleetAccessSession } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
 import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
 import { Deadline } from "./deadline"
-import { advancePendingElsewhere, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
+import { advancePendingElsewhere, freshRefusal, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
 import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
 import { type ProviderSecretStatus } from "./provider-settings"
@@ -760,18 +760,24 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // machine, then opens the session once its snapshot arrives.
   const [pendingElsewhere, setPendingElsewhere] = useState<PendingElsewhere | null>(null)
   const windowMachineId = attached?.machineId ?? homeMachineId
+  const refusal = authenticationRequired || protocolError || null
+  const seenRefusal = useRef(refusal)
   useEffect(() => {
+    // Only a refusal that appears ends the pick: the hook keeps the last
+    // machine's error for a render after the window switches.
+    const refused = freshRefusal(seenRefusal.current, refusal)
+    seenRefusal.current = refusal
     if (!pendingElsewhere) return
     const step = advancePendingElsewhere(pendingElsewhere, {
       currentMachineId: windowMachineId,
       snapshotMachineId: snapshot?.machine.id ?? null,
       sessionIds: snapshot?.sessions.map((session) => session.id) ?? [],
-      refused: Boolean(authenticationRequired || protocolError),
+      refused,
     })
     if (step.next !== pendingElsewhere) setPendingElsewhere(step.next)
     if (step.open) openSessionInWorkspace(step.open)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingElsewhere, windowMachineId, snapshot, authenticationRequired, protocolError])
+  }, [pendingElsewhere, windowMachineId, snapshot, refusal])
   const searchTargets = windowMachineId ? paletteSearchTargets({
     machines: fleetMachines(fleet?.entries ?? []),
     access: fleetClientAccess,

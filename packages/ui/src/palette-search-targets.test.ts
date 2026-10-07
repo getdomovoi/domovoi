@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { advancePendingElsewhere, paletteSearchTargets } from "./palette-search-targets"
+import { advancePendingElsewhere, freshRefusal, paletteSearchTargets } from "./palette-search-targets"
 
 const home = { id: "machine-home", label: "mac-mini-m4", connection: "local", self: true }
 const studio = { id: "machine-studio", label: "studio", connection: "tailnet", self: false }
@@ -67,5 +67,20 @@ describe("advancePendingElsewhere", () => {
     expect(advancePendingElsewhere(pending, { ...at(studio.id, null), refused: true })).toEqual({ next: null })
     const reached = advancePendingElsewhere(pending, at(studio.id, null)).next!
     expect(advancePendingElsewhere(reached, { ...at(studio.id, studio.id, ["s-1"]), refused: true })).toEqual({ next: null })
+  })
+})
+
+// Peer review of PR #745: the window's workspace hook keeps the last machine's
+// error for a render after a switch, so only a refusal that appears counts.
+describe("freshRefusal", () => {
+  it("counts a refusal when it appears or changes", () => {
+    expect(freshRefusal(null, "Client credential revoked")).toBe(true)
+    expect(freshRefusal("Protocol 0.7.0 is not 0.8.0", "Client credential revoked")).toBe(true)
+  })
+
+  it("does not count the error the window already showed, or its clearing", () => {
+    expect(freshRefusal("Protocol 0.7.0 is not 0.8.0", "Protocol 0.7.0 is not 0.8.0")).toBe(false)
+    expect(freshRefusal("Client credential revoked", null)).toBe(false)
+    expect(freshRefusal(null, null)).toBe(false)
   })
 })
