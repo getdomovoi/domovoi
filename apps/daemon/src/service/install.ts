@@ -1047,9 +1047,12 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
     const instances = new OwnerInstances(readOwner, profile)
     await instances.note(readDeadline)
     // Starts a service definition and waits for its daemon to report ready.
-    const startIn = (deadline: OperationDeadline) => async (commands: readonly ServiceCommand[]) => {
+    const startIn = (deadline: OperationDeadline) => async (commands: readonly ServiceCommand[], afterCommand?: (command: ServiceCommand) => void) => {
       await instances.note(deadline)
-      for (const command of commands) await runIn(deadline)(command)
+      for (const command of commands) {
+        await runIn(deadline)(command)
+        afterCommand?.(command)
+      }
       await instances.waitUntilReady(registrationId, waits.readinessWaitMs, deadline)
     }
     // Holds the profile once the stopped daemon lets it go, for the step given
@@ -1211,11 +1214,11 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       args: command.args.map((arg, index) => command.args[index - 1] === "/tr" ? previousCommand : arg),
     })
     const legacy = !previous.arguments.includes('" --service-supervise "')
-    let newRegistrationAttempted = false
+    let newRegistrationSucceeded = false
     if (!effects.stopSupervisor) throw new DaemonServiceUpdateError("nothing-changed", new Error("Windows supervisor shutdown proof is unavailable"))
     const stopTask = async (deadline: OperationDeadline, restoring = false) => {
       const removal = windowsTaskRemovalPlan(displayName)
-      if (legacy && !newRegistrationAttempted) {
+      if (legacy && !newRegistrationSucceeded) {
         await removeWindowsTask(removal, effects, deadline, true)
         return
       }
@@ -1249,8 +1252,9 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
           wroteNew = true
           await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
         })
-        newRegistrationAttempted = true
-        await startIn(deadline)(plan.commands)
+        await startIn(deadline)(plan.commands, (command) => {
+          if (command.args[0] === "/create") newRegistrationSucceeded = true
+        })
         return plan
       },
       restore: async (deadline) => {

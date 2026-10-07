@@ -552,6 +552,52 @@ describe("updateDaemonService with a Windows logon task", () => {
     expect(effects.stopSupervisor).not.toHaveBeenCalled()
   })
 
+  it("restores legacy configuration and registration when replacement creation fails", async () => {
+    const home = "C:\\Users\\dl", effects = fake("win32", home)
+    const legacyCommand = oldWindowsCommand.replace("--service-supervise", "--service-config")
+    effects.task.definition = legacyCommand
+    let exists = true, creates = 0
+    const capture = effects.capture, run = effects.run
+    effects.capture = vi.fn(async (command, args, deadline) => {
+      if (!exists) return { code: 0, stdout: "domovoi-task:missing" }
+      const result = await capture(command, args, deadline)
+      if (script(args).includes("DeleteTask")) exists = false
+      return result
+    })
+    effects.run = vi.fn(async (command, args, deadline) => {
+      if (args[0] === "/create") {
+        if (++creates === 1) throw new Error("create failed")
+        exists = true
+      }
+      await run(command, args, deadline)
+    })
+    effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
+      if (!await options?.confirmNoLaunch?.()) throw new Error("No startup history or disabled task proof")
+      if (!await options.stopTask?.()) throw new Error("Task remains observable")
+    })
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toMatchObject({ outcome: "swap-failed-restored" })
+    expect(effects.files.get(`${home}\\.domovoi\\service.json`)).toBe(serializeServiceConfiguration(saved("win32", home)))
+    expect(effects.task.runningDefinition).toBe(legacyCommand)
+    expect(effects.task.running).toBe(true)
+    expect(exists).toBe(true)
+    expect(effects.stopSupervisor).not.toHaveBeenCalled()
+  })
+
+  it("requires supervisor proof during legacy rollback after replacement creation succeeded", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    const legacyCommand = oldWindowsCommand.replace("--service-supervise", "--service-config")
+    effects.task.definition = legacyCommand
+    const run = effects.run
+    let settings = 0
+    effects.run = vi.fn(async (command, args, deadline) => {
+      if (script(args).includes("ExecutionTimeLimit") && ++settings === 1) throw new Error("settings failed")
+      await run(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toMatchObject({ outcome: "swap-failed-restored" })
+    expect(effects.stopSupervisor).toHaveBeenCalledOnce()
+    expect(effects.task.runningDefinition).toBe(legacyCommand)
+  })
+
   it("stops the task, holds the profile, re-registers it with the new command and runs it", async () => {
     const effects = fake("win32", "C:\\Users\\dl")
     expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
