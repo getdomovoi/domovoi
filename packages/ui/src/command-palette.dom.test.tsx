@@ -93,7 +93,7 @@ describe("workspace command palette keyboard path", () => {
     expect(screen.getByText("Stop the active turn before creating a checkpoint")).toBeTruthy()
   })
 
-  it("shows the v2 session commands with their meta and opens the sheet tabs they name", async () => {
+  it("shows the v2 session commands with their meta", async () => {
     const user = userEvent.setup()
     render(<WorkspaceShell />)
     await act(async () => {
@@ -111,15 +111,40 @@ describe("workspace command palette keyboard path", () => {
     expect(option("Read the audit log").textContent).toContain("on this machine")
     // Pairing lives in the desktop's settings; a browser window has no card to open.
     expect(screen.queryByRole("option", { name: /^Pair a phone or tablet/u })).toBeNull()
+  })
 
+  it('opens the Changes tab from "open the changes sheet"', async () => {
+    const user = userEvent.setup()
+    render(<WorkspaceShell />)
+    await act(async () => {
+      completeHandshake(harness.socket(0), workspaceSnapshot())
+    })
+
+    await openPalette(user)
     await user.type(screen.getByRole("combobox"), "open the changes sheet")
     await user.keyboard("{Enter}")
     expect(screen.getByRole("tab", { name: "Changes" }).getAttribute("aria-selected")).toBe("true")
+  })
+
+  it('opens the Rules tab from "review what you have allowed"', async () => {
+    const user = userEvent.setup()
+    render(<WorkspaceShell />)
+    await act(async () => {
+      completeHandshake(harness.socket(0), workspaceSnapshot())
+    })
 
     await openPalette(user)
     await user.type(screen.getByRole("combobox"), "review what you have allowed")
     await user.keyboard("{Enter}")
     expect(screen.getByRole("tab", { name: "Rules" }).getAttribute("aria-selected")).toBe("true")
+  })
+
+  it('opens the Checkpoints tab from "revert to a checkpoint"', async () => {
+    const user = userEvent.setup()
+    render(<WorkspaceShell />)
+    await act(async () => {
+      completeHandshake(harness.socket(0), workspaceSnapshot())
+    })
 
     await openPalette(user)
     await user.type(screen.getByRole("combobox"), "revert to a checkpoint")

@@ -30,7 +30,8 @@ it.runIf(process.platform === "win32")("contains descendants, gates resume, refu
   try {
     vi.stubEnv("PSModulePath", "C:\\PowerShell 7\\Modules;C:\\Domovoi-tëst-ü\\User's Modules")
     const executable = process.execPath
-    const script = `const {spawn}=require('node:child_process');const {writeFileSync}=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});writeFileSync(process.argv[1],JSON.stringify({pid:process.pid,descendant:child.pid,psModulePath:process.env.PSModulePath}));setInterval(()=>{},1000)`
+    // The marker is renamed into place so the poll never reads a partial write.
+    const script = `const {spawn}=require('node:child_process');const {writeFileSync,renameSync}=require('node:fs');const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'ignore'});writeFileSync(process.argv[1]+'.tmp',JSON.stringify({pid:process.pid,descendant:child.pid,psModulePath:process.env.PSModulePath}));renameSync(process.argv[1]+'.tmp',process.argv[1]);setInterval(()=>{},1000)`
     job = await launchWindowsJob({ job: jobName, executable, args: ["-e", script, marker], log: join(directory, "daemon.log") })
     expect(queryWindowsJob(jobName, job.prepared.child.pid)).toMatchObject({ jobExists: true, identity: job.prepared.child })
     expect(job.prepared).toMatchObject({ bootId: before.bootId, killOnClose: true, stdioOnly: true })
