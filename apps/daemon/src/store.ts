@@ -1484,9 +1484,11 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       machine: machine ?? this.load().machine,
       skillEnablements: [],
     } as unknown as WorkspaceSnapshot
-    return projectWorkspaceState(this.transferConflicts.restore(
-      workspaceSnapshotSchema.parse(redactWorkspaceCopies(candidate)),
-    ))
+    const snapshot = workspaceSnapshotSchema.parse(redactWorkspaceCopies(candidate))
+    for (const session of snapshot.sessions) {
+      session.runtime.reasoning = normalizeLegacyEffort(session.runtime.provider, session.runtime.reasoning)
+    }
+    return projectWorkspaceState(this.transferConflicts.restore(snapshot))
   }
 
   #seedProjectRow(snapshot: WorkspaceSnapshot): void {

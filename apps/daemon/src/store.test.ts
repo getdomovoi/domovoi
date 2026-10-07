@@ -72,6 +72,35 @@ describe("SqliteWorkspaceStore", () => {
     } finally { persisted.close() }
   })
 
+  it("maps saved-project OpenCode and Kilo effort labels without changing other providers", async () => {
+    const scratch = await mkdtemp(join(tmpdir(), "domovoi-project-effort-"))
+    scratchDirectories.push(scratch)
+    const databasePath = join(scratch, "state.sqlite")
+    const store = new SqliteWorkspaceStore(databasePath, demoWorkspace)
+    const legacy = projectWorkspaceState(structuredClone(demoWorkspace))!
+    const cases = [
+      ["opencode", "medium", "unset"], ["opencode", "none", "unset"],
+      ["kilo", "medium", "unset"], ["kilo", "none", "unset"],
+      ["codex", "medium", "medium"], ["claude-code", "medium", "medium"],
+    ] as const
+    const expected = structuredClone(legacy)
+    for (const [index, [provider, reasoning, normalized]] of cases.entries()) {
+      const session = structuredClone(legacy.sessions[0]!)
+      session.id = `session-project-effort-${index}`
+      session.runtime = { ...session.runtime, provider, reasoning }
+      legacy.sessions.push(session)
+      expected.sessions.push({ ...session, runtime: { ...session.runtime, reasoning: normalized } })
+    }
+    try {
+      const database = new DatabaseSync(databasePath)
+      try {
+        database.prepare("UPDATE workspace_projects SET state = ? WHERE project_id = ?")
+          .run(JSON.stringify(legacy), legacy.project.id)
+      } finally { database.close() }
+      expect(store.loadProject(legacy.project.id, demoWorkspace.machine)).toEqual(expected)
+    } finally { await store.close() }
+  })
+
   it("migrates protocol 0.6 rule counts without retiring active rules", async () => {
     const scratch = await mkdtemp(join(tmpdir(), "domovoi-rule-count-migration-"))
     scratchDirectories.push(scratch)
