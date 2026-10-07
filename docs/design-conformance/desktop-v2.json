@@ -1784,23 +1784,15 @@
       ],
       "evidence": [
         "EVIDENCE PER FILE",
-        "Revert this file",
+        "re:\\$\\{prompt\\.verb\\} this file",
         "Keep it",
         "Open in editor",
         {
           "absent": "<AlertDialog",
           "in": "packages/ui/src/session-evidence.tsx"
-        }
-      ],
-      "presence": [
-        "<SessionEvidencePanel",
-        "EVIDENCE PER FILE",
-        "Revert this file"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "copy and actions match; the design asks Revert this file / Keep it inline in the file row, the implementation asks in a dialog, and keeps the worktree diff and observed runs below the list instead of in each row"
-      }
+        },
+        "<RevertFileAsk path={file.path}"
+      ]
     },
     {
       "id": "dock.commits",
@@ -2302,6 +2294,11 @@
       "id": "dock.checkpoints",
       "since": "2026-10-06",
       "note": "Q341 A: revert stays worktree-only, so the drawn note (Every approved write takes one first. Reverting rewinds the worktree and the thread together.) is not drawn. checkpointsIntro says what the daemon does: a person's allow at a gate takes one first (J34), a rule's allow takes none, the other reasons and on request, and the thread keeps its turns. Rows name before an approved command from the reason the daemon records (df3452f4)."
+    },
+    {
+      "id": "dock.changes",
+      "since": "2026-10-06",
+      "note": "Revert this file / Keep it asks inside the file row as drawn (RevertFileAsk; Keep it takes focus, Escape keeps the file). Differences: the action names what happens to the file (Restore this file, Remove this file for a file the base commit lacks, Revert this file when the daemon describes no target), and the confirm states what the daemon does (the agent does not learn of the revert until its next read) where the design says the agent is told; the reverted note is a status line above the list, because the file leaves the list once the refresh lands. Each row opens its own diff, and the worktree diff and observed runs stay below the list as well: the daemon reports no per-file run association (tests.state is unknown, file-access-not-recorded), so a row cannot list the runs that touched it until the daemon records file access."
     },
     {
       "id": "dock.terminal",

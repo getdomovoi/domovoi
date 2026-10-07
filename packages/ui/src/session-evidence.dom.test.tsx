@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
@@ -84,6 +84,69 @@ describe("SessionEvidenceContent revert and diff view", () => {
     // This fixture carries no file associations, so there is no commit to bind
     // the confirmation to and the legacy revert is what runs.
     expect(onRevertFile).toHaveBeenCalledWith("src/generated.ts", undefined)
+  })
+
+  // v2 asks Revert this file / Keep it inside the file row, so the list stays
+  // in view and the ask sits beside the file it names.
+  it("asks inside the file row rather than in a dialog, and gives focus back on Keep it", async () => {
+    const user = userEvent.setup()
+    const onRevertFile = vi.fn(async () => {})
+    render(
+      <SessionEvidenceContent
+        connected
+        evidence={evidence}
+        error=""
+        loading={false}
+        onRefresh={vi.fn()}
+        onRevertFile={onRevertFile}
+      />,
+    )
+
+    const trigger = screen.getByRole("button", { name: "Revert src/app.ts" })
+    await user.click(trigger)
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+    expect(screen.queryByRole("dialog")).toBeNull()
+    const row = screen.getByTestId("evidence-file-src/app.ts")
+    const ask = within(row).getByRole("group", { name: "Confirm: revert src/app.ts" })
+    expect(within(ask).getByText(/recovery checkpoint/i)).toBeTruthy()
+    expect(within(ask).getByRole("button", { name: "Revert this file" })).toBeTruthy()
+    const keep = within(ask).getByRole("button", { name: "Keep it" })
+    expect(document.activeElement).toBe(keep)
+    expect(within(row).queryByRole("button", { name: "Revert src/app.ts" })).toBeNull()
+
+    await user.click(keep)
+    expect(screen.queryByRole("group", { name: /^Confirm:/ })).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Revert src/app.ts" }))
+
+    await user.click(screen.getByRole("button", { name: "Revert src/app.ts" }))
+    await user.keyboard("{Escape}")
+    expect(screen.queryByRole("group", { name: /^Confirm:/ })).toBeNull()
+    expect(onRevertFile).not.toHaveBeenCalled()
+  })
+
+  it("keeps a refused revert's reason in the row and says what a finished one did", async () => {
+    const user = userEvent.setup()
+    const onRevertFile = vi.fn()
+      .mockRejectedValueOnce(new Error("The worktree moved since this was described"))
+      .mockResolvedValueOnce(undefined)
+    render(
+      <SessionEvidenceContent
+        connected
+        evidence={evidence}
+        error=""
+        loading={false}
+        onRefresh={vi.fn()}
+        onRevertFile={onRevertFile}
+      />,
+    )
+
+    await user.click(screen.getByRole("button", { name: "Revert src/app.ts" }))
+    await user.click(screen.getByRole("button", { name: "Revert this file" }))
+    const row = screen.getByTestId("evidence-file-src/app.ts")
+    expect(within(row).getByRole("alert").textContent).toBe("The worktree moved since this was described")
+    await user.click(within(row).getByRole("button", { name: "Revert this file" }))
+    expect(screen.queryByRole("group", { name: /^Confirm:/ })).toBeNull()
+    expect(screen.getByRole("status").textContent).toBe("Reverted src/app.ts. The recovery checkpoint Domovoi took first is in the Checkpoints tab.")
   })
 
   it("offers no revert control when the client cannot revert", () => {
