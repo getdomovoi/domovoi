@@ -34,6 +34,7 @@ import { ShellNotice } from "./components/shell-notice"
 import { SkillSheet } from "./components/skill-sheet"
 import { normalizeTab, TabBar, type Tab } from "./components/tab-bar"
 import { clearCredential, loadCredential, saveCredential, type DaemonCredential } from "./lib/credentials"
+import { DaemonNotSentError, DaemonUnconfirmedError } from "./lib/daemon"
 import { useDaemon } from "./lib/use-daemon"
 import { connectedMachineActivity } from "./machine-activity"
 import { launchPhases } from "./launch-state"
@@ -484,7 +485,11 @@ export function App() {
           ? new Map(held).set(terminalId, { state: "watching", record: watchFrom(result) })
           : held)
       }, (cause: unknown) => {
-        if (!current) return
+        // A watch lost with its connection (never sent, or sent and the socket
+        // closed) says nothing about the terminal. The connection rejects it
+        // before this run is retired, so it is told apart here: what is held
+        // stays, unconfirmed, for the next connection to watch again.
+        if (!current || cause instanceof DaemonNotSentError || cause instanceof DaemonUnconfirmedError) return
         setTerminals((held) => {
           const watch = held.get(terminalId)
           if (!watch || !sameShell(watch, openedAt)) return held

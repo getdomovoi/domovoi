@@ -904,6 +904,31 @@ describe("App", () => {
       expect(screen.getByText("Last claimed by MacBook Pro")).toBeOnTheScreen()
     })
 
+    // A connection can drop again while the new watch is out. Its answer is
+    // lost with the connection, which says nothing about the terminal, so the
+    // output already on screen stays.
+    it("keeps the held output when a rewatch loses its connection", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await comeBack(socket)
+      const next = FakeSocket.made.at(-1)!
+      expect(next).not.toBe(socket)
+      await act(async () => {
+        next.readyState = 1
+        next.onopen?.()
+      })
+      await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+      await settle()
+      await act(async () => { next.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      expect(next.requests("terminal.watch")).toHaveLength(1)
+      await act(async () => { next.close() })
+      await settle()
+      expect(screen.queryByText("The terminal could not be read")).toBeNull()
+      expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+      expect(screen.getByText("Unconfirmed")).toBeOnTheScreen()
+    })
+
     it("says Unconfirmed while the connection is down, and watches again once it is back", async () => {
       const { socket } = await openAudit()
       await watchOne(socket)
