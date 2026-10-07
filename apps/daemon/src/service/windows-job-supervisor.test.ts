@@ -1,14 +1,20 @@
 import { randomUUID } from "node:crypto"
-import { expect, it, vi } from "vitest"
+import { afterEach, expect, it, vi } from "vitest"
 
 import { assertWindowsStartup, assertWindowsTreeProof, superviseWindows, windowsSupervisorStatus } from "./windows-job-supervisor.js"
 import { supervisorBackoffs, type WindowsSupervisorRecord } from "./supervisor-record.js"
 import type { WindowsJob } from "./windows-job.js"
 
+afterEach(() => vi.restoreAllMocks())
+
 const loop = { pid: 123, start: "456", bootId: "windows-boot:42" }
 const input = () => ({ loop, registrationId: randomUUID(), configurationDigest: "a".repeat(64), signal: new AbortController().signal })
 function fixture(codes = [9, 9, 9, 9]) {
   const records: WindowsSupervisorRecord[] = []
+  let elapsed = 0
+  vi.spyOn(performance, "now").mockImplementation(() => elapsed)
+  const pause = vi.fn(async (ms: number) => { elapsed += ms })
+  const resume = vi.fn(async () => {})
   const wait = vi.fn(async () => {})
   const launch = vi.fn(async (attempt: WindowsSupervisorRecord["attempts"][number]): Promise<WindowsJob> => {
     const code = codes.shift() ?? 0
@@ -17,9 +23,10 @@ function fixture(codes = [9, 9, 9, 9]) {
     const empty = { kind: "empty" as const, job: attempt.job, bootId: loop.bootId, code, stopped: false, terminated: true as const, activeProcesses: 0 as const }
     return { prepared, resume: async () => {
       expect(records.at(-1)?.attempts.at(-1)).toMatchObject({ stage: "prepared", child: prepared.child })
+      await resume()
     }, exited: Promise.resolve(empty), stop: async () => ({ ...empty, stopped: true }) }
   })
-  return { records, effects: { now: () => new Date(), write: (record: WindowsSupervisorRecord) => { records.push(structuredClone(record)) }, launch, wait } }
+  return { records, resume, effects: { now: () => new Date(), write: (record: WindowsSupervisorRecord) => { records.push(structuredClone(record)) }, launch, wait, pause } }
 }
 
 it("writes intent before launch and exhausts after exactly four crashes using shared backoffs", async () => {
@@ -138,4 +145,60 @@ it("persists confirmed kill-on-close in prepared attempt evidence", async () => 
   const f = fixture([0])
   await superviseWindows(input(), f.effects)
   expect(f.records.find((record) => record.attempts.at(-1)?.stage === "prepared")?.attempts[0]).toMatchObject({ killOnClose: true })
+})
+
+
+it.each(["prepared", "running"] as const)("retries a transient EPERM publishing %s before continuing", async (stage) => {
+  const f = fixture([0]), write = f.effects.write
+  const failure = Object.assign(new Error("record held open"), { code: "EPERM" })
+  const publications: WindowsSupervisorRecord[] = []
+  f.effects.write = (record) => {
+    if (record.attempts.at(-1)?.stage === stage) {
+      publications.push(structuredClone(record))
+      if (publications.length === 1) throw failure
+    }
+    write(record)
+  }
+  expect(await superviseWindows(input(), f.effects)).toMatchObject({ state: "stopped", reason: "clean-exit" })
+  expect(publications).toHaveLength(2)
+  expect(publications[1]).toEqual(publications[0])
+  expect(f.records).toContainEqual(publications[0])
+  expect(f.resume).toHaveBeenCalledTimes(1)
+  expect(f.effects.pause).toHaveBeenCalledWith(25)
+  expect(f.effects.launch).toHaveBeenCalledTimes(1)
+})
+
+it("fails closed after persistent prepared EPERM consumes the retry budget without resuming", async () => {
+  const f = fixture([0]), write = f.effects.write
+  let publications = 0
+  f.effects.write = (record) => {
+    if (record.attempts.at(-1)?.stage === "prepared") {
+      ++publications
+      throw Object.assign(new Error("record still held open"), { code: "EPERM" })
+    }
+    write(record)
+  }
+  expect(await superviseWindows(input(), f.effects)).toMatchObject({ state: "failed", reason: "observation-failure" })
+  expect(f.resume).not.toHaveBeenCalled()
+  expect(publications).toBeGreaterThan(1)
+  const pauses = f.effects.pause.mock.calls.map(([ms]) => ms)
+  expect(pauses.slice(0, 5)).toEqual([25, 50, 100, 200, 400])
+  expect(Math.max(...pauses)).toBeLessThanOrEqual(500)
+  expect(pauses.reduce((total, ms) => total + ms, 0)).toBe(5_000)
+})
+
+it.each(["ENOSPC", undefined])("fails closed without retrying a publication error with code %s", async (code) => {
+  const f = fixture([0]), write = f.effects.write
+  let publications = 0
+  f.effects.write = (record) => {
+    if (record.attempts.at(-1)?.stage === "prepared") {
+      ++publications
+      throw Object.assign(new Error("disk unavailable"), code ? { code } : {})
+    }
+    write(record)
+  }
+  expect(await superviseWindows(input(), f.effects)).toMatchObject({ state: "failed", reason: "observation-failure" })
+  expect(f.resume).not.toHaveBeenCalled()
+  expect(publications).toBe(1)
+  expect(f.effects.pause).not.toHaveBeenCalled()
 })
