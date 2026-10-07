@@ -154,6 +154,10 @@ try {
     await writeFile(join(resolve(images), `${name}-${width}.png`), Buffer.from(image.data, "base64"))
   }
   await text("Home")
+  // The switch reached the main process: the service answers without the
+  // daemon, so no lease was taken under the passwd home (T24).
+  assert.deepEqual(await evaluate("window.domovoiDesktop.daemonService.status()"),
+    { unavailable: "Login service calls are turned off for this test run." })
   await evaluate(`${buttons}.find(button => button.textContent.trim() === 'Skip for now')?.click()`)
   await click("Settings")
   await click("Machines")

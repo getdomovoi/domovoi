@@ -38,6 +38,8 @@ proof runs the full WorkspaceShell, whose Settings reads the service status on m
 read used to write the real `~/.domovoi`. Both smokes that start the app now pass the
 test-only `--domovoi-test-no-login-service` switch. An unpackaged app given it makes no
 login-service call: status reads as unavailable and a service change stops at its first check.
+The fleet client proof asserts that status answer, so a switch that never reaches the main
+process fails the run.
 The switch is read from the command line only, never the environment, and a packaged app
 ignores it, so `test:package` does not use it. The login service itself is not part of these
 smokes' proof.
