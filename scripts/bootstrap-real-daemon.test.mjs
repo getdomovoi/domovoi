@@ -169,7 +169,11 @@ const withoutSqliteNotice = (stderr) => stderr.replace(/^\(node:\d+\) Experiment
 // service manager expects a daemon. The OS boundary is the manager shim, so no
 // real service is installed and the operator's profile is never read.
 test("domovoi daemon from the installed packages registers the daemon's worker entry, not the CLI's", { timeout: 900_000 }, async (t) => {
-  const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-real-cli-")))
+  // Task Scheduler refuses a command over 262 characters, and the installer
+  // refuses it first. The runner's own temporary directory, D:\a\_temp, is
+  // shorter than the user's, so the node, entry and configuration paths fit.
+  const scratch = process.platform === "win32" && process.env.RUNNER_TEMP ? process.env.RUNNER_TEMP : tmpdir()
+  const root = await realpath(await mkdtemp(join(scratch, "dmv-cli-")))
   t.after(() => rm(root, { recursive: true, force: true }))
   const archives = []
   for (const selector of ["@getdomovoi/protocol", "@getdomovoi/credential-store", "@getdomovoi/daemon", "@getdomovoi/cli"]) {
@@ -177,7 +181,7 @@ test("domovoi daemon from the installed packages registers the daemon's worker e
     await mkdir(destination, { recursive: true })
     archives.push(await packPackage(selector, destination))
   }
-  const prefix = join(root, "installed")
+  const prefix = join(root, "i")
   await mkdir(prefix)
   await writeFile(join(prefix, "package.json"), "{\"private\":true}\n")
   // The workspace packages come from their archives; third-party packages
