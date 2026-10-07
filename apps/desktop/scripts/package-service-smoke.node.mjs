@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
-import { join } from "node:path"
+import { posix } from "node:path"
 import test from "node:test"
 
 import { loginServiceAgentLabel, loginServiceHomePaths, loginServiceUnitFile } from "@getdomovoi/protocol"
@@ -28,6 +28,9 @@ import {
   smokeAccount,
   systemdUnitFile,
 } from "./package-service-smoke.mjs"
+
+// The helpers use POSIX paths on every host, the Windows leg included.
+const { join } = posix
 
 const optedIn = { CI: "true", [optInVariable]: "1" }
 

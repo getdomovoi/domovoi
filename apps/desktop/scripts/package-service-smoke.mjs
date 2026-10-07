@@ -25,11 +25,16 @@
 import { constants, existsSync, readdirSync, realpathSync } from "node:fs"
 import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir, userInfo } from "node:os"
-import { dirname, join, resolve, sep } from "node:path"
+import { posix } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
 import { reportSmokeOutput, runSmokeProcess } from "./desktop-smoke.mjs"
+
+// Every path here belongs to macOS or Linux, the only hosts that install. The
+// unit tests run on the Windows leg too, where host paths would use
+// backslashes, so the helpers use POSIX paths whatever the host.
+const { dirname, join, resolve, sep } = posix
 
 export const optInVariable = "DOMOVOI_SERVICE_SMOKE_DISPOSABLE_HOST"
 // Created by .github/workflows/ci.yml for the Linux leg; never a person.
