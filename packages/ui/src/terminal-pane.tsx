@@ -50,14 +50,18 @@ export type TerminalControls = {
   unwatch?(terminalId: string): Promise<void>
 }
 
-// Four states the pane can be in, each with the atom's meaning for it. Keyed on
-// the union the status is computed from, so a fifth state fails typecheck rather
-// than rendering no dot.
-const terminalStatusMeaning: Record<"closed" | "connected" | "connecting" | "disconnected", StatusMeaning> = {
+// The states the pane can be in, each with the atom's meaning for it. Keyed on
+// the union the status is computed from, so another state fails typecheck
+// rather than rendering no dot. "no shell" and "unavailable" are answers: once
+// the daemon has replied, the pane is not connecting any more.
+type TerminalStatus = "closed" | "connected" | "connecting" | "disconnected" | "no shell" | "unavailable"
+const terminalStatusMeaning: Record<TerminalStatus, StatusMeaning> = {
   closed: "idle",
   connected: "online",
   connecting: "waiting",
   disconnected: "offline",
+  "no shell": "idle",
+  unavailable: "offline",
 }
 
 // Who holds the shell, when the claimant's device has no label: the claim
@@ -268,7 +272,12 @@ export function TerminalPane({
   }
 
   const writable = !readOnly && metadata?.owner.clientId === controls.clientId
-  const terminalStatus = closed ? "closed" : connected ? metadata ? "connected" : "connecting" : "disconnected"
+  const terminalStatus: TerminalStatus = closed ? "closed"
+    : !connected ? "disconnected"
+      : metadata ? "connected"
+        : missing ? "no shell"
+          : error ? "unavailable"
+            : "connecting"
   // One selection drives the header's primary button and the reason shown
   // while it is inert, so the reason names the control that is actually there.
   // Taking the shell lives in the claim banner, not here.
@@ -369,7 +378,7 @@ export function TerminalPane({
           {/* "connecting" was the fallback for an unknown shell, which said the
               wrong thing while disconnected: a pane that is not connected is not
               on its way to being. */}
-          pty · {machineName} · {metadata?.shell ?? (connected ? "connecting" : "shell unknown")} · {metadata?.cwd ?? "session worktree"}
+          pty · {machineName} · {metadata?.shell ?? (terminalStatus === "connecting" ? "connecting" : "shell unknown")} · {metadata?.cwd ?? "session worktree"}
         </span>
         {/* A watcher can neither interrupt, restart nor close a shell, so the
             controls that could only ever be inert are not drawn. */}

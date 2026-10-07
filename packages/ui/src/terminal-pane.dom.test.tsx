@@ -362,6 +362,27 @@ describe("TerminalPane on a watching desktop", () => {
     expect(rows[0]!.replace(/\u00a0/gu, " ").indexOf("X")).toBe(119)
   })
 
+  // A watch that has been answered is not on its way anywhere, so the status
+  // stops saying connecting once the daemon replied.
+  it("settles the status once the daemon answers a watch", async () => {
+    const user = userEvent.setup()
+    const target = watcher()
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    expect(screen.getByText("Terminal status: connecting.")).toBeTruthy()
+
+    await act(async () => {
+      target.watched.reject(new Error("Terminal does not exist"))
+    })
+    expect(screen.getByText("Terminal status: no shell.")).toBeTruthy()
+
+    await user.click(screen.getByRole("button", { name: "Check again" }))
+    await act(async () => {
+      target.watched.reject(new Error("Daemon connection is not open"))
+    })
+    expect(screen.getByText("Terminal status: unavailable.")).toBeTruthy()
+    expect(document.body.textContent).not.toContain("connecting")
+  })
+
   it("offers to look again after a watch the daemon refused", async () => {
     const user = userEvent.setup()
     const target = watcher()
