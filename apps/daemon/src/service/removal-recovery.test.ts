@@ -36,8 +36,8 @@ function manager(platform: "linux" | "darwin" | "win32") {
     removalSnapshot: vi.fn().mockImplementationOnce(() => before).mockImplementation(() => after),
     writeRemovalReceipt: vi.fn(), write: vi.fn(async () => {}),
     run: vi.fn(async () => {}), exists: vi.fn(async () => true), remove: vi.fn(async () => {}),
-    // Windows now requires supervisor job proof as well as the registered
-    // action. A scheduler observation alone cannot authorize a receipt.
+    // Supervised Windows tasks require job proof as well as their action.
+    // Q10 B separately permits scheduler retirement of legacy actions.
     ...(platform === "win32"
       ? { stopSupervisor: vi.fn(async () => {}), readConfiguration: vi.fn((home: string) => ({
         ...createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home }),
@@ -95,16 +95,24 @@ it("retains Windows configuration without a recovery receipt when a missing task
   expect(effects.claimProfile).not.toHaveBeenCalled()
 })
 
-it("refuses legacy Windows removal and never grants a recovery receipt", async () => {
-  const { target, effects } = manager("win32"), capture = effects.capture
+it("receipts the exact legacy instance after scheduler retirement under the lease", async () => {
+  const { target, effects, owner, release } = manager("win32"), capture = effects.capture
   effects.capture = vi.fn(async (...args: Parameters<ServiceEffects["capture"]>) => {
     const result = await capture(...args)
     return { ...result, stdout: result.stdout.replace("--service-supervise", "--service-config") }
   })
-  await expect(removeService(target, effects)).rejects.toThrow("legacy Windows task")
+  vi.mocked(effects.writeRemovalReceipt).mockImplementation((_home, _lease, receipt) => {
+    expect(release).not.toHaveBeenCalled()
+    const scripts = vi.mocked(effects.capture).mock.calls.map(([, args]) => Buffer.from(args.at(-1)!, "base64").toString("utf16le"))
+    expect(scripts.some((s) => s.includes("$task.GetInstances(0).Count"))).toBe(true)
+    expect(scripts.at(-1)).toContain("$folder.DeleteTask(")
+    expect(effects.remove).toHaveBeenCalled()
+    expect(receipt).toMatchObject({ instanceId: owner.instanceId, authorization: { registrationId: owner.serviceRegistrationId } })
+  })
+  expect(await removeService(target, effects)).toHaveProperty("profileRecovery", "recorded")
   expect(effects.stopSupervisor).not.toHaveBeenCalled()
-  expect(effects.remove).not.toHaveBeenCalled()
-  expect(effects.writeRemovalReceipt).not.toHaveBeenCalled()
+  expect(effects.writeRemovalReceipt).toHaveBeenCalledOnce()
+  expect(release).toHaveBeenCalledOnce()
 })
 
 it.each(["instance", "machine", "registration", "configuration"])("refuses %s drift before deleting saved launch inputs", async (field) => {
