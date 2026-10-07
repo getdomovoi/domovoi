@@ -95,7 +95,7 @@ it("lets the scope give way to the query on a narrow window", () => {
   const scope = screen.getByText("sessions, machines, commands, skills")
   expect(scope.className.split(/\s+/u)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]))
   expect(scope.className.split(/\s+/u)).not.toContain("shrink-0")
-  expect(screen.getByRole("combobox").className).toMatch(/(^|\s)min-w-\[/u)
+  expect(screen.getByRole("combobox").className.split(/\s+/u)).toContain("min-w-32")
 })
 
 it("names this machine's sessions apart while other machines are searched", async () => {

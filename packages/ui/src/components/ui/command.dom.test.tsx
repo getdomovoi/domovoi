@@ -15,12 +15,12 @@ it("draws the default command input unchanged", () => {
 // The plain variant is Desktop V2's query row: a search mark and the field on
 // the caller's own row, with no input-group fill or frame of its own.
 it("draws the plain variant as a bare mark and field for the caller's row", () => {
-  render(<Command label="Commands"><div data-testid="row"><CommandInput variant="plain" aria-label="Search" placeholder="Search" className="text-[14px]" /></div></Command>)
+  render(<Command label="Commands"><div data-testid="row"><CommandInput variant="plain" aria-label="Search" placeholder="Search" className="text-sm" /></div></Command>)
   const row = screen.getByTestId("row")
   expect(row.querySelector("[data-slot=command-input-wrapper]")).toBeNull()
   expect(row.querySelector("[data-slot=input-group]")).toBeNull()
   const field = screen.getByRole("combobox")
   expect(field.parentElement).toBe(row)
-  expect(field.className).toContain("text-[14px]")
+  expect(field.className).toContain("text-sm")
   expect(row.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true")
 })

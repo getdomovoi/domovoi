@@ -234,10 +234,14 @@ function Sweep() {
   )
 }
 
-const groupClass = "border-t px-2 pt-2 pb-2.5 **:[[cmdk-group-heading]]:px-2.5 **:[[cmdk-group-heading]]:py-1.5 **:[[cmdk-group-heading]]:text-[10.5px] **:[[cmdk-group-heading]]:font-medium **:[[cmdk-group-heading]]:tracking-[.13em] **:[[cmdk-group-heading]]:text-faint"
+const groupClass = "border-t px-2 pt-2 pb-2.5"
+// The design's group label, inside cmdk's heading (which keeps its own px-2
+// py-1.5 and weight). Plain utilities on the label, not descendant variants on
+// the group, keep the startup stylesheet inside its budget.
+const headingClass = "block pl-0.5 text-[10.5px] tracking-[.13em] text-faint"
 // CommandItem appends a check mark for checkable rows; the palette has none,
 // and the hidden mark would hold the meta off the right edge.
-const rowClass = "gap-2.5 px-2.5 py-2 in-data-[slot=dialog-content]:rounded-[calc(var(--radius)-3px)]! data-selected:bg-accent [&>svg:last-child]:hidden"
+const rowClass = "gap-2.5 px-2.5 py-2 data-selected:bg-accent [&>svg:last-child]:hidden"
 // The meta on a row's right truncates within a cap, so a long one (a provider
 // name may run to 64 characters) never takes the label's place on a narrow
 // window.
@@ -443,7 +447,7 @@ export function CommandPalette({
             placeholder="Search commands"
             value={query}
             onValueChange={setQuery}
-            className="min-w-[8rem] text-[14px] text-strong placeholder:text-faint"
+            className="min-w-32 text-sm text-strong placeholder:text-faint"
           />
           {!choosing ? (
             // On a narrow window the scope gives way to the query: it
@@ -453,11 +457,11 @@ export function CommandPalette({
             </span>
           ) : null}
         </div>
-        <CommandList className="max-h-[min(30rem,calc(100dvh-14rem))] scroll-py-2">
+        <CommandList className="max-h-[min(30rem,calc(100dvh-14rem))]">
           <CommandEmpty>No matching commands.</CommandEmpty>
           {groups.map(({ label, items }) => {
             return items.length ? (
-              <CommandGroup key={label} heading={label} className={groupClass}>
+              <CommandGroup key={label} heading={<span className={headingClass}>{label}</span>} className={groupClass}>
                 {items.map((command) => {
                   const meta = command.kind
                     ? command.meta
@@ -505,13 +509,13 @@ export function CommandPalette({
           {searchingElsewhere && searching ? (
             <CommandGroup
               forceMount
-              className={cn(groupClass, "**:[[cmdk-group-heading]]:flex **:[[cmdk-group-heading]]:items-center **:[[cmdk-group-heading]]:gap-2.5")}
+              className={groupClass}
               heading={(
-                <>
+                <span className={cn(headingClass, "flex items-center gap-2.5")}>
                   <span>SESSIONS ON OTHER MACHINES</span>
                   <span className="flex-1" />
                   <span className="text-[11px] font-normal tracking-normal">{remoteScope}</span>
-                </>
+                </span>
               )}
             >
               {silent.length ? notice(
@@ -536,7 +540,7 @@ export function CommandPalette({
                 const answer = remote.answers[machine.id] ?? { state: "asking" as const }
                 return (
                   <div key={machine.id} role="group" aria-label={machine.label} className="flex flex-col">
-                    <div className="flex items-center gap-2 px-2.5 pt-[7px] pb-[5px]">
+                    <div className="flex items-center gap-2 px-2.5 py-1.5">
                       <Dot meaning={answerMeaning[answer.state]} />
                       <span className="font-machine text-[11px] text-strong">{machine.label}</span>
                       <span className="text-[11px] text-faint">{machine.transport}</span>
