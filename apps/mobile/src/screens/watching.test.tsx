@@ -152,6 +152,20 @@ describe("WatchingScreen", () => {
     expect(screen.getByRole("button", { name: "Jump to latest, 2 new" })).toBeOnTheScreen()
   })
 
+  // Restart on a desktop opens a new shell under the same id. What the old
+  // one printed is not news about the new one.
+  it("starts following again, with nothing counted, when a new shell replaces the old", async () => {
+    const first = watching()
+    const { redraw } = await draw(first)
+    await fireEvent.press(screen.getByRole("switch", { name: "Follow output" }))
+    await redraw(more(first, "one\ntwo\n"))
+    expect(screen.getByRole("button", { name: "Jump to latest, 2 new" })).toBeOnTheScreen()
+
+    await redraw(watching({ openedAt: "2026-10-06T14:20:00.000Z", buffer: "$ \n", watchedAt: "2026-10-06T14:20:01.000Z" }))
+    expect(screen.getByRole("switch", { name: "Follow output" })).toBeChecked()
+    expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull()
+  })
+
   it("leaves a reader who scrolled up where they are, and offers the jump back", async () => {
     const first = watching({ buffer: "line\n".repeat(80) })
     const { redraw } = await draw(first)

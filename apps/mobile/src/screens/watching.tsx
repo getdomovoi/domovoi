@@ -94,14 +94,7 @@ function FollowSwitch({ on, disabled, onToggle }: { on: boolean, disabled: boole
   )
 }
 
-export function WatchingScreen({
-  title,
-  watch,
-  connected,
-  notice,
-  onBack,
-  onRetry,
-}: {
+type WatchingProps = {
   // The session the terminal belongs to, as the thread names it.
   title: string
   watch: TerminalWatch
@@ -111,7 +104,17 @@ export function WatchingScreen({
   notice: ConnectionNotice | undefined
   onBack: () => void
   onRetry: () => void
-}) {
+}
+
+// Restart on a desktop opens a new shell under the same id. The view starts
+// over for it, following and with nothing counted, because what the old shell
+// printed is not news about the new one.
+export function WatchingScreen(props: WatchingProps) {
+  const summary = watchedSummary(props.watch)
+  return <WatchingView key={`${summary.terminalId}:${summary.openedAt}`} {...props} />
+}
+
+function WatchingView({ title, watch, connected, notice, onBack, onRetry }: WatchingProps) {
   const summary = watchedSummary(watch)
   const status = terminalStatus(summary, connected)
   const record = watch.state === "watching" ? watch.record : undefined
