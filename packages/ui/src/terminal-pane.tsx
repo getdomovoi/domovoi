@@ -68,12 +68,12 @@ export const terminalHolderRefreshMs = 5_000
 const droppedRecordMarker = "[earlier output was not kept; the record starts here]"
 // Put ahead of an attachment whose start the attachment byte limit cut.
 const cutToLimitMarker = "[earlier lines were cut to fit the attachment limit]"
-// The pane's xterm history. Once the buffer holds this many lines plus the
-// screen, xterm drops the oldest line for each new one.
+// The pane's xterm history, in rows. Once the normal buffer holds this many
+// rows plus the screen's, xterm drops the oldest row for each new one.
 const terminalScrollback = 5_000
-// Put ahead of an attachment read from a full history. It does not say lines
-// were lost, because a buffer exactly full may have lost none.
-const fullHistoryMarker = "[this pane keeps the last 5,000 lines; anything earlier is not in this file]"
+// Put ahead of an attachment once the history has filled. It says "may",
+// because a buffer exactly full has lost nothing yet.
+const fullHistoryMarker = "[this pane's history filled up; earlier output may be missing from this file]"
 
 function sameOwner(left: TerminalOwner, right: TerminalOwner): boolean {
   return left.client === right.client && left.clientId === right.clientId && left.device?.id === right.device?.id
@@ -134,6 +134,9 @@ export function TerminalPane({
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<Terminal | null>(null)
+  // Set once the history has filled, and kept: a later clear or resize shrinks
+  // the buffer again, but rows that scrolled out do not come back.
+  const historyFilledRef = useRef(false)
   const terminalId = useMemo(
     () => sessionId ? terminalIdForSession(sessionId) : undefined,
     [sessionId],
@@ -221,6 +224,12 @@ export function TerminalPane({
         if (active) setError(failure(cause, "Terminal input failed"))
       })
     })
+    // Checked as output is parsed, on the normal buffer (the alternate screen
+    // keeps no history), so the evidence is taken before anything shrinks it.
+    historyFilledRef.current = false
+    const parsed = terminal.onWriteParsed(() => {
+      if (terminal.buffer.normal.length >= terminalScrollback + terminal.rows) historyFilledRef.current = true
+    })
     // The shell has one grid, the holder's. A pane that does not hold it draws
     // at that grid rather than its own width, or every cursor-positioned
     // character the shell prints lands in the wrong column.
@@ -304,6 +313,7 @@ export function TerminalPane({
       unsubscribe()
       observer.disconnect()
       input.dispose()
+      parsed.dispose()
       terminal.dispose()
       if (xtermRef.current === terminal) xtermRef.current = null
       if (readOnly && unwatch) void unwatch(terminalId).catch(() => undefined)
@@ -398,7 +408,7 @@ export function TerminalPane({
       setAttachNote({ tone: "refused", text: "Nothing has been printed yet." })
       return
     }
-    const historyFull = buffer.length >= terminalScrollback + terminal.rows
+    const historyFull = historyFilledRef.current
     const marker = truncated ? cutToLimitMarker : historyFull ? fullHistoryMarker : earlierDropped ? droppedRecordMarker : undefined
     const outcome = composer.offer(sessionId, terminalOutputAttachment(marker ? `${marker}\n${text}` : text))
     const attached = "Attached to the composer as terminal-output.txt."
@@ -408,7 +418,7 @@ export function TerminalPane({
             tone: "done",
             text: truncated
               ? `${attached} The start was cut to fit the attachment limit.`
-              : historyFull ? `${attached} The pane keeps the last 5,000 lines.` : attached,
+              : historyFull ? `${attached} The pane's history filled up, so earlier output may be missing.` : attached,
           }
         : outcome === "full"
           ? { tone: "refused", text: "The composer already holds the most attachments. Remove one to attach this output." }

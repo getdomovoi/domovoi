@@ -723,15 +723,21 @@ describe("Attach this output to the composer", () => {
       target.deliverOutput("END OF OUTPUT\r\n")
     })
     await parsedThrough(container, "END OF OUTPUT")
+    // Clearing the history afterwards shrinks the buffer below full, but the
+    // lines that scrolled out are still gone, so the mark stays.
+    await act(async () => {
+      target.deliverOutput("\x1b[3J$ after the clear\r\n")
+    })
+    await parsedThrough(container, "$ after the clear")
 
     await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
 
     await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1))
     const [attachment] = receive.mock.calls[0]!
     const content = "content" in attachment ? attachment.content : ""
-    expect(content).toMatch(/^\[this pane keeps the last 5,000 lines; anything earlier is not in this file\]\n/u)
+    expect(content).toMatch(/^\[this pane's history filled up; earlier output may be missing from this file\]\n/u)
     expect(content).not.toContain("$ first command")
-    expect(screen.getByText(/The pane keeps the last 5,000 lines\./u)).toBeTruthy()
+    expect(screen.getByText(/The pane's history filled up, so earlier output may be missing\./u)).toBeTruthy()
   })
 
   // A disconnect disposes the renderer the button reads from, so the button
