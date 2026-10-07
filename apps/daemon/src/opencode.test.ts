@@ -1,6 +1,6 @@
 import { waitForDaemon } from "./test-wait-for.js"
 import type { ChildProcess } from "node:child_process"
-import { EventEmitter } from "node:events"
+import { EventEmitter, once } from "node:events"
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -8,7 +8,8 @@ import { PassThrough } from "node:stream"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import type { Runtime } from "@getdomovoi/protocol"
+import { demoWorkspace, protocolVersion, workspaceSnapshotSchema, type Runtime } from "@getdomovoi/protocol"
+import { WebSocket } from "ws"
 
 import { ApprovalRequestNotPendingError, type AgentEvent } from "./agents.js"
 import { embeddedServerCommand } from "./embedded-server.js"
@@ -30,6 +31,8 @@ import {
   type OpenCodeFactory,
 } from "./opencode.js"
 import { removeScratchDirectories } from "./test-scratch.js"
+import { DomovoiDaemon } from "./server.js"
+import { SqliteWorkspaceStore } from "./store.js"
 
 const scratchDirectories: string[] = []
 afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
@@ -220,8 +223,11 @@ describe("OpenCodeSdkAdapter", () => {
     })
   })
 
-  it("discovers configured models without starting a model turn", async () => {
+  it.each([true, false])("discovers configured models with reasoning capability %s without starting a model turn", async (reasoning) => {
     const { client, factory, server } = harness()
+    const catalog = await client.config.providers()
+    catalog.data.providers[0]!.models.sonnet.capabilities.reasoning = reasoning
+    client.config.providers.mockResolvedValue(catalog)
     const adapter = new OpenCodeSdkAdapter(factory)
 
     await expect(adapter.listModels()).resolves.toEqual([{
@@ -229,8 +235,8 @@ describe("OpenCodeSdkAdapter", () => {
       id: "anthropic/sonnet",
       displayName: "Anthropic / Claude Sonnet",
       description: "OpenCode model from Anthropic",
-      supportedReasoningEfforts: ["medium"],
-      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: ["unset"],
+      defaultReasoningEffort: "unset",
       isDefault: true,
     }])
     expect(client.session.create).not.toHaveBeenCalled()
@@ -624,8 +630,11 @@ describe("OpenCodeSdkAdapter", () => {
 })
 
 describe("KiloSdkAdapter", () => {
-  it("discovers Kilo models without starting an inference turn", async () => {
+  it.each([true, false])("discovers Kilo models with reasoning capability %s without starting an inference turn", async (reasoning) => {
     const { client, factory, server } = harness()
+    const catalog = await client.config.providers()
+    catalog.data.providers[0]!.models.sonnet.capabilities.reasoning = reasoning
+    client.config.providers.mockResolvedValue(catalog)
     const adapter = new KiloSdkAdapter(factory)
 
     await expect(adapter.listModels()).resolves.toEqual([{
@@ -633,8 +642,8 @@ describe("KiloSdkAdapter", () => {
       id: "anthropic/sonnet",
       displayName: "Anthropic / Claude Sonnet",
       description: "Kilo model from Anthropic",
-      supportedReasoningEfforts: ["medium"],
-      defaultReasoningEffort: "medium",
+      supportedReasoningEfforts: ["unset"],
+      defaultReasoningEffort: "unset",
       isDefault: true,
     }])
     expect(client.session.create).not.toHaveBeenCalled()
@@ -712,6 +721,93 @@ describe("KiloSdkAdapter", () => {
       }),
     }))
     await adapter.close()
+  })
+})
+
+describe.each([
+  ["opencode", OpenCodeSdkAdapter],
+  ["kilo", KiloSdkAdapter],
+] as const)("%s stored reasoning compatibility", (provider, Adapter) => {
+  it.each(["medium", "none", "unset"])("resumes stored %s reasoning and sends no effort override", async (reasoning) => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-effort-"))
+    scratchDirectories.push(directory)
+    const { client, factory, stream } = harness()
+    const adapter = new Adapter(factory, () => "effort-turn")
+    // Isolate stored-runtime validation from discovery, covered above.
+    vi.spyOn(adapter, "listModels").mockResolvedValue([{
+      provider, id: "anthropic/sonnet", displayName: "Claude Sonnet", description: "Model default effort",
+      supportedReasoningEfforts: ["unset"], defaultReasoningEffort: "unset", isDefault: true,
+    }])
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions.find(({ id }) => id === "session-billing")!
+    session.runtime = { ...runtime("build"), provider, reasoning }
+    session.state = "idle"
+    session.workspacePath = directory
+    session.providerThreadId = "open-session"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    snapshot.workingPlans = []
+    const store = new SqliteWorkspaceStore(":memory:", workspaceSnapshotSchema.parse(snapshot))
+    const daemon = new DomovoiDaemon({
+      port: 0, statePath: ":memory:", profileDirectory: directory, store, agents: { [provider]: adapter },
+      artifactWatcherFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn() }),
+    })
+    let socket: WebSocket | undefined
+    try {
+      const { port } = await daemon.start()
+      socket = new WebSocket(`ws://127.0.0.1:${port}/rpc`)
+      await once(socket, "open")
+      const responses = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>()
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number; result?: unknown; error?: { message: string } }
+        if (message.id !== undefined) {
+          responses.get(message.id)?.(message)
+          responses.delete(message.id)
+        }
+      })
+      let nextId = 0
+      const rpc = (method: string, params: Record<string, unknown>) => new Promise<{ result?: unknown; error?: { message: string } }>((resolve) => {
+        const id = ++nextId
+        responses.set(id, resolve)
+        socket!.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+      expect((await rpc("system.hello", {
+        client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken,
+      })).error).toBeUndefined()
+      const loaded = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+        .sessions.find(({ id }) => id === session.id)!
+      expect(loaded.runtime.reasoning).toBe(reasoning)
+      expect((await rpc("session.setRuntime", {
+        sessionId: session.id, runtime: { ...loaded.runtime, reasoning: "high" }, client: "desktop",
+      })).error?.message).toBe("Reasoning effort is not supported by the selected model")
+      expect((await rpc("session.setRuntime", {
+        sessionId: session.id, runtime: loaded.runtime, client: "desktop",
+      })).error).toBeUndefined()
+      expect((await rpc("session.send", {
+        sessionId: session.id, prompt: "Hello", client: "desktop",
+      })).error).toBeUndefined()
+      expect(client.session.get).toHaveBeenCalledWith(expect.objectContaining({ path: { id: "open-session" } }))
+      expect(client.session.create).not.toHaveBeenCalled()
+      await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledOnce())
+      // Exact body equality also catches new effort or variant fields.
+      expect(client.session.promptAsync).toHaveBeenCalledWith(expect.objectContaining({
+        body: {
+          messageID: "effort-turn", agent: "build",
+          model: { providerID: "anthropic", modelID: "sonnet" },
+          parts: [{ type: "text", text: "Hello" }],
+        },
+      }))
+      finishRun(stream, "open-session", "effort-turn")
+      await waitForDaemon(async () => {
+        const current = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+          .sessions.find(({ id }) => id === session.id)!
+        expect(current.activeTurnId).toBeUndefined()
+      })
+    } finally {
+      socket?.terminate()
+      await daemon.stop()
+    }
   })
 })
 
