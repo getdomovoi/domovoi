@@ -37,7 +37,7 @@ describe("runtime discovery over production daemon sockets", () => {
     if (discovered.status !== "ready") throw new Error("No runtime returned")
     expect(discovered.models[0]).not.toHaveProperty("defaultReasoningEffort")
     await target.root.ok("project.open", { path: await harness.repository("no-default-project"), client: "cli" })
-    for (const runtime of [discovered.defaultRuntime, { ...discovered.defaultRuntime, model: "default", reasoning: "retired" }]) {
+    for (const runtime of [discovered.defaultRuntime, { ...discovered.defaultRuntime, model: "default", reasoning: levels.length > 0 ? "retired" : "medium" }]) {
       const created = await target.root.ok("session.create", { title: "Model setting", runtime, client: "cli" })
       expect(created.sessions.find(({ id }) => id === created.activeSessionId)?.runtime).toEqual(discovered.defaultRuntime)
       expect(claude.startThread).toHaveBeenLastCalledWith(expect.objectContaining({ runtime: discovered.defaultRuntime }))
@@ -48,6 +48,28 @@ describe("runtime discovery over production daemon sockets", () => {
       expect(created.sessions.find(({ id }) => id === created.activeSessionId)?.runtime.reasoning).toBe("high")
       expect((await target.root.call("session.create", { title: "Invalid effort", client: "cli",
         runtime: { ...discovered.defaultRuntime, reasoning: "invented" } })).error?.code).toBe(-32602)
+    }
+  }, budgetMs)
+
+  it.each(["session.create", "session.setRuntime"] as const)("refuses invented effort on %s when the model has no effort support", async (method) => {
+    const claude = agent("claude-code")
+    const { defaultReasoningEffort: _default, ...noDefault } = model("claude-code")
+    claude.listModels.mockResolvedValue([{ ...noDefault, supportedReasoningEfforts: [] }])
+    const target = await harness.machine("no effort support", undefined, {
+      agents: { "claude-code": claude }, providerProbe: { inspect: async () => [detection("claude-code")] },
+    })
+    await target.root.ok("project.open", { path: await harness.repository("no-effort-project"), client: "cli" })
+    const runtime = { provider: "claude-code", model: "discovered-model", reasoning: "unset", permissionMode: "ask", auto: false } as const
+    const created = await target.root.ok("session.create", { title: "Model setting", runtime, client: "cli" })
+    const sessionId = created.activeSessionId!
+    const accepted = await target.root.ok("session.setRuntime", { sessionId, runtime, client: "cli" })
+    expect(accepted.sessions.find(({ id }) => id === sessionId)?.runtime).toEqual(runtime)
+    for (const model of ["discovered-model", "default"]) {
+      const invalidRuntime = { ...runtime, model, reasoning: "invented" }
+      const refused = method === "session.create"
+        ? await target.root.call(method, { title: "Invalid effort", runtime: invalidRuntime, client: "cli" })
+        : await target.root.call(method, { sessionId, runtime: invalidRuntime, client: "cli" })
+      expect(refused.error).toEqual({ code: -32602, message: "Reasoning effort is not supported by the selected model" })
     }
   }, budgetMs)
 
@@ -62,7 +84,7 @@ describe("runtime discovery over production daemon sockets", () => {
     const claude = agent("claude-code")
     const { defaultReasoningEffort: _default, ...noDefault } = model("claude-code")
     claude.listModels.mockResolvedValue([{ ...noDefault, supportedReasoningEfforts: [] }])
-    const daemon = new DomovoiDaemon({ port: 0,
+    const daemon = new DomovoiDaemon({ port: 0, profileDirectory: await harness.scratch(),
       store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
       agents: { "claude-code": claude }, providerProbe: { inspect: async () => [detection("claude-code")] },
     })

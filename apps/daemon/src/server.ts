@@ -5940,9 +5940,12 @@ export class DomovoiDaemon {
       : models.find((candidate) => candidate.id === runtime.model)
     if (!model) throw new RuntimeValidationError(`Model is not available from ${runtime.provider}`)
     const defaultReasoningEffort = model.defaultReasoningEffort ?? "unset"
-    // Old sessions can carry an invented effort for a model with no effort
-    // support. Normalize it so restarting or changing modes remains possible.
+    // The old Claude adapter reported medium for models with no effort support.
+    // Normalize only that legacy value so stored sessions remain usable.
     if (model.supportedReasoningEfforts.length === 0 && model.defaultReasoningEffort === undefined) {
+      if (runtime.reasoning !== "unset" && runtime.reasoning !== "medium") {
+        throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")
+      }
       return { ...runtime, model: model.id, reasoning: "unset" }
     }
     const supportedReasoningEfforts = model.supportedReasoningEfforts.length > 0
