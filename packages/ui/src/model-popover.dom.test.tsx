@@ -148,7 +148,7 @@ it("carries the effort's level across harnesses by its word, and moves it to the
   const onChange = vi.fn()
   const codex = { ...model("codex", "gpt-5.3-codex", "Authenticated here."), supportedReasoningEfforts: ["low", "medium", "high"], defaultReasoningEffort: "low" }
   const onListModels = vi.fn(async (provider: string) => provider === "codex" ? [codex] : catalogs[provider] ?? [])
-  const view = render(popover({ onChange, onListModels, runtime: { ...runtime, reasoning: "think-hard" } }))
+  const view = render(popover({ onChange, onListModels, runtime: { ...runtime, reasoning: "medium" } }))
   await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
   await user.click(screen.getByRole("option", { name: "gpt-5.3-codex, codex" }))

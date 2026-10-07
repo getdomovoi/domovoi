@@ -2133,15 +2133,7 @@
         "Model's own",
         "Sends no effort value, so the model uses its own setting.",
         "Short thinking. Enough for a single-file edit or a question with one answer."
-      ],
-      "presence": [
-        "model?.supportedReasoningEfforts ?? []",
-        "effortLevel(provider, id, model?.defaultReasoningEffort)"
-      ],
-      "partial": {
-        "since": "2026-09-26",
-        "reason": "the effort menu from PR #622 lists the levels the model reports, the value sent in mono beside each word, and a level with no word as its value; it uses the 2026-09-23 scales, so the claude-code effort and codex none to xhigh words and lines, Model's own, the Model default marker, the No word yet tag and the neutral clamp note are not built. effort-scales.ts still names claude-code levels think, think-hard and ultrathink, which the daemon never reports (it reports the SDK's supported effort levels), so claude-code rows get shared words and no lines; the clamp note is amber where the design is neutral. Rulings Q31, Q34, Q35 and Q36 (2026-09-26) already settle the copy"
-      }
+      ]
     },
     {
       "id": "editor.dialog",
@@ -2205,6 +2197,11 @@
     }
   ],
   "humanRead": [
+    {
+      "id": "composer.effort-levels",
+      "since": "2026-10-06",
+      "note": "Built in the client for Q31, Q34, Q35 and Q36. Two states the menu draws are not reachable from a real daemon yet. Model's own: OpenCode and Kilo discovery reports medium or none rather than unset, so the menu shows Medium or None; the daemon follow-up reports unset and carries stored medium and none values. No default reported by this model: providerModelSchema requires a default among the levels, and the Claude adapter fills in high or the first level; the follow-up lets the protocol carry a missing default and stops the adapter from picking one."
+    },
     {
       "id": "settings.service-remove",
       "since": "2026-10-02",
