@@ -99,10 +99,13 @@ lease under the account's own home as the password database names it, not `HOME`
 systemd user manager reads units only under the home it started with.
 
 So the script refuses, before it changes anything, unless `CI=true` and
-`DOMOVOI_SERVICE_SMOKE_DISPOSABLE_HOST=1` are set, the account's `~/.domovoi` is absent or
-holds nothing but that lease file, and no Domovoi service is loaded for it. Any service
-command the account runs leaves the lease file behind, and it holds no profile state, so it
-alone does not refuse. Do not run it on a developer machine. On macOS CI it uses a
+`DOMOVOI_SERVICE_SMOKE_DISPOSABLE_HOST=1` are set, the account's `~/.domovoi` holds none of
+the files a daemon or a saved service writes there (`state.sqlite`, `daemon.token`,
+`local-owner.json`, `profile-lease.sqlite`, `service.json`; the unit test pins each name to the
+daemon source that writes it), and no Domovoi service is loaded for it. Other entries do not
+refuse: the lease file any service command leaves, and the `transfers` directory a daemon
+server test leaves under the macOS runner's real home earlier in the job. Do not run it on a
+developer machine. On macOS CI it uses a
 temporary HOME and profile, and the lease file stays in the runner account's `~/.domovoi`. On
 Linux CI it runs only as the throwaway `domovoi-smoke` account, which the workflow creates with
 its own lingering systemd manager, from a copy of the unpacked app that account owns. Fresh

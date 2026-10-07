@@ -66,12 +66,19 @@ export function serviceSmokeSkip(platform) {
     + "install, attach, status and removal."
 }
 
-// The entries of the account's ~/.domovoi that make it a Domovoi profile:
-// everything but the installer's own service-operation lease. Any service
-// command the account runs creates that file there whatever HOME says, this
-// smoke's own included, and it holds no profile state.
+// What a daemon that ran in a profile, or a saved login service, leaves in
+// it: the state store, the credential, the owner record, the profile lease
+// and the service configuration. The test pins each name to the daemon
+// source that writes it.
+export const profileMarkers = ["state.sqlite", "daemon.token", "local-owner.json", "profile-lease.sqlite", "service.json"]
+
+// The entries of the account's ~/.domovoi that make it a Domovoi profile.
+// Other entries are not one: the installer's service-operation lease, which
+// any service command leaves there whatever HOME says, and directories a
+// daemon test can leave under the runner's real home (transfers, on the
+// macOS CI leg) hold no profile state.
 export function profileEntries(names) {
-  return names.filter((name) => !/^service-operation-lease\.sqlite(?:-journal)?$/u.test(name))
+  return names.filter((name) => profileMarkers.includes(name))
 }
 
 // The reason this host may not run the smoke, or undefined when it may.

@@ -19,6 +19,7 @@ import {
   optInVariable,
   packagedResourcesCandidates,
   profileEntries,
+  profileMarkers,
   parseAttachReport,
   parseServiceStatus,
   serviceGone,
@@ -69,16 +70,34 @@ test("the smoke refuses a host that already has a Domovoi profile", () => {
   assert.match(refusal, /Nothing was installed/u)
 })
 
-test("only the installer's own lease file in ~/.domovoi is not a profile", () => {
-  // Any service command the account runs leaves the lease file; it holds no
-  // profile state, so that file alone must not refuse.
-  assert.deepEqual(profileEntries(["service-operation-lease.sqlite", "service-operation-lease.sqlite-journal"]), [])
+test("a ~/.domovoi is a profile when it holds what a daemon or a saved service writes there", () => {
+  // The lease file any service command leaves, and the transfers directory a
+  // daemon server test can leave under the runner's real home (seen on the
+  // macOS CI leg), are not a daemon's profile.
+  assert.deepEqual(profileEntries(["service-operation-lease.sqlite", "service-operation-lease.sqlite-journal", "transfers"]), [])
   assert.deepEqual(profileEntries([]), [])
-  assert.deepEqual(profileEntries(["service-operation-lease.sqlite", "profile-lease.sqlite", "local-owner.json"]), ["profile-lease.sqlite", "local-owner.json"])
-  assert.deepEqual(profileEntries(["service-operation-lease.sqlite.bak"]), ["service-operation-lease.sqlite.bak"])
+  assert.deepEqual(
+    profileEntries(["transfers", "state.sqlite", "daemon.token", "local-owner.json", "profile-lease.sqlite", "service.json"]),
+    ["state.sqlite", "daemon.token", "local-owner.json", "profile-lease.sqlite", "service.json"],
+  )
   assert.equal(serviceSmokeRefusal({
     platform: "darwin", env: optedIn, username: "runner", userHome: "/Users/runner", home: "/Users/runner", profileEntries: [],
   }), undefined)
+})
+
+test("the profile markers are the file names the daemon writes", async () => {
+  const daemonSource = async (path) => readFile(new URL(`../../daemon/src/${path}`, import.meta.url), "utf8")
+  const writers = {
+    "state.sqlite": "production-daemon.ts",
+    "daemon.token": "config.ts",
+    "local-owner.json": "local-owner-record.ts",
+    "profile-lease.sqlite": "profile-lease.ts",
+    "service.json": "service/configuration.ts",
+  }
+  assert.deepEqual(Object.keys(writers).sort(), [...profileMarkers].sort())
+  for (const [name, file] of Object.entries(writers)) {
+    assert.ok((await daemonSource(file)).includes(`"${name}"`), `${file} names ${name}`)
+  }
 })
 
 test("on Linux the smoke runs only as the throwaway account in its own home", () => {
