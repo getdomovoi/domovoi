@@ -116,17 +116,17 @@ function age(updatedAt: string, now: number): string {
 }
 
 // A session on another machine, read the way the drawer reads one here
-// (session-groups.ts): a session stopped at a gate waits even while its turn
-// is in flight, a failed one says so, a turn in flight is running, and the
-// rest say their state. All but running say how long ago the session last
+// (session-groups.ts): active is running, and so is a turn in flight on an
+// idle or done session. Every other state says itself even while a turn id
+// remains: a gate wait, a failure, a conflict, and archiving or a transfer,
+// which the daemon sets before it clears the turn. All but running say how long ago the session last
 // changed. Running has no duration: the wire carries no turn start until
 // protocol 0.8.0 (ruling Q390 A). The dot is sessionTone's colour for the
 // state, as on this machine's rows in the same list, so a state reads the same
 // whichever machine returned it.
 export function remoteSessionMeta(session: SessionSummary, now: number): { meaning: StatusMeaning; meta: string } {
-  const gated = session.state === "waiting" || session.state === "failed" || session.state === "ownership-conflict"
-  // Active is running with or without a turn id, as sessionTone reads it.
-  if (!gated && (session.activeTurnId || session.state === "active")) return { meaning: "online", meta: "running" }
+  const quiet = session.state === "idle" || session.state === "done"
+  if (session.state === "active" || (quiet && session.activeTurnId)) return { meaning: "online", meta: "running" }
   const note = session.state === "ownership-conflict" ? "ownership conflict"
     : session.state === "transferred" ? "moved to another machine"
       : session.state

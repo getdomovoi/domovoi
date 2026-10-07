@@ -400,6 +400,26 @@ it("colours a remote session's dot as this machine's rows are coloured", async (
   }
 })
 
+// PR #745 review (P2): the daemon sets archiving (and the transfer states)
+// before it clears the turn id, so a state that says something wins over the
+// turn in flight; only active, idle and done read a live turn as running.
+it("lets a state that says something win over a turn still in flight", async () => {
+  const states = ["archiving", "transferring", "transferred", "archived", "idle", "done"] as const
+  const search = vi.fn(async (machineId: string): Promise<SessionSearchResult> => machineId === machines[0]!.id
+    ? { query: "billing", truncated: false, matches: states.map((state) => ({ session: { ...session(`s-${state}`, `Billing ${state} turn`), state, activeTurnId: `turn-${state}` }, matchedIn: "title" as const })) }
+    : none("billing"))
+  const { user } = palette(search)
+  await user.type(screen.getByRole("combobox"), "billing")
+  await screen.findByRole("option", { name: /Billing archiving turn/u })
+  const meta = (state: string) => screen.getByRole("option", { name: new RegExp(`Billing ${state} turn`, "u") }).querySelector("[data-palette-meta]")?.textContent
+  expect(meta("archiving")).toMatch(/^archiving /u)
+  expect(meta("transferring")).toMatch(/^transferring /u)
+  expect(meta("transferred")).toMatch(/^moved to another machine /u)
+  expect(meta("archived")).toMatch(/^archived /u)
+  expect(meta("idle")).toBe("running")
+  expect(meta("done")).toBe("running")
+})
+
 // Picking a row on another machine keeps the palette open on that row while
 // the window switches, and closes it once the shell has opened the session.
 it("shows the switch on the picked row and closes when it lands", async () => {
