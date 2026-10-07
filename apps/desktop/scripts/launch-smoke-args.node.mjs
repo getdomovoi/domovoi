@@ -428,16 +428,24 @@ test("both runners settle their finally through the shared outcome", async () =>
   }
 })
 
-test("the verdict names the changed paths, and an unreadable profile is reported, not thrown", async () => {
+test("the verdict names the changed paths", async () => {
   const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
   try {
     const before = await live.liveProfileSnapshot(home)
     assert.equal(await live.liveProfileVerdict(before, home), undefined)
     await mkdir(join(home, ".domovoi"))
     assert.match(await live.liveProfileVerdict(before, home), /changed during the smoke: .*\.domovoi\./u)
-    // A home that is a file cannot be listed into: lstat fails with ENOTDIR.
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+// A home that is a file cannot be looked into: lstat fails with ENOTDIR.
+// Windows answers ENOENT for the same path, so it has no such case to test.
+test("an unreadable profile is reported, not thrown", { skip: process.platform === "win32" }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  try {
     const file = join(home, "not-a-directory")
     await writeFile(file, "")
+    const before = await live.liveProfileSnapshot(home)
     assert.match(await live.liveProfileVerdict(before, file), /could not be read after the smoke/u)
   } finally { await rm(home, { recursive: true, force: true }) }
 })
