@@ -583,6 +583,22 @@ describe("updateDaemonService with a Windows logon task", () => {
     expect(effects.stopSupervisor).not.toHaveBeenCalled()
   })
 
+  it("refuses legacy update and rollback when external deletion races initial retirement", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    effects.task.definition = oldWindowsCommand.replace("--service-supervise", "--service-config")
+    const capture = effects.capture
+    let missing = false
+    effects.capture = vi.fn(async (command, args, deadline) => {
+      if (script(args).includes("$task.Stop(0)")) missing = true
+      if (missing) return { code: 0, stdout: "domovoi-task:missing" }
+      return capture(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow("Legacy Windows registration disappeared before migration")
+    expect(effects.write).not.toHaveBeenCalled()
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(effects.stopSupervisor).not.toHaveBeenCalled()
+  })
+
   it("requires supervisor proof during legacy rollback after replacement creation succeeded", async () => {
     const effects = fake("win32", "C:\\Users\\dl")
     const legacyCommand = oldWindowsCommand.replace("--service-supervise", "--service-config")

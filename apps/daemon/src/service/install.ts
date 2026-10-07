@@ -1214,12 +1214,15 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
       args: command.args.map((arg, index) => command.args[index - 1] === "/tr" ? previousCommand : arg),
     })
     const legacy = !previous.arguments.includes('" --service-supervise "')
+    let legacyRemoved = false
     let newRegistrationSucceeded = false
     if (!effects.stopSupervisor) throw new DaemonServiceUpdateError("nothing-changed", new Error("Windows supervisor shutdown proof is unavailable"))
     const stopTask = async (deadline: OperationDeadline, restoring = false) => {
       const removal = windowsTaskRemovalPlan(displayName)
       if (legacy && !newRegistrationSucceeded) {
-        await removeWindowsTask(removal, effects, deadline, true)
+        const removed = await removeWindowsTask(removal, effects, deadline, true)
+        if (removed === "removed") legacyRemoved = true
+        else if (!restoring || !legacyRemoved) throw new Error("Legacy Windows registration disappeared before migration")
         return
       }
       await disableWindowsTask(removal, effects, deadline)
