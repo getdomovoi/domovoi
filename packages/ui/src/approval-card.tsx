@@ -57,10 +57,10 @@ export function ApprovalCard({
   // The desktop card is the Desktop v2 gate; the web card keeps the signed web
   // design's header, which draws no facts.
   const desktop = surface === "desktop"
-  // Ruling pending (questions.md): the design folds the facts behind What
-  // does this touch?. For a file edit the command reads only the tool's name
-  // and Affects is the fact that names the file, so the disclosure starts
-  // open and nothing sits behind a click until that is decided.
+  // Ruled Q7 B (2026-10-06): the design folds the facts behind What does
+  // this touch?, and the card draws that disclosure but starts it open. For a
+  // file edit the command reads only the tool's name and Affects is the fact
+  // that names the file, so nothing sits behind a click until a person folds.
   // A fold holds for the revision it was made on. The daemon revises a gate
   // when what it reaches changes, and a decision then answers facts the
   // reader has not seen, so a new revision opens them again.
@@ -127,7 +127,7 @@ export function ApprovalCard({
           <span className="ml-auto font-machine text-[10.5px] font-normal text-warn-dim">{meta}</span>
         </AlertTitle>
       )}
-      <AlertDescription className={cn("col-span-full flex flex-col", desktop ? "gap-3 px-4 pb-3.5" : "gap-3")}>
+      <AlertDescription className={cn("col-span-full flex flex-col", desktop ? "gap-3 px-4 pb-3.5 [&_p:not(:last-child)]:mb-0" : "gap-3")}>
         <p className="m-0 text-[13px] font-medium text-warn-foreground">{approval.operation}</p>
         <code
           className={cn(
@@ -237,8 +237,11 @@ export function ApprovalCard({
         // the card's edges, divided by the gate's own border colour. Folded,
         // they stay mounted and hidden, so the toggle's aria-controls holds.
         <dl id={factsId} hidden={!factsOpen} className="col-span-full m-0 grid grid-cols-1 gap-px border-t border-warn-border bg-warn-border sm:grid-cols-3">
-          {facts.map(([label, value]) => (
-            <div key={label} className="bg-warn-background px-3.5 py-2.5">
+          {facts.map(([label, value], index) => (
+            // The design draws six facts; the wire carries five (OUTSIDE
+            // PROJECT waits on protocol), so the last one takes the rest of
+            // its row rather than leaving a hole of divider colour.
+            <div key={label} className={cn("bg-warn-background px-3.5 py-2.5", index === facts.length - 1 && lastFactSpan[facts.length % 3])}>
               <dt className="text-[10.5px] tracking-[.13em] text-warn-dim uppercase">{label}</dt>
               <dd className="m-0 mt-1 min-w-0 break-words font-machine text-[10.5px] leading-[1.4] text-warn-foreground">{value}</dd>
             </div>
@@ -248,6 +251,9 @@ export function ApprovalCard({
     </Alert>
   )
 }
+
+// Indexed by how many facts sit on the last row of three.
+const lastFactSpan = ["", "sm:col-span-3", "sm:col-span-2"] as const
 
 // The design outlines Always and Deny in the gate's own border, on no fill.
 const outline = "border-warn-border bg-transparent hover:bg-warn-deep dark:border-warn-border dark:bg-transparent dark:hover:bg-warn-deep"

@@ -126,7 +126,7 @@ export function ApprovalReceipt({
   return (
     <section
       aria-label="Decision receipt"
-      className={cn("mx-auto flex max-w-3xl flex-col gap-1.5 rounded-xl border px-3.5 py-[11px]", tone.frame, className)}
+      className={cn("mx-auto flex w-full max-w-3xl flex-col gap-1.5 rounded-xl border px-3.5 py-[11px]", tone.frame, className)}
     >
       <h3 className={cn("m-0 flex items-center gap-2.5 text-[12.5px] font-medium", tone.text)}>
         <span aria-hidden data-receipt-dot={denied ? "danger" : "ok"} className={cn("size-[7px] shrink-0 rounded-full", tone.dot)} />

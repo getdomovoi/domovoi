@@ -20,7 +20,7 @@ export function PolicyRefusalCard({ refusal, className }: { refusal: PolicyRefus
   ] as const
 
   return (
-    <div className={cn("mx-auto flex max-w-3xl flex-col gap-3", className)}>
+    <div className={cn("mx-auto flex w-full max-w-3xl flex-col gap-3", className)}>
       <section
         aria-label="Policy refusal"
         className="flex flex-col overflow-hidden rounded-xl border border-danger-border bg-danger-background"

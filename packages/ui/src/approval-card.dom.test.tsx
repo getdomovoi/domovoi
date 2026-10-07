@@ -591,9 +591,9 @@ it("heads the desktop gate Waiting on your decision, with a hard gate named on t
 })
 
 // The design folds the facts under the decisions behind What does this
-// touch?. Pending the ruling on whether they start folded, the disclosure
-// starts open, so no fact sits behind a click: for a file edit the command
-// reads only the tool's name and Affects is the line that names the file.
+// touch?. Ruled Q7 B (2026-10-06): the disclosure starts open, so no fact
+// sits behind a click: for a file edit the command reads only the tool's
+// name and Affects is the line that names the file.
 it("draws the desktop facts under the decisions, behind a disclosure that starts open", async () => {
   const user = userEvent.setup()
   const approval = renderThread("desktop", "normal")
