@@ -25,9 +25,15 @@ type Kind = "phone" | "tablet" | "browser"
 
 // The browser's line depends on whether the daemon's owner set the web app
 // address, so it is chosen where the code is drawn.
-const kinds: Record<Kind, { label: string; noun: string; client: ClientKind; Icon: typeof SmartphoneIcon; how: string }> = {
-  phone: { label: "Phone", noun: "a phone", client: "phone", Icon: SmartphoneIcon, how: "Scan it with the Domovoi app, or paste the code." },
-  tablet: { label: "Tablet", noun: "a tablet", client: "tablet", Icon: TabletIcon, how: "Scan it with the Domovoi app, or paste the code." },
+// `command` is the terminal's way to the same code. `domovoid pair --client`
+// refuses to run without `--label`, so it carries a one-word label that runs
+// as printed (Q336 A): a placeholder such as `<device label>` would fail in a
+// shell, where `<` is a redirection. A browser has none: with `--client web`
+// and a label, the command prints a QR and a `domovoi-pair:` payload, and the browser's
+// connect page takes the bare word code alone.
+const kinds: Record<Kind, { label: string; noun: string; client: ClientKind; command?: string; Icon: typeof SmartphoneIcon; how: string }> = {
+  phone: { label: "Phone", noun: "a phone", client: "phone", command: "domovoid pair --client phone --label Phone", Icon: SmartphoneIcon, how: "Scan it with the Domovoi app, or paste the code." },
+  tablet: { label: "Tablet", noun: "a tablet", client: "tablet", command: "domovoid pair --client tablet --label Tablet", Icon: TabletIcon, how: "Scan it with the Domovoi app, or paste the code." },
   browser: { label: "Web browser", noun: "a browser", client: "web", Icon: GlobeIcon, how: "Open Domovoi in the browser on that device and type the code." },
 }
 
@@ -242,12 +248,12 @@ export function PairingCard({
                   {/* The daemon's refusal of a watching credential (Q347 A). */}
                   <span className="font-machine text-[10.5px] text-faint">device.issueCode refused · watching-only credential</span>
                 </div>
-              ) : (
+              ) : kinds[kind].command ? (
                 <div className="flex flex-wrap items-baseline gap-2 text-[11px] text-muted-foreground">
                   <span>The same code as</span>
-                  <span className="font-machine text-foreground">{printedCommand(`domovoid pair --client ${kinds[kind].client}`, links)}</span>
+                  <span className="font-machine text-foreground">{printedCommand(kinds[kind].command, links)}</span>
                 </div>
-              )}
+              ) : null}
             </>
           ) : null}
 
