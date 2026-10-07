@@ -2,8 +2,9 @@ import { act, cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import type { TerminalOwnershipNotification, TerminalSession } from "@getdomovoi/protocol"
+import type { SessionAttachment, TerminalOwnershipNotification, TerminalSession, TerminalWatchResult } from "@getdomovoi/protocol"
 
+import { createComposerInbox, type ComposerInbox } from "./composer-inbox"
 import { TerminalPane, type TerminalControls } from "./terminal-pane"
 
 afterEach(cleanup)
@@ -68,6 +69,7 @@ function harness() {
       owner: { client: "web", clientId: owner },
     }),
     refuseOwnership: (cause: unknown) => claim.reject(cause),
+    deliverOutput: (data: string) => handlers?.output({ terminalId, data }),
     deliverOwnership: (owner: string) => handlers?.ownership({
       terminalId,
       owner: { client: "web", clientId: owner },
@@ -76,7 +78,7 @@ function harness() {
 }
 
 describe("TerminalPane ownership", () => {
-  it("silences non-owner input until Take over hands the terminal back", async () => {
+  it("silences non-owner input until Take the shell hands the terminal back", async () => {
     const user = userEvent.setup()
     const target = harness()
     render(
@@ -86,7 +88,7 @@ describe("TerminalPane ownership", () => {
     await act(async () => {
       target.connect(otherClient)
     })
-    expect(screen.getByRole("button", { name: "Take over" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Take the shell" })).toBeTruthy()
 
     await user.click(screen.getByRole("button", { name: "Tab" }))
     await user.click(screen.getByRole("button", { name: "Close terminal" }))
@@ -94,13 +96,13 @@ describe("TerminalPane ownership", () => {
     expect(target.close).not.toHaveBeenCalled()
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close terminal" }).disabled).toBe(true)
 
-    await user.click(screen.getByRole("button", { name: "Take over" }))
+    await user.click(screen.getByRole("button", { name: "Take the shell" }))
     expect(target.claimRequest).toHaveBeenCalledWith(terminalId)
     await act(async () => {
       target.grantOwnership(thisClient)
     })
 
-    expect(screen.queryByRole("button", { name: "Take over" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Take the shell" })).toBeNull()
     expect(screen.getByRole("button", { name: "Interrupt ⌃C" })).toBeTruthy()
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Close terminal" }).disabled).toBe(false)
 
@@ -120,12 +122,12 @@ describe("TerminalPane ownership", () => {
     await act(async () => {
       target.connect(otherClient)
     })
-    expect(screen.getByRole("button", { name: "Take over" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Take the shell" })).toBeTruthy()
 
     await act(async () => {
       target.deliverOwnership(thisClient)
     })
-    expect(screen.queryByRole("button", { name: "Take over" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Take the shell" })).toBeNull()
 
     await user.click(screen.getByRole("button", { name: "Tab" }))
     expect(target.write).toHaveBeenCalledWith(terminalId, "\t")
@@ -133,7 +135,7 @@ describe("TerminalPane ownership", () => {
     await act(async () => {
       target.deliverOwnership(otherClient)
     })
-    expect(screen.getByRole("button", { name: "Take over" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Take the shell" })).toBeTruthy()
   })
 
   it("reports a refused takeover and stays read-only", async () => {
@@ -146,16 +148,215 @@ describe("TerminalPane ownership", () => {
     await act(async () => {
       target.connect(otherClient)
     })
-    await user.click(screen.getByRole("button", { name: "Take over" }))
+    await user.click(screen.getByRole("button", { name: "Take the shell" }))
     await act(async () => {
       target.refuseOwnership(new Error("Terminal is being taken over"))
     })
 
     expect((await screen.findByRole("alert")).textContent).toContain("Terminal is being taken over")
-    expect(screen.getByRole("button", { name: "Take over" })).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Take the shell" })).toBeTruthy()
 
     await user.click(screen.getByRole("button", { name: "Tab" }))
     expect(target.write).not.toHaveBeenCalled()
+  })
+})
+
+const phone = {
+  client: "phone" as const,
+  clientId: otherClient,
+  device: { id: "device-0123456789abcdef0123456789abcdef", label: "iPhone 16 Pro" },
+}
+
+function watchResult(over: Partial<TerminalWatchResult> = {}): TerminalWatchResult {
+  return {
+    terminalId,
+    sessionId,
+    cols: 80,
+    rows: 24,
+    shell: "bash",
+    cwd: "/worktrees/demo",
+    owner: phone,
+    claimHeld: true,
+    openedAt: "2026-10-07T14:04:00.000Z",
+    state: "live",
+    buffer: "$ pnpm test\r\n PASS  webhooks\r\n",
+    earlierOutputDropped: false,
+    watchedAt: "2026-10-07T14:05:00.000Z",
+    ...over,
+  }
+}
+
+function watcher() {
+  const target = harness()
+  const watched = deferred<TerminalWatchResult>()
+  const watch = vi.fn(() => watched.promise)
+  const unwatch = vi.fn(async () => undefined)
+  const create = vi.fn(target.controls.create)
+  const controls: TerminalControls = { ...target.controls, create, watch, unwatch }
+  return { ...target, controls, create, watch, unwatch, watched }
+}
+
+describe("TerminalPane claim banner", () => {
+  it("says this desktop holds the shell", async () => {
+    const target = harness()
+    render(<TerminalPane connected controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+
+    await act(async () => {
+      target.connect(thisClient)
+    })
+
+    expect(screen.getByText("You hold this shell")).toBeTruthy()
+    expect(screen.getByText("One claimant at a time. Other devices can watch.")).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Take the shell" })).toBeNull()
+    // Q340 A: the design's footer says the agent owns a read-only shell,
+    // which is false for this PTY. The footer says what is true here.
+    expect(screen.getByText("interactive, this device holds the shell")).toBeTruthy()
+    expect(screen.queryByText(/the agent owns this shell/u)).toBeNull()
+  })
+
+  it("names the device that holds the shell and offers to take it", async () => {
+    const target = harness()
+    const controls: TerminalControls = {
+      ...target.controls,
+      create: async () => ({
+        terminalId, sessionId, cols: 80, rows: 24, shell: "bash", cwd: "/worktrees/demo", buffer: "", owner: phone,
+      }),
+    }
+    render(<TerminalPane connected controls={controls} machineName="worktop" sessionId={sessionId} />)
+
+    expect(await screen.findByText("Claimed by iPhone 16 Pro")).toBeTruthy()
+    expect(screen.getByText("Reading is free, typing needs the claim.")).toBeTruthy()
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Take the shell" }).disabled).toBe(false)
+    expect(screen.getByText("read-only until you take the shell")).toBeTruthy()
+  })
+})
+
+describe("TerminalPane on a watching desktop", () => {
+  it("reads the stream through terminal.watch and never opens or types", async () => {
+    const user = userEvent.setup()
+    const target = watcher()
+    const { unmount } = render(
+      <TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />,
+    )
+
+    expect(target.watch).toHaveBeenCalledWith(terminalId)
+    expect(target.create).not.toHaveBeenCalled()
+    await act(async () => {
+      target.watched.resolve(watchResult())
+    })
+
+    expect(screen.getByText("Claimed by iPhone 16 Pro")).toBeTruthy()
+    const take = screen.getByRole<HTMLButtonElement>("button", { name: "Take the shell" })
+    expect(take.disabled).toBe(true)
+    // A disabled control says why, beside it.
+    expect(screen.getByText("This view reads the shell and cannot take it.")).toBeTruthy()
+    expect(screen.getByText("read-only, this device watches")).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Close terminal" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Interrupt ⌃C" })).toBeNull()
+    expect(screen.queryByText("Watching only")).toBeNull()
+
+    await user.click(take)
+    expect(target.claimRequest).not.toHaveBeenCalled()
+    expect(target.write).not.toHaveBeenCalled()
+
+    unmount()
+    expect(target.unwatch).toHaveBeenCalledWith(terminalId)
+  })
+
+  it("says nobody holds a shell whose claimant has gone", async () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+
+    await act(async () => {
+      target.watched.resolve(watchResult({ claimHeld: false }))
+    })
+
+    expect(screen.getByText("Nobody holds this shell")).toBeTruthy()
+  })
+
+  it("follows an owner change while watching", async () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.resolve(watchResult({ claimHeld: false }))
+    })
+
+    await act(async () => {
+      target.deliverOwnership(otherClient)
+    })
+
+    expect(screen.getByText("Claimed by a browser")).toBeTruthy()
+  })
+
+  it("says when the session has no shell open and checks again on request", async () => {
+    const user = userEvent.setup()
+    const target = watcher()
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+
+    await act(async () => {
+      target.watched.reject(new Error("Terminal does not exist"))
+    })
+
+    expect(screen.getByText("No shell is open in this session")).toBeTruthy()
+    expect(screen.queryByRole("alert")).toBeNull()
+    await user.click(screen.getByRole("button", { name: "Check again" }))
+    expect(target.watch).toHaveBeenCalledTimes(2)
+  })
+
+  it("keeps the watching empty state when this client cannot watch", () => {
+    const target = harness()
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+
+    expect(screen.getByText("Watching only")).toBeTruthy()
+  })
+})
+
+describe("Attach this output to the composer", () => {
+  async function printed(target: ReturnType<typeof harness>, composer: ComposerInbox) {
+    render(<TerminalPane connected controls={target.controls} composer={composer} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.connect(thisClient)
+    })
+    await act(async () => {
+      target.deliverOutput("$ echo hi\r\nhi\r\n")
+    })
+  }
+
+  it("hands what the pane shows to this session's composer", async () => {
+    const user = userEvent.setup()
+    const composer = createComposerInbox()
+    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
+    composer.open(sessionId, receive)
+    await printed(harness(), composer)
+
+    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+
+    await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1))
+    const [attachment] = receive.mock.calls[0]!
+    expect(attachment).toMatchObject({ kind: "text", name: "terminal-output.txt", mimeType: "text/plain" })
+    expect("content" in attachment ? attachment.content : "").toContain("$ echo hi\nhi")
+    expect(screen.getByText("Attached to the composer as terminal-output.txt.")).toBeTruthy()
+  })
+
+  it("is not offered when no composer is open for this session", async () => {
+    const composer = createComposerInbox()
+    const other = vi.fn(() => "attached" as const)
+    composer.open("session-other", other)
+    await printed(harness(), composer)
+
+    expect(screen.queryByRole("button", { name: "Attach this output to the composer" })).toBeNull()
+    expect(other).not.toHaveBeenCalled()
+  })
+
+  it("says so when the composer is full", async () => {
+    const user = userEvent.setup()
+    const composer = createComposerInbox()
+    composer.open(sessionId, () => "full")
+    await printed(harness(), composer)
+
+    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+
+    expect(await screen.findByText(/The composer already holds the most attachments/u)).toBeTruthy()
   })
 })
 
