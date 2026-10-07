@@ -1,5 +1,6 @@
 import type { ThreadItem } from "@getdomovoi/protocol"
 
+import { Button } from "./components/ui/button"
 import { cn } from "./lib/utils"
 
 type Receipt = Extract<ThreadItem, { kind: "receipt" }>
@@ -91,16 +92,31 @@ function shortReference(reference: string, length = 7): string {
 // daemon labels that row with the commit's first 8 characters.
 const checkpointRowLength = 8
 
+// The dock tabs a receipt's link opens: the rule an Always saved, or the
+// checkpoints for any other decision.
+export type ReceiptDockTab = "checkpoints" | "rules"
+
+// What the design offers after the latest decision. Each opens a surface the
+// thread already has, and each is drawn only when its caller can open it.
+export type ReceiptActions = {
+  onReviewChanges?: (() => void) | undefined
+  onMoveSession?: (() => void) | undefined
+  onOpenDockTab?: ((tab: ReceiptDockTab) => void) | undefined
+}
+
 export function ApprovalReceipt({
   receipt,
   checkpointTaken = false,
   className,
+  actions,
 }: {
   receipt: Receipt
   // Set when the thread shows the checkpoint this allow took; see
   // receiptCheckpointTaken.
   checkpointTaken?: boolean
   className?: string
+  // Set on the latest receipt only, as drawn.
+  actions?: ReceiptActions | undefined
 }) {
   const denied = receipt.decision === "deny" || receipt.decision === "deny-explain"
   const { verdict, rule } = decisionSummary(receipt)
@@ -122,29 +138,53 @@ export function ApprovalReceipt({
 
   // The design tones an allow ok and a denial danger, each with its dot.
   const tone = denied ? toneClasses.danger : toneClasses.ok
+  const link = receipt.decision === "always-project"
+    ? { tab: "rules" as const, label: "See the rule" }
+    : { tab: "checkpoints" as const, label: "See the checkpoints" }
+  const { onReviewChanges, onMoveSession, onOpenDockTab } = actions ?? {}
 
   return (
-    <section
-      aria-label="Decision receipt"
-      className={cn("mx-auto flex w-full max-w-3xl flex-col gap-1.5 rounded-xl border px-3.5 py-[11px]", tone.frame, className)}
-    >
-      <h3 className={cn("m-0 flex items-center gap-2.5 text-[12.5px] font-medium", tone.text)}>
-        <span aria-hidden data-receipt-dot={denied ? "danger" : "ok"} className={cn("size-[7px] shrink-0 rounded-full", tone.dot)} />
-        {verdict}
-        {meta ? <span className={cn("ml-auto font-machine text-[10.5px] font-normal", tone.dim)}>{meta}</span> : null}
-      </h3>
-      <p className={cn("m-0 font-machine text-[11px]", tone.text)}>{receipt.operation}</p>
-      {/* One body, as drawn: what happened to the files, then whether the
-          decision outlives the moment. */}
-      <p className={cn("m-0 text-[13px] leading-[1.6] text-pretty", tone.text)}>
-        {denied ? null : <><span>{recoveryNote(receipt, checkpointTaken)}</span>{" "}</>}
-        <span>{rule}</span>
-      </p>
-      {receipt.explanation ? (
-        <p className={cn("m-0 text-[12px]", tone.text)}>{receipt.explanation}</p>
+    <>
+      <section
+        aria-label="Decision receipt"
+        className={cn("mx-auto flex w-full max-w-3xl flex-col gap-1.5 rounded-xl border px-3.5 py-[11px]", tone.frame, className)}
+      >
+        <h3 className={cn("m-0 flex items-center gap-2.5 text-[12.5px] font-medium", tone.text)}>
+          <span aria-hidden data-receipt-dot={denied ? "danger" : "ok"} className={cn("size-[7px] shrink-0 rounded-full", tone.dot)} />
+          {verdict}
+          {meta ? <span className={cn("ml-auto font-machine text-[10.5px] font-normal", tone.dim)}>{meta}</span> : null}
+        </h3>
+        <p className={cn("m-0 font-machine text-[11px]", tone.text)}>{receipt.operation}</p>
+        {/* One body, as drawn: what happened to the files, then whether the
+            decision outlives the moment. */}
+        <p className={cn("m-0 text-[13px] leading-[1.6] text-pretty", tone.text)}>
+          {denied ? null : <><span>{recoveryNote(receipt, checkpointTaken)}</span>{" "}</>}
+          <span>{rule}</span>
+        </p>
+        {receipt.explanation ? (
+          <p className={cn("m-0 text-[12px]", tone.text)}>{receipt.explanation}</p>
+        ) : null}
+        <p className={cn("m-0 font-machine text-[10.5px]", tone.dim)}>decided from {decidedFrom}</p>
+      </section>
+      {onReviewChanges || onMoveSession || onOpenDockTab ? (
+        // The design's follow-up row: review, move, and the link to what the
+        // decision wrote. The count of changed files is the sample's; the
+        // changes sheet says how many.
+        <div role="group" aria-label="After this decision" className="mx-auto flex w-full max-w-3xl flex-wrap items-center gap-2">
+          {onReviewChanges ? (
+            <Button size="sm" className="h-8 px-[15px] text-[13px] font-semibold" onClick={onReviewChanges}>Review the changed files</Button>
+          ) : null}
+          {onMoveSession ? (
+            <Button variant="outline" size="sm" className="h-8 px-[15px] text-[12px] font-normal text-muted-foreground" onClick={onMoveSession}>Move this session to another machine</Button>
+          ) : null}
+          {onOpenDockTab ? (
+            <Button variant="link" size="xs" className="ml-auto text-[11.5px] font-normal" onClick={() => onOpenDockTab(link.tab)}>
+              {link.label}<span aria-hidden> →</span>
+            </Button>
+          ) : null}
+        </div>
       ) : null}
-      <p className={cn("m-0 font-machine text-[10.5px]", tone.dim)}>decided from {decidedFrom}</p>
-    </section>
+    </>
   )
 }
 
