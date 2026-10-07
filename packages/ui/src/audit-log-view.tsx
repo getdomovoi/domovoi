@@ -3,7 +3,6 @@ import {
   CircleStopIcon,
   DownloadIcon,
   SearchIcon,
-  ShieldCheckIcon,
 } from "lucide-react"
 
 import type {
@@ -14,10 +13,10 @@ import type {
   AuditOutcome,
   AuditQueryPage,
   AuditQueryParams,
+  ClientKind,
 } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
-import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
 import { Field, FieldLabel } from "./components/ui/field"
@@ -135,11 +134,33 @@ async function collectAuditPages(
   throw new Error("Audit export exceeds the safe page limit; narrow the filters")
 }
 
-function outcomeVariant(outcome: AuditOutcome): "success" | "warning" | "destructive" | "outline" {
-  if (outcome === "succeeded") return "success"
-  if (outcome === "started") return "warning"
-  if (outcome === "failed" || outcome === "denied") return "destructive"
-  return "outline"
+// The design colours a row's dot success, info or destructive. The outcome
+// word sits in the row's last column, so the dot is never the only signal.
+function outcomeDotClass(outcome: AuditOutcome): string {
+  if (outcome === "succeeded") return "bg-success"
+  if (outcome === "failed" || outcome === "denied") return "bg-destructive"
+  return "bg-info"
+}
+
+const twoDigits = (value: number) => String(value).padStart(2, "0")
+
+// The design draws a 24-hour time in a 62px column. Its query window is one
+// day; this query has no window, so a row from another day also names the day.
+function auditEntryTime(occurredAt: string, now = new Date()): { time: string; day?: string } {
+  const at = new Date(occurredAt)
+  const time = [at.getHours(), at.getMinutes(), at.getSeconds()].map(twoDigits).join(":")
+  if (at.toDateString() === now.toDateString()) return { time }
+  const sameYear = at.getFullYear() === now.getFullYear()
+  return {
+    time,
+    day: at.toLocaleDateString(undefined, sameYear
+      ? { month: "short", day: "numeric" }
+      : { year: "numeric", month: "short", day: "numeric" }),
+  }
+}
+
+function auditRowsLoaded(count: number): string {
+  return `${count.toLocaleString("en-US")} ${count === 1 ? "row" : "rows"} loaded`
 }
 
 function mergeAuditPages(current: AuditQueryPage | undefined, older: AuditQueryPage): AuditQueryPage {
@@ -152,37 +173,69 @@ function mergeAuditPages(current: AuditQueryPage | undefined, older: AuditQueryP
   }
 }
 
-function AuditEntryRow({ entry }: { entry: AuditEntry }) {
+// The design's row: outcome dot, time, the action with an actor pill over a
+// detail line, then who and outcome columns. The list is a size container, so
+// when the pane (not the window) is narrower than 48rem the two columns wrap
+// under the action instead of squeezing it or running out of the pane.
+function AuditEntryRow({ entry, now }: { entry: AuditEntry; now: Date }) {
+  const when = auditEntryTime(entry.occurredAt, now)
   return (
-    <article className="flex flex-col gap-2 border-b py-3 last:border-b-0">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="font-machine text-[11px] font-medium">{entry.action}</span>
-        <Badge variant={outcomeVariant(entry.outcome)}>{entry.outcome}</Badge>
-        <time className="ml-auto font-machine text-mono-xs text-faint" dateTime={entry.occurredAt}>
-          {new Date(entry.occurredAt).toLocaleString()}
-        </time>
+    <article className="flex flex-wrap items-start gap-3 border-b px-[15px] py-3 last:border-b-0 @3xl:flex-nowrap">
+      <span aria-hidden className={`mt-[5px] size-1.5 shrink-0 rounded-full ${outcomeDotClass(entry.outcome)}`} />
+      <time className="mt-px flex w-[62px] shrink-0 flex-col font-machine text-[10.5px] text-faint" dateTime={entry.occurredAt} title={new Date(entry.occurredAt).toLocaleString()}>
+        <span>{when.time}</span>
+        {when.day ? <span>{when.day}</span> : null}
+      </time>
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className="font-machine text-[11.5px] [overflow-wrap:anywhere]">{entry.action}</span>
+          <span className="rounded-full bg-muted px-2 py-0.5 font-machine text-[10.5px] text-muted-foreground">{entry.actor.kind}</span>
+        </div>
+        {entry.detail ? (
+          <div className="mt-1 max-h-40 overflow-y-auto whitespace-pre-wrap text-[11.5px] leading-[1.45] text-strong [overflow-wrap:anywhere]">
+            {entry.detail}
+          </div>
+        ) : null}
       </div>
-      <div className="flex flex-wrap gap-2 font-machine text-[9.5px] text-muted-foreground">
+      <div className="flex basis-full flex-col pl-[92px] font-machine text-[10.5px] leading-normal text-muted-foreground [overflow-wrap:anywhere] @3xl:w-[190px] @3xl:shrink-0 @3xl:basis-auto @3xl:pl-0">
         <span>{auditActorLabel(entry.actor)}</span>
-        {entry.sessionId ? <span>session · {entry.sessionId}</span> : null}
-        {entry.target ? <span>target · {entry.target}</span> : null}
       </div>
-      {entry.detail ? (
-        <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-code p-2.5 font-machine text-[10px] leading-relaxed text-muted-foreground">
-          {entry.detail}
-        </pre>
-      ) : null}
+      <div className="flex basis-full flex-col pl-[92px] font-machine text-[10.5px] leading-normal text-faint [overflow-wrap:anywhere] @3xl:w-[150px] @3xl:shrink-0 @3xl:basis-auto @3xl:pl-0">
+        <span>{entry.outcome}</span>
+        {entry.target ? <span>target · {entry.target}</span> : null}
+        {entry.sessionId ? <span>session · {entry.sessionId}</span> : null}
+      </div>
     </article>
   )
 }
 
+// Q346 A (2026-10-02): a browser downloads the export to the device it runs
+// on, so a browser client says so. A desktop, or a caller that does not say,
+// keeps the drawn line.
+function auditExportDestination(clientKind: ClientKind | undefined): string {
+  return clientKind === "web" || clientKind === "tablet" || clientKind === "phone"
+    ? "saves to this device"
+    : "writes a file on this machine"
+}
+
+const auditFacts = [
+  { text: "Rows name verified credentials, so renaming a device does not rewrite history.", dot: "bg-success" },
+  // The daemon's fixed defaults in apps/daemon/src/audit-log.ts (Q377 A).
+  { text: "Retention is by count: 10,000 activity and 1,000 pre-authentication entries.", dot: "bg-info" },
+  { text: "It lives on this machine and is never uploaded.", dot: "bg-info" },
+  // "redacted" is a dated deviation from the design (Q377 A): the export is redacted.
+  { text: "Export writes a redacted file here. Moving it is your decision.", dot: "bg-info" },
+] as const
+
 export function AuditLogView({
   connected,
+  clientKind,
   initialPage,
   onQuery,
   onExport,
 }: {
   connected: boolean
+  clientKind?: ClientKind
   initialPage?: AuditQueryPage
   onOpenSkills: () => void
   onQuery: (params: AuditQueryParams, options?: DomovoiRequestOptions) => Promise<AuditQueryPage>
@@ -193,6 +246,28 @@ export function AuditLogView({
   const [outcome, setOutcome] = useState<OutcomeFilter>("all")
   const [actor, setActor] = useState<ActorFilter>("all")
   const [page, setPage] = useState<AuditQueryPage | undefined>(initialPage)
+  // Rows from today show a time only, so "today" is re-read at the next local
+  // midnight, whenever rows land, and when the window regains focus or the tab
+  // becomes visible (a sleeping machine can hold a timer past midnight).
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const midnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+    const timer = setTimeout(() => setNow(new Date()), Math.max(1_000, midnight.getTime() - Date.now() + 1_000))
+    return () => clearTimeout(timer)
+  }, [now])
+  useEffect(() => {
+    const refresh = () => setNow((current) => {
+      const next = new Date()
+      return next.toDateString() === current.toDateString() ? current : next
+    })
+    refresh()
+    window.addEventListener("focus", refresh)
+    document.addEventListener("visibilitychange", refresh)
+    return () => {
+      window.removeEventListener("focus", refresh)
+      document.removeEventListener("visibilitychange", refresh)
+    }
+  }, [page])
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState("")
@@ -334,8 +409,8 @@ export function AuditLogView({
 
         {error ? <Alert variant="destructive"><CircleStopIcon /><AlertTitle>Audit log unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
 
-        <section aria-label="Audit entries" className="overflow-hidden rounded-xl border bg-card">
-          {page?.entries.map((entry) => <AuditEntryRow key={entry.id} entry={entry} />)}
+        <section aria-label="Audit entries" className="@container overflow-hidden rounded-xl border bg-card">
+          {page?.entries.map((entry) => <AuditEntryRow key={entry.id} entry={entry} now={now} />)}
           {!loading && !error && page?.entries.length === 0 ? (
             <Empty className="min-h-52 border-0">
               <EmptyHeader>
@@ -351,18 +426,13 @@ export function AuditLogView({
           <Button variant="secondary" disabled={!connected} onClick={toggleExport} aria-label={exporting ? "Cancel export" : "Export this query"}>
             <DownloadIcon data-icon="inline-start" />{exporting ? "Cancel export" : "Export this query"}
           </Button>
-          <span className="font-machine text-[10.5px] text-faint">writes a file on this machine · {page?.entries.length ?? 0} rows loaded</span>
+          <span className="font-machine text-[10.5px] text-faint">{`${auditExportDestination(clientKind)} · ${auditRowsLoaded(page?.entries.length ?? 0)}`}</span>
           {page?.hasMore ? <Button className="ml-auto" variant="outline" size="sm" disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading" : "Load older"}</Button> : null}
         </div>
 
         <section className="overflow-hidden rounded-xl border bg-card" aria-labelledby="audit-facts-title">
           <h2 id="audit-facts-title" className="m-0 border-b px-[15px] py-[11px] text-[10.5px] font-medium tracking-[0.13em] text-faint">WHAT THIS LOG IS, AND IS NOT</h2>
-          {[
-            "Rows name verified credentials, so renaming a device does not rewrite history.",
-            "Retention is bounded by the daemon's local audit policy.",
-            "It lives on this machine and is never uploaded.",
-            "Export writes a redacted file here. Moving it is your decision.",
-          ].map((fact) => <div key={fact} className="flex items-start gap-2.5 px-[15px] py-2.5 text-[12px] leading-[1.55] text-strong"><ShieldCheckIcon className="mt-1 size-3 shrink-0 text-success" />{fact}</div>)}
+          {auditFacts.map(({ text, dot }) => <div key={text} className="flex items-start gap-2.5 px-[15px] py-2.5 text-[12px] leading-[1.55] text-strong"><span aria-hidden className={`mt-1.5 size-1.5 shrink-0 rounded-full ${dot}`} /><span>{text}</span></div>)}
         </section>
       </main>
     </ScrollArea>

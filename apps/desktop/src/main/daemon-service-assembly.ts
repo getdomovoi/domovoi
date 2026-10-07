@@ -18,11 +18,16 @@ import { savedTailnetReachRecord, tailnetReachEnvironment } from "./tailnet-reac
 // install writes that profile, and each call checks the saved service's
 // profile against it again under the service-operation lease. home and
 // environment default to this process's; tests pass their own.
+//
+// loginService "off" (T24, test-only, launch-smoke-profile.ts): no call
+// reaches the daemon. Status reads as unavailable, and install, update and
+// remove stop at their first profile check with the same line.
 export function createDesktopDaemonService(
   desktopDaemon: DesktopDaemon,
-  app: { resourcesPath: string; version: string; home?: string; environment?: NodeJS.ProcessEnv; dataDirectory?: string },
+  app: { resourcesPath: string; version: string; home?: string; environment?: NodeJS.ProcessEnv; dataDirectory?: string; loginService?: "off" },
   daemon: DaemonModule,
 ): DesktopDaemonService {
+  if (app.loginService === "off") return loginServiceOff()
   const home = app.home ?? homedir()
   const environment = app.environment ?? process.env
   const profileDirectory = environment.DOMOVOI_PROFILE_DIR
@@ -77,5 +82,16 @@ export function createDesktopDaemonService(
       attachOnly: () => desktopDaemon.attachOnly(),
       restart: () => desktopDaemon.restart(),
     },
+  })
+}
+
+function loginServiceOff(): DesktopDaemonService {
+  const off = async (): Promise<never> => {
+    throw new Error("Login service calls are turned off for this test run.")
+  }
+  return new DesktopDaemonService({
+    stageRuntime: off, install: off, status: off, remove: off, update: off, profile: off,
+    refusal: off, fence: off, runtimeCopy: off, removeUnusedRuntimes: off,
+    daemon: { beginHandoff: () => {}, endHandoff: () => {}, stopOwned: off, attachOnly: off, restart: off },
   })
 }

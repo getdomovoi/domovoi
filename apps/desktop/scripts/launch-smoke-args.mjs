@@ -1,14 +1,23 @@
 import { dirname, join } from "node:path"
 
+// T24: the main process's test-only switch (src/main/launch-smoke-profile.ts).
+// The login-service calls take their lease under the passwd home, which the
+// smoke's HOME cannot move; with this switch an unpackaged app makes none.
+export const loginServiceOffSwitch = "--domovoi-test-no-login-service"
+
 // A packaged build already knows where its application is. Passing a directory
 // as well makes Electron read it as a file argument, not as the app to run.
-export function launchSmokeElectronArgs({ platform, ci, desktopRoot, packaged = false, debuggingLogFile, userDataDirectory }) {
+export function launchSmokeElectronArgs({ platform, ci, desktopRoot, packaged = false, debuggingLogFile, userDataDirectory, loginServiceOff = false }) {
+  // A packaged app ignores the switch, so asking for it there would promise
+  // an isolation the run does not have.
+  if (packaged && loginServiceOff) throw new Error("A packaged app ignores the test-only login service switch")
   return [
     ...(platform === "linux" && ci ? ["--no-sandbox"] : []),
     "--headless",
     "--disable-gpu",
     ...(userDataDirectory ? [`--user-data-dir=${userDataDirectory}`] : []),
     ...(debuggingLogFile ? ["--remote-debugging-port=0", "--enable-logging=file", `--log-file=${debuggingLogFile}`] : []),
+    ...(loginServiceOff ? [loginServiceOffSwitch] : []),
     ...(packaged ? [] : [desktopRoot]),
   ]
 }
