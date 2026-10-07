@@ -59,4 +59,13 @@ describe("advancePendingElsewhere", () => {
     const reached = advancePendingElsewhere(pending, at(studio.id, null)).next!
     expect(advancePendingElsewhere(reached, at(home.id, home.id))).toEqual({ next: null })
   })
+
+  // PR #745 review (P2): a target that refuses this client (authentication or
+  // protocol) ends the pick, so reauthorizing later never opens the old
+  // selection behind the user's back.
+  it("drops the intent when the target refuses the switch", () => {
+    expect(advancePendingElsewhere(pending, { ...at(studio.id, null), refused: true })).toEqual({ next: null })
+    const reached = advancePendingElsewhere(pending, at(studio.id, null)).next!
+    expect(advancePendingElsewhere(reached, { ...at(studio.id, studio.id, ["s-1"]), refused: true })).toEqual({ next: null })
+  })
 })

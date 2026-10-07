@@ -766,11 +766,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       currentMachineId: windowMachineId,
       snapshotMachineId: snapshot?.machine.id ?? null,
       sessionIds: snapshot?.sessions.map((session) => session.id) ?? [],
+      refused: Boolean(authenticationRequired || protocolError),
     })
     if (step.next !== pendingElsewhere) setPendingElsewhere(step.next)
     if (step.open) openSessionInWorkspace(step.open)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingElsewhere, windowMachineId, snapshot])
+  }, [pendingElsewhere, windowMachineId, snapshot, authenticationRequired, protocolError])
   const searchTargets = windowMachineId ? paletteSearchTargets({
     machines: fleetMachines(fleet?.entries ?? []),
     access: fleetClientAccess,

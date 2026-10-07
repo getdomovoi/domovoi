@@ -38,7 +38,11 @@ export function advancePendingElsewhere(pending: PendingElsewhere, now: {
   currentMachineId: string | null
   snapshotMachineId: string | null
   sessionIds: readonly string[]
+  // The window's daemon refused this client (authentication or protocol).
+  // The pick ends there, so a later reauthorization never opens it unasked.
+  refused?: boolean
 }): { next: PendingElsewhere | null; open?: string } {
+  if (now.refused) return { next: null }
   if (now.currentMachineId === pending.from) return { next: pending.reached ? null : pending }
   if (now.currentMachineId !== pending.machineId) return { next: null }
   if (now.snapshotMachineId !== pending.machineId) return { next: pending.reached ? pending : { ...pending, reached: true } }
