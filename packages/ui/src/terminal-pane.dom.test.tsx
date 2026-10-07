@@ -473,11 +473,54 @@ describe("TerminalPane on a watching desktop", () => {
     await act(async () => {
       target.watched.resolve(watchResult({ state: "closed", closedAt: "2026-10-07T14:06:00.000Z", exitCode: 0, claimHeld: false }))
     })
+    expect(screen.getByText("closed, the shell has exited")).toBeTruthy()
 
     await user.click(screen.getByRole("button", { name: "Check again" }))
 
     expect(target.unwatch).toHaveBeenCalledWith(terminalId)
     expect(target.watch).toHaveBeenCalledTimes(2)
+  })
+
+  it("says the watched shell exited when the close arrives live", async () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.resolve(watchResult())
+    })
+
+    await act(async () => {
+      target.deliverClosed(0)
+    })
+
+    expect(screen.queryByText("read-only, this device watches")).toBeNull()
+    expect(screen.getByText("closed, the shell has exited")).toBeTruthy()
+  })
+
+  // When the daemon dropped the start and the attachment limit cuts again,
+  // the cut marker is the one that holds: what follows starts after both.
+  it("marks a cut attachment from a record the daemon already shortened", async () => {
+    const user = userEvent.setup()
+    const composer = createComposerInbox()
+    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
+    composer.open(sessionId, receive)
+    const target = watcher()
+    render(<TerminalPane connected readOnly composer={composer} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.resolve(watchResult({ earlierOutputDropped: true }))
+    })
+    const line = `${"y".repeat(78)}\r\n`
+    await act(async () => {
+      for (let index = 0; index < 4_000; index += 1) target.deliverOutput(line)
+    })
+
+    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+
+    await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1))
+    const [attachment] = receive.mock.calls[0]!
+    const content = "content" in attachment ? attachment.content : ""
+    expect(content).toMatch(/^\[earlier lines were cut to fit the attachment limit\]\n/u)
+    expect(content).not.toContain("[earlier output was not kept")
+    expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(maximumTextAttachmentBytes)
   })
 
   it("stops watching one session's shell when the pane moves to another", async () => {
