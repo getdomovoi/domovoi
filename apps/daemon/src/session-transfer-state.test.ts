@@ -168,6 +168,23 @@ describe("portable session transfer state", () => {
     expect(imported.skillEnablements).toEqual(target.skillEnablements)
   })
 
+  it.each([
+    ["opencode", "medium", "unset"], ["opencode", "none", "unset"],
+    ["kilo", "medium", "unset"], ["kilo", "none", "unset"],
+    ["codex", "medium", "medium"], ["claude-code", "medium", "medium"],
+    ["opencode", "unset", "unset"], ["kilo", "unset", "unset"],
+    ["opencode", "high", "high"], ["kilo", "high", "high"],
+  ] as const)("imports %s effort %s as %s without changing transferred bytes", (provider, reasoning, expected) => {
+    const state = portableSessionTransferState(sourceWorkspace(), "session-billing", usage)
+    state.session.runtime = { ...state.session.runtime, provider, reasoning }
+    const sent = sessionTransferStateBytes(state)
+    const imported = importSessionTransferState(targetWorkspace(), state, importInput)
+    const session = imported.sessions.find(({ id }) => id === state.session.id)!
+    expect(session.runtime).toEqual({ ...state.session.runtime, reasoning: expected, auto: false })
+    expect(session.transferredFrom?.manifestDigest).toBe(importInput.manifestDigest)
+    expect(sessionTransferStateBytes(state)).toEqual(sent)
+  })
+
   // A source that ran before receipt labels were redacted sends the label as
   // it was written. The state is accepted as sent, so its bytes and digest
   // still verify, and the import redacts it before it becomes this machine's
