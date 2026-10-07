@@ -72,6 +72,11 @@ const skillSecurityMetadata = {
 }
 
 describe("workspace protocol", () => {
+  it("leaves the demo OpenCode session effort unset", () => {
+    expect(demoWorkspace.sessions.find((session) => session.id === "session-audit")?.runtime)
+      .toMatchObject({ provider: "opencode", reasoning: "unset" })
+  })
+
   it("uses a breaking minor for client access, refusals, and queued sends", () => {
     expect(protocolVersion).toBe("0.8.0")
     expect(demoWorkspace.protocolVersion).toBe(protocolVersion)
