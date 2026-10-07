@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
 import "@xterm/xterm/css/xterm.css"
 
+import { maximumTextAttachmentBytes } from "@getdomovoi/protocol"
 import type {
   TerminalClosedNotification,
   TerminalOutputNotification,
@@ -54,15 +55,21 @@ export type TerminalControls = {
   list?(sessionId: string): Promise<TerminalSummary[]>
 }
 
-// How often a pane that does not hold the shell reads the holder again. The
-// daemon sends no notice when the holder's connection drops or the holder
-// resizes, so for up to this long the banner can name a holder that has gone
-// and output can draw at the holder's previous grid.
+// The interval at which a pane that does not hold the shell reads the holder
+// again. The daemon sends no notice when the holder's connection drops or the
+// holder resizes, so between reads (this interval plus the reply's time, or
+// longer when a read fails or the page throttles timers) the banner can name a
+// holder that has gone and output can draw at the holder's previous grid.
 export const terminalHolderRefreshMs = 5_000
 
-// Written ahead of a watched record that does not start at the shell's start,
-// so the stream and anything attached from it say what is missing.
+// Put ahead of an attachment from a watched record that does not start at the
+// shell's start. It is held outside xterm, because a screen clear or a long
+// scrollback would erase a line written into the stream.
 const droppedRecordMarker = "[earlier output was not kept; the record starts here]"
+
+function sameOwner(left: TerminalOwner, right: TerminalOwner): boolean {
+  return left.client === right.client && left.clientId === right.clientId && left.device?.id === right.device?.id
+}
 
 // The states the pane can be in, each with the atom's meaning for it. Keyed on
 // the union the status is computed from, so another state fails typecheck
@@ -133,6 +140,8 @@ export function TerminalPane({
   // Whether an xterm is mounted to read output from. A disconnect disposes it
   // while the last metadata stays on screen.
   const [rendered, setRendered] = useState(false)
+  // terminal.watch said the record does not start at the shell's start.
+  const [earlierDropped, setEarlierDropped] = useState(false)
   const watching = readOnly && controls.watch !== undefined
   const canAttach = useSyncExternalStore(
     composer.subscribe,
@@ -155,6 +164,7 @@ export function TerminalPane({
     setError("")
     setClosed(false)
     setAttachNote(undefined)
+    setEarlierDropped(false)
     const styles = getComputedStyle(container)
     const terminal = new Terminal({
       cursorBlink: !readOnly,
@@ -225,7 +235,7 @@ export function TerminalPane({
         const current = terminals.find((candidate) => candidate.terminalId === terminalId)
         if (!current || current.state !== "live") return
         setClaimHeld(current.claimHeld)
-        setMetadata((shown) => shown && shown.owner.clientId !== current.owner.clientId ? { ...shown, owner: current.owner } : shown)
+        setMetadata((shown) => shown && !sameOwner(shown.owner, current.owner) ? { ...shown, owner: current.owner } : shown)
         if (terminal.cols !== current.cols || terminal.rows !== current.rows) terminal.resize(current.cols, current.rows)
       }, () => undefined)
     }, holderRefreshMs) : undefined
@@ -241,7 +251,7 @@ export function TerminalPane({
           setMetadata({ terminalId, sessionId, cols, rows, shell, cwd, buffer, owner })
           setClaimHeld(held)
           terminal.resize(cols, rows)
-          if (record.earlierOutputDropped) terminal.write(`${droppedRecordMarker}\r\n`)
+          setEarlierDropped(record.earlierOutputDropped)
           if (buffer) terminal.write(buffer)
           if (state === "closed") {
             setClosed(true)
@@ -369,12 +379,17 @@ export function TerminalPane({
   const attachOutput = () => {
     const terminal = xtermRef.current
     if (!terminal) return
-    const text = terminalBufferText(terminal.buffer.active)
+    // The marker's bytes come out of the limit, so the file still fits.
+    const marker = earlierDropped ? `${droppedRecordMarker}\n` : ""
+    const text = terminalBufferText(
+      terminal.buffer.active,
+      maximumTextAttachmentBytes - new TextEncoder().encode(marker).byteLength,
+    )
     if (!text) {
       setAttachNote({ tone: "refused", text: "Nothing has been printed yet." })
       return
     }
-    const outcome = composer.offer(sessionId, terminalOutputAttachment(text))
+    const outcome = composer.offer(sessionId, terminalOutputAttachment(`${marker}${text}`))
     setAttachNote(
       outcome === "attached"
         ? { tone: "done", text: "Attached to the composer as terminal-output.txt." }
@@ -495,6 +510,13 @@ export function TerminalPane({
           <AlertTitle>Terminal unavailable</AlertTitle>
           <AlertDescription>{error}</AlertDescription>
         </Alert>
+      ) : null}
+      {/* Outside the stream, so a screen clear or a long scrollback cannot
+          take the note away while the record is still partial. */}
+      {earlierDropped ? (
+        <p className="border-b bg-sidebar px-3 py-1.5 text-[11px] text-muted-foreground">
+          Earlier output was not kept. The daemon's record of this shell starts after it.
+        </p>
       ) : null}
       {missing ? (
         <Empty className="min-h-0 flex-1 border-0 text-muted-foreground">

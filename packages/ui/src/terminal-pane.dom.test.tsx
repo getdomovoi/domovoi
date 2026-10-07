@@ -482,23 +482,46 @@ describe("TerminalPane on a watching desktop", () => {
   // not hold the shell reads it again on a short interval.
   it("rereads the holder and its grid while it does not hold the shell", async () => {
     const target = watcher()
-    const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, ...listed } = watchResult({ cols: 132, rows: 40, claimHeld: false })
-    const list = vi.fn(async (_sessionId: string) => [listed])
+    const listing = (over: Partial<TerminalWatchResult>) => {
+      const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, ...listed } = watchResult(over)
+      return listed
+    }
+    let answer = listing({ claimHeld: false })
+    const list = vi.fn(async (_sessionId: string) => [answer])
     const controls: TerminalControls = { ...target.controls, list }
-    const { container } = render(
+    const { container, unmount } = render(
       <TerminalPane connected readOnly controls={controls} holderRefreshMs={20} machineName="worktop" sessionId={sessionId} />,
     )
     await act(async () => {
       target.watched.resolve(watchResult())
     })
 
+    // The holder's connection dropped.
     expect(await screen.findByText("Nobody holds this shell")).toBeTruthy()
     expect(list).toHaveBeenCalledWith(sessionId)
+
+    // Another device took the shell and set a wider grid.
+    answer = listing({ owner: { client: "web", clientId: otherClient }, cols: 132, rows: 40 })
+    expect(await screen.findByText("Claimed by a browser")).toBeTruthy()
     await vi.waitFor(() => expect(container.querySelectorAll(".xterm-rows > div").length).toBe(40))
+    await act(async () => {
+      target.deliverOutput("\x1b[1;120HX")
+    })
+    await vi.waitFor(() => {
+      const first = container.querySelector(".xterm-rows > div")?.textContent ?? ""
+      expect(first.replace(/\u00a0/gu, " ").indexOf("X")).toBe(119)
+    })
+
+    // Nothing is read after the pane goes.
+    unmount()
+    const calls = list.mock.calls.length
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    expect(list.mock.calls.length).toBe(calls)
   })
 
   // The daemon keeps a bounded record. When the start of the shell's output
-  // is gone, the stream says so, and so does anything attached from it.
+  // is gone, the view says so, and so does anything attached from it. The
+  // note lives outside the stream, so a screen clear cannot erase it.
   it("marks a watched record whose start the daemon no longer keeps", async () => {
     const user = userEvent.setup()
     const composer = createComposerInbox()
@@ -513,7 +536,11 @@ describe("TerminalPane on a watching desktop", () => {
     })
 
     await drawnRows(container)
-    expect(container.textContent).toContain("[earlier output was not kept; the record starts here]")
+    await act(async () => {
+      target.deliverOutput("\x1b[2J\x1b[H$ after the clear\r\n")
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain("$ after the clear"))
+    expect(screen.getByText("Earlier output was not kept. The daemon's record of this shell starts after it.")).toBeTruthy()
     await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
     const [attachment] = receive.mock.calls[0]!
     expect("content" in attachment ? attachment.content : "").toMatch(/^\[earlier output was not kept; the record starts here\]/u)
