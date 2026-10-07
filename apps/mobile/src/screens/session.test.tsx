@@ -547,6 +547,14 @@ describe("SessionScreen terminals", () => {
     expect(screen.getByRole("button", { name: "Show all 1 line" })).toBeOnTheScreen()
   })
 
+  // Terminal blocks sit above the messages and grow, or appear, as output
+  // arrives. The thread keeps the item a reader is on where it is, rather
+  // than its numeric offset, so that growth does not move what they read.
+  it("keeps what a reader is on in place when terminal blocks above it change", async () => {
+    await draw({ terminals: [watched("line\n")] })
+    expect(screen.getByTestId("thread").props.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 0 })
+  })
+
   it("draws no terminal block for a session with none", async () => {
     await draw()
     expect(screen.queryByText(/Show all/)).toBeNull()

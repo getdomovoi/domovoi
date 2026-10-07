@@ -704,6 +704,11 @@ export function SessionScreen({
           bottomInset={composerFootprint}
           followEnd
           onAtEndChange={(next) => { setAtEnd(next); if (next) setUnseen(0) }}
+          // Terminal blocks above the messages grow, and appear, as output
+          // arrives. The thread keeps the first visible item in place rather
+          // than its numeric offset, so a reader scrolled into history is not
+          // moved by them. Growth below needs nothing: followEnd handles it.
+          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
           testID="thread"
         >
           <ConnectionBanner notice={notice} />
