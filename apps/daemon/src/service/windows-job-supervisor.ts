@@ -52,6 +52,9 @@ export function assertWindowsStartup(previous: WindowsSupervisorRecord | undefin
   // This relies on the same user not deleting the profile's evidence files.
   if (!previous) return
   assertWindowsTreeProof(previous, bootId)
+  // The exclusive lease excludes the settled loop; its PID may now name a
+  // protected process unrelated to this registration.
+  if (terminalWindowsTreeProof(previous)) return
   if (previous.loop.bootId === bootId && alive(previous.loop)) throw new Error("A recorded Windows supervisor is still alive")
 }
 

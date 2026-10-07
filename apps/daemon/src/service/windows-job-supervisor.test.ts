@@ -88,13 +88,35 @@ it("permits retry after a prelaunch failure left only a claimable lease", () => 
 it("gates startup on every old job, and refuses a live predecessor even with empty jobs", async () => {
   const f = fixture([0])
   const record = await superviseWindows(input(), f.effects)
+  record.state = "stopping"; record.reason = null
   expect(() => assertWindowsStartup(record, loop.bootId, () => true)).toThrow("still alive")
+  expect(() => assertWindowsStartup(record, loop.bootId, () => { throw new Error("Access denied") })).toThrow("Access denied")
   expect(() => assertWindowsStartup(record, loop.bootId, () => false)).not.toThrow()
   const attempt = record.attempts[0]!
   attempt.stage = "running"; attempt.empty = null; attempt.exitCode = null
   record.state = "failed"; record.reason = "observation-failure"
   expect(() => assertWindowsStartup(record, loop.bootId, () => false)).toThrow("Restart Windows")
   expect(() => assertWindowsStartup(record, "windows-boot:43", () => { throw new Error("old PID must not be queried") })).not.toThrow()
+})
+
+it.each([
+  ["stopped", "empty"], ["failed", "empty"], ["exhausted", "empty"],
+  ["stopped", "closed"], ["failed", "closed"],
+  ["stopped", "no-attempts"], ["failed", "no-attempts"],
+] as const)("starts after %s history with %s proof without probing a reused loop PID", async (state, proof) => {
+  const f = fixture(state === "exhausted" ? undefined : [0])
+  const record = await superviseWindows(input(), f.effects)
+  record.state = state
+  record.reason = state === "failed" ? "observation-failure" : state === "exhausted" ? "restart-limit" : "deliberate-stop"
+  if (proof === "no-attempts") record.attempts = []
+  if (proof === "closed") {
+    const attempt = record.attempts[0]!
+    attempt.stage = "closed"; attempt.empty = null; attempt.exitCode = null
+    attempt.closure = { at: record.updatedAt, jobAbsent: true, daemonDead: true }
+  }
+  const alive = vi.fn(() => { throw new Error("Access denied to reused PID") })
+  expect(() => assertWindowsStartup(record, loop.bootId, alive)).not.toThrow()
+  expect(alive).not.toHaveBeenCalled()
 })
 
 it("reports a dead loop during backoff as failed even when the old job is empty", async () => {
