@@ -250,4 +250,4 @@ export function ApprovalCard({
 }
 
 // The design outlines Always and Deny in the gate's own border, on no fill.
-const outline = "border-warn-border bg-transparent hover:bg-warn-deep dark:border-warn-border dark:bg-transparent"
+const outline = "border-warn-border bg-transparent hover:bg-warn-deep dark:border-warn-border dark:bg-transparent dark:hover:bg-warn-deep"
