@@ -203,6 +203,20 @@ describe("WatchingScreen", () => {
     expect(screen.getByRole("button", { name: "Jump to latest, 1 new" })).toBeOnTheScreen()
   })
 
+  // The last lines can land below the reader just before the shell ends.
+  it("keeps the jump to the last lines after the shell closes", async () => {
+    const first = watching()
+    const { redraw } = await draw(first)
+    await fireEvent.press(screen.getByRole("switch", { name: "Follow output" }))
+    const landed = more(first, "last\nlines\n")
+    await redraw(landed)
+    if (landed.state !== "watching") throw new Error("only a watched terminal closes")
+    await redraw({ state: "watching", record: withNotification(landed.record, { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 0 } }, new Date("2026-10-06T14:09:40.000Z")) })
+    expect(screen.getByRole("switch", { name: "Follow output" })).toBeDisabled()
+    await fireEvent.press(screen.getByRole("button", { name: "Jump to latest, 2 new" }))
+    expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull()
+  })
+
   // 04b, with a failing exit: the end is stated and follow turns off.
   it("says Failed for a shell that exited with an error, and has nothing to follow", async () => {
     await draw(watching({ state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 1 }))

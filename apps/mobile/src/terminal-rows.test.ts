@@ -427,6 +427,18 @@ describe("withNotification", () => {
     expect(claimantLine(record.summary, true)).toBe("Claimed by Studio")
   })
 
+  // A claim that moved is something heard, so a gap after it starts there.
+  it("hears a move of the claim as recently as any output", () => {
+    const later = new Date("2026-10-06T14:30:00.000Z")
+    const record = withNotification(
+      watchFrom(watched()),
+      { method: "terminal.ownership", params: { terminalId: "terminal-1", owner: { client: "web", clientId: "web-1", device: { id: `device-${"b".repeat(32)}`, label: "Studio" } } } },
+      later,
+    )
+    expect(record.lastHeardAt).toBe(later.toISOString())
+    expect(terminalRows(record, false).at(-1)?.text).toBe(`Nothing received since ${clock(later.toISOString())}. Reconnecting replays the recent output first.`)
+  })
+
   it("leaves a record alone for another terminal's notification", () => {
     const record = watchFrom(watched())
     expect(withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-2", data: "elsewhere\n" } }, at)).toBe(record)
@@ -541,8 +553,17 @@ describe("follow", () => {
     expect(followAfterScroll(landed, true)).toEqual({ following: false, atEnd: true, unseen: 0 })
   })
 
-  // 04b: a closed terminal sends nothing more, so there is nothing to follow.
-  it("offers no jump on a closed terminal", () => {
+  // 04b: a closed terminal sends nothing more, so there is nothing to follow
+  // once the reader is at its end.
+  it("offers no jump on a closed terminal read to its end", () => {
     expect(showJump(followToggle(followStart), true)).toBe(false)
+  })
+
+  // Its last lines can land below a reader just before it closes; the way
+  // down to them stays until the reader is there.
+  it("keeps the jump on a closed terminal while lines are below the reader", () => {
+    expect(showJump(followAfterOutput(followToggle(followStart), 3), true)).toBe(true)
+    expect(showJump(followAfterScroll(followStart, false), true)).toBe(true)
+    expect(showJump(followJump(followAfterOutput(followToggle(followStart), 3)), true)).toBe(false)
   })
 })

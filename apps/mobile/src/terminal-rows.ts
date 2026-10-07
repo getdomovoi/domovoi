@@ -128,7 +128,8 @@ export function withNotification(record: TerminalRecord, notification: TerminalN
   if (notification.params.terminalId !== record.summary.terminalId) return record
   if (notification.method === "terminal.ownership") {
     if (record.summary.state === "closed") return record
-    return { ...record, summary: { ...record.summary, owner: notification.params.owner, claimHeld: true } }
+    // A moved claim is something heard, so a gap after it starts there.
+    return { ...record, summary: { ...record.summary, owner: notification.params.owner, claimHeld: true }, lastHeardAt: now.toISOString() }
   }
   if (record.summary.state === "closed") return record
   if (notification.method === "terminal.closed") {
@@ -447,7 +448,10 @@ export function followToggle(follow: Follow): Follow {
   return follow.following ? { ...follow, following: false } : followJump(follow)
 }
 
-// A closed terminal sends nothing more, so it offers no jump.
+// A closed terminal sends nothing more, so following means nothing there; the
+// jump stays only while lines are below the reader (scrolled up, or landed
+// just before it closed).
 export function showJump(follow: Follow, closed: boolean): boolean {
-  return !closed && (!follow.following || !follow.atEnd)
+  if (closed) return !follow.atEnd || follow.unseen > 0
+  return !follow.following || !follow.atEnd
 }
