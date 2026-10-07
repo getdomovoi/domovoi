@@ -367,11 +367,10 @@ function endingSignal(summary: TerminalSummary): number | undefined {
   return summary.signal !== undefined && summary.signal !== 0 ? summary.signal : undefined
 }
 
-// The lines of a text that are finished: all of them when what it draws ends
-// on a line break, all but the last otherwise.
+// The lines of a text that are finished: one per line break in what it
+// draws, whatever an erase or a sequence cut in half left after the last.
 function wholeLines(text: string): number {
-  const count = terminalLines(text).length
-  return plainText(text).endsWith("\n") ? count : Math.max(0, count - 1)
+  return plainText(text).split("\n").length - 1
 }
 
 // Failed is a shell that exited with a code other than zero. A shell ended by

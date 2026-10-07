@@ -408,6 +408,13 @@ describe("terminalRows", () => {
     const record = withNotification(watchFrom(watched({ buffer: "finished\n\u001b[0m" })), { method: "terminal.output", params: { terminalId: "terminal-1", data: "next\n" } }, at)
     expect(terminalRows(record, true).map((row) => row.kind === "mark" ? row.key : row.text)).toEqual(["finished", "live-from", "next"])
   })
+
+  // The record can end with an erased line and a sequence cut in half, which
+  // live output finishes.
+  it("places the live mark after the last finished line when the record ends mid-sequence", () => {
+    const record = withNotification(watchFrom(watched({ buffer: "first\n\u001b[2K\u001b[31" })), { method: "terminal.output", params: { terminalId: "terminal-1", data: "mnext\n" } }, at)
+    expect(terminalRows(record, true).map((row) => row.kind === "mark" ? row.key : row.text)).toEqual(["first", "live-from", "next"])
+  })
 })
 
 describe("withNotification", () => {
