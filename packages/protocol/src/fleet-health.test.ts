@@ -60,6 +60,16 @@ describe("fleetMachineHealth", () => {
       .toBe("reconnecting")
   })
 
+  it("reports an offline heartbeat as unreachable even while retrying", () => {
+    const health = fleetMachineHealth({ ...healthy, heartbeat: "offline", connection: "reconnecting" })
+    expect(fleetHealthSchema.parse(health)).toBe("unreachable")
+  })
+
+  it.each(["online", "stale"] as const)("keeps a retrying %s heartbeat reconnecting", (heartbeat) => {
+    const health = fleetMachineHealth({ ...healthy, heartbeat, connection: "reconnecting" })
+    expect(fleetHealthSchema.parse(health)).toBe("reconnecting")
+  })
+
   it("asks for an upgrade when the machine is behind the client", () => {
     expect(fleetMachineHealth({ ...healthy, protocolVersion: "0.1.0", clientProtocolVersion: "0.2.0" }))
       .toBe("upgrade-required")
