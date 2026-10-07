@@ -1559,6 +1559,56 @@ describe("ClaudeAgentSdkAdapter", () => {
     }
   })
 
+  // An empty value in the settings env still replaces the inherited one, and
+  // Claude takes an empty list id as unset: the thread keeps its own list.
+  it("uses the thread's own task list when the person's Claude settings clear the shared one", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "domovoi-claude-tasks-"))
+    scratchDirectories.push(configDir)
+    const threadId = "6ff6db97-17eb-409b-9b49-a49ffd5c7488"
+    await writeFile(join(configDir, "settings.json"), JSON.stringify({ env: { CLAUDE_CODE_TASK_LIST_ID: "" } }))
+    const task = async (list: string, subject: string) => {
+      await mkdir(join(configDir, "tasks", list), { recursive: true })
+      await writeFile(
+        join(configDir, "tasks", list, "1.json"),
+        JSON.stringify({ id: "1", subject, description: `${subject}.`, status: "pending", blocks: [], blockedBy: [] }),
+      )
+    }
+    await task("team", "Shared task")
+    await task(threadId, "Own task")
+    vi.stubEnv("CLAUDE_CONFIG_DIR", configDir)
+    vi.stubEnv("CLAUDE_CODE_TASK_LIST_ID", "team")
+    try {
+      const { calls, factory } = factoryHarness()
+      const ids: ClaudeMessageId[] = ["55555555-5555-4555-8555-555555555555"]
+      const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+      const event = vi.fn()
+      adapter.onEvent(event)
+      await adapter.resumeThread({ threadId, cwd: "/worktree", runtime: runtime("build") })
+      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go on", runtime: runtime("build") })
+      const query = calls[0]!.query
+      query.emit({
+        type: "assistant",
+        session_id: threadId,
+        message: { content: [{ type: "tool_use", id: "toolu_u", name: "TaskUpdate", input: { taskId: "1", status: "completed" } }] },
+      })
+      query.emit({
+        type: "user",
+        session_id: threadId,
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
+        tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "completed" } },
+      })
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
+        type: "plan-updated",
+        threadId,
+        turnId,
+        steps: [{ text: "Own task", status: "completed" }],
+      }))
+      await adapter.close()
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
   // In Plan mode the plan is the proposal in Claude's reply, which the daemon
   // reads when the turn ends unless a provider plan arrived during it. A task
   // checklist Claude keeps while it researches must not stand in for that

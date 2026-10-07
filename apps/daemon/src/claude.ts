@@ -1291,7 +1291,7 @@ async function claudeTaskStorage(threadId: string, env: NodeJS.ProcessEnv): Prom
     // Claude loads the person's settings env over the inherited environment.
     const settings = asRecord(JSON.parse(await readFile(join(configDirectory, "settings.json"), "utf8")))
     const configuredId = asRecord(settings?.env)?.CLAUDE_CODE_TASK_LIST_ID
-    if (typeof configuredId === "string" && configuredId.length > 0) sharedId = configuredId
+    if (typeof configuredId === "string") sharedId = configuredId
   } catch {
     // Missing or malformed user settings leave the inherited list selection intact.
   }
