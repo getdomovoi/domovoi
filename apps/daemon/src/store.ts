@@ -1139,9 +1139,15 @@ export class SqliteWorkspaceStore implements WorkspaceStore {
       }
     }
     const existingSnapshot = migratedExisting?.snapshot
+    const matchesMigratedSeed = existingSnapshot?.annotations.length === 0 &&
+      options.legacySnapshots?.some(
+        (snapshot) => legacyFingerprint(existingSnapshot) === legacyFingerprint(
+          migrateStoredWorkspace(snapshot).snapshot,
+        ),
+      )
     // Effort aliases must not erase a person's change when identifying a seed.
-    // Apply the earlier migrations to both sides, but compare before effort repair.
-    const seedCandidate = existingSnapshot && existing && options.legacySnapshots?.length
+    // Only possible seeds need another migration with effort repair disabled.
+    const seedCandidate = matchesMigratedSeed && existing
       ? migrateStoredWorkspace(JSON.parse(existing.snapshot), { repairLegacyEffort: false }).snapshot
       : undefined
     const isLegacySeed = seedCandidate?.annotations.length === 0 &&
