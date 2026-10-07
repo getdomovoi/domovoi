@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { terminalBufferText } from "./terminal-output-text"
+import { terminalBufferOutput, terminalBufferText } from "./terminal-output-text"
 
 type Line = { text: string, wrapped?: boolean }
 
@@ -46,5 +46,12 @@ describe("terminalBufferText", () => {
 
   it("counts bytes, not characters, against the limit", () => {
     expect(terminalBufferText(buffer([{ text: "ok" }, { text: "ééé" }]), 6)).toBe("ééé")
+  })
+
+  // Whoever attaches the text has to say when the limit cut its start.
+  it("says whether the limit cut anything", () => {
+    expect(terminalBufferOutput(buffer([{ text: "first" }, { text: "second" }]), 12)).toEqual({ text: "first\nsecond", truncated: false })
+    expect(terminalBufferOutput(buffer([{ text: "first" }, { text: "second" }, { text: "third" }]), 12)).toEqual({ text: "second\nthird", truncated: true })
+    expect(terminalBufferOutput(buffer([{ text: "abcdefghij" }]), 4)).toEqual({ text: "ghij", truncated: true })
   })
 })

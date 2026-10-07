@@ -24,7 +24,7 @@ import { StatusDot, type StatusMeaning } from "./status-dot"
 import { terminalIdForSession } from "./terminal-id"
 import { settleTerminalWrite } from "./terminal-input"
 import { terminalQuickKeyData, terminalQuickKeys } from "./terminal-keys"
-import { terminalBufferText } from "./terminal-output-text"
+import { terminalBufferOutput } from "./terminal-output-text"
 
 export type TerminalControls = {
   clientId: string
@@ -66,6 +66,8 @@ export const terminalHolderRefreshMs = 5_000
 // shell's start. It is held outside xterm, because a screen clear or a long
 // scrollback would erase a line written into the stream.
 const droppedRecordMarker = "[earlier output was not kept; the record starts here]"
+// Put ahead of an attachment whose start the attachment byte limit cut.
+const cutToLimitMarker = "[earlier lines were cut to fit the attachment limit]"
 
 function sameOwner(left: TerminalOwner, right: TerminalOwner): boolean {
   return left.client === right.client && left.clientId === right.clientId && left.device?.id === right.device?.id
@@ -379,20 +381,22 @@ export function TerminalPane({
   const attachOutput = () => {
     const terminal = xtermRef.current
     if (!terminal) return
-    // The marker's bytes come out of the limit, so the file still fits.
-    const marker = earlierDropped ? `${droppedRecordMarker}\n` : ""
-    const text = terminalBufferText(
+    // Both markers' bytes come out of the limit up front, so the file fits
+    // whichever of them it ends up carrying.
+    const dropped = earlierDropped ? `${droppedRecordMarker}\n` : ""
+    const cut = `${cutToLimitMarker}\n`
+    const { text, truncated } = terminalBufferOutput(
       terminal.buffer.active,
-      maximumTextAttachmentBytes - new TextEncoder().encode(marker).byteLength,
+      maximumTextAttachmentBytes - new TextEncoder().encode(`${dropped}${cut}`).byteLength,
     )
     if (!text) {
       setAttachNote({ tone: "refused", text: "Nothing has been printed yet." })
       return
     }
-    const outcome = composer.offer(sessionId, terminalOutputAttachment(`${marker}${text}`))
+    const outcome = composer.offer(sessionId, terminalOutputAttachment(`${truncated ? cut : dropped}${text}`))
     setAttachNote(
       outcome === "attached"
-        ? { tone: "done", text: "Attached to the composer as terminal-output.txt." }
+        ? { tone: "done", text: truncated ? "Attached to the composer as terminal-output.txt. The start was cut to fit the attachment limit." : "Attached to the composer as terminal-output.txt." }
         : outcome === "full"
           ? { tone: "refused", text: "The composer already holds the most attachments. Remove one to attach this output." }
           : { tone: "refused", text: "The composer for this session is not open." },
@@ -412,8 +416,10 @@ export function TerminalPane({
       : "Reading is free, typing needs the claim."
   // Q340 A: the design's footer reads "read-only, the agent owns this shell".
   // Here the shell is an interactive PTY a person opened, so the footer says
-  // who can type in it instead.
-  const footerNote = readOnly
+  // who can type in it instead. A closed shell holds no claim, so nobody can.
+  const footerNote = closed
+    ? "closed, the shell has exited"
+    : readOnly
     ? "read-only, this device watches"
     : writable
       ? "interactive, this device holds the shell"

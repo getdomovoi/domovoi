@@ -21,6 +21,15 @@ export function terminalBufferText(
   buffer: TerminalBufferLike,
   limitBytes: number = maximumTextAttachmentBytes,
 ): string {
+  return terminalBufferOutput(buffer, limitBytes).text
+}
+
+// The same text, and whether the limit cut its start, so whoever attaches it
+// can say so rather than hand over a tail that reads as the whole.
+export function terminalBufferOutput(
+  buffer: TerminalBufferLike,
+  limitBytes: number = maximumTextAttachmentBytes,
+): { text: string, truncated: boolean } {
   const lines: string[] = []
   for (let y = 0; y < buffer.length; y += 1) {
     const line = buffer.getLine(y)
@@ -39,13 +48,13 @@ export function terminalBufferText(
     const line = lines[index]!
     const cost = byteLength(line) + (kept.length > 0 ? 1 : 0)
     if (bytes + cost > limitBytes) {
-      if (kept.length === 0) return lineTail(line, limitBytes)
+      if (kept.length === 0) return { text: lineTail(line, limitBytes), truncated: true }
       break
     }
     kept.unshift(line)
     bytes += cost
   }
-  return kept.join("\n")
+  return { text: kept.join("\n"), truncated: kept.length < lines.length }
 }
 
 // The newest line alone is past the limit: keep its tail, counted a code

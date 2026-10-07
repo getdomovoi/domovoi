@@ -2,6 +2,7 @@ import { act, cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { maximumTextAttachmentBytes } from "@getdomovoi/protocol"
 import type { SessionAttachment, TerminalOwnershipNotification, TerminalSession, TerminalWatchResult } from "@getdomovoi/protocol"
 
 import { createComposerInbox, type ComposerInbox } from "./composer-inbox"
@@ -71,6 +72,7 @@ function harness() {
     }),
     refuseOwnership: (cause: unknown) => claim.reject(cause),
     deliverOutput: (data: string) => handlers?.output({ terminalId, data }),
+    deliverClosed: (exitCode: number) => handlers?.closed({ terminalId, exitCode }),
     deliverOwnership: (owner: string) => handlers?.ownership({
       terminalId,
       owner: { client: "web", clientId: owner },
@@ -232,6 +234,24 @@ describe("TerminalPane claim banner", () => {
     // which is false for this PTY. The footer says what is true here.
     expect(screen.getByText("interactive, this device holds the shell")).toBeTruthy()
     expect(screen.queryByText(/the agent owns this shell/u)).toBeNull()
+  })
+
+  // A closed terminal holds no claim, so the footer stops saying this device
+  // holds it once the shell has exited.
+  it("stops claiming the shell once it has exited", async () => {
+    const target = harness()
+    render(<TerminalPane connected controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.connect(thisClient)
+    })
+
+    await act(async () => {
+      target.deliverClosed(0)
+    })
+
+    expect(screen.queryByText("interactive, this device holds the shell")).toBeNull()
+    expect(screen.queryByText("You hold this shell")).toBeNull()
+    expect(screen.getByText("closed, the shell has exited")).toBeTruthy()
   })
 
   it("names the device that holds the shell and offers to take it", async () => {
@@ -600,6 +620,35 @@ describe("Attach this output to the composer", () => {
     await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
 
     expect(await screen.findByText(/The composer already holds the most attachments/u)).toBeTruthy()
+  })
+
+  // The attachment has a byte limit. When the pane holds more than fits, the
+  // file starts with a line saying its start was cut, and the note says so.
+  it("marks an attachment the byte limit cut", async () => {
+    const user = userEvent.setup()
+    const composer = createComposerInbox()
+    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
+    composer.open(sessionId, receive)
+    const target = harness()
+    render(<TerminalPane connected controls={target.controls} composer={composer} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.connect(thisClient)
+    })
+    const line = `${"x".repeat(78)}\r\n`
+    await act(async () => {
+      target.deliverOutput("$ first command\r\n")
+      for (let index = 0; index < 4_000; index += 1) target.deliverOutput(line)
+    })
+
+    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+
+    await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1))
+    const [attachment] = receive.mock.calls[0]!
+    const content = "content" in attachment ? attachment.content : ""
+    expect(content).toMatch(/^\[earlier lines were cut to fit the attachment limit\]\n/u)
+    expect(content).not.toContain("$ first command")
+    expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(maximumTextAttachmentBytes)
+    expect(screen.getByText(/The start was cut to fit the attachment limit\./u)).toBeTruthy()
   })
 
   // A disconnect disposes the renderer the button reads from, so the button
