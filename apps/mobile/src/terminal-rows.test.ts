@@ -90,9 +90,14 @@ describe("terminalLines", () => {
     expect(terminalLines("")).toEqual([])
   })
 
-  it("erases a character for a backspace", () => {
-    // A shell echoes an erase as back, space, back.
-    expect(terminalLines("lss\b \b\n")).toEqual(["ls"])
+  // A backspace only moves the cursor. A shell erases with back, space, back,
+  // or with back and an erase to the line's end; a bare backspace erases
+  // nothing, and output arriving before the overwrite must not lose cells.
+  it("moves the cursor back on a backspace and erases only what is written over", () => {
+    expect(terminalLines("lss\b \b\n")).toEqual(["ls "])
+    expect(terminalLines("lss\b\u001b[K\n")).toEqual(["ls"])
+    expect(terminalLines("abc\b")).toEqual(["abc"])
+    expect(terminalLines("abc\bX\n")).toEqual(["abX"])
   })
 
   // Progress reporters and shells rewrite a line with a carriage return and

@@ -228,7 +228,8 @@ function drawnStart(record: TerminalRecord): number {
 
 // What a terminal draws, read as lines. Colour and cursor-movement sequences
 // are dropped; a carriage return overwrites the line from its start as a
-// progress bar does; a backspace and an erase-in-line erase. The line still
+// progress bar does; a backspace moves the cursor back; an erase-in-line
+// erases. The line still
 // being written is kept; the empty line after a final newline is not.
 export function terminalLines(text: string): string[] {
   const lines = plainText(text).split("\n").map(drawnLine)
@@ -284,10 +285,9 @@ function drawnLine(raw: string): string {
       column += 1
     }
   }
-  // A backspace moves the cursor without erasing; what stays visible past the
-  // cursor at the end of a line is what the person typed over, so a line
-  // ended by backspaces ends at the cursor.
-  const drawn = (raw.endsWith("\b") ? cells.slice(0, column) : cells).join("")
+  // A backspace moves the cursor and erases nothing: only what is written
+  // over it, or an erase sequence, changes a cell.
+  const drawn = cells.join("")
   // Blanks an erase left at the end of a line are not text.
   return erased ? drawn.replace(/ +$/, "") : drawn
 }
