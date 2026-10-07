@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { execFileSync, spawn } from "node:child_process"
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { closeSync, openSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
@@ -64,8 +64,8 @@ it.runIf(process.platform === "win32")("contains descendants, gates resume, refu
 }, 90_000)
 
 
-it.runIf(process.platform === "win32")("recovers a supervisor after helper death closes its Global job", async () => {
-  const home = mkdtempSync(join(tmpdir(), "domovoi-helper-death-")), directory = join(home, ".domovoi")
+function supervisorFixture(prefix: string) {
+  const home = mkdtempSync(join(tmpdir(), prefix)), directory = join(home, ".domovoi")
   mkdirSync(directory)
   const path = join(directory, "service.json"), marker = join(directory, "descendant.json")
   const config = { ...createServiceConfiguration({ DOMOVOI_PROFILE_DIR: directory }, { platform: "win32", homeDirectory: home, workingDirectory: home }), registrationId: randomUUID() }
@@ -83,13 +83,37 @@ it.runIf(process.platform === "win32")("recovers a supervisor after helper death
   const deadline = OperationDeadline.start(120_000)
   let supervisor = start()
   const ended = () => supervisor.exitCode !== null || supervisor.signalCode !== null
+  const diagnostics = () => {
+    let recorded: string
+    try {
+      const record = readWindowsSupervisorRecord(home)
+      recorded = `state=${record?.state ?? "missing"}, reason=${record?.reason ?? "none"}`
+    } catch (error) { recorded = `record read failed: ${String(error)}` }
+    return `exitCode=${supervisor.exitCode}, signal=${supervisor.signalCode}, ${recorded}: ${output}`
+  }
   const poll = async (phase: string, check: () => boolean, allowExit = false) => {
     while (!check()) {
-      if (!allowExit && ended()) throw new Error(`Supervisor exited while waiting for ${phase}: ${output}`)
-      if (deadline.signal.aborted) throw new Error(`Timed out waiting for ${phase}: ${output}`)
+      if (!allowExit && ended()) throw new Error(`Supervisor exited while waiting for ${phase}: ${diagnostics()}`)
+      if (deadline.signal.aborted) throw new Error(`Timed out waiting for ${phase}: ${diagnostics()}`)
       await delay(100)
     }
   }
+  const cleanup = async () => {
+    deadline.clear()
+    const cleanup = OperationDeadline.start(30_000)
+    try {
+      await stopWindowsSupervisor(path, cleanup)
+      while (!ended()) { cleanup.throwIfExpired(); await delay(100) }
+      // A failed proof retains the test profile and its evidence for inspection.
+      rmSync(home, { recursive: true, force: true })
+    } finally { cleanup.clear() }
+  }
+  return { home, directory, marker, poll, ended, restart: () => { supervisor = start() }, cleanup }
+}
+
+it.runIf(process.platform === "win32")("recovers a supervisor after helper death closes its Global job", async () => {
+  const f = supervisorFixture("domovoi-helper-death-")
+  const { home, marker, poll, ended } = f
   try {
     await poll("first running attempt", () => readWindowsSupervisorRecord(home)?.state === "running" && existsSync(marker))
     const first = readWindowsSupervisorRecord(home)!, attempt = first.attempts[0]!
@@ -102,20 +126,39 @@ it.runIf(process.platform === "win32")("recovers a supervisor after helper death
     await poll("descendant termination", () => queryWindowsProcess(pids.descendant).identity?.start !== descendant!.start, true)
     expect(queryWindowsJob(attempt.job, attempt.child!.pid)).toMatchObject({ jobExists: false, identity: null })
     expect(readWindowsSupervisorStatus(home)).toMatchObject({ detail: expect.stringContaining("completion not observed") })
-    supervisor = start()
+    f.restart()
     await poll("replacement running attempt", () => {
       const record = readWindowsSupervisorRecord(home)
       return record?.state === "running" && record.supervisorId !== first.supervisorId
     })
     expect(readWindowsSupervisorRecord(home)!.attempts[0]!.job).not.toBe(attempt.job)
+  } finally { await f.cleanup() }
+}, 155_000)
+
+it.runIf(process.platform === "win32")("keeps supervising while an open record delays crash publication", async () => {
+  const f = supervisorFixture("domovoi-record-held-")
+  let handle: number | undefined
+  try {
+    await f.poll("first running attempt", () => readWindowsSupervisorRecord(f.home)?.state === "running" && existsSync(f.marker))
+    const first = readWindowsSupervisorRecord(f.home)!, attempt = first.attempts[0]!
+    handle = openSync(join(f.directory, "windows-supervisor.json"), "r")
+    // Only kill the daemon. Its helper must close the job and report the crash
+    // while the test's open target prevents replacement of the record.
+    process.kill(attempt.child!.pid, "SIGKILL")
+    await f.poll("daemon termination", () => queryWindowsProcess(attempt.child!.pid).identity?.start !== attempt.child!.start)
+    await delay(1_500)
+    // Prove the open handle blocked replacement; allowing rename would stop exercising this race.
+    const held = readWindowsSupervisorRecord(f.home)
+    expect(held).toMatchObject({ state: "running", crashes: 0, supervisorId: first.supervisorId })
+    expect(held!.attempts).toHaveLength(1)
+    closeSync(handle); handle = undefined
+    await f.poll("second running attempt", () => {
+      const record = readWindowsSupervisorRecord(f.home)
+      return record?.state === "running" && record.supervisorId === first.supervisorId && record.attempts.length === 2 && record.crashes === 1
+    })
+    expect(f.ended()).toBe(false)
   } finally {
-    deadline.clear()
-    const cleanup = OperationDeadline.start(30_000)
-    try {
-      await stopWindowsSupervisor(path, cleanup)
-      while (!ended()) { cleanup.throwIfExpired(); await delay(100) }
-      // A failed proof retains the test profile and its evidence for inspection.
-      rmSync(home, { recursive: true, force: true })
-    } finally { cleanup.clear() }
+    if (handle !== undefined) closeSync(handle)
+    await f.cleanup()
   }
 }, 155_000)
