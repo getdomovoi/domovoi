@@ -42,8 +42,8 @@ clean-exit and live-child/backoff-removal evidence independently.
 Actual Windows user logon is still unproved. Neither this wiring nor a manual
 task start closes that gate. S1.1 stays open.
 
-**Decided 2026-09-17; Linux built 2026-10-01, Windows deferred, neither
-accepted** (`SHIP-PLAN.md` S1.1, 6a0be626; owner ruling Q282 A to build them,
+**Decided 2026-09-17; Linux built 2026-10-01, Windows job supervision implemented
+2026-10-06, neither fully accepted** (`SHIP-PLAN.md` S1.1, 6a0be626; owner ruling Q282 A to build them,
 ruling Q300 A to defer Windows). The two policies this assessment left to the
 maintainer are settled. [Daemon service configuration](daemon-services.md)
 has the printed text and failure handling.
@@ -58,18 +58,64 @@ has the printed text and failure handling.
   tests with a mocked command runner, and the distributed-CLI test with a
   shimmed `loginctl` on the Linux CI leg. No test runs a real `loginctl`. Owed:
   a native proof that the unit survives logout and starts at boot.
-- Windows matches WSL's shape: not built. A supervisor loop under the logon
-  task was built on `feat/s1-1-service-policies` and taken out by ruling
-  Q300 A (2026-10-01). Security review of #698 showed that failing closed on
-  Windows needs per-attempt process tree evidence, a startup gate and
-  boot-based recovery, which a job object that contains the daemon's tree
-  would provide; the policy returns with that work. The logon task still runs
-  the daemon itself, with no crash restart. What did land for it: every
-  `schtasks` call names the one under `SystemRoot`, and a step after each
-  `schtasks /create` sets `ExecutionTimeLimit` `PT0S` and both battery rules
-  false, as the WSL task does, replacing the documented 72 hour default. Owed:
-  the supervision itself, a native read-back of those settings (only the
-  generated script is tested), and the actual logon acceptance above.
+- Windows matches WSL's shape: job supervision is implemented. The earlier loop was
+  reverted by Q300 A because PID death and taskkill were not process-tree proof. Each new
+  attempt now has a UUID job held by a persistent PowerShell/P/Invoke helper, a suspended
+  launch and publication gate, and an empty-job receipt queried after job termination.
+  Startup and removal refuse unconfirmed same-boot attempts; a positively read different
+  kernel boot counter (`KUSER_SHARED_DATA.BootId`) permits boot-based recovery. Unreadable identity refuses. Backoffs are
+  1, 5 and 15 seconds, followed by recorded exhaustion on crash four and status exit 1.
+  Supervised stop/removal require tree proof. Q10 B (2026-10-06) keeps legacy task removal
+  through Task Scheduler: disable, stop, confirm no instances, then delete. That does not
+  prove every legacy descendant dead; profile changes still require the free profile lease.
+  All manager executables remain resolved under SystemRoot. The native test reads back
+  `PT0S` and both false battery flags, asserts exactly one restart with a stable new PID,
+  exhaustion status, deliberate-stop non-restart, and empty jobs at removal. Unit tests
+  run on macOS/Linux with the Windows boundary mocked. Windows task-native restart,
+  exhaustion, stop, removal and settings read-back passed on `8efda0ef` (2026-10-06).
+  Q9 A (2026-10-06) accepts recorded kill-on-close confirmation, absence of the exact Global
+  job name, and death of the recorded daemon identity. This means termination started,
+  completion not observed; the profile lease guards a second owner. Global names avoid
+  mistaking a new logon session's namespace for proof about the previous one. The helper
+  creates and opens its Global name before resuming the daemon. Receipt files and the hidden
+  session-end window were removed. Both Windows native test files passed on `27f7f370`, including
+  helper-death recovery. Real sign-out/sign-in and reboot acceptance remain **[H]**, fetzy's hardware run.
+  Install and update migrate recognized legacy tasks to supervised registrations through that
+  retirement path; [daemon services](daemon-services.md#windows-removal) states its limit.
+  This change does not provide Windows boot supervision and does not close S1.1.
+
+### Real-hardware acceptance checklist, 2026-10-06
+
+Q4: fetzy runs these on real hardware. Each row stays **[H]** until its result is
+recorded. Use an already configured authenticated observer that sends `system.hello`
+without starting Domovoi, opening Desktop, starting WSL, or logging into the service
+user's Linux session. Record the tested commit and OS version, plus the Windows
+build and WSL distribution/version where applicable. Keep credentials out of the record.
+
+1. On Windows, install the native Windows task and the WSL task from the tested commit.
+   Record their distinct endpoints and confirm both answer authenticated `system.hello`.
+2. Sign out normally, then sign back into the same Windows account. Start nothing by
+   hand. Require both the native daemon and WSL daemon to answer `system.hello` through
+   their logon tasks. Record each result and any refusal separately.
+3. Choose **Restart** in Windows, then sign in normally. Again start nothing by hand
+   and require both daemons to answer. This proves startup after logon following a
+   reboot, not Windows supervision before anyone signs in.
+4. On Linux, run `domovoid service install` as the intended service user. Require no
+   linger warning and confirm `loginctl show-user <uid> --property=Linger --value`
+   reports `yes`. Confirm authenticated `system.hello` before continuing.
+5. Log that Linux user out of every session. From the observer, require the daemon
+   still to answer `system.hello` without a new login or manual service start.
+6. Reboot Linux. Before anyone logs in, require authenticated `system.hello` from the
+   observer. Record failure as failure; logging in to inspect it cannot satisfy this row.
+
+| Hardware run | Date | OS/version | Commit SHA | Result and evidence |
+| --- | --- | --- | --- | --- |
+| Windows sign-out/sign-in, native task | Pending | Pending | Pending | [H] |
+| Windows sign-out/sign-in, WSL task | Pending | Pending | Pending | [H] |
+| Windows reboot then logon, native task | Pending | Pending | Pending | [H] |
+| Windows reboot then logon, WSL task | Pending | Pending | Pending | [H] |
+| Linux logout with linger on | Pending | Pending | Pending | [H] |
+| Linux reboot before any login | Pending | Pending | Pending | [H] |
 
 The accepted scope is Unix acceptance, two status-reporting fixes, and Windows
 and WSL lifecycle decisions. Existing Unix adapters already install, supervise
@@ -298,16 +344,17 @@ pending. The fixture's task installation does not wire WSL selection into
 
 ## Measured platform gaps
 
-Source locations in this section refer to the baseline commit above.
+Source locations in this section refer to the baseline commit above, except the Windows row,
+updated for job supervision and the native CI results at `27f7f370`.
 
 | Platform | Built | Evidence read | Remaining work or decision |
 | --- | --- | --- | --- |
 | macOS | Per-user LaunchAgent in `gui/<uid>`, saved configuration, install/remove, `RunAtLoad`, and `KeepAlive` with `SuccessfulExit=false`. `service/install.ts:182`, `service/units.ts:69`. | Native lifecycle and crash/clean-exit tests at `service/launchd-agent.native.test.ts:322` and `:376`; [macOS job](https://github.com/getdomovoi/domovoi/actions/runs/34635457431/job/103382119331) ran that file's nine tests with no skips. | Fix `service/install.ts:444`: loadedness is reported as running. Acceptance still needs the intended login/logout and reboot boundary. The existing GUI agent supplies no pre-login daemon contract. |
 | Linux | Per-user systemd unit, `enable --now`, status, `disable --now` and removal, `Restart=on-failure`, five-second restart delay. `service/install.ts:169`, `service/units.ts:48`. | [Linux job](https://github.com/getdomovoi/domovoi/actions/runs/34635457431/job/103382119025) ran both tests in `service/systemd-unit.native.test.ts`: lifecycle plus crash restart, explicit-stop and clean-exit negatives. | The installer does not enable lingering yet. Decided 2026-09-17: it will, on install, and remove only a linger it enabled itself (see above). Built 2026-10-01 with mocked and shimmed `loginctl` evidence only; the native logout and boot proof is owed. Native proofs use a throwaway process and unit; they do not reboot the host or prove production-daemon state recovery. |
-| Windows | Limited-user `ONLOGON` Task Scheduler task, immediate demand start, saved configuration, bounded disable/stop/observe/delete removal. `service/install.ts:193`, `service/windows-task.ts:66`. | [Windows job](https://github.com/getdomovoi/domovoi/actions/runs/34635457431/job/103382119358) ran `service/windows-task.native.test.ts:23`: one native stop-before-delete proof. Portable tests and the intercepted-manager CLI test cover creation/configuration. | The implementation is a user task, not an SCM Windows service. Crash restart is not configured yet. Decided 2026-09-17: the task gets the WSL guest's supervisor loop (see above). Deferred 2026-10-01 by ruling Q300 A until a job object can contain the daemon's tree; crash restart is still not configured. Full native creation/logon acceptance is missing. Fix the English `Status: Running` match at `service/install.ts:466`; formatting localized values as CSV would not establish a stable state contract. |
+| Windows | Limited-user `ONLOGON` task runs the Domovoi supervisor with each daemon tree in a job object. Suspended launch and startup gate, 1/5/15 second backoffs, exhaustion on crash four and status exit 1. Removal requires recorded tree proof before task deletion. See `service/windows-job-supervisor.ts` and `service/windows-task.ts`. | The [baseline Windows job](https://github.com/getdomovoi/domovoi/actions/runs/34635457431/job/103382119358) proved stop before deletion. Both Windows native files passed on `27f7f370`, covering one restart with a new PID, exhaustion, clean stop, removal, XML settings, job containment and Global-name recovery after helper death. Portable tests mock the Windows boundary. | Actual sign-out/sign-in and reboot acceptance remain **[H]**, fetzy's hardware checklist above. This is a user-logon task, with no SCM Windows service or pre-login boot supervision. Q9 closure proves termination started, not observed completion; the profile lease guards a second owner. Legacy scheduler retirement cannot prove every descendant dead. |
 | WSL without systemd | The daemon runs in a real guest and exposes authenticated transport. `index.ts:169` passes `process.platform`, so service installation takes the ordinary Linux `systemctl --user` path. There is no WSL-specific supervisor selection. | [Native WSL run](https://github.com/getdomovoi/domovoi/actions/runs/34633804887/job/103376745829) at ancestor `9a3af4976f0e3c31a8c94aaa2f824ebe4a13a90a`: WSL 2.7.13.0, 15 passed, zero skipped. | Select the launch trigger, crash supervisor and instance-lifetime contract. The proof has `systemd=false`, an explicit foreground launch and an explicit restart. It does not install or test automatic supervision. |
 
-The three ordinary CI jobs above ran against the exact measured main commit.
+The three linked baseline CI jobs above ran against the exact measured main commit.
 Their logs distinguish native tests from platform skips. The ordinary Windows
 suite skipped 11 of 15 WSL tests; the separate native job is the evidence for
 those guest proofs, not the Windows check row.

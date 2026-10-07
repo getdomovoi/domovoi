@@ -1,5 +1,4 @@
 import type { ThreadItem } from "@getdomovoi/protocol"
-import { CheckIcon, CircleSlashIcon } from "lucide-react"
 
 import { cn } from "./lib/utils"
 
@@ -21,7 +20,9 @@ export function decisionSummary(receipt: Receipt): { verdict: string, rule: stri
     case "always-project":
       return {
         verdict: "Allowed, and saved as a rule for this project",
-        rule: "Later requests matching it run without asking. Retire the rule in Rules.",
+        // J34, ruled 2026-09-23: only a person's allow takes a checkpoint, so
+        // a run the rule lets through later takes none.
+        rule: "Later requests matching it run without asking. Later runs under the rule do not take a checkpoint. Retire the rule in Rules.",
       }
     case "deny":
       return { verdict: "Denied", rule: "Nothing ran, and no rule was saved." }
@@ -119,29 +120,35 @@ export function ApprovalReceipt({
       ? `${decider}, declared client ${receipt.clientId}`
       : decider
 
+  // The design tones an allow ok and a denial danger, each with its dot.
+  const tone = denied ? toneClasses.danger : toneClasses.ok
+
   return (
     <section
       aria-label="Decision receipt"
-      className={cn(
-        "mx-auto flex max-w-3xl flex-col gap-1.5 rounded-xl border px-4 py-3",
-        denied ? "border-border bg-card" : "border-info-border bg-info-background",
-        className,
-      )}
+      className={cn("mx-auto flex w-full max-w-3xl flex-col gap-1.5 rounded-xl border px-3.5 py-[11px]", tone.frame, className)}
     >
-      <h3 className={cn("flex items-center gap-2 text-[12.5px] font-semibold", denied ? "text-strong" : "text-info-foreground")}>
-        {denied ? <CircleSlashIcon aria-hidden className="size-3.5" /> : <CheckIcon aria-hidden className="size-3.5" />}
+      <h3 className={cn("m-0 flex items-center gap-2.5 text-[12.5px] font-medium", tone.text)}>
+        <span aria-hidden data-receipt-dot={denied ? "danger" : "ok"} className={cn("size-[7px] shrink-0 rounded-full", tone.dot)} />
         {verdict}
-        {meta ? <span className="ml-auto font-mono text-[10.5px] font-normal text-info-dim">{meta}</span> : null}
+        {meta ? <span className={cn("ml-auto font-machine text-[10.5px] font-normal", tone.dim)}>{meta}</span> : null}
       </h3>
-      <p className={cn("m-0 font-mono text-[11px]", denied ? "text-muted-foreground" : "text-info-foreground")}>
-        {receipt.operation}
+      <p className={cn("m-0 font-machine text-[11px]", tone.text)}>{receipt.operation}</p>
+      {/* One body, as drawn: what happened to the files, then whether the
+          decision outlives the moment. */}
+      <p className={cn("m-0 text-[13px] leading-[1.6] text-pretty", tone.text)}>
+        {denied ? null : <><span>{recoveryNote(receipt, checkpointTaken)}</span>{" "}</>}
+        <span>{rule}</span>
       </p>
-      <p className={cn("m-0 text-[11.5px]", denied ? "text-faint" : "text-info-dim")}>{rule}</p>
-      {denied ? null : <p className="m-0 text-[11.5px] text-info-dim">{recoveryNote(receipt, checkpointTaken)}</p>}
       {receipt.explanation ? (
-        <p className="m-0 text-[11.5px] text-muted-foreground">{receipt.explanation}</p>
+        <p className={cn("m-0 text-[12px]", tone.text)}>{receipt.explanation}</p>
       ) : null}
-      <p className="m-0 font-mono text-[10.5px] text-faint">decided from {decidedFrom}</p>
+      <p className={cn("m-0 font-machine text-[10.5px]", tone.dim)}>decided from {decidedFrom}</p>
     </section>
   )
 }
+
+const toneClasses = {
+  ok: { frame: "border-ok-border bg-ok-background", text: "text-ok-foreground", dim: "text-ok-dim", dot: "bg-success" },
+  danger: { frame: "border-danger-border bg-danger-background", text: "text-danger-foreground", dim: "text-danger-dim", dot: "bg-destructive" },
+} as const

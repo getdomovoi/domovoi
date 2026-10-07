@@ -303,6 +303,50 @@ describe("session creation cleanup", () => {
 })
 
 describe("session creation recovery boundaries", () => {
+  it.each([
+    ["opencode", "medium", "verified"], ["kilo", "medium", "missing-receipt"],
+    ["opencode", "none", "cleanup-started"], ["kilo", "none", "wrong-head"],
+  ])("normalizes recovered %s %s effort with %s while preserving the fork request and journal", async (provider, reasoning, outcome) => {
+    let storedIntent = ""
+    const fixture = await liveCreationFixture("fork", async (setup) => {
+      await prepareInterruptedCreation(setup, outcome === "wrong-head")
+      const intent = setup.store.sessionCreations.pending("project-cleanup")[0]!
+      intent.session.runtime = { ...intent.session.runtime, provider, reasoning }
+      intent.session.forkedFrom = {
+        sourceSessionId: "session-source", checkpointId: "checkpoint-source",
+        checkpointCommit: setup.seed.sessions[0]!.baseCommit!,
+        requestId: "12345678-1234-4123-8123-123456789abc", client: "cli",
+        requestedRuntime: { ...intent.session.runtime },
+      }
+      if (outcome === "missing-receipt") delete intent.workspace
+      if (outcome === "cleanup-started") intent.cleanupStarted = true
+      storedIntent = JSON.stringify(intent)
+      const database = new DatabaseSync(join(setup.root, "state.sqlite"))
+      try {
+        database.prepare("UPDATE session_creation_intents SET record = ? WHERE session_id = ?")
+          .run(storedIntent, "session-interrupted")
+        // Keep the journal row after recovery so its original bytes can be checked.
+        database.exec("CREATE TRIGGER refuse_effort_intent_delete BEFORE DELETE ON session_creation_intents BEGIN SELECT RAISE(FAIL, 'injected intent deletion failure'); END")
+      } finally { database.close() }
+      injectOwnerProbe("ESRCH")
+    })
+    try {
+      const recovered = (await fixture.rpc("workspace.get", {})).result!.sessions
+        .find(({ id }) => id === "session-interrupted")!
+      expect(recovered.runtime).toEqual({ ...creationTestRuntime, provider, reasoning: "unset" })
+      expect(recovered.forkedFrom?.requestedRuntime).toEqual({ ...creationTestRuntime, provider, reasoning })
+      expect(recovered.state).toBe("failed")
+      if (outcome === "verified") expect(recovered.workspacePath).toBeDefined()
+      else expect(recovered.workspacePath).toBeUndefined()
+      expect(fixture.agent.startThread).not.toHaveBeenCalled()
+      const database = new DatabaseSync(join(fixture.root, "state.sqlite"))
+      try {
+        expect(database.prepare("SELECT record FROM session_creation_intents WHERE session_id = ?")
+          .get("session-interrupted")?.record).toBe(storedIntent)
+      } finally { database.close() }
+    } finally { await fixture.close() }
+  })
+
   it("restarts a verified worktree only after an explicit provider restart", async () => {
     const fixture = await liveCreationFixture("create", async (setup) => {
       await prepareInterruptedCreation(setup)

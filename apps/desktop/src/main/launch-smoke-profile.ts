@@ -3,6 +3,18 @@ import { join, resolve } from "node:path"
 
 type SmokePath = "userData" | "sessionData" | "logs"
 
+// T24: test-only. The login-service calls take the service-operation lease
+// under the account's passwd home (the daemon's nodeServiceEffects), which a
+// smoke's HOME cannot move, so a status read from Settings wrote the real
+// ~/.domovoi. The unpackaged smokes pass this switch to turn those calls off.
+// It is read from the command line only, never the environment, and a
+// packaged app ignores it, so no shipped build can lose its lease this way.
+export const loginServiceOffSwitch = "--domovoi-test-no-login-service"
+
+export function loginServiceTurnedOff({ isPackaged, argv }: { isPackaged: boolean; argv: readonly string[] }): boolean {
+  return !isPackaged && argv.includes(loginServiceOffSwitch)
+}
+
 export function configureLaunchSmokeProfile(
   app: { setPath(name: SmokePath, path: string): void },
   profile: string | undefined,

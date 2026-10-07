@@ -24,11 +24,11 @@ function snapshots() {
     url: "ws://127.0.0.1:47831/rpc", serviceRegistrationId: registrationId,
   }
   const before: ServiceRemovalSnapshot = { owner, registrationId, configurationDigest: "sha256:configuration" }
-  return { owner, before, after: structuredClone(before) }
+  return { owner, before, after: structuredClone(before), registrationId }
 }
 function manager(platform: "linux" | "darwin" | "win32") {
   vi.stubEnv("SystemRoot", "C:\\Windows")
-  const { before, after, owner } = snapshots()
+  const { before, after, owner, registrationId } = snapshots()
   const release = vi.fn()
   const effects: ServiceEffects = {
     claimServiceOperation: vi.fn(() => ({ release: vi.fn() })),
@@ -36,11 +36,12 @@ function manager(platform: "linux" | "darwin" | "win32") {
     removalSnapshot: vi.fn().mockImplementationOnce(() => before).mockImplementation(() => after),
     writeRemovalReceipt: vi.fn(), write: vi.fn(async () => {}),
     run: vi.fn(async () => {}), exists: vi.fn(async () => true), remove: vi.fn(async () => {}),
-    // Ruled 2026-09-25: Windows removal first checks that Domovoi registered
-    // the task, from service.json and the task's action.
+    // Supervised Windows tasks require job proof as well as their action.
+    // Q10 B separately permits scheduler retirement of legacy actions.
     ...(platform === "win32"
-      ? { readConfiguration: vi.fn((home: string) => ({
+      ? { stopSupervisor: vi.fn(async () => {}), readConfiguration: vi.fn((home: string) => ({
         ...createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home }),
+        registrationId,
         serviceRuntime: { executable: "C:\\Domovoi\\node.exe", entry: "C:\\Domovoi\\index.js" },
       })) }
       : {}),
@@ -50,7 +51,7 @@ function manager(platform: "linux" | "darwin" | "win32") {
       const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
       if (script.includes("domovoi-task-action:")) {
         const configurationPath = serviceConfigurationPath("C:\\Users\\operator", "win32")
-        const action = { path: "C:\\Domovoi\\node.exe", arguments: `"C:\\Domovoi\\index.js" --service-config "${configurationPath}"`, enabled: true, state: 4 }
+        const action = { path: "C:\\Domovoi\\node.exe", arguments: `"C:\\Domovoi\\index.js" --service-supervise "${configurationPath}"`, enabled: true, state: 4 }
         return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}` }
       }
       return { code: 0, stdout: script.includes("$folder.DeleteTask(") ? "domovoi-task:deleted" : "domovoi-task:1" }
@@ -65,6 +66,7 @@ it.each(["linux", "darwin", "win32"] as const)("records the exact stopped instan
   vi.mocked(effects.writeRemovalReceipt).mockImplementation((_home, _lease, receipt, deadline) => {
     expect(release).not.toHaveBeenCalled()
     expect(effects.remove).toHaveBeenCalled()
+    if (platform === "win32") expect(effects.stopSupervisor).toHaveBeenCalledOnce()
     expect(deadline.remainingMs()).toBeGreaterThan(0)
     expect(receipt).toMatchObject({ instanceId: owner.instanceId, authorization: { registrationId: owner.serviceRegistrationId } })
   })
@@ -81,6 +83,36 @@ it.each(["linux", "darwin", "win32"] as const)("never converts a missing %s job 
   expect(effects.writeRemovalReceipt).not.toHaveBeenCalled()
   expect(effects.remove).toHaveBeenCalled()
   expect(owner.state).toBe("ready")
+})
+
+it("retains Windows configuration without a recovery receipt when a missing task has no tree proof", async () => {
+  const { target, effects } = manager("win32")
+  vi.mocked(effects.capture).mockResolvedValue({ code: 0, stdout: "domovoi-task:missing" })
+  vi.mocked(effects.stopSupervisor!).mockRejectedValue(new Error("Windows tree is unconfirmed. Restart Windows"))
+  await expect(removeService(target, effects)).rejects.toThrow("Restart Windows")
+  expect(effects.remove).not.toHaveBeenCalled()
+  expect(effects.writeRemovalReceipt).not.toHaveBeenCalled()
+  expect(effects.claimProfile).not.toHaveBeenCalled()
+})
+
+it("receipts the exact legacy instance after scheduler retirement under the lease", async () => {
+  const { target, effects, owner, release } = manager("win32"), capture = effects.capture
+  effects.capture = vi.fn(async (...args: Parameters<ServiceEffects["capture"]>) => {
+    const result = await capture(...args)
+    return { ...result, stdout: result.stdout.replace("--service-supervise", "--service-config") }
+  })
+  vi.mocked(effects.writeRemovalReceipt).mockImplementation((_home, _lease, receipt) => {
+    expect(release).not.toHaveBeenCalled()
+    const scripts = vi.mocked(effects.capture).mock.calls.map(([, args]) => Buffer.from(args.at(-1)!, "base64").toString("utf16le"))
+    expect(scripts.some((s) => s.includes("$task.GetInstances(0).Count"))).toBe(true)
+    expect(scripts.at(-1)).toContain("$folder.DeleteTask(")
+    expect(effects.remove).toHaveBeenCalled()
+    expect(receipt).toMatchObject({ instanceId: owner.instanceId, authorization: { registrationId: owner.serviceRegistrationId } })
+  })
+  expect(await removeService(target, effects)).toHaveProperty("profileRecovery", "recorded")
+  expect(effects.stopSupervisor).not.toHaveBeenCalled()
+  expect(effects.writeRemovalReceipt).toHaveBeenCalledOnce()
+  expect(release).toHaveBeenCalledOnce()
 })
 
 it.each(["instance", "machine", "registration", "configuration"])("refuses %s drift before deleting saved launch inputs", async (field) => {
