@@ -587,7 +587,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         instructions,
         repository: verdict.state === "trusted" ? { digest: verdict.configDigest, ...claudeRepositoryLoad(verdict.documents) } : undefined,
         taskStorage,
-        tasks: resume || taskStorage.shared ? await readClaudeTasks(taskStorage.directory) : undefined,
+        tasks: resume || taskStorage.shared ? (await readClaudeTasks(taskStorage.directory))?.tasks : undefined,
       }
     })())
     const settings = repository && Object.keys(repository.settings).length > 0 ? repository.settings : undefined
@@ -996,8 +996,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
           // Claude writes before returning. Include tasks other sessions changed,
           // then apply this result's confirmed edit. TaskList uses the disk snapshot.
           const refreshed = await readClaudeTasks(session.sharedTaskDirectory)
-          if (refreshed) {
-            session.tasks = refreshed
+          if (refreshed?.complete) {
+            session.tasks = refreshed.tasks
             if (tracked.name !== "TaskList") updateClaudeTasks(session.tasks, tracked, rawToolResult)
             changed = tracked.name === "TaskList" || previous !== JSON.stringify([...session.tasks])
           } else {
@@ -1302,34 +1302,39 @@ async function claudeTaskStorage(threadId: string, env: NodeJS.ProcessEnv): Prom
   return { directory: join(configDirectory, "tasks", listId), shared: Boolean(sharedId) }
 }
 
-async function readClaudeTasks(directory: string): Promise<Map<string, ClaudeTask> | undefined> {
+async function readClaudeTasks(directory: string): Promise<{ tasks: Map<string, ClaudeTask>; complete: boolean } | undefined> {
   const tasks = new Map<string, ClaudeTask>()
+  let complete: boolean
   try {
     const files = (await readdir(directory))
       .filter((name) => name.endsWith(".json") && !name.startsWith("."))
       .sort()
-      .slice(0, 1000)
-    for (const file of files) {
+    complete = files.length <= 1000
+    for (const file of files.slice(0, 1000)) {
       try {
         const task = asRecord(JSON.parse(await readFile(join(directory, file), "utf8")))
         if (task && typeof task.id === "string" && typeof task.subject === "string" && isClaudeTaskStatus(task.status)) {
           tasks.set(task.id, { subject: task.subject, status: task.status })
+        } else {
+          complete = false
         }
       } catch {
-        // A missing or incomplete task file must not prevent the session opening.
+        // Hydration keeps readable tasks. A shared refresh needs the whole list.
+        complete = false
       }
     }
   } catch {
     // An unavailable directory is not an empty list. Keep the session's tasks.
     return undefined
   }
-  return new Map([...tasks].sort(([left], [right]) => {
+  const ordered = new Map([...tasks].sort(([left], [right]) => {
     if (/^-?\d+$/.test(left) && /^-?\d+$/.test(right)) {
       const difference = BigInt(left) - BigInt(right)
       if (difference !== 0n) return difference < 0n ? -1 : 1
     }
     return left.localeCompare(right)
   }))
+  return { tasks: ordered, complete }
 }
 
 function claudeTaskSucceeded(tool: ClaudeTaskTool, rawResult: unknown): boolean {

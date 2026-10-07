@@ -1512,6 +1512,58 @@ describe("ClaudeAgentSdkAdapter", () => {
     }
   })
 
+  // Another session can be rewriting a task's file while this one reads the
+  // shared list. A read that cannot parse every task is not the whole list.
+  it("keeps the shared task list in memory when a task file is caught half written", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "domovoi-claude-tasks-"))
+    scratchDirectories.push(configDir)
+    const list = join(configDir, "tasks", "team-list")
+    await mkdir(list, { recursive: true })
+    for (const [id, subject] of [["1", "Inspect"], ["2", "Write the docs"]] as const) {
+      await writeFile(join(list, `${id}.json`), JSON.stringify({ id, subject, status: "pending" }))
+    }
+    vi.stubEnv("CLAUDE_CONFIG_DIR", configDir)
+    vi.stubEnv("CLAUDE_CODE_TASK_LIST_ID", "team-list")
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "55555555-5555-4555-8555-555555555555",
+      "66666666-6666-4666-8666-666666666666",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    try {
+      const event = vi.fn()
+      adapter.onEvent(event)
+      const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go on", runtime: runtime("build") })
+      await writeFile(join(list, "1.json"), JSON.stringify({ id: "1", subject: "Inspect", status: "in_progress" }))
+      await writeFile(join(list, "2.json"), "{\"id\": \"2\", \"subj")
+      const query = calls[0]!.query
+      query.emit({
+        type: "assistant",
+        session_id: threadId,
+        message: { content: [{ type: "tool_use", id: "toolu_u", name: "TaskUpdate", input: { taskId: "1", status: "in_progress" } }] },
+      })
+      query.emit({
+        type: "user",
+        session_id: threadId,
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
+        tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "in_progress" } },
+      })
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
+        type: "plan-updated",
+        threadId,
+        turnId,
+        steps: [
+          { text: "Inspect", status: "in-progress" },
+          { text: "Write the docs", status: "pending" },
+        ],
+      }))
+    } finally {
+      await adapter.close()
+      vi.unstubAllEnvs()
+    }
+  })
+
   // Claude applies the env block of the person's settings.json over the
   // environment it inherits, and Domovoi loads user settings, so a list named
   // there is the one Claude uses.
