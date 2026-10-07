@@ -1,21 +1,30 @@
 import assert from "node:assert/strict"
-import { mkdtempSync } from "node:fs"
+import { mkdirSync, mkdtempSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
-import { isAbsolute, join, relative, sep } from "node:path"
+import { isAbsolute, join, relative, sep, win32 } from "node:path"
 
 import { afterAll, afterEach, beforeEach } from "vitest"
+
+export function daemonTestEnvironment(platform: NodeJS.Platform, home: string): NodeJS.ProcessEnv {
+  return {
+    HOME: home, USERPROFILE: home,
+    ...(platform === "win32" ? { TEMP: win32.join(home, "tmp"), TMP: win32.join(home, "tmp") } : {}),
+  }
+}
 
 const inheritedHome = homedir()
 const inheritedProfile = process.env.DOMOVOI_PROFILE_DIR
 const protectedProfiles = [join(inheritedHome, ".domovoi"), ...(inheritedProfile ? [inheritedProfile] : [])]
 const home = mkdtempSync(join(tmpdir(), "domovoi-vitest-home-"))
+const environment = daemonTestEnvironment(process.platform, home)
+// Windows runtime staging requires temp paths to remain inside USERPROFILE.
+if (environment.TEMP !== undefined) mkdirSync(environment.TEMP)
 
 // setupFiles run before each test file is imported. Assign directly so a test's
 // vi.unstubAllEnvs() restores this scratch home, never the runner's live home.
 // DomovoiDaemon's direct constructor reads homedir(), not DOMOVOI_PROFILE_DIR.
-process.env.HOME = home
-process.env.USERPROFILE = home
+Object.assign(process.env, environment)
 // An inherited explicit profile would escape HOME isolation in production
 // entry points and override the homes supplied by child-process fixtures.
 delete process.env.DOMOVOI_PROFILE_DIR
