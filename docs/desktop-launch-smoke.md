@@ -112,9 +112,10 @@ Each command has its own bound: 180 seconds for install, 120 for removal, 30 for
 manager reads. The attach is retried for up to 90 seconds after install. After removal, the
 manager and the attach are read for up to 30 seconds until the manager holds neither the
 definition nor a running job and the attach is refused. These windows are checked between
-attempts, not imposed on them, so each can run over by one attempt: up to 20 seconds for an
-attach, plus a 30-second manager read after removal. The step's own CI timeout bounds the whole
-run. If a run fails after install, it
+attempts, not imposed on them, so each can run over by one attempt. An attach attempt is
+bounded at 20 seconds and a manager read at 30, each with up to 2 more seconds to stop a
+process that ran over, and attempts are one second apart. The step's own CI timeout bounds the
+whole run. If a run fails after install, it
 removes the service. Once anything was installed, the work directory with the runtime copy
 and profile is deleted only when the manager confirms the service gone; otherwise it is kept
 and named.
