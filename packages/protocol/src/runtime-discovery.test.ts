@@ -46,6 +46,27 @@ describe("runtime discovery contract", () => {
     ]) expect(rpcMethods["runtime.discover"].result.safeParse({ ...ready, ...patch }).success).toBe(false)
   })
 
+  it.each([{ levels: [] }, { levels: ["low", "high"] }])("requires unset when a model reports no default with $levels", ({ levels }) => {
+    const { defaultReasoningEffort: _default, ...noDefault } = model
+    const discovered = {
+      ...ready,
+      models: [{ ...noDefault, supportedReasoningEfforts: levels }],
+      defaultRuntime: { ...ready.defaultRuntime, reasoning: "unset" },
+    }
+    expect(rpcMethods["runtime.discover"].result.parse(discovered)).toEqual(discovered)
+    for (const reasoning of ["low", "high", "invented"]) {
+      expect(rpcMethods["runtime.discover"].result.safeParse({
+        ...discovered, defaultRuntime: { ...discovered.defaultRuntime, reasoning },
+      }).success).toBe(false)
+    }
+  })
+
+  it("requires the reported default instead of unset", () => {
+    expect(rpcMethods["runtime.discover"].result.safeParse({
+      ...ready, defaultRuntime: { ...ready.defaultRuntime, reasoning: "unset" },
+    }).success).toBe(false)
+  })
+
   it("carries a refusal with an action and no selectable runtime", () => {
     const refusal = {
       machineId: ready.machineId, provider: "codex", status: "unavailable", reason: "auth-required",

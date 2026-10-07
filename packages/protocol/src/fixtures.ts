@@ -83,7 +83,7 @@ export const demoWorkspace: WorkspaceSnapshot = {
       runtime: {
         provider: "opencode",
         model: "glm-4.7",
-        reasoning: "medium",
+        reasoning: "unset",
         permissionMode: "ask",
         auto: false,
       },

@@ -92,6 +92,7 @@ it.each(["empty", "no-preparation", "no-proof", "deadline", "receipt-without-clo
     launch: (attempt) => launchWindowsJob({ job: attempt.job, executable: "C:\\node.exe", args: [], log: "C:\\out.log" }, f.transport),
     wait: async () => { throw new Error("A timed-out launch must not restart") },
   })
+  await vi.advanceTimersByTimeAsync(0)
   const request = JSON.parse(f.input().trim()) as { job: string }
   try {
     await vi.advanceTimersByTimeAsync(25_000)
