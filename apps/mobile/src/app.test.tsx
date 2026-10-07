@@ -768,6 +768,8 @@ describe("App", () => {
       await act(async () => { socket.close() })
       await act(async () => { jest.advanceTimersByTime(1_100) })
       const next = FakeSocket.made.at(-1)!
+      // A new dial, not the old socket opened again.
+      expect(next).not.toBe(socket)
       await act(async () => {
         next.readyState = 1
         next.onopen?.()
@@ -806,6 +808,8 @@ describe("App", () => {
       await act(async () => { socket.close() })
       await act(async () => { jest.advanceTimersByTime(1_100) })
       const next = FakeSocket.made.at(-1)!
+      // A new dial, not the old socket opened again.
+      expect(next).not.toBe(socket)
       await act(async () => {
         next.readyState = 1
         next.onopen?.()
@@ -880,6 +884,8 @@ describe("App", () => {
       await act(async () => { socket.close() })
       await act(async () => { jest.advanceTimersByTime(1_100) })
       const next = FakeSocket.made.at(-1)!
+      // A new dial, not the old socket opened again.
+      expect(next).not.toBe(socket)
       await act(async () => {
         next.readyState = 1
         next.onopen?.()
