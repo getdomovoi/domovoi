@@ -573,7 +573,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     // A start that close overtook while it prepared starts no Claude.
     this.#refuseWhenClosing()
     const preflight = this.#preflight
-    const env = { ...process.env, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }
+    const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }
     const { instructions, repository, tasks } = await this.#prepared((async () => {
       if (preflight) await preflight()
       const instructions = await projectInstructions(cwd, "claude")
@@ -584,7 +584,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       return {
         instructions,
         repository: verdict.state === "trusted" ? { digest: verdict.configDigest, ...claudeRepositoryLoad(verdict.documents) } : undefined,
-        tasks: resume ? await readClaudeTasks(threadId, env) : new Map<string, ClaudeTask>(),
+        tasks: resume || env.CLAUDE_CODE_TASK_LIST_ID ? await readClaudeTasks(threadId, env) : new Map<string, ClaudeTask>(),
       }
     })())
     const settings = repository && Object.keys(repository.settings).length > 0 ? repository.settings : undefined
@@ -1267,7 +1267,7 @@ async function readClaudeTasks(threadId: string, env: NodeJS.ProcessEnv): Promis
   const tasks = new Map<string, ClaudeTask>()
   // Claude Code 2.1.292 keeps a session's tasks in its own storage, at
   // <config dir>/tasks/<list id>/<task id>.json, and takes an empty
-  // CLAUDE_CODE_TASK_LIST_ID as unset. Read only, and only on resume.
+  // CLAUDE_CODE_TASK_LIST_ID as unset. Read only, on resume or for a shared list.
   const listId = (env.CLAUDE_CODE_TASK_LIST_ID || threadId).replace(/[^a-zA-Z0-9_-]/g, "-")
   const directory = join(env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude"), "tasks", listId)
   try {
@@ -1310,8 +1310,12 @@ function updateClaudeTasks(tasks: Map<string, ClaudeTask>, tool: ClaudeTaskTool,
     return true
   }
   if (tool.name === "TaskUpdate") {
-    const { taskId, subject, status } = tool.input
-    if (result.success !== true || typeof taskId !== "string") return false
+    if (result.success !== true) return false
+    const { subject, status } = tool.input
+    // Claude repairs input aliases before running the tool. Its result names the task it updated.
+    const taskId = [result.taskId, tool.input.taskId, tool.input.id, tool.input.task_id]
+      .find((id) => typeof id === "string")
+    if (typeof taskId !== "string") return false
     const previous = tasks.get(taskId)
     if (!previous) return false
     if (status === "deleted") return tasks.delete(taskId)
