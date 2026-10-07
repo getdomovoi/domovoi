@@ -734,7 +734,9 @@ async function installWithDeadline(
       const status = await withinServiceDeadline(deadline, async () => effects.supervisorStatus?.(assertHome(target.home)))
       if (status?.treeUnconfirmed) throw new Error(windowsTreeUnknown)
       if (status?.supervising || status?.running) throw new Error("The Windows supervisor is still active; stop and remove it before installing again")
-      if (!status && (owner === "supervised" || effects.readConfiguration?.(assertHome(target.home), "win32") !== undefined)) {
+      // Stopped/exhausted history does not disable its logon registration.
+      // Fence and drain the old task before a replacement configuration is visible.
+      if (owner === "supervised" || (!status && effects.readConfiguration?.(assertHome(target.home), "win32") !== undefined)) {
         if (!effects.stopSupervisor) throw new Error("Windows supervisor evidence is missing; replacement refused")
         const removal = windowsTaskRemovalPlan(displayName)
         await disableWindowsTask(removal, effects, deadline)

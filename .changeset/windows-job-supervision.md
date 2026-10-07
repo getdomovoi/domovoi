@@ -11,3 +11,5 @@ Recover after helper death using recorded kill-on-close confirmation, absence of
 Keep Windows retirement active and hold the startup lease until Task Scheduler confirms the old task is disabled with no instances before allowing an update or reinstall to restart it.
 
 Preserve Task Scheduler removal for recognized legacy Windows tasks and migrate them to job supervision on install or update. Scheduler retirement does not prove every legacy descendant dead; profile changes still require the free profile lease.
+
+Retire and stop an existing supervised Windows registration before reinstall writes new configuration, including when its last supervisor stopped or exhausted its retries.

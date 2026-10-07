@@ -741,11 +741,15 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
   const home = platform === "win32" ? windowsHome : platform === "darwin" ? "/Users/dl" : "/home/dl"
   const files = new Map(Object.entries(start.files ?? {}))
   let task = start.task
+  let taskEnabled = true
   let job = start.job
   const ran: string[] = []
   let failuresLeft = start.failures ?? 1
   const effects = dependencies({
     platform, home, ...(platform === "win32" ? { user: "dl", supervisorStatus: vi.fn(async () => ({ installed: null, running: false, detail: "stopped; jobs confirmed empty" })) } : {}),
+    stopSupervisor: vi.fn(async (_path, _deadline, options) => {
+      if (!await options?.stopTask?.()) throw new Error("Task remains observable")
+    }),
     exists: vi.fn(async (path: string) => files.has(path)),
     read: vi.fn(async (path: string) => {
       const text = files.get(path)
@@ -770,6 +774,7 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
         if (start.foreignLoadsOnFailure) job = { path: start.foreignLoadsOnFailure, running: true }
         throw new Error(`${line} failed`)
       }
+      if (args[0] === "/create") taskEnabled = true
       if (args[0] === "/create") task = { path: `"${args[args.indexOf("/tr") + 1]!.split('" "')[0]!.slice(1)}"`, arguments: args[args.indexOf("/tr") + 1]!.split('" ').slice(1).join('" ') }
       if (args[0] === "bootout") {
         job = undefined
@@ -788,8 +793,9 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
       }
       const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
       if (!task) return { code: 0, stdout: "domovoi-task:missing\r\n" }
-      if (script.includes("domovoi-task-action:")) return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ ...task, enabled: true, state: 3 })}\r\n` }
-      return { code: 0, stdout: "domovoi-task:3\r\n" }
+      if (script.includes("domovoi-task-action:")) return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ ...task, enabled: taskEnabled, state: taskEnabled ? 3 : 1 })}\r\n` }
+      if (script.includes("$task.Enabled = $false")) taskEnabled = false
+      return { code: 0, stdout: `domovoi-task:${taskEnabled ? 3 : 1}` }
     }),
   })
   return { effects, files, ran, task: () => task, job: () => job }

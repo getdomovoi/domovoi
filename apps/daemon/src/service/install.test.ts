@@ -781,9 +781,17 @@ it("reinstalls over the logon task Domovoi registered, lifting its run limit bef
   const configurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
   const action = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-supervise "${configurationPath}"`, enabled: true, state: 3 }
   const dependencies = effects({
+    stopSupervisor: vi.fn(async (_path, _deadline, options) => {
+      if (!await options?.stopTask?.()) throw new Error("Task remains observable")
+    }),
     supervisorStatus: vi.fn(async () => ({ installed: true, running: false, supervising: false, detail: "stopped; jobs empty" })),
     readConfiguration: vi.fn(() => ({ ...windows.configuration, serviceRuntime: { executable: "C:\\Program Files\\nodejs\\node.exe", entry: "C:\\Program Files\\Domovoi\\dist\\index.js" } })),
-    capture: vi.fn(async () => ({ code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}\r\n` })),
+    capture: vi.fn(async (_command, args) => {
+      const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+      if (script.includes("domovoi-task-action:")) return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}` }
+      if (script.includes("$task.Enabled = $false")) { action.enabled = false; action.state = 1 }
+      return { code: 0, stdout: `domovoi-task:${action.state}` }
+    }),
   })
   await expect(installService(windowsScript, dependencies)).resolves.toMatchObject({ kind: "task" })
   expect(vi.mocked(dependencies.run).mock.calls.map(([command, args]) => command === "C:\\Windows\\System32\\schtasks.exe" ? args[0] : "settings")).toEqual(["/create", "settings", "/run"])

@@ -75,6 +75,37 @@ it("refuses replacing a task while its supervisor is backing off or its tree is 
   expect(f.effects.write).not.toHaveBeenCalled()
 })
 
+it.each(["stopped", "exhausted"] as const)("retires an enabled %s supervisor before reinstall writes configuration", async (state) => {
+  const f = fixture(); f.task.running = false
+  f.effects.supervisorStatus = vi.fn(async () => ({ installed: null, running: false, detail: state,
+    ...(state === "exhausted" ? { supervisionFailure: "exhausted" as const } : {}) }))
+  let retired = false
+  f.effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
+    expect(f.task.enabled).toBe(false)
+    expect(options?.retire).toBe(false)
+    expect(await options?.confirmNoLaunch?.()).toBe(true)
+    if (!await options?.stopTask?.()) throw new Error("Task remains observable")
+    retired = true
+  })
+  f.effects.write = vi.fn(async () => {
+    // A logon/manual start of the old registration cannot win this seam.
+    expect(f.task.enabled).toBe(false)
+    expect(retired).toBe(true)
+  })
+  await installService(target, f.effects)
+  expect(f.effects.stopSupervisor).toHaveBeenCalledOnce()
+  expect(f.effects.write).toHaveBeenCalled()
+  expect(f.events).toContain("stop-task")
+})
+
+it("retains configuration if an exhausted supervisor cannot be retired for reinstall", async () => {
+  const f = fixture()
+  f.effects.stopSupervisor = vi.fn(async () => { throw new Error("Retirement unconfirmed") })
+  await expect(installService(target, f.effects)).rejects.toThrow("Retirement unconfirmed")
+  expect(f.effects.write).not.toHaveBeenCalled()
+  expect(f.effects.run).not.toHaveBeenCalled()
+})
+
 it("retires a legacy task using the scheduler before removing configuration", async () => {
   const f = fixture(); f.task.flag = "--service-config"
   await removeService(target, f.effects)
