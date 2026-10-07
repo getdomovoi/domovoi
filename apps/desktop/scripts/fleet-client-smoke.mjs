@@ -9,7 +9,9 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import electron from "electron"
 import { launchSmokeCommand, launchSmokeElectronArgs, launchSmokeEnvironment } from "./launch-smoke-args.mjs"
 import { executableOnPath, observeSmokeDebugging, smokeDiagnosticLog } from "./desktop-smoke.mjs"
+import { liveProfileChanges, liveProfileFailure, liveProfileSnapshot } from "./launch-smoke-live-profile.mjs"
 
+const liveProfile = await liveProfileSnapshot()
 const desktopRoot = fileURLToPath(new URL("../", import.meta.url))
 const daemonRequire = createRequire(new URL("../../daemon/package.json", import.meta.url))
 const { WebSocket } = daemonRequire("ws")
@@ -38,7 +40,7 @@ async function bounded(promise, label, maximum = 15_000) {
   } finally { clearTimeout(timer) }
 }
 let backend, desktop, socket, debugging
-let backendOutput = ""
+let backendOutput = "", failed = false
 const closedChildren = new WeakSet()
 const trackChild = child => {
   child.once("close", () => closedChildren.add(child))
@@ -49,6 +51,8 @@ try {
   const electronArgs = launchSmokeElectronArgs({
     platform: process.platform, ci: process.env.CI === "true", desktopRoot, debuggingLogFile: chromiumLog,
     userDataDirectory: electronProfile,
+    // Settings reads the login service on mount (T24).
+    loginServiceOff: true,
   })
   const launch = launchSmokeCommand({ platform: process.platform, env: process.env, electronPath: electron, electronArgs, xvfb })
   const tsconfig = join(directory, "tsconfig.json")
@@ -206,6 +210,7 @@ try {
   assert.equal(await evaluate(`${buttons}.find(button => button.getAttribute('aria-label') === 'Use Studio').disabled`), true)
   console.info("DOMOVOI_FLEET_CLIENT_PROOF_OK use=1 terminal=1 inventory=1 comparison=1 remove=1")
 } catch (error) {
+  failed = true
   console.error(backendOutput, debugging?.output() ?? "Desktop not spawned")
   console.error(`Chromium startup log:\n${await smokeDiagnosticLog(chromiumLog)}`)
   throw error
@@ -246,4 +251,11 @@ try {
   const failure = retired.find(result => result.status === "rejected")
   if (failure) throw failure.reason
   await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+  // Checked once both children are gone. A failure already on its way out
+  // keeps its own error; this one is added.
+  const changed = liveProfileChanges(liveProfile, await liveProfileSnapshot())
+  if (changed.length > 0) {
+    if (failed) console.error(liveProfileFailure(changed))
+    else throw new Error(liveProfileFailure(changed))
+  }
 }

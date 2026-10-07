@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import { EventEmitter } from "node:events"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir, userInfo } from "node:os"
 import { delimiter, join, sep } from "node:path"
 import { PassThrough } from "node:stream"
 import test from "node:test"
@@ -14,6 +14,7 @@ import {
   packagedAsarPath,
 } from "./launch-smoke-args.mjs"
 import * as launch from "./launch-smoke-args.mjs"
+import * as live from "./launch-smoke-live-profile.mjs"
 import { executableOnPath } from "./desktop-smoke.mjs"
 import * as smoke from "./desktop-smoke.mjs"
 
@@ -314,4 +315,94 @@ test("isolates production paths and listener settings from the parent environmen
     "NODE_OPTIONS", "home", "userprofile", "appdata"]) {
     assert.equal(env[key], undefined, key)
   }
+})
+
+// T24: the login-service calls take their lease under the passwd home, which
+// the smoke's HOME cannot move. Smokes that start the application turn those
+// calls off with the main process's test-only switch, which only an
+// unpackaged app reads (src/main/launch-smoke-profile.ts).
+test("passes the test-only login service switch before the application directory", () => {
+  const args = launchSmokeElectronArgs({ platform: "darwin", ci: false, desktopRoot: "/desktop", loginServiceOff: true })
+  assert.deepEqual(args, ["--headless", "--disable-gpu", "--domovoi-test-no-login-service", "/desktop"])
+  assert.equal(launch.loginServiceOffSwitch, "--domovoi-test-no-login-service")
+})
+
+test("refuses the login service switch for a packaged build, which ignores it", () => {
+  assert.throws(
+    () => launchSmokeElectronArgs({ platform: "linux", ci: true, desktopRoot: "/desktop", packaged: true, loginServiceOff: true }),
+    /packaged/u,
+  )
+})
+
+test("the main process reads the same switch the runner passes", async () => {
+  const source = await readFile(new URL("../src/main/launch-smoke-profile.ts", import.meta.url), "utf8")
+  assert.ok(source.includes(`"${launch.loginServiceOffSwitch}"`))
+})
+
+test("both smokes that start the application turn the login service off and guard the live profile", async () => {
+  for (const name of ["launch-smoke.mjs", "fleet-client-smoke.mjs"]) {
+    const source = await readFile(new URL(`./${name}`, import.meta.url), "utf8")
+    assert.match(source, /loginServiceOff: true/u, name)
+    assert.match(source, /liveProfileSnapshot\(/u, name)
+    assert.match(source, /liveProfileChanges\(/u, name)
+  }
+})
+
+test("a live profile that does not exist is never created by the snapshot, and its creation is a change", async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  try {
+    const before = await live.liveProfileSnapshot(home)
+    await assert.rejects(readFile(join(home, ".domovoi")), { code: "ENOENT" })
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)), [])
+    await mkdir(join(home, ".domovoi"))
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)), [join(home, ".domovoi")])
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test("names every change to the service-operation lease and its SQLite files", async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  const profile = join(home, ".domovoi")
+  const lease = join(profile, "service-operation-lease.sqlite")
+  try {
+    await mkdir(profile)
+    await writeFile(lease, "")
+    const before = await live.liveProfileSnapshot(home)
+    await writeFile(lease, "written")
+    await writeFile(`${lease}-journal`, "")
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)), [lease, `${lease}-journal`])
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+// The lease writes nothing into its empty database. What it leaves on the
+// file itself is the chmod to 0600, which moves the change time even when the
+// mode was already 0600. Windows has no such mode.
+test("a chmod to the same mode still counts as a change to the lease", { skip: process.platform === "win32" }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  const lease = join(home, ".domovoi", "service-operation-lease.sqlite")
+  try {
+    await mkdir(join(home, ".domovoi"))
+    await writeFile(lease, "")
+    await chmod(lease, 0o600)
+    const before = await live.liveProfileSnapshot(home)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    await chmod(lease, 0o600)
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)), [lease])
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test("ignores files a running daemon on the live profile writes", async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-live-home-"))
+  const profile = join(home, ".domovoi")
+  try {
+    await mkdir(profile)
+    await writeFile(join(profile, "service-operation-lease.sqlite"), "")
+    const before = await live.liveProfileSnapshot(home)
+    await writeFile(join(profile, "state.sqlite"), "written by a running daemon")
+    await writeFile(join(profile, "profile-lease.sqlite-journal"), "")
+    assert.deepEqual(live.liveProfileChanges(before, await live.liveProfileSnapshot(home)), [])
+  } finally { await rm(home, { recursive: true, force: true }) }
+})
+
+test("the live profile is the passwd home's, not HOME's", () => {
+  assert.equal(live.liveProfileHome(), userInfo().homedir)
 })

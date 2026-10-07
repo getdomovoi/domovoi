@@ -16,18 +16,21 @@ import {
   runSmokeProcess,
   successMarker,
 } from "./desktop-smoke.mjs"
+import { liveProfileChanges, liveProfileFailure, liveProfileSnapshot } from "./launch-smoke-live-profile.mjs"
 
 const description = "desktop launch smoke"
 const timeoutMs = launchSmokeTimeoutMs({ platform: process.platform, env: process.env })
 const desktopRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 
+const liveProfile = await liveProfileSnapshot()
 const profileRoot = await createSmokeProfile("domovoi-desktop-smoke-")
-let result
+let result, failed = false
 try {
   const electronArgs = launchSmokeElectronArgs({
     platform: process.platform,
     ci: process.env.CI === "true",
     desktopRoot,
+    loginServiceOff: true,
   })
   const xvfb = process.platform === "linux" ? await executableOnPath("xvfb-run") : undefined
   const { command, args } = launchSmokeCommand({ platform: process.platform, env: process.env, electronPath, electronArgs, xvfb })
@@ -42,8 +45,15 @@ try {
   await assertDaemonProfile(profileRoot, description)
   process.stdout.write(`${successMarker}\n`)
 } catch (error) {
+  failed = true
   if (result) reportSmokeOutput(result)
   throw error
 } finally {
   await rm(profileRoot, { force: true, recursive: true })
+  const changed = liveProfileChanges(liveProfile, await liveProfileSnapshot())
+  // A failure already on its way out keeps its own error; this one is added.
+  if (changed.length > 0) {
+    if (failed) console.error(liveProfileFailure(changed))
+    else throw new Error(liveProfileFailure(changed))
+  }
 }
