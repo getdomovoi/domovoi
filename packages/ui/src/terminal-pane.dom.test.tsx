@@ -208,6 +208,12 @@ function watcher() {
   return { ...target, controls, create, watch, unwatch, watched }
 }
 
+// xterm parses writes asynchronously. Output is parsed in order, so once the
+// last line shows, everything before it is in the buffer.
+async function parsedThrough(container: HTMLElement, last: string): Promise<void> {
+  await vi.waitFor(() => expect(container.textContent).toContain(last), { timeout: 15_000 })
+}
+
 // What xterm drew, row by row, once its write queue has run.
 async function drawnRows(container: HTMLElement): Promise<string[]> {
   let rows: string[] = []
@@ -498,20 +504,22 @@ describe("TerminalPane on a watching desktop", () => {
 
   // When the daemon dropped the start and the attachment limit cuts again,
   // the cut marker is the one that holds: what follows starts after both.
-  it("marks a cut attachment from a record the daemon already shortened", async () => {
+  it("marks a cut attachment from a record the daemon already shortened", { timeout: 20_000 }, async () => {
     const user = userEvent.setup()
     const composer = createComposerInbox()
     const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
     composer.open(sessionId, receive)
     const target = watcher()
-    render(<TerminalPane connected readOnly composer={composer} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    const { container } = render(<TerminalPane connected readOnly composer={composer} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
     await act(async () => {
       target.watched.resolve(watchResult({ earlierOutputDropped: true }))
     })
     const line = `${"y".repeat(78)}\r\n`
     await act(async () => {
       for (let index = 0; index < 4_000; index += 1) target.deliverOutput(line)
+      target.deliverOutput("END OF OUTPUT\r\n")
     })
+    await parsedThrough(container, "END OF OUTPUT")
 
     await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
 
@@ -667,13 +675,14 @@ describe("Attach this output to the composer", () => {
 
   // The attachment has a byte limit. When the pane holds more than fits, the
   // file starts with a line saying its start was cut, and the note says so.
-  it("marks an attachment the byte limit cut", async () => {
+  // 4,000 writes parse slowly when the whole suite runs at once.
+  it("marks an attachment the byte limit cut", { timeout: 20_000 }, async () => {
     const user = userEvent.setup()
     const composer = createComposerInbox()
     const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
     composer.open(sessionId, receive)
     const target = harness()
-    render(<TerminalPane connected controls={target.controls} composer={composer} machineName="worktop" sessionId={sessionId} />)
+    const { container } = render(<TerminalPane connected controls={target.controls} composer={composer} machineName="worktop" sessionId={sessionId} />)
     await act(async () => {
       target.connect(thisClient)
     })
@@ -681,7 +690,9 @@ describe("Attach this output to the composer", () => {
     await act(async () => {
       target.deliverOutput("$ first command\r\n")
       for (let index = 0; index < 4_000; index += 1) target.deliverOutput(line)
+      target.deliverOutput("END OF OUTPUT\r\n")
     })
+    await parsedThrough(container, "END OF OUTPUT")
 
     await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
 
