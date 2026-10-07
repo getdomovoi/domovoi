@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto"
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, posix } from "node:path"
 
 import { afterEach, expect, it, vi } from "vitest"
 
 import { localOwnerRecordPath, type ReadyLocalOwner } from "../local-owner-record.js"
+import { claimProfile, ProfileAlreadyOwnedError } from "../profile-lease.js"
 import { callerProfile, createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { removeService, runServiceCommand, type ServiceEffects } from "./install.js"
 import { readServiceRemovalSnapshot, serviceRemovalRecovery, type ServiceRemovalSnapshot } from "./removal-recovery.js"
@@ -243,4 +244,74 @@ it.each([
   expect(printed).toMatch(cause)
   expect(printed).toContain("No recovery receipt was written")
   expect(printed).toContain("domovoid profile recover --confirm-no-supervisor")
+})
+
+// T17, found by the packaged smoke (#742): `launchctl bootout` returns while
+// the booted-out daemon is still shutting down and still holds the profile
+// lease. The stand-in daemon here holds a real lease on a temporary profile
+// and lets it go only some time after the bootout, or never.
+async function launchdRemoval(options: { releaseAfterBootoutMs?: number; loadedFrom?: string } = {}) {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-removal-launchd-"))
+  homes.push(home)
+  // launchd paths are POSIX, as install.ts builds them, on every test host.
+  const plist = posix.join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")
+  const { effects } = manager("darwin")
+  const daemon = claimProfile(home)
+  const claim = vi.fn(claimProfile)
+  effects.claimProfile = claim
+  effects.capture = vi.fn(async () => ({ code: 0, stdout: `\tpath = ${options.loadedFrom ?? plist}\n\tstate = running\n` }))
+  vi.mocked(effects.run).mockImplementation(async (command, args) => {
+    if (command === "launchctl" && args[0] === "bootout" && options.releaseAfterBootoutMs !== undefined) {
+      setTimeout(() => daemon.release(), options.releaseAfterBootoutMs)
+    }
+  })
+  return { target: { platform: "darwin" as const, home, uid: 501 }, effects, claim, daemon, plist }
+}
+
+it("waits on macOS for the booted-out daemon to let the profile go, then removes the agent", async () => {
+  const { target, effects, claim, daemon, plist } = await launchdRemoval({ releaseAfterBootoutMs: 300 })
+  try {
+    expect(await removeService(target, effects)).toHaveProperty("profileRecovery", "recorded")
+    expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootout", "gui/501/sh.domovoi.domovoid"], expect.anything())
+    expect(effects.remove).toHaveBeenCalledWith(plist, expect.anything())
+    expect(effects.remove).toHaveBeenCalledWith(serviceConfigurationPath(target.home, "darwin"), expect.anything())
+    expect(effects.writeRemovalReceipt).toHaveBeenCalledOnce()
+    expect(claim.mock.calls.length).toBeGreaterThan(1)
+    // The removal let the profile go again once it was done.
+    claimProfile(target.home).release()
+  } finally { daemon.release() }
+})
+
+it("keeps the macOS agent when the booted-out daemon never lets the profile go within the wait", async () => {
+  const { target, effects, claim, daemon } = await launchdRemoval()
+  try {
+    await expect(removeService(target, effects, { profileReleaseWaitMs: 300 })).rejects.toThrow(/profile/)
+    expect(claim.mock.calls.length).toBeGreaterThan(1)
+    expect(effects.remove).not.toHaveBeenCalled()
+    expect(effects.writeRemovalReceipt).not.toHaveBeenCalled()
+  } finally { daemon.release() }
+})
+
+it("does not wait on macOS when nothing Domovoi loaded was booted out", async () => {
+  const { target, effects, claim, daemon } = await launchdRemoval({ releaseAfterBootoutMs: 300, loadedFrom: "/Library/LaunchAgents/other.plist" })
+  try {
+    await expect(removeService(target, effects)).rejects.toThrow(ProfileAlreadyOwnedError)
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(claim).toHaveBeenCalledOnce()
+    expect(effects.remove).not.toHaveBeenCalled()
+  } finally { daemon.release() }
+})
+
+it("still claims a Linux profile once after systemd has waited for the stop", async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-removal-systemd-"))
+  homes.push(home)
+  const { effects } = manager("linux")
+  const daemon = claimProfile(home)
+  const claim = vi.fn(claimProfile)
+  effects.claimProfile = claim
+  try {
+    await expect(removeService({ platform: "linux", home }, effects)).rejects.toThrow(ProfileAlreadyOwnedError)
+    expect(claim).toHaveBeenCalledOnce()
+    expect(effects.remove).not.toHaveBeenCalled()
+  } finally { daemon.release() }
 })
