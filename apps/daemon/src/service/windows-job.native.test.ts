@@ -147,6 +147,10 @@ it.runIf(process.platform === "win32")("keeps supervising while an open record d
     process.kill(attempt.child!.pid, "SIGKILL")
     await f.poll("daemon termination", () => queryWindowsProcess(attempt.child!.pid).identity?.start !== attempt.child!.start)
     await delay(1_500)
+    // Prove the open handle blocked replacement; allowing rename would stop exercising this race.
+    const held = readWindowsSupervisorRecord(f.home)
+    expect(held).toMatchObject({ state: "running", crashes: 0, supervisorId: first.supervisorId })
+    expect(held!.attempts).toHaveLength(1)
     closeSync(handle); handle = undefined
     await f.poll("second running attempt", () => {
       const record = readWindowsSupervisorRecord(f.home)
