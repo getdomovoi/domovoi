@@ -23,6 +23,7 @@ import {
   terminalStatus,
   terminalTitle,
   unconfirmedWatches,
+  watchesFor,
   watchFrom,
   withNotification,
   type TerminalWatch,
@@ -92,6 +93,16 @@ describe("terminalLines", () => {
   it("erases a character for a backspace", () => {
     // A shell echoes an erase as back, space, back.
     expect(terminalLines("lss\b \b\n")).toEqual(["ls"])
+  })
+
+  // Progress reporters and shells rewrite a line with a carriage return and
+  // an erase to its end; what is left on screen is only the new text.
+  it("erases what an erase-in-line sequence erases", () => {
+    expect(terminalLines("abcdef\rXY\u001b[K\n")).toEqual(["XY"])
+    expect(terminalLines("abcdef\rXY\u001b[0K\n")).toEqual(["XY"])
+    expect(terminalLines("abcdef\u001b[2K\rdone\n")).toEqual(["done"])
+    expect(terminalLines("abcdef\u001b[1K\n")).toEqual([""])
+    expect(terminalLines("abcdef\b\b\u001b[1K\n")).toEqual(["     f"])
   })
 
   // A character outside the basic plane is two UTF-16 units, and a cursor
@@ -263,6 +274,14 @@ describe("terminalRows", () => {
     expect(record.received).toBe(Math.ceil(maximumTerminalReplayCharacters / line.length) + 5)
   })
 
+  // A cut at the bound never splits a character in two.
+  it("cuts at the bound without splitting a character outside the basic plane", () => {
+    const full = watchFrom(watched({ buffer: `🙂${"x".repeat(maximumTerminalReplayCharacters - 2)}` }))
+    const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "y" } }, at)
+    expect(record.text.startsWith("x")).toBe(true)
+    expect(record.text.endsWith("xy")).toBe(true)
+  })
+
   // Output with no line break, a progress bar or a minified dump, is cut at
   // the bound rather than all at once.
   it("keeps the newest output up to the bound when there is no line break to cut at", () => {
@@ -370,6 +389,19 @@ describe("listedWatches", () => {
     const next = listedWatches(new Map([["terminal-1", kept]]), [summary()]).get("terminal-1")
     if (next?.state !== "watching") throw new Error("a watched terminal stays watched across a list")
     expect(next.record.confirmed).toBe(true)
+  })
+})
+
+// The records are the open session's. Between opening another session and
+// the old records being dropped, none of them may be drawn as the new one's.
+describe("watchesFor", () => {
+  it("gives only the terminals of the session asked for", () => {
+    const mine: TerminalWatch = { state: "watching", record: watchFrom(watched()) }
+    const other: TerminalWatch = { state: "reading", summary: summary({ terminalId: "terminal-2", sessionId: "session-audit" }) }
+    const held = new Map<string, TerminalWatch>([["terminal-1", mine], ["terminal-2", other]])
+    expect(watchesFor(held, "session-billing")).toEqual([mine])
+    expect(watchesFor(held, "session-audit")).toEqual([other])
+    expect(watchesFor(held, undefined)).toEqual([])
   })
 })
 

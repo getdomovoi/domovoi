@@ -71,6 +71,13 @@ export function watchedSummary(watch: TerminalWatch): TerminalSummary {
   return watch.state === "watching" ? watch.record.summary : watch.summary
 }
 
+// The terminals of one session. What the phone holds is dropped after another
+// session opens, not before its first frame, so a screen draws only these.
+export function watchesFor(held: ReadonlyMap<string, TerminalWatch>, sessionId: string | undefined): TerminalWatch[] {
+  if (!sessionId) return []
+  return [...held.values()].filter((watch) => watchedSummary(watch).sessionId === sessionId)
+}
+
 // The daemon's answer to terminal.list, laid over what the phone already
 // reads. The list is the daemon's word now, so every summary comes from it. A
 // terminal still listed keeps its output and how far reading it got; one no
@@ -148,7 +155,10 @@ function bounded(record: TerminalRecord): TerminalRecord {
   const excess = record.text.length - maximumTerminalReplayCharacters
   if (excess <= 0) return record
   const lineBreak = record.text.indexOf("\n", excess - 1)
-  const cut = lineBreak !== -1 && lineBreak + 1 - excess <= lineBreakReach ? lineBreak + 1 : excess
+  let cut = lineBreak !== -1 && lineBreak + 1 - excess <= lineBreakReach ? lineBreak + 1 : excess
+  // A cut between the two halves of a character outside the basic plane
+  // takes the whole character.
+  if (isLowSurrogate(record.text.charCodeAt(cut))) cut += 1
   return {
     ...record,
     text: record.text.slice(cut),
@@ -158,15 +168,26 @@ function bounded(record: TerminalRecord): TerminalRecord {
   }
 }
 
-// What a terminal draws, read as lines. Colour and cursor sequences are
-// dropped, a carriage return overwrites the line from its start as a progress
-// bar does, and a backspace erases. The line still being written is kept; the
-// empty line after a final newline is not.
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff
+}
+
+// What a terminal draws, read as lines. Colour and cursor-movement sequences
+// are dropped; a carriage return overwrites the line from its start as a
+// progress bar does; a backspace and an erase-in-line erase. The line still
+// being written is kept; the empty line after a final newline is not.
 export function terminalLines(text: string): string[] {
   const lines = plainText(text).split("\n").map(drawnLine)
   if (lines.at(-1) === "") lines.pop()
   return lines
 }
+
+// Erase-in-line survives the stripping as one control character each, which
+// drawnLine acts on. The characters are cleared from the text first; they
+// draw nothing on a terminal either.
+const eraseToEnd = "\u0001"
+const eraseToStart = "\u0002"
+const eraseLine = "\u0003"
 
 // The text with escape sequences dropped and line breaks made plain.
 function plainText(text: string): string {
@@ -174,7 +195,12 @@ function plainText(text: string): string {
     // Operating system commands, such as a window title.
     // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
     .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
-    // Control sequences: colour, cursor movement, erase.
+    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
+    .replace(/[\u0001-\u0003]/g, "")
+    // Erase in line: to its end, to its start, all of it.
+    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
+    .replace(/\u001b\[([012]?)K/g, (_sequence, mode: string) => mode === "1" ? eraseToStart : mode === "2" ? eraseLine : eraseToEnd)
+    // Other control sequences: colour, cursor movement.
     // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
     .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
     // Any other two-character escape.
@@ -186,12 +212,20 @@ function plainText(text: string): string {
 // One cell per character, so a character outside the basic plane, two UTF-16
 // units, is overwritten and erased as one.
 function drawnLine(raw: string): string {
-  const cells: string[] = []
+  let cells: string[] = []
   let column = 0
+  let erased = false
   for (const char of raw) {
     if (char === "\r") column = 0
     else if (char === "\b") column = Math.max(0, column - 1)
-    else if (char === "\t" || (char >= " " && char !== "\u007f")) {
+    else if (char === eraseToEnd) cells = cells.slice(0, column)
+    else if (char === eraseToStart || char === eraseLine) {
+      const through = char === eraseLine ? cells.length : Math.min(cells.length, column + 1)
+      cells = cells.map((cell, at) => at < through ? " " : cell)
+      erased = true
+    } else if (char === "\t" || (char >= " " && char !== "\u007f")) {
+      // A cursor past the end, after an erase to the end, leaves blanks.
+      while (cells.length < column) cells.push(" ")
       cells[column] = char
       column += 1
     }
@@ -199,7 +233,9 @@ function drawnLine(raw: string): string {
   // A backspace moves the cursor without erasing; what stays visible past the
   // cursor at the end of a line is what the person typed over, so a line
   // ended by backspaces ends at the cursor.
-  return (raw.endsWith("\b") ? cells.slice(0, column) : cells).join("")
+  const drawn = (raw.endsWith("\b") ? cells.slice(0, column) : cells).join("")
+  // Blanks an erase left at the end of a line are not text.
+  return erased ? drawn.replace(/ +$/, "") : drawn
 }
 
 export function terminalLineCount(record: TerminalRecord): number {
