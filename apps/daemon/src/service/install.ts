@@ -1274,7 +1274,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
 
 // A service that was never installed is not an error to remove: the end state
 // the caller asked for is the one they get either way.
-type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt" | "claimServiceOperation" | "readConfiguration" | "stopSupervisor" | "supervisorStatus">
+type RemovalEffects = Pick<ServiceEffects, "run" | "capture" | "remove" | "exists" | "claimProfile" | "removalSnapshot" | "writeRemovalReceipt" | "claimServiceOperation" | "readConfiguration" | "readOwner" | "stopSupervisor" | "supervisorStatus">
 type ServiceRemovalResult = ServiceRemovalPlan & {
   profileRecovery: "recorded" | "operator-confirmation-required" | "proof-unavailable" | "not-needed"
   profileRecoveryDetail?: string
@@ -1292,6 +1292,7 @@ async function removeWithDeadline(
   effects: RemovalEffects,
   deadline: OperationDeadline,
   progress: RemovalProgress,
+  profileReleaseWaitMs: number,
   callerProfile?: ProfileLocation,
 ): Promise<ServiceRemovalResult> {
   const plan = serviceRemovalPlan(target)
@@ -1365,6 +1366,11 @@ async function removeWithDeadline(
     else throw captureFailure("launchctl", printed)
   }
   if (plan.kind === "file" && !ownsJob) managerStopped = false
+  // Round 5 of #577 (P2): lease, and write any recovery receipt into, the
+  // profile the saved configuration names under its own home.
+  const profile = profileLocation(home, before.effectiveProfileDirectory ?? before.profileDirectory)
+  const readOwner = effects.readOwner ?? (() => undefined)
+  const stoppedInstance = target.platform === "darwin" && ownsJob ? currentInstance(readOwner, profile) : undefined
   for (const { command, args } of plan.kind === "file" && ownsJob ? plan.commands : []) {
     try {
       await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
@@ -1378,10 +1384,10 @@ async function removeWithDeadline(
     }
   }
   deadline.throwIfExpired()
-  // Round 5 of #577 (P2): lease, and write any recovery receipt into, the
-  // profile the saved configuration names under its own home.
-  const profile = profileLocation(home, before.effectiveProfileDirectory ?? before.profileDirectory)
-  const lease = effects.claimProfile(profile)
+  // Bootout returns before the daemon lets the profile go, found by the packaged smoke (#742).
+  const lease = target.platform === "darwin" && ownsJob && managerStopped
+    ? await claimProfileAfterStop(effects.claimProfile, readOwner, profile, stoppedInstance, profileReleaseWaitMs, deadline)
+    : effects.claimProfile(profile)
   let removed: ServiceRemovalResult
   try {
     const recovery = serviceRemovalRecovery(before, effects.removalSnapshot(home, target.platform), managerStopped)
@@ -1415,10 +1421,10 @@ async function removeWithDeadline(
 export function removeService(
   target: Pick<ServiceTarget, "platform" | "home" | "uid" | "user">,
   effects: RemovalEffects,
-  options: { callerProfile?: ProfileLocation } = {},
+  options: { callerProfile?: ProfileLocation; profileReleaseWaitMs?: number } = {},
 ): Promise<ServiceRemovalResult> {
   const progress: RemovalProgress = { managerHoldsDeadline: false }
-  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress, options.callerProfile)).catch((cause: unknown) => {
+  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress, options.profileReleaseWaitMs ?? 10_000, options.callerProfile)).catch((cause: unknown) => {
     // The outer deadline can expire before the manager adapter settles. It
     // needs the same actionable task-specific error, not a bare timer failure.
     if (progress.managerHoldsDeadline && !(cause instanceof WindowsTaskRemovalError)) {
