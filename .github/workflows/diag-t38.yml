@@ -1,0 +1,70 @@
+name: diag-t38
+on:
+  push:
+    branches: [diag/t38-flakes]
+permissions:
+  contents: read
+jobs:
+  helper-timing:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        with: { install: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Helper timing, sequential
+        shell: bash
+        working-directory: apps/daemon
+        run: node --import tsx diag/helper-timing.mts sequential 15
+      - name: Helper timing, 8 concurrent
+        shell: bash
+        working-directory: apps/daemon
+        run: |
+          for n in 1 2 3 4 5 6 7 8; do node --import tsx diag/helper-timing.mts "concurrent-$n" 8 & done; wait
+      - name: Summary
+        if: always()
+        shell: bash
+        run: echo done
+  restore-lease:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        with: { install: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @getdomovoi/protocol build
+      - name: Repeat the restore lease file under parallel load
+        shell: bash
+        working-directory: apps/daemon
+        run: |
+          mkdir -p ../../diag-out
+          loop() { for i in $(seq 1 25); do npx vitest run src/workspace-restore-lease.test.ts --reporter=dot > "../../diag-out/lease-$1-$i.txt" 2>&1 || echo "FAILED lease-$1-$i"; done; }
+          loop a & loop b & loop c & loop d & wait
+          grep -l "FAIL" ../../diag-out/*.txt | while read f; do echo "=== $f"; grep -A30 "FAIL" "$f" | head -60; done
+          echo "failures: $(grep -l FAIL ../../diag-out/*.txt | wc -l) of $(ls ../../diag-out | wc -l)"
+  profile-recovery:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with: { persist-credentials: false }
+      - uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        with: { install: false }
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @getdomovoi/protocol build
+      - name: Repeat profile recovery under parallel load
+        shell: bash
+        working-directory: apps/daemon
+        run: |
+          mkdir -p ../../diag-out
+          loop() { for i in $(seq 1 8); do npx vitest run src/profile-recovery.test.ts > "../../diag-out/pr-$1-$i.txt" 2>&1 || echo "FAILED pr-$1-$i"; done; }
+          loop a & loop b & loop c & wait
+          for f in ../../diag-out/*.txt; do grep -E "assigns a fresh registration|Tests " "$f" | head -3; done
+          grep -l "FAIL" ../../diag-out/*.txt | while read f; do echo "=== $f"; grep -B2 -A25 "FAIL" "$f" | head -50; done

@@ -155,7 +155,7 @@ describe("restore owner reclamation", () => {
       expect(record.children).toEqual(children.map(({ child }) => child.pid))
       expect(record.children).toHaveLength(2)
       for (const { child } of children) child.stdin!.end("finish")
-      expect((await settled).map(({ status }) => status)).toEqual(["fulfilled", "fulfilled"])
+      expect((await settled).map((r) => r.status === "rejected" ? `rejected: ${String((r.reason as Error)?.stack ?? r.reason)} code=${String((r.reason as NodeJS.ErrnoException)?.code)} inner=${((r.reason as AggregateError)?.errors ?? []).map((e: unknown) => String((e as Error)?.stack ?? e)).join(" | ")} cause=${String(((r.reason as Error)?.cause as Error)?.stack ?? (r.reason as Error)?.cause)}` : r.status)).toEqual(["fulfilled", "fulfilled"])
     } finally {
       for (const { child } of children) if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
       await settled
