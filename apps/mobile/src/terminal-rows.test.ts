@@ -301,7 +301,17 @@ describe("terminalRows", () => {
     let record = watchFrom(watched({ buffer: `\u001b]0;${"t".repeat(maximumTerminalReplayCharacters - 4)}` }))
     record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: "tt" } }, at)
     record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: "\u0007done\n" } }, at)
-    expect(terminalLines(record.text)).toEqual(["done"])
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["done"])
+  })
+
+  // The two-character end of a title, ESC then backslash, can arrive in two
+  // pieces of output.
+  it("keeps an unfinished title whole when its end arrives split", () => {
+    let record = watchFrom(watched({ buffer: `\u001b]0;${"t".repeat(maximumTerminalReplayCharacters - 4)}` }))
+    for (const data of ["tt", "\u001b", "\\done\n"]) {
+      record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data } }, at)
+    }
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["done"])
   })
 
   // The daemon's record can start inside a window title.

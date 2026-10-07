@@ -29,10 +29,11 @@ export type TerminalRecord = {
   // The phone cut the front of what it holds, to keep no more than the
   // daemon keeps. Once cut, the machine's start time no longer describes it.
   phoneDropped: boolean
-  // Text may begin partway through a line, or inside an escape sequence: the
-  // daemon keeps its record by size and cuts it anywhere, and the phone cuts
-  // at its bound where no line break is near. The rest of that first line is
-  // not drawn when a line break follows soon after.
+  // Text may begin inside an escape sequence or a window title: the daemon
+  // keeps its record by size and cuts it anywhere. The rest of that first
+  // line is not drawn when a line break follows soon after. The phone's own
+  // cut never lands inside a sequence (sequenceSafe), so once it has cut, the
+  // text is drawn from its start.
   startsMidLine: boolean
   // Line breaks received live, counted as they arrive and never reduced by a
   // cut, so what landed can be counted for the reader.
@@ -172,7 +173,7 @@ function bounded(record: TerminalRecord): TerminalRecord {
     // Once the start of live output is cut away, nothing above it is left.
     liveAt: record.liveAt !== undefined && record.liveAt > cut ? record.liveAt - cut : undefined,
     phoneDropped: true,
-    startsMidLine: !atLineBreak,
+    startsMidLine: false,
   }
 }
 
@@ -181,9 +182,10 @@ function bounded(record: TerminalRecord): TerminalRecord {
 // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
 const sequenceAtStart = /^(?:\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[@-Z\\^_])/
 // A sequence still arriving: an introducer whose end has not come yet, so it
-// runs to the end of the text.
+// runs to the end of the text. A title can end in ESC with its backslash
+// still to come.
 // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-const sequenceUnfinished = /^\u001b(?:\][^\u0007\u001b]*|\[[0-?]*[ -/]*)?$/
+const sequenceUnfinished = /^\u001b(?:\][^\u0007\u001b]*\u001b?|\[[0-?]*[ -/]*)?$/
 // The longest unfinished sequence kept whole across a cut, so the phone holds
 // at most this much past its bound. Longer, and the bound wins.
 const unfinishedSequenceReach = 4_096
