@@ -5932,6 +5932,7 @@ export class DomovoiDaemon {
     // OpenCode and Kilo never sent effort overrides for these stored labels.
     const legacyModelDefault = (runtime.provider === "opencode" || runtime.provider === "kilo")
       && (reasoning === "medium" || reasoning === "none")
+      && !supportedReasoningEfforts.includes(reasoning)
       && supportedReasoningEfforts.includes("unset")
     if (!supportedReasoningEfforts.includes(reasoning) && !legacyModelDefault) {
       throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")

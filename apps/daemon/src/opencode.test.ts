@@ -729,9 +729,13 @@ describe.each([
   ["kilo", KiloSdkAdapter],
 ] as const)("%s stored reasoning compatibility", (provider, Adapter) => {
   it.each([
-    ["medium", "setRuntime"], ["none", "setRuntime"], ["unset", "setRuntime"],
-    ["medium", "restartProviderThread"],
-  ] as const)("normalizes %s through %s, then sends no effort override", async (reasoning, method) => {
+    ["medium", "setRuntime", ["unset"], "unset"],
+    ["none", "setRuntime", ["unset"], "unset"],
+    ["unset", "setRuntime", ["unset"], "unset"],
+    ["medium", "restartProviderThread", ["unset"], "unset"],
+    ["medium", "setRuntime", ["unset", "medium"], "medium"],
+    ["none", "setRuntime", ["unset", "none"], "none"],
+  ] as const)("resolves %s through %s with %j to %s, then sends no effort override", async (reasoning, method, efforts, expected) => {
     const directory = await mkdtemp(join(tmpdir(), "domovoi-effort-"))
     scratchDirectories.push(directory)
     const { client, factory, stream } = harness()
@@ -739,7 +743,7 @@ describe.each([
     // Isolate stored-runtime validation from discovery, covered above.
     vi.spyOn(adapter, "listModels").mockResolvedValue([{
       provider, id: "anthropic/sonnet", displayName: "Claude Sonnet", description: "Model default effort",
-      supportedReasoningEfforts: ["unset"], defaultReasoningEffort: "unset", isDefault: true,
+      supportedReasoningEfforts: [...efforts], defaultReasoningEffort: "unset", isDefault: true,
     }])
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions.find(({ id }) => id === "session-billing")!
@@ -781,7 +785,7 @@ describe.each([
       })).error).toBeUndefined()
       const loaded = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
         .sessions.find(({ id }) => id === session.id)!
-      expect.soft(loaded.runtime.reasoning).toBe("unset")
+      expect(loaded.runtime.reasoning).toBe("unset")
       expect((await rpc("session.setRuntime", {
         sessionId: session.id, runtime: { ...loaded.runtime, reasoning: "high" }, client: "desktop",
       })).error?.message).toBe("Reasoning effort is not supported by the selected model")
@@ -790,7 +794,7 @@ describe.each([
       })).error).toBeUndefined()
       const updated = workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
         .sessions.find(({ id }) => id === session.id)!
-      expect(updated.runtime.reasoning).toBe("unset")
+      expect(updated.runtime.reasoning).toBe(expected)
       expect((await rpc("session.send", {
         sessionId: session.id, prompt: "Hello", client: "desktop",
       })).error).toBeUndefined()

@@ -311,6 +311,9 @@ function migrateStoredWorkspace(value: unknown): {
     repaired = true
   }
   const inactivatedRules: Array<{ id: string; projectId: string; inactivatedAt: string }> = []
+  // Before discovery reported unset, OpenCode and Kilo sent no effort value
+  // for medium or none. Normalize these labels on every load; revisit this
+  // repair if either adapter ever sends a real effort value.
   if (Array.isArray(migrated.sessions)) {
     for (const session of migrated.sessions) {
       if (!isRecord(session) || !isRecord(session.runtime)) continue
