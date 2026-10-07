@@ -40,8 +40,8 @@ PR will fix this with per-start IDs and a start fence held through cleanup.
 This is Windows user logon, not Windows boot supervision. The guest loop is not
 self-restarting after distro or loop loss. A demand-start fixture does not
 establish real logon acceptance; that remains open in the lifecycle assessment.
-The native Windows logon task has no crash supervision yet
-([Windows logon task](#windows-logon-task)), and a Linux install turns
+The native Windows logon task runs a supervisor that contains each daemon tree in a job
+object and provides bounded crash restart ([Windows logon task](#windows-logon-task)). A Linux install turns
 lingering on ([Linux lingering](#linux-lingering)).
 
 It captures the current daemon configuration before asking the service manager to start anything.
@@ -240,8 +240,8 @@ Every `schtasks /create /sc onlogon /rl LIMITED` is followed by the Task Schedul
 step, before `/run`: `ExecutionTimeLimit` is `PT0S`, and `DisallowStartIfOnBatteries` and
 `StopIfGoingOnBatteries` are false. This replaces Task Scheduler's default run limit and battery
 stops. Install, update and rollback use the same settings step. Failure there fails the operation.
-The Windows native task tests passed restart, exhaustion, stop, removal and XML read-back on
-`8efda0ef`. The Global-name helper-death recovery test still needs Windows CI execution.
+Both Windows native test files passed on `27f7f370`: restart, exhaustion, stop, removal, XML
+read-back, job containment and Global-name recovery after helper death.
 Actual logon acceptance remains **[H]**, fetzy's hardware run. A manual task start is not logon acceptance.
 
 ## Windows removal
@@ -270,6 +270,13 @@ if registration fails, it restores the previous configuration and a disabled leg
 for retry. Update rollback uses the prior runtime and action, which can still be legacy; it refuses
 if it cannot settle any new supervised attempt. A successful migration uses supervision from then on. No manual
 configuration deletion or Windows restart is required for legacy migration.
+
+For an existing supervised registration, reinstall disables and retires it before changing its
+configuration. If runtime publication, configuration writing or `/create` fails, Domovoi restores
+the prior action and its enabled state after restoring the old configuration. A deleted task is
+re-created; rollback never issues `/run`. If configuration restoration fails, Domovoi does not
+re-enable the old task. An expired operation cannot roll back commands that may still complete;
+inspect status before retrying.
 
 The Windows path uses the built-in Windows PowerShell Task Scheduler COM interface, not localized
 `schtasks /query` text. The executable is resolved beneath the absolute local `SystemRoot`, never
@@ -438,15 +445,17 @@ process exited or is waiting for a scheduled spawn remains installed but reports
 The crash-supervision test also checks status after a clean exit. A missing or ambiguous runtime
 field is a refusal, as is any command failure other than the missing-service answer (113).
 
-Windows status uses the numeric Task Scheduler `RegisteredTask.State` through the same read-only
-COM inspection as removal. State 4 reports running; 1, 2 and 3 report registered but not running.
-Only an explicit missing-task answer reports no registration. Unknown state 0, malformed output
-and every nonzero PowerShell exit refuse the query. Localized `schtasks` prose is not parsed.
+Windows status reads task registration through the numeric Task Scheduler `RegisteredTask.State`
+and reports daemon state from supervisor history and Windows boot/process evidence. A running
+task alone does not prove a running daemon. Recorded exhaustion returns exit 1. Only an explicit
+missing-task answer reports no registration. Unknown state 0, malformed output and every nonzero
+PowerShell exit refuse the query. Localized `schtasks` prose is not parsed.
 
 Beyond those native tests these are configuration delivery and focused removal checks, not full
-native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision of the fixture
-process is proven on systemd and launchd, and absent on Windows: the logon task runs the daemon
-directly with no restart, and supervision returns with the job-object work (ruling Q300 A).
+native systemd, launchd, or Task Scheduler lifecycle acceptance. Crash supervision is exercised by
+native tests on systemd, launchd and Windows. The Windows task runs the job-object supervisor:
+1, 5 and 15 second backoffs, exhaustion on crash four, and status exit 1. Both Windows native test
+files passed on `27f7f370`; real sign-out/sign-in and reboot acceptance remain **[H]**.
 Lingering is proven only against mocked and shimmed `loginctl`; no test changes a real user's
 lingering. Installer rollback
 remains separate audit work. A timed-out manager may already have changed OS state; inspect service

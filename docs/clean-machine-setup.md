@@ -374,7 +374,7 @@ Read these before relying on this guide for a fleet rollout.
   the exact Global job name, and death of the recorded daemon identity after helper death or
   sign-out. The limit is termination started, completion not observed; the profile lease
   guards a second owner. Helper-written receipts and the hidden session-end window are not
-  used. The replacement Global-name/helper-death test still needs Windows CI execution.
+  used. Both Windows native files passed on `27f7f370`, including Global-name/helper-death recovery.
   Existing direct-daemon tasks retain [scheduler retirement](daemon-services.md#windows-removal):
   disable, stop, confirm no instances, then delete. This does not prove every legacy descendant
   dead. Install and update migrate them to supervised registrations; profile changes require
