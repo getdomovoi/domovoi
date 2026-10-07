@@ -737,7 +737,7 @@ async function installWithDeadline(
       if (status?.supervising || status?.running) throw new Error("The Windows supervisor is still active; stop and remove it before installing again")
       // Stopped/exhausted history does not disable its logon registration.
       // Fence and drain the old task before a replacement configuration is visible.
-      if (owner === "supervised" || (!status && effects.readConfiguration?.(assertHome(target.home), "win32") !== undefined)) {
+      if (owner === "supervised" || effects.readConfiguration?.(assertHome(target.home), "win32") !== undefined) {
         if (!effects.stopSupervisor) throw new Error("Windows supervisor evidence is missing; replacement refused")
         const removal = windowsTaskRemovalPlan(displayName)
         let previousTask: { action: WindowsTaskAction; command: string; runtime: ServiceRuntimeRecord | undefined } | undefined
@@ -751,7 +751,12 @@ async function installWithDeadline(
         await disableWindowsTask(removal, effects, deadline)
         await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, {
           retire: false,
-          stopTask: async () => await stopWindowsTask(removal, effects, deadline) === "stopped",
+          stopTask: async () => {
+            // Tree evidence is already proved under the startup lease. A task
+            // deleted outside Domovoi has no registration left to drain.
+            const stopped = await stopWindowsTask(removal, effects, deadline)
+            return stopped === "stopped" || stopped === "missing"
+          },
           ...(owner === "supervised" ? { confirmNoLaunch: () => windowsTaskDisabledAndIdle(displayName, effects, deadline) } : {}),
         }))
         if (previousTask) {

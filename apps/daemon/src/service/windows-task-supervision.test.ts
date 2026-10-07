@@ -107,6 +107,30 @@ it("retains configuration if an exhausted supervisor cannot be retired for reins
   expect(f.effects.run).not.toHaveBeenCalled()
 })
 
+it.each(["before-reinstall", "during-stop"] as const)("reinstalls with proven terminal evidence when the task disappears %s", async (when) => {
+  const f = fixture(); f.task.running = false
+  if (when === "before-reinstall") f.task.exists = false
+  f.effects.stopSupervisor = vi.fn(async (_path, _deadline, options) => {
+    // The real stop path invokes this only after validating evidence under its lease.
+    if (when === "during-stop") f.task.exists = false
+    if (!await options?.stopTask?.()) throw new Error("Task remains observable")
+    f.events.push("prove-empty")
+  })
+  await installService(target, f.effects)
+  expect(f.effects.stopSupervisor).toHaveBeenCalledOnce()
+  expect(f.events.indexOf("prove-empty")).toBeLessThan(f.events.indexOf("write"))
+  expect(f.effects.write).toHaveBeenCalled()
+  expect(vi.mocked(f.effects.run).mock.calls.some(([, args]) => args[0] === "/create")).toBe(true)
+})
+
+it("refuses reinstall of a missing task when its tree proof fails", async () => {
+  const f = fixture(); f.task.exists = false
+  f.effects.stopSupervisor = vi.fn(async () => { throw new Error(windowsTreeUnknown) })
+  await expect(installService(target, f.effects)).rejects.toThrow("Restart Windows")
+  expect(f.effects.write).not.toHaveBeenCalled()
+  expect(f.effects.run).not.toHaveBeenCalled()
+})
+
 it("retires a legacy task using the scheduler before removing configuration", async () => {
   const f = fixture(); f.task.flag = "--service-config"
   await removeService(target, f.effects)
