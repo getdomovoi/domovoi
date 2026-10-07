@@ -145,7 +145,7 @@ describe("ClaudeAgentSdkAdapter", () => {
       id: "sonnet",
       displayName: "Sonnet 5",
       description: "Balanced coding model",
-      supportedReasoningEfforts: ["low", "medium", "high", "max"],
+      supportedReasoningEfforts: ["unset", "low", "medium", "high", "max"],
       isDefault: true,
     }])
     expect(calls[0]?.query.supportedModels).toHaveBeenCalledOnce()
@@ -162,7 +162,7 @@ describe("ClaudeAgentSdkAdapter", () => {
     try {
       const models = await adapter.listModels()
       expect(models[0]).not.toHaveProperty("defaultReasoningEffort")
-      expect(models[0]?.supportedReasoningEfforts).toEqual(supportsEffort ? ["low", "medium", "high", "max"] : [])
+      expect(models[0]?.supportedReasoningEfforts).toEqual(supportsEffort ? ["unset", "low", "medium", "high", "max"] : [])
     } finally { await adapter.close() }
   })
 

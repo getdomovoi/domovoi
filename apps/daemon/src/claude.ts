@@ -310,7 +310,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       signal?.throwIfAborted()
       return models.map((model, index) => {
         const efforts = model.supportsEffort
-          ? [...(model.supportedEffortLevels ?? [])]
+          ? ["unset", ...(model.supportedEffortLevels ?? [])]
           : []
         return {
           provider: "claude-code",
