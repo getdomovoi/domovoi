@@ -424,7 +424,10 @@ export function TerminalPane({
           <EmptyHeader>
             <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
             <EmptyTitle>No shell is open in this session</EmptyTitle>
-            <EmptyDescription>A device with full access opens it. This desktop can read it once it is open.</EmptyDescription>
+            {/* Read-only covers a watching device and an archived session, and
+                only the first will ever see a shell open, so the line promises
+                neither. */}
+            <EmptyDescription>This view reads a shell. It cannot open one.</EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
             <Button variant="outline" size="xs" disabled={!connected} onClick={restart}>Check again</Button>
