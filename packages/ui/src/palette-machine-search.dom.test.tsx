@@ -203,6 +203,8 @@ it("shows a remote session's state and age as its meta", async () => {
     ? { query: "billing", truncated: false, matches: [
         { session: { ...session("s-replay", "Replay failed billing events"), state: "active", activeTurnId: "turn-1" }, matchedIn: "title" },
         { session: { ...session("s-drain", "Find why the queue drains"), state: "failed", updatedAt: hourAgo }, matchedIn: "title" },
+        // A turn stopped at a gate keeps its turn id; the row says it waits.
+        { session: { ...session("s-gate", "Apply the billing migration"), state: "waiting", activeTurnId: "turn-2", updatedAt: new Date(Date.now() - 5 * 60_000).toISOString() }, matchedIn: "title" },
       ] }
     : none("billing"))
   const { user } = palette(search)
@@ -212,6 +214,56 @@ it("shows a remote session's state and age as its meta", async () => {
   expect(replay.querySelector("[data-status-dot]")).toBeTruthy()
   const drain = screen.getByRole("option", { name: /Find why the queue drains/u })
   expect(drain.querySelector("[data-palette-meta]")?.textContent).toBe("failed 1h ago")
+  const gate = screen.getByRole("option", { name: /Apply the billing migration/u })
+  expect(gate.querySelector("[data-palette-meta]")?.textContent).toBe("waiting 5m ago")
+})
+
+// Review 2026-10-06: Add it back during the debounce of a new query must not
+// ask for the old one; the pending search takes the machine back in.
+it("adds a machine back into the query being typed, not the last one asked", async () => {
+  let wslAnswers = false
+  const search = vi.fn(async (machineId: string, query: string): Promise<SessionSearchResult> => {
+    if (machineId === machines[1]!.id && !wslAnswers) throw new Error("no reply")
+    return none(query)
+  })
+  const { user } = palette(search)
+  await user.type(screen.getByRole("combobox"), "billing")
+  await user.click(await screen.findByRole("button", { name: "Search only what answered" }))
+  wslAnswers = true
+  search.mockClear()
+  await user.type(screen.getByRole("combobox"), "s")
+  await user.click(screen.getByRole("button", { name: "Add it back" }))
+  expect(search).not.toHaveBeenCalledWith(machines[1]!.id, "billing", expect.anything())
+  await screen.findByText("searched 3 of 3 machines")
+  expect(search).toHaveBeenCalledWith(machines[1]!.id, "billings", expect.any(AbortSignal))
+})
+
+it("answers Enter on the notice's button, not on the highlighted row", async () => {
+  const search = vi.fn(async (machineId: string): Promise<SessionSearchResult> => {
+    if (machineId === machines[1]!.id) throw new Error("no reply")
+    return none("billing")
+  })
+  const run = vi.fn()
+  const { user, onOpenChange } = palette(search, vi.fn(), [{ id: "open-project", label: "Open billing project", section: "Project", keywords: [], run }])
+  await user.type(screen.getByRole("combobox"), "billing")
+  const button = await screen.findByRole("button", { name: "Search only what answered" })
+  button.focus()
+  await user.keyboard("{Enter}")
+  expect(run).not.toHaveBeenCalled()
+  expect(onOpenChange).not.toHaveBeenCalled()
+  expect(screen.getByText("wsl-ubuntu-24 is left out, so its sessions stay unsearched until you add it back.")).toBeTruthy()
+})
+
+it("keeps the picked row while the query changes during the switch", async () => {
+  const hits = (query: string) => ({ query, truncated: false, matches: [{ session: session("s-replay", "Replay failed billing events"), matchedIn: "title" as const }] })
+  const search = vi.fn(async (machineId: string, query: string): Promise<SessionSearchResult> => machineId === machines[0]!.id && query === "billing" ? hits(query) : none(query))
+  const { user, switching } = palette(search, vi.fn(() => true))
+  await user.type(screen.getByRole("combobox"), "billing")
+  await user.click(await screen.findByText("Replay failed billing events"))
+  switching({ machineId: machines[0]!.id, sessionId: "s-replay" })
+  await user.type(screen.getByRole("combobox"), "x")
+  await new Promise((settle) => setTimeout(settle, 400))
+  expect(screen.getByRole("option", { name: /Replay failed billing events/u }).textContent).toContain("switching to hetzner-cx42")
 })
 
 // Picking a row on another machine keeps the palette open on that row while

@@ -46,6 +46,21 @@ it("draws every row on one line: a dot, the label, and the meta on the right", (
   expect(checkpoint.querySelector("[data-palette-label]")?.textContent).toBe("Take a checkpoint")
 })
 
+it("draws the design's frame: 660px wide, 96px from the top", () => {
+  palette()
+  const frame = screen.getByRole("dialog", { name: "Domovoi commands" })
+  expect(frame.className.split(/\s+/u)).toEqual(expect.arrayContaining(["w-[660px]", "sm:max-w-[660px]", "top-24"]))
+  expect(frame.className).not.toMatch(/(^|\s)(top-1\/3|sm:max-w-sm)(\s|$)/u)
+})
+
+// A command's dot repeats nothing a reader needs, so it is hidden and adds no
+// text; an entity's dot is its state and stays readable.
+it("keeps a command's dot out of the row's name and text", () => {
+  palette()
+  expect(option("Take a checkpoint").textContent).toBe("Take a checkpointmanual")
+  expect(screen.getByRole("option", { name: /^session, waiting Migrate billing webhooks/u })).toBeTruthy()
+})
+
 it("lists sessions, commands, machines and skills under their own headings", () => {
   palette()
   expect([...document.querySelectorAll("[cmdk-group-heading]")].map((heading) => heading.textContent))

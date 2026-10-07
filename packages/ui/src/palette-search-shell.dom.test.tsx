@@ -1,10 +1,10 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it } from "vitest"
-import { protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
+import { daemonAuthenticationErrorCode, protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
 
 import { WorkspaceShell } from "./workspace-shell"
-import { installFakeWebSocket, completeHandshake, respond, sentRequests, workspaceSnapshot } from "./test-support/fake-websocket"
+import { installFakeWebSocket, completeHandshake, fail, respond, sentRequests, workspaceSnapshot } from "./test-support/fake-websocket"
 
 let sockets: ReturnType<typeof installFakeWebSocket>
 beforeEach(() => { globalThis.localStorage?.clear(); sockets = installFakeWebSocket() })
@@ -24,9 +24,8 @@ const machine: FleetMachine = {
   transports: [transport],
 }
 
-// J39: once a machine is admitted, the palette asks it directly for matching
-// sessions, and picking one switches this window to that machine.
-it("searches an admitted machine from the palette and switches to a picked session", async () => {
+// Admits Studio, searches it from the palette, and picks its one match.
+async function pickOnStudio() {
   const user = userEvent.setup()
   render(<WorkspaceShell />)
   const home = sockets.socket(0)
@@ -71,6 +70,13 @@ it("searches an admitted machine from the palette and switches to a picked sessi
   expect(group.textContent).toContain("1 match")
   await user.click(within(group).getByText("Billing webhooks on Studio"))
   await waitFor(() => expect(sentRequests(home, "fleet.clientRoute")).toHaveLength(3))
+  return { home }
+}
+
+// J39: once a machine is admitted, the palette asks it directly for matching
+// sessions, and picking one switches this window to that machine.
+it("searches an admitted machine from the palette and switches to a picked session", async () => {
+  const { home } = await pickOnStudio()
   // The palette stays on the picked row while the window moves (Desktop V2,
   // xmChoose), and closes once the session is open there.
   const palette = screen.getByRole("dialog", { name: "Domovoi commands" })
@@ -82,6 +88,22 @@ it("searches an admitted machine from the palette and switches to a picked sessi
   await act(async () => { completeHandshake(attached, { ...target, sessions: [...target.sessions, studioSession] }) })
   await settle()
   await act(async () => { respond(attached, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
+  await settle()
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull())
+}, 15_000)
+
+// A switch that cannot finish does not leave the palette spinning over the
+// shell: it closes, and the shell's own banner says what went wrong.
+it("closes the palette when the machine it is switching to refuses this client", async () => {
+  const { home } = await pickOnStudio()
+  expect(screen.getByRole("dialog", { name: "Domovoi commands" })).toBeTruthy()
+  await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
+  await settle()
+  const attached = sockets.socket(3)
+  await act(async () => {
+    attached.open()
+    fail(attached, "system.hello", { code: daemonAuthenticationErrorCode, message: "This client credential was revoked" })
+  })
   await settle()
   await waitFor(() => expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull())
 }, 15_000)

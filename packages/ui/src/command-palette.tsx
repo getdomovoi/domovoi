@@ -116,18 +116,22 @@ function age(updatedAt: string, now: number): string {
 }
 
 // A session on another machine, read the way the drawer reads one here
-// (session-groups.ts): a turn in flight is running, and the rest say their
-// state and how long ago it last changed. A running session has no duration:
-// the wire carries no turn start until protocol 0.8.0 (ruling Q390 A).
+// (session-groups.ts): a session stopped at a gate waits even while its turn
+// is in flight, a failed one says so, a turn in flight is running, and the
+// rest say their state. All but running say how long ago the session last
+// changed. Running has no duration: the wire carries no turn start until
+// protocol 0.8.0 (ruling Q390 A).
 export function remoteSessionMeta(session: SessionSummary, now: number): { meaning: StatusMeaning; meta: string } {
-  if (session.activeTurnId) return { meaning: "online", meta: "running" }
-  const [meaning, note]: [StatusMeaning, string] =
-    session.state === "failed" ? ["offline", "failed"]
-      : session.state === "ownership-conflict" ? ["offline", "ownership conflict"]
-        : session.state === "waiting" ? ["waiting", "waiting"]
-          : session.state === "transferred" ? ["idle", "moved to another machine"]
-            : session.state === "archiving" || session.state === "archived" ? ["idle", session.state]
-              : ["idle", "idle"]
+  const stated: [StatusMeaning, string] | null =
+    session.state === "waiting" ? ["waiting", "waiting"]
+      : session.state === "failed" ? ["offline", "failed"]
+        : session.state === "ownership-conflict" ? ["offline", "ownership conflict"]
+          : null
+  if (!stated && session.activeTurnId) return { meaning: "online", meta: "running" }
+  const [meaning, note]: [StatusMeaning, string] = stated
+    ?? (session.state === "transferred" ? ["idle", "moved to another machine"]
+      : session.state === "archiving" || session.state === "archived" ? ["idle", session.state]
+        : ["idle", "idle"])
   return { meaning, meta: `${note} ${age(session.updatedAt, now)}` }
 }
 
@@ -139,18 +143,22 @@ function useMachineSearch(machineSearch: MachineSearch | undefined, query: strin
   // notice untrue.
   const [leftOut, setLeftOut] = useState<ReadonlySet<string>>(() => new Set())
   const leftOutNow = useRef<ReadonlySet<string>>(leftOut)
-  const controller = useRef<AbortController | null>(null)
+  // The query that was last sent out and the controller of its requests. It
+  // is cleared while the next query waits out its debounce, so a machine added
+  // back then is asked by that search, never for the query before it.
+  const fired = useRef<{ query: string; controller: AbortController } | null>(null)
   const trimmed = query.trim()
   const active = Boolean(machineSearch) && open && trimmed.length >= 2
   useEffect(() => {
+    fired.current = null
     if (!machineSearch || !active) {
       setAnswers({})
       setAskedFor("")
       return
     }
     const current = new AbortController()
-    controller.current = current
     const timer = setTimeout(() => {
+      fired.current = { query: trimmed, controller: current }
       setAskedFor(trimmed)
       const everyMachine = [machineSearch.here, ...machineSearch.machines]
       const left = leftOutNow.current
@@ -159,7 +167,7 @@ function useMachineSearch(machineSearch: MachineSearch | undefined, query: strin
         if (!left.has(machine.id)) ask(machineSearch, machine.id, trimmed, current, setAnswers)
       }
     }, machineSearchDebounceMs)
-    return () => { clearTimeout(timer); current.abort() }
+    return () => { clearTimeout(timer); current.abort(); fired.current = null }
   }, [machineSearch, active, trimmed])
   const setLeft = (next: ReadonlySet<string>) => { leftOutNow.current = next; setLeftOut(next) }
   const leaveOutSilent = () => {
@@ -169,10 +177,11 @@ function useMachineSearch(machineSearch: MachineSearch | undefined, query: strin
   const addBack = () => {
     const returning = [...leftOut]
     setLeft(new Set())
-    const current = controller.current
-    if (!machineSearch || !askedFor || !current || current.signal.aborted) return
+    const current = fired.current
+    // Nothing sent yet: the search waiting out its debounce asks them.
+    if (!machineSearch || !current || current.controller.signal.aborted) return
     setAnswers((answered) => ({ ...answered, ...Object.fromEntries(returning.map((id) => [id, { state: "asking" as const }])) }))
-    for (const id of returning) ask(machineSearch, id, askedFor, current, setAnswers)
+    for (const id of returning) ask(machineSearch, id, current.query, current.controller, setAnswers)
   }
   const forget = () => setLeft(new Set())
   return { active, askedFor, answers, leaveOutSilent, addBack, forget }
@@ -197,12 +206,13 @@ function ask(
   )
 }
 
-// A dot that repeats what the words beside it already say. It stays out of
-// the accessibility tree, so a row is read once.
+// A dot that repeats what the words beside it already say, or, on a command,
+// is the design's colour and nothing more. It stays out of the accessibility
+// tree and adds no text, so a row is read, and copied, once.
 function Dot({ meaning }: { meaning: StatusMeaning }) {
   return (
     <span aria-hidden className="inline-flex shrink-0">
-      <StatusDot meaning={meaning} label={meaning} labelHidden />
+      <StatusDot meaning={meaning} label="" labelHidden />
     </span>
   )
 }
@@ -279,11 +289,12 @@ export function CommandPalette({
   const rows = targets ?? ranked
   // A row picked on another machine stays on screen, marked switching, while
   // the window moves. The window's move changes the shell's search targets,
-  // so the palette keeps the ones the row was picked from until it closes.
-  const [picked, setPicked] = useState<{ machineId: string; sessionId: string; search: MachineSearch } | null>(null)
+  // so the palette keeps the ones the row was picked from, and the query it
+  // was found by, until it closes.
+  const [picked, setPicked] = useState<{ machineId: string; sessionId: string; search: MachineSearch; query: string } | null>(null)
   const sawSwitch = useRef(false)
   const searching = picked?.search ?? machineSearch
-  const remote = useMachineSearch(searching, query, open && !choosing)
+  const remote = useMachineSearch(searching, picked?.query ?? query, open && !choosing)
   const remoteMachines = searching?.machines ?? []
   const searched = searching ? [searching.here, ...remoteMachines] : []
   const answered = searched.filter((machine) => ["hits", "none"].includes(remote.answers[machine.id]?.state ?? "")).length
@@ -352,7 +363,9 @@ export function CommandPalette({
   }, [open, restoreFocusTo])
 
   const notice = (key: string, meaning: StatusMeaning, text: string, action: string, onClick: () => void) => (
-    <div key={key} data-palette-notice className="mx-0.5 mt-0.5 mb-1.5 flex items-center gap-2.5 rounded-[calc(var(--radius)-2px)] border bg-background px-3 py-[9px]">
+    // The list's own key handling runs the highlighted row on Enter; a key
+    // pressed on the notice's button belongs to the button.
+    <div key={key} data-palette-notice onKeyDown={(event) => event.stopPropagation()} className="mx-0.5 mt-0.5 mb-1.5 flex items-center gap-2.5 rounded-[calc(var(--radius)-2px)] border bg-background px-3 py-[9px]">
       <Dot meaning={meaning} />
       <span className="min-w-0 flex-1 text-[12px] leading-normal text-strong">{text}</span>
       <Button type="button" variant="outline" size="xs" className="shrink-0" onClick={onClick}>{action}</Button>
@@ -526,7 +539,7 @@ export function CommandPalette({
                               close()
                               return
                             }
-                            setPicked({ machineId: machine.id, sessionId: match.session.id, search: searching })
+                            setPicked({ machineId: machine.id, sessionId: match.session.id, search: searching, query })
                           }}
                         >
                           <Dot meaning={row.meaning} />
