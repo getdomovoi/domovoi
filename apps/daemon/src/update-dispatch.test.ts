@@ -70,14 +70,14 @@ async function setup(repository = signedRepository(), automaticChecks = false) {
 
 describe("daemon update operation", () => {
   it("reports the built commit in its initial status", () => {
-    vi.stubGlobal("__DOMOVOI_SOURCE_COMMIT__", "a".repeat(40))
+    vi.stubGlobal("__BUILD_SOURCE_COMMIT__", "a".repeat(40))
     expect(new DaemonUpdates().status()).toMatchObject({ currentSourceCommit: "a".repeat(40) })
   })
 
   it("retains the captured build commit while checking and after an idle check", async () => {
-    vi.stubGlobal("__DOMOVOI_SOURCE_COMMIT__", "a".repeat(40))
+    vi.stubGlobal("__BUILD_SOURCE_COMMIT__", "a".repeat(40))
     const { updates } = await setup(signedRepository({ targetVersion: "0.0.1" }))
-    vi.stubGlobal("__DOMOVOI_SOURCE_COMMIT__", "b".repeat(40))
+    vi.stubGlobal("__BUILD_SOURCE_COMMIT__", "b".repeat(40))
     const checking = updates.check()
     expect(updates.status()).toMatchObject({ state: "checking", currentSourceCommit: "a".repeat(40) })
     expect(await checking).toMatchObject({ state: "idle", currentSourceCommit: "a".repeat(40) })
@@ -85,7 +85,7 @@ describe("daemon update operation", () => {
   })
 
   it("retains the build commit in a refused status", async () => {
-    vi.stubGlobal("__DOMOVOI_SOURCE_COMMIT__", "a".repeat(40))
+    vi.stubGlobal("__BUILD_SOURCE_COMMIT__", "a".repeat(40))
     expect(await new DaemonUpdates().check()).toMatchObject({ state: "failed", currentSourceCommit: "a".repeat(40) })
   })
 
@@ -94,7 +94,7 @@ describe("daemon update operation", () => {
   })
 
   it.each(["not-a-commit", null, undefined])("omits an invalid build commit: %s", (commit) => {
-    vi.stubGlobal("__DOMOVOI_SOURCE_COMMIT__", commit)
+    vi.stubGlobal("__BUILD_SOURCE_COMMIT__", commit)
     expect(new DaemonUpdates().status()).not.toHaveProperty("currentSourceCommit")
   })
 
