@@ -78,6 +78,12 @@ const clientNoun: Record<TerminalOwner["client"], string> = {
 // watching desktop shows, not an error.
 const terminalMissing = "Terminal does not exist"
 
+// What a refusal says. An RPC error may carry an empty message, and an empty
+// error would leave the pane with nothing to show and its status unsettled.
+function failure(cause: unknown, fallback: string): string {
+  return cause instanceof Error && cause.message.trim() ? cause.message : fallback
+}
+
 type AttachNote = { tone: "done" | "refused", text: string }
 
 export function TerminalPane({
@@ -174,7 +180,7 @@ export function TerminalPane({
     const input = terminal.onData((data) => {
       if (!ownsTerminal) return
       void controls.write(terminalId, data).catch((cause: unknown) => {
-        if (active) setError(cause instanceof Error ? cause.message : "Terminal input failed")
+        if (active) setError(failure(cause, "Terminal input failed"))
       })
     })
     // The shell has one grid, the holder's. A pane that does not hold it draws
@@ -207,7 +213,7 @@ export function TerminalPane({
         },
         (cause: unknown) => {
           if (!active) return
-          const message = cause instanceof Error ? cause.message : "Terminal could not be read"
+          const message = failure(cause, "Terminal could not be read")
           if (message === terminalMissing) setMissing(true)
           else setError(message)
         },
@@ -232,7 +238,7 @@ export function TerminalPane({
           }
         },
         (cause: unknown) => {
-          if (active) setError(cause instanceof Error ? cause.message : "Terminal could not start")
+          if (active) setError(failure(cause, "Terminal could not start"))
         },
       )
     }
@@ -286,7 +292,7 @@ export function TerminalPane({
   const sendInterrupt = () => {
     if (!terminalId || !writable) return
     void controls.write(terminalId, "\x03").catch((cause: unknown) => {
-      setError(cause instanceof Error ? cause.message : "Terminal interrupt failed")
+      setError(failure(cause, "Terminal interrupt failed"))
     })
   }
   const sendInput = (data: string) => {
@@ -298,14 +304,14 @@ export function TerminalPane({
       () => xtermRef.current,
       () => terminal.focus(),
       (cause: unknown) => {
-        setError(cause instanceof Error ? cause.message : "Terminal input failed")
+        setError(failure(cause, "Terminal input failed"))
       },
     )
   }
   const close = () => {
     if (!terminalId || !writable) return
     void controls.close(terminalId).catch((cause: unknown) => {
-      setError(cause instanceof Error ? cause.message : "Terminal could not close")
+      setError(failure(cause, "Terminal could not close"))
     })
   }
   const restart = () => {
@@ -317,7 +323,7 @@ export function TerminalPane({
     void controls.claim(terminalId).then(
       ({ owner }) => setMetadata((current) => current ? { ...current, owner } : current),
       (cause: unknown) => {
-        setError(cause instanceof Error ? cause.message : "Terminal takeover failed")
+        setError(failure(cause, "Terminal takeover failed"))
       },
     )
   }

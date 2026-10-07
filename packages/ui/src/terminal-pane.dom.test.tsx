@@ -383,6 +383,25 @@ describe("TerminalPane on a watching desktop", () => {
     expect(document.body.textContent).not.toContain("connecting")
   })
 
+  // An RPC error may carry no message. The refusal still settles the status
+  // and says something.
+  it("settles on a refusal with no message, watching or opening", async () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.reject(new Error(""))
+    })
+    expect(screen.getByText("Terminal status: unavailable.")).toBeTruthy()
+    expect((await screen.findByRole("alert")).textContent).toContain("Terminal could not be read")
+    cleanup()
+
+    const opening = harness()
+    const refusing: TerminalControls = { ...opening.controls, create: async () => { throw new Error("") } }
+    render(<TerminalPane connected controls={refusing} machineName="worktop" sessionId={sessionId} />)
+    expect((await screen.findByRole("alert")).textContent).toContain("Terminal could not start")
+    expect(screen.getByText("Terminal status: unavailable.")).toBeTruthy()
+  })
+
   it("offers to look again after a watch the daemon refused", async () => {
     const user = userEvent.setup()
     const target = watcher()
