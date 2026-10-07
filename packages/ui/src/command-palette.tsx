@@ -20,6 +20,7 @@ import {
   commandPaletteTitle,
   opensElsewhere,
   rankWorkspaceCommands,
+  sessionTone,
   shortcutLabel,
   type CommandPalettePlatform,
   type WorkspaceCommand,
@@ -119,22 +120,17 @@ function age(updatedAt: string, now: number): string {
 // is in flight, a failed one says so, a turn in flight is running, and the
 // rest say their state. All but running say how long ago the session last
 // changed. Running has no duration: the wire carries no turn start until
-// protocol 0.8.0 (ruling Q390 A).
+// protocol 0.8.0 (ruling Q390 A). The dot is sessionTone's colour for the
+// state, as on this machine's rows in the same list, so a state reads the same
+// whichever machine returned it.
 export function remoteSessionMeta(session: SessionSummary, now: number): { meaning: StatusMeaning; meta: string } {
-  const stated: [StatusMeaning, string] | null =
-    session.state === "waiting" ? ["waiting", "waiting"]
-      : session.state === "failed" ? ["offline", "failed"]
-        : session.state === "ownership-conflict" ? ["offline", "ownership conflict"]
-          : null
-  // Active is running with or without a turn id, as sessionTone reads this
-  // machine's own session rows in the same list.
-  if (!stated && (session.activeTurnId || session.state === "active")) return { meaning: "online", meta: "running" }
-  const [meaning, note]: [StatusMeaning, string] = stated
-    ?? (session.state === "transferred" ? ["idle", "moved to another machine"]
-      : session.state === "transferring" ? ["waiting", "transferring"]
-        : session.state === "done" || session.state === "archiving" || session.state === "archived" ? ["idle", session.state]
-          : ["idle", "idle"])
-  return { meaning, meta: `${note} ${age(session.updatedAt, now)}` }
+  const gated = session.state === "waiting" || session.state === "failed" || session.state === "ownership-conflict"
+  // Active is running with or without a turn id, as sessionTone reads it.
+  if (!gated && (session.activeTurnId || session.state === "active")) return { meaning: "online", meta: "running" }
+  const note = session.state === "ownership-conflict" ? "ownership conflict"
+    : session.state === "transferred" ? "moved to another machine"
+      : session.state
+  return { meaning: sessionTone(session.state), meta: `${note} ${age(session.updatedAt, now)}` }
 }
 
 // While a picked row switches the window, the answers on screen are the ones

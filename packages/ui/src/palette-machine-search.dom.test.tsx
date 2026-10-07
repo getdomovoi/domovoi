@@ -5,7 +5,8 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { CommandPalette } from "./command-palette"
-import type { WorkspaceCommand } from "./workspace-commands"
+import type { StatusMeaning } from "./status-dot"
+import { sessionTone, type WorkspaceCommand } from "./workspace-commands"
 
 afterEach(cleanup)
 
@@ -380,6 +381,23 @@ it("names a finished or moving session by its state", async () => {
   const done = await screen.findByRole("option", { name: /Billing export finished/u })
   expect(done.querySelector("[data-palette-meta]")?.textContent).toMatch(/^done /u)
   expect(screen.getByRole("option", { name: /Billing moving over/u }).querySelector("[data-palette-meta]")?.textContent).toMatch(/^transferring /u)
+})
+
+// PR #745 review (P2): a session's dot is the colour sessionTone gives its
+// state, so the same state reads the same whichever machine returned it.
+it("colours a remote session's dot as this machine's rows are coloured", async () => {
+  const states = ["archiving", "archived", "transferring", "transferred", "done", "idle", "waiting", "failed", "ownership-conflict", "active"] as const
+  const search = vi.fn(async (machineId: string): Promise<SessionSearchResult> => machineId === machines[0]!.id
+    ? { query: "billing", truncated: false, matches: states.map((state) => ({ session: { ...session(`s-${state}`, `Billing ${state} row`), state }, matchedIn: "title" as const })) }
+    : none("billing"))
+  const { user } = palette(search)
+  await user.type(screen.getByRole("combobox"), "billing")
+  await screen.findByRole("option", { name: /Billing archiving row/u })
+  const fill: Record<StatusMeaning, string> = { online: "bg-success", waiting: "bg-warning", offline: "bg-destructive", handoff: "bg-info", idle: "bg-faint" }
+  for (const state of states) {
+    const dot = screen.getByRole("option", { name: new RegExp(`Billing ${state} row`, "u") }).querySelector("[data-status-dot]")!
+    expect([state, dot.className.split(/\s+/u).find((name) => name.startsWith("bg-"))]).toEqual([state, fill[sessionTone(state)]])
+  }
 })
 
 // Picking a row on another machine keeps the palette open on that row while
