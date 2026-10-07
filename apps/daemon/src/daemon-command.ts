@@ -3,7 +3,7 @@ import { homedir, userInfo } from "node:os"
 import { fileURLToPath } from "node:url"
 import { z } from "zod"
 
-import { nodeServiceEffects, runServiceCommand, type ServiceCommandDependencies } from "./service/install.js"
+import type { ServiceCommandDependencies } from "./service/install.js"
 
 // Both entry points, and any shared tsup chunks, live directly in dist/.
 // The invoking binary may be the human CLI rather than the daemon worker.
@@ -19,7 +19,8 @@ export function ownVersion(): string {
   return manifest.version
 }
 
-export function nodeDaemonCommandDependencies(): ServiceCommandDependencies {
+export async function nodeDaemonCommandDependencies(): Promise<ServiceCommandDependencies> {
+  const { nodeServiceEffects } = await import("./service/install.js")
   // The service runs as the user who asked for it, using this process's identity.
   const { uid, username } = userInfo()
   return {
@@ -50,7 +51,8 @@ export async function runDaemonCommand(
     return 1
   }
   try {
-    return await runServiceCommand(["service", ...args], dependencies ?? nodeDaemonCommandDependencies())
+    const { runServiceCommand } = await import("./service/install.js")
+    return await runServiceCommand(["service", ...args], dependencies ?? await nodeDaemonCommandDependencies())
   } catch (error) {
     stderr(`${error instanceof Error ? error.message : String(error)}\n`)
     return 1

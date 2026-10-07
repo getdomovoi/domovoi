@@ -178,7 +178,7 @@ async function main() {
     return
   }
   if (args[0] === "service") {
-    process.exitCode = await runServiceCommand(args, nodeDaemonCommandDependencies())
+    process.exitCode = await runServiceCommand(args, await nodeDaemonCommandDependencies())
     return
   }
   if (args[0] === "open") {

@@ -6,13 +6,22 @@ import { join } from "node:path"
 
 const daemonCommand = await import("./dist/daemon-command.js")
 assert.equal(daemonCommand.daemonWorkerEntry(), realpathSync(new URL("./dist/index.js", import.meta.url)))
-assert.equal(daemonCommand.nodeDaemonCommandDependencies().execPath, daemonCommand.daemonWorkerEntry())
+assert.equal((await daemonCommand.nodeDaemonCommandDependencies()).execPath, daemonCommand.daemonWorkerEntry())
 
 const commandProfile = mkdtempSync(join(tmpdir(), "domovoi-dist-command-"))
 try {
+  // Detect SQLite imports even on Node versions that no longer warn about them.
+  const detectSqlite = "data:text/javascript," + encodeURIComponent(`
+    import module from "node:module"
+    module.registerHooks({
+      resolve(specifier, context, next) {
+        if (specifier === "node:sqlite" || specifier === "sqlite") process.stdout.write("node:sqlite\\n")
+        return next(specifier, context)
+      },
+    })
+  `)
   const imported = spawnSync(process.execPath, [
-    // Node 22 warns on node:sqlite when the import chain loads it.
-    "--disable-warning=ExperimentalWarning",
+    "--import", detectSqlite,
     "--input-type=module", "-e", 'await import("./dist/daemon-command.js")',
   ], {
     encoding: "utf8", timeout: 2_000,

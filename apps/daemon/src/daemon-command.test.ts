@@ -43,8 +43,8 @@ describe("daemon command", () => {
       .toBe(fileURLToPath("file:///C:/opt/pkg/dist/index.js"))
   })
 
-  it("builds dependencies for the worker instead of the invoking binary", () => {
-    const dependencies = nodeDaemonCommandDependencies()
+  it("builds dependencies for the worker instead of the invoking binary", async () => {
+    const dependencies = await nodeDaemonCommandDependencies()
     expect(dependencies.execPath).toBe(daemonWorkerEntry())
     expect(dependencies.execPath).not.toBe(process.argv[1])
     expect(dependencies.runtime).toBe(process.execPath)
