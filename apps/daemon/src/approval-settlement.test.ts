@@ -1,11 +1,14 @@
+import * as fs from "node:fs"
 import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { unrestrictedApprovalScope } from "./approval-facts.js"
 import {
   ApprovalLedger,
+  heldSettlementInput,
+  sealedApproval,
   sameExecution,
   savedSettlementInput,
   settleApproval,
@@ -691,5 +694,178 @@ describe("ApprovalLedger", () => {
       directory: "[REDACTED] in the session worktree",
       command: "cat [REDACTED]",
     })
+  })
+})
+
+describe("approval outside-project facts", () => {
+  it("omits working-directory containment when the command request has no cwd", async () => {
+    const workspace = await worktree()
+    const { approval } = await settleApproval(input(workspace, {
+      request: { workspace, command: "cat /somewhere/else.txt" },
+    }))
+    expect(approval).not.toHaveProperty("outsideProject")
+  })
+
+  it("limits a shell command's fact to its reported working directory", async () => {
+    const workspace = await worktree()
+    const { approval } = await settleApproval(input(workspace, {
+      request: { workspace, cwd: workspace, cwdSource: "request", command: "cat /somewhere/else.txt" },
+    }))
+    expect(approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
+  })
+
+  it("does not treat a session cwd as the command cwd", async () => {
+    const workspace = await worktree()
+    const { approval } = await settleApproval(input(workspace))
+    expect(approval).not.toHaveProperty("outsideProject")
+    expect(approval.directory).toBe(workspace)
+    expect(approval.execution.state).toBe("resolved")
+  })
+
+  it.each([undefined, ""])("requires a nonempty cwd alongside the provenance marker: %s", async (cwd) => {
+    const workspace = await worktree()
+    const { approval } = await settleApproval(input(workspace, {
+      request: { workspace, cwd, cwdSource: "request", command: "ls" },
+    }))
+    expect(approval).not.toHaveProperty("outsideProject")
+  })
+
+  it("retains request cwd provenance when settling a held card again", async () => {
+    const workspace = await worktree()
+    const request = { workspace, cwd: workspace, cwdSource: "request" as const, command: "ls" }
+    const first = await settleApproval(input(workspace, { request }))
+    const held = await settleApproval(heldSettlementInput(first.approval, request, undefined, "resolve", () => "normal"))
+    expect(held.approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
+  })
+
+  it("uses path containment for a target, including new files and sibling directories", async () => {
+    const parent = await worktree()
+    const workspace = join(parent, "repo")
+    await mkdir(workspace)
+    await mkdir(join(parent, "repo-other"))
+    for (const [path, outside] of [["new.txt", false], ["../repo-other/new.txt", true], [".", false]] as const) {
+      const { approval } = await settleApproval(input(workspace, { request: { workspace, path, command: "Write" } }))
+      expect(approval.outsideProject).toEqual({ outside, basis: "path" })
+    }
+  })
+
+  it("follows links before parent traversal and follows a linked worktree root", async () => {
+    const parent = await worktree()
+    const workspace = join(parent, "repo")
+    await mkdir(workspace)
+    await mkdir(join(parent, "outside", "child"), { recursive: true })
+    await symlink(join(parent, "outside", "child"), join(workspace, "link"), "junction")
+    await symlink(workspace, join(parent, "alias"), "junction")
+    const escaped = await settleApproval(input(workspace, {
+      request: { workspace, path: "link/../new.txt", command: "Write" },
+    }))
+    expect(escaped.approval.outsideProject).toEqual({ outside: true, basis: "path" })
+    const inside = await settleApproval(input(join(parent, "alias"), {
+      request: { workspace: join(parent, "alias"), cwd: workspace, cwdSource: "request", command: "ls" },
+    }))
+    expect(inside.approval.outsideProject).toEqual({ outside: false, basis: "working-directory" })
+    const external = await settleApproval(input(workspace, {
+      request: { workspace, cwd: join(workspace, "link"), cwdSource: "request", command: "ls" },
+    }))
+    expect(external.approval.outsideProject).toEqual({ outside: true, basis: "working-directory" })
+  })
+
+  it("omits a fact for opaque tools and unknown command details", async () => {
+    const workspace = await worktree()
+    for (const request of [{ workspace, tool: "opaque", command: "tool.call" }, { workspace }]) {
+      const { approval } = await settleApproval(input(workspace, { request }))
+      expect(approval).not.toHaveProperty("outsideProject")
+    }
+  })
+
+  it("omits the fact when a path lookup fails with permission denied", async () => {
+    const workspace = await worktree()
+    const request = input(workspace, { request: { workspace, path: "unreadable.txt", command: "Write" } })
+    expect((await settleApproval(request)).approval.outsideProject).toEqual({ outside: false, basis: "path" })
+    const target = join(workspace, "unreadable.txt")
+    const nativeRealpath = fs.realpath.native
+    const lookup = vi.spyOn(fs.realpath, "native").mockImplementation(((
+      path: string, callback: (error: NodeJS.ErrnoException | null, resolved: string) => void,
+    ) => {
+      if (path === target) callback(Object.assign(new Error("permission denied"), { code: "EACCES" }), "")
+      else nativeRealpath(path, callback)
+    }) as never)
+    try {
+      const unreadable = await settleApproval(request)
+      expect(lookup).toHaveBeenCalledWith(target, expect.any(Function))
+      expect(unreadable.approval).not.toHaveProperty("outsideProject")
+    } finally {
+      lookup.mockRestore()
+    }
+  })
+
+  // Windows can report an overlong component as missing instead of unreadable.
+  it.skipIf(process.platform === "win32")("omits the fact for an unreadable overlong path component", async () => {
+    const workspace = await worktree()
+    const unreadable = await settleApproval(input(workspace, {
+      request: { workspace, path: "x".repeat(300), command: "Write" },
+    }))
+    expect(unreadable.approval).not.toHaveProperty("outsideProject")
+  })
+
+  it("omits the fact when the deadline expires", async () => {
+    const workspace = await worktree()
+    const deadline = OperationDeadline.start(1, { signal: AbortSignal.abort() })
+    const expired = await settleApproval(input(workspace, {
+      request: { workspace, path: "new.txt", command: "Write" },
+    }), deadline)
+    expect(expired.approval).not.toHaveProperty("outsideProject")
+  })
+
+  it("recomputes a held path's fact and drops it when the card is sealed", async () => {
+    const workspace = await worktree()
+    const outside = await worktree()
+    await symlink(workspace, join(workspace, "target"), "junction")
+    const request = { workspace, path: "target/new.txt", command: "Write" }
+    const first = await settleApproval(input(workspace, { request }))
+    expect(first.approval.outsideProject).toEqual({ outside: false, basis: "path" })
+    await rm(join(workspace, "target"))
+    await symlink(outside, join(workspace, "target"), "junction")
+    const nextInput = heldSettlementInput(first.approval, request, undefined, "resolve", () => "normal")
+    expect((await settleApproval(nextInput)).approval.outsideProject).toEqual({ outside: true, basis: "path" })
+    expect(sealedApproval(first.approval, undefined)).not.toHaveProperty("outsideProject")
+    expect((await settleApproval(nextInput, OperationDeadline.start(1, { signal: AbortSignal.abort() }))).approval)
+      .not.toHaveProperty("outsideProject")
+  })
+})
+
+describe("saved approval context", () => {
+  it("keeps the recorded origin without promoting a saved display directory to request evidence", async () => {
+    const workspace = await worktree()
+    const origin = { client: "desktop" as const, connectionId: "11111111-1111-4111-8111-111111111111" }
+    const first = input(workspace)
+    const card = (await settleApproval({
+      ...first, approval: { ...first.approval, origin }, request: { ...first.request, cwdSource: "request" },
+    })).approval
+    expect(card.outsideProject).toEqual({ outside: false, basis: "working-directory" })
+    const restored = await settleApproval(savedSettlementInput(card, workspace, undefined, () => "normal"))
+    expect(restored.approval.origin).toEqual(origin)
+    expect(restored.approval).not.toHaveProperty("outsideProject")
+    expect(restored.approval.directory).toBe(card.directory)
+    expect(restored.approval.execution).toEqual(card.execution)
+    const { origin: _origin, outsideProject: _outsideProject, ...legacy } = card
+    const old = await settleApproval(savedSettlementInput(legacy, workspace, undefined, () => "normal"))
+    expect(old.approval).not.toHaveProperty("origin")
+    expect(old.approval).not.toHaveProperty("outsideProject")
+  })
+
+  it("rechecks a saved file fact using the file line and never substitutes its directory", async () => {
+    const workspace = await worktree()
+    const outside = await worktree()
+    const target = join(workspace, "file.txt")
+    await writeFile(target, "ordinary file")
+    const card = (await settleApproval(input(workspace, { request: { workspace, path: "file.txt", command: "Write" } }))).approval
+    expect(card.outsideProject).toEqual({ outside: false, basis: "path" })
+    await rm(target)
+    await symlink(join(outside, "file.txt"), target)
+    const restored = await settleApproval(savedSettlementInput(card, workspace, undefined, () => "normal"))
+    expect(restored.approval.outsideProject).toEqual({ outside: true, basis: "path" })
+    const hidden = await settleApproval(savedSettlementInput({ ...card, affects: "The file [REDACTED] in the session worktree." }, workspace, undefined, () => "normal"))
+    expect(hidden.approval).not.toHaveProperty("outsideProject")
   })
 })

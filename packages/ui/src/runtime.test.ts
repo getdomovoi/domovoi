@@ -47,10 +47,30 @@ describe("selectRuntimeModel", () => {
   // Desktop V2: the effort keeps its level when the new model reports the
   // same level, read by its shared word rather than the raw value.
   it("carries a level the new model reports under another value with the same word", () => {
-    const thinking: Runtime = { ...runtime, provider: "claude-code", reasoning: "think-hard" }
-    expect(selectRuntimeModel(thinking, { ...model(["low", "medium", "high"]), defaultReasoningEffort: "high" })).toMatchObject({
+    const shouted: Runtime = { ...runtime, provider: "claude-code", reasoning: "HIGH" }
+    expect(selectRuntimeModel(shouted, { ...model(["low", "medium", "high"]), defaultReasoningEffort: "medium" })).toMatchObject({
       provider: "codex",
-      reasoning: "medium",
+      reasoning: "high",
+    })
+  })
+
+  // Ruling Q31: xhigh is Extra high on every harness, so it carries from
+  // codex to a claude-code model that reports it.
+  it("carries Extra high between codex and claude-code", () => {
+    const extra: Runtime = { ...runtime, reasoning: "xhigh" }
+    expect(selectRuntimeModel(extra, { ...model(["low", "high", "xhigh", "max"]), provider: "claude-code", defaultReasoningEffort: "high" })).toMatchObject({
+      provider: "claude-code",
+      reasoning: "xhigh",
+    })
+  })
+
+  // The claude-code names of the 2026-09-23 scale are not levels the daemon
+  // reports, so they carry no word and land on the new model's default.
+  it("moves a level with no word to the new model's default", () => {
+    const retired: Runtime = { ...runtime, provider: "claude-code", reasoning: "think-hard" }
+    expect(selectRuntimeModel(retired, { ...model(["low", "medium", "high"]), defaultReasoningEffort: "high" })).toMatchObject({
+      provider: "codex",
+      reasoning: "high",
     })
   })
 
@@ -66,23 +86,27 @@ describe("selectRuntimeModel", () => {
     })
   })
 
-  // A raw id means one level on one provider's scale and may mean another, or
-  // nothing, on the next, so across providers the shared word decides first.
-  it("prefers the shared word to a raw id the new provider also reports", () => {
-    const thinking: Runtime = { ...runtime, provider: "claude-code", reasoning: "think-hard" }
-    expect(selectRuntimeModel(thinking, { ...model(["think-hard", "medium"]), defaultReasoningEffort: "think-hard" })).toMatchObject({
-      provider: "codex",
-      reasoning: "medium",
+  // Desktop V2's rank runs Model's own, None, Minimal, Low, Medium, High,
+  // Extra high, Max, so a level carried onto a model with no default among
+  // its levels lands on the nearest rung it reports.
+  it("ranks the design's whole vocabulary when it moves to the nearest level", () => {
+    const extra: Runtime = { ...runtime, reasoning: "xhigh" }
+    expect(selectRuntimeModel(extra, { ...model(["minimal", "high", "max"]), defaultReasoningEffort: "unknown" })).toMatchObject({
+      reasoning: "high",
+    })
+    const none: Runtime = { ...runtime, reasoning: "none" }
+    expect(selectRuntimeModel(none, { ...model(["minimal", "high"]), provider: "claude-code", defaultReasoningEffort: "unknown" })).toMatchObject({
+      reasoning: "minimal",
     })
   })
 
   // The launcher names the new provider before its models arrive, so the
   // caller says which scale the current level was chosen on.
   it("reads the level on the scale of the provider it came from", () => {
-    const named: Runtime = { ...runtime, provider: "codex", reasoning: "think-hard" }
-    expect(selectRuntimeModel(named, { ...model(["low", "medium"]), defaultReasoningEffort: "low" }, "claude-code")).toMatchObject({
-      reasoning: "medium",
-    })
+    const named: Runtime = { ...runtime, reasoning: "unset" }
+    const kilo = { ...model(["high", "none"]), provider: "kilo", defaultReasoningEffort: "unknown" }
+    expect(selectRuntimeModel(named, kilo, "opencode")).toMatchObject({ reasoning: "none" })
+    expect(selectRuntimeModel(named, kilo)).toMatchObject({ reasoning: "high" })
   })
 
   it("keeps the model default for a model that reports no levels", () => {

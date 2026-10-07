@@ -44,6 +44,20 @@ overrides:
   brace-expansion@1: ^1.1.21
   brace-expansion@2: ^2.1.7
   brace-expansion@5: ^5.0.12
+  # GHSA-pqg4-j6r4-53mv, critical: shell-quote 1.8.4 to 1.10.x lets a line terminator
+  # after a comment token inject a command through quote(). Reached through
+  # @changesets/cli > launch-editor and the mobile Expo toolchain > react-devtools-core.
+  # Remove once the lockfile resolves 1.11.0 or later on its own.
+  shell-quote@1: ^1.11.0
+  # GHSA-68fv-2mgg-jv7q, high: source-map-js below 1.2.2 lets indexed source-map section
+  # offsets block the event loop. Reached through postcss in tsup and vite. Remove once
+  # the lockfile resolves 1.2.2 or later on its own.
+  source-map-js@1: ^1.2.2
+  # GHSA-6qxp-vccf-f47h, high: the MCP TypeScript SDK below 1.31.0 can send OAuth client
+  # credentials to an authorization server the MCP server chooses. Reached directly from
+  # apps/daemon, through @anthropic-ai/claude-agent-sdk, and through the shadcn CLI in
+  # packages/ui. Remove once every consumer resolves 1.31.0 or later on its own.
+  '@modelcontextprotocol/sdk@1': ^1.31.0
 
 catalog:
   "@vitest/coverage-v8": ^5.0.0
