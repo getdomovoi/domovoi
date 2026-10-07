@@ -1,25 +1,33 @@
 import assert from "node:assert/strict"
-import { mkdirSync, mkdtempSync } from "node:fs"
+import { mkdtempSync } from "node:fs"
 import { rm } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { isAbsolute, join, relative, sep, win32 } from "node:path"
 
 import { afterAll, afterEach, beforeEach } from "vitest"
 
+export function daemonTestHomePrefix(platform: NodeJS.Platform, temporaryDirectory: string): string {
+  // A sibling of Windows Temp leaves room for long fixture filenames and Git
+  // checkpoint ref locks without changing Git's path handling.
+  return platform === "win32"
+    ? win32.join(win32.dirname(temporaryDirectory), "dv-")
+    : join(temporaryDirectory, "domovoi-vitest-home-")
+}
+
 export function daemonTestEnvironment(platform: NodeJS.Platform, home: string): NodeJS.ProcessEnv {
   return {
     HOME: home, USERPROFILE: home,
-    ...(platform === "win32" ? { TEMP: win32.join(home, "tmp"), TMP: win32.join(home, "tmp") } : {}),
+    ...(platform === "win32" ? { TEMP: home, TMP: home } : {}),
   }
 }
 
 const inheritedHome = homedir()
 const inheritedProfile = process.env.DOMOVOI_PROFILE_DIR
 const protectedProfiles = [join(inheritedHome, ".domovoi"), ...(inheritedProfile ? [inheritedProfile] : [])]
-const home = mkdtempSync(join(tmpdir(), "domovoi-vitest-home-"))
+const home = mkdtempSync(daemonTestHomePrefix(process.platform, tmpdir()))
 const environment = daemonTestEnvironment(process.platform, home)
-// Windows runtime staging requires temp paths to remain inside USERPROFILE.
-if (environment.TEMP !== undefined) mkdirSync(environment.TEMP)
+// Windows staging stays inside USERPROFILE. Reuse the created home as TEMP
+// itself so the redirect adds no further directory components.
 
 // setupFiles run before each test file is imported. Assign directly so a test's
 // vi.unstubAllEnvs() restores this scratch home, never the runner's live home.
