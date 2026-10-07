@@ -174,11 +174,15 @@ function useMachineSearch(machineSearch: MachineSearch | undefined, query: strin
     return () => { clearTimeout(timer); current.abort(); fired.current = null }
   }, [machineSearch, active, trimmed, frozen])
   const setLeft = (next: ReadonlySet<string>) => { leftOutNow.current = next; setLeftOut(next) }
+  // Frozen, nothing can be asked, so neither action changes anything: a
+  // machine added back then would be dropped from the list without a search.
   const leaveOutSilent = () => {
+    if (frozen) return
     setLeft(new Set([...leftOut, ...Object.entries(answers).filter(([, answer]) => answer.state === "silent").map(([id]) => id)]))
     setAnswers((current) => Object.fromEntries(Object.entries(current).map(([id, answer]) => [id, answer.state === "silent" ? { state: "left" as const } : answer])))
   }
   const addBack = () => {
+    if (frozen) return
     const returning = [...leftOut]
     setLeft(new Set())
     const current = fired.current
@@ -374,7 +378,7 @@ export function CommandPalette({
     <div key={key} data-palette-notice onKeyDown={(event) => { if (event.key === "Enter") event.stopPropagation() }} className="mx-0.5 mt-0.5 mb-1.5 flex items-center gap-2.5 rounded-[calc(var(--radius)-2px)] border bg-background px-3 py-[9px]">
       <Dot meaning={meaning} />
       <span className="min-w-0 flex-1 text-[12px] leading-normal text-strong">{text}</span>
-      <Button type="button" variant="outline" size="xs" className="shrink-0" onClick={onClick}>{action}</Button>
+      <Button type="button" variant="outline" size="xs" className="shrink-0" disabled={picked !== null} onClick={onClick}>{action}</Button>
     </div>
   )
 

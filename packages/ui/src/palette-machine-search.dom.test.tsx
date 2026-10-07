@@ -282,6 +282,26 @@ it("keeps a row picked during the next query's debounce", async () => {
   expect(screen.getByRole("option", { name: /Replay failed billing events/u }).textContent).toContain("switching to hetzner-cx42")
 })
 
+// PR #745 review (P2): while a picked row switches the window nothing can be
+// asked, so the notice's action waits, and the machine stays left out.
+it("holds Add it back while a picked row switches the window", async () => {
+  const hits = { query: "billing", truncated: false, matches: [{ session: session("s-replay", "Replay failed billing events"), matchedIn: "title" as const }] }
+  const search = vi.fn(async (machineId: string, query: string): Promise<SessionSearchResult> => {
+    if (machineId === machines[1]!.id) throw new Error("no reply")
+    return machineId === machines[0]!.id ? hits : none(query)
+  })
+  const { user, switching } = palette(search, vi.fn(() => true))
+  await user.type(screen.getByRole("combobox"), "billing")
+  await user.click(await screen.findByRole("button", { name: "Search only what answered" }))
+  await user.click(screen.getByText("Replay failed billing events"))
+  switching({ machineId: machines[0]!.id, sessionId: "s-replay" })
+  const addBack = screen.getByRole("button", { name: "Add it back" })
+  expect(addBack.hasAttribute("disabled")).toBe(true)
+  await user.click(addBack)
+  expect(screen.getByText("wsl-ubuntu-24 is left out, so its sessions stay unsearched until you add it back.")).toBeTruthy()
+  expect(screen.getByRole("group", { name: "wsl-ubuntu-24" }).textContent).toContain("not searched, left out")
+})
+
 // The notice's button keeps Enter to itself, and only Enter: the palette's
 // toggle and every other key still reach the window.
 it("lets every key but Enter leave the notice's button", async () => {
