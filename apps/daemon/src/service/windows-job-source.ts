@@ -3,11 +3,9 @@
 export const windowsJobSource = String.raw`
 $ErrorActionPreference = 'Stop'
 try {
-# Node sends and parses UTF-8 regardless of the Windows console code page.
-[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Add-Type -ReferencedAssemblies System.dll,System.Core.dll,System.Web.Extensions.dll -TypeDefinition @'
 using System;
+using System.IO;
 using System.Text;
 using System.Threading;
 using System.Collections.Concurrent;
@@ -19,6 +17,11 @@ using System.Web.Script.Serialization;
 public static class DomovoiJob {
   const uint KILL_ON_CLOSE = 0x2000;
   static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
+  // Hidden helpers have pipes but no console. Share the buffered input reader
+  // so commands read ahead with the initial request are not lost.
+  static readonly StreamReader Input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
+  static readonly StreamWriter Output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
+  public static string ReadRequest() { return Input.ReadLine(); }
   [StructLayout(LayoutKind.Sequential)] struct BasicLimits {
     public long ProcessTime, JobTime; public uint Flags; public UIntPtr MinWorking, MaxWorking;
     public uint ActiveLimit; public UIntPtr Affinity; public uint Priority, Scheduling;
@@ -59,7 +62,7 @@ public static class DomovoiJob {
   [DllImport("kernel32.dll", SetLastError=true)] static extern IntPtr OpenProcess(uint access, bool inherit, uint pid);
   [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
   static void Check(bool ok) { if (!ok) throw new Win32Exception(Marshal.GetLastWin32Error()); }
-  static void Emit(object value) { Console.Out.WriteLine(Json.Serialize(value)); Console.Out.Flush(); }
+  static void Emit(object value) { Output.WriteLine(Json.Serialize(value)); }
   static string Boot() {
     // KUSER_SHARED_DATA.BootId on Windows 10+: read-only shared kernel data
     // at the fixed user mapping. This unsigned boot counter does not derive
@@ -176,7 +179,7 @@ public static class DomovoiJob {
       }
       var commands = new BlockingCollection<string>();
       var reader = new Thread(() => {
-        try { string line; while ((line = Console.In.ReadLine()) != null) commands.Add(line); }
+        try { string line; while ((line = ReadRequest()) != null) commands.Add(line); }
         catch (System.IO.IOException) { /* Broken input also requests shutdown. */ }
         finally { commands.Add("{\"command\":\"stop\"}"); }
       }); reader.IsBackground = true; reader.Start();
@@ -220,7 +223,7 @@ public static class DomovoiJob {
   }
 }
 '@
-$request = [Console]::In.ReadLine() | ConvertFrom-Json
+$request = [DomovoiJob]::ReadRequest() | ConvertFrom-Json
 if ($request.mode -eq 'inspect') { [DomovoiJob]::Inspect([uint32[]]@($request.pids)) }
 elseif ($request.mode -eq 'inspect-job') { [DomovoiJob]::InspectJob([string]$request.job, [uint32]$request.pid) }
 elseif ($request.mode -eq 'run') {

@@ -28,10 +28,24 @@ it("does not interpolate launch data into the fixed helper program", () => {
   expect(windowsJobCommand().args.join(" ").length).toBeLessThan(30_000)
 })
 
-it("sets BOM-less UTF-8 for helper input and output before reading requests", () => {
-  const beforeRequest = windowsJobSource.slice(0, windowsJobSource.indexOf("$request ="))
-  expect(beforeRequest).toContain("[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)")
-  expect(beforeRequest).toContain("[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)")
+it("does not change console encodings in the hidden helper", () => {
+  expect(/(?:InputEncoding|OutputEncoding)\s*=/.test(windowsJobSource)).toBe(false)
+})
+
+it("shares one UTF-8 stdin reader between the request and command thread", () => {
+  expect(windowsJobSource.match(/new StreamReader\(/g)).toHaveLength(1)
+  expect(windowsJobSource).toContain("static readonly StreamReader Input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));")
+  expect(windowsJobSource).toContain("public static string ReadRequest() { return Input.ReadLine(); }")
+  expect(windowsJobSource).toContain("$request = [DomovoiJob]::ReadRequest() | ConvertFrom-Json")
+  expect(windowsJobSource).toContain("while ((line = ReadRequest()) != null) commands.Add(line);")
+  expect(/Console(?:\]|\.)?(?:::)?In\b/.test(windowsJobSource)).toBe(false)
+})
+
+it("emits parsed responses through a BOM-less UTF-8 stdout writer", () => {
+  expect(windowsJobSource.match(/new StreamWriter\(/g)).toHaveLength(1)
+  expect(windowsJobSource).toContain("static readonly StreamWriter Output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };")
+  expect(windowsJobSource).toContain("static void Emit(object value) { Output.WriteLine(Json.Serialize(value)); }")
+  expect(/Console(?:\]|\.)?(?:::)?Out\b/.test(windowsJobSource)).toBe(false)
 })
 
 it("holds the suspended child until the caller acknowledges durable evidence", async () => {
