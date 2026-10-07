@@ -71,10 +71,15 @@ describe("useDeviceIdentity", () => {
     await hook.rerender({ status: "connecting", credential: "token-b" })
     expect(hook.result.current).toBeUndefined()
     await hook.rerender({ status: "open", credential: "token-b" })
-    await hook.rerender({ status: "connecting", credential: "token-c" })
-    await act(async () => answers[1]!.resolve(paired("device-ffffffffffffffffffffffffffffffff")))
+    await hook.rerender({ status: "open", credential: "token-c" })
+    // token-c's answer lands first; token-b's arrives late and must not
+    // replace it (review r1: the old order let a dropped guard pass).
+    const deviceC = "device-cccccccccccccccccccccccccccccccc"
+    await act(async () => answers[2]!.resolve(paired(deviceC)))
+    expect(hook.result.current).toBe(deviceC)
+    await act(async () => answers[1]!.resolve(paired("device-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")))
 
-    expect(hook.result.current).toBeUndefined()
+    expect(hook.result.current).toBe(deviceC)
   })
 
   // A reconnect on the same credential is the same device, so the id it

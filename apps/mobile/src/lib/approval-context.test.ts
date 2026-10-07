@@ -46,6 +46,9 @@ describe("approvalOriginLine", () => {
     // tell itself from another phone, so it says only what it knows.
     expect(approvalOriginLine(other, { client: "phone" })).toBe("a phone")
     expect(approvalOriginLine(card({ origin: { client: "phone", connectionId, clientId: thisPhone.deviceId } }).origin, { client: "phone" })).toBe("a phone")
+    // An attribution without a client id names no device, so it is not
+    // evidence of another phone either (review r1).
+    expect(approvalOriginLine(card({ origin: { client: "phone", connectionId } }).origin, thisPhone)).toBe("a phone")
     // Without its own id the phone can still rule out another kind of client.
     expect(approvalOriginLine(card({ origin: { client: "desktop", connectionId } }).origin, { client: "phone" })).toBe("a desktop")
   })

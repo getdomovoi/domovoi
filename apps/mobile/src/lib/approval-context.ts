@@ -31,7 +31,9 @@ export function approvalOriginLine(
   const sameKind = viewer?.client === origin.client
   if (!sameKind || viewer?.deviceId === undefined) return clientNames[origin.client]
   if (origin.clientId === viewer.deviceId) return `you, on this ${origin.client}`
-  return `another ${origin.client}`
+  // An attribution without a client id names no device, so only two known
+  // ids that differ make it another one.
+  return origin.clientId === undefined ? clientNames[origin.client] : `another ${origin.client}`
 }
 
 // Each value names the basis it was judged on. A working directory inside the

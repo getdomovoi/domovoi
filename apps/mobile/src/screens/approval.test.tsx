@@ -237,6 +237,13 @@ describe("ApprovalScreen context facts", () => {
     expect(screen.queryByText(/you, on this phone/)).toBeNull()
   })
 
+  // Only two known ids that differ make it another phone.
+  it("does not call a phone without a client id another phone", async () => {
+    await draw({ approval: card({ origin: { client: "phone", connectionId } }), viewer: thisPhone })
+
+    expect(fact("Turn from")).toBe("Turn from: a phone")
+  })
+
   it("says the request reaches outside the project, judged by its path", async () => {
     await draw({ approval: card({ outsideProject: { outside: true, basis: "path" } }) })
 
