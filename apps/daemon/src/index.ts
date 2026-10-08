@@ -39,10 +39,11 @@ async function requestPairingCode(
   config: CliRpcTarget,
   token: string,
   targetClient?: ClientKind,
+  label?: string,
 ): Promise<DeviceIssueCodeResult> {
   return readDaemonResult("device.issueCode", rpcMethods["device.issueCode"].result, await callDaemon({
     target: config, token, method: "device.issueCode",
-    params: targetClient === undefined ? {} : { targetClient },
+    params: targetClient === undefined ? {} : { targetClient, ...(label === undefined ? {} : { label }) },
   }))
 }
 
@@ -221,7 +222,7 @@ async function main() {
     const config = parseDaemonEnvironment(process.env, homedir())
     const token = config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath)
     process.exitCode = await runPairCommand(args, {
-      issue: (targetClient) => requestPairingCode(config, token, targetClient),
+      issue: (targetClient, label) => requestPairingCode(config, token, targetClient, label),
       renderCode: (payload) => renderQrToTerminal(payload),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),
