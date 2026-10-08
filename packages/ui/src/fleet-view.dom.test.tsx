@@ -315,6 +315,17 @@ it("does not read again a machine it has just read", () => {
   expect(onReadMachine).not.toHaveBeenCalled()
 })
 
+it("dates an admitted machine's reading while the home daemon is not connected", () => {
+  const readAt = "2026-10-06T14:03:00.000Z"
+  renderFleet({
+    connected: false,
+    entries: entries(local, { ...studio, health: "healthy" }),
+    clientAccess: { [studio.id]: admitted(reading({ providers: [codex], readAt })) },
+  })
+
+  expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS).toBe(`codex · as of ${clock.format(new Date(readAt))}`)
+})
+
 it("counts an ownership conflict in the session fact, as the drawer puts it under NEEDS YOU", () => {
   renderFleet({
     entries: entries(local),

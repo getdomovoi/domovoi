@@ -1,6 +1,6 @@
 import { demoWorkspace, type FleetEntry, type FleetMachine } from "@getdomovoi/protocol"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
-import { asOf, FleetAccessSession, fleetAgents } from "./fleet-access-session.js"
+import { asOf, FleetAccessSession, fleetAgents, machineReading } from "./fleet-access-session.js"
 import { installFakeWebSocket, completeHandshake, respond, sentRequests, workspaceSnapshot } from "./test-support/fake-websocket"
 
 const machineId = demoWorkspace.machine.id
@@ -122,6 +122,7 @@ it("gives Settings each machine's agents from its own reading and says which are
       [ids.lost]: { state: "admitted", deviceId, reading: { providers: [codex], sessions: [], readAt } },
     },
     currentMachineId: ids.home,
+    connected: true,
   })
 
   expect(rows).toEqual([
@@ -130,6 +131,31 @@ it("gives Settings each machine's agents from its own reading and says which are
     { machineId: ids.lab, label: "lab", unknown: "this app holds no client credential for it" },
     { machineId: ids.lost, label: "lost", providers: [codex], stale: asOf(readAt) },
   ])
+})
+
+it("dates every admitted reading while the home daemon is not connected", () => {
+  const studio: FleetEntry = { kind: "machine", machine: {
+    id: `machine-${"b".repeat(32)}`, label: "studio", self: false, health: "healthy", platform: "linux", arch: "x64", version: "0.1.0",
+    protocolVersion: "0.1.0", connection: "tailnet", capabilities: ["sessions"], transports: [],
+    heartbeat: { state: "online", lastSeenAt: "2026-10-06T14:00:00.000Z" },
+  } }
+  const readAt = "2026-10-06T14:03:00.000Z"
+  const rows = fleetAgents([studio], {
+    readings: {},
+    clientAccess: { [`machine-${"b".repeat(32)}`]: { state: "admitted", deviceId, reading: { providers: [], sessions: [], readAt } } },
+    currentMachineId: machineId,
+    connected: false,
+  })
+
+  expect(rows).toEqual([{ machineId: `machine-${"b".repeat(32)}`, label: "studio", providers: [], stale: asOf(readAt) }])
+})
+
+it("reads a session with a pending approval as waiting, as the drawer does", () => {
+  const billing = demoWorkspace.sessions.find((session) => session.id === "session-billing")!
+  const snapshot = { ...demoWorkspace, sessions: [{ ...billing, state: "active" as const }] }
+  expect(snapshot.approvals.map((approval) => approval.sessionId)).toEqual(["session-billing"])
+
+  expect(machineReading(snapshot, new Date()).sessions).toEqual([{ id: "session-billing", title: billing.title, state: "waiting" }])
 })
 
 async function admit(snapshot = workspaceSnapshot()): Promise<void> {
@@ -165,7 +191,8 @@ it("reads an admitted machine again and keeps the last reading when it does not 
   await vi.advanceTimersByTimeAsync(0)
   const socket = sockets.socket(1)
   const [billing] = demoWorkspace.sessions
-  completeHandshake(socket, workspaceSnapshot({ sessions: [{ ...billing!, state: "failed" }] }))
+  // No approval pending, so the reading keeps the session's own state.
+  completeHandshake(socket, workspaceSnapshot({ sessions: [{ ...billing!, state: "failed" }], approvals: [] }))
   await vi.advanceTimersByTimeAsync(0)
   respond(socket, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
   await reading

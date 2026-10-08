@@ -1648,6 +1648,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             providers={snapshot.machine.providers}
             providerMachines={fleet ? fleetAgents(fleet.entries, {
               readings: fleetReadings, clientAccess: fleetClientAccess, currentMachineId: attached?.machineId ?? snapshot.machine.id,
+              connected: home.connected,
             }) : undefined}
             secrets={providerSecrets}
             readOnly={watching}

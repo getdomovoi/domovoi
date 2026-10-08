@@ -1223,7 +1223,7 @@ export function FleetView({
 
   const agentsHeadingId = useId()
   const factsOf = (machine: FleetMachine) => machineFacts(machine, {
-    readings, access: clientAccess[machine.id], currentMachineId, providers, currentSessionCount,
+    readings, access: clientAccess[machine.id], currentMachineId, connected, providers, currentSessionCount,
   })
   const agents = machineAgents(entries, factsOf)
 

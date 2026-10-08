@@ -25,10 +25,14 @@ export type MachineReading = {
   readAt: string
 }
 
+// A session with a pending approval is waiting on the operator even while its
+// turn is in flight, as the drawer files it (groupSessions), so the reading
+// keeps that fact rather than the session's own state alone.
 export function machineReading(snapshot: WorkspaceSnapshot, readAt: Date): MachineReading {
+  const gated = new Set(snapshot.approvals.map((approval) => approval.sessionId))
   return {
     providers: snapshot.machine.providers,
-    sessions: snapshot.sessions.map(({ id, title, state }) => ({ id, title, state })),
+    sessions: snapshot.sessions.map(({ id, title, state }) => ({ id, title, state: gated.has(id) && state !== "archived" ? "waiting" : state })),
     readAt: readAt.toISOString(),
   }
 }
@@ -63,14 +67,16 @@ export type HeldReading = { reading: MachineReading; live: boolean }
 
 // A machine that is not answering still shows what it last said, dated,
 // because that is what is still true about it: one the home daemon is not
-// hearing from, one that did not answer this client's last read, or one whose
-// held connection closed.
+// hearing from, one that did not answer this client's last read, one whose
+// held connection closed, or any admission reading while this client has no
+// connection to the home daemon to read it again through.
 export function machineFacts(
   machine: FleetMachine,
   input: {
     readings: Readonly<Record<string, HeldReading>>
     access: FleetAccessState | undefined
     currentMachineId: string
+    connected: boolean
     providers?: readonly ProviderRuntime[] | undefined
     currentSessionCount?: number | undefined
   },
@@ -85,7 +91,7 @@ export function machineFacts(
   if (reading) {
     const stale = useHeld
       ? !held.live || unreachable
-      : silentHealth.has(machine.health) || admitted?.unanswered === true
+      : !input.connected || silentHealth.has(machine.health) || admitted?.unanswered === true
     return { known: true, providers: reading.providers, sessions: reading.sessions, readAt: reading.readAt, stale }
   }
   if (machine.id === input.currentMachineId && input.providers) {
@@ -120,10 +126,11 @@ export function fleetAgents(
     readings: Readonly<Record<string, HeldReading>>
     clientAccess: Readonly<Record<string, FleetAccessState>>
     currentMachineId: string
+    connected: boolean
   },
 ): MachineAgents[] {
   return machineAgents(entries, (machine) => machineFacts(machine, {
-    readings: input.readings, access: input.clientAccess[machine.id], currentMachineId: input.currentMachineId,
+    readings: input.readings, access: input.clientAccess[machine.id], currentMachineId: input.currentMachineId, connected: input.connected,
   }))
 }
 
