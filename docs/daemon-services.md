@@ -63,8 +63,12 @@ alone does not rewrite service-manager configuration.
 The installer writes `<user-home>/.domovoi/service.json`. The installed command names the Node
 runtime, daemon entry point, and `--service-config <path>` explicitly. On startup the production
 factory receives the saved settings, not daemon variables inherited from the supervisor.
-Windows installation refuses command lines over 262 characters before writing files; use shorter
-absolute installation paths rather than a truncated launch command.
+Windows installation refuses command lines over 261 characters before writing files. This is
+schtasks's own limit; its documentation says 262. The refusal names the command's length and its
+longest part. Use shorter absolute installation paths. With Node in `C:\Program Files\nodejs`,
+the measured fit is up to about a 33-character user profile folder name for an npm global install
+and about 25 for the desktop runtime copy. Node version managers that keep Node and global
+packages in deep folders, such as fnm-style layouts, can exceed the limit at any user name length.
 
 The versioned file contains a fresh installation registration UUID, listener host and port,
 remote-listener opt-in, TLS certificate and key
