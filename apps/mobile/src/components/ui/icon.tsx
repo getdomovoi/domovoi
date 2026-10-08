@@ -8,8 +8,10 @@ import ChevronRight from "lucide-react-native/icons/chevron-right"
 import ChevronUp from "lucide-react-native/icons/chevron-up"
 import Eye from "lucide-react-native/icons/eye"
 import Image from "lucide-react-native/icons/image"
+import Laptop from "lucide-react-native/icons/laptop"
 import Layers from "lucide-react-native/icons/layers"
 import ListChecks from "lucide-react-native/icons/list-checks"
+import Maximize2 from "lucide-react-native/icons/maximize-2"
 import MessageSquare from "lucide-react-native/icons/message-square"
 import MessageSquareDashed from "lucide-react-native/icons/message-square-dashed"
 import Pencil from "lucide-react-native/icons/pencil"
@@ -17,6 +19,7 @@ import Pin from "lucide-react-native/icons/pin"
 import Plus from "lucide-react-native/icons/plus"
 import RotateCw from "lucide-react-native/icons/rotate-cw"
 import Server from "lucide-react-native/icons/server"
+import SquareTerminal from "lucide-react-native/icons/square-terminal"
 import Settings from "lucide-react-native/icons/settings"
 import Unplug from "lucide-react-native/icons/unplug"
 import X from "lucide-react-native/icons/x"
@@ -38,8 +41,10 @@ const glyphs = {
   "chevron-up": ChevronUp,
   eye: Eye,
   image: Image,
+  laptop: Laptop,
   layers: Layers,
   "list-checks": ListChecks,
+  "maximize-2": Maximize2,
   "message-square": MessageSquare,
   "message-square-dashed": MessageSquareDashed,
   pencil: Pencil,
@@ -48,6 +53,7 @@ const glyphs = {
   "rotate-cw": RotateCw,
   server: Server,
   settings: Settings,
+  "square-terminal": SquareTerminal,
   unplug: Unplug,
   x: X,
 }

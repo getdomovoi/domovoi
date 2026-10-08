@@ -36,10 +36,12 @@ function connection(handlers: {
   onDelta?: (delta: unknown) => void
   onError?: (cause: unknown) => void
   onProtocolError?: (reason: string) => void
+  onTerminal?: (notification: unknown) => void
 } = {}) {
   return new DaemonConnection("ws://desk:8787", "token", "phone", {
     onSnapshot: handlers.onSnapshot ?? (() => {}),
     ...(handlers.onHello ? { onHello: handlers.onHello } : {}),
+    ...(handlers.onTerminal ? { onTerminal: handlers.onTerminal } : {}),
     onDelta: handlers.onDelta ?? (() => {}),
     onFleet: handlers.onFleet ?? (() => {}),
     onStatus: () => {},
@@ -190,6 +192,26 @@ describe("DaemonConnection notifications", () => {
       expect(onSnapshot).toHaveBeenCalledTimes(2)
     } finally { daemon.close() }
   })
+
+  // Phone v2 frame 04: a watched terminal's output, its end and its claim
+  // reach the phone as notifications, after terminal.watch.
+  it("hands on a watched terminal's output, its end and a move of its claim", () => {
+    const socket = withSocket(() => {})
+    const onTerminal = vi.fn()
+    const daemon = connection({ onTerminal })
+    daemon.connect()
+    const owner = { client: "desktop", clientId: "desktop-1", device: { id: `device-${"a".repeat(32)}`, label: "MacBook Pro" } }
+    try {
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", method: "terminal.output", params: { terminalId: "terminal-1", data: "$ ls\n" } }) })
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", method: "terminal.ownership", params: { terminalId: "terminal-1", owner } }) })
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 1 } }) })
+      expect(onTerminal.mock.calls.map(([notification]) => notification)).toEqual([
+        { method: "terminal.output", params: { terminalId: "terminal-1", data: "$ ls\n" } },
+        { method: "terminal.ownership", params: { terminalId: "terminal-1", owner } },
+        { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 1 } },
+      ])
+    } finally { daemon.close() }
+  })
 })
 
 describe("DaemonConnection messages it cannot read", () => {
@@ -228,6 +250,19 @@ describe("DaemonConnection messages it cannot read", () => {
     const { onProtocolError, onFleet } = pushed(JSON.stringify({ jsonrpc: "2.0", method: "fleet.changed", params: { entries: [{ kind: "unenrolled", machineId: "not-a-machine-id" }] } }))
     expect(onFleet).not.toHaveBeenCalled()
     expect(onProtocolError).toHaveBeenCalledWith(expect.stringContaining("fleet.changed"))
+  })
+
+  it("reports terminal output it cannot read and passes none of it on", () => {
+    const socket = withSocket(() => {})
+    const onProtocolError = vi.fn()
+    const onTerminal = vi.fn()
+    const daemon = connection({ onProtocolError, onTerminal })
+    daemon.connect()
+    try {
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", method: "terminal.output", params: { terminalId: "terminal-1", data: "" } }) })
+    } finally { daemon.close() }
+    expect(onTerminal).not.toHaveBeenCalled()
+    expect(onProtocolError).toHaveBeenCalledWith(expect.stringContaining("terminal.output"))
   })
 
   it("refuses a hello answer that is not a snapshot instead of seeding the screen with it", async () => {

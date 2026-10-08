@@ -216,8 +216,11 @@ and are gone when the app restarts.
 - Fleet lists the machines paired with the daemon and their health. Use and Terminal on a remote
   machine are not offered on the phone. The desktop admits them (`docs/fleet-client-admission.md`;
   the fleet client smoke proves Use and Terminal against two production daemons).
-- No terminal on the phone. A terminal artifact is listed with a note that it is watched on the
-  desktop (`apps/mobile/src/artifact-rows.ts`). A preview renders from a signed grant the phone
+- Terminals are read-only on the phone. It lists the open session's terminals, shows each one's
+  tail in the thread and opens it in full, and never types, resizes or takes the claim
+  (`apps/mobile/src/screens/watching.tsx`). The tablet's view beside the thread is not built. A
+  terminal artifact is listed with a note that it is watched on the desktop
+  (`apps/mobile/src/artifact-rows.ts`). A preview renders from a signed grant the phone
   asks for with `artifact.authorize` (`apps/mobile/src/artifact-url.ts`). Plans and diffs render
   up to 400 lines and count the rest.
 - Session transfer is not offered from the phone (`apps/mobile/src/lib/request-timeout.ts`).
