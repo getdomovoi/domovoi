@@ -226,7 +226,7 @@ function terminalWindowsTreeProof(record: WindowsSupervisorRecord): boolean {
 export async function runWindowsSupervisor(path: string, entry: { executable: string; args: string[] }): Promise<WindowsSupervisorRecord> {
   if (process.platform !== "win32") throw new Error("Windows job supervision requires Windows")
   const config = configurationAt(path), home = profileLocation(config.homeDirectory, config.profileDirectory)
-  const lease = claim(home)
+  let lease = claim(home)
   const controller = new AbortController()
   const stop = () => controller.abort()
   const assertRegistrationNotStopped = () => {
@@ -238,12 +238,17 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
     let observed: ReturnType<typeof queryWindowsProcess>
     try { observed = queryWindowsProcess(process.pid) } catch (error) {
       if (!windowsHelperTimedOut(error)) throw error
-      // Cold first spawn at logon: after each of five CI timeouts, the next test, helper spawns included, passed in 3.6 to 6.3 s.
-      // Startup is bounded by two 20 s caps.
-      // Honor a stop published during the first cap before retrying, keeping that waiting stop's lease hold within one cap.
+      // The identity query only observes this process; no supervision record has been read or written yet.
+      // Retry without the lease so a waiting stop is blocked for at most one query cap.
+      // Everything after runs under a re-claimed lease, as if this task started later.
       assertRegistrationNotStopped()
+      lease.release()
       try { observed = queryWindowsProcess(process.pid) } catch (cause) {
         throw new Error("Windows supervisor could not read its own process identity: the first helper query reached the 20 s cap at startup and its one retry also failed. This start launched no daemon and wrote no supervision record; any earlier record in the profile's windows-supervisor.json is unchanged, so see domovoi daemon status. The logon task starts the supervisor again at the next logon.", { cause })
+      }
+      try { lease = claim(home) } catch (error) {
+        if (error instanceof WindowsSupervisorBusyError) assertRegistrationNotStopped()
+        throw error
       }
       assertRegistrationNotStopped()
     }
