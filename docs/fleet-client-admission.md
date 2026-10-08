@@ -44,10 +44,12 @@ code. Machine pending claims and their expiration/confirmation rules are unchang
 
 The Fleet dialog below does not take this code. It takes a client credential, and nothing in
 Domovoi gives an operator one today: no command prints it, and neither the desktop nor the shared
-UI redeems a code for the dialog. The credential comes only from a `device.pair` request with
-`targetClient`, made with the target daemon's own credential, which returns the credential and
-the device id to revoke. Domovoi ships no command or screen that makes that request, so Fleet
-authorization has no supported way through yet. The tests make the request directly.
+UI redeems a code for the dialog. Over the protocol, a `device.redeemCode` with a desktop code
+returns one, and so does a `device.pair` request for a desktop client (`targetClient`, or `client`
+when that is omitted) made with the target daemon's own credential; each
+answer carries the credential and the device id to revoke. Domovoi ships no command or screen that
+makes either request for this dialog, so Fleet authorization has no supported way through yet.
+The tests make the requests directly.
 
 Either way this is a deliberate grant, not an automated machine claim. A code grants nothing until
 a device redeems it, and a lost reply costs the code. The target's Devices list shows and can
