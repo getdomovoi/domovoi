@@ -72,7 +72,7 @@ it("keeps observation surfaces and provider failure visible while locking compos
 
   expect(screen.getByText("This device was paired to watch only.")).toBeTruthy()
   expect(screen.queryByText(/plan:/iu)).toBeNull()
-  expect(screen.getByText("No sends, approvals, terminal or writes. Reads stream as normal.")).toBeTruthy()
+  expect(screen.getByText("No sends, approvals, terminal input or writes. Reads stream as normal.")).toBeTruthy()
   expect(screen.getByText("Provider connection failed")).toBeTruthy()
   expect((screen.getByRole("button", { name: "Allow once" }) as HTMLButtonElement).disabled).toBe(true)
   expect((screen.getByLabelText("Message") as HTMLTextAreaElement).disabled).toBe(true)

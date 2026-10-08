@@ -1314,7 +1314,7 @@ export function Thread({
               <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-info" />
               <div className="min-w-0 flex-1">
                 <div className="text-[12px] leading-[1.5] text-info-foreground">This device was paired to watch only.</div>
-                <div className="mt-1 text-[11px] leading-[1.5] text-info-dim">No sends, approvals, terminal or writes. Reads stream as normal.</div>
+                <div className="mt-1 text-[11px] leading-[1.5] text-info-dim">No sends, approvals, terminal input or writes. Reads stream as normal.</div>
               </div>
             </div>
           ) : archiveReadOnly ? (

@@ -1320,12 +1320,12 @@
       "where": "composer body when this client is watching",
       "evidence": [
         "Free plan: this route carries reads only.",
-        "No sends, approvals, terminal or writes. Reads stream as normal."
+        "No sends, approvals, terminal input or writes. Reads stream as normal."
       ],
       "blocked": {
         "since": "2026-09-23",
         "needs": "protocol",
-        "reason": "the drawn reason names a Free plan and a reads-only route, which is a plan tier (M3) on a relay route (M2); nothing on the wire says why a client is watching (no route capability or plan tier), so the composer says This device was paired to watch only. until the daemon reports a reason"
+        "reason": "the drawn reason names a Free plan and a reads-only route, which is a plan tier (M3) on a relay route (M2); nothing on the wire says why a client is watching (no route capability or plan tier), so the composer says This device was paired to watch only. until the daemon reports a reason. Since 2026-10-08 a watching desktop reads the session's shell through terminal.watch, so the second line reads No sends, approvals, terminal input or writes where the design says terminal: the watcher can read the terminal but not type in it. The archived notice keeps the design's terminal, because archiving closes the session's shells"
       }
     },
     {
@@ -2268,7 +2268,7 @@
     {
       "id": "dock.tabs",
       "since": "2026-10-02",
-      "note": "Three tips copy the design's words and are false for the shipped product. Terminal (read-only. The agent owns this shell.): the tab is an interactive daemon PTY, and Q340 A corrects the tip and footer and asks Claude Design to redraw the tab. Checkpoints (Reverting rewinds the worktree and the thread together): checkpoint.restore resets the worktree only, and Q341 A keeps that; since 2026-10-06 the tip reads In a session with a worktree, every request you allow at a gate takes one first. Reverting resets the worktree; the thread keeps its turns. History (Fork from any turn.): fork is checkpoint-only (turn-row fork closed as a design error, f3252e50), so the tip becomes Fork from any checkpoint. A tab that matches the design here is a tab that says something untrue."
+      "note": "Three tips in the design are false for the shipped product. Terminal (The raw stream from the machine, read-only. The agent owns this shell.): the tab is an interactive daemon PTY the user creates; one device holds it and types, and the others read it through terminal.watch. Q340 A keeps the PTY and asks Claude Design to redraw the tab; since 2026-10-07 the tip reads A shell on the machine, in the session's worktree. One device types at a time; the others can read. Checkpoints (Reverting rewinds the worktree and the thread together): checkpoint.restore resets the worktree only, and Q341 A keeps that; since 2026-10-06 the tip reads In a session with a worktree, every request you allow at a gate takes one first. Reverting resets the worktree; the thread keeps its turns. History (Fork from any turn.): fork is checkpoint-only (turn-row fork closed as a design error, f3252e50), so the tip becomes Fork from any checkpoint. A tab that matches the design here is a tab that says something untrue."
     },
     {
       "id": "conversation.approval",
