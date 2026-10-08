@@ -866,7 +866,8 @@ export function Thread({
     />
   )
 
-  const sendPrompt = async (nextPrompt: string, { fromComposer }: { fromComposer: boolean }, sendAttachments = attachments) => {
+  // The draft as it is now: a write since the last render goes with the message.
+  const sendPrompt = async (nextPrompt: string, { fromComposer }: { fromComposer: boolean }, sendAttachments = attachmentsRef.current) => {
     if (watching) return
     setPending(true)
     setSendError("")
@@ -980,7 +981,7 @@ export function Thread({
         text: outcome.text,
         state: "waiting",
         ...(skillSelection ? { skillIds: [...skillSelection] } : {}),
-        ...(attachments.length > 0 ? { attachments } : {}),
+        ...(attachmentsRef.current.length > 0 ? { attachments: attachmentsRef.current } : {}),
       })
       setPrompt("")
       setAttachments([])

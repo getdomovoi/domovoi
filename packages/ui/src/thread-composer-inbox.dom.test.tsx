@@ -181,3 +181,37 @@ it("leaves a long composer paste inline when output filled the draft before the 
   expect(screen.getByRole("alert").textContent).toBe("Attach up to 2 items per message. The pasted text stayed in the message.")
   expect(screen.getByRole("region", { name: "Attachments" }).textContent).not.toContain("pasted-text")
 })
+
+// Output offered in the same batch as Send goes with that message, rather
+// than being sent without and then cleared.
+it("sends output offered in the same batch as Send", async () => {
+  const user = userEvent.setup()
+  const { onSend } = renderThread()
+  await user.type(screen.getByRole("textbox", { name: "Message" }), "Why did this pass?")
+  const output = terminalOutputAttachment("$ pnpm test\n PASS  webhooks")
+
+  await act(async () => {
+    expect(composerInbox.offer(sessionId, output)).toBe("attached")
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }))
+  })
+
+  expect(onSend).toHaveBeenCalledWith(sessionId, "Why did this pass?", undefined, [output])
+})
+
+it("queues output offered in the same batch as Send while a turn runs", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals = []
+  snapshot.sessions.find((session) => session.id === sessionId)!.activeTurnId = "turn-running"
+  const onQueuedChange = vi.fn()
+  renderThread({ snapshot, onQueuedChange })
+  await user.type(screen.getByRole("textbox", { name: "Message" }), "Also check retries")
+  const output = terminalOutputAttachment("$ pnpm test\n PASS  webhooks")
+
+  await act(async () => {
+    expect(composerInbox.offer(sessionId, output)).toBe("attached")
+    fireEvent.click(screen.getByRole("button", { name: "Send message" }))
+  })
+
+  expect(onQueuedChange).toHaveBeenLastCalledWith(expect.objectContaining({ text: "Also check retries", attachments: [output] }))
+})
