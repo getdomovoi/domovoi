@@ -1,10 +1,10 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
-import { protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
+import { fleetSnapshotOverflowErrorCode, maximumFleetEntries, protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
 
 import { WorkspaceShell } from "./workspace-shell"
-import { installFakeWebSocket, completeHandshake, respond, sentRequests, workspaceSnapshot } from "./test-support/fake-websocket"
+import { installFakeWebSocket, completeHandshake, fail, respond, sentRequests, workspaceSnapshot } from "./test-support/fake-websocket"
 
 let sockets: ReturnType<typeof installFakeWebSocket>
 beforeEach(() => { globalThis.localStorage?.clear(); sockets = installFakeWebSocket() })
@@ -143,6 +143,28 @@ it("reads an admitted machine again when Settings opens, so its providers are cu
     clock.mockRestore()
   }
 }, admissionJourneyTimeoutMs)
+
+it("says in Settings that the fleet list was withheld, rather than listing this machine as the whole fleet", async () => {
+  const user = userEvent.setup()
+  render(<WorkspaceShell />)
+  const home = sockets.socket(0)
+  await act(async () => { completeHandshake(home) })
+  await settle()
+  await act(async () => {
+    fail(home, "fleet.list", {
+      code: fleetSnapshotOverflowErrorCode,
+      message: "Fleet keyring exceeds the wire limit",
+      data: { kind: "fleet-overflow", limit: maximumFleetEntries, totalEntries: 600, entriesNotShown: 600 },
+    })
+  })
+  await settle()
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await settle()
+
+  const providers = await screen.findByRole("region", { name: "Providers and tokens" })
+  expect(providers.textContent).toContain("Fleet list withheld")
+  expect(providers.textContent).toContain("600 entries are not shown")
+})
 
 it("renders refusal and leaves Use disabled when the credential is a daemon root", async () => {
   const user = userEvent.setup()

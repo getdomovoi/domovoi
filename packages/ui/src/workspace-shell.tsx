@@ -1650,6 +1650,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               readings: fleetReadings, clientAccess: fleetClientAccess, currentMachineId: attached?.machineId ?? snapshot.machine.id,
               connected: home.connected,
             }) : undefined}
+            providerFleetOverflow={fleet ? undefined : fleetOverflow ?? undefined}
             secrets={providerSecrets}
             readOnly={watching}
             {...(localDaemon && !attached ? { localDaemon: {

@@ -1,4 +1,4 @@
-import { localOwnerRequiredErrorCode, type ApprovalRule, type ClientKind, type PairedDeviceSummary, type ProviderRuntime, type UpdateStatus } from "@getdomovoi/protocol"
+import { localOwnerRequiredErrorCode, type ApprovalRule, type ClientKind, type FleetSnapshotOverflow, type PairedDeviceSummary, type ProviderRuntime, type UpdateStatus } from "@getdomovoi/protocol"
 import { ChevronRightIcon, ExternalLinkIcon, TerminalIcon } from "lucide-react"
 import { useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react"
 
@@ -579,6 +579,8 @@ export type SettingsShellProps = {
   // Every machine's agents as this client knows them; without it the pane
   // lists `providers` for this machine alone.
   providerMachines?: readonly MachineAgents[] | undefined
+  // Set when the home daemon withheld the fleet list.
+  providerFleetOverflow?: FleetSnapshotOverflow | undefined
   about?: AboutBuild | undefined
   pairing?: PairingSettings | undefined
   secrets: readonly ProviderSecretStatus[]
@@ -605,6 +607,7 @@ export type SettingsShellProps = {
 export function SettingsShell({
   providers,
   providerMachines,
+  providerFleetOverflow,
   secrets,
   about,
   pairing,
@@ -657,7 +660,7 @@ export function SettingsShell({
           {tailnet && !daemonSection ? <TailnetReachCard controller={tailnet} /> : null}
 
           <section aria-label="Providers and tokens">
-            <ProviderSettings providers={providers} machines={providerMachines} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
+            <ProviderSettings providers={providers} machines={providerMachines} fleetOverflow={providerFleetOverflow} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
           </section>
 
           {about && !daemonSection ? <AboutBuildSection about={about} /> : null}

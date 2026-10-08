@@ -1,5 +1,5 @@
 import { useId, useState } from "react"
-import type { ProviderRuntime } from "@getdomovoi/protocol"
+import type { FleetSnapshotOverflow, ProviderRuntime } from "@getdomovoi/protocol"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -14,6 +14,7 @@ import {
   type DesktopExternalEditor,
   type WorkspaceWindowDecoration,
 } from "./desktop-platform.js"
+import { fleetOverflowNotice } from "./fleet-overflow.js"
 import { cn } from "./lib/utils"
 
 export type ProviderSecretStatus = {
@@ -27,6 +28,9 @@ type ProviderSettingsProps = {
   providers: readonly ProviderRuntime[]
   // Every machine's agents as this client knows them (fleetAgents).
   machines?: readonly MachineAgents[] | undefined
+  // The home daemon withheld the fleet list (fleetOverflow in useWorkspace),
+  // so the rows cannot cover the other machines and the pane says so.
+  fleetOverflow?: FleetSnapshotOverflow | undefined
   secrets: readonly ProviderSecretStatus[]
   localDaemon?: { title: string; detail: string }
   // Q336 A: names a command as it runs on the execution machine, when that
@@ -34,7 +38,7 @@ type ProviderSettingsProps = {
   printCommand?: ((command: string) => string) | undefined
 }
 
-export function ProviderSettings({ providers, machines, secrets, localDaemon, printCommand }: ProviderSettingsProps) {
+export function ProviderSettings({ providers, machines, fleetOverflow, secrets, localDaemon, printCommand }: ProviderSettingsProps) {
   const rows = machines ?? [{ machineId: "this-machine", label: "this machine", providers }]
   return (
     <>
@@ -47,6 +51,11 @@ export function ProviderSettings({ providers, machines, secrets, localDaemon, pr
           </p>
         </div>
         <MachineAgentList machines={rows} />
+        {fleetOverflow ? (
+          <p className="m-0 border-t px-[15px] py-[11px] text-[11.5px] leading-relaxed text-destructive">
+            {fleetOverflowNotice(fleetOverflow).title}. {fleetOverflow.entriesNotShown} entries are not shown, so this lists only this machine&apos;s agents. Machines says why and what to run.
+          </p>
+        ) : null}
       </div>
 
       {localDaemon ? (

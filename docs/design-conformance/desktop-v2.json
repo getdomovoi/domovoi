@@ -2215,7 +2215,7 @@
     {
       "id": "settings.providers",
       "since": "2026-10-07",
-      "note": "Built with the fleet.agents rows, one per machine and agent across the fleet. The header line is Q18 A (2026-10-06): Stored on each machine that runs the agent. Domovoi does not send it to another device. Subscription CLIs own their credentials. The drawn line names a Domovoi account, which M1 does not have (Q5). Harness marks stay text-only while they are not vendored (Q388 A). LOCAL DAEMON and DIRECT API KEYS stay below the rows."
+      "note": "Built with the fleet.agents rows, one per machine and agent across the fleet. When the home daemon withholds the fleet list (fleet overflow), the rows list this machine and a line says the list was withheld and how many entries are not shown, as Machines does. The header line is Q18 A (2026-10-06): Stored on each machine that runs the agent. Domovoi does not send it to another device. Subscription CLIs own their credentials. The drawn line names a Domovoi account, which M1 does not have (Q5). Harness marks stay text-only while they are not vendored (Q388 A). LOCAL DAEMON and DIRECT API KEYS stay below the rows."
     },
     {
       "id": "composer.effort-levels",
