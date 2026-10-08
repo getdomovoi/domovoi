@@ -32,11 +32,22 @@ it("does not change console encodings in the hidden helper", () => {
   expect(/(?:InputEncoding|OutputEncoding)\s*=/.test(windowsJobSource)).toBe(false)
 })
 
+it("invokes no PowerShell cmdlet in the helper or bootstrap", () => {
+  const bootstrap = Buffer.from(windowsJobCommand().args.at(-1)!, "base64").toString("utf16le")
+  for (const script of [windowsJobSource, bootstrap]) {
+    // Exclude the C# here-string, quoted data and comments, then reject any
+    // Verb-Noun token, including commands after assignments or pipelines.
+    const powershell = script.replace(/@'\r?\n[\s\S]*?\r?\n'@/g, "''")
+      .replace(/'(?:''|[^'])*'|"(?:`.|[^"`])*"/g, "''").replace(/#[^\r\n]*/g, "")
+    expect(powershell.match(/\b[A-Za-z]+-[A-Za-z]+\b/g)).toBeNull()
+  }
+})
+
 it("shares one UTF-8 stdin reader between the request and command thread", () => {
   expect(windowsJobSource.match(/new StreamReader\(/g)).toHaveLength(1)
   expect(windowsJobSource).toContain("static readonly StreamReader Input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));")
   expect(windowsJobSource).toContain("public static string ReadRequest() { return Input.ReadLine(); }")
-  expect(windowsJobSource).toContain("$request = [DomovoiJob]::ReadRequest() | ConvertFrom-Json")
+  expect(windowsJobSource).toMatch(/public static void Serve\(\)\s*\{\s*var request = Json\.DeserializeObject\(ReadRequest\(\)\)/)
   expect(windowsJobSource).toContain("while ((line = ReadRequest()) != null) commands.Add(line);")
   expect(/Console(?:\]|\.)?(?:::)?In\b/.test(windowsJobSource)).toBe(false)
 })
