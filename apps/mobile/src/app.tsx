@@ -498,7 +498,8 @@ export function App() {
         // No answer in time is not a refusal: the daemon may still have taken
         // the watch. The entry stays as it is (output already held, unconfirmed,
         // or still reading) and the next list asks again; its answer replays
-        // the record, so nothing printed meanwhile is lost.
+        // the daemon's record, which keeps the most recent output up to its
+        // bound.
         if (cause instanceof DaemonTimeoutError) {
           askAgain.add(terminalId)
           return
