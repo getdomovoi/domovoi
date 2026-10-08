@@ -1,4 +1,4 @@
-import { execFile, spawn, type ChildProcess } from "node:child_process"
+import { execFile, spawn, spawnSync, type ChildProcess } from "node:child_process"
 import { randomUUID } from "node:crypto"
 import { once } from "node:events"
 import { fsyncSync } from "node:fs"
@@ -8,7 +8,7 @@ import { join, posix } from "node:path"
 import { fileURLToPath } from "node:url"
 import { promisify } from "node:util"
 
-import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
 
 import { acquireLocalDaemon, type LocalDaemonHandle } from "./local-daemon.js"
 import { readLocalOwnerRecord, type ReadyLocalOwner } from "./local-owner-record.js"
@@ -18,6 +18,7 @@ import { CliProviderProbe } from "./providers.js"
 import { claimProfile } from "./profile-lease.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./service/configuration.js"
 import { installService, nodeServiceEffects, removeService } from "./service/install.js"
+import { windowsJobCommand } from "./service/windows-job.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForFixtureStartup } from "./test-wait-for.js"
 
@@ -33,6 +34,23 @@ const cleanupBudget = 10_000
 const homes: string[] = []
 const children: Array<{ child: ChildProcess; exited: Promise<unknown> }> = []
 const handles: LocalDaemonHandle[] = []
+
+beforeAll(() => {
+  if (process.platform !== "win32") return
+  // Like first imports in #584, the cold Windows PowerShell start belongs to
+  // the runner, not the test. Before module removal, CI measured 8.4 to 10.1 s:
+  // host 5.0 to 5.6 s, module resolution 0.9 to 1.0 s and 1.1 to 1.6 s,
+  // and C# compile 1.2 to 1.8 s. Under suite load it can exceed the 20 s query
+  // cap. Later starts take 0.3 to 0.5 s; one warm-up cut this test from 9 to
+  // 11 s to about 1 s. Give runner startup its own budget, as in #584.
+  const command = windowsJobCommand()
+  const result = spawnSync(command.command, command.args, {
+    input: JSON.stringify({ mode: "inspect", pids: [process.pid] }) + "\n",
+    encoding: "utf8", timeout: 90_000, windowsHide: true,
+  })
+  expect(result.error).toBeUndefined()
+  expect(result.status).toBe(0)
+}, 120_000)
 
 beforeEach(() => { vi.spyOn(CliProviderProbe.prototype, "inspect").mockResolvedValue([]) })
 afterEach(async () => {
