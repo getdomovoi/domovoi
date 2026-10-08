@@ -118,14 +118,34 @@ describe("servicePlan", () => {
     }
   })
 
-  it("refuses an overlong Windows command before any files or manager calls", async () => {
+  // schtasks /create refuses a /tr value over 261 characters with "Value for
+  // '/TR' option cannot be more than 261 character(s)", one fewer than its
+  // documentation's 262. With this runtime and configuration, an entry of
+  // 168 characters makes the command exactly 261.
+  const entryOfLength = (length: number) => `C:\\${"a".repeat(length - 17)}\\dist\\index.js`
+
+  it("registers a Windows task command of 261 characters, the most schtasks accepts", () => {
+    const plan = servicePlan({ ...windowsScript, execPath: entryOfLength(168) })
+    const create = plan.commands.find(({ args }) => args[0] === "/create")!
+    const command = create.args[create.args.indexOf("/tr") + 1]!
+    expect(command).toBe(`"C:\\Program Files\\nodejs\\node.exe" "${entryOfLength(168)}" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"`)
+    expect(command).toHaveLength(261)
+  })
+
+  it("refuses a 262 character Windows command before any files or manager calls, naming its longest part", async () => {
     const dependencies = effects()
-    await expect(installService({
-      ...windowsScript,
-      execPath: `C:\\${"a".repeat(190)}\\dist\\index.js`,
-    }, dependencies)).rejects.toThrow(/Windows task command exceeds 262 characters/)
+    await expect(installService({ ...windowsScript, execPath: entryOfLength(169) }, dependencies)).rejects.toThrow(
+      `The Windows task command is 262 characters, and schtasks accepts at most 261. Its longest part is the daemon entry ${entryOfLength(169)} (169 characters). Install Node and Domovoi at shorter absolute paths before installing the service. No service files were changed.`,
+    )
     expect(dependencies.write).not.toHaveBeenCalled()
     expect(dependencies.run).not.toHaveBeenCalled()
+  })
+
+  it("names the Node runtime when it is the longest part of an overlong Windows command", () => {
+    const runtime = `C:\\${"n".repeat(200)}\\node.exe`
+    expect(() => servicePlan({ ...windowsScript, runtime })).toThrow(
+      `The Windows task command is 311 characters, and schtasks accepts at most 261. Its longest part is the Node runtime ${runtime} (212 characters).`,
+    )
   })
 
   it("puts a systemd unit in the asking user's own configuration", () => {
@@ -166,7 +186,7 @@ describe("servicePlan", () => {
   it("launches a script through Node rather than letting Windows pick an interpreter", () => {
     const plan = servicePlan(windowsScript)
     const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
-    expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "C:\\Users\\dl\\.domovoi\\service.json"')
+    expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"')
   })
 
   // The daemon runs for the whole logon session. schtasks /create
@@ -192,7 +212,7 @@ describe("servicePlan", () => {
   it("passes a real executable straight through", () => {
     const plan = servicePlan(windows)
     const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
-    expect(target).toBe('"C:\\Program Files\\Domovoi\\domovoid.exe" --service-config "C:\\Users\\dl\\.domovoi\\service.json"')
+    expect(target).toBe('"C:\\Program Files\\Domovoi\\domovoid.exe" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"')
   })
 
   it("refuses a script with no runtime to run it", () => {
@@ -429,6 +449,7 @@ describe("serviceRemovalPlan", () => {
       expect(serviceRemovalPlan({ platform: "win32" })).toEqual({
         kind: "task",
         name: "Domovoi daemon",
+        disable: { command, args: expect.any(Array) },
         stop: { command, args: expect.any(Array) },
         inspect: { command, args: expect.any(Array) },
         remove: { command, args: expect.any(Array) },
@@ -550,7 +571,7 @@ describe("serviceStatus", () => {
     await expect(serviceStatus({ platform: "win32", home: "C:\\Users\\dl" }, dependencies)).resolves.toEqual({
       installed: true,
       running: true,
-      detail: "Domovoi daemon is running",
+      detail: "legacy Windows logon task; no crash supervision or job-object tree evidence",
     })
     // The ownership read, then the state read; neither is schtasks text.
     expect(dependencies.capture).toHaveBeenCalledTimes(2)
@@ -706,7 +727,7 @@ describe("runServiceCommand", () => {
     const launch = target.platform === "win32"
       ? vi.mocked(dependencies.run).mock.calls[0]?.[1].join(" ")
       : vi.mocked(dependencies.write).mock.calls.find(([path]) => !path.endsWith("service.json"))?.[1]
-    expect(launch).toContain("--service-config")
+    expect(launch).toContain(target.platform === "win32" ? "--service-supervise" : "--service-config")
     expect(launch).toContain(configuration![0])
   })
 
@@ -770,6 +791,14 @@ describe("runServiceCommand", () => {
     await expect(runServiceCommand(["pair"], dependencies)).resolves.toBe(1)
     expect(dependencies.stderr).not.toHaveBeenCalled()
   })
+
+  it("uses supplied command words in service usage", async () => {
+    const dependencies = command({ words: {
+      install: "custom install", status: "custom status", remove: "custom remove", profileRecover: "custom recover",
+    } })
+    expect(await runServiceCommand(["service"], dependencies)).toBe(1)
+    expect(dependencies.stderr).toHaveBeenCalledWith("Usage: custom install\n       custom status\n       custom remove\n")
+  })
 })
 
 // A reinstall over the logon task Domovoi registered replaces it with the
@@ -778,10 +807,19 @@ describe("runServiceCommand", () => {
 it("reinstalls over the logon task Domovoi registered, lifting its run limit before it runs", async () => {
   vi.stubEnv("SystemRoot", "C:\\Windows")
   const configurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
-  const action = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-config "${configurationPath}"`, enabled: true, state: 3 }
+  const action = { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-supervise "${configurationPath}"`, enabled: true, state: 3 }
   const dependencies = effects({
+    stopSupervisor: vi.fn(async (_path, _deadline, options) => {
+      if (!await options?.stopTask?.()) throw new Error("Task remains observable")
+    }),
+    supervisorStatus: vi.fn(async () => ({ installed: true, running: false, supervising: false, detail: "stopped; jobs empty" })),
     readConfiguration: vi.fn(() => ({ ...windows.configuration, serviceRuntime: { executable: "C:\\Program Files\\nodejs\\node.exe", entry: "C:\\Program Files\\Domovoi\\dist\\index.js" } })),
-    capture: vi.fn(async () => ({ code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}\r\n` })),
+    capture: vi.fn(async (_command, args) => {
+      const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+      if (script.includes("domovoi-task-action:")) return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}` }
+      if (script.includes("$task.Enabled = $false")) { action.enabled = false; action.state = 1 }
+      return { code: 0, stdout: `domovoi-task:${action.state}` }
+    }),
   })
   await expect(installService(windowsScript, dependencies)).resolves.toMatchObject({ kind: "task" })
   expect(vi.mocked(dependencies.run).mock.calls.map(([command, args]) => command === "C:\\Windows\\System32\\schtasks.exe" ? args[0] : "settings")).toEqual(["/create", "settings", "/run"])

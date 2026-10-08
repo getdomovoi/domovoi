@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { once } from "node:events"
-import { mkdtemp, rm } from "node:fs/promises"
+import { chmod, cp, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -196,5 +196,182 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
     const result = await runCli(["pair", "hearth-quiet-ember-42", "--daemon", url, "--credential-file", join(home!, "unused.json")])
     expect(result.code).toBe(2)
     expect(result.stderr).toMatch(/stdin, not as an argument/)
+  })
+})
+
+// `domovoi daemon` runs the daemon package's own installer (ruling Q3 B). The
+// OS boundary is the daemon's manager shim, preloaded into the CLI process: it
+// answers systemctl, launchctl, loginctl and Task Scheduler from a log, so the
+// real files and launch command are written into a scratch home and no real
+// service is installed. Every DOMOVOI_ setting of the shell running the tests
+// is dropped, so the live profile is never read or written.
+const daemonEntry = resolve(import.meta.dirname, "../../daemon/dist/index.js")
+const managerShim = pathToFileURL(resolve(import.meta.dirname, "../test-fixtures/service-manager.mjs")).href
+
+// Node 22 announces node:sqlite on stderr, for domovoid as well (ruling Q32 A).
+const sqliteNotice = /^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature[^\n]*\n(?:\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n)?/gmu
+const withoutNotice = (stderr: string) => stderr.replace(sqliteNotice, "")
+
+async function serviceHome(): Promise<{ home: string; environment: NodeJS.ProcessEnv; done: () => Promise<void> }> {
+  // Real path: macOS reaches the temporary directory through /var, a link.
+  const home = await realpath(await mkdtemp(join(tmpdir(), "domovoi-cli-daemon-")))
+  const environment: NodeJS.ProcessEnv = { ...process.env }
+  for (const key of Object.keys(environment)) if (key.startsWith("DOMOVOI_")) delete environment[key]
+  Object.assign(environment, {
+    HOME: home, USERPROFILE: home, XDG_STATE_HOME: join(home, ".local", "state"),
+    DOMOVOI_TEST_SERVICE_HOME: home, DOMOVOI_TEST_MANAGER_LOG: join(home, "manager.jsonl"),
+  })
+  return { home, environment, done: () => rm(home, { recursive: true, force: true }) }
+}
+
+function runWithShim(program: string[], environment: NodeJS.ProcessEnv): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn(program[0]!, program.slice(1), { env: environment, stdio: ["ignore", "pipe", "pipe"] })
+    let stdout = ""
+    let stderr = ""
+    child.stdout.on("data", (bytes: Buffer) => { stdout += bytes.toString() })
+    child.stderr.on("data", (bytes: Buffer) => { stderr += bytes.toString() })
+    child.on("exit", (code) => resolve({ code: code ?? -1, stdout, stderr: withoutNotice(stderr) }))
+  })
+}
+
+const domovoi = (args: string[], environment: NodeJS.ProcessEnv) => runWithShim([process.execPath, "--import", managerShim, cli, "daemon", ...args], environment)
+const domovoid = (args: string[], environment: NodeJS.ProcessEnv) => runWithShim([process.execPath, "--import", managerShim, daemonEntry, "service", ...args], environment)
+
+// What the service manager was told to run: the unit, the launch agent, or the
+// command Task Scheduler's /create received.
+async function registeredLaunch(home: string): Promise<string> {
+  if (process.platform === "win32") {
+    const commands = (await readFile(join(home, "manager.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { command: string; args: string[] })
+    const create = commands.findLast(({ command, args }) => command.endsWith("\\System32\\schtasks.exe") && args[0] === "/create")!
+    return create.args[create.args.indexOf("/tr") + 1]!
+  }
+  return readFile(process.platform === "darwin"
+    ? join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")
+    : join(home, ".config", "systemd", "user", "domovoid.service"), "utf8")
+}
+
+describe("domovoi daemon", { timeout: 60_000 }, () => {
+  it("refuses a verb it does not have, and surplus words, before anything runs", async () => {
+    const { home, environment, done } = await serviceHome()
+    try {
+      for (const [args, refusal] of [
+        [[], /^domovoi daemon takes one of install, status or remove\n/],
+        [["start"], /^domovoi daemon takes one of install, status or remove; got "start"\n/],
+        [["install", "now"], /^domovoi daemon install takes no further arguments; got "now"\n/],
+        [["status", "--verbose"], /^Unknown option --verbose\n/],
+        // The service is this machine's: no option names another daemon, so
+        // none is accepted and silently dropped (review round 1, Major).
+        [["remove", "--daemon", "ws://203.0.113.7:47831/rpc"], /^domovoi daemon remove acts on this machine's login service and takes no options; got --daemon\n/],
+        [["install", "--credential-file", join(home, "x.json"), "--yes"], /^domovoi daemon install acts on this machine's login service and takes no options; got --credential-file, --yes\n/],
+      ] as const) {
+        const refused = await domovoi([...args], environment)
+        expect(refused.code, args.join(" ")).toBe(2)
+        expect(refused.stderr).toMatch(refusal)
+        expect(refused.stderr).toContain("domovoi daemon install|status|remove")
+      }
+      await expect(readFile(join(home, "manager.jsonl"))).rejects.toMatchObject({ code: "ENOENT" })
+    } finally { await done() }
+  })
+
+  it("registers the daemon's own worker entry, never this CLI's", async () => {
+    const { home, environment, done } = await serviceHome()
+    try {
+      const installed = await domovoi(["install"], environment)
+      expect(installed.stderr).toBe("")
+      expect(installed.code).toBe(0)
+      expect(installed.stdout).toMatch(/^Installed the Domovoi daemon service /m)
+      const launch = await registeredLaunch(home)
+      expect(launch).toContain(await realpath(daemonEntry))
+      expect(launch).not.toContain(resolve(import.meta.dirname, "../dist"))
+      expect(launch).toContain(process.platform === "win32" ? "--service-supervise" : "--service-config")
+      // Q28 A: the follow-up line names the command that was run. The shim
+      // answers loginctl, so only a Linux install turns lingering on.
+      if (process.platform === "linux") expect(installed.stdout).toMatch(/turns it off again\.$/m)
+      if (process.platform === "linux") expect(installed.stdout).toContain(" domovoi daemon remove turns it off again.")
+      expect(installed.stdout).not.toContain("domovoid service")
+    } finally { await done() }
+  })
+
+  // Task Scheduler's status reads supervisor evidence the shim does not
+  // produce, so the exit meanings are checked where the manager answers.
+  it.skipIf(process.platform === "win32")("keeps domovoid service's exit codes: status 0 while installed, 1 once removed", async () => {
+    const { environment, done } = await serviceHome()
+    try {
+      expect((await domovoi(["status"], environment))).toMatchObject({ code: 1, stdout: expect.stringMatching(/^not installed, not running: /) })
+      expect((await domovoi(["install"], environment)).code).toBe(0)
+      expect(await domovoi(["status"], environment)).toMatchObject({ code: 0, stderr: "", stdout: expect.stringMatching(/^installed, /) })
+      const removed = await domovoi(["remove"], environment)
+      expect(removed).toMatchObject({ code: 0, stderr: "", stdout: expect.stringMatching(/^Removed the Domovoi daemon service /) })
+      expect((await domovoi(["status"], environment))).toMatchObject({ code: 1, stdout: expect.stringMatching(/^not installed, not running: /) })
+      // The same answers from domovoid, the daemon's own entry.
+      expect((await domovoid(["status"], environment)).code).toBe(1)
+    } finally { await done() }
+  })
+
+  // Q28 A and Q33 A: profile recovery has no domovoi form, and domovoid may
+  // not be on PATH, so through the CLI the line says what domovoid is.
+  it.skipIf(process.platform === "win32")("names the command that was run when removal cannot prove the profile owner", async () => {
+    const { home, environment, done } = await serviceHome()
+    try {
+      const unreadableOwner = async () => {
+        await mkdir(join(home, ".domovoi"), { recursive: true })
+        await writeFile(join(home, ".domovoi", "local-owner.json"), "{not json", { mode: 0o600 })
+      }
+      expect((await domovoi(["install"], environment)).code).toBe(0)
+      await unreadableOwner()
+      const throughCli = await domovoi(["remove"], environment)
+      expect(throughCli).toMatchObject({ code: 0, stderr: "" })
+      expect(throughCli.stdout).toContain(`run domovoid profile recover --confirm-no-supervisor (domovoid is Node running ${await realpath(daemonEntry)}).\n`)
+
+      expect((await domovoid(["install"], environment)).code).toBe(0)
+      await unreadableOwner()
+      const throughDaemon = await domovoid(["remove"], environment)
+      expect(throughDaemon).toMatchObject({ code: 0, stderr: "" })
+      expect(throughDaemon.stdout).toContain("run domovoid profile recover --confirm-no-supervisor.\n")
+    } finally { await done() }
+  })
+
+  // Q31 A: the desktop runtime ships this CLI beside the daemon, without a
+  // second daemon copy, and links domovoi into ~/.local/bin through a launcher
+  // (apps/desktop/scripts/daemon-runtime.mjs). Through that link, install
+  // runs the runtime's daemon, which the daemon recognises as an app's (Q408)
+  // and copies under the profile, so the service never runs from inside the
+  // app. The desktop writes no launcher on Windows.
+  it.skipIf(process.platform === "win32")("from the CLI an app links, registers a copy of the app's daemon, not the app's own", async () => {
+    const { home, environment, done } = await serviceHome()
+    try {
+      const resources = join(home, "Domovoi.app", "Contents", "Resources")
+      const runtime = join(resources, "daemon-runtime")
+      for (const part of ["daemon", "cli"]) {
+        await cp(resolve(import.meta.dirname, `../../${part}/dist`), join(runtime, part, "dist"), { recursive: true })
+        await cp(resolve(import.meta.dirname, `../../${part}/package.json`), join(runtime, part, "package.json"))
+      }
+      // The runtime's Node, standing in for the pinned program it ships.
+      await mkdir(join(runtime, "node", "bin"), { recursive: true })
+      await writeFile(join(runtime, "node", "bin", "node"), `#!/bin/sh\nexec '${process.execPath.replaceAll("'", "'\\''")}' "$@"\n`)
+      await chmod(join(runtime, "node", "bin", "node"), 0o755)
+      // Third-party packages resolve from above the runtime, so the copy the
+      // install makes holds only what the runtime holds. No @getdomovoi/daemon
+      // is reachable from the CLI: only the sibling daemon can answer.
+      await symlink(resolve(import.meta.dirname, "../../daemon/node_modules"), join(home, "node_modules"), "dir")
+      // The desktop's own launcher writer, so the link runs what the app ships.
+      const desktopRuntime = new URL("../../desktop/scripts/daemon-runtime.mjs", import.meta.url).href
+      const { writeCommandLaunchers } = await import(desktopRuntime) as { writeCommandLaunchers: (input: { root: string; platform: string }) => Promise<string[]> }
+      expect(await writeCommandLaunchers({ root: runtime, platform: process.platform })).toContain("domovoi")
+      await mkdir(join(home, ".local", "bin"), { recursive: true })
+      await symlink(join(runtime, "bin", "domovoi"), join(home, ".local", "bin", "domovoi"))
+
+      const installed = await runWithShim([join(home, ".local", "bin", "domovoi"), "daemon", "install"], { ...environment, NODE_OPTIONS: `--import=${managerShim}` })
+      expect(installed.stderr).toBe("")
+      expect(installed.code).toBe(0)
+      const versions = join(home, ".domovoi", "runtime", JSON.parse(await readFile(join(runtime, "daemon", "package.json"), "utf8")).version as string)
+      const [copy, ...others] = await readdir(versions)
+      expect(others).toEqual([])
+      expect(installed.stdout).toContain(`Copied the daemon runtime out of the app to ${join(versions, copy!)}, so the service does not run from inside the app.\n`)
+      const launch = await registeredLaunch(home)
+      expect(launch).toContain(join(versions, copy!, "daemon", "dist", "index.js"))
+      expect(launch).not.toContain(runtime)
+    } finally { await done() }
   })
 })

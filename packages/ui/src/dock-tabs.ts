@@ -50,7 +50,9 @@ export const dockTabDefinitions: readonly DockTabDefinition[] = [
   {
     id: "terminal",
     label: "Terminal",
-    note: "The raw stream from the machine, read-only. The agent owns this shell.",
+    // Q340 A: the tab is an interactive PTY a person opens, not the agent's
+    // read-only shell the design draws, so the tip does not say otherwise.
+    note: "A shell on the machine, in the session's worktree. One device types at a time; the others can read.",
     Icon: TerminalIcon,
   },
   {
@@ -62,7 +64,8 @@ export const dockTabDefinitions: readonly DockTabDefinition[] = [
   {
     id: "checkpoints",
     label: "Checkpoints",
-    note: "Every approved write is revertible. Reverting rewinds the worktree and the thread together.",
+    // Q341 A: revert is worktree-only, so the tip does not promise a rewound thread.
+    note: "In a session with a worktree, every request you allow at a gate takes one first. Reverting resets the worktree; the thread keeps its turns.",
     Icon: HistoryIcon,
   },
   {

@@ -27,12 +27,13 @@
     "prepack": "pnpm run build",
     "predev": "pnpm --filter @getdomovoi/protocol build",
     "dev": "tsx src/index.ts",
-    "pretest": "pnpm --filter @getdomovoi/protocol build && pnpm build",
+    "pretest": "pnpm --filter @getdomovoi/protocol build && pnpm --filter @getdomovoi/daemon build && pnpm build",
     "test": "vitest run --coverage",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@getdomovoi/credential-store": "workspace:*",
+    "@getdomovoi/daemon": "workspace:*",
     "@getdomovoi/protocol": "workspace:*",
     "ws": "^8.18.3",
     "zod": "catalog:"

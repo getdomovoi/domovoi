@@ -2,7 +2,7 @@ import { waitForDaemon } from "./test-wait-for.js"
 import { DatabaseSync } from "node:sqlite"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
-import { maximumFleetMachines, protocolVersion, type FleetMachineDescriptor } from "@getdomovoi/protocol"
+import { maximumFleetMachines, offlineHeartbeatMs, staleHeartbeatMs, protocolVersion, type FleetMachineDescriptor } from "@getdomovoi/protocol"
 
 import { FleetEnrollmentService } from "./fleet-enrollment.js"
 import { SqliteFleetRegistry } from "./fleet-registry.js"
@@ -328,6 +328,67 @@ describe("fleet enrollment coordinator", () => {
     expect(f.service.snapshot().entries[0]).toMatchObject({ machine: {
       health: "pairing-required", heartbeat: { lastSeenAt: new Date(20_000).toISOString() },
     } })
+  })
+
+  it.each([
+    [1, "online"],
+    [staleHeartbeatMs + 1, "stale"],
+    [offlineHeartbeatMs, "stale"],
+  ])("keeps a failed dial reconnecting after %i ms of heartbeat silence", async (silence, state) => {
+    const f = fixture()
+    await f.service.enroll(params)
+    f.time(1_000 + silence)
+    f.open.mockRejectedValue(new Error("network offline"))
+    await f.service.refresh()
+    expect((await f.service.list()).entries).toMatchObject([{ kind: "machine", machine: {
+      id: targetId, health: "reconnecting",
+      heartbeat: { state, lastSeenAt: new Date(1_000).toISOString() },
+    } }])
+  })
+
+  it("lists repeated failed dials as unreachable once the heartbeat is offline", async () => {
+    const f = fixture()
+    await f.service.enroll(params)
+    f.open.mockRejectedValue(new Error("network offline"))
+    f.time(1_000 + staleHeartbeatMs + 1)
+    await f.service.refresh()
+    expect((await f.service.list()).entries).toMatchObject([{ machine: { health: "reconnecting" } }])
+    f.time(1_000 + offlineHeartbeatMs + 1)
+    await f.service.refresh()
+    expect((await f.service.list()).entries).toMatchObject([{ kind: "machine", machine: {
+      id: targetId, health: "unreachable",
+      heartbeat: { state: "offline", lastSeenAt: new Date(1_000).toISOString() },
+    } }])
+  })
+
+  it("uses the heartbeat age when the failed dial finishes", async () => {
+    const f = fixture()
+    await f.service.enroll(params)
+    f.time(1_000 + offlineHeartbeatMs)
+    f.open.mockImplementation(async () => {
+      f.time(1_000 + offlineHeartbeatMs + 1)
+      throw new Error("network offline")
+    })
+    await f.service.refresh()
+    expect((await f.service.list()).entries).toMatchObject([{ machine: {
+      health: "unreachable", heartbeat: { state: "offline" },
+    } }])
+  })
+
+  it("returns an unreachable machine to healthy after authenticated recovery", async () => {
+    const f = fixture()
+    await f.service.enroll(params)
+    f.time(1_000 + offlineHeartbeatMs + 1)
+    f.open.mockRejectedValueOnce(new Error("network offline"))
+    await f.service.refresh()
+    expect((await f.service.list()).entries).toMatchObject([{ machine: { health: "unreachable" } }])
+    const recoveredAt = 1_000 + offlineHeartbeatMs + 2
+    f.time(recoveredAt)
+    await f.service.refresh()
+    expect((await f.service.list()).entries).toMatchObject([{ kind: "machine", machine: {
+      id: targetId, health: "healthy",
+      heartbeat: { state: "online", lastSeenAt: new Date(recoveredAt).toISOString() },
+    } }])
   })
 
   it("does not turn keychain unavailability into a lost row or a false heartbeat", async () => {

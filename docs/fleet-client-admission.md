@@ -25,17 +25,36 @@ admission. The client verifier explicitly refuses a root receipt even though roo
 On the target machine, using its own daemon credential:
 
 ```sh
-domovoid pair --client desktop --label "My desktop"
+domovoid pair --client desktop
 ```
 
-Use `web` for a browser client. This prints the new client bearer and the device id to revoke.
-The command greets as cli and requests `targetClient: desktop`; the issuer's identity is not
-changed to impersonate the recipient. Plain `domovoid pair` still issues a machine pairing code.
-Machine pending claims and their expiration/confirmation rules are unchanged.
+Use `web` for a browser client. This prints no credential. It prints a one-time pairing code: for
+a desktop, a symbol to scan and the same text as a line to paste, both carrying the code and the
+address a device dials; for `web`, the code as words to type, with the web app address when
+`DOMOVOI_WEB_APP_URL` is set. The code lasts at most three minutes and works once, only for that
+client kind. Issuing another code ends it, and so do five wrong codes presented while it is open
+(`maximumPairingAttempts`); run the command again for a fresh one. When the daemon has no address
+a device could dial, the command prints the code and the reason and exits 1. The device that
+redeems the code (`device.redeemCode`) receives the client credential and its device id, and
+names itself. `--label <name>` is optional. The daemon keeps it with the open code, but it is
+not in what the command prints, and no device or screen receives it yet, so it changes nothing. The command greets
+as cli and requests `targetClient: desktop` through `device.issueCode`; the issuer's identity is
+not changed to impersonate the recipient. Plain `domovoid pair` still issues a machine pairing
+code. Machine pending claims and their expiration/confirmation rules are unchanged.
 
-This is a deliberate grant, active when issued, not an automated machine claim. The target's
-Devices list can revoke it even if the caller loses the reply. Check that list before retrying
-an ambiguously completed grant. Do not paste a machine secret or a daemon root token instead.
+The Fleet dialog below does not take this code. It takes a client credential, and nothing in
+Domovoi gives an operator one today: no command prints it, and neither the desktop nor the shared
+UI redeems a code for the dialog. Over the protocol, a `device.redeemCode` with a desktop code
+returns one, and so does a `device.pair` request for a desktop client (`targetClient`, or `client`
+when that is omitted) made with the target daemon's own credential; each
+answer carries the credential and the device id to revoke. Domovoi ships no command or screen that
+makes either request for this dialog, so Fleet authorization has no supported way through yet.
+The tests make the requests directly.
+
+Either way this is a deliberate grant, not an automated machine claim. A code grants nothing until
+a device redeems it, and a lost reply costs the code. The target's Devices list shows and can
+revoke what was paired. Check that list before retrying an ambiguously completed grant. Do not
+paste a machine secret or a daemon root token instead.
 
 ## Protocol and client boundaries
 
@@ -70,8 +89,9 @@ error strings are not displayed because they can echo a submitted secret. Reason
 missing enrollment, daemon pairing, inaccessible keychain, protocol or identity mismatch,
 unusable route, route deadline, wrong client credential, and unavailable verification.
 
-The Fleet action is **Authorize this client**, beside disabled Use and Terminal, with
-the exact target command, authority warning, and inline remedy on refusal. Controls become usable
+The Fleet action is **Authorize this client**, beside disabled Use and Terminal, with an authority
+warning and inline remedy on refusal. Its dialog names `domovoid pair --client <kind>` only to say
+that the code it prints is not what the field takes. Controls become usable
 only after a successful identity/credential proof. The row says **Client credential verified** and
 then offers Use and Terminal. The home connection remains available; **Return to home daemon**
 works even while the remote connection is unavailable. Each remote reconnect verifies identity
@@ -139,7 +159,8 @@ secrets to a relay, or add accounts or other Goal 3 services.
 
 Protocol tests cover additive parsing and strict caller receipts. Two production-built daemons
 exercise separate client/machine authority and pending-forget route masking over real sockets.
-The real CLI binary issues a desktop grant that the real shared client verifies over a socket.
+The real CLI binary issues a desktop code; a device redeems it, and the real shared client verifies
+the redeemed credential over a socket.
 Client tests refuse wrong identities, wrong kinds, root receipts, changed device ids, and missing
 verification; they cover notification withholding, bounded queues, deadlines and reconnects.
 

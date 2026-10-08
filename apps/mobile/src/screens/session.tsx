@@ -25,7 +25,9 @@ import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
 import type { Attachment } from "../attachments"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
 import type { PhoneRefusal } from "../session-refusal"
+import { watchedSummary, type TerminalWatch } from "../terminal-rows"
 import { useTheme } from "../theme/theme-provider"
+import { TerminalBlock } from "./watching"
 
 // The handoff tints a step's mark with the state it is in rather than outlining
 // it, so a plan reads as a column of coloured marks at a glance.
@@ -566,6 +568,9 @@ export function SessionScreen({
   onSeeHeldBack,
   onStartLike,
   onTellAgent,
+  terminals = [],
+  connected = true,
+  onOpenTerminal,
 }: {
   detail: SessionDetail
   // The route can die while the thread is open; the screen says what is drawn
@@ -620,6 +625,14 @@ export function SessionScreen({
   // Sends a policy refusal's remedy to the agent as a steer (ruling Q356 A).
   // Resolves to how the daemon took the message, or undefined when it did not.
   onTellAgent?: ((text: string) => Promise<TellDelivery | undefined>) | undefined
+  // Phone v2 frame 04 (B): the session's terminals as the phone watches them,
+  // each a block with its tail that opens the read-only view. Read-only on
+  // every credential, so they are drawn for a watching phone too.
+  terminals?: readonly TerminalWatch[] | undefined
+  // Whether the connection that watches is up; while it is down a terminal's
+  // state is unconfirmed.
+  connected?: boolean | undefined
+  onOpenTerminal?: ((terminalId: string) => void) | undefined
 }) {
   const [startOpen, setStartOpen] = useState(false)
   const [attachOpen, setAttachOpen] = useState(false)
@@ -691,6 +704,11 @@ export function SessionScreen({
           bottomInset={composerFootprint}
           followEnd
           onAtEndChange={(next) => { setAtEnd(next); if (next) setUnseen(0) }}
+          // Terminal blocks above the messages grow, and appear, as output
+          // arrives. The thread keeps the first visible item in place rather
+          // than its numeric offset, so a reader scrolled into history is not
+          // moved by them. Growth below needs nothing: followEnd handles it.
+          maintainVisibleContentPosition={{ minIndexForVisible: 0 }}
           testID="thread"
         >
           <ConnectionBanner notice={notice} />
@@ -729,6 +747,18 @@ export function SessionScreen({
           {plan && !planPinned ? <PlanCard plan={plan} onEditStep={access === "full" ? onEditStep : undefined} onPin={() => onPinPlan(true)} /> : null}
 
           {artifacts.length > 0 ? <ArtifactList rows={artifacts} onOpen={onOpenArtifact} /> : null}
+
+          {terminals.map((watch) => {
+            const terminalId = watchedSummary(watch).terminalId
+            return (
+              <TerminalBlock
+                key={terminalId}
+                watch={watch}
+                connected={connected}
+                onOpen={() => onOpenTerminal?.(terminalId)}
+              />
+            )
+          })}
 
           {detail.omitted > 0 ? (
             <Text variant="note" className="text-center">

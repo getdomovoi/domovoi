@@ -9,7 +9,7 @@ import { join, resolve } from "node:path"
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Notification, protocol, session, shell } from "electron"
 
 import { DesktopDaemon } from "./desktop-daemon.js"
-import { configureLaunchSmokeProfile } from "./launch-smoke-profile.js"
+import { configureLaunchSmokeProfile, loginServiceTurnedOff } from "./launch-smoke-profile.js"
 import { LaunchSmokeExit } from "./launch-smoke-exit.js"
 import { DesktopDaemonLifecycle, startDesktop } from "./daemon-lifecycle.js"
 import type { DesktopDaemonService } from "./daemon-service.js"
@@ -68,6 +68,9 @@ const launchSmoke = process.env.DOMOVOI_DESKTOP_LAUNCH_SMOKE === "1"
 if (launchSmoke) {
   configureLaunchSmokeProfile(app, process.env.DOMOVOI_LAUNCH_SMOKE_PROFILE, homedir())
 }
+// Test-only, unpackaged smokes (launch-smoke-profile.ts): the service calls
+// would take their lease under the real passwd home.
+const loginServiceOff = loginServiceTurnedOff({ isPackaged: app.isPackaged, argv: process.argv })
 let launchSmokeStage = "main"
 let launchSmokeTimeout: ReturnType<typeof setTimeout> | undefined
 const deepLinks = new DesktopDeepLinkQueue()
@@ -182,7 +185,7 @@ const fleetOrigins = new FleetOriginAdmission(async (machineId, timeoutMs) => {
 let desktopDaemonService: Promise<DesktopDaemonService> | undefined
 const daemonService = (): Promise<DesktopDaemonService> => {
   desktopDaemonService ??= import("./daemon-service-assembly.js").then(
-    (assembly) => assembly.createDesktopDaemonService(desktopDaemon, { resourcesPath: process.resourcesPath, version: app.getVersion(), dataDirectory: userDataDirectory }, daemonModule.module),
+    (assembly) => assembly.createDesktopDaemonService(desktopDaemon, { resourcesPath: process.resourcesPath, version: app.getVersion(), dataDirectory: userDataDirectory, ...(loginServiceOff ? { loginService: "off" } : {}) }, daemonModule.module),
     (error: unknown) => {
       desktopDaemonService = undefined
       throw error

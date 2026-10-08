@@ -403,15 +403,21 @@
       "evidence": [
         "Move a session here",
         "LAST HEARD",
-        "See what stalled"
+        "See what stalled",
+        "[\"TRANSPORT\", transportFact(machine)]",
+        "[\"AGENTS\", facts.known",
+        "[\"SESSIONS\", facts.known",
+        "`Open its ${count} ${count === 1 ? \"session\" : \"sessions\"}`",
+        "unreachable && \"border-danger-border opacity-[.72]\"",
+        "{ known: false, reason: \"no client credential here\" }",
+        {
+          "absent": "No capability reported",
+          "in": "packages/ui/src/fleet-view.tsx"
+        }
       ],
       "presence": [
         "Move a session here"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "a card per machine exists with Move a session here; it is not the drawn card. The design draws a dot, mono name and status pill, four fact rows (TRANSPORT, AGENTS, SESSIONS, LAST HEARD), one primary action (Open its N sessions, or See what stalled when unreachable) and a danger border when unreachable. fleet-view draws a sans name with a Badge, Use, Move, Terminal and Forget buttons, a platform, arch and version line, capability badges and a transports list, and dims an unreachable card with no border. LAST HEARD is buildable from heartbeat.lastSeenAt. Agents and session counts for another machine are client work for admitted machines: FleetAccessSession opens an authenticated DomovoiClient per admitted machine, and its connect() returns that machine's WorkspaceSnapshot with machine.providers and sessions. A machine this client holds no credential for stays unknown, and the card must say so rather than guess. The domovoi cloud transport is M2"
-      }
+      ]
     },
     {
       "id": "fleet.agents",
@@ -428,12 +434,16 @@
       "evidence": [
         "Agents and providers",
         "Tokens live in that machine&apos;s OS keychain",
-        "Authenticate there"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the heading and keychain note are drawn inside this machine's own card and list only this machine's providers; the design draws a panel below the cards with one row per machine and agent, a state, and an action only where one is needed (Authenticate there). Other machines' agents are client work for admitted machines: FleetAccessSession's per-machine DomovoiClient connect() returns that machine's WorkspaceSnapshot, whose machine.providers lists them; machines without an admitted credential stay unknown"
-      }
+        "Authenticate there",
+        "<MachineAgentList machines={agents} />",
+        "needs sign-in on that machine",
+        "reading: machineReading(snapshot, new Date(), heardAt)",
+        "onReadMachine={(machineId, signal) => accessSession.read(machineId, signal)}",
+        {
+          "absent": "Agents and providers on ${machine.label}",
+          "in": "packages/ui/src/fleet-view.tsx"
+        }
+      ]
     },
     {
       "id": "audit.header",
@@ -474,20 +484,19 @@
       "id": "audit.rows",
       "name": "Audit rows",
       "where": "audit surface: when, what, actor, detail, who, outcome",
-      "presence": [
-        "function AuditEntryRow("
-      ],
       "evidence": [
         "function AuditEntryRow(",
+        "outcomeDotClass(entry.outcome)",
+        "w-[62px]",
+        "{entry.actor.kind}",
+        "@container overflow-hidden",
+        "@3xl:w-[190px]",
+        "@3xl:w-[150px]",
         {
           "absent": "<pre className=\"max-h-40",
           "in": "packages/ui/src/audit-log-view.tsx"
         }
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "rows exist (the earlier evidence was only the component name); they are not the drawn row. The design draws an outcome dot, a 62px time, the action with an actor pill, a detail line, then 190px who and 150px outcome columns. AuditEntryRow draws the action with an outcome Badge, a locale timestamp on the right, an actor line and the detail in a pre block. Every field the design names is in auditEntrySchema, so this is client-only"
-      }
+      ]
     },
     {
       "id": "audit.export",
@@ -501,11 +510,12 @@
       ],
       "evidence": [
         "Export this query",
+        "saves to this device",
         "rows match"
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "export exists; the line under it says N rows loaded where the design says 1,204 rows match, because the query page carries no total (protocol). It also says writes a file on this machine in every client, while a web tab downloads to the browser's device; Q346 A (2026-10-02) makes that copy depend on the client kind (saves to this device in a browser)"
+        "reason": "export exists; the line under it says N rows loaded where the design says 1,204 rows match, because the query page carries no total (protocol, Codex follow-up C1). The Q346 A copy is built in AuditLogView (S3.10j, 2026-10-06): a browser client says saves to this device, a desktop writes a file on this machine. WorkspaceShell does not pass clientKind to it yet, so until that one-line follow-up every client draws the desktop line"
       }
     },
     {
@@ -515,17 +525,17 @@
       "copy": [
         "WHAT THIS LOG IS, AND IS NOT"
       ],
-      "presence": [
-        "WHAT THIS LOG IS, AND IS NOT"
-      ],
       "evidence": [
         "WHAT THIS LOG IS, AND IS NOT",
-        "Retention is by count: 10,000 activity and 1,000 pre-authentication entries."
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the facts block exists; two of its four lines differ. The design's retention line is true (10,000 activity and 1,000 pre-authentication entries are the daemon's fixed defaults in apps/daemon/src/audit-log.ts) while the code says Retention is bounded by the daemon's local audit policy; Q377 A (2026-10-02) takes the design's exact numbers and keeps redacted in the export line as a dated deviation. The dots are ShieldCheck icons, all success-coloured"
-      }
+        "Retention is by count: 10,000 activity and 1,000 pre-authentication entries.",
+        "Rows name verified credentials, so renaming a device does not rewrite history.\", dot: \"bg-success\"",
+        "Retention is by count: 10,000 activity and 1,000 pre-authentication entries.\", dot: \"bg-info\"",
+        "rounded-full ${dot}",
+        {
+          "absent": "ShieldCheckIcon",
+          "in": "packages/ui/src/audit-log-view.tsx"
+        }
+      ]
     },
     {
       "id": "settings.header",
@@ -676,15 +686,17 @@
         {
           "absent": "data-provider-account-action=\"\"\n                    aria-describedby={`provider-account-${provider.id}`}\n                    disabled",
           "in": "packages/ui/src/provider-settings.tsx"
+        },
+        "<MachineAgentList machines={rows} />",
+        "providerMachines={fleet ? fleetAgents(fleet.entries, {",
+        {
+          "absent": "data-provider-account-action",
+          "in": "packages/ui/src/provider-settings.tsx"
         }
       ],
       "presence": [
         "Providers and tokens"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the section lists this machine's providers under SUBSCRIPTION CLIS and DIRECT API KEYS; the design draws one row per provider and machine across the fleet with a dot, state and an action only when one is needed (Authenticate there). Every row carries a permanently disabled Manage, Re-authenticate or Install button; the header says Stored on this machine. Domovoi does not send it to another device. Subscription CLIs own their credentials. in place of the drawn Stored in each machine's OS keychain. Never in a Domovoi account. (Q5, 2026-10-06: M1 has no Domovoi account or hosted relay, so no surface may name one); with no providers the card is empty with no empty state. Other machines' providers are client work for admitted machines (FleetAccessSession's per-machine connect() returns that machine's WorkspaceSnapshot with machine.providers); machines without an admitted credential stay unknown; harness marks stay text-only while the marks are not vendored (the reason Q388 A gives for Skills and Tools)"
-      }
+      ]
     },
     {
       "id": "api-keys",
@@ -1094,16 +1106,16 @@
         "Waiting on your decision",
         "What does this touch?",
         "Allow once",
-        "Deny"
+        "Deny",
+        "[[\"Outside project\", outsideProjectText(approval.outsideProject)]]",
+        "approvalOriginLine(approval.origin, connectionId, surface)",
+        "approvalPlanStep(plans ?? [], approval)",
+        "connectionId={connectionId} plans={snapshot.workingPlans}"
       ],
-      "presence": [
-        "Allow once",
-        "Deny"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "the card decides; it is not the drawn card. Its header reads Approval required (with a Hard gate badge) where the design says Waiting on your decision with a pulsing dot and step n of N meta; the facts are always open in two columns where the design folds them behind What does this touch?; the command is 11px; a watching client sees no buttons. Rulings 2026-10-02: Q339 A, Deny decides at once with a quiet Deny with a note secondary whose copy does not promise the agent hears it; Q371 A, the Always button reads Always for this command here (no Always on hard gates or unresolved requests, ruled 2026-09-24); Q372 A, a watching client sees the buttons locked with Locked, this client is watching only. The from-you origin and the OUTSIDE PROJECT fact need protocol fields; step n of N needs the plan step whose blocker names this approval"
-      }
+      "notes": [
+        "2026-10-06 (S3.10h): built for the client parts. The desktop card heads Waiting on your decision with the pulsing dot, the command at 13.5px, Allow once, Always for this command here and Deny at 38px, and the facts in three columns under the decisions behind What does this touch? / Hide what this touches (approval-card.tsx). Rulings 2026-10-02 as built: Q339 A, Deny decides at once with a quiet Deny with a note secondary whose copy does not promise the agent hears it; Q371 A, Always for this command here, never on hard gates or unresolved requests (ruled 2026-09-24); Q372 A, a watching client sees the buttons locked with Locked, this client is watching only.",
+        "2026-10-07 (S3.10h2): the card reads the facts #740 put on the wire (approval-card.tsx, approval-facts.ts). The origin line under the header reads You started this turn from this desktop (this browser on the web card) only when approval.origin names the connection this client holds now, the connectionId from the daemon's hello. Otherwise it names the kind (This turn started from a phone, a desktop, a browser, a tablet, the command line): a connection id is new on every reconnect, so a different one does not prove another client, and a client that does not know its own id cannot tell. No origin draws no line. Outside project is the sixth fact with its basis, in the phone's words (Q17): yes or no, by the path it names; yes, by where it runs; no, by where it runs, not by what it reaches. It is absent when the daemon could not decide. step n of N leads the meta line, from approvalPlanStep over the snapshot's working plans, which the thread passes with its connection."
+      ]
     },
     {
       "id": "conversation.approval-checkpoint-failed",
@@ -1116,9 +1128,12 @@
       "evidence": [
         "Could not take a checkpoint"
       ],
-      "missing": {
-        "since": "2026-10-02",
-        "reason": "no longer blocked: since 5ee18251 (J34) the daemon takes a checkpoint before every human allow and, when it cannot, refuses the resolve with Domovoi could not take a checkpoint, so the command did not run; decide again. The client shows that refusal as a generic Agent request failed alert above the composer, not in the gate card. Showing it in the card is client-only; naming the cause (the held lock path) needs the daemon to answer with a typed refusal code and the cause instead of internalError"
+      "presence": [
+        "refusal={cardShowsRefusal ? approvalRefusal?.message : undefined}"
+      ],
+      "partial": {
+        "since": "2026-10-06",
+        "reason": "since 5ee18251 (J34) the daemon takes a checkpoint before every human allow and, when it cannot, refuses the resolve with Domovoi could not take a checkpoint, so the command did not run; decide again. The gate card shows that refusal inside the card in the daemon's words (thread.tsx cardShowsRefusal), in the design's danger block with its dot (S3.10h). The drawn lead, Could not take a checkpoint: <lock path> is held by another git process. Nothing ran. Decide again., needs the daemon to answer with a typed refusal code and the cause instead of internalError (Codex follow-up); the client does not parse the daemon's sentence"
       }
     },
     {
@@ -1133,14 +1148,17 @@
       ],
       "evidence": [
         "THE RULE IT BROKE",
-        "What you can do instead"
+        "What you can do instead",
+        "See what a rule can never cover",
+        "re:<Thread key=\\{activeThreadKey\\(snapshot\\)\\}[^\\n]*onOpenDockTab=",
+        "onSeeRules={onOpenDockTab ? () => onOpenDockTab(\"rules\") : undefined}"
       ],
       "presence": [
         "aria-label=\"Policy refusal\""
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "the refusal card exists; the rule chain and the alternatives block are not the design's"
+        "since": "2026-10-07",
+        "reason": "S3.10h draws the card: Refused by policy, there is nothing to approve, the command, why, THE RULE IT BROKE with Set by and Applies to, and the remedy under What you can do instead (policy-refusal-card.tsx). S3.10h2 draws See what a rule can never cover → in that header, opening the rules tab through Thread's onOpenDockTab. Missing: the shell does not pass onOpenDockTab yet (workspace-shell.tsx, held by #745), so the link is not drawn in the app; the wiring and this entry's flip are saved as S3.10h2's shell patch. Needs protocol and stays a Codex follow-up: the step n of N meta (a plan step's blocker names only an approval), the Target it saw row, and tone-coded alternatives (the wire carries one remedy string, so the list has one neutral row). The drawn Recorded as refusal, actor daemon row is not drawn: the audit records provider.policy-refused with a provider actor"
       }
     },
     {
@@ -1157,14 +1175,19 @@
       ],
       "evidence": [
         "Decision receipt",
-        ">Move this session to another machine</Button>"
+        ">Move this session to another machine</Button>",
+        "onClick={onReviewChanges}>Review the changed files</Button>",
+        "label: \"See the checkpoints\"",
+        "label: \"See the rule\"",
+        "re:<Thread key=\\{activeThreadKey\\(snapshot\\)\\}[^\\n]*onOpenDockTab=",
+        "actions={connected && item.id === latestReceiptId ? receiptActions : undefined}"
       ],
       "presence": [
         "Decision receipt"
       ],
       "partial": {
-        "since": "2026-09-23",
-        "reason": "the receipt exists; its Move this session to another machine action is not on the receipt (the string matched the transfer dialog's title). Allowed is info-toned and denied neutral where the design tones them ok and danger; there is no ckpt and duration meta and none of the follow-up actions (Review the changed files, Move this session, See the checkpoints). Both facts are on the wire since 5ee18251: receipt.ranForMs, and for an allow receipt.checkpoint is the approved checkpoint; the comments in approval-receipt.tsx that say otherwise are stale. The rule receipt's Whether later runs under the rule each get a checkpoint is not decided is decided (J34, checkpoints on human allows only): Later runs under the rule do not take a checkpoint"
+        "since": "2026-10-07",
+        "reason": "S3.10h2 draws the follow-up row under the latest receipt while connected, as the design hides it offline (approval-receipt.tsx, thread.tsx): Review the changed files opens the changes sheet, Move this session to another machine opens the machine menu's move (not read-only, with a machine to move to), and See the checkpoints → or See the rule → (after an Always) opens that dock tab through Thread's onOpenDockTab. Missing: the shell does not pass onOpenDockTab yet (workspace-shell.tsx, held by #745), so the link is not drawn in the app; the wiring and this entry's flip to built are saved as S3.10h2's shell patch. The link reads See the rule, not the drawn See the rule you just created, because another client may have made the decision. The design's title suffixes (migration applied, step 3 rewritten), the follow-up line and the file count in Review the 7 changed files are the sample session's words"
       }
     },
     {
@@ -1529,20 +1552,13 @@
         "Comment on a step"
       ],
       "evidence": [
-        "PROBLEM",
-        "APPROACH",
+        "<PlanSheet",
+        "aria-label=\"Plan document\"",
         "STOPS FOR APPROVAL",
         "Looks right, carry on",
-        "Comment on a step"
-      ],
-      "presence": [
-        "<WorkingPlanCard",
-        "Looks right, carry on"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the working plan renders as a card with Looks right, carry on (working-plan.tsx); the document is not drawn: no PROBLEM, APPROACH, STOPS FOR APPROVAL, WHAT THIS DOES NOT FIX or STILL OPEN sections and no Comment on a step. A plan artifact is hidden whenever a working plan exists, and WorkingPlan carries text, status and blocker only. Q350 A (2026-10-02): when a plan artifact exists, show it as the document beside the working-plan card, with Comment on a step anchored to it by a text quote (client-only). The footer meta reads revision N where the design says revised once since <time>"
-      }
+        "Comment on a step",
+        "anchor: { textQuote: quote }"
+      ]
     },
     {
       "id": "dock.preview",
@@ -1691,14 +1707,16 @@
       ],
       "evidence": [
         "Take the shell",
-        "Attach this output to the composer"
+        "Attach this output to the composer",
+        "Release the shell"
       ],
       "presence": [
-        "Terminal quick keys"
+        "Terminal quick keys",
+        "Take the shell"
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "a terminal pane exists, but it is an interactive daemon PTY the user creates, not the agent's read-only shell the design draws. The claim banner (who holds the shell, Take the shell) is a header strip with Take over and a client-owned label; Attach this output to the composer is not drawn (client-only: session.send takes a text attachment); a watching desktop gets an empty state where the design keeps the stream visible (terminal.watch exists and the desktop never calls it). Release the shell and since <time> need protocol. Q340 A (2026-10-02) keeps the PTY, corrects the tip and footer copy (the design's read-only, the agent owns this shell is false here) and asks Claude Design to redraw the tab"
+        "since": "2026-10-07",
+        "reason": "S3.10q (2026-10-07) draws the claim banner (You hold this shell, Claimed by <device label>, Nobody holds this shell) with Take the shell in place of the header's Take over; the watching state reads the stream through terminal.watch with Take the shell disabled and its reason beside it; Attach this output to the composer hands the rendered output to that session's composer as terminal-output.txt and shows only while that composer is open. Until the lead's wiring batch lands the workspace-shell watch controls and the thread inbox, a watching desktop still shows its empty state and the attach button does not show. Still not as drawn: Release the shell and since <time> need protocol (no terminal.release, no claim time on the owner). The tab is an interactive daemon PTY the user creates, not the agent's read-only shell the design draws; Q340 A (2026-10-02) keeps the PTY with corrected tip and footer copy, and the tab's redraw needs a design source change with Claude Design (not made here, 2026-10-07)"
       }
     },
     {
@@ -1723,15 +1741,11 @@
         "Fork"
       ],
       "evidence": [
-        "Every approved write takes one first"
-      ],
-      "presence": [
-        "export function CheckpointsPanel("
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the tab draws Fork, Revert and Reset as the design does (the design renders Revert, not Revert to here, which the earlier evidence asked for); the gap is the intro note. checkpointsIntro omits the checkpoint the daemon takes before every command you allow (J34, since 5ee18251), and the dock tip says Reverting rewinds the worktree and the thread together, which is false: checkpoint.restore resets the worktree only. Q341 A (2026-10-02) keeps worktree-only revert and corrects the tip and the panel copy, so the design's thread half is not drawn. Row meta cannot say why an approved-command checkpoint exists: the daemon records it with no reason, and the reason enum has no before-approved-command value (protocol)"
-      }
+        "export function CheckpointsPanel(",
+        "In a session with a worktree, every request you allow at a gate takes one first.",
+        "The thread keeps its turns.",
+        "\"before-approved-command\": \"before an approved command\""
+      ]
     },
     {
       "id": "dock.checkpoint-take",
@@ -1788,23 +1802,15 @@
       ],
       "evidence": [
         "EVIDENCE PER FILE",
-        "Revert this file",
+        "re:\\$\\{prompt\\.verb\\} this file",
         "Keep it",
         "Open in editor",
         {
           "absent": "<AlertDialog",
           "in": "packages/ui/src/session-evidence.tsx"
-        }
-      ],
-      "presence": [
-        "<SessionEvidencePanel",
-        "EVIDENCE PER FILE",
-        "Revert this file"
-      ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "copy and actions match; the design asks Revert this file / Keep it inline in the file row, the implementation asks in a dialog, and keeps the worktree diff and observed runs below the list instead of in each row"
-      }
+        },
+        "<RevertFileAsk path={file.path}"
+      ]
     },
     {
       "id": "dock.commits",
@@ -1997,24 +2003,20 @@
         "detail: \"settings\"",
         "label: \"Read the audit log\"",
         "detail: \"on this machine\"",
-        "re:<CommandDialog[^>]*660px"
+        "re:commandPaletteFrame = \"top-24 w-\\[660px\\]",
+        "re:<CommandDialog\\s+className=\\{commandPaletteFrame\\}",
+        "<Dot meaning={command.tone ?? \"idle\"} />",
+        "data-palette-meta",
+        "SESSIONS ON THIS MACHINE"
       ],
-      "presence": [
-        "Search commands",
-        "label: \"Open the changes sheet\"",
-        "label: \"Read the audit log\""
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the commands and their meta are built; the palette is the shadcn CommandDialog unchanged (about 385px wide at top-1/3, list capped at max-h-72) where the design draws 660px at 96px from the top, with a plain query row and the scope on its right; rows are icons with two-line meta and a kind tag where the design draws a coloured dot, one line and the meta on the right. Q375 A (2026-10-02) takes the dots and right-aligned meta with the 660px restyle; Q376 A keeps the undrawn commands, with the design's COMMANDS first"
-      },
       "notes": [
+        "2026-10-06 (S3.10 slice o, rulings Q375 A and Q376 A): built as drawn: 660px at 96px from the top, a plain query row with the scope on its right, one line per row with a coloured dot, the label and the meta on the right, no icons, two-line meta or kind tag. The design's COMMANDS come first in its order and colours; the undrawn commands follow (humanRead palette, 2026-10-06).",
         "2026-10-01 (S3.10 slice 2, ruling Q288 A): Run a migration on this machine is left out. It is the mockup's sample session acting through the palette, not a command. Its copy stays claimed here so the gate keeps reading it, and no disabled placeholder is drawn.",
         "2026-10-01 (ruling Q288 A): Open a pull request is left out until the git-from-app work lands; dock.changes-pr is blocked on protocol and claims its copy. No disabled placeholder is drawn.",
         "2026-10-01: Revert to a checkpoint draws no count. The design's meta (5 available) needs the checkpoint list, which the snapshot does not carry and the palette does not fetch. The command opens the Checkpoints tab.",
         "2026-10-01: Take a checkpoint keeps its existing action, which takes the checkpoint at once while the design's command opens the Checkpoints tab with its label field.",
         "2026-10-01 (ruling Q291 A): only the desktop app binds the two shortcuts the meta names (mod+shift+D opens the changes sheet, mod+shift+M shows all machines) and draws that meta. A browser window registers neither binding, leaves those keys to the browser, and shows both commands without the shortcut meta. The shell tells the two apart by its clientKind, the signal it already uses for the dock's first tab and the pairing card.",
-        "2026-10-01: Move this session to another machine opens the machine menu on the active session, the same route as a session row's Move, and the transfer dialog follows the choice of machine. Pair a phone or tablet opens settings, and is offered only in a desktop window on its own daemon, where the pairing card is. Rows carry icons where the design draws a coloured dot."
+        "2026-10-01: Move this session to another machine opens the machine menu on the active session, the same route as a session row's Move, and the transfer dialog follows the choice of machine. Pair a phone or tablet opens settings, and is offered only in a desktop window on its own daemon, where the pairing card is. Rows carried icons where the design draws a coloured dot until 2026-10-06 (Q375 A)."
       ]
     },
     {
@@ -2026,17 +2028,20 @@
         "in summary",
         "Matches join this list as each machine answers."
       ],
-      "presence": [
-        "SESSIONS ON OTHER MACHINES"
-      ],
       "evidence": [
         "SESSIONS ON OTHER MACHINES",
-        "Add it back"
+        "Search only what answered",
+        "Add it back",
+        "is left out, so its sessions stay unsearched until you add it back.",
+        "did not answer, so its sessions were not searched.",
+        "<Dot meaning={answerMeaning[answer.state]} />",
+        "{answer.state === \"asking\" ? <Sweep /> : null}",
+        "switching to {machine.label}",
+        "export function remoteSessionMeta("
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the group, per-machine search and Search only what answered are built; leaving a silent machine out has no undo, so Add it back and the notice that the machine is left out until you add it back are not drawn; the machine header has no answer dot or asking sweep; picking a row closes the palette at once instead of showing switching to <machine>; the notice is danger-styled and adds a sentence the design does not draw; row meta is the session state where the design shows running 41m"
-      }
+      "notes": [
+        "2026-10-06 (S3.10 slice o): built as drawn in the grouped layout (paletteSessions A): the notice is the design's (a dot and one sentence on the card's ground, Search only what answered, then Add it back once the machine is left out), each machine header has its answer dot and the asking sweep, a picked row shows switching to <machine> until the window has arrived there and asked for the session (activation then runs as a drawer click does, with its own errors in the shell), and row meta is the session's state and age. Ruled differences are in humanRead palette.other-machines, 2026-10-06."
+      ]
     },
     {
       "id": "composer.action-row",
@@ -2198,9 +2203,24 @@
   ],
   "humanRead": [
     {
+      "id": "fleet.machine-card",
+      "since": "2026-10-07",
+      "note": "Built as drawn: dot, mono name, status pill, the four facts, one primary action and Move a session here, with a danger border on an unreachable card. Differences. Terminal, Remove local access and Forget sit as quiet controls after the design's two actions, and Authorize this client sits beside the primary on a machine this client holds no credential for, because the design draws no place for them; platform, arch and version are the name's tooltip; the advertised transport list and capability badges are not drawn. TRANSPORT says how the home daemon reaches the machine (loopback for its own daemon, else the connection kind, or direct with the verified endpoint), never the domovoi cloud transport, which is M2. AGENTS and SESSIONS come from that machine's own daemon: the home and attached snapshots, or the reading an admitted machine gave at admission and again each time Machines or Settings opens; a stored reading the machine did not answer a later read of, or an admission reading from a machine whose health is anything but healthy (the home daemon is not hearing it or will not route a read to it), unless it is reconnecting and this client asked it after the home daemon's latest heartbeat (the heartbeat it had seen then is still the latest, so both times are the home daemon's), or any admission reading while this client has no connection to the home daemon, is dated (as of 14:03, with the day for an older reading), and a read that finds the machine down keeps this client's credential. The daemon reports a machine whose dial keeps failing as reconnecting until its heartbeat goes offline, then as unreachable (apps/daemon/src/fleet-enrollment.ts), and the danger border and See what stalled follow that report. A machine with no client credential says unknown and why. Open its N sessions counts the machine's sessions that are not archived; the drawer also lists archived ones, as history. See what stalled opens, in the card, the sessions that were running or waiting at the last reading and says their daemon has not reported them stopped, instead of moving to the design's offline thread."
+    },
+    {
+      "id": "fleet.agents",
+      "since": "2026-10-07",
+      "note": "Built as one row per machine and agent below the cards. Agents a machine looked for and did not find are not listed. The state words are Domovoi's provider states (ready, needs sign-in on that machine, found, sign-in not checked, cannot start, adapter unavailable) rather than the design's token-in-keychain words, because a subscription CLI keeps its own credential and Domovoi does not read where. Authenticate there opens, in the row, the sign-in command to run in a terminal on that machine; Domovoi does not sign in for the provider. A machine this client never read has one unknown row with the reason."
+    },
+    {
+      "id": "settings.providers",
+      "since": "2026-10-07",
+      "note": "Built with the fleet.agents rows, one per machine and agent across the fleet. When the home daemon withholds the fleet list (fleet overflow), the rows list this machine and a line says the list was withheld and how many entries are not shown, as Machines does. The header line is Q18 A (2026-10-06): Stored on each machine that runs the agent. Domovoi does not send it to another device. Subscription CLIs own their credentials. The drawn line names a Domovoi account, which M1 does not have (Q5). Harness marks stay text-only while they are not vendored (Q388 A). LOCAL DAEMON and DIRECT API KEYS stay below the rows."
+    },
+    {
       "id": "composer.effort-levels",
       "since": "2026-10-06",
-      "note": "Built in the client for Q31, Q34, Q35 and Q36. Two states the menu draws are not reachable from a real daemon yet. Model's own: OpenCode and Kilo discovery reports medium or none rather than unset, so the menu shows Medium or None; the daemon follow-up reports unset and carries stored medium and none values. No default reported by this model: providerModelSchema requires a default among the levels, and the Claude adapter fills in high or the first level; the follow-up lets the protocol carry a missing default and stops the adapter from picking one."
+      "note": "Built in the client for Q31, Q34, Q35 and Q36. Model's own is reachable: OpenCode and Kilo discovery reports unset as the only level and its default, and stored medium and none values are carried to unset (#744). No default reported by this model is now reachable: providerModelSchema permits an absent default, and the Claude adapter reports no default and lists Model's own first when effort is supported."
     },
     {
       "id": "settings.service-remove",
@@ -2250,12 +2270,12 @@
     {
       "id": "dock.tabs",
       "since": "2026-10-02",
-      "note": "Three tips copy the design's words and are false for the shipped product. Terminal (read-only. The agent owns this shell.): the tab is an interactive daemon PTY, and Q340 A corrects the tip and footer and asks Claude Design to redraw the tab. Checkpoints (Reverting rewinds the worktree and the thread together): checkpoint.restore resets the worktree only, and Q341 A keeps that and corrects the copy. History (Fork from any turn.): fork is checkpoint-only (turn-row fork closed as a design error, f3252e50), so the tip becomes Fork from any checkpoint. A tab that matches the design here is a tab that says something untrue."
+      "note": "Three tips copy the design's words and are false for the shipped product. Terminal (read-only. The agent owns this shell.): the tab is an interactive daemon PTY, and Q340 A corrects the tip and footer and asks Claude Design to redraw the tab. Checkpoints (Reverting rewinds the worktree and the thread together): checkpoint.restore resets the worktree only, and Q341 A keeps that; since 2026-10-06 the tip reads In a session with a worktree, every request you allow at a gate takes one first. Reverting resets the worktree; the thread keeps its turns. History (Fork from any turn.): fork is checkpoint-only (turn-row fork closed as a design error, f3252e50), so the tip becomes Fork from any checkpoint. A tab that matches the design here is a tab that says something untrue."
     },
     {
       "id": "conversation.approval",
       "since": "2026-10-02",
-      "note": "Ruled differences from the drawn card: Q339 A, Deny decides at once as drawn, plus a quiet Deny with a note secondary the design does not draw, whose copy does not promise the agent hears the note (no adapter passes it on); Q371 A, the Always button reads Always for this command here, not the drawn Always for <command family> here, because rules match an execution record, not a family; the 2026-09-24 ruling (#545) hides Always on hard gates and unresolved requests."
+      "note": "Ruled differences from the drawn card: Q339 A, Deny decides at once as drawn, plus a quiet Deny with a note secondary the design does not draw, whose copy does not promise the agent hears the note (no adapter passes it on); Q371 A, the Always button reads Always for this command here, not the drawn Always for <command family> here, because rules match an execution record, not a family; the 2026-09-24 ruling (#545) hides Always on hard gates and unresolved requests. Differences recorded 2026-10-06 (S3.10h): Q7 B, 2026-10-06: the card draws the design's disclosure but starts it open, so it first reads Hide what this touches, because for a file edit the command is the tool's name and Affects is the only fact that names the file; a fold reopens when the daemon revises the gate. When the daemon could not decide Outside project the card draws five facts, and the last takes the rest of its row. Differences recorded 2026-10-07 (S3.10h2, Q22): the drawn from-you line (You asked for this command from the composer. It is still gated, because no rule covers <command> on this machine yet.) reads You started this turn from this desktop., and the drawn requested by you · not in the plan meta reads as any other gate's meta, led by step n of N when a plan step waits on the gate. The origin names the client that started the turn, not who asked for the command, and the card knows no reason a rule did not match. A turn from another connection names the client kind, which the design does not draw. The card keeps the operation sentence above the command, which the design does not draw, because it is an approval fact and AGENTS.md says clients do not omit approval facts. The card takes DESIGN.md's card radius (the base --radius) where the gate draws 16px. To stay inside the web stylesheet budget (128,000 bytes), the card's shadow is the theme's shadow-lg rather than the drawn amber halo, and its dot fades in place (motion-safe) rather than drawing the 2.4s expanding ring."
     },
     {
       "id": "titlebar.theme",
@@ -2266,6 +2286,11 @@
       "id": "drawer.row",
       "since": "2026-10-02",
       "note": "The design's drawer mixes sessions from several machines (sample names). Q364 A keeps the M1 drawer to this machine with the machine name in each row's meta; a fleet-wide drawer comes with the replace-herdr work."
+    },
+    {
+      "id": "audit.rows",
+      "since": "2026-10-06",
+      "note": "Built by S3.10j. Differences from the drawn row: the design's query window is the last 24 hours and this one is not (the wire has no since), so a row from another day adds the day under its time. The outcome column starts with the outcome word, then target and session, because the wire carries an outcome enum rather than the design's free result phrase. The actor pill names the actor kind. A long detail scrolls inside the row past 10rem (detail is up to 4,096 characters). The list is a size container: when it is narrower than 48rem (a narrow window, or a wide one with the drawer open) the who and outcome columns wrap under the action."
     },
     {
       "id": "audit.facts",
@@ -2298,14 +2323,39 @@
       "note": "Q376 A: Open project, New session, Pause, Emergency stop, Agent workspace, Provider settings, Skills, Checkpoints, Reconnect, Open in editor, Copy worktree path, First-run setup and the footer hint are not drawn and stay, after the design's COMMANDS."
     },
     {
+      "id": "palette",
+      "since": "2026-10-06",
+      "note": "Differences from the drawn palette after the Q375 A restyle. With no kind tag on a row, machine and skill rows sit under MACHINES and SKILLS headings after COMMANDS, where the design draws only SESSIONS and COMMANDS. The undrawn commands take dot colours by the design's own reading (green opens a screen, blue a sheet, flow or other app, amber can undo work, red stops it). A command's dot is decoration and stays out of the accessibility tree; an entity's dot keeps its spoken kind and state. The overlay is the shadcn dialog's, not the design's --overlay, and the list scrolls past min(30rem, viewport less 14rem). Screenshot: ~/.agents/plans/domovoi-autopilot/tasks/S3.10o-palette/."
+    },
+    {
+      "id": "palette.other-machines",
+      "since": "2026-10-06",
+      "note": "Ruled and chosen differences. A running session's meta is running with no duration (Q390 A: no turn start on the wire until protocol 0.8.0); a session stopped at a gate reads waiting even with its turn in flight, and every row but running reads its state and age from updatedAt (failed 1h ago). A switch the target refuses (authentication or protocol) closes the palette so the shell's banner shows why. A machine with no match says no matches, not no matches in N sessions: session.search returns no count. The asking dot is the status atom's blue because the atom has no primary meaning; the sweep and the word asking carry it. A machine left out stays out for later queries until Add it back, which asks it again for the current query; both notice actions are disabled while a picked row switches the window, when nothing can be asked. The States design's second sentence (This is not the same as having no results) is not drawn in the palette, as Desktop V2 draws it. Merged layout B (machine chips, Matches join this list as each machine answers) is not built."
+    },
+    {
       "id": "dock.preview",
       "since": "2026-10-02",
       "note": "Q379 A: the preview authorizes on open, so the drawn authorize to view click is not built; the chip shows authorized and the time left. Q380 A: Print view, Download safe copy, Compare, the filmstrip, the Live badge and the safe-copies line are shipped features the design does not draw; they stay behind one overflow control in the design's toolbar."
     },
     {
+      "id": "dock.plan-doc",
+      "since": "2026-10-06",
+      "note": "Q350 A: the plan artifact is the document (title, revision N, the agent's Markdown) with the working-plan card under it, and the decision row (Looks right, carry on; Comment on a step) is drawn once under both. PROBLEM, APPROACH, WHAT THIS DOES NOT FIX and STILL OPEN are not drawn as fixed sections: WorkingPlan carries text, status and blocker only, and Q350 B (protocol fields) was not taken, so whatever sections the agent writes are its own headings. STOPS FOR APPROVAL marks a step while it is blocked on an approval, because the wire knows a gate only then. Comment on a step quotes the words selected in the document, or the chosen step's own words when nothing is selected, as an annotation.create text quote on the plan artifact; the comment lists under COMMENTS ON THE PLAN. The daemon mirrors the working plan into its own plan artifact (plan-<sessionId>). When that artifact holds only its rendering of the steps (# Working plan and a numbered list) it is the card's text, never drawn as the document, and a comment anchors to it when no document exists; when it holds a whole plan (a prose plan, or a plan-mode final reply whose steps were extracted) it is the document. A comment is bound to the session and artifact it was opened on, and a chosen step's words are kept as chosen. With several plan files, the document is the one the daemon found last: revisions count per artifact and the wire carries no update time, so an older file edited later is not preferred. The design's footer meta (revised once since <time>) and header meta (project, worktree, base, written and revised times) are not drawn; the header reads revision N."
+    },
+    {
+      "id": "dock.checkpoints",
+      "since": "2026-10-06",
+      "note": "Q341 A: revert stays worktree-only, so the drawn note (Every approved write takes one first. Reverting rewinds the worktree and the thread together.) is not drawn. checkpointsIntro says what the daemon does: a person's allow at a gate takes one first (J34) when the session has a worktree, a rule's allow takes none, the other reasons and on request, and the thread keeps its turns. Rows name before an approved command from the reason the daemon records (df3452f4)."
+    },
+    {
+      "id": "dock.changes",
+      "since": "2026-10-06",
+      "note": "Revert this file / Keep it asks inside the file row as drawn (RevertFileAsk; Keep it takes focus, Escape keeps the file). Differences: the action names what happens to the file (Restore this file, Remove this file for a file the base commit lacks, Revert this file when the daemon describes no target), and the confirm states what the daemon does (the agent does not learn of the revert until its next read) where the design says the agent is told; the reverted note is a status line above the list, because the file leaves the list once the refresh lands. Each row opens its own diff, and the worktree diff and observed runs stay below the list as well: the daemon reports no per-file run association (tests.state is unknown, file-access-not-recorded), so a row cannot list the runs that touched it until the daemon records file access."
+    },
+    {
       "id": "dock.terminal",
       "since": "2026-10-02",
-      "note": "Q340 A: the tab stays an interactive PTY the user creates, not the agent's read-only shell the design draws; the design's footer note read-only, the agent owns this shell is not drawn because it is false here, and the redraw is with Claude Design."
+      "note": "Q340 A: the tab stays an interactive PTY the user creates, not the agent's read-only shell the design draws; the design's footer note read-only, the agent owns this shell is not drawn because it is false here, and the redraw is with Claude Design. Since 2026-10-07 the footer says who can type instead: interactive, this device holds the shell; read-only until you take the shell; read-only, this device watches. The tip reads A shell on the machine, in the session's worktree. One device types at a time; the others can read. The banner's note for the holder reads Other devices can watch where the design says The phone can watch, because any paired device can."
     },
     {
       "id": "handoff.conflict",

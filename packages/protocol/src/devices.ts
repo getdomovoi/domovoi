@@ -217,7 +217,12 @@ export const deviceConfirmClaimResultSchema = z.object({ device: pairedDeviceSch
 export const deviceIssueCodeParamsSchema = z.object({
   targetClient: clientKindSchema.optional(),
   clientAccess: clientAccessSchema.optional(),
-}).strict()
+  // A suggested name for the device the code pairs; the device's own name is used.
+  label: deviceRenameLabelSchema.optional(),
+}).strict().refine((params) => params.label === undefined || params.targetClient !== undefined, {
+  path: ["label"],
+  message: "A label requires a target client; a machine pairing names itself at claim",
+})
 
 // The web app a pairing code can be opened in, as the daemon's owner set it.
 // An absolute http(s) address with no credentials and no fragment, so a card

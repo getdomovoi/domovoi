@@ -65,7 +65,11 @@ describe("buildWorkspaceCommands", () => {
       hasProject: true,
       ...callbacks,
     })
+    // Ruling Q376 A (2026-10-02): the design's commands lead, and the ones it
+    // does not draw follow them.
     expect(connected.map(({ id }) => id)).toEqual([
+      "surface-fleet",
+      "surface-audit",
       "open-project",
       "new-session",
       "pause-all",
@@ -73,8 +77,6 @@ describe("buildWorkspaceCommands", () => {
       "surface-workspace",
       "surface-providers",
       "surface-skills",
-      "surface-fleet",
-      "surface-audit",
     ])
     expect(connected.find(({ id }) => id === "reconnect")).toBeUndefined()
 
@@ -248,6 +250,41 @@ describe("v2 session commands", () => {
         { id: "pair-device", label: "Pair a phone or tablet", detail: "settings", shortcut: undefined },
         { id: "surface-audit", label: "Read the audit log", detail: "on this machine", shortcut: undefined },
       ])
+  })
+
+  // Ruling Q376 A (2026-10-02): the undrawn commands stay, after the design's.
+  it("puts the design's commands ahead of the ones it does not draw", () => {
+    const commands = buildWorkspaceCommands({ ...base, ...openers(), openCheckpoints: vi.fn() })
+    const verbs = commands.filter((command) => !command.kind).map(({ id }) => id)
+    expect(verbs.slice(0, designIds.length)).toEqual(designIds)
+    expect(verbs.slice(designIds.length)).toEqual([
+      "open-project",
+      "new-session",
+      "pause-all",
+      "emergency-stop",
+      "surface-workspace",
+      "surface-providers",
+      "surface-skills",
+      "open-checkpoints",
+    ])
+  })
+
+  // Ruling Q375 A (2026-10-02): every row is marked with a coloured dot, and a
+  // drawn command takes the colour the design gives it.
+  it("gives each command the design's dot colour, and every other command one", () => {
+    const commands = buildWorkspaceCommands({ ...base, ...openers(), openCheckpoints: vi.fn(), connected: false })
+    const tone = (id: string) => commands.find((command) => command.id === id)?.tone
+    expect(designIds.map((id) => [id, tone(id)])).toEqual([
+      ["open-changes", "handoff"],
+      ["take-checkpoint", "online"],
+      ["revert-checkpoint", "waiting"],
+      ["review-rules", "handoff"],
+      ["move-session", "handoff"],
+      ["surface-fleet", "online"],
+      ["pair-device", "handoff"],
+      ["surface-audit", "online"],
+    ])
+    expect(commands.filter((command) => command.tone === undefined).map(({ id }) => id)).toEqual([])
   })
 
   it("runs each command through the opener the shell supplies", () => {

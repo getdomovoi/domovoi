@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto"
-import { isAbsolute, resolve, sep } from "node:path"
+import { readdir, readFile } from "node:fs/promises"
+import { homedir } from "node:os"
+import { isAbsolute, join, resolve, sep } from "node:path"
 
 import {
   query,
@@ -102,6 +104,7 @@ type ClaudePermissionContext = {
 
 export type ClaudeQueryOptions = {
   cwd?: string
+  env?: NodeJS.ProcessEnv
   sessionId?: string
   resume?: string
   model?: string
@@ -163,13 +166,22 @@ export type ClaudeQueryFactory = (
   options: ClaudeQueryOptions,
 ) => ClaudeQuery
 
+type ClaudeTask = { subject: string; status: "pending" | "in_progress" | "completed" }
+type ClaudeTaskTool = {
+  type: "task"
+  name: "TaskCreate" | "TaskUpdate" | "TaskList"
+  input: Record<string, unknown>
+}
+
 type Session = {
   threadId: string
   cwd: string
   input: PushStream<ClaudeUserMessage>
   query: ClaudeQuery
   runtime: Runtime
-  tools: Map<string, { type: "command"; command: string } | { type: "file"; path: string }>
+  tools: Map<string, { type: "command"; command: string } | { type: "file"; path: string } | ClaudeTaskTool>
+  tasks: Map<string, ClaudeTask>
+  sharedTaskDirectory?: string
   // Tool calls the PreToolUse hook sent to an approval, by tool use id, with
   // the reason the approval card should give.
   screenedReads: Map<string, { reason: string; path?: string }>
@@ -310,18 +322,14 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       signal?.throwIfAborted()
       return models.map((model, index) => {
         const efforts = model.supportsEffort
-          ? [...(model.supportedEffortLevels ?? [])]
+          ? ["unset", ...(model.supportedEffortLevels ?? [])]
           : []
-        const defaultReasoningEffort = efforts.includes("high")
-          ? "high"
-          : efforts[0] ?? "medium"
         return {
           provider: "claude-code",
           id: model.value,
           displayName: model.displayName,
           description: model.description,
           supportedReasoningEfforts: efforts,
-          defaultReasoningEffort,
           isDefault: index === 0,
         }
       })
@@ -566,16 +574,20 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     // A start that close overtook while it prepared starts no Claude.
     this.#refuseWhenClosing()
     const preflight = this.#preflight
-    const { instructions, repository } = await this.#prepared((async () => {
+    const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }
+    const { instructions, repository, tasks, taskStorage } = await this.#prepared((async () => {
       if (preflight) await preflight()
       const instructions = await projectInstructions(cwd, "claude")
       // The worktree's verdict, read just before Claude starts: only a
       // trusted one brings anything, and it brings the documents its digest
       // was computed from. An archive resume is given no grant (Q149 A).
       const verdict = await repositoryTrustVerdict(cwd, repositoryTrust, this.#readRepositoryConfig)
+      const taskStorage = await claudeTaskStorage(threadId, env)
       return {
         instructions,
         repository: verdict.state === "trusted" ? { digest: verdict.configDigest, ...claudeRepositoryLoad(verdict.documents) } : undefined,
+        taskStorage,
+        tasks: resume || taskStorage.shared ? (await readClaudeTasks(taskStorage.directory))?.tasks : undefined,
       }
     })())
     const settings = repository && Object.keys(repository.settings).length > 0 ? repository.settings : undefined
@@ -588,6 +600,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     const processes: ClaudeProcess[] = []
     const options: ClaudeQueryOptions = {
       ...baseOptions(),
+      // Claude Code 2.1.292 offers its task tools (TaskCreate, TaskUpdate,
+      // TaskList), and so a working plan, to a current model only with this
+      // variable set. The SDK's env replaces the process environment.
+      env,
       ...(instructions
         ? { systemPrompt: { type: "preset", preset: "claude_code", append: instructions } }
         : {}),
@@ -595,7 +611,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       ...(settings ? { settings } : {}),
       ...(resume ? { resume: threadId } : { sessionId: threadId }),
       model: runtime.model,
-      effort: claudeEffortFor(runtime.reasoning),
+      ...(runtime.reasoning === "unset" ? {} : { effort: claudeEffortFor(runtime.reasoning) }),
       permissionMode: permission.permissionMode,
       allowDangerouslySkipPermissions: permission.allowDangerouslySkipPermissions,
       canUseTool: (toolName, toolInput, context) =>
@@ -614,6 +630,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       query,
       runtime,
       tools: new Map(),
+      tasks: tasks ?? new Map(),
+      ...(taskStorage.shared ? { sharedTaskDirectory: taskStorage.directory } : {}),
       screenedReads: new Map(),
       turnMessageIds: new Set(),
       interruptedMessageIds: new Set(),
@@ -685,7 +703,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     await Promise.all([
       session.query.setModel(runtime.model),
       session.query.setPermissionMode(permission.permissionMode),
-      session.query.applyFlagSettings({ effortLevel: claudeEffortFor(runtime.reasoning) }),
+      // The SDK requires null to clear a prior effort; undefined leaves it set.
+      session.query.applyFlagSettings({ effortLevel: runtime.reasoning === "unset" ? null : claudeEffortFor(runtime.reasoning) }),
     ])
     session.runtime = runtime
   }
@@ -862,7 +881,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       return
     }
     if (message.type === "user") {
-      this.#receiveUser(session, turnId, message.message, message.tool_use_result)
+      await this.#receiveUser(session, turnId, message.message, message.tool_use_result)
       return
     }
     if (message.type === "result") {
@@ -915,7 +934,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       const input = asRecord(block.input) ?? {}
       if (block.name === "TodoWrite") {
         const steps = claudeTodoSteps(input.todos)
-        if (steps) {
+        if (steps && session.runtime.permissionMode !== "plan") {
           this.#emit({
             type: "plan-updated",
             threadId: session.threadId,
@@ -923,6 +942,11 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
             steps,
           })
         }
+        continue
+      }
+      if (block.name === "TaskCreate" || block.name === "TaskUpdate" || block.name === "TaskList") {
+        // Task tools bypass canUseTool. Match their results by tool use id.
+        session.tools.set(block.id, { type: "task", name: block.name, input })
         continue
       }
       if (block.name === "Bash") {
@@ -949,12 +973,12 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     }
   }
 
-  #receiveUser(
+  async #receiveUser(
     session: Session,
     turnId: string,
     rawMessage: unknown,
     rawToolResult: unknown,
-  ): void {
+  ): Promise<void> {
     const message = asRecord(rawMessage)
     if (!Array.isArray(message?.content)) return
     for (const rawBlock of message.content) {
@@ -964,6 +988,38 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       if (!tracked) continue
       session.tools.delete(block.tool_use_id)
       const failed = block.is_error === true
+      if (tracked.type === "task") {
+        if (failed) continue
+        let changed: boolean
+        if (session.sharedTaskDirectory && claudeTaskSucceeded(tracked, rawToolResult)) {
+          const previous = JSON.stringify([...session.tasks])
+          // Claude writes before returning. Include tasks other sessions changed,
+          // then apply this result's confirmed edit. TaskList uses the disk snapshot.
+          const refreshed = await readClaudeTasks(session.sharedTaskDirectory)
+          if (refreshed?.complete) {
+            session.tasks = refreshed.tasks
+            if (tracked.name !== "TaskList") updateClaudeTasks(session.tasks, tracked, rawToolResult)
+            changed = tracked.name === "TaskList" || previous !== JSON.stringify([...session.tasks])
+          } else {
+            changed = updateClaudeTasks(session.tasks, tracked, rawToolResult)
+          }
+        } else {
+          changed = updateClaudeTasks(session.tasks, tracked, rawToolResult)
+        }
+        // Plan mode keeps the checklist, but the final reply supplies its proposal.
+        if (changed && session.runtime.permissionMode !== "plan") {
+          this.#emit({
+            type: "plan-updated",
+            threadId: session.threadId,
+            turnId,
+            steps: [...session.tasks.values()].map(({ subject, status }) => ({
+              text: subject,
+              status: status === "in_progress" ? "in-progress" : status,
+            })),
+          })
+        }
+        continue
+      }
       if (tracked.type === "command") {
         this.#emit({
           type: "item",
@@ -1222,6 +1278,114 @@ async function claudeContextOccupancy(
   } finally {
     if (timeout) clearTimeout(timeout)
   }
+}
+
+function isClaudeTaskStatus(value: unknown): value is ClaudeTask["status"] {
+  return value === "pending" || value === "in_progress" || value === "completed"
+}
+
+async function claudeTaskStorage(threadId: string, env: NodeJS.ProcessEnv): Promise<{ directory: string; shared: boolean }> {
+  const configDirectory = env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")
+  let sharedId = env.CLAUDE_CODE_TASK_LIST_ID
+  try {
+    // Claude loads the person's settings env over the inherited environment.
+    const settings = asRecord(JSON.parse(await readFile(join(configDirectory, "settings.json"), "utf8")))
+    const configuredId = asRecord(settings?.env)?.CLAUDE_CODE_TASK_LIST_ID
+    if (typeof configuredId === "string") sharedId = configuredId
+  } catch {
+    // Missing or malformed user settings leave the inherited list selection intact.
+  }
+  // Claude Code 2.1.292 keeps a session's tasks in its own storage, at
+  // <config dir>/tasks/<list id>/<task id>.json, and takes an empty
+  // CLAUDE_CODE_TASK_LIST_ID as unset. Read only, on resume or for a shared list.
+  const listId = (sharedId || threadId).replace(/[^a-zA-Z0-9_-]/g, "-")
+  return { directory: join(configDirectory, "tasks", listId), shared: Boolean(sharedId) }
+}
+
+async function readClaudeTasks(directory: string): Promise<{ tasks: Map<string, ClaudeTask>; complete: boolean } | undefined> {
+  const tasks = new Map<string, ClaudeTask>()
+  let complete: boolean
+  try {
+    const files = (await readdir(directory))
+      .filter((name) => name.endsWith(".json") && !name.startsWith("."))
+      .sort()
+    complete = files.length <= 1000
+    for (const file of files.slice(0, 1000)) {
+      try {
+        const task = asRecord(JSON.parse(await readFile(join(directory, file), "utf8")))
+        if (task && typeof task.id === "string" && typeof task.subject === "string" && isClaudeTaskStatus(task.status)) {
+          tasks.set(task.id, { subject: task.subject, status: task.status })
+        } else {
+          complete = false
+        }
+      } catch {
+        // Hydration keeps readable tasks. A shared refresh needs the whole list.
+        complete = false
+      }
+    }
+  } catch {
+    // An unavailable directory is not an empty list. Keep the session's tasks.
+    return undefined
+  }
+  const ordered = new Map([...tasks].sort(([left], [right]) => {
+    if (/^-?\d+$/.test(left) && /^-?\d+$/.test(right)) {
+      const difference = BigInt(left) - BigInt(right)
+      if (difference !== 0n) return difference < 0n ? -1 : 1
+    }
+    return left.localeCompare(right)
+  }))
+  return { tasks: ordered, complete }
+}
+
+function claudeTaskSucceeded(tool: ClaudeTaskTool, rawResult: unknown): boolean {
+  const result = asRecord(rawResult)
+  if (tool.name === "TaskUpdate") return result?.success === true
+  if (tool.name === "TaskList") return Array.isArray(result?.tasks)
+  const task = asRecord(result?.task)
+  return typeof task?.id === "string" && typeof task.subject === "string"
+}
+
+function updateClaudeTasks(tasks: Map<string, ClaudeTask>, tool: ClaudeTaskTool, rawResult: unknown): boolean {
+  const result = asRecord(rawResult)
+  if (!result) return false
+  if (tool.name === "TaskCreate") {
+    // The input has no task id. Only the top-level result supplies it.
+    const task = asRecord(result.task)
+    if (!task || typeof task.id !== "string" || typeof task.subject !== "string") return false
+    const previous = tasks.get(task.id)
+    if (previous?.subject === task.subject && previous.status === "pending") return false
+    tasks.set(task.id, { subject: task.subject, status: "pending" })
+    return true
+  }
+  if (tool.name === "TaskUpdate") {
+    if (result.success !== true) return false
+    const { subject, status } = tool.input
+    // Claude repairs input aliases before running the tool. Its result names the task it updated.
+    const taskId = [result.taskId, tool.input.taskId, tool.input.id, tool.input.task_id]
+      .find((id) => typeof id === "string")
+    if (typeof taskId !== "string") return false
+    const previous = tasks.get(taskId)
+    if (!previous) return false
+    if (status === "deleted") return tasks.delete(taskId)
+    const next: ClaudeTask = {
+      subject: typeof subject === "string" ? subject : previous.subject,
+      status: isClaudeTaskStatus(status) ? status : previous.status,
+    }
+    if (previous.subject === next.subject && previous.status === next.status) return false
+    tasks.set(taskId, next)
+    return true
+  }
+  if (!Array.isArray(result.tasks)) return false
+  const listed = new Map<string, ClaudeTask>()
+  for (const candidate of result.tasks) {
+    const task = asRecord(candidate)
+    if (!task || typeof task.id !== "string" || typeof task.subject !== "string" || !isClaudeTaskStatus(task.status)) return false
+    listed.set(task.id, { subject: task.subject, status: task.status })
+  }
+  // TaskList restores the full ordered list, including after a session resume.
+  tasks.clear()
+  for (const [id, task] of listed) tasks.set(id, task)
+  return true
 }
 
 function claudeTodoSteps(value: unknown): AgentWorkingPlanStep[] | undefined {

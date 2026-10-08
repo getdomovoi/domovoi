@@ -289,13 +289,17 @@ test("the real release SBOM covers every packed runtime coordinate, not just thi
   for (const archiveFile of [credentialStoreArchive, cliArchive]) {
     const inventory = JSON.parse(await readFile(archiveFile.replace(/\.tgz$/, ".sbom.json"), "utf8"))
     validateCycloneDx(inventory)
-    assert.equal(inventory.components.some((c) => c.name.includes("claude-agent-sdk")), false, `${archiveFile} is not described by the daemon graph`)
+    // Q3 B: the CLI depends on the daemon package for `domovoi daemon`, so
+    // its inventory includes the daemon's graph; the credential store's not.
+    const cli = archiveFile === cliArchive
+    assert.equal(inventory.components.some((c) => c.name.includes("claude-agent-sdk")), cli,
+      cli ? `${archiveFile} is described with the daemon graph it installs` : `${archiveFile} is not described by the daemon graph`)
     assert.ok(inventory.components.some((c) => c.name.startsWith("@napi-rs/keyring-")), `${archiveFile} lists keyring binaries for every platform`)
     assert.equal(inventory.metadata.properties.find((p) => p.name === "domovoi:sbom:pnpm-lock-sha256").value,
       createHash("sha256").update(await readFile(new URL("../pnpm-lock.yaml", import.meta.url))).digest("hex"))
   }
   const cliInventory = JSON.parse(await readFile(cliArchive.replace(/\.tgz$/, ".sbom.json"), "utf8"))
-  for (const [name, archiveFile] of [["@getdomovoi/credential-store", credentialStoreArchive], ["@getdomovoi/protocol", protocolArchive]]) {
+  for (const [name, archiveFile] of [["@getdomovoi/credential-store", credentialStoreArchive], ["@getdomovoi/protocol", protocolArchive], ["@getdomovoi/daemon", archive]]) {
     const component = cliInventory.components.find((c) => c.name === name)
     assert.deepEqual(component?.hashes, [{ alg: "SHA-512", content: await sha512(archiveFile) }], `the CLI inventory names the released ${name} bytes`)
     assert.deepEqual(component.licenses, [{ license: { id: "Apache-2.0" } }])

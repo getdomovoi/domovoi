@@ -193,7 +193,11 @@ function utf8Parts(text: string, limit: number): string[] {
 // repository's servers that pass are added beside it (codex-repository-trust.ts).
 function codexThreadConfig(cwd: string, servers: Readonly<Record<string, CodexRepositoryServer>> = {}): Record<string, unknown> {
   const projects = Object.fromEntries(codexProjectTrustKeys(cwd).map((key) => [key, { trust_level: "untrusted" as const }]))
-  return Object.keys(servers).length === 0 ? { projects } : { projects, ...codexTrustedThreadConfig(servers) }
+  // Codex registers update_plan only when tools.update_plan.enabled is true
+  // (openai/codex #41744; measured with codex-cli 0.160.1). Without it no
+  // turn/plan/updated arrives. A Codex older than that ignores the key.
+  const tools = { update_plan: { enabled: true } }
+  return Object.keys(servers).length === 0 ? { projects, tools } : { projects, tools, ...codexTrustedThreadConfig(servers) }
 }
 
 // What a thread may take from a trusted worktree: the digest its verdict

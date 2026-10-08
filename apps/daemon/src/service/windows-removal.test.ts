@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
+import { runDaemonCommand } from "../daemon-command.js"
 import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import { createServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import { nodeServiceEffects, removeService, runServiceCommand, type ServiceEffects } from "./install.js"
@@ -31,7 +32,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 // check that Domovoi registered the task. These fakes answer that read with a
 // Domovoi registration; the sequences below start with it.
 const configurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
-const registeredAction = { path: '"C:\\Domovoi\\node.exe"', arguments: `"C:\\Domovoi\\index.js" --service-config "${configurationPath}"` }
+const registeredAction = { path: '"C:\\Domovoi\\node.exe"', arguments: `"C:\\Domovoi\\index.js" --service-supervise "${configurationPath}"` }
 const registered = { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ ...registeredAction, enabled: true, state: 4 })}\r\n` }
 const isActionRead = (args: string[]) => Buffer.from(args.at(-1)!, "base64").toString("utf16le").includes("domovoi-task-action:")
 
@@ -40,6 +41,7 @@ const isActionRead = (args: string[]) => Buffer.from(args.at(-1)!, "base64").toS
 function taskManager() {
   const task = { registered: true, enabled: true, running: true }
   const effects: ServiceEffects = {
+    stopSupervisor: vi.fn(async () => {}),
     readConfiguration: vi.fn((home: string) => ({
       ...createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home }),
       serviceRuntime: { executable: "C:\\Domovoi\\node.exe", entry: "C:\\Domovoi\\index.js" },
@@ -77,7 +79,56 @@ function taskManager() {
   return { task, effects }
 }
 
+describe("Windows legacy task migration", () => {
+  it.each(["daemon", "service"])("keeps the %s command vocabulary when legacy task deletion fails during install", async (entry) => {
+    const { effects, task } = taskManager()
+    const capture = effects.capture
+    effects.capture = vi.fn(async (command, args, deadline) => {
+      if (Buffer.from(args.at(-1)!, "base64").toString("utf16le").includes("$folder.DeleteTask(")) {
+        expect(task).toEqual({ registered: true, enabled: false, running: false })
+        throw new Error("Legacy task deletion refused")
+      }
+      const result = await capture(command, args, deadline)
+      return { ...result, stdout: result.stdout.replace("--service-supervise", "--service-config") }
+    })
+    const stderr = vi.fn()
+    const stdout = vi.fn()
+    const dependencies = {
+      ...effects, platform: "win32", user: "dl", home: "C:\\Users\\dl", workingDirectory: "C:\\Users\\dl", environment: {},
+      runtime: "C:\\Domovoi\\node.exe", execPath: "C:\\Domovoi\\index.js", stdout, stderr,
+    }
+    expect(await (entry === "daemon"
+      ? runDaemonCommand(["install"], dependencies)
+      : runServiceCommand(["service", "install"], dependencies))).toBe(1)
+    const prefix = entry === "daemon" ? "domovoi daemon" : "domovoid service"
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("Legacy task deletion refused"))
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining(`reinstall it with ${prefix} install. Otherwise retry ${prefix} remove.`))
+    expect(task).toEqual({ registered: true, enabled: false, running: false })
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(stdout).not.toHaveBeenCalled()
+  })
+})
+
 describe("Windows service removal", () => {
+  it.each(["supervisor", "task"])("uses supplied commands after a %s removal failure", async (failure) => {
+    const { effects } = taskManager()
+    if (failure === "supervisor") vi.mocked(effects.stopSupervisor!).mockRejectedValue(new Error("Stop refused"))
+    else {
+      const capture = effects.capture
+      effects.capture = vi.fn(async (command, args, deadline) => {
+        if (Buffer.from(args.at(-1)!, "base64").toString("utf16le").includes("$folder.DeleteTask(")) throw new Error("Delete refused")
+        return capture(command, args, deadline)
+      })
+    }
+    const stderr = vi.fn()
+    expect(await runServiceCommand(["service", "remove"], {
+      ...effects, platform: "win32", home: "C:\\Users\\dl", execPath: "C:\\Domovoi\\index.js", stdout: vi.fn(), stderr,
+      words: { install: "custom install", status: "custom status", remove: "custom remove", profileRecover: "custom recover" },
+    })).toBe(1)
+    expect(stderr).toHaveBeenCalledWith(expect.stringContaining("reinstall it with custom install. Otherwise retry custom remove."))
+    expect(effects.remove).not.toHaveBeenCalled()
+  })
+
   it("stops the live task before unregistering it and deleting its configuration", async () => {
     const { task, effects } = taskManager()
     vi.mocked(effects.remove).mockImplementation(async () => {
@@ -107,7 +158,7 @@ describe("Windows service removal", () => {
     try {
       const { effects } = taskManager()
       const observed: number[] = []
-      vi.mocked(effects.capture).mockResolvedValueOnce(registered).mockImplementationOnce(async (_command, _args, deadline) => {
+      vi.mocked(effects.capture).mockResolvedValueOnce(registered).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:4" }).mockImplementationOnce(async (_command, _args, deadline) => {
         await new Promise((resolve) => setTimeout(resolve, 400))
         observed.push(deadline.remainingMs())
         return { code: 0, stdout: "domovoi-task:4" }
@@ -127,7 +178,7 @@ describe("Windows service removal", () => {
       const calls = vi.mocked(effects.capture).mock.calls.map(([, args]) => args)
       expect(isActionRead(calls[0]!)).toBe(true)
       expect(calls.slice(1)).toEqual([
-        plan.stop.args, plan.inspect.args, plan.inspect.args, plan.remove.args,
+        plan.disable!.args, plan.stop.args, plan.inspect.args, plan.inspect.args, plan.remove.args,
       ])
       const deadlines = vi.mocked(effects.capture).mock.calls.map(([, , deadline]) => deadline)
       expect(deadlines.every((value) => value === deadlines[0])).toBe(true)
@@ -142,13 +193,13 @@ describe("Windows service removal", () => {
       vi.useFakeTimers()
       try {
         const { effects } = taskManager()
-        vi.mocked(effects.capture).mockResolvedValueOnce(registered).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:4" })
+        vi.mocked(effects.capture).mockResolvedValueOnce(registered).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:4" }).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:4" })
           .mockResolvedValue({ code: 0, stdout: `domovoi-task:${state}` })
         const pending = expect(removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects))
           .rejects.toThrow('Could not confirm removal of Windows task "Domovoi daemon". Inspect Task Scheduler')
         await vi.advanceTimersByTimeAsync(100)
         await pending
-        expect(effects.capture).toHaveBeenCalledTimes(3)
+        expect(effects.capture).toHaveBeenCalledTimes(4)
         expect(effects.run).not.toHaveBeenCalled()
         expect(effects.remove).not.toHaveBeenCalled()
         expect(vi.getTimerCount()).toBe(0)
@@ -160,7 +211,7 @@ describe("Windows service removal", () => {
     vi.useFakeTimers()
     try {
       const { effects } = taskManager()
-      vi.mocked(effects.capture).mockResolvedValueOnce(registered)
+      vi.mocked(effects.capture).mockResolvedValueOnce(registered).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:4" })
       if (phase === "inspect") vi.mocked(effects.capture).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:4" })
       if (phase === "remove") vi.mocked(effects.capture).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:1" })
       vi.mocked(effects.capture).mockResolvedValue({ code: 1, stdout: "", stderr: "Access denied" })
@@ -180,14 +231,15 @@ describe("Windows service removal", () => {
     const { effects } = taskManager()
     vi.mocked(effects.capture).mockResolvedValue({ code: 0, stdout: "domovoi-task:missing\r\n" })
     await removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)
-    // The ownership read, then the stop, each find no task.
-    expect(effects.capture).toHaveBeenCalledTimes(2)
+    // Ownership, disable and stop each find no task; the proof still ran.
+    expect(effects.capture).toHaveBeenCalledTimes(3)
+    expect(effects.stopSupervisor).toHaveBeenCalledOnce()
     expect(effects.remove).toHaveBeenCalledOnce()
   })
 
   it("does not treat a disappearing task at deletion as confirmed removal", async () => {
     const { effects } = taskManager()
-    vi.mocked(effects.capture).mockResolvedValueOnce(registered).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:1" })
+    vi.mocked(effects.capture).mockResolvedValueOnce(registered).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:4" }).mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:1" })
       .mockResolvedValueOnce({ code: 0, stdout: "domovoi-task:missing" })
     await expect(removeService({ platform: "win32", home: "C:\\Users\\dl" }, effects)).rejects.toThrow("registration disappeared")
     expect(effects.remove).not.toHaveBeenCalled()
@@ -330,7 +382,7 @@ describe("Task Scheduler command boundary", () => {
 // Owner ruling 2026-09-25: the CLI checks who registered the task, as the
 // desktop does. A task under Domovoi's name counts only when service.json holds
 // a Domovoi registration and the task runs that file in the shape Domovoi
-// writes. An install from before the runtime was recorded stays removable.
+// writes. Legacy task ownership remains recognizable, but absence of job evidence refuses removal.
 describe("the CLI and a same-named Windows task", () => {
   const home = "C:\\Users\\dl"
   const configurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
@@ -390,13 +442,14 @@ describe("the CLI and a same-named Windows task", () => {
     ["an npm install", { path: '"C:\\Program Files\\nodejs\\node.exe"', arguments: `"C:\\Users\\dl\\AppData\\Roaming\\npm\\node_modules\\@getdomovoi\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }],
     ["a pnpm install", { path: "C:\\Users\\dl\\AppData\\Local\\fnm\\node.exe", arguments: `"C:\\Users\\dl\\AppData\\Local\\pnpm\\global\\5\\.pnpm\\@getdomovoi+daemon@0.7.0\\node_modules\\@getdomovoi\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }],
     ["a checkout", { path: "C:\\Program Files\\nodejs\\node.exe", arguments: `"C:\\src\\domovoi\\apps\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }],
-  ])("remove still removes an older install from %s", async (_shape, action) => {
+  ])("remove retires an older install through Task Scheduler from %s", async (_shape, action) => {
     const { task, effects, cli, stdout, stderr } = scheduler(action, saved)
     expect(await runServiceCommand(["service", "remove"], cli)).toBe(0)
     expect(stderr).not.toHaveBeenCalled()
-    expect(stdout).toHaveBeenCalledWith("Removed the Domovoi daemon service Domovoi daemon\n")
+    expect(stdout).toHaveBeenCalled()
     expect(task.registered).toBe(false)
-    expect(effects.remove).toHaveBeenCalledWith(configurationPath, expect.anything())
+    expect(task.stopIssued).toBe(true)
+    expect(effects.remove).toHaveBeenCalled()
   })
 
   // Security review round 2: the reviewer's shape, an unrelated absolute
@@ -427,7 +480,7 @@ describe("the CLI and a same-named Windows task", () => {
     const removal = scheduler(action, recorded)
     expect(await runServiceCommand(["service", "remove"], removal.cli)).toBe(1)
     expect(removal.task.registered).toBe(true)
-    const own = scheduler({ path: '"C:\\Domovoi\\node.exe"', arguments: `"C:\\Domovoi\\daemon\\dist\\index.js" --service-config "${configurationPath}"` }, recorded)
+    const own = scheduler({ path: '"C:\\Domovoi\\node.exe"', arguments: `"C:\\Domovoi\\daemon\\dist\\index.js" --service-supervise "${configurationPath}"` }, recorded)
     expect(await runServiceCommand(["service", "remove"], own.cli)).toBe(0)
     expect(own.task.registered).toBe(false)
   })

@@ -1106,8 +1106,25 @@ secure, where its credential came from, and `start()` and `stop()`. `start()` re
 host, port, and WebSocket URL. The handle also carries `authToken` for an embedding client; treat
 it as a root credential and never log it or persist another copy.
 
-`@getdomovoi/daemon` is the package's only entry point. It does not expose the raw server
-constructor; daemon tests import the source server module directly.
+The package exposes the root entry `@getdomovoi/daemon` and the subpath
+`@getdomovoi/daemon/daemon-command`. It does not expose the raw server constructor; daemon tests
+import the source server module directly.
+
+The subpath exports `runDaemonCommand(args, dependencies?)`, which accepts `["install"]`,
+`["status"]`, or `["remove"]` and asynchronously returns the exit code with the same meanings as
+`domovoid service`. Successful installation and removal return 0. Status returns 0 when installed,
+even if stopped, unless supervision failed; it returns 1 when not installed or supervision failed.
+An unverified Windows registration returns 0 unless supervision failed. Invalid arguments and
+errors return 1 with usage or the error message on stderr.
+
+`daemonWorkerEntry()` synchronously names the packaged `dist/index.js` beside the command module.
+The service registers this Domovoi worker entry, or the worker entry in the runtime copy made
+under the profile when the command runs from an app, never the calling binary.
+`nodeDaemonCommandDependencies()` asynchronously builds the Node dependencies, including that
+worker entry. `ownVersion()` synchronously reads and validates the package version.
+
+Importing the subpath starts nothing and loads no service code. The service implementation loads
+only when a valid command runs or `nodeDaemonCommandDependencies()` is called.
 
 ## Bundle restore claims
 

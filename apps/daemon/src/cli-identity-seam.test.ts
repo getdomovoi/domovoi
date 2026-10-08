@@ -152,6 +152,27 @@ describe("domovoid CLI connection identity", () => {
     expect(again).toHaveProperty("error")
   }, 20_000)
 
+  it("prints a web code a browser types, and the browser pairs under its own name", async () => {
+    const received = vi.spyOn(WebSocket.prototype, "emit")
+    const daemon = await startDaemon()
+    const result = await runCli(daemon, ["pair", "--client", "web", "--label", "Studio browser"])
+    // The label reaches the daemon with the code, as a suggested name.
+    expect(received.mock.calls.some(([event, bytes]) => {
+      if (event !== "message") return false
+      const message = JSON.parse(String(bytes)) as { method?: string; params?: { targetClient?: string; label?: string } }
+      return message.method === "device.issueCode" && message.params?.targetClient === "web" && message.params.label === "Studio browser"
+    })).toBe(true)
+    expect(result).toMatchObject({ exitCode: 0, stderr: "" })
+    expect(result.stdout).not.toContain("domovoi-pair:")
+    const code = /^Web code: (\S+)$/mu.exec(result.stdout)?.[1]
+    expect(code).toMatch(/^[a-z]+-[a-z]+-[a-z]+-\d{2}$/u)
+
+    const redeemed = await redeem(`ws://${daemon.address!.host}:${daemon.address!.port}/rpc`, code!, "Firefox")
+    expect((redeemed.result as { device: { label: string; binding: unknown } }).device).toMatchObject({
+      label: "Firefox", binding: { kind: "client", client: "web", clientAccess: "full" },
+    })
+  }, 20_000)
+
   it("pairs through a real daemon socket", async () => {
     const received = vi.spyOn(WebSocket.prototype, "emit")
     const result = await runCli(await startDaemon(), ["pair"])

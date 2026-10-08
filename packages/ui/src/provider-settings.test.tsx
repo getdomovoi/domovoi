@@ -5,7 +5,6 @@ import { describe, expect, it, vi } from "vitest"
 import {
   ExternalEditorSettings,
   ProviderSettings,
-  providerAccountAction,
   providerAccountCommand,
 } from "./provider-settings.js"
 import { defaultNotificationPreferences } from "./notification-preferences.js"
@@ -118,15 +117,16 @@ describe("Settings shell and provider pane", () => {
 
     expect(markup).toContain("Providers and tokens")
     expect(markup).toContain("Subscription CLIs own their credentials")
-    expect(markup).toContain("Cursor Agent")
-    expect(markup).toContain("Re-authenticate")
-    expect(markup).toContain("claude auth login")
-    expect(markup).toContain("codex login")
-    expect(markup).toContain("agent login")
+    expect(markup).not.toContain("SUBSCRIPTION CLIS")
+    for (const id of ["claude-code", "codex", "cursor-agent", "grok", "opencode"]) expect(markup).toContain(`>${id}</span>`)
+    // Kilo was looked for and not found, so it is not installed there.
+    expect(markup).not.toContain(">kilo</span>")
+    // One action, where one is needed: Grok needs sign-in, and the command is named for it.
+    expect(markup.match(/>Authenticate there</g)).toHaveLength(1)
+    // A standard control, so it is the shared Button primitive (AGENTS.md).
+    expect(markup).toMatch(/<button data-slot="button"[^>]*>Authenticate there</)
     expect(markup).toContain("grok login")
-    expect(markup).toContain("opencode auth login")
-    expect(markup).toContain("kilo auth login")
-    expect(markup.match(/data-provider-account-action=""[^>]*disabled=""/g)).toHaveLength(6)
+    expect(markup).not.toContain("data-provider-account-action")
     expect(markup).toContain("OS keychain")
     expect(markup).toContain("OpenRouter")
     expect(markup).toContain("Keychain unavailable")
@@ -138,12 +138,81 @@ describe("Settings shell and provider pane", () => {
     expect(markup).toContain(">External editor</h1>")
   })
 
-  it("says provider credentials stay on this machine without claiming an account or relay", () => {
+  it("says provider credentials stay on each machine without claiming an account or relay", () => {
     const markup = renderToStaticMarkup(<ProviderSettings providers={providers} secrets={[]} />)
 
-    expect(markup).toContain("Stored on this machine. Domovoi does not send it to another device.")
+    // Q18 A (standing ruling 2026-10-06): the rows span machines, so the line names each one.
+    expect(markup).toContain("Stored on each machine that runs the agent. Domovoi does not send it to another device.")
     expect(markup).toContain("Subscription CLIs own their credentials.")
     expect(markup).not.toMatch(/Domovoi account|relay/i)
+  })
+
+  it("lists each machine's agents across the fleet and says which machines are unknown", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderSettings
+        providers={providers}
+        secrets={[]}
+        machines={[
+          { machineId: "m1", label: "workshop", providers: [providers[0]!, { ...providers[1]!, status: "auth-required" }] },
+          { machineId: "m2", label: "studio", unknown: "this app holds no client credential for it" },
+          { machineId: "m3", label: "lab", providers: [providers[0]!], stale: "as of 14:03" },
+        ]}
+      />,
+    )
+    const rows = [...markup.matchAll(/<li[^>]*>(.*?)<\/li>/gs)].map(([, row]) =>
+      [...row!.matchAll(/data-agent-cell=""[^>]*>([^<]*)</g)].map(([, cell]) => cell))
+
+    expect(rows).toEqual([
+      ["claude-code", "workshop", "ready"],
+      ["codex", "workshop", "needs sign-in on that machine"],
+      ["unknown", "studio", "this app holds no client credential for it"],
+      ["claude-code", "lab", "ready · as of 14:03"],
+    ])
+    expect(markup).toContain("codex login")
+    expect(markup).not.toContain(">grok</span>")
+  })
+
+  it("does not call an agent ready, or offer its sign-in, when this Domovoi cannot start sessions with it", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderSettings
+        providers={providers}
+        secrets={[]}
+        machines={[{ machineId: "m1", label: "workshop", providers: [
+          { ...providers[0]!, sessionCapable: false },
+          { ...providers[1]!, status: "auth-required", sessionCapable: false },
+        ] }]}
+      />,
+    )
+    const rows = [...markup.matchAll(/<li[^>]*>(.*?)<\/li>/gs)].map(([, row]) =>
+      [...row!.matchAll(/data-agent-cell=""[^>]*>([^<]*)</g)].map(([, cell]) => cell))
+
+    expect(rows).toEqual([
+      ["claude-code", "workshop", "adapter unavailable"],
+      ["codex", "workshop", "adapter unavailable"],
+    ])
+    expect(markup).not.toContain("Authenticate there")
+  })
+
+  it("hands the fleet's agents to the providers pane", () => {
+    const markup = renderToStaticMarkup(
+      <SettingsShell
+        providers={providers}
+        providerMachines={[{ machineId: "m2", label: "studio", unknown: "this app holds no client credential for it" }]}
+        secrets={[]}
+        approvalRules={[]}
+        notifications={defaultNotificationPreferences()}
+        onNotificationsChange={vi.fn()}
+        onOpenFleet={vi.fn()}
+        onOpenSkills={vi.fn()}
+        onOpenAudit={vi.fn()}
+        theme="dark"
+        onThemeChange={vi.fn()}
+      />,
+    )
+
+    expect(markup).toContain(">studio</span>")
+    expect(markup).toContain("this app holds no client credential for it")
+    expect(markup).not.toContain(">claude-code</span>")
   })
 
   it("shows why a detected provider cannot start sessions instead of the sign-in hint", () => {
@@ -164,7 +233,7 @@ describe("Settings shell and provider pane", () => {
     )
 
     expect(markup).toContain(problem)
-    expect(markup).toContain("Cannot start")
+    expect(markup).toContain("cannot start")
   })
 
   it("uses the installed single-choice primitive for every allowlisted editor", () => {
@@ -187,11 +256,7 @@ describe("Settings shell and provider pane", () => {
     expect(markup).not.toMatch(/token|secret|password/i)
   })
 
-  it("returns clear account actions for each readiness state", () => {
-    expect(providerAccountAction(providers[0]!)).toBe("Manage")
-    expect(providerAccountAction(providers.find((provider) => provider.id === "grok")!)).toBe("Re-authenticate")
-    expect(providerAccountAction({ ...providers[0]!, status: "missing" })).toBe("Install")
-    expect(providerAccountAction({ ...providers[0]!, status: "unknown" })).toBe("Check status")
+  it("names each provider's own sign-in command", () => {
     expect(providers.map(providerAccountCommand)).toEqual([
       "claude auth login",
       "codex login",
