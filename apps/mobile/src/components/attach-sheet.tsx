@@ -10,7 +10,7 @@ import { Text } from "./ui/text"
 // says what it waits on rather than pretending to be a row.
 const waiting: { icon: IconName, label: string, note: string }[] = [
   { icon: "layers", label: "File from the worktree", note: "desktop work: a phone holds no worktree to pick from" },
-  { icon: "server", label: "Terminal output", note: "waits on a read-only terminal path, which a phone does not have yet" },
+  { icon: "server", label: "Terminal output", note: "not built: a phone reads a terminal but cannot pick its output to attach" },
   { icon: "unplug", label: "A URL to fetch", note: "not built: an outbound fetch on a phone's word needs its own gate line" },
 ]
 
