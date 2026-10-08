@@ -163,7 +163,7 @@ try {
   await click("Machines")
   await text("Studio")
   console.info("Fleet proof: enrolled row rendered")
-  assert.equal(await evaluate(`${buttons}.find(button => button.getAttribute('aria-label') === 'Use Studio').disabled`), true)
+  assert.equal(await evaluate(`${buttons}.find(button => /^Open its (\\d+ )?sessions? on Studio$/.test(button.getAttribute('aria-label') ?? '')).disabled`), true)
   await click("Authorize this client for Studio")
   await text("It comes from a device.pair request made with that daemon's own credential.")
   await capture("authorize", 1280)
@@ -190,7 +190,10 @@ try {
   console.info("Fleet proof: admitted inventory observed")
   await click("Settings")
   await click("Machines")
-  await click("Use Studio")
+  await poll(() => evaluate(`(() => {
+    const button = ${buttons}.find(button => /^Open its (\\d+ )?sessions? on Studio$/.test(button.getAttribute('aria-label') ?? ''));
+    if (!button || button.disabled) return false; button.click(); return true;
+  })()`), "button Open its sessions on Studio")
   await text("Remote proof session")
   await click("Settings")
   await click("Open command palette")
@@ -211,7 +214,7 @@ try {
   await click("Machines")
   await click("Remove local access")
   await text("Devices list")
-  assert.equal(await evaluate(`${buttons}.find(button => button.getAttribute('aria-label') === 'Use Studio').disabled`), true)
+  assert.equal(await evaluate(`${buttons}.find(button => /^Open its (\\d+ )?sessions? on Studio$/.test(button.getAttribute('aria-label') ?? '')).disabled`), true)
   console.info("DOMOVOI_FLEET_CLIENT_PROOF_OK use=1 terminal=1 inventory=1 comparison=1 remove=1")
 } catch (error) {
   failed = true
