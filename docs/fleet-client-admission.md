@@ -25,17 +25,29 @@ admission. The client verifier explicitly refuses a root receipt even though roo
 On the target machine, using its own daemon credential:
 
 ```sh
-domovoid pair --client desktop --label "My desktop"
+domovoid pair --client desktop
 ```
 
-Use `web` for a browser client. This prints the new client bearer and the device id to revoke.
-The command greets as cli and requests `targetClient: desktop`; the issuer's identity is not
-changed to impersonate the recipient. Plain `domovoid pair` still issues a machine pairing code.
-Machine pending claims and their expiration/confirmation rules are unchanged.
+Use `web` for a browser client. This prints no credential. It prints a one-time pairing code: for
+a desktop, a symbol to scan and the same text as a line to paste, both carrying the code and the
+address a device dials; for `web`, the code as words to type, with the web app address when
+`DOMOVOI_WEB_APP_URL` is set. The code lasts three minutes, works once and only for that client
+kind, and issuing another code ends it. When the daemon has no address a device could dial, the
+command prints the code and the reason and exits 1. The device that redeems the code
+(`device.redeemCode`) receives the client credential and its device id, and names itself.
+`--label <name>` is optional and is kept with the code only as a suggested name. The command greets
+as cli and requests `targetClient: desktop` through `device.issueCode`; the issuer's identity is
+not changed to impersonate the recipient. Plain `domovoid pair` still issues a machine pairing
+code. Machine pending claims and their expiration/confirmation rules are unchanged.
 
-This is a deliberate grant, active when issued, not an automated machine claim. The target's
-Devices list can revoke it even if the caller loses the reply. Check that list before retrying
-an ambiguously completed grant. Do not paste a machine secret or a daemon root token instead.
+No command prints a client credential. The Fleet dialog below takes one, not a pairing code; it
+comes from a `device.pair` request with `targetClient`, made with the target daemon's own
+credential, which returns the credential and the device id to revoke.
+
+Either way this is a deliberate grant, not an automated machine claim. A code grants nothing until
+a device redeems it, and a lost reply costs the code. The target's Devices list shows and can
+revoke what was paired. Check that list before retrying an ambiguously completed grant. Do not
+paste a machine secret or a daemon root token instead.
 
 ## Protocol and client boundaries
 
@@ -139,7 +151,8 @@ secrets to a relay, or add accounts or other Goal 3 services.
 
 Protocol tests cover additive parsing and strict caller receipts. Two production-built daemons
 exercise separate client/machine authority and pending-forget route masking over real sockets.
-The real CLI binary issues a desktop grant that the real shared client verifies over a socket.
+The real CLI binary issues a desktop code; a device redeems it, and the real shared client verifies
+the redeemed credential over a socket.
 Client tests refuse wrong identities, wrong kinds, root receipts, changed device ids, and missing
 verification; they cover notification withholding, bounded queues, deadlines and reconnects.
 
