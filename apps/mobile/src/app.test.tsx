@@ -929,6 +929,41 @@ describe("App", () => {
       expect(screen.getByText("Unconfirmed")).toBeOnTheScreen()
     })
 
+    // A watch that gets no answer in time may still have been taken. The
+    // output already on screen stays, and the next list asks again.
+    it("keeps the held output when a rewatch gets no answer in time, and asks again", async () => {
+      jest.useFakeTimers({ advanceTimers: true, doNotFake: ["nextTick", "setImmediate", "queueMicrotask"] })
+      try {
+        const { socket } = await openAudit()
+        await watchOne(socket)
+        await comeBack(socket)
+        const next = FakeSocket.made.at(-1)!
+        expect(next).not.toBe(socket)
+        await act(async () => {
+          next.readyState = 1
+          next.onopen?.()
+        })
+        await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+        await settle()
+        await act(async () => { next.answer("terminal.list", { terminals: [terminal] }) })
+        await settle()
+        expect(next.requests("terminal.watch")).toHaveLength(1)
+
+        await act(async () => { jest.advanceTimersByTime(30_001) })
+        await settle()
+        expect(screen.queryByText("The terminal could not be read")).toBeNull()
+        expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+
+        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
+        await settle()
+        await act(async () => { next.answer("terminal.list", { terminals: [terminal] }) })
+        await settle()
+        expect(next.requests("terminal.watch").length).toBeGreaterThan(1)
+      } finally {
+        jest.useRealTimers()
+      }
+    })
+
     it("says Unconfirmed while the connection is down, and watches again once it is back", async () => {
       const { socket } = await openAudit()
       await watchOne(socket)

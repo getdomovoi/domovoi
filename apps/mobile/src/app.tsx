@@ -35,6 +35,7 @@ import { SkillSheet } from "./components/skill-sheet"
 import { normalizeTab, TabBar, type Tab } from "./components/tab-bar"
 import { clearCredential, loadCredential, saveCredential, type DaemonCredential } from "./lib/credentials"
 import { DaemonNotSentError, DaemonUnconfirmedError } from "./lib/daemon"
+import { DaemonTimeoutError } from "./lib/request-timeout"
 import { useDaemon } from "./lib/use-daemon"
 import { connectedMachineActivity } from "./machine-activity"
 import { launchPhases } from "./launch-state"
@@ -470,6 +471,10 @@ export function App() {
     // back, so leaving ends each, and a new shell under the same id (Restart)
     // is watched again.
     const watched = new Map<string, string>()
+    // Watches that got no answer in time. They stay in `watched`, since the
+    // daemon may have taken them and leaving must end them, and the next
+    // list asks for them again.
+    const askAgain = new Set<string>()
     // An answer is for the shell it was asked for; one that lands after the
     // list named a newer shell under the id is dropped.
     const sameShell = (watch: TerminalWatch | undefined, openedAt: string) => watch !== undefined && watchedSummary(watch).openedAt === openedAt
@@ -490,9 +495,14 @@ export function App() {
         // before this run is retired, so it is told apart here: what is held
         // stays, unconfirmed, for the next connection to watch again.
         if (!current || cause instanceof DaemonNotSentError || cause instanceof DaemonUnconfirmedError) return
+        // No answer in time: the daemon may still have taken the watch. Output
+        // already held stays, unconfirmed, and the next list asks again.
+        const unanswered = cause instanceof DaemonTimeoutError
+        if (unanswered) askAgain.add(terminalId)
         setTerminals((held) => {
           const watch = held.get(terminalId)
           if (!watch || !sameShell(watch, openedAt)) return held
+          if (unanswered && watch.state === "watching") return held
           return new Map(held).set(terminalId, {
             state: "failed",
             summary: watchedSummary(watch),
@@ -518,7 +528,7 @@ export function App() {
         setTerminalsListed(true)
         setTerminals((held) => listedWatches(held, listed.terminals))
         for (const terminal of listed.terminals) {
-          if (watched.get(terminal.terminalId) !== terminal.openedAt) watchOne(terminal.terminalId, terminal.openedAt)
+          if (watched.get(terminal.terminalId) !== terminal.openedAt || askAgain.delete(terminal.terminalId)) watchOne(terminal.terminalId, terminal.openedAt)
         }
       }, () => {})
     }
