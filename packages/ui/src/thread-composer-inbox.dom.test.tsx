@@ -1,5 +1,5 @@
 import { demoWorkspace } from "@getdomovoi/protocol"
-import { act, cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
@@ -129,4 +129,55 @@ it("keeps a file that finished reading when output is offered before the next re
     { kind: "text", name: "notes.txt", mimeType: "text/plain", content: "release notes" },
     output,
   ])
+})
+
+// The draft holds two attachments at most. A write that fills it before the
+// next render still counts against the limit for the writes after it.
+it("leaves a long editor paste inline when output filled the draft before the next render", async () => {
+  const user = userEvent.setup()
+  renderThread()
+  act(() => { expect(composerInbox.offer(sessionId, terminalOutputAttachment("first"))).toBe("attached") })
+  await user.keyboard("{Meta>}{Shift>}e{/Shift}{/Meta}")
+  const editor = screen.getByRole("textbox", { name: "Prompt editor message" })
+  const longText = Array.from({ length: 60 }, (_, index) => `line ${index}`).join("\n")
+
+  act(() => {
+    expect(composerInbox.offer(sessionId, terminalOutputAttachment("second"))).toBe("attached")
+    fireEvent.paste(editor, { clipboardData: { getData: () => longText } })
+  })
+
+  expect(screen.getByText(/Attach up to 2 items per message\. The pasted text stayed in the message\./u)).toBeTruthy()
+  expect(screen.queryByText(/goes with the message as a file/u)).toBeNull()
+})
+
+it("says the draft is full when output filled it while a chosen file was read", async () => {
+  const user = userEvent.setup()
+  renderThread()
+  act(() => { expect(composerInbox.offer(sessionId, terminalOutputAttachment("first"))).toBe("attached") })
+  const { file, finish } = slowFile()
+  await user.upload(screen.getByLabelText("Choose an image or file"), file)
+
+  act(() => { expect(composerInbox.offer(sessionId, terminalOutputAttachment("second"))).toBe("attached") })
+  await act(async () => { finish("release notes") })
+
+  expect(screen.getByRole("alert").textContent).toBe("Attach up to 2 items per message.")
+  expect(screen.getByRole("region", { name: "Attachments" }).textContent).not.toContain("notes.txt")
+})
+
+it("leaves a long composer paste inline when output filled the draft before the next render", async () => {
+  renderThread()
+  act(() => { expect(composerInbox.offer(sessionId, terminalOutputAttachment("first"))).toBe("attached") })
+  const field = screen.getByRole("textbox", { name: "Message" })
+  const longText = Array.from({ length: 60 }, (_, index) => `line ${index}`).join("\n")
+
+  let pasteProceeds = false
+  act(() => {
+    expect(composerInbox.offer(sessionId, terminalOutputAttachment("second"))).toBe("attached")
+    pasteProceeds = fireEvent.paste(field, { clipboardData: { getData: () => longText } })
+  })
+
+  // Not prevented, so the browser puts the text in the field.
+  expect(pasteProceeds).toBe(true)
+  expect(screen.getByRole("alert").textContent).toBe("Attach up to 2 items per message. The pasted text stayed in the message.")
+  expect(screen.getByRole("region", { name: "Attachments" }).textContent).not.toContain("pasted-text")
 })

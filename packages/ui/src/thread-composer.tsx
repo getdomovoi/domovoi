@@ -150,15 +150,20 @@ export function ThreadComposer({
   const paletteShortcut = composerPlatform() === "darwin" ? "⌘K" : "Ctrl+K"
 
   // A file or clipboard read awaits before it adds, so the draft may have
-  // changed since this render. The append is applied to the draft as it is
-  // then; one that would pass the limit by then is not added.
-  const addAttachments = (next: SessionAttachment[]) => {
-    if (attachments.length + next.length > desktopAttachmentLimit) {
-      setAttachmentError(`Attach up to ${desktopAttachmentLimit} items per message.`)
-      return
+  // changed since this render. The append is checked against the draft as it
+  // is then. The thread applies an update at once, so the refusal is known
+  // here; a setter that defers it only skips the message. Says whether the
+  // attachments went in.
+  const addAttachments = (next: SessionAttachment[], refusal = `Attach up to ${desktopAttachmentLimit} items per message.`) => {
+    let refused = attachments.length + next.length > desktopAttachmentLimit
+    if (!refused) {
+      onAttachmentsChange((current) => {
+        refused = current.length + next.length > desktopAttachmentLimit
+        return refused ? current : [...current, ...next]
+      })
     }
-    setAttachmentError("")
-    onAttachmentsChange((current) => current.length + next.length > desktopAttachmentLimit ? current : [...current, ...next])
+    setAttachmentError(refused ? refusal : "")
+    return !refused
   }
   const attachWorkspacePath = () => {
     try {
@@ -193,8 +198,11 @@ export function ThreadComposer({
       setAttachmentError(outcome.note ?? "")
       return
     }
-    event.preventDefault()
-    addAttachments([outcome.attachment])
+    // The draft may have filled since this render. Then the paste is not
+    // prevented, so the text stays in the field as it does past the limit.
+    if (addAttachments([outcome.attachment], `Attach up to ${desktopAttachmentLimit} items per message. The pasted text stayed in the message.`)) {
+      event.preventDefault()
+    }
   }
   const takeSlashCommand = (command: SlashCommand) => {
     if (watching) return

@@ -1460,9 +1460,11 @@ export function Thread({
               // The same draft as the composer, so the same conversion. The
               // file is drawn in the composer; the editor says where it went.
               const field = event.currentTarget
+              // Read against the draft as it is now: a write since the last
+              // render (Attach this output) counts toward the limit.
               const outcome = pasteOutcome(
                 event.clipboardData.getData("text/plain"),
-                attachments,
+                attachmentsRef.current,
                 field.value.length - (field.selectionEnd - field.selectionStart),
               )
               if (outcome.kind === "inline") {
