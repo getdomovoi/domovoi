@@ -58,13 +58,16 @@ export type MachineFacts =
 
 const readingClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
 const readingDay = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short" })
+// Decides "today" in the same time zone the labels are drawn in, which the
+// formatters fix when they are made.
+const readingDate = new Intl.DateTimeFormat("en-GB", { year: "numeric", month: "2-digit", day: "2-digit" })
 
 // When a reading was taken: the time for today's, with the day before it for
 // an older one, so a reading from yesterday never passes for this morning's.
 export function readingTime(readAt: string): string {
   const at = new Date(readAt)
   const time = readingClock.format(at)
-  return at.toDateString() === new Date(Date.now()).toDateString() ? time : `${readingDay.format(at)} ${time}`
+  return readingDate.format(at) === readingDate.format(new Date(Date.now())) ? time : `${readingDay.format(at)} ${time}`
 }
 
 export function asOf(readAt: string | undefined): string | undefined {
