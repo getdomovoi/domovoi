@@ -51,7 +51,7 @@ import { DaemonRpcError, ProjectSwitchConfirmationError, clientVersion } from ".
 import { SessionsDrawerColumn, SessionsDrawerTrigger, type SessionRowAction } from "./sessions-drawer"
 import { useWorkspace } from "./use-workspace"
 import type { RelayPinStorage } from "./relay-pin"
-import { FleetAccessSession, fleetAgents, machineReading, type HeldReading } from "./fleet-access-session"
+import { FleetAccessSession, fleetAgents, machineReading, useReadOnVisit, type HeldReading } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
 import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
 import { Deadline } from "./deadline"
@@ -1522,6 +1522,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     skillsWanted,
   ])
 
+  // Settings lists every machine's agents, so each visit reads the admitted
+  // machines the way Machines does; the Machines surface reads on its own.
+  const readMachine = useCallback((machineId: string, signal: AbortSignal) => accessSession.read(machineId, signal), [accessSession])
+  useReadOnVisit({ active: surface === "providers", connected: home.connected, clientAccess: fleetClientAccess, onReadMachine: readMachine })
   useEffect(() => {
     if (surface !== "skills" || !connected || localSkillInventory?.state !== "available") return
     const refresh = new AbortController()

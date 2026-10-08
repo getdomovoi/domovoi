@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react"
 import {
   credentialSchema,
   type FleetEntry,
@@ -124,6 +125,61 @@ export function fleetAgents(
   return machineAgents(entries, (machine) => machineFacts(machine, {
     readings: input.readings, access: input.clientAccess[machine.id], currentMachineId: input.currentMachineId,
   }))
+}
+
+// A reading younger than this is not read again when a visit starts: the
+// machine was just admitted or just read.
+const freshReadingMs = 30_000
+
+// Each admitted machine is read once per visit of a surface that shows its
+// facts (Machines, Settings), or when it is admitted during one, unless its
+// reading is fresh: one connection per machine per visit, not a poll. A
+// machine that does not answer keeps its last reading, marked unanswered in
+// `clientAccess`, and the surface dates it. A visit is while `active` holds
+// and the caller stays mounted.
+export function useReadOnVisit({ active, connected, clientAccess, onReadMachine }: {
+  active: boolean
+  connected: boolean
+  clientAccess: Readonly<Record<string, FleetAccessState>>
+  onReadMachine?: ((machineId: string, signal: AbortSignal) => Promise<void>) | undefined
+}): void {
+  const admittedIds = Object.entries(clientAccess)
+    .filter(([, access]) => access.state === "admitted")
+    .map(([machineId]) => machineId)
+    .sort()
+    .join(" ")
+  const requested = useRef(new Set<string>())
+  const pending = useRef(new Map<string, AbortController>())
+  // Ending the visit cancels the reads still waiting, and the next visit asks
+  // every machine again. A read cut short was never answered, so a remount
+  // (StrictMode does one in development) asks again too.
+  useEffect(() => {
+    if (!active) return
+    const asked = requested.current
+    const waiting = pending.current
+    return () => {
+      for (const read of waiting.values()) read.abort()
+      waiting.clear()
+      asked.clear()
+    }
+  }, [active])
+  useEffect(() => {
+    if (!active || !onReadMachine || !connected) return
+    for (const machineId of admittedIds.split(" ").filter(Boolean)) {
+      const access = clientAccess[machineId]
+      if (requested.current.has(machineId) || access?.state !== "admitted") continue
+      requested.current.add(machineId)
+      if (Date.now() - Date.parse(access.reading.readAt) < freshReadingMs) continue
+      const read = new AbortController()
+      pending.current.set(machineId, read)
+      // The answer, or the lack of one, arrives through clientAccess.
+      onReadMachine(machineId, read.signal).catch(() => {}).finally(() => {
+        if (pending.current.get(machineId) === read) pending.current.delete(machineId)
+      })
+    }
+    // The ids name the machines to read; a new reading of one must not read it
+    // again, so clientAccess and onReadMachine are left out of the dependencies.
+  }, [admittedIds, connected, active])
 }
 
 type ClientInputs = Omit<Parameters<typeof fleetClient>[0], "access">

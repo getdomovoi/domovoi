@@ -47,6 +47,7 @@ import {
   machineFacts,
   readingClock,
   unknownAgentsReason,
+  useReadOnVisit,
   type FleetAccessState,
   type HeldReading,
   type MachineFacts,
@@ -242,10 +243,6 @@ function when(value: string | undefined): string {
   return timestamp.format(new Date(value)).replace(",", "")
 }
 
-// A reading younger than this is not read again when the view opens: the
-// machine was just admitted or just read.
-const freshReadingMs = 30_000
-
 // The clock LAST HEARD counts from, ticking while the view is open.
 function useNow(intervalMs: number): number {
   const [now, setNow] = useState(() => Date.now())
@@ -266,10 +263,13 @@ function sessionsFact(facts: Extract<MachineFacts, { known: true }>): string {
   const sessions = facts.sessions
   if (typeof sessions === "number") return `${sessions} running or waiting`
   const count = (state: string) => sessions.filter((session) => session.state === state).length
+  const conflicts = count("ownership-conflict")
+  // Failed and ownership conflicts are what the drawer files under NEEDS YOU.
   const parts = [
     [count("active"), "running"],
     [count("waiting"), "waiting on you"],
     [count("failed"), "failed"],
+    [conflicts, conflicts === 1 ? "ownership conflict" : "ownership conflicts"],
   ].filter(([n]) => n !== 0).map(([n, word]) => `${n} ${word}`)
   return parts.length === 0 ? "none running" : parts.join(" · ")
 }
@@ -291,7 +291,15 @@ function transportFact(machine: FleetMachine): string {
   return machine.health === "unreachable" ? `${route} · not answering` : route
 }
 
-function heardFact(lastSeenAt: string, now: number): string {
+// Before the fleet list answers, or after it fails, the shell draws this
+// machine from its own snapshot with a heartbeat at the epoch (localMachineEntry).
+// That is no heartbeat at all: an open connection to the machine is heard now,
+// and anything else is unknown.
+function heardFact(machine: FleetMachine, facts: MachineFacts, now: number): string {
+  const lastSeenAt = machine.heartbeat.lastSeenAt
+  if (Date.parse(lastSeenAt) <= 0) {
+    return facts.known && !facts.stale && machine.self ? "just now" : "unknown, no heartbeat reported"
+  }
   const seconds = Math.max(0, Math.round((now - Date.parse(lastSeenAt)) / 1_000))
   if (seconds < 10) return "just now"
   if (seconds < 60) return `${seconds}s ago`
@@ -327,7 +335,7 @@ function MachineFactRows({ machine, facts, now }: { machine: FleetMachine; facts
       ? known(facts.providers.filter((provider) => provider.status !== "missing").map((provider) => provider.id).join(" · ") || "none found")
       : `unknown, ${facts.reason}`],
     ["SESSIONS", facts.known ? known(sessionsFact(facts)) : `unknown, ${facts.reason}`],
-    ["LAST HEARD", heardFact(machine.heartbeat.lastSeenAt, now)],
+    ["LAST HEARD", heardFact(machine, facts, now)],
   ]
   return (
     <dl className="m-0 flex flex-col">
@@ -1210,47 +1218,8 @@ export function FleetView({
   const [forgetNotice, setForgetNotice] = useState<ForgetMachineNotice | null>(null)
   const now = useNow(15_000)
 
-  // Each admitted machine is read once when this view opens, or when it is
-  // admitted, unless its reading is fresh: one connection per machine per
-  // visit, not a poll. A machine that does not answer keeps its last reading,
-  // marked unanswered in `clientAccess`, and the card dates it.
-  const admittedIds = Object.entries(clientAccess)
-    .filter(([, access]) => access.state === "admitted")
-    .map(([machineId]) => machineId)
-    .sort()
-    .join(" ")
-  const requested = useRef(new Set<string>())
-  const pending = useRef(new Map<string, AbortController>())
-  // Leaving the view cancels the reads still waiting. A read cut short was
-  // never answered, so a remount (StrictMode does one in development) asks again.
-  useEffect(() => {
-    const asked = requested.current
-    const waiting = pending.current
-    return () => {
-      for (const [machineId, read] of waiting) {
-        read.abort()
-        asked.delete(machineId)
-      }
-      waiting.clear()
-    }
-  }, [])
-  useEffect(() => {
-    if (!onReadMachine || !connected) return
-    for (const machineId of admittedIds.split(" ").filter(Boolean)) {
-      const access = clientAccess[machineId]
-      if (requested.current.has(machineId) || access?.state !== "admitted") continue
-      requested.current.add(machineId)
-      if (Date.now() - Date.parse(access.reading.readAt) < freshReadingMs) continue
-      const read = new AbortController()
-      pending.current.set(machineId, read)
-      // The answer, or the lack of one, arrives through clientAccess.
-      onReadMachine(machineId, read.signal).catch(() => {}).finally(() => {
-        if (pending.current.get(machineId) === read) pending.current.delete(machineId)
-      })
-    }
-    // The ids name the machines to read; a new reading of one must not read it again.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [admittedIds, connected])
+  // Each visit of this view reads every admitted machine whose reading is not fresh.
+  useReadOnVisit({ active: true, connected, clientAccess, onReadMachine })
 
   const agentsHeadingId = useId()
   const factsOf = (machine: FleetMachine) => machineFacts(machine, {

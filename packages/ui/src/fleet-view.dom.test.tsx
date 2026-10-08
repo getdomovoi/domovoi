@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, render, renderHook, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { StrictMode } from "react"
 import { afterEach, expect, it, vi } from "vitest"
@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from "vitest"
 import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary, type ProviderRuntime } from "@getdomovoi/protocol"
 
 import { DaemonRpcError } from "./client.js"
-import type { FleetAccessState, HeldReading, MachineReading } from "./fleet-access-session.js"
+import { useReadOnVisit, type FleetAccessState, type HeldReading, type MachineReading } from "./fleet-access-session.js"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { FleetView } from "./fleet-view.js"
 import { forgetRefusalMessage } from "./forget-machine.js"
@@ -313,6 +313,45 @@ it("does not read again a machine it has just read", () => {
   })
 
   expect(onReadMachine).not.toHaveBeenCalled()
+})
+
+it("counts an ownership conflict in the session fact, as the drawer puts it under NEEDS YOU", () => {
+  renderFleet({
+    entries: entries(local),
+    readings: { [local.id]: held(reading({ sessions: [session("s1", "Claimed elsewhere", "ownership-conflict")] })) },
+  })
+
+  expect(facts(screen.getByRole("group", { name: "workshop" })).SESSIONS).toBe("1 ownership conflict")
+})
+
+it("never shows the placeholder heartbeat the shell draws before the fleet list answers", () => {
+  // localMachineEntry stands in for this machine with a heartbeat at the epoch.
+  const placeholder = { state: "online" as const, lastSeenAt: new Date(0).toISOString() }
+  renderFleet({
+    entries: entries({ ...local, heartbeat: placeholder }, { ...studio, health: "healthy", heartbeat: placeholder }),
+    readings: { [local.id]: held(reading()) },
+  })
+
+  expect(facts(screen.getByRole("group", { name: "workshop" }))["LAST HEARD"]).toBe("just now")
+  expect(facts(screen.getByRole("group", { name: "studio" }))["LAST HEARD"]).toBe("unknown, no heartbeat reported")
+})
+
+it("reads admitted machines on each visit of a surface that stays mounted, as Settings does", async () => {
+  const onReadMachine = vi.fn((_machineId: string, _signal: AbortSignal) => Promise.resolve())
+  const clientAccess = { [studio.id]: admitted(reading({ readAt: "2026-10-06T14:03:00.000Z" })) }
+  const { rerender } = renderHook(({ active }: { active: boolean }) => useReadOnVisit({ active, connected: true, clientAccess, onReadMachine }),
+    { initialProps: { active: false } })
+  expect(onReadMachine).not.toHaveBeenCalled()
+
+  rerender({ active: true })
+  expect(onReadMachine).toHaveBeenCalledTimes(1)
+  await act(async () => { await Promise.resolve() })
+  rerender({ active: true })
+  expect(onReadMachine).toHaveBeenCalledTimes(1)
+
+  rerender({ active: false })
+  rerender({ active: true })
+  expect(onReadMachine).toHaveBeenCalledTimes(2)
 })
 
 const pending: FleetEntry = {
