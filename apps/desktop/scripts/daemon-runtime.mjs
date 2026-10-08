@@ -159,8 +159,60 @@ export function deployDaemon({ repositoryRoot, destination, run = execute }) {
 // Review P3-5 (Q336 A): the domovoi CLI ships beside the daemon so the app can
 // link it into ~/.local/bin. It is deployed the same way, into its own
 // directory with its own node_modules.
-export function deployCli({ repositoryRoot, destination, run = execute }) {
-  return deployWorkspacePackage({ name: "@getdomovoi/cli", repositoryRoot, destination, run })
+export async function deployCli({ repositoryRoot, destination, run = execute }) {
+  const entry = await deployWorkspacePackage({ name: "@getdomovoi/cli", repositoryRoot, destination, run })
+  await keepOnlyCliGraph(destination)
+  return entry
+}
+
+// Q31 A (2026-10-07): the CLI depends on @getdomovoi/daemon so that an npm
+// install can run `domovoi daemon`. Here the daemon already ships beside it,
+// and the CLI loads that sibling when its own copy is absent
+// (apps/cli/src/daemon-command.ts). Installing from the sibling also lets the
+// daemon recognise the app's runtime and copy it out (Q408). So the deployed
+// CLI keeps only the packages its own dependencies reach without the daemon,
+// resolved from each package's directory upward as Node resolves them.
+const siblingOnly = "@getdomovoi/daemon"
+
+async function keepOnlyCliGraph(root) {
+  const kept = new Set()
+  const installed = async (from, name) => {
+    for (let directory = from; ; directory = dirname(directory)) {
+      const candidate = join(directory, "node_modules", name)
+      if (await exists(join(candidate, "package.json"))) return candidate
+      if (directory === root) return undefined
+    }
+  }
+  const visit = async (from) => {
+    const manifest = JSON.parse(await readFile(join(from, "package.json"), "utf8"))
+    // A peer is kept when it is installed; an absent one is not an error.
+    const names = Object.keys({ ...manifest.dependencies, ...manifest.optionalDependencies, ...manifest.peerDependencies })
+    for (const name of names) {
+      if (name === siblingOnly) continue
+      const found = await installed(from, name)
+      if (found === undefined || kept.has(found)) continue
+      kept.add(found)
+      await visit(found)
+    }
+  }
+  await visit(root)
+  const sweep = async (modules) => {
+    for (const name of await readdir(modules).catch(() => [])) {
+      if (name.startsWith(".")) continue
+      const path = join(modules, name)
+      if (name.startsWith("@")) {
+        await sweep(path)
+        if ((await readdir(path)).length === 0) await rm(path, { recursive: true, force: true })
+      } else if (kept.has(path)) {
+        await sweep(join(path, "node_modules"))
+      } else {
+        await rm(path, { recursive: true, force: true })
+      }
+    }
+  }
+  await sweep(join(root, "node_modules"))
+  // .bin links to removed packages now point at nothing.
+  await removeDanglingLinks(join(root, "node_modules"))
 }
 
 async function deployWorkspacePackage({ name, repositoryRoot, destination, run }) {

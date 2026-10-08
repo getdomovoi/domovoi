@@ -4,7 +4,7 @@ import { z } from "zod"
 
 import type { OperationDeadline } from "../operation-deadline.js"
 import { withinServiceDeadline } from "./deadline.js"
-import type { ServiceCommand, ServiceEffects } from "./install.js"
+import { domovoidServiceWords, type ServiceCommand, type ServiceCommandWords, type ServiceEffects } from "./install.js"
 
 const taskStateScript = "[Console]::Out.WriteLine('domovoi-task:' + [int]$task.State)"
 
@@ -18,13 +18,14 @@ export type WindowsTaskRemovalPlan = {
 }
 
 export class WindowsTaskRemovalError extends Error {
-  constructor(name: string, cause: unknown, options: { stopIssued?: boolean } = {}) {
+  constructor(name: string, cause: unknown, options: { stopIssued?: boolean; words?: ServiceCommandWords } = {}) {
     const detail = cause instanceof Error ? cause.message : String(cause)
+    const words = options.words ?? domovoidServiceWords
     // The stop script disables the task before stopping it. Once issued, a
     // later failure leaves that disabled registration behind; nothing here
     // re-enables it, so the operator must choose to restore or retry.
     const disabled = options.stopIssued
-      ? ` The task "${name}" may now be disabled while its registration and saved configuration are kept. To keep the service, re-enable it with schtasks /change /tn "${name}" /enable or reinstall it with domovoid service install. Otherwise retry domovoid service remove.`
+      ? ` The task "${name}" may now be disabled while its registration and saved configuration are kept. To keep the service, re-enable it with schtasks /change /tn "${name}" /enable or reinstall it with ${words.install}. Otherwise retry ${words.remove}.`
       : ""
     super(`Could not confirm removal of Windows task "${name}". Inspect Task Scheduler and the saved service configuration before retrying: ${detail}.${disabled}`, { cause })
     this.name = "WindowsTaskRemovalError"
@@ -205,7 +206,7 @@ $action = $task.Definition.Actions.Item(1)
   return action.data
 }
 
-export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline, confirmNoInstances = false): Promise<"removed" | "already-missing"> {
+export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: Pick<ServiceEffects, "capture">, deadline: OperationDeadline, confirmNoInstances = false, words: ServiceCommandWords = domovoidServiceWords): Promise<"removed" | "already-missing"> {
   try {
     let state = await taskResult(plan.stop, effects, deadline)
     // Absence before any stop attempt is idempotent. Once an instance may have
@@ -224,6 +225,6 @@ export async function removeWindowsTask(plan: WindowsTaskRemovalPlan, effects: P
   } catch (cause) {
     // Every failure here follows the stop attempt; earlier refusals are
     // wrapped by the caller without this warning.
-    throw new WindowsTaskRemovalError(plan.name, cause, { stopIssued: true })
+    throw new WindowsTaskRemovalError(plan.name, cause, { stopIssued: true, words })
   }
 }

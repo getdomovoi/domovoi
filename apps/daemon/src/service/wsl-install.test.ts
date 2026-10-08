@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest"
+import { runDaemonCommand } from "../daemon-command.js"
 
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { runServiceCommand, servicePlan, type ServiceCommandDependencies } from "./install.js"
@@ -181,6 +182,24 @@ describe("WSL service installation", () => {
     expect(deps.remove).toHaveBeenCalledExactlyOnceWith(home + "/.domovoi/service.json", expect.anything())
   })
 
+  it.each(["daemon", "service"])("keeps the %s command vocabulary when WSL task deletion fails", async (entry) => {
+    const deps: ServiceCommandDependencies = { ...dependencies(), environment: {}, readConfiguration: () => configuration,
+      stopSupervisor: vi.fn(async () => {}),
+      capture: vi.fn(async (_command, args) => {
+        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+        if (script.includes("$folder.DeleteTask")) throw new Error("WSL task deletion refused")
+        return { code: 0, stdout: "domovoi-task:1" }
+      }) }
+    expect(await (entry === "daemon"
+      ? runDaemonCommand(["remove"], deps)
+      : runServiceCommand(["service", "remove"], deps))).toBe(1)
+    const prefix = entry === "daemon" ? "domovoi daemon" : "domovoid service"
+    expect(deps.stderr).toHaveBeenCalledWith(expect.stringContaining("WSL task deletion refused"))
+    expect(deps.stderr).toHaveBeenCalledWith(expect.stringContaining(`reinstall it with ${prefix} install. Otherwise retry ${prefix} remove.`))
+    expect(deps.remove).not.toHaveBeenCalled()
+    expect(deps.stdout).not.toHaveBeenCalled()
+  })
+
   it("retains registration after an unknown guest stop", async () => {
     const deps: ServiceCommandDependencies = { ...dependencies(), readConfiguration: () => configuration,
       stopSupervisor: async () => { throw new Error("unresolved guest identity") },
@@ -223,6 +242,15 @@ describe("WSL service installation", () => {
   // old Windows task and registering the new one left its intent record.
   describe("after an interrupted update", () => {
     const intentPath = home + "/.domovoi/service.json.update-intent.json"
+
+    it.each(["install", "status"])("uses supplied removal words for interrupted %s", async (verb) => {
+      const deps: ServiceCommandDependencies = { ...dependencies(), readConfiguration: () => configuration,
+        exists: vi.fn(async (path) => path === intentPath),
+        words: { install: "custom install", status: "custom status", remove: "custom remove", profileRecover: "custom recover" } }
+      expect(await runServiceCommand(["service", verb], deps)).toBe(1)
+      expect(verb === "install" ? deps.stderr : deps.stdout).toHaveBeenCalledWith(expect.stringContaining("or custom remove,"))
+      expect(deps.run).not.toHaveBeenCalled()
+    })
 
     it("reports it from status and exits 1", async () => {
       const deps: ServiceCommandDependencies = { ...dependencies(), environment: {}, readConfiguration: () => configuration,

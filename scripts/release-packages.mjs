@@ -6,7 +6,7 @@ export const publishDependencies = {
   "@getdomovoi/protocol": [],
   "@getdomovoi/credential-store": [],
   "@getdomovoi/daemon": ["@getdomovoi/protocol"],
-  "@getdomovoi/cli": ["@getdomovoi/credential-store", "@getdomovoi/protocol"],
+  "@getdomovoi/cli": ["@getdomovoi/credential-store", "@getdomovoi/daemon", "@getdomovoi/protocol"],
 }
 
 export const publishablePackages = Object.keys(publishDependencies)

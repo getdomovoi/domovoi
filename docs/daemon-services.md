@@ -1,6 +1,16 @@
 # Daemon service configuration
 
-`domovoid service install` installs a per-user systemd unit, launchd agent, or Windows logon task.
+`domovoi daemon install` installs a per-user systemd unit, launchd agent, or Windows logon task.
+`domovoi daemon status` and `domovoi daemon remove` report on and remove it.
+
+The `domovoi` CLI runs the daemon package's own command for these (ruling Q3 B, 2026-10-06), so
+there is one installer: `domovoid service install|status|remove`, the daemon's own entry, runs
+the same code and stays available where only the daemon runtime is installed. Either spelling
+registers the daemon's `dist/index.js`, never the CLI's, and keeps the same exit codes. Each
+prints its follow-up advice in its own spelling, so below `domovoi daemon remove` reads
+`domovoid service remove` when the command was run through `domovoid`. Profile recovery has no
+`domovoi` form; through the CLI its advice reads `domovoid profile recover
+--confirm-no-supervisor (domovoid is Node running <daemon entry>)`.
 
 Inside WSL 2 with Windows interop enabled, the command instead registers the
 decided Windows-logon task running the guest supervisor. The distribution comes
@@ -133,31 +143,31 @@ credential, identity, workspace database, or worktrees.
 
 Decided 2026-09-17 (`SHIP-PLAN.md` S1.1). Without lingering, systemd stops a user's units when that
 user's last session ends and starts them again at the next login, so the daemon would stop at
-logout. `domovoid service install` on Linux (not inside WSL) therefore asks
+logout. `domovoi daemon install` on Linux (not inside WSL) therefore asks
 `loginctl show-user <uid> --property=Linger --value` first:
 
 - `no`: it runs `loginctl enable-linger <uid>`, saves `"lingerEnabledByDomovoi": true` in
   `service.json`, and prints `Turned on lingering for <user> with loginctl enable-linger, so the
-  daemon keeps running after <user> logs out and starts when the machine boots. domovoid service
+  daemon keeps running after <user> logs out and starts when the machine boots. domovoi daemon
   remove turns it off again.`
 - `yes`: it changes nothing, saves `"lingerEnabledByDomovoi": false`, and prints `Lingering was
-  already on for <user>, so Domovoi left it as it was. domovoid service remove will leave it on.`
+  already on for <user>, so Domovoi left it as it was. domovoi daemon remove will leave it on.`
   A reinstall over a configuration that already says `true` keeps `true` and prints `Lingering for
-  <user> stays on from an earlier Domovoi install. domovoid service remove turns it off again.`
+  <user> stays on from an earlier Domovoi install. domovoi daemon remove turns it off again.`
 
 Lingering is asked for under the profile lease, before `service.json` is written, so one write
 records it. Any other answer is a failure: `loginctl` missing (`loginctl was not found`), a non-zero
 exit (its own message), or a value other than `yes` or `no`. A failure records nothing, installs
 the service anyway, exits 0, and prints on stderr `Could not turn on lingering for <user>: <reason>.
 The service is installed, but systemd stops the daemon when <user> logs out of every session and
-starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service
+starts it again at the next login. To keep it running, run loginctl enable-linger; domovoi daemon
 remove will then leave lingering on.` It warns rather than fails because the service itself works
 while the user is logged in, the way the WSL install succeeds and states its own limit (`Windows user
 logon only; no boot supervision.`). Every manager step stays fatal, and so does an expired deadline. If a later install step fails and the previous service files are put back, the lingering
 this install turned on is turned off again; if that fails too, the error says lingering is still
 on.
 
-`domovoid service remove` reads the record before anything changes. Only `true` runs
+`domovoi daemon remove` reads the record before anything changes. Only `true` runs
 `loginctl disable-linger <uid>`, after the unit and `service.json` are gone, and prints `Turned off
 lingering for <user>, which Domovoi turned on at install.` `false` prints `Lingering for <user> was
 on before Domovoi was installed, so it was left on.` No record, or a configuration that cannot be
@@ -165,7 +175,8 @@ read, leaves lingering as found and prints nothing about it. A failed `disable-l
 the removal; it prints on stderr that lingering stays on and how to turn it off. The desktop's
 install and removal do the same and return the outcome as `linger`. When lingering could not be
 turned on, the install also returns the CLI's stderr text as `lingerWarning`, and Desktop shows it
-under the install result (ruling Q307). Desktop does not show the removal's outcome yet.
+under the install result (ruling Q307). That text names `domovoid service remove`, the daemon's
+own spelling. Desktop does not show the removal's outcome yet.
 
 Desktop refuses service text over 4,096 UTF-16 units. Before any lingering line is composed,
 `loginctl`'s diagnostic is cut to 1,000 code points and the user name to 128, each followed by
@@ -205,7 +216,7 @@ The supervisor records that observation. If the helper dies before publishing it
 `Global\Domovoi-<uuid>` job name, and death of the recorded daemon identity. This separate
 `closed` evidence means termination started, completion not observed. The profile lease guards
 a second owner while descendants finish. Backoffs share WSL's policy: 1, 5 and 15 seconds; the fourth
-crash records exhaustion. `domovoid service status` reports exhaustion and exits 1 even when the
+crash records exhaustion. `domovoi daemon status` reports exhaustion and exits 1 even when the
 task remains registered. A clean exit or deliberate stop does not restart. Daemon output is
 appended to the profile's `windows-daemon.log`.
 
@@ -246,7 +257,7 @@ Actual logon acceptance remains **[H]**, fetzy's hardware run. A manual task sta
 
 ## Windows removal
 
-`domovoid service remove` disables future task starts, requests supervisor retirement, and
+`domovoi daemon remove` disables future task starts, requests supervisor retirement, and
 requires empty-job or Q9 closure evidence for every attempt under the startup lease. A verified later boot
 also settles an earlier boot's tree. Only after that proof does it stop the task, wait for no
 queued or running instances, delete the registration, and remove the configuration. Updates
@@ -263,7 +274,7 @@ not job-object tree proof. Legacy descendants that escaped the task may remain; 
 lease must be free before Domovoi changes the profile. The same-user configuration and task
 ownership checks still apply.
 
-`domovoid service install` and Desktop service update retire a recognized legacy task through
+`domovoi daemon install` and Desktop service update retire a recognized legacy task through
 that path and register the replacement with `--service-supervise`. New attempts then use job
 supervision. Install keeps the stopped legacy registration until replacement files are ready;
 if registration fails, it restores the previous configuration and a disabled legacy action
@@ -296,7 +307,7 @@ stop timeouts retain the configuration; a failure during final deletion may have
 OS or filesystem state. The error names the task and asks the operator to inspect Task Scheduler
 and the saved configuration before retrying. A failure after the stop step can leave the task
 disabled with its registration and configuration kept; the error says so. Re-enable it with
-`schtasks /change /tn "Domovoi daemon" /enable` or reinstall with `domovoid service install` if
+`schtasks /change /tn "Domovoi daemon" /enable` or reinstall with `domovoi daemon install` if
 keeping the service instead of retrying removal. No other process is killed by
 name, and a daemon already orphaned by an older delete-only removal needs manual reconciliation.
 
@@ -318,6 +329,15 @@ launches the real daemon with a conflicting environment and authenticates over i
 endpoint. Removing the CLI environment handoff makes that test recover the default endpoint and
 identity paths instead.
 The TLS fixture requires `openssl` on the test runner's PATH to generate its temporary certificate.
+
+`domovoi daemon` is checked the same way, with the same manager shim. An installed-package test
+(`scripts/bootstrap-real-daemon.test.mjs`) installs the packed protocol, credential store, daemon
+and CLI archives with npm and runs the `domovoi` bin: the registered launch names the daemon's
+`dist/index.js` and not the CLI's, and status and removal keep their exit codes. The CLI's
+end-to-end test (`apps/cli/src/cli.e2e.test.ts`) also checks the refusals, the follow-up lines in
+each spelling, and an install through the launcher the desktop links, which registers a copy of
+the app's daemon under the profile. On Windows both check the registered launch only, because
+the shim produces no supervisor evidence for status.
 
 Concurrency tests hold the manager phase while using real file publication, registration digest
 checks and profile leases. A separate test starts two copies of the distributed CLI, intercepting
