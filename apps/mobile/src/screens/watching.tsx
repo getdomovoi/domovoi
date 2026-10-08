@@ -149,6 +149,8 @@ function WatchingView({ title, watch, connected, notice, onBack, onRetry }: Watc
     if (seen.current.watchedAt !== watchedAt || received < seen.current.received) {
       seen.current = { watchedAt, received: 0 }
       setFollow((current) => ({ ...current, unseen: 0 }))
+      // A new watch replays the whole record; held text gives way to it.
+      setHeldRecord(undefined)
     }
     const added = received - seen.current.received
     seen.current.received = received
@@ -196,7 +198,10 @@ function WatchingView({ title, watch, connected, notice, onBack, onRetry }: Watc
     if (atEnd) setOutputBelow(false)
     setFollow((current) => followAfterScroll(current, atEnd))
   }
-  const jumpOffered = showJump(follow, closed, outputBelow)
+  // Held text that the record has moved past is output the reader has not
+  // been shown, so the jump to it stays offered, closed shell or not.
+  const behind = heldRecord !== undefined && record !== undefined && heldRecord.text !== record.text
+  const jumpOffered = showJump(follow, closed, outputBelow || behind)
 
   return (
     <View className="flex-1 bg-background">

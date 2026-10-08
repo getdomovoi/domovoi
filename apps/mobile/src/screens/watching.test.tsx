@@ -206,6 +206,25 @@ describe("WatchingScreen", () => {
     expect(screen.getByText("The shell exited with code 0. No more output will arrive.")).toBeOnTheScreen()
   })
 
+  // A rewatch replays the whole record, so held text gives way to it; and
+  // while held text is behind the record, the way to the rest stays offered,
+  // closed shell or not.
+  it("gives held text up to a rewatch, and offers the rest while behind", async () => {
+    const first = watching()
+    const { redraw } = await draw(first)
+    await fireEvent.press(screen.getByRole("switch", { name: "Follow output" }))
+    await redraw(watching({ buffer: "fresh replay\n", watchedAt: "2026-10-06T14:20:00.000Z" }))
+    expect(screen.getByText(/fresh replay/)).toBeOnTheScreen()
+
+    const again = watching({ buffer: "fresh replay\n", watchedAt: "2026-10-06T14:20:00.000Z" })
+    await fireEvent.press(screen.getByRole("switch", { name: "Follow output" }))
+    await fireEvent.press(screen.getByRole("switch", { name: "Follow output" }))
+    const landed = more(again, "partial")
+    if (landed.state !== "watching") throw new Error("only a watched terminal closes")
+    await redraw({ state: "watching", record: { ...withNotification(landed.record, { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 0 } }, new Date("2026-10-06T14:21:00.000Z")), pieces: 0 } })
+    expect(screen.getByRole("button", { name: /Jump to latest/ })).toBeOnTheScreen()
+  })
+
   // Turning Follow off at the end is also a reader stopping to read: what
   // they see holds still while old output is dropped.
   it("holds what a reader reads after turning Follow off at the end", async () => {
