@@ -4,6 +4,7 @@ import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
 import "@xterm/xterm/css/xterm.css"
 
+import { maximumTerminalReplayCharacters } from "@getdomovoi/protocol"
 import type {
   TerminalClosedNotification,
   TerminalOutputNotification,
@@ -151,6 +152,9 @@ export function TerminalPane({
   const [rendered, setRendered] = useState(false)
   // terminal.watch said the record does not start at the shell's start.
   const [earlierDropped, setEarlierDropped] = useState(false)
+  // terminal.create's record reached the replay limit. That reply has no
+  // dropped flag, so the start may or may not have gone.
+  const [recordFull, setRecordFull] = useState(false)
   const watching = readOnly && controls.watch !== undefined && controls.unwatch !== undefined
   const canAttach = useSyncExternalStore(
     composer.subscribe,
@@ -176,6 +180,7 @@ export function TerminalPane({
     setClosed(false)
     setAttachNote(undefined)
     setEarlierDropped(false)
+    setRecordFull(false)
     const styles = getComputedStyle(container)
     const terminal = new Terminal({
       cursorBlink: !readOnly,
@@ -311,6 +316,9 @@ export function TerminalPane({
           ownsTerminal = session.owner.clientId === controls.clientId
           terminal.options.disableStdin = !ownsTerminal
           setMetadata(session)
+          // The daemon keeps the last maximumTerminalReplayCharacters
+          // characters, so a record that long may be missing its start.
+          setRecordFull(session.buffer.length >= maximumTerminalReplayCharacters)
           if (!ownsTerminal) resizeTo(session.cols, session.rows)
           if (session.buffer) terminal.write(session.buffer)
           if (ownsTerminal) {
@@ -423,7 +431,7 @@ export function TerminalPane({
     if (xtermRef.current !== terminal) return
     const { content, marked } = terminalAttachmentText(
       terminal.buffer.active,
-      { historyFilled: historyFilledRef.current, earlierDropped },
+      { historyFilled: historyFilledRef.current, earlierDropped, recordFull },
     )
     if (!content) {
       setAttachNote({ tone: "refused", text: "Nothing has been printed yet." })
@@ -568,6 +576,10 @@ export function TerminalPane({
       {earlierDropped ? (
         <p className="border-b bg-sidebar px-3 py-1.5 text-[11px] text-muted-foreground">
           Earlier output was not kept. The daemon's record of this shell starts after it.
+        </p>
+      ) : recordFull ? (
+        <p className="border-b bg-sidebar px-3 py-1.5 text-[11px] text-muted-foreground">
+          The daemon's record of this shell is full, so earlier output may not have been kept.
         </p>
       ) : null}
       {missing ? (

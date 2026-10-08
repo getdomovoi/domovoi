@@ -2,7 +2,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { maximumTextAttachmentBytes } from "@getdomovoi/protocol"
+import { maximumTerminalReplayCharacters, maximumTextAttachmentBytes } from "@getdomovoi/protocol"
 import type { SessionAttachment, TerminalOwnershipNotification, TerminalSession, TerminalWatchResult } from "@getdomovoi/protocol"
 
 import { createComposerInbox, type ComposerInbox } from "./composer-inbox"
@@ -678,6 +678,32 @@ describe("Attach this output to the composer", () => {
     await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1), { timeout: 15_000 })
     const [attachment] = receive.mock.calls[0]!
     expect("content" in attachment ? attachment.content : "").toContain("LAST LINE")
+  })
+
+  // terminal.create hands back the daemon's record with no flag for a dropped
+  // start. A record at the replay limit may have lost its start, so the view
+  // and the file say so.
+  it("marks output joined from a record at the replay limit", async () => {
+    const user = userEvent.setup()
+    const composer = createComposerInbox()
+    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
+    composer.open(sessionId, receive)
+    const target = harness()
+    const full = `${"r".repeat(79)}\n`.repeat(Math.ceil(maximumTerminalReplayCharacters / 80)).slice(-maximumTerminalReplayCharacters)
+    const controls: TerminalControls = {
+      ...target.controls,
+      create: async () => ({
+        terminalId, sessionId, cols: 80, rows: 24, shell: "bash", cwd: "/worktrees/demo", buffer: full, owner: { client: "web", clientId: thisClient },
+      }),
+    }
+    render(<TerminalPane connected controls={controls} composer={composer} machineName="worktop" sessionId={sessionId} />)
+
+    expect(await screen.findByText("The daemon's record of this shell is full, so earlier output may not have been kept.")).toBeTruthy()
+    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
+
+    await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1))
+    const [attachment] = receive.mock.calls[0]!
+    expect("content" in attachment ? attachment.content : "").toMatch(/^\[the daemon's record of this shell was full; earlier output may be missing from this file\]\n/u)
   })
 
   // Read from a real xterm at width 5: blanks the shell printed before a wrap

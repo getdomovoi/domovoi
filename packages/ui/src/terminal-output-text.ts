@@ -69,6 +69,9 @@ export const attachmentMarkers = {
   history: "[this pane's history filled up; earlier output may be missing from this file]",
   // The daemon's record did not start at the shell's start.
   dropped: "[earlier output was not kept; the record starts here]",
+  // The daemon's record reached its limit, and the reply did not say whether
+  // its start was dropped (terminal.create carries no such flag). "May".
+  recordFull: "[the daemon's record of this shell was full; earlier output may be missing from this file]",
 } as const
 
 export type AttachmentMark = keyof typeof attachmentMarkers
@@ -79,10 +82,13 @@ export type AttachmentMark = keyof typeof attachmentMarkers
 // needed, so output that fits whole is never cut to make room for one.
 export function terminalAttachmentText(
   buffer: TerminalBufferLike,
-  known: { historyFilled: boolean, earlierDropped: boolean },
+  known: { historyFilled: boolean, earlierDropped: boolean, recordFull: boolean },
   limitBytes: number = maximumTextAttachmentBytes,
 ): { content: string, marked: AttachmentMark | undefined } {
-  const lead: AttachmentMark | undefined = known.historyFilled ? "history" : known.earlierDropped ? "dropped" : undefined
+  const lead: AttachmentMark | undefined = known.historyFilled ? "history"
+    : known.earlierDropped ? "dropped"
+      : known.recordFull ? "recordFull"
+        : undefined
   const leading = lead ? `${attachmentMarkers[lead]}\n` : ""
   const whole = terminalBufferOutput(buffer, limitBytes - byteLength(leading))
   if (!whole.text) return { content: "", marked: undefined }

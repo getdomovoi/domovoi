@@ -57,7 +57,7 @@ describe("terminalBufferText", () => {
 })
 
 describe("terminalAttachmentText", () => {
-  const nothingKnown = { historyFilled: false, earlierDropped: false }
+  const nothingKnown = { historyFilled: false, earlierDropped: false, recordFull: false }
 
   // Room for a marker is only taken when a marker is needed. Output that fits
   // the limit whole goes whole, with no marker and nothing cut.
@@ -78,8 +78,18 @@ describe("terminalAttachmentText", () => {
 
   it("leads with what is already known missing when nothing more is cut", () => {
     const lines = buffer([{ text: "tail" }])
-    expect(terminalAttachmentText(lines, { historyFilled: true, earlierDropped: true }, 1_000)).toEqual({ content: `${attachmentMarkers.history}\ntail`, marked: "history" })
-    expect(terminalAttachmentText(lines, { historyFilled: false, earlierDropped: true }, 1_000)).toEqual({ content: `${attachmentMarkers.dropped}\ntail`, marked: "dropped" })
+    expect(terminalAttachmentText(lines, { historyFilled: true, earlierDropped: true, recordFull: false }, 1_000)).toEqual({ content: `${attachmentMarkers.history}\ntail`, marked: "history" })
+    expect(terminalAttachmentText(lines, { historyFilled: false, earlierDropped: true, recordFull: false }, 1_000)).toEqual({ content: `${attachmentMarkers.dropped}\ntail`, marked: "dropped" })
+  })
+
+  // terminal.create returns the daemon's record with no word on whether its
+  // start was dropped. A record at the replay limit may have been, and the
+  // file says "may".
+  it("leads with the full-record marker when the record reached its limit", () => {
+    const lines = buffer([{ text: "tail" }])
+    expect(terminalAttachmentText(lines, { historyFilled: false, earlierDropped: false, recordFull: true }, 1_000))
+      .toEqual({ content: `${attachmentMarkers.recordFull}\ntail`, marked: "recordFull" })
+    expect(attachmentMarkers.recordFull).toContain("may")
   })
 
   // When the daemon dropped the start and the limit cuts again, the cut
@@ -87,7 +97,7 @@ describe("terminalAttachmentText", () => {
   it("leads with the cut marker over a record the daemon already shortened", () => {
     const lines = buffer(Array.from({ length: 40 }, (_, index) => ({ text: `line ${String(index).padStart(2, "0")}` })))
     const limit = attachmentMarkers.dropped.length + 1 + 30
-    const { content, marked } = terminalAttachmentText(lines, { historyFilled: false, earlierDropped: true }, limit)
+    const { content, marked } = terminalAttachmentText(lines, { historyFilled: false, earlierDropped: true, recordFull: false }, limit)
     expect(marked).toBe("cut")
     expect(content.startsWith(`${attachmentMarkers.cut}\n`)).toBe(true)
     expect(content).not.toContain(attachmentMarkers.dropped)
@@ -104,7 +114,7 @@ describe("terminalAttachmentText", () => {
     // Two lines whose total sits between the two room sizes.
     const total = limit - Math.floor((history + cutMarker) / 2)
     const lines = buffer([{ text: "a".repeat(10) }, { text: "b".repeat(total - 11) }])
-    const { content, marked } = terminalAttachmentText(lines, { historyFilled: true, earlierDropped: false }, limit)
+    const { content, marked } = terminalAttachmentText(lines, { historyFilled: true, earlierDropped: false, recordFull: false }, limit)
     expect(marked).toBe("cut")
     expect(content).not.toContain("aaaaaaaaaa")
     expect(encoder.encode(content).byteLength).toBeLessThanOrEqual(limit)
