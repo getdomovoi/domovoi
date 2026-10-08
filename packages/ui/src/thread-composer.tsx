@@ -149,14 +149,16 @@ export function ThreadComposer({
   const slashQuery = prompt.split(/\s/u, 1)[0] ?? ""
   const paletteShortcut = composerPlatform() === "darwin" ? "⌘K" : "Ctrl+K"
 
+  // A file or clipboard read awaits before it adds, so the draft may have
+  // changed since this render. The append is applied to the draft as it is
+  // then; one that would pass the limit by then is not added.
   const addAttachments = (next: SessionAttachment[]) => {
-    const combined = [...attachments, ...next]
-    if (combined.length > desktopAttachmentLimit) {
+    if (attachments.length + next.length > desktopAttachmentLimit) {
       setAttachmentError(`Attach up to ${desktopAttachmentLimit} items per message.`)
       return
     }
     setAttachmentError("")
-    onAttachmentsChange(combined)
+    onAttachmentsChange((current) => current.length + next.length > desktopAttachmentLimit ? current : [...current, ...next])
   }
   const attachWorkspacePath = () => {
     try {

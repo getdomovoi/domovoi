@@ -1,5 +1,5 @@
 import { demoWorkspace } from "@getdomovoi/protocol"
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
@@ -75,4 +75,33 @@ it("renders attachments as removable compact chips", async () => {
   expect(region.textContent).toContain("src/thread.tsx")
   await user.click(screen.getByRole("button", { name: "Remove src/thread.tsx" }))
   expect(screen.queryByRole("region", { name: "Attachments" })).toBeNull()
+})
+
+// Reading a chosen file takes time. Two reads that finish close together each
+// add their file; the second must not replace the first with a draft read
+// before either finished.
+it("keeps both files when two reads finish close together", async () => {
+  const user = userEvent.setup()
+  const onSend = renderThread()
+  const finishes: Array<(text: string) => void> = []
+  const slowFile = (name: string) => {
+    const file = new File(["x"], name, { type: "text/plain" })
+    Object.defineProperty(file, "text", { value: () => new Promise<string>((resolve) => { finishes.push(resolve) }) })
+    return file
+  }
+  const input = screen.getByLabelText("Choose an image or file")
+  await user.upload(input, slowFile("first.txt"))
+  await user.upload(input, slowFile("second.txt"))
+
+  await act(async () => {
+    finishes[0]?.("one")
+    finishes[1]?.("two")
+  })
+
+  await user.type(screen.getByRole("textbox", { name: "Message" }), "Both files")
+  await user.click(screen.getByRole("button", { name: "Send message" }))
+  expect(onSend).toHaveBeenCalledWith(demoWorkspace.activeSessionId, "Both files", undefined, [
+    { kind: "text", name: "first.txt", mimeType: "text/plain", content: "one" },
+    { kind: "text", name: "second.txt", mimeType: "text/plain", content: "two" },
+  ])
 })

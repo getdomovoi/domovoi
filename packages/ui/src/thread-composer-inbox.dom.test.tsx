@@ -74,7 +74,59 @@ it("closes the inbox when the thread goes", () => {
 // A watching device cannot send, so it never opens the inbox and the terminal
 // does not offer an attach it could not use.
 it("does not open the inbox on a watching device", () => {
+  const { view } = renderThread()
+  expect(composerInbox.canReceive(sessionId)).toBe(true)
+  view.unmount()
+
   renderThread({ clientAccess: "watching" })
 
   expect(composerInbox.canReceive(sessionId)).toBe(false)
+})
+
+// A file the composer is still reading and output the terminal hands over can
+// land in either order. Neither write may replace the other.
+function slowFile() {
+  let finish: (text: string) => void = () => {}
+  const file = new File(["notes"], "notes.txt", { type: "text/plain" })
+  Object.defineProperty(file, "text", { value: () => new Promise<string>((resolve) => { finish = resolve }) })
+  return { file, finish: (text: string) => finish(text) }
+}
+
+it("keeps terminal output offered while a chosen file is still being read", async () => {
+  const user = userEvent.setup()
+  const { onSend } = renderThread()
+  const { file, finish } = slowFile()
+  await user.upload(screen.getByLabelText("Choose an image or file"), file)
+  const output = terminalOutputAttachment("$ pnpm test\n PASS  webhooks")
+
+  act(() => { expect(composerInbox.offer(sessionId, output)).toBe("attached") })
+  await act(async () => { finish("release notes") })
+
+  await user.type(screen.getByRole("textbox", { name: "Message" }), "Both")
+  await user.click(screen.getByRole("button", { name: "Send message" }))
+  expect(onSend).toHaveBeenCalledWith(sessionId, "Both", undefined, [
+    output,
+    { kind: "text", name: "notes.txt", mimeType: "text/plain", content: "release notes" },
+  ])
+})
+
+it("keeps a file that finished reading when output is offered before the next render", async () => {
+  const user = userEvent.setup()
+  const { onSend } = renderThread()
+  const { file, finish } = slowFile()
+  await user.upload(screen.getByLabelText("Choose an image or file"), file)
+  const output = terminalOutputAttachment("$ pnpm test\n PASS  webhooks")
+
+  await act(async () => {
+    finish("release notes")
+    for (let index = 0; index < 4; index += 1) await Promise.resolve()
+    expect(composerInbox.offer(sessionId, output)).toBe("attached")
+  })
+
+  await user.type(screen.getByRole("textbox", { name: "Message" }), "Both")
+  await user.click(screen.getByRole("button", { name: "Send message" }))
+  expect(onSend).toHaveBeenCalledWith(sessionId, "Both", undefined, [
+    { kind: "text", name: "notes.txt", mimeType: "text/plain", content: "release notes" },
+    output,
+  ])
 })

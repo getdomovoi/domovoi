@@ -1,4 +1,4 @@
-import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react"
 import {
   ArchiveIcon,
   ArrowDownIcon,
@@ -549,7 +549,16 @@ export function Thread({
   // from empty. Everything else still resets.
   const draftSessionId = snapshot.activeSessionId
   const [prompt, setPrompt] = useState(() => sessionDraftStore.read(draftSessionId).prompt)
-  const [attachments, setAttachments] = useState<SessionAttachment[]>(() => [...sessionDraftStore.read(draftSessionId).attachments])
+  const [attachments, setAttachmentsState] = useState<SessionAttachment[]>(() => [...sessionDraftStore.read(draftSessionId).attachments])
+  // Every write to the draft's attachments goes through this ref, applied at
+  // once, so a write that lands before the next render (a file read that
+  // finished, the terminal's Attach this output) builds on the write before
+  // it rather than on the last render.
+  const attachmentsRef = useRef(attachments)
+  const setAttachments = useCallback((next: SetStateAction<SessionAttachment[]>) => {
+    attachmentsRef.current = typeof next === "function" ? next(attachmentsRef.current) : next
+    setAttachmentsState(attachmentsRef.current)
+  }, [])
   const [slashDismissed, setSlashDismissed] = useState(false)
   const slashOpen = connected && !watching && prompt.startsWith("/") && !slashDismissed
   const threadViewport = useRef<HTMLDivElement>(null)
@@ -746,17 +755,14 @@ export function Thread({
   // A dock surface (the terminal's Attach this output) hands attachments to
   // this composer by session id. Only a composer that can send opens the
   // inbox, so the offer is not drawn where it could not be used.
-  const attachmentsRef = useRef(attachments)
-  attachmentsRef.current = attachments
   useEffect(() => {
     if (readOnly || !activeSessionId) return
     return composerInbox.open(activeSessionId, (attachment) => {
       if (attachmentsRef.current.length >= desktopAttachmentLimit) return "full"
-      attachmentsRef.current = [...attachmentsRef.current, attachment]
-      setAttachments(attachmentsRef.current)
+      setAttachments((current) => [...current, attachment])
       return "attached"
     })
-  }, [activeSessionId, readOnly])
+  }, [activeSessionId, readOnly, setAttachments])
 
   if (!active) {
     const hasProject = snapshot.project !== null
