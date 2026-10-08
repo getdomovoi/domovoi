@@ -150,18 +150,16 @@ export function ThreadComposer({
   const paletteShortcut = composerPlatform() === "darwin" ? "⌘K" : "Ctrl+K"
 
   // A file or clipboard read awaits before it adds, so the draft may have
-  // changed since this render. The append is checked against the draft as it
-  // is then. The thread applies an update at once, so the refusal is known
-  // here; a setter that defers it only skips the message. Says whether the
-  // attachments went in.
+  // grown or shrunk since this render. The limit is checked only against the
+  // draft as it is then. The thread applies an update at once, so the refusal
+  // is known here; a setter that defers it only skips the message. Says
+  // whether the attachments went in.
   const addAttachments = (next: SessionAttachment[], refusal = `Attach up to ${desktopAttachmentLimit} items per message.`) => {
-    let refused = attachments.length + next.length > desktopAttachmentLimit
-    if (!refused) {
-      onAttachmentsChange((current) => {
-        refused = current.length + next.length > desktopAttachmentLimit
-        return refused ? current : [...current, ...next]
-      })
-    }
+    let refused = false
+    onAttachmentsChange((current) => {
+      refused = current.length + next.length > desktopAttachmentLimit
+      return refused ? current : [...current, ...next]
+    })
     setAttachmentError(refused ? refusal : "")
     return !refused
   }

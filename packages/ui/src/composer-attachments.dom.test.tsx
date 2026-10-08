@@ -105,3 +105,29 @@ it("keeps both files when two reads finish close together", async () => {
     { kind: "text", name: "second.txt", mimeType: "text/plain", content: "two" },
   ])
 })
+
+// A read that finishes after a removal freed room is judged against the draft
+// as it is then, not against the draft when the read started.
+it("takes a file whose read finishes after a removal made room", async () => {
+  const user = userEvent.setup()
+  const onSend = renderThread()
+  const input = screen.getByLabelText("Choose an image or file")
+  await user.upload(input, new File(["old"], "old.txt", { type: "text/plain" }))
+  await user.upload(input, new File(["kept"], "kept.txt", { type: "text/plain" }))
+  await screen.findByRole("button", { name: /Remove kept\.txt/u })
+  let finish: (text: string) => void = () => {}
+  const slow = new File(["x"], "new.txt", { type: "text/plain" })
+  Object.defineProperty(slow, "text", { value: () => new Promise<string>((resolve) => { finish = resolve }) })
+  await user.upload(input, slow)
+  await user.click(screen.getByRole("button", { name: /Remove old\.txt/u }))
+
+  await act(async () => { finish("fresh") })
+
+  expect(screen.queryByText("Attach up to 2 items per message.")).toBeNull()
+  await user.type(screen.getByRole("textbox", { name: "Message" }), "Two files")
+  await user.click(screen.getByRole("button", { name: "Send message" }))
+  expect(onSend).toHaveBeenCalledWith(demoWorkspace.activeSessionId, "Two files", undefined, [
+    { kind: "text", name: "kept.txt", mimeType: "text/plain", content: "kept" },
+    { kind: "text", name: "new.txt", mimeType: "text/plain", content: "fresh" },
+  ])
+})
