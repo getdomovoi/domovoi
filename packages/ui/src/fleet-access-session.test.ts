@@ -1,7 +1,7 @@
 import { demoWorkspace, type FleetEntry, type FleetMachine } from "@getdomovoi/protocol"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { asOf, FleetAccessSession, fleetAgents, machineReading } from "./fleet-access-session.js"
-import { installFakeWebSocket, completeHandshake, respond, sentRequests, workspaceSnapshot } from "./test-support/fake-websocket"
+import { installFakeWebSocket, completeHandshake, notify, respond, sentRequests, workspaceSnapshot } from "./test-support/fake-websocket"
 
 const machineId = demoWorkspace.machine.id
 const deviceId = `device-${"a".repeat(32)}`
@@ -256,6 +256,38 @@ it("notes the home daemon's latest heartbeat it had seen when it asked the machi
   respond(socket, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
   await reading
   expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", reading: { heardAt: "2026-10-06T14:02:00.000Z" } })
+})
+
+it("reads the state after what the machine sent while it verified this client, not the hello alone", async () => {
+  const billing = demoWorkspace.sessions.find((session) => session.id === "session-billing")!
+  const quiet = workspaceSnapshot({ sessions: [{ ...billing, state: "active" }], approvals: [] })
+  // An approval arrives between system.hello and device.current; the client
+  // replays it before connect() resolves with the older hello snapshot.
+  const gated = workspaceSnapshot({ sessions: [{ ...billing, state: "active" }] })
+  expect(gated.approvals.map((approval) => approval.sessionId)).toEqual(["session-billing"])
+  const elsewhere = `machine-${"e".repeat(32)}`
+  const foreign = workspaceSnapshot({ ...quiet, machine: { ...quiet.machine, id: elsewhere },
+    ...(quiet.project ? { project: { ...quiet.project, machineId: elsewhere } } : {}) })
+  const answer = async (socket: number, ask: Promise<void>) => {
+    await vi.advanceTimersByTimeAsync(0)
+    completeHandshake(sockets.socket(socket), quiet)
+    await vi.advanceTimersByTimeAsync(0)
+    notify(sockets.socket(socket), "workspace.changed", gated)
+    // A replayed snapshot naming another machine is not this machine's reading.
+    notify(sockets.socket(socket), "workspace.changed", foreign)
+    respond(sockets.socket(socket), "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
+    await ask
+  }
+  const sessionState = () => {
+    const state = access.snapshot()[machineId]
+    return state?.state === "admitted" ? state.reading.sessions.map((session) => session.state) : undefined
+  }
+
+  await answer(0, access.authorize(machineId, "a".repeat(43), new AbortController().signal))
+  expect(sessionState()).toEqual(["waiting"])
+
+  await answer(1, access.read(machineId, new AbortController().signal))
+  expect(sessionState()).toEqual(["waiting"])
 })
 
 it("dials at most four reads at once, across callers, and frees a slot only when a read ends", async () => {

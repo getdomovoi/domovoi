@@ -1,11 +1,13 @@
 import { useEffect, useRef } from "react"
 import {
+  applyWorkspaceDelta,
   credentialSchema,
   type FleetEntry,
   type FleetMachine,
   type ProviderRuntime,
   type SessionSearchResult,
   type SessionSummary,
+  type WorkspaceDelta,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -46,6 +48,29 @@ export function machineReading(snapshot: WorkspaceSnapshot, readAt: Date, heardA
     sessions: snapshot.sessions.map((session) => ({ id: session.id, title: session.title, state: filed(session) })),
     readAt: readAt.toISOString(),
     ...(heardAt === undefined ? {} : { heardAt }),
+  }
+}
+
+// connect() resolves with the hello's own snapshot after replaying what the
+// machine sent while it verified this client (client.ts). A reading wants the
+// state after those, so it follows the snapshots and deltas the client
+// dispatches, as useWorkspace does. The hello comes first; a replayed
+// snapshot naming another machine is not this machine's state.
+async function connectLatest(client: DomovoiClient, deadline: Deadline): Promise<WorkspaceSnapshot> {
+  let latest: WorkspaceSnapshot | undefined
+  const onSnapshot = (event: Event) => {
+    const next = (event as CustomEvent<WorkspaceSnapshot>).detail
+    if (!latest || next.machine.id === latest.machine.id) latest = next
+  }
+  const onDelta = (event: Event) => { if (latest) latest = applyWorkspaceDelta(latest, (event as CustomEvent<WorkspaceDelta>).detail) }
+  client.addEventListener("snapshot", onSnapshot)
+  client.addEventListener("workspace-delta", onDelta)
+  try {
+    const hello = await client.connect(deadline)
+    return latest ?? hello
+  } finally {
+    client.removeEventListener("snapshot", onSnapshot)
+    client.removeEventListener("workspace-delta", onDelta)
   }
 }
 
@@ -275,7 +300,7 @@ export class FleetAccessSession {
       this.#pending.set(machineId, client)
       this.#set(machineId, { state: "checking" })
       signal.addEventListener("abort", cancel, { once: true })
-      const snapshot = await client.connect(deadline)
+      const snapshot = await connectLatest(client, deadline)
       if (signal.aborted || this.#pending.get(machineId) !== client) return
       if (!client.admittedDeviceId) throw new ClientAdmissionError("verification-unavailable")
       this.#access.set(machineId, { machineId, credential, deviceId: client.admittedDeviceId })
@@ -429,7 +454,7 @@ export class FleetAccessSession {
     signal.addEventListener("abort", close, { once: true })
     try {
       if (signal.aborted) throw new DOMException(cancelled, "AbortError")
-      const snapshot = await client.connect(deadline)
+      const snapshot = await connectLatest(client, deadline)
       if (signal.aborted || this.#access.get(machineId) !== access) throw new DOMException(cancelled, "AbortError")
       if (client.admittedDeviceId !== access.deviceId) throw new ClientAdmissionError("identity-mismatch")
       return await question(client, deadline, snapshot, access)
