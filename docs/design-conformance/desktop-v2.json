@@ -1695,14 +1695,16 @@
       ],
       "evidence": [
         "Take the shell",
-        "Attach this output to the composer"
+        "Attach this output to the composer",
+        "Release the shell"
       ],
       "presence": [
-        "Terminal quick keys"
+        "Terminal quick keys",
+        "Take the shell"
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "a terminal pane exists, but it is an interactive daemon PTY the user creates, not the agent's read-only shell the design draws. The claim banner (who holds the shell, Take the shell) is a header strip with Take over and a client-owned label; Attach this output to the composer is not drawn (client-only: session.send takes a text attachment); a watching desktop gets an empty state where the design keeps the stream visible (terminal.watch exists and the desktop never calls it). Release the shell and since <time> need protocol. Q340 A (2026-10-02) keeps the PTY, corrects the tip and footer copy (the design's read-only, the agent owns this shell is false here) and asks Claude Design to redraw the tab"
+        "since": "2026-10-07",
+        "reason": "S3.10q (2026-10-07) draws the claim banner (You hold this shell, Claimed by <device label>, Nobody holds this shell) with Take the shell in place of the header's Take over; the watching state reads the stream through terminal.watch with Take the shell disabled and its reason beside it; Attach this output to the composer hands the rendered output to that session's composer as terminal-output.txt and shows only while that composer is open. Until the lead's wiring batch lands the workspace-shell watch controls and the thread inbox, a watching desktop still shows its empty state and the attach button does not show. Still not as drawn: Release the shell and since <time> need protocol (no terminal.release, no claim time on the owner). The tab is an interactive daemon PTY the user creates, not the agent's read-only shell the design draws; Q340 A (2026-10-02) keeps the PTY with corrected tip and footer copy, and the tab's redraw needs a design source change with Claude Design (not made here, 2026-10-07)"
       }
     },
     {
@@ -2326,7 +2328,7 @@
     {
       "id": "dock.terminal",
       "since": "2026-10-02",
-      "note": "Q340 A: the tab stays an interactive PTY the user creates, not the agent's read-only shell the design draws; the design's footer note read-only, the agent owns this shell is not drawn because it is false here, and the redraw is with Claude Design."
+      "note": "Q340 A: the tab stays an interactive PTY the user creates, not the agent's read-only shell the design draws; the design's footer note read-only, the agent owns this shell is not drawn because it is false here, and the redraw is with Claude Design. Since 2026-10-07 the footer says who can type instead: interactive, this device holds the shell; read-only until you take the shell; read-only, this device watches. The tip reads A shell on the machine, in the session's worktree. One device types at a time; the others can read. The banner's note for the holder reads Other devices can watch where the design says The phone can watch, because any paired device can."
     },
     {
       "id": "handoff.conflict",

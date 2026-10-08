@@ -205,7 +205,7 @@ try {
   await click("Settings")
   await click("Machines")
   await click("Terminal on Studio")
-  await text("desktop-owned")
+  await text("You hold this shell")
   await click("Return to home daemon")
   await click("Settings")
   await click("Machines")

@@ -346,17 +346,23 @@
         "read-only",
         "Follow output",
         "Jump to latest",
-        "Read-only. Only the claimant can type or resize."
+        "Read-only. Only the claimant can type or resize.",
+        "Recent output above. Live from 14:06:12.",
+        "Earlier output was not kept. The machine's record of this terminal starts at 13:52:04.",
+        "The shell exited with code 0 at 14:09:40. No more output will arrive.",
+        "Nothing received since 14:07:18. Reconnecting replays the recent output first.",
+        "Last claimed by MacBook Pro",
+        "Last heard: claimed by MacBook Pro"
       ],
       "evidence": [
         "Claimed by",
         "Follow output",
-        "Only the claimant can type or resize"
+        "Only the claimant can type or resize",
+        "Jump to latest",
+        "Recent output above. Live from",
+        "call(\"terminal.watch\"",
+        "call(\"terminal.unwatch\""
       ],
-      "missing": {
-        "since": "2026-10-02",
-        "reason": "not built on the phone. The protocol no longer blocks it: terminal.list, terminal.watch and terminal.unwatch are on phoneAndTabletRpcMethods since 9266302f, the watch result carries a buffer redacted before it is kept with its start time and the claimant's device label, and apps/daemon/src/terminal-watch.test.ts serves it to a phone. The phone calls none of them"
-      },
       "states": [
         "live",
         "failed",
@@ -604,7 +610,7 @@
     {
       "id": "attach.sheet",
       "name": "What you can attach",
-      "where": "frame 13: Photo or screenshot with its bound, Take a photo, and three dimmed sources. Terminal output is dimmed because the phone receives no terminal stream to select from; bounded text attachment transport through session.send already exists.",
+      "where": "frame 13: Photo or screenshot with its bound, Take a photo, and three dimmed sources. Terminal output is dimmed because picking output to attach is not built, though the phone reads a terminal since watching.screen; bounded text attachment transport through session.send already exists.",
       "copy": [
         "What you can attach",
         "Photo or screenshot",
@@ -859,6 +865,16 @@
       "id": "launch.screen",
       "since": "2026-10-02",
       "note": "the mark is one SVG component (apps/mobile/src/components/mark.tsx) shared by the phone and the tablet, per ruling Q386 A. Frame 06 draws mark-working.svg, which is not vendored: design/assets holds mark.svg and mark-reduced.svg only. The working variant that ruling also asks for is therefore built from the brand handoff (design/design_handoff_domovoi_brand/README.md, Working state: the eyes widen to r 3.8), keeping mark.svg's eye centres and mustache, and drawn on the splash and the launch notice while daemons answer. The state's 34% primary glow is a field behind the mark, never on it, and is not drawn. The same handoff's Where state is allowed table marks in-product chrome as no place for state; frame 06 draws the working mark at launch anyway, and the phone follows the frame, per ruling Q407 A (2026-10-03). If a mark-working.svg is vendored, its paths replace the built ones. The wordmark evidence is anchored to the splash by its 25px class, because the gate's only file-scoped evidence form checks absence. Where a heading or the wordmark names the screen, the mark is not announced to a screen reader"
+    },
+    {
+      "id": "watching.screen",
+      "since": "2026-10-06",
+      "note": "built from the wire, not the sample. The thread block (B) draws the command a tool ran with Failed above the shell's Live; a terminal summary carries shell and cwd and no command, so the block names the shell and directory with the terminal's one state, Failed being a shell that exited with a code other than zero (a protocol follow-up, not invented here). B sits after the artifact list rather than between two messages, because the thread carries no reference to a terminal. Output is drawn in one tone with escape sequences dropped, so the sample's pass and fail colours and its redaction chip are not drawn, and long lines wrap without the 3ch hanging indent, which React Native text cannot set. 04d's banner is the app's connection banner. Not in the design, approved as built by ruling Q8 A, 2026-10-06: the end of a shell ended by a signal or with no code; Earlier output was not kept on this phone. when the phone cuts the front of what it holds to the daemon's own bound; and Reading the terminal., The terminal could not be read, Nothing printed yet. and Open the terminal for the states before output. Not seen on a device. The end is stated without its time until the daemon's list gives one, because terminal.closed carries no time and the phone's clock is not the daemon's (ruling Q12, 2026-10-06). 04c draws a whole first line under Earlier output was not kept; the daemon keeps its record by size and can cut it inside a line or an escape sequence, so the rest of that first line is not drawn when a line break follows within 256 characters"
+    },
+    {
+      "id": "attach.sheet",
+      "since": "2026-10-06",
+      "note": "approved difference, ruling Q8 A, 2026-10-06: the Terminal output row says not built: a phone reads a terminal but cannot pick its output to attach, not the design's waits on a read-only terminal path, which a phone does not have yet, which stopped being true when watching.screen was built. The design's open question 5 names the change; attaching a selection is not drawn"
     }
   ],
   "scriptBacklog": {
@@ -866,26 +882,20 @@
     "reason": "Copy the design builds in its data script, collected by the gate since audit G23 and not yet read against the implementation. Classify each string as an element's copy, sample or annotations, and remove it here.",
     "strings": [
       "RUN v2.1.4 /Users/mira/dev/acme/.domovoi/worktrees/wt-billing-idem",
-      "Recent output above. Live from 14:06:12.",
       "AssertionError: expected [ 'evt_1PqR8sLkd92HfXa0' ] to deeply equal []",
       "Test Files 1 failed | 1 passed (2)",
       "Tests 1 failed | 18 passed (19)",
       "Duration 2.83s",
-      "Earlier output was not kept. The machine's record of this terminal starts at 13:52:04.",
       "Progress: resolved 412, reused 409, downloaded 3, added 3, done",
       "Done in 11.2s",
       "Environment variables loaded from .env",
-      "The shell exited with code 0 at 14:09:40. No more output will arrive.",
-      "Nothing received since 14:07:18. Reconnecting replays the recent output first.",
       "Watch every session and its diffs",
       "Answer gates, with the same three decisions",
       "Start and stop sessions, and steer one mid-run",
       "Gates reach it only while its app is open. Nothing is pushed to a phone yet.",
       "It cannot pull the repository down. Files stay here.",
       "status label",
-      "Last claimed by MacBook Pro",
       "claimant, 04b",
-      "Last heard: claimed by MacBook Pro",
       "claimant, 04d",
       "jump count",
       "phone footer",
