@@ -3,12 +3,21 @@ import { homedir, userInfo } from "node:os"
 import { fileURLToPath } from "node:url"
 import { z } from "zod"
 
-import type { ServiceCommandDependencies } from "./service/install.js"
+import type { ServiceCommandDependencies, ServiceCommandWords } from "./service/install.js"
 
 // Both entry points, and any shared tsup chunks, live directly in dist/.
 // The invoking binary may be the human CLI rather than the daemon worker.
 export function daemonWorkerEntry(moduleUrl = import.meta.url): string {
   return fileURLToPath(new URL("./index.js", moduleUrl))
+}
+
+export function daemonCommandWords(entry = daemonWorkerEntry()): ServiceCommandWords {
+  return {
+    install: "domovoi daemon install",
+    status: "domovoi daemon status",
+    remove: "domovoi daemon remove",
+    profileRecover: `domovoid profile recover --confirm-no-supervisor (domovoid is Node running ${entry})`,
+  }
 }
 
 // The version in this package's manifest, beside dist/.
@@ -52,7 +61,10 @@ export async function runDaemonCommand(
   }
   try {
     const { runServiceCommand } = await import("./service/install.js")
-    return await runServiceCommand(["service", ...args], dependencies ?? await nodeDaemonCommandDependencies())
+    return await runServiceCommand(["service", ...args], {
+      ...dependencies ?? await nodeDaemonCommandDependencies(),
+      words: dependencies?.words ?? daemonCommandWords(),
+    })
   } catch (error) {
     stderr(`${error instanceof Error ? error.message : String(error)}\n`)
     return 1

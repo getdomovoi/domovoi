@@ -19,7 +19,7 @@ import { claimServiceOperation } from "./operation-lease.js"
 import { launchdPlist, launchdPlistProgram, systemdUnit, systemdUnitProgram } from "./units.js"
 import { isRecordedServiceProgram } from "./restore-target.js"
 import { disableWindowsTask, readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsSchtasksPath, windowsTaskDisabledAndIdle, windowsTaskRemovalPlan, windowsTaskSettingsCommand, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
-import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, within, type InFlight, type ServiceSwap } from "./update-outcome.js"
+import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, seconds, within, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readWindowsSupervisorStatus, stopWindowsSupervisor, windowsTreeUnknown } from "./windows-job-supervisor.js"
 import { readGuestSupervisorStatus } from "./supervisor-command.js"
@@ -686,6 +686,7 @@ async function installWithDeadline(
   target: ServiceTarget,
   effects: InstallEffects,
   deadline: OperationDeadline,
+  words: ServiceCommandWords,
   handoff: (() => Promise<void>) | undefined,
   callerProfile?: ProfileLocation,
   beforeChanges?: () => Promise<void>,
@@ -853,7 +854,7 @@ async function installWithDeadline(
       try {
         if (command === "launchctl" && args[0] === "bootout") bootoutSent = true
         if (legacyWindowsCommand && index === registering) {
-          if (await removeWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline, true) !== "removed") throw new Error("Legacy Windows registration disappeared before migration")
+          if (await removeWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline, true, words) !== "removed") throw new Error("Legacy Windows registration disappeared before migration")
           legacyWindowsRemoved = true
         }
         await withinServiceDeadline(deadline, () => effects.run(command, args, deadline))
@@ -913,9 +914,9 @@ async function withLinger(target: ServiceTarget, plan: ServicePlan, effects: Ins
 export function installService(
   target: ServiceTarget,
   effects: InstallEffects & Pick<ServiceEffects, "claimServiceOperation">,
-  options: { handoff?: () => Promise<void>; callerProfile?: ProfileLocation; beforeChanges?: () => Promise<void> } = {},
+  options: { handoff?: () => Promise<void>; callerProfile?: ProfileLocation; beforeChanges?: () => Promise<void>; words?: ServiceCommandWords } = {},
 ): Promise<InstalledService> {
-  return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.handoff, options.callerProfile, options.beforeChanges))
+  return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.words ?? domovoidServiceWords, options.handoff, options.callerProfile, options.beforeChanges))
 }
 
 // Security review rounds 1 and 2 (#574): any program can register a Windows
@@ -1293,6 +1294,7 @@ async function removeWithDeadline(
   deadline: OperationDeadline,
   progress: RemovalProgress,
   profileReleaseWaitMs: number,
+  words: ServiceCommandWords,
   callerProfile?: ProfileLocation,
 ): Promise<ServiceRemovalResult> {
   const plan = serviceRemovalPlan(target)
@@ -1348,10 +1350,10 @@ async function removeWithDeadline(
         await disableWindowsTask(plan, effects, deadline)
         await withinServiceDeadline(deadline, () => effects.stopSupervisor!(serviceConfigurationPath(home, "win32"), deadline,
           windowsOwner === "supervised" ? { confirmNoLaunch: () => windowsTaskDisabledAndIdle(plan.name, effects, deadline) } : undefined))
-      } catch (cause) { throw new WindowsTaskRemovalError(plan.name, cause, { stopIssued: true }) }
+      } catch (cause) { throw new WindowsTaskRemovalError(plan.name, cause, { stopIssued: true, words }) }
     }
     progress.managerHoldsDeadline = true
-    managerStopped = await removeWindowsTask(plan, effects, deadline, windowsOwner === "domovoi") === "removed"
+    managerStopped = await removeWindowsTask(plan, effects, deadline, windowsOwner === "domovoi", words) === "removed"
     progress.managerHoldsDeadline = false
   }
   // Security review round 2 (#574): with no Domovoi service file, the same-
@@ -1386,7 +1388,8 @@ async function removeWithDeadline(
   deadline.throwIfExpired()
   // Bootout returns before the daemon lets the profile go, found by the packaged smoke (#742).
   const lease = target.platform === "darwin" && ownsJob && managerStopped
-    ? await claimProfileAfterStop(effects.claimProfile, readOwner, profile, stoppedInstance, profileReleaseWaitMs, deadline)
+    ? await claimProfileAfterStop(effects.claimProfile, readOwner, profile, stoppedInstance, profileReleaseWaitMs, deadline,
+      `The service was stopped, but its daemon did not let the profile go within ${seconds(profileReleaseWaitMs)}. The launch agent file and saved configuration were kept. Run ${words.remove} again once that daemon has exited.`)
     : effects.claimProfile(profile)
   let removed: ServiceRemovalResult
   try {
@@ -1421,14 +1424,15 @@ async function removeWithDeadline(
 export function removeService(
   target: Pick<ServiceTarget, "platform" | "home" | "uid" | "user">,
   effects: RemovalEffects,
-  options: { callerProfile?: ProfileLocation; profileReleaseWaitMs?: number } = {},
+  options: { callerProfile?: ProfileLocation; profileReleaseWaitMs?: number; words?: ServiceCommandWords } = {},
 ): Promise<ServiceRemovalResult> {
   const progress: RemovalProgress = { managerHoldsDeadline: false }
-  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress, options.profileReleaseWaitMs ?? 10_000, options.callerProfile)).catch((cause: unknown) => {
+  const words = options.words ?? domovoidServiceWords
+  return serviceOperation(effects, (deadline) => removeWithDeadline(target, effects, deadline, progress, options.profileReleaseWaitMs ?? 10_000, words, options.callerProfile)).catch((cause: unknown) => {
     // The outer deadline can expire before the manager adapter settles. It
     // needs the same actionable task-specific error, not a bare timer failure.
     if (progress.managerHoldsDeadline && !(cause instanceof WindowsTaskRemovalError)) {
-      throw new WindowsTaskRemovalError(displayName, cause)
+      throw new WindowsTaskRemovalError(displayName, cause, { words })
     }
     throw cause
   })
@@ -1521,12 +1525,17 @@ export function serviceStatus(
   return serviceOperation(effects, (deadline) => statusWithDeadline(target, effects, deadline))
 }
 
-const usage = `Usage: domovoid service install
-       domovoid service status
-       domovoid service remove
-`
+export type ServiceCommandWords = { install: string; status: string; remove: string; profileRecover: string }
+
+export const domovoidServiceWords: ServiceCommandWords = {
+  install: "domovoid service install",
+  status: "domovoid service status",
+  remove: "domovoid service remove",
+  profileRecover: "domovoid profile recover --confirm-no-supervisor",
+}
 
 export type ServiceCommandDependencies = ServiceEffects & {
+  words?: ServiceCommandWords
   platform: string
   execPath: string
   runtime?: string
@@ -1556,9 +1565,10 @@ export async function runServiceCommand(
   dependencies: ServiceCommandDependencies,
 ): Promise<number> {
   if (args[0] !== "service") return 1
+  const words = dependencies.words ?? domovoidServiceWords
   const verb = args[1]
   if (args.length > 2 || verb === undefined || !["install", "status", "remove"].includes(verb)) {
-    dependencies.stderr(usage)
+    dependencies.stderr(`Usage: ${words.install}\n       ${words.status}\n       ${words.remove}\n`)
     return 1
   }
 
@@ -1611,8 +1621,8 @@ export async function runServiceCommand(
     }
     if (configuration !== undefined) {
       const plan = bundled === undefined
-        ? await installService({ ...target, configuration }, dependencies)
-        : await installService({ ...target, execPath: bundled.runtime.daemonEntryPath, runtime: bundled.runtime.nodePath, configuration }, dependencies, { beforeChanges: bundled.publish })
+        ? await installService({ ...target, configuration }, dependencies, { words })
+        : await installService({ ...target, execPath: bundled.runtime.daemonEntryPath, runtime: bundled.runtime.nodePath, configuration }, dependencies, { beforeChanges: bundled.publish, words })
       if (bundled !== undefined) {
         dependencies.stdout(`Copied the daemon runtime out of the app to ${bundled.copy}, so the service does not run from inside the app.\n`)
         // #635: the app's Install removes unused copies once it has reached
@@ -1630,14 +1640,14 @@ export async function runServiceCommand(
           : `Installed the Domovoi daemon service as ${serviceName}\n`,
       )
       if (plan.linger !== undefined) {
-        const line = lingerInstallLine(plan.linger, target)
+        const line = lingerInstallLine(plan.linger, target, words)
         dependencies[line.stream](line.text)
       }
       return 0
     }
 
     if (verb === "remove") {
-      const plan = await removeService(target, dependencies)
+      const plan = await removeService(target, dependencies, { words })
       dependencies.stdout(
         plan.kind === "file"
           ? `Removed the Domovoi daemon service at ${plan.path}\n`
@@ -1648,10 +1658,10 @@ export async function runServiceCommand(
         dependencies[line.stream](line.text)
       }
       if (plan.profileRecovery === "operator-confirmation-required") {
-        dependencies.stdout("The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run domovoid profile recover --confirm-no-supervisor.\n")
+        dependencies.stdout(`The profile owner remains unresolved. After confirming no custom or legacy supervisor will restart it, run ${words.profileRecover}.\n`)
       }
       if (plan.profileRecovery === "proof-unavailable") {
-        dependencies.stdout(`${plan.profileRecoveryDetail}. No recovery receipt was written. Repair or inspect that file, then after confirming no custom or legacy supervisor will restart the daemon, run domovoid profile recover --confirm-no-supervisor.\n`)
+        dependencies.stdout(`${plan.profileRecoveryDetail}. No recovery receipt was written. Repair or inspect that file, then after confirming no custom or legacy supervisor will restart the daemon, run ${words.profileRecover}.\n`)
       }
       return 0
     }

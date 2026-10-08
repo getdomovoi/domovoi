@@ -1,6 +1,6 @@
 import type { OperationDeadline } from "../operation-deadline.js"
 import { withinServiceDeadline } from "./deadline.js"
-import type { CapturedRun, ServiceEffects } from "./install.js"
+import { domovoidServiceWords, type CapturedRun, type ServiceCommandWords, type ServiceEffects } from "./install.js"
 
 // Decided 2026-09-17 (SHIP-PLAN S1.1): a daemon that stops at logout is not a
 // daemon. A Linux install turns lingering on for the installing user, so that
@@ -118,17 +118,17 @@ export async function disableLinger(
   return { kind: "disabled" }
 }
 
-export function lingerInstallLine(outcome: LingerInstallOutcome, target: LingerTarget): { stream: "stdout" | "stderr"; text: string } {
+export function lingerInstallLine(outcome: LingerInstallOutcome, target: LingerTarget, words: ServiceCommandWords = domovoidServiceWords): { stream: "stdout" | "stderr"; text: string } {
   const name = lingerName(target)
   switch (outcome.kind) {
     case "enabled":
-      return { stream: "stdout", text: `Turned on lingering for ${name} with loginctl enable-linger, so the daemon keeps running after ${name} logs out and starts when the machine boots. domovoid service remove turns it off again.\n` }
+      return { stream: "stdout", text: `Turned on lingering for ${name} with loginctl enable-linger, so the daemon keeps running after ${name} logs out and starts when the machine boots. ${words.remove} turns it off again.\n` }
     case "kept":
-      return { stream: "stdout", text: `Lingering for ${name} stays on from an earlier Domovoi install. domovoid service remove turns it off again.\n` }
+      return { stream: "stdout", text: `Lingering for ${name} stays on from an earlier Domovoi install. ${words.remove} turns it off again.\n` }
     case "already-on":
-      return { stream: "stdout", text: `Lingering was already on for ${name}, so Domovoi left it as it was. domovoid service remove will leave it on.\n` }
+      return { stream: "stdout", text: `Lingering was already on for ${name}, so Domovoi left it as it was. ${words.remove} will leave it on.\n` }
     case "failed":
-      return { stream: "stderr", text: `Could not turn on lingering for ${name}: ${outcome.detail}. The service is installed, but systemd stops the daemon when ${name} logs out of every session and starts it again at the next login. To keep it running, run loginctl enable-linger; domovoid service remove will then leave lingering on.\n` }
+      return { stream: "stderr", text: `Could not turn on lingering for ${name}: ${outcome.detail}. The service is installed, but systemd stops the daemon when ${name} logs out of every session and starts it again at the next login. To keep it running, run loginctl enable-linger; ${words.remove} will then leave lingering on.\n` }
   }
 }
 

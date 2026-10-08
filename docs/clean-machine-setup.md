@@ -73,29 +73,38 @@ git clone https://github.com/getdomovoi/domovoi.git
 cd domovoi
 pnpm install
 pnpm --filter @getdomovoi/daemon build
+pnpm --filter @getdomovoi/cli build
 ```
 
 The runtime directory is then `apps/daemon` and its entry point is `apps/daemon/dist/index.js`.
-This route resolves dependencies with pnpm at the moment you run it. It is not the frozen
-installation route A provides.
+The `domovoi` CLI's entry point is `apps/cli/dist/index.js`; it runs the daemon package beside it
+in the checkout. This route resolves dependencies with pnpm at the moment you run it. It is not
+the frozen installation route A provides. Route A installs the daemon runtime only, not the CLI.
 
-## Step 2: fix the command you will keep using
+## Step 2: fix the commands you will keep using
 
-There is no installer that writes a `domovoid` shim. Choose one absolute entry-point path and use
-it everywhere, because service installation records the Node executable and the entry-point path
-it was invoked with, and a later reinstall from a different path replaces that launch command.
+There is no installer that writes a `domovoi` or `domovoid` shim. Choose one absolute
+entry-point path for each and use it everywhere, because service installation records the Node
+executable and the daemon entry point, and a later reinstall from a different runtime replaces
+that launch command. `domovoi daemon install` records the daemon's own `dist/index.js`, never the
+CLI's.
 
 Linux and macOS:
 
 ```bash
 DOMOVOID=/absolute/path/to/runtime/dist/index.js
 domovoid() { node "$DOMOVOID" "$@"; }
+# Route B only: the CLI from the same checkout.
+DOMOVOI=/absolute/path/to/domovoi/apps/cli/dist/index.js
+domovoi() { node "$DOMOVOI" "$@"; }
 ```
 
 Windows PowerShell:
 
 ```powershell
 function domovoid { node C:\absolute\path\to\runtime\dist\index.js @args }
+# Route B only: the CLI from the same checkout.
+function domovoi { node C:\absolute\path\to\domovoi\apps\cli\dist\index.js @args }
 ```
 
 Check the entry point answers before continuing:
@@ -179,9 +188,14 @@ Close every other daemon owner first, including Desktop. Installation claims the
 and refuses rather than taking ownership from a running process.
 
 ```bash
-domovoid service install
-domovoid service status
+domovoi daemon install
+domovoi daemon status
 ```
+
+`domovoi daemon` runs the daemon package's own installer, the same code as the daemon's own
+`domovoid service install`, `status` and `remove`, which remain available where only the daemon
+runtime is installed, as after route A. Either spelling registers the daemon's entry point, and
+each prints its follow-up advice in its own spelling.
 
 `install` writes a systemd user unit on Linux, a launch agent under the user's own `LaunchAgents`
 on macOS, or a logon task on Windows, then asks that manager to load it. It also writes
@@ -194,18 +208,20 @@ An install refuses before writing anything if `DOMOVOI_AUTH_TOKEN` is set. Point
 `DOMOVOI_CREDENTIAL_PATH` at an existing private credential file, unset the environment bearer,
 then install again.
 
-`status` reports whether the service file exists and whether the manager currently runs it, and
-exits non-zero when nothing is installed. Reopen Desktop after the service is running and it will
-attach to the service-owned daemon.
+`status` reports whether the service file exists and whether the manager currently runs it. It
+exits 0 when the service is installed, even if it is stopped, and 1 when nothing is installed or
+its supervision failed. `install` and `remove` exit 0 on success and 1 on failure. These are the
+daemon's exit codes, not the CLI's exit code table. Reopen Desktop after the service is running
+and it will attach to the service-owned daemon.
 
-To change settings later: stop the service, run `domovoid service install` again with the intended
+To change settings later: stop the service, run `domovoi daemon install` again with the intended
 environment, then start it. Editing the environment of the supervisor alone changes nothing,
 because the service reads `~/.domovoi/service.json`.
 
 To remove it:
 
 ```bash
-domovoid service remove
+domovoi daemon remove
 ```
 
 `remove` stops the manager job, deletes the launch files, and deletes the saved configuration. On
@@ -332,7 +348,7 @@ domovoid profile recover --confirm-no-supervisor
 ```
 
 The flag is your assertion that nothing will restart that profile. The command refuses while any
-owner holds the lease or a saved service configuration remains; use `domovoid service remove` for
+owner holds the lease or a saved service configuration remains; use `domovoi daemon remove` for
 the latter. It records the assertion and does not start a daemon. Reopen Desktop afterwards to
 consume the receipt.
 
