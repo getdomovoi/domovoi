@@ -229,6 +229,9 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
   const lease = claim(home)
   const controller = new AbortController()
   const stop = () => controller.abort()
+  const assertRegistrationNotStopped = () => {
+    if (readSupervisorStopRequest(home)?.registrationId === config.registrationId) throw new Error("This Windows supervisor registration was stopped; reinstall before starting it")
+  }
   let monitor: ReturnType<typeof setInterval> | undefined
   let monitorError: unknown
   try {
@@ -237,6 +240,8 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
       if (!windowsHelperTimedOut(error)) throw error
       // Cold first spawn at logon: after each of five CI timeouts, the next test, helper spawns included, passed in 3.6 to 6.3 s.
       // Startup is bounded by two 20 s caps.
+      // Honor a stop published during the first cap before retrying, keeping that waiting stop's lease hold within one cap.
+      assertRegistrationNotStopped()
       try { observed = queryWindowsProcess(process.pid) } catch (cause) {
         throw new Error("Windows supervisor could not read its own process identity: the first helper query reached the 20 s cap at startup and its one retry also failed. No daemon was launched; no supervision record was written. The logon task starts the supervisor again at the next logon.", { cause })
       }
@@ -244,7 +249,7 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
     if (!observed.identity) throw new Error("Windows supervisor birth identity is unavailable")
     const previous = readWindowsSupervisorRecord(home)
     assertWindowsStartup(previous ? recoverWindowsJobClosure(previous, observed.bootId) : undefined, observed.bootId, windowsProcessAlive)
-    if (readSupervisorStopRequest(home)?.registrationId === config.registrationId) throw new Error("This Windows supervisor registration was stopped; reinstall before starting it")
+    assertRegistrationNotStopped()
     process.on("SIGINT", stop); process.on("SIGTERM", stop)
     monitor = setInterval(() => {
       try {
