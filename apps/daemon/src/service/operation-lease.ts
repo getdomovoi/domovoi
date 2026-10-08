@@ -1,6 +1,6 @@
 import { join } from "node:path"
 
-import { claimExclusiveFileLease } from "../file-lease.js"
+import { claimExclusiveFileLease, claimSharedFileLease } from "../file-lease.js"
 
 export class ServiceOperationBusyError extends Error {
   constructor(path: string) {
@@ -15,4 +15,9 @@ export class ServiceOperationBusyError extends Error {
 export function claimServiceOperation(userHomeDirectory: string) {
   const path = join(userHomeDirectory, ".domovoi", "service-operation-lease.sqlite")
   return claimExclusiveFileLease(path, () => new ServiceOperationBusyError(path))
+}
+
+export function claimServiceStatusRead(userHomeDirectory: string) {
+  const path = join(userHomeDirectory, ".domovoi", "service-operation-lease.sqlite")
+  return claimSharedFileLease(path, () => new ServiceOperationBusyError(path))
 }
