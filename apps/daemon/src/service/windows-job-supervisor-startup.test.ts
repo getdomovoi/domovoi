@@ -62,10 +62,13 @@ it("starts after its first helper query outlives the per-query cap at a cold log
   const marker = join(f.home, "first-call")
   // The first call sleeps past the 20 s cap, as a cold Windows PowerShell host
   // and compile did in CI; every later call answers like the warm helper.
-  const standIn = `const fs=require('node:fs');const marker=process.argv[1];
-if(!fs.existsSync(marker)){fs.writeFileSync(marker,'cold');setTimeout(()=>{},60000)}else{let input='';process.stdin.setEncoding('utf8');
-process.stdin.on('data',(chunk)=>{input+=chunk});process.stdin.on('end',()=>{const request=JSON.parse(input);
-process.stdout.write(JSON.stringify({bootId:${JSON.stringify(bootId)},identities:request.pids.map((pid)=>({pid,start:'456',bootId:${JSON.stringify(bootId)}}))}))})}`
+  // One line: the Windows command line carries it as a single quoted argument.
+  const standIn = [
+    "const fs=require('node:fs');const marker=process.argv[1];",
+    "if(!fs.existsSync(marker)){fs.writeFileSync(marker,'cold');setTimeout(()=>{},60000)}else{let input='';process.stdin.setEncoding('utf8');",
+    "process.stdin.on('data',(chunk)=>{input+=chunk});process.stdin.on('end',()=>{const request=JSON.parse(input);",
+    `process.stdout.write(JSON.stringify({bootId:${JSON.stringify(bootId)},identities:request.pids.map((pid)=>({pid,start:'456',bootId:${JSON.stringify(bootId)}}))}))})}`,
+  ].join("")
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process")
   await substituteHelper((options) => actual.execFileSync(process.execPath, ["-e", standIn, marker], { ...options, encoding: "utf8" }))
   retireOnLaunch(f)
@@ -98,6 +101,22 @@ it("fails closed with a stated reason when the retried first query also times ou
   // The startup lease is released for the next logon's supervisor.
   claimExclusiveFileLease(f.lease, () => new Error("lease still held")).release()
   expect(existsSync(f.lease)).toBe(true)
+})
+
+it("fails closed with the retry's own error as the cause when the retry fails another way", async () => {
+  const f = fixture()
+  let calls = 0
+  await substituteHelper(() => { if (++calls === 1) throw timedOut(); throw new Error("Access denied") })
+  retireOnLaunch(f)
+  asWindows()
+  const failure = await runWindowsSupervisor(f.path, { executable: "unused", args: [] }).catch((error: unknown) => error)
+  expect((failure as Error).message).toMatch(/^Windows supervisor could not read its own process identity/)
+  expect((failure as Error).message).toContain("No daemon was launched")
+  expect((failure as Error).message).not.toMatch(/each reached|also capped/)
+  expect(((failure as Error).cause as Error).message).toBe("Access denied")
+  expect(helperCalls()).toHaveLength(2)
+  expect(launchWindowsJob).not.toHaveBeenCalled()
+  expect(readWindowsSupervisorRecord(f.home)).toBeUndefined()
 })
 
 it("does not retry a first query that fails for a reason other than its time cap", async () => {
