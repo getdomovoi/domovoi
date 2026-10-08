@@ -225,7 +225,11 @@ async function restoreWorkspaceState(workspaceState, savedState) {
   if (currentState) {
     if (savedState?.equals(currentState)) return
     try {
-      if (JSON.parse(currentState.toString("utf8"))?.settings?.dev === true) return
+      const state = JSON.parse(currentState.toString("utf8"))
+      const settings = state?.settings
+      const hasSettings = settings !== null && typeof settings === "object" && !Array.isArray(settings)
+      const recordsDeploy = state?.filteredInstall === true && settings?.dev === false && settings?.nodeLinker === "hoisted"
+      if (hasSettings && !recordsDeploy) return
     } catch {
       // Invalid JSON still needs restoration.
     }
@@ -251,10 +255,10 @@ async function deployWorkspacePackage({ name, repositoryRoot, destination, run }
     deployFailure = { error }
     throw error
   } finally {
-    // pnpm deploy records a production install as the checkout's workspace state.
-    // Restoring it keeps the next pnpm command from aborting or reinstalling for
-    // production. A development state found afterwards came from a newer command
-    // and is kept.
+    // pnpm deploy records a filtered production install with the hoisted linker.
+    // Restore that state or one we cannot attribute to another install, keeping
+    // other installs' states. Restoring keeps the next pnpm command from aborting
+    // or reinstalling for production.
     try {
       await restoreWorkspaceState(workspaceState, savedState)
     } catch (restoreError) {

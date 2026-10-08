@@ -720,13 +720,17 @@ test("restores the checkout's pnpm workspace state when the deploy fails", async
   }
 })
 
-// PR #769 review (P2): a development install that finishes in the checkout
-// while the deploy runs writes a newer state. The restore keeps that state
-// rather than putting the older snapshot back over it.
-test("keeps a development install's newer workspace state written while the deploy ran", async () => {
+// PR #769 review (P2, twice): another install that finishes in the checkout
+// while the deploy runs writes a newer state, development or production. The
+// restore keeps any state that is not the one this deploy records (production,
+// hoisted, filtered) rather than putting the older snapshot back over it.
+test("keeps another install's newer workspace state written while the deploy ran", async () => {
   const { mkdir } = await import("node:fs/promises")
-  const newerState = `${JSON.stringify({ lastValidatedTimestamp: 3, filteredInstall: false, settings: { dev: true, nodeLinker: "isolated" } }, undefined, 2)}\n`
-  for (const before of [developmentState, undefined]) {
+  const newerStates = [
+    { lastValidatedTimestamp: 3, filteredInstall: false, settings: { dev: true, nodeLinker: "isolated" } },
+    { lastValidatedTimestamp: 4, filteredInstall: false, settings: { dev: false, nodeLinker: "isolated" } },
+  ].map((state) => `${JSON.stringify(state, undefined, 2)}\n`)
+  for (const [before, newerState] of [developmentState, undefined].flatMap((before) => newerStates.map((newer) => [before, newer]))) {
     const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-state-newer-"))
     try {
       await mkdir(join(root, "node_modules"), { recursive: true })
@@ -738,6 +742,31 @@ test("keeps a development install's newer workspace state written while the depl
       }
       await deployDaemon({ repositoryRoot: root, destination: join(root, "out", "daemon"), run })
       assert.equal(await readFile(join(root, workspaceState), "utf8"), newerState)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+// A state this code cannot read as another install's (no settings, or not
+// JSON) is treated as the deploy's own and restored, so a change in pnpm's
+// format cannot leave the production state behind.
+test("restores the saved workspace state over a state it cannot attribute to another install", async () => {
+  const { mkdir } = await import("node:fs/promises")
+  for (const unknown of [`${JSON.stringify({ lastValidatedTimestamp: 5 })}\n`, "not json"]) {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-state-unknown-"))
+    try {
+      await mkdir(join(root, "node_modules"), { recursive: true })
+      await writeFile(join(root, workspaceState), developmentState)
+      const run = async (_command, args) => {
+        await writeFile(join(root, workspaceState), unknown)
+        const destination = args.at(-1)
+        await mkdir(join(destination, "dist"), { recursive: true })
+        await mkdir(join(destination, "node_modules"), { recursive: true })
+        await writeFile(join(destination, "dist", "index.js"), "")
+      }
+      await deployDaemon({ repositoryRoot: root, destination: join(root, "out", "daemon"), run })
+      assert.equal(await readFile(join(root, workspaceState), "utf8"), developmentState)
     } finally {
       await rm(root, { recursive: true, force: true })
     }
