@@ -515,7 +515,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "export exists; the line under it says N rows loaded where the design says 1,204 rows match, because the query page carries no total (protocol, Codex follow-up C1). The Q346 A copy is built in AuditLogView (S3.10j, 2026-10-06): a browser client says saves to this device, a desktop writes a file on this machine. WorkspaceShell does not pass clientKind to it yet, so until that one-line follow-up every client draws the desktop line"
+        "reason": "export exists; the line under it says N rows loaded where the design says 1,204 rows match, because the query page carries no total (protocol, Codex follow-up C1). The Q346 A copy is built in AuditLogView (S3.10j, 2026-10-06): a browser client says saves to this device, a desktop writes a file on this machine. WorkspaceShell passes its clientKind (2026-10-08), so the web app draws saves to this device and the desktop app writes a file on this machine"
       }
     },
     {
@@ -1156,10 +1156,9 @@
       "presence": [
         "aria-label=\"Policy refusal\""
       ],
-      "partial": {
-        "since": "2026-10-07",
-        "reason": "S3.10h draws the card: Refused by policy, there is nothing to approve, the command, why, THE RULE IT BROKE with Set by and Applies to, and the remedy under What you can do instead (policy-refusal-card.tsx). S3.10h2 draws See what a rule can never cover → in that header, opening the rules tab through Thread's onOpenDockTab. Missing: the shell does not pass onOpenDockTab yet (workspace-shell.tsx, held by #745), so the link is not drawn in the app; the wiring and this entry's flip are saved as S3.10h2's shell patch. Needs protocol and stays a Codex follow-up: the step n of N meta (a plan step's blocker names only an approval), the Target it saw row, and tone-coded alternatives (the wire carries one remedy string, so the list has one neutral row). The drawn Recorded as refusal, actor daemon row is not drawn: the audit records provider.policy-refused with a provider actor"
-      }
+      "notes": [
+        "S3.10h draws the card: Refused by policy, there is nothing to approve, the command, why, THE RULE IT BROKE with Set by and Applies to, and the remedy under What you can do instead (policy-refusal-card.tsx). S3.10h2 draws See what a rule can never cover → in that header, opening the rules tab through Thread's onOpenDockTab. The shell passes onOpenDockTab (openSheetTab), so the link opens the tab in the app. Needs protocol and stays a Codex follow-up: the step n of N meta (a plan step's blocker names only an approval), the Target it saw row, and tone-coded alternatives (the wire carries one remedy string, so the list has one neutral row). The drawn Recorded as refusal, actor daemon row is not drawn: the audit records provider.policy-refused with a provider actor"
+      ]
     },
     {
       "id": "conversation.receipt",
@@ -1185,10 +1184,9 @@
       "presence": [
         "Decision receipt"
       ],
-      "partial": {
-        "since": "2026-10-07",
-        "reason": "S3.10h2 draws the follow-up row under the latest receipt while connected, as the design hides it offline (approval-receipt.tsx, thread.tsx): Review the changed files opens the changes sheet, Move this session to another machine opens the machine menu's move (not read-only, with a machine to move to), and See the checkpoints → or See the rule → (after an Always) opens that dock tab through Thread's onOpenDockTab. Missing: the shell does not pass onOpenDockTab yet (workspace-shell.tsx, held by #745), so the link is not drawn in the app; the wiring and this entry's flip to built are saved as S3.10h2's shell patch. The link reads See the rule, not the drawn See the rule you just created, because another client may have made the decision. The design's title suffixes (migration applied, step 3 rewritten), the follow-up line and the file count in Review the 7 changed files are the sample session's words"
-      }
+      "notes": [
+        "S3.10h2 draws the follow-up row under the latest receipt while connected, as the design hides it offline (approval-receipt.tsx, thread.tsx): Review the changed files opens the changes sheet, Move this session to another machine opens the machine menu's move (not read-only, with a machine to move to), and See the checkpoints → or See the rule → (after an Always) opens that dock tab through Thread's onOpenDockTab. The shell passes onOpenDockTab (openSheetTab), so the link opens the tab in the app. The link reads See the rule, not the drawn See the rule you just created, because another client may have made the decision. The design's title suffixes (migration applied, step 3 rewritten), the follow-up line and the file count in Review the 7 changed files are the sample session's words"
+      ]
     },
     {
       "id": "conversation.offline-actions",
@@ -1716,7 +1714,7 @@
       ],
       "partial": {
         "since": "2026-10-07",
-        "reason": "S3.10q (2026-10-07) draws the claim banner (You hold this shell, Claimed by <device label>, Nobody holds this shell) with Take the shell in place of the header's Take over; the watching state reads the stream through terminal.watch with Take the shell disabled and its reason beside it; Attach this output to the composer hands the rendered output to that session's composer as terminal-output.txt and shows only while that composer is open. Until the lead's wiring batch lands the workspace-shell watch controls and the thread inbox, a watching desktop still shows its empty state and the attach button does not show. Still not as drawn: Release the shell and since <time> need protocol (no terminal.release, no claim time on the owner). The tab is an interactive daemon PTY the user creates, not the agent's read-only shell the design draws; Q340 A (2026-10-02) keeps the PTY with corrected tip and footer copy, and the tab's redraw needs a design source change with Claude Design (not made here, 2026-10-07)"
+        "reason": "S3.10q (2026-10-07) draws the claim banner (You hold this shell, Claimed by <device label>, Nobody holds this shell) with Take the shell in place of the header's Take over; the watching state reads the stream through terminal.watch with Take the shell disabled and its reason beside it; Attach this output to the composer hands the rendered output to that session's composer as terminal-output.txt and shows only while that composer is open. Since 2026-10-08 the shell passes terminal.watch, terminal.unwatch and terminal.list to the pane and the thread opens its composer to the attach, so a watching desktop reads the shell and the attach reaches the draft. Still not as drawn: Release the shell and since <time> need protocol (no terminal.release, no claim time on the owner), and a watcher follows the holder's resize only at its next terminal.list read (every 5 seconds, or later when a read fails or the page throttles timers), until protocol task 39 adds a resize notice. The tab is an interactive daemon PTY the user creates, not the agent's read-only shell the design draws; Q340 A (2026-10-02) keeps the PTY with corrected tip and footer copy, and the tab's redraw needs a design source change with Claude Design (not made here, 2026-10-07)"
       }
     },
     {
