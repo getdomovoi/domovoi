@@ -170,40 +170,46 @@ export function useReadOnVisit({ active, connected, clientAccess, onReadMachine 
     .sort()
     .join(" ")
   const requested = useRef(new Set<string>())
-  const pending = useRef(new Map<string, AbortController>())
+  // Every read not yet settled, this visit's or a cancelled one from before:
+  // a cancelled read can still hold its route request, so it keeps its slot
+  // until it ends.
+  const inFlight = useRef(new Set<AbortController>())
   const queued = useRef<QueuedRead[]>([])
+  // Whether queued reads may start: during a visit, with the home daemon connected.
+  const live = useRef(false)
   // Starts queued reads while fewer than `readConcurrency` are in flight. The
-  // answer, or the lack of one, arrives through clientAccess; a read that ends
-  // within the visit makes room for the next.
+  // answer, or the lack of one, arrives through clientAccess; each read that
+  // ends makes room for the next.
   const pump = () => {
-    while (pending.current.size < readConcurrency) {
+    while (live.current && inFlight.current.size < readConcurrency) {
       const next = queued.current.shift()
       if (!next) return
       const read = new AbortController()
-      pending.current.set(next.machineId, read)
+      inFlight.current.add(read)
       next.read(read.signal).catch(() => {}).finally(() => {
-        if (pending.current.get(next.machineId) !== read) return
-        pending.current.delete(next.machineId)
+        inFlight.current.delete(read)
         pump()
       })
     }
   }
-  // Ending the visit cancels the reads in flight and the ones still queued,
-  // and the next visit asks every machine again. A read cut short was never
-  // answered, so a remount (StrictMode does one in development) asks again too.
+  // Ending the visit cancels the reads in flight and drops the ones still
+  // queued, and the next visit asks every machine again. A read cut short was
+  // never answered, so a remount (StrictMode does one in development) asks again too.
   useEffect(() => {
     if (!active) return
     const asked = requested.current
-    const waiting = pending.current
+    const reads = inFlight.current
     const queue = queued.current
     return () => {
-      for (const read of waiting.values()) read.abort()
-      waiting.clear()
+      live.current = false
+      for (const read of reads) read.abort()
       queue.length = 0
       asked.clear()
     }
   }, [active])
   useEffect(() => {
+    // Offline, queued reads wait for the connection rather than fail.
+    live.current = active && connected && onReadMachine !== undefined
     if (!active || !onReadMachine || !connected) return
     for (const machineId of admittedIds.split(" ").filter(Boolean)) {
       const access = clientAccess[machineId]
