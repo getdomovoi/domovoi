@@ -658,10 +658,61 @@ test("deploys the domovoi CLI with the same hoisted pnpm deploy as the daemon", 
       await mkdir(join(destination, "dist"), { recursive: true })
       await mkdir(join(destination, "node_modules"), { recursive: true })
       await writeFile(join(destination, "dist", "index.js"), "")
+      await writeFile(join(destination, "package.json"), JSON.stringify({ name: "@getdomovoi/cli", dependencies: {} }))
     }
     const entry = await deployCli({ repositoryRoot: root, destination: join(root, "cli"), run })
     assert.equal(entry, join(root, "cli", "dist", "index.js"))
     assert.deepEqual(calls, [["pnpm", "--filter", "@getdomovoi/cli", "deploy", "--legacy", "--prod", "--config.node-linker=hoisted", join(root, "cli")]])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// Q31 A: the CLI depends on @getdomovoi/daemon so an npm install can run
+// `domovoi daemon`. The runtime already ships the daemon beside the CLI, and
+// the CLI loads that one when its own is absent (apps/cli/src/daemon-command.ts),
+// so the deployed CLI keeps no second daemon and none of the packages only
+// that copy needed. What the CLI itself loads stays, nested copies included.
+test("deploys the CLI without a second daemon or the packages only that copy needs", async () => {
+  const { mkdir, readdir, readlink, symlink } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-cli-graph-"))
+  try {
+    const packages = {
+      "": { name: "@getdomovoi/cli", dependencies: { "@getdomovoi/daemon": "0.0.1", "@getdomovoi/protocol": "0.0.1", ws: "^8", keyring: "^2" } },
+      "@getdomovoi/daemon": { name: "@getdomovoi/daemon", dependencies: { "@getdomovoi/protocol": "0.0.1", "node-pty": "1", express: "5", ws: "^8" } },
+      "@getdomovoi/protocol": { name: "@getdomovoi/protocol", dependencies: { zod: "4" } },
+      zod: { name: "zod" },
+      ws: { name: "ws", peerDependencies: { bufferutil: "4" } },
+      keyring: { name: "keyring", optionalDependencies: { "keyring-darwin": "2" } },
+      "keyring-darwin": { name: "keyring-darwin" },
+      "node-pty": { name: "node-pty", dependencies: { "node-addon-api": "7" } },
+      "node-addon-api": { name: "node-addon-api" },
+      express: { name: "express", dependencies: { debug: "2" } },
+      "express/node_modules/debug": { name: "debug" },
+      "@scoped/only-daemon": { name: "@scoped/only-daemon" },
+    }
+    const run = async (_command, args) => {
+      const destination = args.at(-1)
+      await mkdir(join(destination, "dist"), { recursive: true })
+      await writeFile(join(destination, "dist", "index.js"), "")
+      for (const [path, manifest] of Object.entries(packages)) {
+        const directory = path === "" ? destination : join(destination, "node_modules", ...path.split("/"))
+        await mkdir(directory, { recursive: true })
+        await writeFile(join(directory, "package.json"), JSON.stringify(manifest))
+      }
+      await mkdir(join(destination, "node_modules", ".bin"), { recursive: true })
+      await symlink(join("..", "@getdomovoi", "daemon", "dist", "index.js"), join(destination, "node_modules", ".bin", "domovoid"))
+      await mkdir(join(destination, "node_modules", "@getdomovoi", "daemon", "dist"), { recursive: true })
+      await writeFile(join(destination, "node_modules", "@getdomovoi", "daemon", "dist", "index.js"), "")
+      await symlink(join("..", "ws", "package.json"), join(destination, "node_modules", ".bin", "ws-manifest"))
+    }
+    await deployCli({ repositoryRoot: root, destination: join(root, "cli"), run })
+    const modules = join(root, "cli", "node_modules")
+    const left = async (directory) => (await readdir(directory)).sort()
+    assert.deepEqual(await left(modules), [".bin", "@getdomovoi", "keyring", "keyring-darwin", "ws", "zod"])
+    assert.deepEqual(await left(join(modules, "@getdomovoi")), ["protocol"])
+    assert.deepEqual(await left(join(modules, ".bin")), ["ws-manifest"])
+    assert.equal(await readlink(join(modules, ".bin", "ws-manifest")), join("..", "ws", "package.json"))
   } finally {
     await rm(root, { recursive: true, force: true })
   }

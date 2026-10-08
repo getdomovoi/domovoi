@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url"
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonWorkerEntry, nodeDaemonCommandDependencies, runDaemonCommand } from "./daemon-command.js"
+import { daemonCommandWords, daemonWorkerEntry, nodeDaemonCommandDependencies, runDaemonCommand } from "./daemon-command.js"
 import { systemdUnitProgram } from "./service/units.js"
 import type { ServiceCommandDependencies, ServiceEffects } from "./service/install.js"
 
@@ -38,6 +38,44 @@ function command(overrides: Partial<ServiceCommandDependencies> = {}): ServiceCo
 }
 
 describe("daemon command", () => {
+  it("names the CLI commands and explains the profile recovery worker", () => {
+    expect(daemonCommandWords("/opt/package/dist/index.js")).toEqual({
+      install: "domovoi daemon install", status: "domovoi daemon status", remove: "domovoi daemon remove",
+      profileRecover: "domovoid profile recover --confirm-no-supervisor (domovoid is Node running /opt/package/dist/index.js)",
+    })
+    expect(daemonCommandWords().profileRecover).toContain(daemonWorkerEntry())
+  })
+
+  it("uses CLI removal words in lingering output without injected words", async () => {
+    const dependencies = command()
+    expect(await runDaemonCommand(["install"], dependencies)).toBe(0)
+    expect(dependencies.stdout).toHaveBeenCalledWith("Lingering was already on for dl, so Domovoi left it as it was. domovoi daemon remove will leave it on.\n")
+  })
+
+  it.each(["unresolved", "unreadable"])("explains %s profile recovery without injected words", async (reason) => {
+    const dependencies = command({ removalSnapshot: vi.fn(() => ({
+      owner: {
+        version: 1 as const, state: "ready" as const, instanceId: "12345678-1234-4123-8123-123456789abc",
+        machineId: `machine-${"a".repeat(32)}`, protocolVersion: "0.4.0", owner: "daemon" as const,
+        credential: { source: "environment" as const }, url: "ws://127.0.0.1:47831/rpc",
+      },
+      configurationDigest: null,
+      ...(reason === "unreadable" ? { unreadable: "Saved configuration unreadable" } : {}),
+    })) })
+    expect(await runDaemonCommand(["remove"], dependencies)).toBe(0)
+    expect(dependencies.stdout).toHaveBeenCalledWith(expect.stringContaining(
+      `run domovoid profile recover --confirm-no-supervisor (domovoid is Node running ${daemonWorkerEntry()}).\n`,
+    ))
+  })
+
+  it("preserves explicitly supplied command words", async () => {
+    const dependencies = command({ words: {
+      install: "custom install", status: "custom status", remove: "custom remove", profileRecover: "custom recover",
+    } })
+    expect(await runDaemonCommand(["install"], dependencies)).toBe(0)
+    expect(dependencies.stdout).toHaveBeenCalledWith(expect.stringContaining("custom remove will leave it on"))
+  })
+
   it("resolves the worker beside the distributed command module", () => {
     expect(daemonWorkerEntry("file:///C:/opt/pkg/dist/daemon-command.js"))
       .toBe(fileURLToPath("file:///C:/opt/pkg/dist/index.js"))

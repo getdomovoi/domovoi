@@ -771,6 +771,14 @@ describe("runServiceCommand", () => {
     await expect(runServiceCommand(["pair"], dependencies)).resolves.toBe(1)
     expect(dependencies.stderr).not.toHaveBeenCalled()
   })
+
+  it("uses supplied command words in service usage", async () => {
+    const dependencies = command({ words: {
+      install: "custom install", status: "custom status", remove: "custom remove", profileRecover: "custom recover",
+    } })
+    expect(await runServiceCommand(["service"], dependencies)).toBe(1)
+    expect(dependencies.stderr).toHaveBeenCalledWith("Usage: custom install\n       custom status\n       custom remove\n")
+  })
 })
 
 // A reinstall over the logon task Domovoi registered replaces it with the

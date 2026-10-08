@@ -66,6 +66,9 @@ importers:
       '@getdomovoi/credential-store':
         specifier: workspace:*
         version: link:../../packages/credential-store
+      '@getdomovoi/daemon':
+        specifier: workspace:*
+        version: link:../daemon
       '@getdomovoi/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
