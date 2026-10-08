@@ -124,14 +124,15 @@ jobs:
         if: matrix.os != 'windows-latest'
         run: pnpm --filter @getdomovoi/desktop package:dir
         timeout-minutes: 15
-      # Run with node, not pnpm: packaging deploys the daemon runtime with
-      # pnpm deploy --prod, which leaves the workspace state marked production,
-      # and a pnpm run after it would reinstall node_modules for production.
+      # Packaging deploys the daemon runtime with pnpm deploy --prod and then
+      # restores the workspace state that deploy records. verify-deps-before-run
+      # set to error fails this run if that state was left changed, where the
+      # default would reinstall node_modules for production and carry on.
       - name: Packaged service smoke on macOS
         if: matrix.os == 'macos-latest'
         env:
           DOMOVOI_SERVICE_SMOKE_DISPOSABLE_HOST: '1'
-        run: node apps/desktop/scripts/package-service-smoke.mjs
+        run: pnpm --config.verify-deps-before-run=error --filter @getdomovoi/desktop test:package:service
         timeout-minutes: 10
       # The systemd user manager reads units only under the home it started
       # with, so a temporary HOME cannot be installed into. The smoke runs as a
@@ -163,7 +164,7 @@ jobs:
             "$smoke/linux-unpacked/resources/daemon-runtime/node/bin/node" "$smoke/package-service-smoke.mjs" --dist "$smoke"
       - name: Packaged service smoke on Windows (skips with its reason)
         if: matrix.os == 'windows-latest'
-        run: node apps/desktop/scripts/package-service-smoke.mjs
+        run: pnpm --filter @getdomovoi/desktop test:package:service
   audit:
     runs-on: ubuntu-latest
     steps:

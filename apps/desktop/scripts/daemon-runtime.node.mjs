@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join, sep } from "node:path"
 import test from "node:test"
 
-import { assertShippedTreeContained, deployCli, fetchNodeArchive, proveCliRuns, nodePins, nodeVersion, proveDaemonRuns, runtimeTarget, sha256Of, writeCommandLaunchers, writeDaemonRuntimeManifest } from "./daemon-runtime.mjs"
+import { assertShippedTreeContained, deployCli, deployDaemon, fetchNodeArchive, proveCliRuns, nodePins, nodeVersion, proveDaemonRuns, runtimeTarget, sha256Of, writeCommandLaunchers, writeDaemonRuntimeManifest } from "./daemon-runtime.mjs"
 import { createHash } from "node:crypto"
 
 test("pins one Node build per platform and architecture the desktop ships for", () => {
@@ -663,6 +663,148 @@ test("deploys the domovoi CLI with the same hoisted pnpm deploy as the daemon", 
     const entry = await deployCli({ repositoryRoot: root, destination: join(root, "cli"), run })
     assert.equal(entry, join(root, "cli", "dist", "index.js"))
     assert.deepEqual(calls, [["pnpm", "--filter", "@getdomovoi/cli", "deploy", "--legacy", "--prod", "--config.node-linker=hoisted", join(root, "cli")]])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// T19: pnpm 11 deploy --legacy runs a filtered production install and records
+// it in the checkout's node_modules/.pnpm-workspace-state-v1.json. The next
+// pnpm command then sees changed settings and aborts, or under CI reinstalls
+// for production. The fake run writes what pnpm 11.5.3 wrote there.
+const workspaceState = join("node_modules", ".pnpm-workspace-state-v1.json")
+const developmentState = `${JSON.stringify({ lastValidatedTimestamp: 1, filteredInstall: false, settings: { dev: true, nodeLinker: "isolated" } }, undefined, 2)}\n`
+const productionState = `${JSON.stringify({ lastValidatedTimestamp: 2, filteredInstall: true, settings: { dev: false, nodeLinker: "hoisted" } }, undefined, 2)}\n`
+
+async function deployThatRecordsProduction(root, { fail = false } = {}) {
+  const { mkdir } = await import("node:fs/promises")
+  return async (_command, args) => {
+    await mkdir(join(root, "node_modules"), { recursive: true })
+    await writeFile(join(root, workspaceState), productionState)
+    if (fail) throw new Error("pnpm deploy failed")
+    const destination = args.at(-1)
+    await mkdir(join(destination, "dist"), { recursive: true })
+    await mkdir(join(destination, "node_modules"), { recursive: true })
+    await writeFile(join(destination, "dist", "index.js"), "")
+    await writeFile(join(destination, "package.json"), JSON.stringify({ name: "deployed", dependencies: {} }))
+  }
+}
+
+test("leaves the checkout's pnpm workspace state as it was after deploying the daemon and the CLI", async () => {
+  const { mkdir } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-state-"))
+  try {
+    await mkdir(join(root, "node_modules"), { recursive: true })
+    await writeFile(join(root, workspaceState), developmentState)
+    const run = await deployThatRecordsProduction(root)
+    await deployDaemon({ repositoryRoot: root, destination: join(root, "out", "daemon"), run })
+    assert.equal(await readFile(join(root, workspaceState), "utf8"), developmentState)
+    await deployCli({ repositoryRoot: root, destination: join(root, "out", "cli"), run })
+    assert.equal(await readFile(join(root, workspaceState), "utf8"), developmentState)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test("restores the checkout's pnpm workspace state when the deploy fails", async () => {
+  const { mkdir } = await import("node:fs/promises")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-state-failed-"))
+  try {
+    await mkdir(join(root, "node_modules"), { recursive: true })
+    await writeFile(join(root, workspaceState), developmentState)
+    const run = await deployThatRecordsProduction(root, { fail: true })
+    await assert.rejects(deployDaemon({ repositoryRoot: root, destination: join(root, "out", "daemon"), run }), /pnpm deploy failed/)
+    assert.equal(await readFile(join(root, workspaceState), "utf8"), developmentState)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+// PR #769 review (P2, twice): another install that finishes in the checkout
+// while the deploy runs writes a newer state, development or production. The
+// restore keeps any state that is not the one this deploy records (production,
+// hoisted, filtered) rather than putting the older snapshot back over it.
+test("keeps another install's newer workspace state written while the deploy ran", async () => {
+  const { mkdir } = await import("node:fs/promises")
+  const newerStates = [
+    { lastValidatedTimestamp: 3, filteredInstall: false, settings: { dev: true, nodeLinker: "isolated" } },
+    { lastValidatedTimestamp: 4, filteredInstall: false, settings: { dev: false, nodeLinker: "isolated" } },
+  ].map((state) => `${JSON.stringify(state, undefined, 2)}\n`)
+  for (const [before, newerState] of [developmentState, undefined].flatMap((before) => newerStates.map((newer) => [before, newer]))) {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-state-newer-"))
+    try {
+      await mkdir(join(root, "node_modules"), { recursive: true })
+      if (before !== undefined) await writeFile(join(root, workspaceState), before)
+      const deploy = await deployThatRecordsProduction(root)
+      const run = async (command, args, options) => {
+        await deploy(command, args, options)
+        await writeFile(join(root, workspaceState), newerState)
+      }
+      await deployDaemon({ repositoryRoot: root, destination: join(root, "out", "daemon"), run })
+      assert.equal(await readFile(join(root, workspaceState), "utf8"), newerState)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+// A state this code cannot read as another install's (no settings, or not
+// JSON) is treated as the deploy's own and restored, so a change in pnpm's
+// format cannot leave the production state behind.
+test("restores the saved workspace state over a state it cannot attribute to another install", async () => {
+  const { mkdir } = await import("node:fs/promises")
+  for (const unknown of [`${JSON.stringify({ lastValidatedTimestamp: 5 })}\n`, "not json"]) {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-state-unknown-"))
+    try {
+      await mkdir(join(root, "node_modules"), { recursive: true })
+      await writeFile(join(root, workspaceState), developmentState)
+      const run = async (_command, args) => {
+        await writeFile(join(root, workspaceState), unknown)
+        const destination = args.at(-1)
+        await mkdir(join(destination, "dist"), { recursive: true })
+        await mkdir(join(destination, "node_modules"), { recursive: true })
+        await writeFile(join(destination, "dist", "index.js"), "")
+      }
+      await deployDaemon({ repositoryRoot: root, destination: join(root, "out", "daemon"), run })
+      assert.equal(await readFile(join(root, workspaceState), "utf8"), developmentState)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+// T19 review round 1: a restore that fails after a failed deploy must not hide
+// why the deploy failed. A directory where the state file was makes both the
+// write and the removal fail.
+test("reports the deploy failure and the failed restore together", async () => {
+  const { mkdir } = await import("node:fs/promises")
+  for (const before of [developmentState, undefined]) {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-state-restore-"))
+    try {
+      await mkdir(join(root, "node_modules"), { recursive: true })
+      if (before !== undefined) await writeFile(join(root, workspaceState), before)
+      const run = async () => {
+        await rm(join(root, workspaceState), { force: true })
+        await mkdir(join(root, workspaceState), { recursive: true })
+        throw new Error("pnpm deploy failed")
+      }
+      await assert.rejects(deployDaemon({ repositoryRoot: root, destination: join(root, "out", "daemon"), run }), (error) => {
+        assert.match(error.message, /pnpm deploy failed/)
+        assert.match(error.message, /pnpm-workspace-state-v1\.json/)
+        return true
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
+test("leaves no pnpm workspace state behind when the checkout had none before the deploy", async () => {
+  const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-state-absent-"))
+  try {
+    const run = await deployThatRecordsProduction(root)
+    await deployDaemon({ repositoryRoot: root, destination: join(root, "out", "daemon"), run })
+    await assert.rejects(readFile(join(root, workspaceState)), { code: "ENOENT" })
   } finally {
     await rm(root, { recursive: true, force: true })
   }

@@ -40,6 +40,7 @@
     "test": "node scripts/signing.node.mjs && node --test scripts/daemon-runtime.node.mjs scripts/package-service-smoke.node.mjs && vitest run --coverage",
     "test:launch": "node --test scripts/launch-smoke-args.node.mjs && electron-vite build && node scripts/launch-smoke.mjs && node scripts/fleet-origin-smoke.mjs && node scripts/fleet-client-smoke.mjs",
     "test:package": "node scripts/package-smoke.mjs",
+    "test:package:service": "node scripts/package-service-smoke.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
