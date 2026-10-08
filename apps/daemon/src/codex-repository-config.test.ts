@@ -289,6 +289,7 @@ const threadReply: Reply = (method) => {
 
 const untrusted = (...paths: string[]) => ({
   projects: Object.fromEntries(paths.map((path) => [realpathSync.native(path), { trust_level: "untrusted" }])),
+  tools: { update_plan: { enabled: true } },
 })
 
 function sentParams(transport: RecordingTransport, method: string): Record<string, unknown>[] {
@@ -360,7 +361,8 @@ describe("Codex project trust", () => {
       ["approvalPolicy", "config", "cwd", "developerInstructions", "model", "sandbox", "serviceName"],
     )
     expect(params).toMatchObject({ cwd: root, sandbox: "workspace-write", serviceName: "domovoi" })
-    expect(Object.keys(params?.config as object)).toEqual(["projects"])
+    expect(Object.keys(params?.config as object)).toEqual(["projects", "tools"])
+    expect((params?.config as Record<string, unknown>).tools).toEqual({ update_plan: { enabled: true } })
   })
 })
 

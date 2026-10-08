@@ -97,6 +97,37 @@ describe("a pairing code shown for a phone", () => {
     expect(errorMessage(again)).toBe("Pairing was refused")
   })
 
+  it("takes a suggested label with a client code, and the device still names itself", async () => {
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
+    daemons.push(daemon)
+    await daemon.start()
+    const owner = await ownerOf(daemon)
+
+    const named = await call(owner, "device.issueCode", { targetClient: "web", label: "Studio browser" })
+    expect(named).not.toHaveProperty("error")
+    const browser = await connect(daemon)
+    const redeemed = await call(browser, "device.redeemCode", {
+      code: (named.result as { code: string }).code, label: "Firefox", protocolVersion,
+    })
+    // The device's own name is the one used (Q37 B).
+    expect((redeemed.result as { device: { label: string } }).device.label).toBe("Firefox")
+
+    // The desktop card's code carries no label, and the device names itself.
+    const unnamed = await call(owner, "device.issueCode", { targetClient: "phone" })
+    const phone = await connect(daemon)
+    const own = await call(phone, "device.redeemCode", {
+      code: (unnamed.result as { code: string }).code, label: "iPhone", protocolVersion,
+    })
+    expect((own.result as { device: { label: string } }).device.label).toBe("iPhone")
+
+    const listed = await call(owner, "device.list", {})
+    expect((listed.result as { devices: { label: string }[] }).devices.map((device) => device.label).sort())
+      .toEqual(["Firefox", "iPhone"])
+
+    // A machine pairing names itself when it claims, so a label there is refused.
+    expect(await call(owner, "device.issueCode", { label: "Desk" })).toHaveProperty("error")
+  })
+
   it("cannot be spent as a machine pairing", async () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     daemons.push(daemon)

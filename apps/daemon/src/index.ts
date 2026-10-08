@@ -39,10 +39,11 @@ async function requestPairingCode(
   config: CliRpcTarget,
   token: string,
   targetClient?: ClientKind,
+  label?: string,
 ): Promise<DeviceIssueCodeResult> {
   return readDaemonResult("device.issueCode", rpcMethods["device.issueCode"].result, await callDaemon({
     target: config, token, method: "device.issueCode",
-    params: targetClient === undefined ? {} : { targetClient },
+    params: targetClient === undefined ? {} : { targetClient, ...(label === undefined ? {} : { label }) },
   }))
 }
 
@@ -77,7 +78,7 @@ async function openWorkspace(target: OpenTarget): Promise<void> {
 
 const help = `Usage: domovoid [options]
        domovoid pair
-       domovoid pair --client <desktop|web|tablet|phone|cli> --label <device label>
+       domovoid pair --client <desktop|web|tablet|phone|cli> [--label <suggested name>]
        domovoid fleet-keychain list
        domovoid fleet-keychain forget <machine-id> --confirm-daemon-stopped
        domovoid open [path]
@@ -92,6 +93,9 @@ const help = `Usage: domovoid [options]
        domovoid skill sign <skill-path> --key <private-key-path>
        domovoid skill trust <public-key> [--trust-file <path>]
        domovoid profile recover --confirm-no-supervisor
+
+Pairing:
+  --label is kept with the code as a suggested name for the device. The device's own name is the one used.
 
 Profile recovery:
   --confirm-no-supervisor asserts that no supervisor will restart this profile.
@@ -221,7 +225,7 @@ async function main() {
     const config = parseDaemonEnvironment(process.env, homedir())
     const token = config.authToken ?? await loadOrCreateDaemonToken(config.credentialPath)
     process.exitCode = await runPairCommand(args, {
-      issue: (targetClient) => requestPairingCode(config, token, targetClient),
+      issue: (targetClient, label) => requestPairingCode(config, token, targetClient, label),
       renderCode: (payload) => renderQrToTerminal(payload),
       stdout: (text) => process.stdout.write(text),
       stderr: (text) => process.stderr.write(text),

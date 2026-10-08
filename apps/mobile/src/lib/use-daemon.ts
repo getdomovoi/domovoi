@@ -11,7 +11,7 @@ import {
 
 import { connectionFault, type ConnectionFault } from "./connection-fault"
 import { openRelayPinStore } from "./credentials"
-import { DaemonConnection, DaemonError, DaemonNotSentError, type DaemonCall, type DaemonStatus } from "./daemon"
+import { DaemonConnection, DaemonError, DaemonNotSentError, type DaemonCall, type DaemonStatus, type TerminalNotification } from "./daemon"
 import type { HandheldClient } from "./protocol-facts"
 import { reconcileRelayPin } from "./relay-pin"
 import { retryDelayMs } from "./reconnect"
@@ -51,6 +51,9 @@ export function useDaemon(
   fleetSink.current = onFleet
   const kindSink = useRef(onKindLearned)
   kindSink.current = onKindLearned
+  // Whoever is reading a watched terminal. A set rather than one callback, so
+  // a screen subscribes and unsubscribes without the connection being rebuilt.
+  const terminalListeners = useRef(new Set<(notification: TerminalNotification) => void>())
   // The kind the connection greets as, which every call must name.
   const [greetedAs, setGreetedAs] = useState<HandheldClient>(client ?? "phone")
 
@@ -112,6 +115,12 @@ export function useDaemon(
         },
         onFleet: (entries) => {
           if (current()) fleetSink.current(entries)
+        },
+        // A watch belongs to the connection that asked for it, so a replaced
+        // connection's late output is not this one's.
+        onTerminal: (notification) => {
+          if (!current()) return
+          for (const listener of terminalListeners.current) listener(notification)
         },
         onStatus: (next) => {
           if (!current()) return
@@ -201,5 +210,11 @@ export function useDaemon(
   // still wrong however many times it is asked.
   const reconnect = useCallback(() => reopen.current?.(), [])
 
-  return { snapshot, status, fault, protocolProblem, call, refresh, reconnect, imageAttachments, clientAccess, client: greetedAs }
+  // Returns the way to stop listening.
+  const subscribeTerminal = useCallback((listener: (notification: TerminalNotification) => void) => {
+    terminalListeners.current.add(listener)
+    return () => { terminalListeners.current.delete(listener) }
+  }, [])
+
+  return { snapshot, status, fault, protocolProblem, call, refresh, reconnect, subscribeTerminal, imageAttachments, clientAccess, client: greetedAs }
 }

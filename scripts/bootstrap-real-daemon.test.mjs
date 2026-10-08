@@ -169,7 +169,7 @@ const withoutSqliteNotice = (stderr) => stderr.replace(/^\(node:\d+\) Experiment
 // service manager expects a daemon. The OS boundary is the manager shim, so no
 // real service is installed and the operator's profile is never read.
 test("domovoi daemon from the installed packages registers the daemon's worker entry, not the CLI's", { timeout: 900_000 }, async (t) => {
-  // Task Scheduler refuses a command over 262 characters, and the installer
+  // schtasks refuses a command over 261 characters, and the installer
   // refuses it first. The runner's own temporary directory, D:\a\_temp, is
   // shorter than the user's, so the node, entry and configuration paths fit.
   const scratch = process.platform === "win32" && process.env.RUNNER_TEMP ? process.env.RUNNER_TEMP : tmpdir()

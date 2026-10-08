@@ -118,14 +118,34 @@ describe("servicePlan", () => {
     }
   })
 
-  it("refuses an overlong Windows command before any files or manager calls", async () => {
+  // schtasks /create refuses a /tr value over 261 characters with "Value for
+  // '/TR' option cannot be more than 261 character(s)", one fewer than its
+  // documentation's 262. With this runtime and configuration, an entry of
+  // 168 characters makes the command exactly 261.
+  const entryOfLength = (length: number) => `C:\\${"a".repeat(length - 17)}\\dist\\index.js`
+
+  it("registers a Windows task command of 261 characters, the most schtasks accepts", () => {
+    const plan = servicePlan({ ...windowsScript, execPath: entryOfLength(168) })
+    const create = plan.commands.find(({ args }) => args[0] === "/create")!
+    const command = create.args[create.args.indexOf("/tr") + 1]!
+    expect(command).toBe(`"C:\\Program Files\\nodejs\\node.exe" "${entryOfLength(168)}" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"`)
+    expect(command).toHaveLength(261)
+  })
+
+  it("refuses a 262 character Windows command before any files or manager calls, naming its longest part", async () => {
     const dependencies = effects()
-    await expect(installService({
-      ...windowsScript,
-      execPath: `C:\\${"a".repeat(190)}\\dist\\index.js`,
-    }, dependencies)).rejects.toThrow(/Windows task command exceeds 262 characters/)
+    await expect(installService({ ...windowsScript, execPath: entryOfLength(169) }, dependencies)).rejects.toThrow(
+      `The Windows task command is 262 characters, and schtasks accepts at most 261. Its longest part is the daemon entry ${entryOfLength(169)} (169 characters). Install Node and Domovoi at shorter absolute paths before installing the service. No service files were changed.`,
+    )
     expect(dependencies.write).not.toHaveBeenCalled()
     expect(dependencies.run).not.toHaveBeenCalled()
+  })
+
+  it("names the Node runtime when it is the longest part of an overlong Windows command", () => {
+    const runtime = `C:\\${"n".repeat(200)}\\node.exe`
+    expect(() => servicePlan({ ...windowsScript, runtime })).toThrow(
+      `The Windows task command is 311 characters, and schtasks accepts at most 261. Its longest part is the Node runtime ${runtime} (212 characters).`,
+    )
   })
 
   it("puts a systemd unit in the asking user's own configuration", () => {

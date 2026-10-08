@@ -1,23 +1,30 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import { CircleStopIcon, TerminalSquareIcon, XIcon } from "lucide-react"
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
 import "@xterm/xterm/css/xterm.css"
 
+import { maximumTerminalReplayCharacters } from "@getdomovoi/protocol"
 import type {
   TerminalClosedNotification,
   TerminalOutputNotification,
+  TerminalOwner,
   TerminalOwnershipNotification,
   TerminalSession,
+  TerminalSummary,
+  TerminalWatchResult,
 } from "@getdomovoi/protocol"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
-import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
+import { composerInbox, type ComposerInbox } from "./composer-inbox"
+import { terminalOutputAttachment } from "./desktop-attachments"
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { terminalIdForSession } from "./terminal-id"
 import { settleTerminalWrite } from "./terminal-input"
 import { terminalQuickKeyData, terminalQuickKeys } from "./terminal-keys"
+import { terminalAttachmentText } from "./terminal-output-text"
 
 export type TerminalControls = {
   clientId: string
@@ -38,60 +45,151 @@ export type TerminalControls = {
       ownership: (event: TerminalOwnershipNotification) => void
     },
   ): () => void
+  // terminal.list: who holds each of a session's shells, whether that
+  // connection is still there, and the grid it set.
+  list?(sessionId: string): Promise<TerminalSummary[]>
+} & (
+  // Reading without holding: terminal.watch and terminal.unwatch, as a pair,
+  // because a watch that cannot be undone keeps this connection in the
+  // shell's audience after the pane is gone. A client that cannot watch
+  // leaves both out, and a read-only pane shows its empty state instead.
+  | {
+    watch(terminalId: string): Promise<TerminalWatchResult>
+    unwatch(terminalId: string): Promise<void>
+  }
+  | { watch?: never, unwatch?: never }
+)
+
+// The interval at which a pane that does not hold the shell reads the holder
+// again. The daemon sends no notice when the holder's connection drops or the
+// holder resizes, so between reads (this interval plus the reply's time, or
+// longer when a read fails or the page throttles timers) the banner can name a
+// holder that has gone and output can draw at the holder's previous grid.
+export const terminalHolderRefreshMs = 5_000
+
+// The pane's xterm history, in rows. Once the normal buffer holds this many
+// rows plus the screen's, xterm drops the oldest row for each new one.
+const terminalScrollback = 5_000
+
+function sameOwner(left: TerminalOwner, right: TerminalOwner): boolean {
+  return left.client === right.client && left.clientId === right.clientId && left.device?.id === right.device?.id
 }
 
-// Four states the pane can be in, each with the atom's meaning for it. Keyed on
-// the union the status is computed from, so a fifth state fails typecheck rather
-// than rendering no dot.
-const terminalStatusMeaning: Record<"closed" | "connected" | "connecting" | "disconnected", StatusMeaning> = {
+// The states the pane can be in, each with the atom's meaning for it. Keyed on
+// the union the status is computed from, so another state fails typecheck
+// rather than rendering no dot. "no shell" and "unavailable" are answers: once
+// the daemon has replied, the pane is not connecting any more.
+type TerminalStatus = "closed" | "connected" | "connecting" | "disconnected" | "no shell" | "unavailable"
+const terminalStatusMeaning: Record<TerminalStatus, StatusMeaning> = {
   closed: "idle",
   connected: "online",
   connecting: "waiting",
   disconnected: "offline",
+  "no shell": "idle",
+  unavailable: "offline",
 }
 
+// Who holds the shell, when the claimant's device has no label: the claim
+// names the client kind it came from and nothing more.
+const clientNoun: Record<TerminalOwner["client"], string> = {
+  desktop: "a desktop",
+  web: "a browser",
+  tablet: "a tablet",
+  phone: "a phone",
+  cli: "the command line",
+}
+
+// The daemon's reply when a session has no shell open. It is a state the
+// watching desktop shows, not an error.
+const terminalMissing = "Terminal does not exist"
+
+// What a refusal says. An RPC error may carry an empty message, and an empty
+// error would leave the pane with nothing to show and its status unsettled.
+function failure(cause: unknown, fallback: string): string {
+  return cause instanceof Error && cause.message.trim() ? cause.message : fallback
+}
+
+type AttachNote = { tone: "done" | "refused", text: string }
+
 export function TerminalPane({
+  composer = composerInbox,
   connected,
   controls,
+  historyRows = terminalScrollback,
+  holderRefreshMs = terminalHolderRefreshMs,
   readOnly = false,
   machineName,
   sessionId,
 }: {
+  composer?: ComposerInbox
   connected: boolean
   controls: TerminalControls
+  // xterm's scrollback, in rows. Tests shorten it so filling it is cheap.
+  historyRows?: number
+  holderRefreshMs?: number
   readOnly?: boolean
   machineName: string
   sessionId: string | null
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<Terminal | null>(null)
+  // Set once the history has filled, and kept: a later clear or resize shrinks
+  // the buffer again, but rows that scrolled out do not come back.
+  const historyFilledRef = useRef(false)
   const terminalId = useMemo(
     () => sessionId ? terminalIdForSession(sessionId) : undefined,
     [sessionId],
   )
   const [metadata, setMetadata] = useState<TerminalSession>()
+  const [claimHeld, setClaimHeld] = useState(true)
+  const [missing, setMissing] = useState(false)
   const [error, setError] = useState("")
   const [closed, setClosed] = useState(false)
   const [restartKey, setRestartKey] = useState(0)
+  const [attachNote, setAttachNote] = useState<AttachNote>()
+  // Whether an xterm is mounted to read output from. A disconnect disposes it
+  // while the last metadata stays on screen.
+  const [rendered, setRendered] = useState(false)
+  // terminal.watch said the record does not start at the shell's start.
+  const [earlierDropped, setEarlierDropped] = useState(false)
+  // terminal.create's record reached the replay limit. That reply has no
+  // dropped flag, so the start may or may not have gone.
+  const [recordFull, setRecordFull] = useState(false)
+  const watching = readOnly && controls.watch !== undefined && controls.unwatch !== undefined
+  const canAttach = useSyncExternalStore(
+    composer.subscribe,
+    () => composer.canReceive(sessionId),
+    () => false,
+  )
 
   useEffect(() => {
     const container = containerRef.current
-    if (readOnly || !container || !connected || !sessionId || !terminalId) return
+    if (!container || !connected || !sessionId || !terminalId) return
+    const watch = controls.watch
+    const unwatch = controls.unwatch
+    // Untyped callers can still pass half the pair; never watch without a
+    // way to stop.
+    if (readOnly && (!watch || !unwatch)) return
     let active = true
     let attached = false
     let ownsTerminal = false
     setMetadata(undefined)
+    setClaimHeld(true)
+    setMissing(false)
     setError("")
     setClosed(false)
+    setAttachNote(undefined)
+    setEarlierDropped(false)
+    setRecordFull(false)
     const styles = getComputedStyle(container)
     const terminal = new Terminal({
-      cursorBlink: true,
+      cursorBlink: !readOnly,
       disableStdin: true,
       fontFamily: "JetBrains Mono Variable, JetBrains Mono, monospace",
       fontSize: 11,
       lineHeight: 1.85,
       screenReaderMode: true,
-      scrollback: 5_000,
+      scrollback: historyRows,
       theme: {
         background: styles.getPropertyValue("--code").trim() || "#151515",
         foreground: styles.getPropertyValue("--foreground").trim() || "#eeeeec",
@@ -103,7 +201,31 @@ export function TerminalPane({
     terminal.loadAddon(fit)
     terminal.open(container)
     xtermRef.current = terminal
+    setRendered(true)
     fit.fit()
+    // Whether the history has filled, so its oldest rows may have gone. Taken
+    // on the normal buffer (the alternate screen keeps no history) at every
+    // point rows can be pushed out: a line feed or any other scroll, both
+    // inside the parse so a clear later in the same write cannot hide it, and
+    // either side of a resize, whose reflow can push rows out too.
+    historyFilledRef.current = false
+    // A resize to fewer rows lowers the capacity before reflow, so it is
+    // checked against the smaller of the two heights.
+    const noteHistory = (rows = terminal.rows) => {
+      if (terminal.buffer.normal.length >= historyRows + Math.min(rows, terminal.rows)) historyFilledRef.current = true
+    }
+    const fed = terminal.onLineFeed(() => noteHistory())
+    const scrolled = terminal.onScroll(() => noteHistory())
+    const resizeTo = (cols: number, rows: number) => {
+      noteHistory(rows)
+      terminal.resize(cols, rows)
+      noteHistory()
+    }
+    const refit = () => {
+      noteHistory(fit.proposeDimensions()?.rows)
+      fit.fit()
+      noteHistory()
+    }
     const unsubscribe = controls.subscribe(terminalId, {
       output: ({ data }) => terminal.write(data),
       closed: ({ exitCode }) => {
@@ -111,53 +233,118 @@ export function TerminalPane({
         terminal.write(`\r\n[process exited${exitCode === undefined ? "" : ` ${exitCode}`}]\r\n`)
       },
       ownership: ({ owner }) => {
-        ownsTerminal = owner.clientId === controls.clientId
+        // A watcher never holds the shell, whatever the notification says.
+        const owned = ownsTerminal
+        ownsTerminal = !readOnly && owner.clientId === controls.clientId
         terminal.options.disableStdin = !ownsTerminal
+        // Taking the shell makes this pane's grid the shell's grid.
+        if (ownsTerminal && !owned && attached) {
+          refit()
+          void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
+        }
+        setClaimHeld(true)
         setMetadata((current) => current ? { ...current, owner } : current)
       },
     })
     const input = terminal.onData((data) => {
       if (!ownsTerminal) return
       void controls.write(terminalId, data).catch((cause: unknown) => {
-        if (active) setError(cause instanceof Error ? cause.message : "Terminal input failed")
+        if (active) setError(failure(cause, "Terminal input failed"))
       })
     })
+    // The shell has one grid, the holder's. A pane that does not hold it draws
+    // at that grid rather than its own width, or every cursor-positioned
+    // character the shell prints lands in the wrong column.
     const observer = new ResizeObserver(() => {
-      fit.fit()
-      if (!attached || !ownsTerminal) return
+      if (attached && !ownsTerminal) return
+      refit()
+      if (!attached) return
       void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
     })
     observer.observe(container)
-    void controls.create(
-      sessionId,
-      { cols: terminal.cols, rows: terminal.rows },
-      terminalId,
-    ).then(
-      (session) => {
-        if (!active) return
-        attached = true
-        ownsTerminal = session.owner.clientId === controls.clientId
-        terminal.options.disableStdin = !ownsTerminal
-        setMetadata(session)
-        if (session.buffer) terminal.write(session.buffer)
-        if (ownsTerminal) {
-          void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
-          terminal.focus()
-        }
-      },
-      (cause: unknown) => {
-        if (active) setError(cause instanceof Error ? cause.message : "Terminal could not start")
-      },
-    )
+    // Nothing on the wire says when the holder's connection drops or the
+    // holder resizes, so a pane that does not hold the shell reads both from
+    // terminal.list on an interval. Replies come in order on one connection,
+    // so a reply never undoes an ownership notice that arrived before it.
+    const list = controls.list
+    const holderRefresh = list ? setInterval(() => {
+      if (!attached || ownsTerminal) return
+      void list(sessionId).then((terminals) => {
+        if (!active || ownsTerminal) return
+        const current = terminals.find((candidate) => candidate.terminalId === terminalId)
+        if (!current || current.state !== "live") return
+        setClaimHeld(current.claimHeld)
+        setMetadata((shown) => shown && !sameOwner(shown.owner, current.owner) ? { ...shown, owner: current.owner } : shown)
+        if (terminal.cols !== current.cols || terminal.rows !== current.rows) resizeTo(current.cols, current.rows)
+      }, () => undefined)
+    }, holderRefreshMs) : undefined
+    if (readOnly && watch) {
+      // The watching desktop reads the shell the way the phone does: the
+      // daemon's kept record, then what it prints from here on. Nothing it
+      // does reaches the process, and it never opens a shell of its own.
+      void watch(terminalId).then(
+        (record) => {
+          if (!active) return
+          attached = true
+          const { buffer, claimHeld: held, cols, cwd, owner, rows, shell, state } = record
+          setMetadata({ terminalId, sessionId, cols, rows, shell, cwd, buffer, owner })
+          setClaimHeld(held)
+          resizeTo(cols, rows)
+          setEarlierDropped(record.earlierOutputDropped)
+          if (buffer) terminal.write(buffer)
+          if (state === "closed") {
+            setClosed(true)
+            terminal.write(`\r\n[process exited${record.exitCode === undefined ? "" : ` ${record.exitCode}`}]\r\n`)
+          }
+        },
+        (cause: unknown) => {
+          if (!active) return
+          const message = failure(cause, "Terminal could not be read")
+          if (message === terminalMissing) setMissing(true)
+          else setError(message)
+        },
+      )
+    } else {
+      void controls.create(
+        sessionId,
+        { cols: terminal.cols, rows: terminal.rows },
+        terminalId,
+      ).then(
+        (session) => {
+          if (!active) return
+          attached = true
+          ownsTerminal = session.owner.clientId === controls.clientId
+          terminal.options.disableStdin = !ownsTerminal
+          setMetadata(session)
+          // The daemon keeps the last maximumTerminalReplayCharacters
+          // characters, so a record that long may be missing its start.
+          setRecordFull(session.buffer.length >= maximumTerminalReplayCharacters)
+          if (!ownsTerminal) resizeTo(session.cols, session.rows)
+          if (session.buffer) terminal.write(session.buffer)
+          if (ownsTerminal) {
+            void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
+            terminal.focus()
+          }
+        },
+        (cause: unknown) => {
+          if (active) setError(failure(cause, "Terminal could not start"))
+        },
+      )
+    }
     return () => {
       active = false
+      if (holderRefresh !== undefined) clearInterval(holderRefresh)
+      setRendered(false)
       unsubscribe()
       observer.disconnect()
       input.dispose()
+      fed.dispose()
+      scrolled.dispose()
       terminal.dispose()
       if (xtermRef.current === terminal) xtermRef.current = null
+      if (readOnly && unwatch) void unwatch(terminalId).catch(() => undefined)
     }
-  }, [connected, controls, readOnly, restartKey, sessionId, terminalId])
+  }, [connected, controls, historyRows, holderRefreshMs, readOnly, restartKey, sessionId, terminalId])
 
   if (!sessionId) {
     return (
@@ -171,7 +358,7 @@ export function TerminalPane({
     )
   }
 
-  if (readOnly) {
+  if (readOnly && !watching) {
     return (
       <Empty className="min-h-full border-0 text-muted-foreground">
         <EmptyHeader>
@@ -183,15 +370,22 @@ export function TerminalPane({
     )
   }
 
-  const writable = metadata?.owner.clientId === controls.clientId
-  const terminalStatus = closed ? "closed" : connected ? metadata ? "connected" : "connecting" : "disconnected"
-  // One selection drives the primary button and the reason shown while it is
-  // inert, so the reason names the control that is actually there.
-  const primaryAction = metadata && !writable && !closed ? "take-over" : closed || error ? "restart" : "interrupt"
+  const writable = !readOnly && metadata?.owner.clientId === controls.clientId
+  const terminalStatus: TerminalStatus = closed ? "closed"
+    : !connected ? "disconnected"
+      : metadata ? "connected"
+        : missing ? "no shell"
+          : error ? "unavailable"
+            : "connecting"
+  // One selection drives the header's primary button and the reason shown
+  // while it is inert, so the reason names the control that is actually there.
+  // Taking the shell lives in the claim banner, not here.
+  const primaryAction = closed || error ? "restart" : "interrupt"
+  const claimable = metadata !== undefined && !writable && !closed
   const sendInterrupt = () => {
     if (!terminalId || !writable) return
     void controls.write(terminalId, "\x03").catch((cause: unknown) => {
-      setError(cause instanceof Error ? cause.message : "Terminal interrupt failed")
+      setError(failure(cause, "Terminal interrupt failed"))
     })
   }
   const sendInput = (data: string) => {
@@ -203,14 +397,14 @@ export function TerminalPane({
       () => xtermRef.current,
       () => terminal.focus(),
       (cause: unknown) => {
-        setError(cause instanceof Error ? cause.message : "Terminal input failed")
+        setError(failure(cause, "Terminal input failed"))
       },
     )
   }
   const close = () => {
     if (!terminalId || !writable) return
     void controls.close(terminalId).catch((cause: unknown) => {
-      setError(cause instanceof Error ? cause.message : "Terminal could not close")
+      setError(failure(cause, "Terminal could not close"))
     })
   }
   const restart = () => {
@@ -218,14 +412,72 @@ export function TerminalPane({
     setRestartKey((current) => current + 1)
   }
   const claim = () => {
-    if (!terminalId) return
+    if (!terminalId || readOnly) return
     void controls.claim(terminalId).then(
       ({ owner }) => setMetadata((current) => current ? { ...current, owner } : current),
       (cause: unknown) => {
-        setError(cause instanceof Error ? cause.message : "Terminal takeover failed")
+        setError(failure(cause, "Terminal takeover failed"))
       },
     )
   }
+  const attachOutput = async () => {
+    const terminal = xtermRef.current
+    if (!terminal) return
+    // xterm parses writes later. An empty write's callback runs once every
+    // write queued before it is in the buffer, so the file holds what was
+    // printed up to the click rather than an older screen.
+    await new Promise<void>((resolve) => terminal.write("", resolve))
+    // A disconnect or session switch while waiting disposed this renderer.
+    if (xtermRef.current !== terminal) return
+    const { content, marked } = terminalAttachmentText(
+      terminal.buffer.active,
+      { historyFilled: historyFilledRef.current, earlierDropped, recordFull },
+    )
+    if (!content) {
+      setAttachNote({ tone: "refused", text: "Nothing has been printed yet." })
+      return
+    }
+    const outcome = composer.offer(sessionId, terminalOutputAttachment(content))
+    const attached = "Attached to the composer as terminal-output.txt."
+    setAttachNote(
+      outcome === "attached"
+        ? {
+            tone: "done",
+            text: marked === "cut"
+              ? `${attached} The start was cut to fit the attachment limit.`
+              : marked === "history" ? `${attached} The pane's history filled up, so earlier output may be missing.` : attached,
+          }
+        : outcome === "full"
+          ? { tone: "refused", text: "The composer already holds the most attachments. Remove one to attach this output." }
+          : { tone: "refused", text: "The composer for this session is not open." },
+    )
+  }
+
+  const holder = metadata?.owner
+  const claimText = writable
+    ? "You hold this shell"
+    : !claimHeld
+      ? "Nobody holds this shell"
+      : `Claimed by ${holder?.device?.label ?? (holder ? clientNoun[holder.client] : "another device")}`
+  const claimNote = writable
+    ? "One claimant at a time. Other devices can watch."
+    : readOnly
+      ? "This view reads the shell and cannot take it."
+      : "Reading is free, typing needs the claim."
+  // Q340 A: the design's footer reads "read-only, the agent owns this shell".
+  // Here the shell is an interactive PTY a person opened, so the footer says
+  // who can type in it instead. A closed shell holds no claim, so nobody can.
+  // Offline, the daemon has released this connection's claim and may have
+  // handed or closed the shell since, so the footer says that is not known.
+  const footerNote = closed
+    ? "closed, the shell has exited"
+    : !connected
+      ? "not connected, who holds the shell is not known"
+      : readOnly
+        ? "read-only, this device watches"
+        : writable
+          ? "interactive, this device holds the shell"
+          : "read-only until you take the shell"
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-code">
@@ -246,42 +498,70 @@ export function TerminalPane({
           {/* "connecting" was the fallback for an unknown shell, which said the
               wrong thing while disconnected: a pane that is not connected is not
               on its way to being. */}
-          pty · {machineName} · {metadata?.shell ?? (connected ? "connecting" : "shell unknown")} · {metadata?.cwd ?? "session worktree"}
+          pty · {machineName} · {metadata?.shell ?? (terminalStatus === "connecting" ? "connecting" : "shell unknown")} · {metadata?.cwd ?? "session worktree"}
         </span>
-        <div className="ml-auto flex items-center gap-1">
-          {primaryAction === "take-over" ? (
-            <Button variant="outline" size="xs" disabled={!connected} onClick={claim}>
-              Take over
+        {/* A watcher can neither interrupt, restart nor close a shell, so the
+            controls that could only ever be inert are not drawn. */}
+        {!readOnly ? (
+          <div className="ml-auto flex items-center gap-1">
+            {primaryAction === "restart" ? (
+              <Button variant="outline" size="xs" disabled={!connected} onClick={restart}>
+                <TerminalSquareIcon data-icon="inline-start" />Restart
+              </Button>
+            ) : (
+              <Button variant="outline" size="xs" disabled={!connected || !writable} onClick={sendInterrupt}>
+                <CircleStopIcon data-icon="inline-start" />Interrupt ⌃C
+              </Button>
+            )}
+            <Button variant="ghost" size="icon-xs" aria-label="Close terminal" disabled={closed || !connected || !writable} onClick={close}>
+              <XIcon />
             </Button>
-          ) : primaryAction === "restart" ? (
-            <Button variant="outline" size="xs" disabled={!connected} onClick={restart}>
-              <TerminalSquareIcon data-icon="inline-start" />Restart
-            </Button>
-          ) : (
-            <Button variant="outline" size="xs" disabled={!connected} onClick={sendInterrupt}>
-              <CircleStopIcon data-icon="inline-start" />Interrupt ⌃C
-            </Button>
-          )}
-          {metadata ? (
-            <span className="hidden font-machine text-[10px] text-faint sm:inline">
-              {metadata.owner.client}-owned
-            </span>
-          ) : null}
-          <Button variant="ghost" size="icon-xs" aria-label="Close terminal" disabled={closed || !connected || !writable} onClick={close}>
-            <XIcon />
-          </Button>
-        </div>
+          </div>
+        ) : closed || error ? (
+          // A watched shell that exited is a closed record, and a refused
+          // watch may be transient. Either way the holder's shell is read
+          // again only by watching again.
+          <div className="ml-auto flex items-center gap-1">
+            <Button variant="outline" size="xs" disabled={!connected} onClick={restart}>Check again</Button>
+          </div>
+        ) : null}
       </div>
+      {metadata && !closed && connected ? (
+        <div
+          className={`flex shrink-0 items-center gap-2.5 border-b px-3.5 py-2.5 ${writable ? "bg-ok-background" : "bg-info-background"}`}
+        >
+          <span aria-hidden className={`size-1.5 shrink-0 rounded-full ${writable ? "bg-success" : "bg-info"}`} />
+          {/* A status region, so a change of holder is announced and not only
+              redrawn: it decides whether typing here reaches the shell. */}
+          <div role="status" className="min-w-0 flex-1">
+            <p className={`text-xs ${writable ? "text-ok-foreground" : "text-info-foreground"}`}>{claimText}</p>
+            <p className={`text-[11px] leading-snug ${writable ? "text-ok-dim" : "text-info-dim"}`}>{claimNote}</p>
+          </div>
+          {claimable ? (
+            <Button
+              variant="outline"
+              size="xs"
+              className="shrink-0 border-info-border text-info-foreground"
+              disabled={readOnly || !connected}
+              onClick={claim}
+            >
+              Take the shell
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
       {/* The controls above go inert on disconnect, Restart included once the
           process has exited. A disabled control with no reason reads as broken
           rather than unavailable, so the reason is on screen beside them. */}
       {!connected ? (
         <p className="border-b bg-sidebar px-3 py-1.5 text-[11px] text-muted-foreground">
-          {primaryAction === "restart"
-            ? "Reconnect to the execution machine to restart this terminal."
-            : primaryAction === "take-over"
-              ? "Reconnect to the execution machine to take over or close this terminal."
-              : "Reconnect to the execution machine to interrupt or close this terminal."}
+          {readOnly
+            ? "Reconnect to the execution machine to read this shell."
+            : primaryAction === "restart"
+              ? "Reconnect to the execution machine to restart this terminal."
+              : claimable
+                ? "Reconnect to the execution machine to take the shell or close this terminal."
+                : "Reconnect to the execution machine to interrupt or close this terminal."}
         </p>
       ) : null}
       {error ? (
@@ -291,29 +571,77 @@ export function TerminalPane({
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       ) : null}
-      <div ref={containerRef} className="min-h-0 flex-1 p-3" />
-      <div
-        className="hidden shrink-0 items-center gap-2 overflow-x-auto border-t bg-sidebar px-3 py-2 [@media(any-pointer:coarse)]:flex"
-        aria-label="Terminal quick keys"
-        role="toolbar"
-      >
-        {terminalQuickKeys.map((key) => (
-          <Button
-            key={key.ariaLabel}
-            type="button"
-            variant="outline"
-            className="h-11 min-w-11 shrink-0 touch-manipulation px-3 font-machine text-[11px]"
-            aria-label={key.ariaLabel}
-            disabled={!connected || closed || !metadata || !writable}
-            onClick={() => sendInput(terminalQuickKeyData(
-              key,
-              xtermRef.current?.modes.applicationCursorKeysMode ?? false,
-            ))}
-          >
-            {key.label}
-          </Button>
-        ))}
-      </div>
+      {/* Outside the stream, so a screen clear or a long scrollback cannot
+          take the note away while the record is still partial. */}
+      {earlierDropped ? (
+        <p className="border-b bg-sidebar px-3 py-1.5 text-[11px] text-muted-foreground">
+          Earlier output was not kept. The daemon's record of this shell starts after it.
+        </p>
+      ) : recordFull ? (
+        <p className="border-b bg-sidebar px-3 py-1.5 text-[11px] text-muted-foreground">
+          The daemon's record of this shell is full, so earlier output may not have been kept.
+        </p>
+      ) : null}
+      {missing ? (
+        <Empty className="min-h-0 flex-1 border-0 text-muted-foreground">
+          <EmptyHeader>
+            <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
+            <EmptyTitle>No shell is open in this session</EmptyTitle>
+            {/* Read-only covers a watching device and an archived session, and
+                only the first will ever see a shell open, so the line promises
+                neither. */}
+            <EmptyDescription>This view reads a shell. It cannot open one.</EmptyDescription>
+          </EmptyHeader>
+          <EmptyContent>
+            <Button variant="outline" size="xs" disabled={!connected} onClick={restart}>Check again</Button>
+          </EmptyContent>
+        </Empty>
+      ) : null}
+      {/* The stream stays mounted while the empty state shows, so Check again
+          finds the element it reads into. */}
+      <div ref={containerRef} hidden={missing} className="min-h-0 flex-1 p-3" />
+      {!readOnly ? (
+        <div
+          className="hidden shrink-0 items-center gap-2 overflow-x-auto border-t bg-sidebar px-3 py-2 [@media(any-pointer:coarse)]:flex"
+          aria-label="Terminal quick keys"
+          role="toolbar"
+        >
+          {terminalQuickKeys.map((key) => (
+            <Button
+              key={key.ariaLabel}
+              type="button"
+              variant="outline"
+              className="h-11 min-w-11 shrink-0 touch-manipulation px-3 font-machine text-[11px]"
+              aria-label={key.ariaLabel}
+              disabled={!connected || closed || !metadata || !writable}
+              onClick={() => sendInput(terminalQuickKeyData(
+                key,
+                xtermRef.current?.modes.applicationCursorKeysMode ?? false,
+              ))}
+            >
+              {key.label}
+            </Button>
+          ))}
+        </div>
+      ) : null}
+      {metadata ? (
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-t bg-sidebar px-3 py-2.5">
+          {/* Shown only while this session's composer is open to receive it
+              and a renderer holds output to read, so the button never hands
+              output to a draft that is not there or reads from nothing. */}
+          {canAttach && rendered ? (
+            <Button variant="secondary" size="xs" onClick={() => void attachOutput()}>
+              Attach this output to the composer
+            </Button>
+          ) : null}
+          {attachNote ? (
+            <span role="status" className={`text-[11px] ${attachNote.tone === "done" ? "text-muted-foreground" : "text-destructive"}`}>
+              {attachNote.text}
+            </span>
+          ) : null}
+          <span className="ml-auto font-machine text-[10.5px] text-faint">{footerNote}</span>
+        </div>
+      ) : null}
     </div>
   )
 }

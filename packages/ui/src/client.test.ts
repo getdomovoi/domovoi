@@ -686,6 +686,57 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  // A watcher names no client identity: it types nothing, and nothing it said
+  // about itself could authorize input. The request carries the terminal id
+  // and nothing more.
+  it("reads a session's terminals without holding them", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      budgets,
+      clientId: "desktop-client-1",
+    })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const summary = {
+      terminalId: "terminal-1",
+      sessionId: "session-billing",
+      cols: 120,
+      rows: 32,
+      shell: "bash",
+      cwd: "/worktrees/billing",
+      owner: { client: "phone", clientId: "phone-client-1" },
+      claimHeld: true,
+      openedAt: "2026-10-07T14:04:00.000Z",
+      state: "live",
+    }
+
+    const listing = client.listTerminals("session-billing")
+    expect(JSON.parse(socket.sent.at(-1)!)).toMatchObject({ method: "terminal.list", params: { sessionId: "session-billing" } })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: { terminals: [summary] } })
+    await expect(listing).resolves.toEqual([summary])
+
+    const watching = client.watchTerminal("terminal-1")
+    const watchRequest = JSON.parse(socket.sent.at(-1)!) as { method: string, params: unknown }
+    expect(watchRequest).toMatchObject({ method: "terminal.watch" })
+    expect(watchRequest.params).toEqual({ terminalId: "terminal-1" })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 3,
+      result: { ...summary, buffer: "$ pnpm test\r\n", earlierOutputDropped: false, watchedAt: "2026-10-07T14:05:00.000Z" },
+    })
+    await expect(watching).resolves.toMatchObject({ buffer: "$ pnpm test\r\n", claimHeld: true })
+
+    const unwatching = client.unwatchTerminal("terminal-1")
+    const unwatchRequest = JSON.parse(socket.sent.at(-1)!) as { method: string, params: unknown }
+    expect(unwatchRequest).toMatchObject({ method: "terminal.unwatch" })
+    expect(unwatchRequest.params).toEqual({ terminalId: "terminal-1" })
+    socket.receive({ jsonrpc: "2.0", id: 4, result: { accepted: true } })
+    await expect(unwatching).resolves.toBeUndefined()
+    client.disconnect()
+  })
+
   it("does not retry a rejected daemon credential", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
       budgets,

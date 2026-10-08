@@ -60,6 +60,8 @@ type OpenPairing = {
   // it is shown and cannot be talked up when it is spent.
   targetClient?: ClientKind
   clientAccess?: ClientAccess
+  // Suggested name retained for a follow-up pairing payload; nothing reads it yet.
+  label?: string
 }
 
 function digestOf(code: string): string {
@@ -86,7 +88,7 @@ export class PairingCodeService {
 
   // Issuing ends any code still open; replacedPairingId names it so its issuer
   // can be told.
-  issue(nowMs: number, targetClient?: ClientKind, clientAccess?: ClientAccess): {
+  issue(nowMs: number, targetClient?: ClientKind, clientAccess?: ClientAccess, label?: string): {
     pairingId: string
     code: string
     expiresAt: string
@@ -106,6 +108,7 @@ export class PairingCodeService {
       attempts: 0,
       ...(targetClient === undefined ? {} : { targetClient }),
       ...(clientAccess === undefined ? {} : { clientAccess }),
+      ...(label === undefined ? {} : { label }),
     }
     return {
       pairingId,
@@ -150,6 +153,9 @@ export class PairingCodeService {
     let paired: DevicePairing
     try {
       paired = this.#devices.pair({
+        // The issuer's label is kept only as a suggested name. The device's
+        // own name is used (Q37 B), as the phone's "Name this phone" field
+        // and the CLI's --label promise.
         label: input.label,
         binding: {
           kind: "client",
