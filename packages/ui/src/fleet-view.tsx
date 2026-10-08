@@ -45,7 +45,7 @@ import {
   asOf,
   machineAgents,
   machineFacts,
-  readingClock,
+  readingTime,
   unknownAgentsReason,
   useReadOnVisit,
   type FleetAccessState,
@@ -360,7 +360,7 @@ function StalledSessions({ id, machine, facts }: { id: string; machine: FleetMac
       </p>
     )
   }
-  const time = facts.readAt === undefined ? "" : ` at ${readingClock.format(new Date(facts.readAt))}`
+  const time = facts.readAt === undefined ? "" : ` at ${readingTime(facts.readAt)}`
   if (typeof facts.sessions === "number") {
     return (
       <p id={id} className="m-0 px-[15px] pb-3 text-[11.5px] leading-relaxed text-muted-foreground">

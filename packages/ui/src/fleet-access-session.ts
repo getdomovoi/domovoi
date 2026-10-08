@@ -56,17 +56,30 @@ export type MachineFacts =
   | { known: true; providers: readonly ProviderRuntime[]; sessions: MachineReading["sessions"] | number; readAt?: string; stale: boolean }
   | { known: false; reason: string }
 
-export const readingClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+const readingClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+const readingDay = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short" })
+
+// When a reading was taken: the time for today's, with the day before it for
+// an older one, so a reading from yesterday never passes for this morning's.
+export function readingTime(readAt: string): string {
+  const at = new Date(readAt)
+  const time = readingClock.format(at)
+  return at.toDateString() === new Date(Date.now()).toDateString() ? time : `${readingDay.format(at)} ${time}`
+}
 
 export function asOf(readAt: string | undefined): string | undefined {
-  return readAt === undefined ? undefined : `as of ${readingClock.format(new Date(readAt))}`
+  return readAt === undefined ? undefined : `as of ${readingTime(readAt)}`
 }
 
 // The home daemon routes a read only to a healthy or reconnecting machine
-// (eligibility in apps/daemon/src/fleet-client-route.ts), and it is not
-// hearing a reconnecting one. Any other health dates what the machine last
-// said rather than showing it as current.
-const currentHealth: FleetMachine["health"] = "healthy"
+// (eligibility in apps/daemon/src/fleet-client-route.ts). A reconnecting
+// machine is one the home daemon is not hearing, so its reading is current
+// only when this client read it after the home daemon's latest heartbeat. Any
+// other health dates what the machine last said.
+function currentFor(machine: FleetMachine, readAt: string): boolean {
+  if (machine.health === "healthy") return true
+  return machine.health === "reconnecting" && Date.parse(readAt) >= Date.parse(machine.heartbeat.lastSeenAt)
+}
 
 // A snapshot the shell holds for a machine: its own home daemon, or the
 // machine it is attached to. Live while that connection is open; a closed
@@ -102,7 +115,7 @@ export function machineFacts(
     // depend on the home route.
     const stale = useHeld
       ? !held.live
-      : !input.connected || machine.health !== currentHealth || admitted?.unanswered === true
+      : !input.connected || !currentFor(machine, reading.readAt) || admitted?.unanswered === true
     return { known: true, providers: reading.providers, sessions: reading.sessions, readAt: reading.readAt, stale }
   }
   if (machine.id === input.currentMachineId && input.providers) {

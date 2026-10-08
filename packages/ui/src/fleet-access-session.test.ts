@@ -202,6 +202,37 @@ async function admit(snapshot = workspaceSnapshot()): Promise<void> {
   await pending
 }
 
+it("names the day of a reading that is not from today", () => {
+  const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+  const day = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short" })
+  const today = new Date(2026, 9, 8, 15, 0)
+  const earlier = new Date(2026, 9, 8, 9, 30)
+  const yesterday = new Date(2026, 9, 7, 23, 50)
+  vi.setSystemTime(today)
+
+  expect(asOf(earlier.toISOString())).toBe(`as of ${clock.format(earlier)}`)
+  expect(asOf(yesterday.toISOString())).toBe(`as of ${day.format(yesterday)} ${clock.format(yesterday)}`)
+})
+
+it("keeps a reconnecting machine's reading current when this client read it after the home daemon's latest heartbeat", () => {
+  const heard = "2026-10-06T14:00:00.000Z"
+  const machine = (id: string, label: string): FleetEntry => ({ kind: "machine", machine: {
+    id, label, self: false, health: "reconnecting", platform: "linux", arch: "x64", version: "0.1.0", protocolVersion: "0.1.0",
+    connection: "tailnet", capabilities: ["sessions"], transports: [], heartbeat: { state: "offline", lastSeenAt: heard },
+  } })
+  const answered = { id: `machine-${"b".repeat(32)}`, readAt: "2026-10-06T14:05:00.000Z" }
+  const silent = { id: `machine-${"c".repeat(32)}`, readAt: "2026-10-06T13:55:00.000Z" }
+  const rows = fleetAgents([machine(answered.id, "answered"), machine(silent.id, "silent")], {
+    readings: {},
+    clientAccess: Object.fromEntries([answered, silent].map(({ id, readAt }) =>
+      [id, { state: "admitted" as const, deviceId, reading: { providers: [], sessions: [], readAt } }])),
+    currentMachineId: machineId,
+    connected: true,
+  })
+
+  expect(rows.map((row) => "stale" in row ? row.stale : undefined)).toEqual([undefined, asOf(silent.readAt)])
+})
+
 it("dials at most four reads at once, across callers, and frees a slot only when a read ends", async () => {
   await admit()
   const before = routeCalls

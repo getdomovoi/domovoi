@@ -104,6 +104,12 @@ function admitted(machineReading: MachineReading): FleetAccessState {
 }
 
 const clock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
+const day = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short" })
+
+// A reading from a fixed earlier day is labelled with its day and time.
+function earlier(readAt: string): string {
+  return `${day.format(new Date(readAt))} ${clock.format(new Date(readAt))}`
+}
 
 // The card's facts as the design draws them: a label and its value per row.
 function facts(card: HTMLElement): Record<string, string> {
@@ -147,7 +153,7 @@ it("keeps an unreachable machine with a danger border, dates its last reading an
   })
 
   const card = screen.getByRole("group", { name: "studio" })
-  const asOf = `as of ${clock.format(new Date(readAt))}`
+  const asOf = `as of ${earlier(readAt)}`
   expect(facts(card)).toEqual({
     TRANSPORT: "tailnet · not answering",
     AGENTS: `codex · ${asOf}`,
@@ -162,7 +168,7 @@ it("keeps an unreachable machine with a danger border, dates its last reading an
   expect(stalled.getAttribute("aria-expanded")).toBe("true")
   const detail = document.getElementById(stalled.getAttribute("aria-controls") ?? "")
   expect(detail?.textContent).toContain("Fix the flaky replay test")
-  expect(detail?.textContent).toContain(`when Domovoi last read studio at ${clock.format(new Date(readAt))}`)
+  expect(detail?.textContent).toContain(`when Domovoi last read studio at ${earlier(readAt)}`)
   expect(detail?.textContent).toContain("has not reported them stopped")
 })
 
@@ -223,8 +229,10 @@ it("reads each admitted machine when the view opens", () => {
 
 it("dates a reading the machine did not answer, and one from a machine the home daemon is not hearing", () => {
   const readAt = "2026-10-06T14:03:00.000Z"
-  const asOf = `as of ${clock.format(new Date(readAt))}`
-  const lab = { ...studio, id: `machine-${"f".repeat(32)}`, label: "lab", health: "reconnecting" as const }
+  const asOf = `as of ${earlier(readAt)}`
+  // The home daemon heard lab after this client's reading, then lost it.
+  const lab = { ...studio, id: `machine-${"f".repeat(32)}`, label: "lab", health: "reconnecting" as const,
+    heartbeat: { state: "offline" as const, lastSeenAt: "2026-10-06T14:10:00.000Z" } }
   renderFleet({
     entries: entries(local, { ...studio, health: "healthy" }, lab),
     clientAccess: {
@@ -278,7 +286,7 @@ it("dates a snapshot kept after its connection closed and prefers a newer admiss
     clientAccess: { [studio.id]: admitted(reading({ providers: [codex], readAt: newer })) },
   })
 
-  expect(facts(screen.getByRole("group", { name: "workshop" })).AGENTS).toBe(`claude-code · as of ${clock.format(new Date(kept))}`)
+  expect(facts(screen.getByRole("group", { name: "workshop" })).AGENTS).toBe(`claude-code · as of ${earlier(kept)}`)
   expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS).toBe("codex")
 })
 
@@ -323,7 +331,7 @@ it("dates an admitted machine's reading while the home daemon is not connected",
     clientAccess: { [studio.id]: admitted(reading({ providers: [codex], readAt })) },
   })
 
-  expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS).toBe(`codex · as of ${clock.format(new Date(readAt))}`)
+  expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS).toBe(`codex · as of ${earlier(readAt)}`)
 })
 
 it("opens the machine in use while the home daemon is not connected, since that needs no route", () => {
