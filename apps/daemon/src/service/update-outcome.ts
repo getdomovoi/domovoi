@@ -302,6 +302,7 @@ export async function claimProfileAfterStop(
   stoppedInstance: string | undefined,
   waitMs: number,
   deadline: OperationDeadline,
+  stoppedMessage?: string,
 ): Promise<ProfileLease> {
   const started = Date.now()
   for (;;) {
@@ -311,7 +312,7 @@ export async function claimProfileAfterStop(
       if (!(error instanceof ProfileAlreadyOwnedError)) throw error
       if (Date.now() - started >= waitMs) {
         const stillStopping = stoppedInstance !== undefined && currentInstance(readOwner, profile) === stoppedInstance
-        if (stillStopping) throw new Error(`the previous service did not let the profile go within ${seconds(waitMs)}`, { cause: error })
+        if (stillStopping) throw new Error(stoppedMessage ?? `the previous service did not let the profile go within ${seconds(waitMs)}`, { cause: error })
         throw error
       }
       await pause(waitMs, deadline)

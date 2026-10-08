@@ -1,9 +1,10 @@
 import assert from "node:assert/strict"
 import { execFile, spawn } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
+import { readFileSync } from "node:fs"
+import { lstat, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { basename, delimiter, dirname, join } from "node:path"
 import test from "node:test"
 import { promisify } from "node:util"
 
@@ -145,4 +146,94 @@ test("the packed daemon bootstraps into an installation that runs and serves", {
     await assert.rejects(readFile(endpointPath), { code: "ENOENT" }, "shutdown must withdraw the endpoint file")
   }
   t.diagnostic("Real packed daemon: installed from the archive, ran --version and --help, loaded native modules, served system.hello, stopped.")
+})
+
+// The npm that ships with this Node: beside node.exe on Windows, under
+// ../lib on the other release archives, and through Homebrew's sibling link.
+async function bundledNpmCli() {
+  const base = dirname(process.execPath)
+  for (const candidate of [join(base, "node_modules/npm/bin/npm-cli.js"), join(base, "../lib/node_modules/npm/bin/npm-cli.js")]) {
+    if ((await lstat(candidate).catch(() => undefined))?.isFile()) return candidate
+  }
+  const linked = await realpath(join(base, "npm")).catch(() => undefined)
+  if (linked !== undefined && basename(linked) === "npm-cli.js") return linked
+  throw new Error(`npm-cli.js was not found beside ${process.execPath}`)
+}
+
+// Node 22 announces node:sqlite on stderr, for domovoid as well (ruling Q32 A).
+const withoutSqliteNotice = (stderr) => stderr.replace(/^\(node:\d+\) ExperimentalWarning: SQLite is an experimental feature[^\n]*\n(?:\(Use `node --trace-warnings \.\.\.` to show where the warning was created\)\n)?/gmu, "")
+
+// Ruling Q3 B: `domovoi daemon` runs the daemon package's own installer. Run
+// from packages npm installed from the packed archives, it must register the
+// daemon's worker entry, never the CLI's, which would start a CLI where the
+// service manager expects a daemon. The OS boundary is the manager shim, so no
+// real service is installed and the operator's profile is never read.
+test("domovoi daemon from the installed packages registers the daemon's worker entry, not the CLI's", { timeout: 900_000 }, async (t) => {
+  // Task Scheduler refuses a command over 262 characters, and the installer
+  // refuses it first. The runner's own temporary directory, D:\a\_temp, is
+  // shorter than the user's, so the node, entry and configuration paths fit.
+  const scratch = process.platform === "win32" && process.env.RUNNER_TEMP ? process.env.RUNNER_TEMP : tmpdir()
+  const root = await realpath(await mkdtemp(join(scratch, "domovoi-cli-")))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const archives = []
+  for (const selector of ["@getdomovoi/protocol", "@getdomovoi/credential-store", "@getdomovoi/daemon", "@getdomovoi/cli"]) {
+    const destination = join(root, "pack", selector.split("/")[1])
+    await mkdir(destination, { recursive: true })
+    archives.push(await packPackage(selector, destination))
+  }
+  const prefix = join(root, "i")
+  await mkdir(prefix)
+  await writeFile(join(prefix, "package.json"), "{\"private\":true}\n")
+  // The workspace packages come from their archives; third-party packages
+  // from the registry. Lifecycle scripts stay off: registering a service
+  // loads no native module.
+  const cache = join(root, ".npm-cache")
+  await execute(process.execPath, [await bundledNpmCli(), "install", "--global=false", "--prefix", prefix, "--cache", cache,
+    "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", ...archives],
+  { cwd: prefix, encoding: "utf8", timeout: 600_000, killSignal: "SIGKILL", env: { ...process.env, npm_config_cache: cache }, maxBuffer: 16 * 1024 * 1024 })
+
+  const cliEntry = await realpath(join(prefix, "node_modules/@getdomovoi/cli/dist/index.js"))
+  const workerEntry = await realpath(join(prefix, "node_modules/@getdomovoi/daemon/dist/index.js"))
+  const home = join(root, "home")
+  await mkdir(home)
+  const environment = {
+    ...isolatedEnvironment(home),
+    DOMOVOI_TEST_SERVICE_HOME: home, DOMOVOI_TEST_MANAGER_LOG: join(home, "manager.jsonl"),
+    // The installed bin finds node through PATH; this one is the test's.
+    PATH: `${dirname(process.execPath)}${delimiter}${process.env.PATH ?? ""}`,
+    NODE_OPTIONS: `--import=${new URL("../apps/cli/test-fixtures/service-manager.mjs", import.meta.url).href}`,
+  }
+  // The command a person runs: npm's bin link, or its .cmd shim on Windows,
+  // which runs the same entry through node.
+  const domovoi = (verb) => process.platform === "win32"
+    ? execute(process.execPath, [cliEntry, "daemon", verb], { encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL", env: environment })
+    : execute(join(prefix, "node_modules/.bin/domovoi"), ["daemon", verb], { encoding: "utf8", timeout: 60_000, killSignal: "SIGKILL", env: environment })
+
+  const installed = await domovoi("install")
+  assert.equal(withoutSqliteNotice(installed.stderr), "")
+  assert.match(installed.stdout, /^Installed the Domovoi daemon service /mu)
+  // What the manager was told to run: the unit, the launch agent, or the
+  // command Task Scheduler's /create received.
+  const launch = process.platform === "win32"
+    ? (() => {
+      const create = readFileSync(join(home, "manager.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
+        .findLast(({ command, args }) => command.endsWith("\\System32\\schtasks.exe") && args[0] === "/create")
+      return create.args[create.args.indexOf("/tr") + 1]
+    })()
+    : await readFile(process.platform === "darwin"
+      ? join(home, "Library/LaunchAgents/sh.domovoi.domovoid.plist")
+      : join(home, ".config/systemd/user/domovoid.service"), "utf8")
+  assert.ok(launch.includes(workerEntry), `the service must run the daemon's worker entry ${workerEntry}: ${launch}`)
+  assert.ok(!launch.includes(dirname(cliEntry)), `the service must not run the CLI: ${launch}`)
+  t.diagnostic(`registered ${workerEntry}`)
+
+  // Task Scheduler's status reads supervisor evidence the shim does not
+  // produce; elsewhere the exit meanings of domovoid service hold.
+  if (process.platform !== "win32") {
+    const status = await domovoi("status")
+    assert.match(status.stdout, /^installed, /u)
+    const removed = await domovoi("remove")
+    assert.match(removed.stdout, /^Removed the Domovoi daemon service /u)
+    await assert.rejects(domovoi("status"), (error) => error.code === 1 && /^not installed, not running: /u.test(error.stdout))
+  }
 })

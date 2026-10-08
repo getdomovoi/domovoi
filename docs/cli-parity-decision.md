@@ -1,9 +1,48 @@
 # CLI parity decision
 
 Status: decided by fetzy on 2026-09-10. Partly implemented, differently from the record below;
-see "State on 2026-09-22".
+see "`domovoi daemon` as built" and "State on 2026-09-22".
 Applies to S1.6 in [SHIP-PLAN.md](../SHIP-PLAN.md).
 Source checkout: `e2d598f` on `feat/launcher-entity-rows`.
+
+## `domovoi daemon` as built (2026-10-07)
+
+Ruling Q3 B (fetzy, 2026-10-06) settled where the service lifecycle commands live, so that one
+code path installs the service:
+
+- `@getdomovoi/daemon` exports `@getdomovoi/daemon/daemon-command` (#757). Its
+  `runDaemonCommand` reuses `runServiceCommand` (`apps/daemon/src/service/install.ts`) and
+  registers `daemonWorkerEntry()`: the package's own `dist/index.js`, resolved from the module's
+  location rather than from `process.argv[1]`.
+- `@getdomovoi/cli` depends on `@getdomovoi/daemon`. `domovoi daemon install|status|remove`
+  (`apps/cli/src/index.ts`) calls `runDaemonCommand([verb])`. An installed-package test
+  (`scripts/bootstrap-real-daemon.test.mjs`) packs the protocol, credential store, daemon and CLI
+  packages, installs them with npm, and shows that `domovoi daemon install` registers the
+  daemon's `dist/index.js`, not the CLI's. `apps/cli/src/cli.e2e.test.ts` covers the same
+  commands against the built workspace.
+- The exit codes are those of `domovoid service`, not the CLI's table: `status` exits 0 when the
+  service is installed, even if it is stopped, and 1 when it is not or its supervision failed;
+  `install` and `remove` exit 0 on success and 1 on failure. A verb the CLI does not have, or a
+  surplus word, is the CLI's usage error, exit 2, before anything runs.
+- `domovoid service install|status|remove` stays as the daemon's own entry. Unlike the migration
+  target below, it is not retired.
+- Follow-up lines name the command that was run (ruling Q28 A, 2026-10-07): `domovoi daemon ...`
+  through the CLI, `domovoid service ...` through `domovoid`. Profile recovery has no `domovoi`
+  form and `domovoid` may not be on `PATH`, so through the CLI it reads `domovoid profile recover
+  --confirm-no-supervisor (domovoid is Node running <daemon entry>)` (ruling Q33 A, 2026-10-07).
+  The supervised worker's exhaustion lines are printed by a service process, not a command, and
+  name both status commands.
+- The desktop runtime ships the CLI without a second copy of the daemon. When
+  `@getdomovoi/daemon` cannot be found, the CLI loads one fixed path,
+  `<runtime>/daemon/dist/daemon-command.js` beside its own `dist`, and searches nowhere else. So
+  `domovoi daemon install` through the app's linked `domovoi` runs the runtime's daemon, which
+  copies the runtime out of the app before registering it (Q408 A). With neither present, the
+  command refuses and names the missing package (ruling Q31 A, 2026-10-07).
+- On Node 22 a daemon command prints Node's SQLite `ExperimentalWarning` on stderr, as `domovoid`
+  does (ruling Q32 A, 2026-10-07).
+
+Still not decided: which other `domovoid` commands move to `domovoi`. `domovoi status` stays the
+summary below; `domovoi daemon status` is the narrower service check.
 
 ## State on 2026-09-22
 
@@ -25,9 +64,10 @@ while `domovoi pair` accepted only a client credential and refused a code. On 20
 ruling Q337 A, `domovoi pair` redeems that code with `device.redeemCode`, the phone's path, so
 there is one pairing flow and the daemon did not change.
 
-Not decided yet: whether the separate package replaces the one-package target below, and which
-`domovoid` commands still move to `domovoi`. Until that is recorded, the rest of this document is
-the 2026-09-10 decision, not a description of the code.
+Not decided on 2026-09-22: whether the separate package replaces the one-package target below,
+and which `domovoid` commands still move to `domovoi`. Ruling Q3 B answered the first for the
+service commands; see "`domovoi daemon` as built". The rest of this document is the 2026-09-10
+decision, not a description of the code.
 
 ## Decision and evidence
 

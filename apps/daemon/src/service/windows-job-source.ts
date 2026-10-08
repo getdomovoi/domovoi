@@ -3,7 +3,7 @@
 export const windowsJobSource = String.raw`
 $ErrorActionPreference = 'Stop'
 try {
-Add-Type -ReferencedAssemblies System.dll,System.Core.dll,System.Web.Extensions.dll -TypeDefinition @'
+$source = @'
 using System;
 using System.IO;
 using System.Text;
@@ -22,6 +22,49 @@ public static class DomovoiJob {
   static readonly StreamReader Input = new StreamReader(Console.OpenStandardInput(), new UTF8Encoding(false));
   static readonly StreamWriter Output = new StreamWriter(Console.OpenStandardOutput(), new UTF8Encoding(false)) { AutoFlush = true };
   public static string ReadRequest() { return Input.ReadLine(); }
+  static object Field(System.Collections.Generic.Dictionary<string, object> request, string name) {
+    object value;
+    if (!request.TryGetValue(name, out value)) throw new InvalidOperationException("Missing helper field");
+    return value;
+  }
+  static string Text(object value) {
+    if (!(value is string)) throw new InvalidOperationException("Invalid helper string");
+    return (string)value;
+  }
+  static uint Pid(object value) {
+    // The serializer represents integer JSON numbers as Int32 or Int64.
+    // Reject strings, booleans and fractional numbers instead of coercing them.
+    if (!(value is int) && !(value is long)) throw new InvalidOperationException("Invalid helper PID");
+    long pid = Convert.ToInt64(value);
+    if (pid < 0 || pid > uint.MaxValue) throw new InvalidOperationException("Invalid helper PID");
+    return (uint)pid;
+  }
+  public static void Serve() {
+    var request = Json.DeserializeObject(ReadRequest()) as System.Collections.Generic.Dictionary<string, object>;
+    if (request == null) throw new InvalidOperationException("Invalid helper request");
+    string mode = Text(Field(request, "mode"));
+    if (mode == "inspect") {
+      var values = Field(request, "pids") as object[];
+      if (values == null || values.Length < 1 || values.Length > 8) throw new InvalidOperationException("Invalid helper PIDs");
+      var pids = new uint[values.Length];
+      for (int i = 0; i < values.Length; ++i) pids[i] = Pid(values[i]);
+      Inspect(pids);
+    } else if (mode == "inspect-job") {
+      InspectJob(Text(Field(request, "job")), Pid(Field(request, "pid")));
+    } else if (mode == "run") {
+      string job = Text(Field(request, "job")), executable = Text(Field(request, "executable")), log = Text(Field(request, "log"));
+      var values = Field(request, "args") as object[];
+      if (values == null) throw new InvalidOperationException("Invalid helper arguments");
+      var args = new string[values.Length];
+      for (int i = 0; i < values.Length; ++i) args[i] = Text(values[i]);
+      object modulePath = Field(request, "psModulePath");
+      string psModulePath = modulePath == null ? null : Text(modulePath);
+      // Windows PowerShell rewrites this variable at startup. Restore the Node
+      // supervisor's value (including absence) before the daemon inherits it.
+      Environment.SetEnvironmentVariable("PSModulePath", psModulePath, EnvironmentVariableTarget.Process);
+      Run(job, executable, args, log);
+    } else { throw new InvalidOperationException("Unknown helper operation"); }
+  }
   [StructLayout(LayoutKind.Sequential)] struct BasicLimits {
     public long ProcessTime, JobTime; public uint Flags; public UIntPtr MinWorking, MaxWorking;
     public uint ActiveLimit; public UIntPtr Affinity; public uint Priority, Scheduling;
@@ -223,16 +266,18 @@ public static class DomovoiJob {
   }
 }
 '@
-$request = [DomovoiJob]::ReadRequest() | ConvertFrom-Json
-if ($request.mode -eq 'inspect') { [DomovoiJob]::Inspect([uint32[]]@($request.pids)) }
-elseif ($request.mode -eq 'inspect-job') { [DomovoiJob]::InspectJob([string]$request.job, [uint32]$request.pid) }
-elseif ($request.mode -eq 'run') {
-  # Windows PowerShell rewrites this variable at startup. Restore the Node
-  # supervisor's value (including absence) before the daemon inherits it.
-  [Environment]::SetEnvironmentVariable('PSModulePath', $request.psModulePath, [EnvironmentVariableTarget]::Process)
-  [DomovoiJob]::Run([string]$request.job, [string]$request.executable, [string[]]@($request.args), [string]$request.log)
+$parameters = [System.CodeDom.Compiler.CompilerParameters]::new()
+$parameters.ReferencedAssemblies.AddRange([string[]]@('System.dll', 'System.Core.dll', 'System.Web.Extensions.dll'))
+$parameters.GenerateInMemory = $true
+$provider = [Microsoft.CSharp.CSharpCodeProvider]::new()
+try {
+  $compiled = $provider.CompileAssemblyFromSource($parameters, [string[]]@($source))
+  if ($compiled.Errors.HasErrors) { throw 'Windows job helper compilation failed' }
+  $null = $compiled.CompiledAssembly
+} finally {
+  $provider.Dispose()
 }
-else { throw 'Unknown helper operation' }
+[DomovoiJob]::Serve()
 exit 0
 } catch {
   [Console]::Error.WriteLine('Windows job helper failed; no shutdown proof. Error ' + $_.Exception.HResult)

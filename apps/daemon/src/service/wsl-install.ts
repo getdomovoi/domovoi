@@ -11,7 +11,7 @@ import { z } from "zod"
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceCommand, ServiceCommandDependencies, ServiceEffects } from "./install.js"
-import { refuseTaskSchedulerExpansion } from "./install.js"
+import { domovoidServiceWords, refuseTaskSchedulerExpansion } from "./install.js"
 import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { hasDomovoiServiceShape, isRecordedServiceProgram } from "./restore-target.js"
 import { serviceRemovalReceipt, serviceRemovalRecovery } from "./removal-recovery.js"
@@ -336,6 +336,7 @@ export function prepareWslUpdate(
 // the profile here (Q408 A), after every check that can refuse and under the
 // profile lease, before the first file is written, as installService does.
 export async function runWslServiceCommand(verb: string, dependencies: ServiceCommandDependencies, deadline: OperationDeadline, beforeChanges?: () => Promise<void>): Promise<number> {
+  const words = dependencies.words ?? domovoidServiceWords
   const home = dependencies.home
   if (!home || !posix.isAbsolute(home)) throw new Error("WSL service requires an absolute guest home")
   const path = serviceConfigurationPath(home, "linux")
@@ -353,11 +354,11 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
     }
   }
   if (interrupted && verb === "status") {
-    dependencies.stdout("not installed; a service update was interrupted before the new Windows task was registered. Run Update the service from the app, or domovoid service remove, to settle it.\n")
+    dependencies.stdout(`not installed; a service update was interrupted before the new Windows task was registered. Run Update the service from the app, or ${words.remove}, to settle it.\n`)
     return 1
   }
   if (interrupted && verb === "install") {
-    throw new Error("A service update was interrupted before the new Windows task was registered. Run Update the service from the app, or domovoid service remove, before installing.")
+    throw new Error(`A service update was interrupted before the new Windows task was registered. Run Update the service from the app, or ${words.remove}, before installing.`)
   }
   if (verb === "install") {
     if (saved) throw new Error("Remove the existing service registration before installing the WSL service")
@@ -430,7 +431,7 @@ export async function runWslServiceCommand(verb: string, dependencies: ServiceCo
   let removed: "removed" | "already-missing" | undefined
   for (const candidate of tasks) {
     try {
-      removed = await removeWindowsTask(candidate.removal, dependencies, deadline)
+      removed = await removeWindowsTask(candidate.removal, dependencies, deadline, false, words)
       break
     } catch (error) {
       refusal = error
