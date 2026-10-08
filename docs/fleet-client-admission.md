@@ -31,18 +31,23 @@ domovoid pair --client desktop
 Use `web` for a browser client. This prints no credential. It prints a one-time pairing code: for
 a desktop, a symbol to scan and the same text as a line to paste, both carrying the code and the
 address a device dials; for `web`, the code as words to type, with the web app address when
-`DOMOVOI_WEB_APP_URL` is set. The code lasts three minutes, works once and only for that client
-kind, and issuing another code ends it. When the daemon has no address a device could dial, the
-command prints the code and the reason and exits 1. The device that redeems the code
-(`device.redeemCode`) receives the client credential and its device id, and names itself.
-`--label <name>` is optional and is kept with the code only as a suggested name. The command greets
+`DOMOVOI_WEB_APP_URL` is set. The code lasts at most three minutes and works once, only for that
+client kind. Issuing another code ends it, and so do five wrong codes presented while it is open
+(`maximumPairingAttempts`); run the command again for a fresh one. When the daemon has no address
+a device could dial, the command prints the code and the reason and exits 1. The device that
+redeems the code (`device.redeemCode`) receives the client credential and its device id, and
+names itself. `--label <name>` is optional. The daemon keeps it with the open code, but it is
+not in what the command prints, and no device or screen receives it yet, so it changes nothing. The command greets
 as cli and requests `targetClient: desktop` through `device.issueCode`; the issuer's identity is
 not changed to impersonate the recipient. Plain `domovoid pair` still issues a machine pairing
 code. Machine pending claims and their expiration/confirmation rules are unchanged.
 
-No command prints a client credential. The Fleet dialog below takes one, not a pairing code; it
-comes from a `device.pair` request with `targetClient`, made with the target daemon's own
-credential, which returns the credential and the device id to revoke.
+The Fleet dialog below does not take this code. It takes a client credential, and nothing in
+Domovoi gives an operator one today: no command prints it, and neither the desktop nor the shared
+UI redeems a code for the dialog. The credential comes only from a `device.pair` request with
+`targetClient`, made with the target daemon's own credential, which returns the credential and
+the device id to revoke. Domovoi ships no command or screen that makes that request, so Fleet
+authorization has no supported way through yet. The tests make the request directly.
 
 Either way this is a deliberate grant, not an automated machine claim. A code grants nothing until
 a device redeems it, and a lost reply costs the code. The target's Devices list shows and can
@@ -82,8 +87,9 @@ error strings are not displayed because they can echo a submitted secret. Reason
 missing enrollment, daemon pairing, inaccessible keychain, protocol or identity mismatch,
 unusable route, route deadline, wrong client credential, and unavailable verification.
 
-The Fleet action is **Authorize this client**, beside disabled Use and Terminal, with
-the exact target command, authority warning, and inline remedy on refusal. Controls become usable
+The Fleet action is **Authorize this client**, beside disabled Use and Terminal, with an authority
+warning and inline remedy on refusal. Its dialog names `domovoid pair --client <kind>` only to say
+that the code it prints is not what the field takes. Controls become usable
 only after a successful identity/credential proof. The row says **Client credential verified** and
 then offers Use and Terminal. The home connection remains available; **Return to home daemon**
 works even while the remote connection is unavailable. Each remote reconnect verifies identity

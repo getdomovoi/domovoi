@@ -431,11 +431,11 @@ open on it, and the phone says so.
 3. **Pair.** **Changes the profile.** In Settings, "Phone and tablet", choose "Phone", then "Show a
    pairing code". From a terminal, `domovoid pair --client phone` prints the same kind of code, as
    a symbol to scan and a line to paste; issuing it ends any code still open, including the one
-   Settings shows. `--label "<name>"` is optional and is kept only as a suggested name; the
-   phone's own name is the one used. On the phone,
+   Settings shows. `--label "<name>"` is optional; the daemon keeps it with the code, but nothing
+   shows it yet, and the name typed on the phone is the one used. On the phone,
    under "Pair this phone", choose "Scan a code" (or "Type it" and paste the line), name the
    phone, and choose "Pair with this machine". Expect "Paired with <machine>", then "Open
-   Sessions". The code lasts three minutes and works once.
+   Sessions". The code lasts at most three minutes and works once; five wrong codes end it sooner.
 4. **Watch a terminal (design frame 04).** Not built on the phone at `640ac4e7`: the phone lists a
    terminal with a note that it is watched on the desktop, and the pairing grant says "Terminal
    output is not on a phone yet." Record this row as blocked, with "not built" in the notes, unless
