@@ -326,6 +326,30 @@ it("dates an admitted machine's reading while the home daemon is not connected",
   expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS).toBe(`codex · as of ${clock.format(new Date(readAt))}`)
 })
 
+it("opens the machine in use while the home daemon is not connected, since that needs no route", () => {
+  renderFleet({
+    connected: false,
+    currentMachineId: studio.id,
+    entries: entries(local, { ...studio, health: "healthy" }),
+    clientAccess: { [studio.id]: admitted(reading({ readAt: "2026-10-06T14:03:00.000Z" })) },
+    readings: { [studio.id]: held(reading()) },
+  })
+
+  expect(screen.getByRole("button", { name: /^Open its .* on studio$/u })).toHaveProperty("disabled", false)
+  expect(screen.getByRole("button", { name: /^Open its .* on workshop$/u })).toHaveProperty("disabled", true)
+})
+
+it("keeps a live attached reading current even when the home daemon is not hearing that machine", () => {
+  renderFleet({
+    currentMachineId: studio.id,
+    entries: entries(local, { ...studio, health: "unreachable" }),
+    clientAccess: { [studio.id]: admitted(reading({ readAt: "2026-10-06T14:03:00.000Z" })) },
+    readings: { [studio.id]: held(reading({ providers: [codex] })) },
+  })
+
+  expect(facts(screen.getByRole("group", { name: "studio" })).AGENTS).toBe("codex")
+})
+
 it("counts an ownership conflict in the session fact, as the drawer puts it under NEEDS YOU", () => {
   renderFleet({
     entries: entries(local),

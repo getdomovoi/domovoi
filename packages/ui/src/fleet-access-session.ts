@@ -97,8 +97,11 @@ export function machineFacts(
   const useHeld = held !== undefined && (held.live || !admitted || Date.parse(held.reading.readAt) >= Date.parse(admitted.reading.readAt))
   const reading = useHeld ? held.reading : admitted?.reading
   if (reading) {
+    // A held connection that is open is the machine itself answering, whatever
+    // the home daemon's heartbeat says; fleet health ages only readings that
+    // depend on the home route.
     const stale = useHeld
-      ? !held.live || unreachable
+      ? !held.live
       : !input.connected || machine.health !== currentHealth || admitted?.unanswered === true
     return { known: true, providers: reading.providers, sessions: reading.sessions, readAt: reading.readAt, stale }
   }

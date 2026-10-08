@@ -483,7 +483,9 @@ function MachineCard({
           <Button
             variant="ghost"
             className={cardPrimary}
-            disabled={!canControl}
+            // The machine in use is already attached: opening its sessions
+            // only returns to them, so it needs no route from the home daemon.
+            disabled={!inUse && !canControl}
             aria-label={`${openLabel(facts)} on ${machine.label}`}
             onClick={() => onUse(machine.id)}
           >
