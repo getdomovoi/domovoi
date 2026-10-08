@@ -87,7 +87,7 @@ it("hides About this build while attached to another machine", async () => {
   await settle()
   await act(async () => { respond(proof, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
   await settle()
-  await user.click(screen.getByRole("button", { name: "Use Studio" }))
+  await user.click(screen.getByRole("button", { name: /^Open its (\d+ )?sessions? on Studio$/u }))
   await settle()
   await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
   await settle()

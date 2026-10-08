@@ -51,7 +51,7 @@ import { DaemonRpcError, ProjectSwitchConfirmationError, clientVersion } from ".
 import { SessionsDrawerColumn, SessionsDrawerTrigger, type SessionRowAction } from "./sessions-drawer"
 import { useWorkspace } from "./use-workspace"
 import type { RelayPinStorage } from "./relay-pin"
-import { FleetAccessSession } from "./fleet-access-session"
+import { FleetAccessSession, fleetAgents, machineReading, useReadOnVisit, type HeldReading } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
 import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
 import { Deadline } from "./deadline"
@@ -369,6 +369,23 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline }),
     } : { state: "disabled" }, relayPinStorage)
   const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, tailnetStatus, revokeDevice, rotateDevice, renameDevice } = home
+  // The snapshots this shell already holds are readings of their own
+  // machines: the home daemon, and the machine it is attached to. Each is
+  // timed when it arrived, and live only while its connection is open.
+  const homeReadingSnapshot = home.snapshot
+  const remoteReadingSnapshot = remote.snapshot
+  const homeReading = useMemo(() => homeReadingSnapshot ? machineReading(homeReadingSnapshot, new Date()) : undefined, [homeReadingSnapshot])
+  const remoteReading = useMemo(() => remoteReadingSnapshot ? machineReading(remoteReadingSnapshot, new Date()) : undefined, [remoteReadingSnapshot])
+  const homeConnected = home.connected
+  const remoteConnected = remote.connected
+  const fleetReadings = useMemo(() => {
+    const readings: Record<string, HeldReading> = {}
+    if (homeReadingSnapshot && homeReading) readings[homeReadingSnapshot.machine.id] = { reading: homeReading, live: homeConnected }
+    if (attached && remoteReading && remoteReadingSnapshot?.machine.id === attached.machineId) {
+      readings[attached.machineId] = { reading: remoteReading, live: remoteConnected }
+    }
+    return readings
+  }, [homeReadingSnapshot, homeReading, homeConnected, remoteReadingSnapshot, remoteReading, remoteConnected, attached])
   const homeSkillInventory = home.getSkillInventory
   const homeVersion = home.snapshot?.machine.version
   const openReleasePage = windowBridge?.openReleasePage
@@ -1505,6 +1522,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     skillsWanted,
   ])
 
+  // Settings lists every machine's agents, so each visit reads the admitted
+  // machines the way Machines does; the Machines surface reads on its own.
+  const readMachine = useCallback((machineId: string, signal: AbortSignal) => accessSession.read(machineId, signal), [accessSession])
+  useReadOnVisit({ active: surface === "providers", connected: home.connected, clientAccess: fleetClientAccess, onReadMachine: readMachine })
   useEffect(() => {
     if (surface !== "skills" || !connected || localSkillInventory?.state !== "available") return
     const refresh = new AbortController()
@@ -1625,6 +1646,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           {surface === "providers" ? (
           <SettingsShell
             providers={snapshot.machine.providers}
+            providerMachines={fleet ? fleetAgents(fleet.entries, {
+              readings: fleetReadings, clientAccess: fleetClientAccess, currentMachineId: attached?.machineId ?? snapshot.machine.id,
+              connected: home.connected,
+            }) : undefined}
+            providerFleetOverflow={fleet ? undefined : fleetOverflow ?? undefined}
             secrets={providerSecrets}
             readOnly={watching}
             {...(localDaemon && !attached ? { localDaemon: {
@@ -1749,6 +1775,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             devicesMachineLabel={home.snapshot?.machine.name}
             currentSessionCount={activeSessionCount(snapshot)}
             providers={snapshot.machine.providers}
+            readings={fleetReadings}
+            onReadMachine={(machineId, signal) => accessSession.read(machineId, signal)}
             onOpenSkills={() => setSurface("skills")}
             onListDevices={listDevices}
             onRevokeDevice={revokeDevice}
@@ -1761,7 +1789,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               return result
             }}
             onUseMachine={(machineId: string) => {
-              switchMachine(machineId)
+              // The machine in use only needs its sessions shown, not a new attachment.
+              if (machineId !== (attached?.machineId ?? homeMachineId)) switchMachine(machineId)
               setSurface("workspace")
             }}
             {...(snapshot.activeSessionId ? { onMoveSessionHere: (machineId: string) => {

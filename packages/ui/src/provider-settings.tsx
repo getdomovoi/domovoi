@@ -1,6 +1,6 @@
-import type { ProviderRuntime } from "@getdomovoi/protocol"
+import { useId, useState } from "react"
+import type { FleetSnapshotOverflow, ProviderRuntime } from "@getdomovoi/protocol"
 
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field"
@@ -14,8 +14,8 @@ import {
   type DesktopExternalEditor,
   type WorkspaceWindowDecoration,
 } from "./desktop-platform.js"
+import { fleetOverflowNotice } from "./fleet-overflow.js"
 import { cn } from "./lib/utils"
-import { providerDisplayName, providerStatusLabel } from "./runtime.js"
 
 export type ProviderSecretStatus = {
   provider: "anthropic" | "openai" | "openrouter"
@@ -24,7 +24,13 @@ export type ProviderSecretStatus = {
 }
 
 type ProviderSettingsProps = {
+  // This machine's providers, listed when `machines` is not given.
   providers: readonly ProviderRuntime[]
+  // Every machine's agents as this client knows them (fleetAgents).
+  machines?: readonly MachineAgents[] | undefined
+  // The home daemon withheld the fleet list (fleetOverflow in useWorkspace),
+  // so the rows cannot cover the other machines and the pane says so.
+  fleetOverflow?: FleetSnapshotOverflow | undefined
   secrets: readonly ProviderSecretStatus[]
   localDaemon?: { title: string; detail: string }
   // Q336 A: names a command as it runs on the execution machine, when that
@@ -32,13 +38,25 @@ type ProviderSettingsProps = {
   printCommand?: ((command: string) => string) | undefined
 }
 
-export function ProviderSettings({ providers, secrets, localDaemon, printCommand }: ProviderSettingsProps) {
+export function ProviderSettings({ providers, machines, fleetOverflow, secrets, localDaemon, printCommand }: ProviderSettingsProps) {
+  const rows = machines ?? [{ machineId: "this-machine", label: "this machine", providers }]
   return (
     <>
-      <h2 className="m-0 text-[13px] font-medium">Providers and tokens</h2>
-      <p className="mt-1.5 max-w-[68ch] text-[11.5px] leading-relaxed text-muted-foreground">
-        Stored on this machine. Domovoi does not send it to another device. Subscription CLIs own their credentials.
-      </p>
+      <div className="overflow-hidden rounded-xl border bg-card">
+        <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 border-b px-[15px] py-[13px]">
+          <h2 className="m-0 text-[13px] font-medium">Providers and tokens</h2>
+          {/* Q18 A, 2026-10-06: the rows span machines, and M1 has no Domovoi account (Q5). */}
+          <p className="m-0 max-w-[68ch] text-[11.5px] leading-relaxed text-muted-foreground">
+            Stored on each machine that runs the agent. Domovoi does not send it to another device. Subscription CLIs own their credentials.
+          </p>
+        </div>
+        <MachineAgentList machines={rows} />
+        {fleetOverflow ? (
+          <p className="m-0 border-t px-[15px] py-[11px] text-[11.5px] leading-relaxed text-destructive">
+            {fleetOverflowNotice(fleetOverflow).title}. {fleetOverflow.entriesNotShown} entries are not shown, so this lists only this machine&apos;s agents. Machines says why and what to run.
+          </p>
+        ) : null}
+      </div>
 
       {localDaemon ? (
         <section className="mt-6" aria-labelledby="local-daemon">
@@ -54,47 +72,6 @@ export function ProviderSettings({ providers, secrets, localDaemon, printCommand
           </Card>
         </section>
       ) : null}
-
-      <section className="mt-6" aria-labelledby="subscription-providers">
-        <div className="flex items-center gap-2">
-          <h2 id="subscription-providers" className="m-0 text-[9.5px] font-medium tracking-[0.12em] text-faint">SUBSCRIPTION CLIS</h2>
-          <Separator className="flex-1" />
-        </div>
-        <Card className="mt-2.5 gap-0 py-0">
-          {providers.map((provider, index) => (
-            <div key={provider.id}>
-              {index > 0 ? <Separator /> : null}
-              <div className="flex min-h-14 flex-wrap items-center justify-between gap-3 px-4 py-3">
-                <span className="flex min-w-0 flex-col">
-                  <span className="font-medium">{providerDisplayName(provider.id)}</span>
-                  <span className="truncate font-machine text-[9.5px] text-faint">
-                    {provider.command}{provider.version ? ` · ${provider.version}` : ""}
-                  </span>
-                  <span id={`provider-account-${provider.id}`} className="text-micro text-muted-foreground">
-                    {provider.problem ?? (providerAccountCommand(provider)
-                      ? <>Run <code className="font-machine">{providerAccountCommand(provider)}</code> in terminal</>
-                      : <>Sign in with <code className="font-machine">{provider.command}</code>&apos;s own instructions in a terminal</>)}
-                  </span>
-                </span>
-                <span className="ml-auto flex flex-wrap items-center gap-2">
-                  <Badge variant={provider.status === "ready" ? "success" : provider.status === "auth-required" ? "warning" : "outline"}>
-                    {providerStatusLabel(provider)}
-                  </Badge>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    data-provider-account-action=""
-                    aria-describedby={`provider-account-${provider.id}`}
-                    disabled
-                  >
-                    {providerAccountAction(provider)}
-                  </Button>
-                </span>
-              </div>
-            </div>
-          ))}
-        </Card>
-      </section>
 
       <section className="mt-6" aria-labelledby="direct-api-keys">
         <div className="flex items-center gap-2">
@@ -339,11 +316,126 @@ function ProviderKeyRow({ status, print }: { status: ProviderSecretStatus; print
   )
 }
 
-export function providerAccountAction(provider: ProviderRuntime): string {
-  if (provider.status === "ready") return "Manage"
-  if (provider.status === "auth-required") return "Re-authenticate"
-  if (provider.status === "missing") return "Install"
-  return "Check status"
+// One machine's agents as this client knows them. Without providers the
+// machine was never read here, and `unknown` says why instead of a guess.
+export type MachineAgents = {
+  machineId: string
+  label: string
+  providers?: readonly ProviderRuntime[] | undefined
+  unknown?: string | undefined
+  // Set when the providers come from an earlier reading: "as of 14:03".
+  stale?: string | undefined
+}
+
+type AgentTone = "success" | "warning" | "destructive" | "muted" | "faint"
+
+const agentDot: Record<AgentTone, string> = {
+  success: "bg-success",
+  warning: "bg-warning",
+  destructive: "bg-destructive",
+  muted: "bg-muted-foreground",
+  faint: "bg-faint",
+}
+
+function agentState(provider: ProviderRuntime): { state: string; tone: AgentTone } {
+  if (provider.problem !== undefined) return { state: "cannot start", tone: "destructive" }
+  // Found on that machine, but its Domovoi has no adapter to start sessions
+  // with it, so signing in would not help (sessionCapable, as the launcher reads it).
+  if (!provider.sessionCapable) return { state: "adapter unavailable", tone: "destructive" }
+  if (provider.status === "auth-required") return { state: "needs sign-in on that machine", tone: "warning" }
+  if (provider.status === "unknown") return { state: "found, sign-in not checked", tone: "muted" }
+  return { state: "ready", tone: "success" }
+}
+
+// A provider the daemon looked for and did not find is not installed there,
+// and the list says what is installed per machine.
+function installedProviders(providers: readonly ProviderRuntime[]): ProviderRuntime[] {
+  return providers.filter((provider) => provider.status !== "missing")
+}
+
+// The design's Agents and providers rows, one per machine and agent: a dot,
+// the agent, the machine, its state, and an action only where one is needed.
+// Signing in happens in that machine's own terminal, so Authenticate there says
+// what to run where; Domovoi never holds or forwards the provider's credential.
+export function MachineAgentList({ machines }: { machines: readonly MachineAgents[] }) {
+  return (
+    <ul className="m-0 list-none p-0">
+      {machines.flatMap((machine) => {
+        if (!machine.providers) {
+          return [<AgentRow key={machine.machineId} name="unknown" machine={machine.label} state={machine.unknown ?? "not read yet"} tone="faint" dimmed />]
+        }
+        const installed = installedProviders(machine.providers)
+        if (installed.length === 0) {
+          return [<AgentRow key={machine.machineId} name="none found" machine={machine.label}
+            state={machine.stale ? `no agent on its PATH · ${machine.stale}` : "no agent on its PATH"} tone="faint" dimmed={machine.stale !== undefined} />]
+        }
+        return installed.map((provider) => {
+          const { state, tone } = agentState(provider)
+          return (
+            <AgentRow
+              key={`${machine.machineId}:${provider.id}`}
+              name={provider.id}
+              machine={machine.label}
+              state={machine.stale ? `${state} · ${machine.stale}` : state}
+              tone={machine.stale ? "faint" : tone}
+              dimmed={machine.stale !== undefined}
+              problem={provider.problem}
+              signIn={provider.status === "auth-required" && provider.problem === undefined && provider.sessionCapable && !machine.stale ? provider : undefined}
+            />
+          )
+        })
+      })}
+    </ul>
+  )
+}
+
+function AgentRow({ name, machine, state, tone, dimmed = false, problem, signIn }: {
+  name: string
+  machine: string
+  state: string
+  tone: AgentTone
+  dimmed?: boolean
+  problem?: string | undefined
+  signIn?: ProviderRuntime | undefined
+}) {
+  const [open, setOpen] = useState(false)
+  const noteId = useId()
+  const command = signIn ? providerAccountCommand(signIn) : undefined
+  return (
+    <li className={cn("border-t px-[15px] py-2.5 first:border-t-0", dimmed && "opacity-60")}>
+      <div className="flex flex-wrap items-center gap-x-[11px] gap-y-1">
+        <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", agentDot[tone])} />
+        <span data-agent-cell="" className="w-[150px] shrink-0 truncate font-machine text-[11.5px] text-strong sm:w-[190px]">{name}</span>
+        <span data-agent-cell="" className="w-[120px] shrink-0 truncate font-machine text-micro text-muted-foreground sm:w-[150px]">{machine}</span>
+        <span data-agent-cell="" className="min-w-0 text-[11.5px] text-muted-foreground">{state}</span>
+        <span className="flex-1" />
+        {signIn ? (
+          <Button
+            type="button"
+            // The link variant carries no fill of its own, so the info pill
+            // keeps its colours in every state, aria-expanded included.
+            variant="link"
+            aria-expanded={open}
+            aria-controls={noteId}
+            aria-label={`Authenticate there: ${name} on ${machine}`}
+            onClick={() => setOpen(!open)}
+            className="h-auto rounded-full border-info-border bg-info-background px-2.5 py-[5px] text-[11px] font-normal text-info-foreground hover:no-underline"
+          >
+            Authenticate there
+          </Button>
+        ) : null}
+      </div>
+      {problem ? <p className="m-0 mt-1 pl-[17px] text-micro leading-relaxed text-muted-foreground">{problem}</p> : null}
+      {signIn ? (
+        <p id={noteId} hidden={!open} className="m-0 mt-1.5 pl-[17px] text-[11.5px] leading-relaxed text-info-foreground">
+          {command
+            ? <>Run <code className="font-machine">{command}</code> in a terminal on {machine}.</>
+            : <>Sign in with <code className="font-machine">{signIn.command}</code>&apos;s own instructions in a terminal on {machine}.</>}
+          {" "}Domovoi does not sign in for you.
+        </p>
+      ) : null}
+    </li>
+  )
 }
 
 // The provider CLI's own sign-in command. Undefined for a provider whose
