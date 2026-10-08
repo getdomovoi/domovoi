@@ -238,6 +238,7 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
     let observed: ReturnType<typeof queryWindowsProcess>
     try { observed = queryWindowsProcess(process.pid) } catch (error) {
       if (!windowsHelperTimedOut(error)) throw error
+      // Cold first helper spawn at logon: after each of five CI cap hits, the next spawn was fast. Retry once.
       // The identity query only observes this process; no supervision record has been read or written yet.
       // Retry without the lease so a waiting stop is blocked for at most one query cap.
       // Everything after runs under a re-claimed lease, as if this task started later.
