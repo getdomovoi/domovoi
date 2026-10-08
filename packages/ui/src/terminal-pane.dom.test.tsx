@@ -522,34 +522,6 @@ describe("TerminalPane on a watching desktop", () => {
     expect(screen.getByText("closed, the shell has exited")).toBeTruthy()
   })
 
-  // When the daemon dropped the start and the attachment limit cuts again,
-  // the cut marker is the one that holds: what follows starts after both.
-  it("marks a cut attachment from a record the daemon already shortened", { timeout: 20_000 }, async () => {
-    const user = userEvent.setup()
-    const composer = createComposerInbox()
-    const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
-    composer.open(sessionId, receive)
-    const target = watcher()
-    const { container } = render(<TerminalPane connected readOnly composer={composer} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
-    await act(async () => {
-      target.watched.resolve(watchResult({ earlierOutputDropped: true }))
-    })
-    const line = `${"y".repeat(78)}\r\n`
-    await act(async () => {
-      for (let index = 0; index < 4_000; index += 1) target.deliverOutput(line)
-      target.deliverOutput("END OF OUTPUT\r\n")
-    })
-    await parsedThrough(container, "END OF OUTPUT")
-
-    await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
-
-    await vi.waitFor(() => expect(receive).toHaveBeenCalledTimes(1))
-    const [attachment] = receive.mock.calls[0]!
-    const content = "content" in attachment ? attachment.content : ""
-    expect(content).toMatch(/^\[earlier lines were cut to fit the attachment limit\]\n/u)
-    expect(content).not.toContain("[earlier output was not kept")
-    expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(maximumTextAttachmentBytes)
-  })
 
   it("stops watching one session's shell when the pane moves to another", async () => {
     const target = watcher()
@@ -696,7 +668,7 @@ describe("Attach this output to the composer", () => {
     await act(async () => {
       target.connect(thisClient)
     })
-    const lines = Array.from({ length: 2_000 }, (_, index) => `line ${index}\r\n`).join("")
+    const lines = Array.from({ length: 300 }, (_, index) => `line ${index}\r\n`).join("")
 
     await act(async () => {
       target.deliverOutput(`${lines}LAST LINE\r\n`)
@@ -782,22 +754,23 @@ describe("Attach this output to the composer", () => {
     expect(screen.getByText(/The start was cut to fit the attachment limit\./u)).toBeTruthy()
   })
 
-  // The pane keeps 5,000 lines of history. Past that xterm drops the oldest,
-  // well inside the byte limit, and the file says so.
-  it("marks an attachment once the pane's history is full", { timeout: 20_000 }, async () => {
+  // The pane keeps a bounded history (5,000 rows; 50 here, so filling it is
+  // cheap). Past that xterm drops the oldest, well inside the byte limit, and
+  // the file says so.
+  it("marks an attachment once the pane's history is full", async () => {
     const user = userEvent.setup()
     const composer = createComposerInbox()
     const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
     composer.open(sessionId, receive)
     const target = harness()
-    const { container } = render(<TerminalPane connected controls={target.controls} composer={composer} machineName="worktop" sessionId={sessionId} />)
+    const { container } = render(<TerminalPane connected controls={target.controls} composer={composer} historyRows={50} machineName="worktop" sessionId={sessionId} />)
     await act(async () => {
       target.connect(thisClient)
     })
     // One write that fills the history and then clears it: the clear shrinks
     // the buffer below full before any batch ends, but the lines that
     // scrolled out are still gone, so the mark stays.
-    const lines = Array.from({ length: 5_100 }, (_, index) => `line ${index}\r\n`).join("")
+    const lines = Array.from({ length: 150 }, (_, index) => `line ${index}\r\n`).join("")
     await act(async () => {
       target.deliverOutput(`$ first command\r\n${lines}\x1b[3J$ after the clear\r\n`)
     })
@@ -815,17 +788,17 @@ describe("Attach this output to the composer", () => {
 
   // Rows also leave the history without a line feed: an index (ESC D) at the
   // bottom of the screen scrolls just the same.
-  it("marks an attachment whose history filled through index scrolls", { timeout: 20_000 }, async () => {
+  it("marks an attachment whose history filled through index scrolls", async () => {
     const user = userEvent.setup()
     const composer = createComposerInbox()
     const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
     composer.open(sessionId, receive)
     const target = harness()
-    const { container } = render(<TerminalPane connected controls={target.controls} composer={composer} machineName="worktop" sessionId={sessionId} />)
+    const { container } = render(<TerminalPane connected controls={target.controls} composer={composer} historyRows={50} machineName="worktop" sessionId={sessionId} />)
     await act(async () => {
       target.connect(thisClient)
     })
-    const rows = Array.from({ length: 5_100 }, (_, index) => `row ${index}\r\x1bD`).join("")
+    const rows = Array.from({ length: 150 }, (_, index) => `row ${index}\r\x1bD`).join("")
     await act(async () => {
       target.deliverOutput(`${rows}\x1b[3J$ after the clear\r\x1bD`)
     })
@@ -840,7 +813,7 @@ describe("Attach this output to the composer", () => {
 
   // Narrowing the grid reflows long rows into more rows, which can push the
   // oldest out of the history with no output at all.
-  it("marks an attachment whose history filled when the grid narrowed", { timeout: 20_000 }, async () => {
+  it("marks an attachment whose history filled when the grid narrowed", async () => {
     const user = userEvent.setup()
     const composer = createComposerInbox()
     const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
@@ -853,9 +826,10 @@ describe("Attach this output to the composer", () => {
     const list = vi.fn(async (_sessionId: string) => [listing({ cols: 20 })])
     const controls: TerminalControls = { ...target.controls, list }
     const { container } = render(
-      <TerminalPane connected readOnly composer={composer} controls={controls} holderRefreshMs={20} machineName="worktop" sessionId={sessionId} />,
+      <TerminalPane connected readOnly composer={composer} controls={controls} historyRows={50} holderRefreshMs={20} machineName="worktop" sessionId={sessionId} />,
     )
-    const wide = Array.from({ length: 3_000 }, (_, index) => `${String(index).padStart(5, "0")} ${"z".repeat(60)}\r\n`).join("")
+    // 40 lines fit the history at 80 columns; at 20 each takes 4 rows.
+    const wide = Array.from({ length: 40 }, (_, index) => `${String(index).padStart(5, "0")} ${"z".repeat(60)}\r\n`).join("")
     await act(async () => {
       target.watched.resolve(watchResult({ buffer: `${wide}END OF OUTPUT\r\n` }))
     })
@@ -875,7 +849,7 @@ describe("Attach this output to the composer", () => {
 
   // Fewer rows lower the history's capacity before the reflow runs, so a
   // wider, shorter grid can drop rows that a wider one would then merge.
-  it("marks an attachment whose history filled when the grid got shorter", { timeout: 20_000 }, async () => {
+  it("marks an attachment whose history filled when the grid got shorter", async () => {
     const user = userEvent.setup()
     const composer = createComposerInbox()
     const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
@@ -885,9 +859,11 @@ describe("Attach this output to the composer", () => {
     const list = vi.fn(async (_sessionId: string) => [listed])
     const controls: TerminalControls = { ...target.controls, list }
     const { container } = render(
-      <TerminalPane connected readOnly composer={composer} controls={controls} holderRefreshMs={20} machineName="worktop" sessionId={sessionId} />,
+      <TerminalPane connected readOnly composer={composer} controls={controls} historyRows={50} holderRefreshMs={20} machineName="worktop" sessionId={sessionId} />,
     )
-    const wrapped = Array.from({ length: 2_506 }, (_, index) => `${String(index).padStart(5, "0")}${"w".repeat(76)}\r\n`).join("")
+    // 30 lines of 81 characters take about 60 rows at 80 by 24: inside the 74
+    // a 24-row screen allows, past the 55 a 5-row screen does.
+    const wrapped = Array.from({ length: 30 }, (_, index) => `${String(index).padStart(5, "0")}${"w".repeat(76)}\r\n`).join("")
     await act(async () => {
       target.watched.resolve(watchResult({ buffer: `${wrapped}END OF OUTPUT\r\n` }))
     })

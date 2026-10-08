@@ -114,6 +114,7 @@ export function TerminalPane({
   composer = composerInbox,
   connected,
   controls,
+  historyRows = terminalScrollback,
   holderRefreshMs = terminalHolderRefreshMs,
   readOnly = false,
   machineName,
@@ -122,6 +123,8 @@ export function TerminalPane({
   composer?: ComposerInbox
   connected: boolean
   controls: TerminalControls
+  // xterm's scrollback, in rows. Tests shorten it so filling it is cheap.
+  historyRows?: number
   holderRefreshMs?: number
   readOnly?: boolean
   machineName: string
@@ -181,7 +184,7 @@ export function TerminalPane({
       fontSize: 11,
       lineHeight: 1.85,
       screenReaderMode: true,
-      scrollback: terminalScrollback,
+      scrollback: historyRows,
       theme: {
         background: styles.getPropertyValue("--code").trim() || "#151515",
         foreground: styles.getPropertyValue("--foreground").trim() || "#eeeeec",
@@ -204,7 +207,7 @@ export function TerminalPane({
     // A resize to fewer rows lowers the capacity before reflow, so it is
     // checked against the smaller of the two heights.
     const noteHistory = (rows = terminal.rows) => {
-      if (terminal.buffer.normal.length >= terminalScrollback + Math.min(rows, terminal.rows)) historyFilledRef.current = true
+      if (terminal.buffer.normal.length >= historyRows + Math.min(rows, terminal.rows)) historyFilledRef.current = true
     }
     const fed = terminal.onLineFeed(() => noteHistory())
     const scrolled = terminal.onScroll(() => noteHistory())
@@ -333,7 +336,7 @@ export function TerminalPane({
       if (xtermRef.current === terminal) xtermRef.current = null
       if (readOnly && unwatch) void unwatch(terminalId).catch(() => undefined)
     }
-  }, [connected, controls, holderRefreshMs, readOnly, restartKey, sessionId, terminalId])
+  }, [connected, controls, historyRows, holderRefreshMs, readOnly, restartKey, sessionId, terminalId])
 
   if (!sessionId) {
     return (

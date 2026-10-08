@@ -82,6 +82,18 @@ describe("terminalAttachmentText", () => {
     expect(terminalAttachmentText(lines, { historyFilled: false, earlierDropped: true }, 1_000)).toEqual({ content: `${attachmentMarkers.dropped}\ntail`, marked: "dropped" })
   })
 
+  // When the daemon dropped the start and the limit cuts again, the cut
+  // marker is the one that holds: what follows starts after both.
+  it("leads with the cut marker over a record the daemon already shortened", () => {
+    const lines = buffer(Array.from({ length: 40 }, (_, index) => ({ text: `line ${String(index).padStart(2, "0")}` })))
+    const limit = attachmentMarkers.dropped.length + 1 + 30
+    const { content, marked } = terminalAttachmentText(lines, { historyFilled: false, earlierDropped: true }, limit)
+    expect(marked).toBe("cut")
+    expect(content.startsWith(`${attachmentMarkers.cut}\n`)).toBe(true)
+    expect(content).not.toContain(attachmentMarkers.dropped)
+    expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(limit)
+  })
+
   // Output that fits beside the short cut marker but not beside the longer
   // history marker is still cut, and the file says so truthfully.
   it("cuts against the longer marker when the known one does not fit", () => {
