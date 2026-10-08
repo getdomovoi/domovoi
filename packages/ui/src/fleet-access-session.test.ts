@@ -8,13 +8,22 @@ const deviceId = `device-${"a".repeat(32)}`
 let sockets: ReturnType<typeof installFakeWebSocket>
 let access: FleetAccessSession
 let routeDown = false
+// Route requests asked of the home daemon, and an optional hold on their answers.
+let routeCalls = 0
+let routeHold: Promise<void> | undefined
 beforeEach(() => {
   vi.useFakeTimers()
   sockets = installFakeWebSocket()
   routeDown = false
-  access = new FleetAccessSession(() => ({ homeUrl: "ws://localhost/rpc", kind: "web", route: async () => routeDown
-    ? { outcome: "refused", reason: "client-route-unavailable" }
-    : { outcome: "ready", machineId, transport: { kind: "local", endpoint: "ws://localhost/rpc", authenticated: true } } }))
+  routeCalls = 0
+  routeHold = undefined
+  access = new FleetAccessSession(() => ({ homeUrl: "ws://localhost/rpc", kind: "web", route: async () => {
+    routeCalls += 1
+    if (routeHold) await routeHold
+    return routeDown
+      ? { outcome: "refused", reason: "client-route-unavailable" }
+      : { outcome: "ready", machineId, transport: { kind: "local", endpoint: "ws://localhost/rpc", authenticated: true } }
+  } }))
 })
 afterEach(() => { access.clear(); sockets.uninstall(); vi.useRealTimers() })
 
@@ -192,6 +201,32 @@ async function admit(snapshot = workspaceSnapshot()): Promise<void> {
   respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
   await pending
 }
+
+it("dials at most four reads at once, across callers, and frees a slot only when a read ends", async () => {
+  await admit()
+  const before = routeCalls
+  let answer!: () => void
+  routeHold = new Promise<void>((resolve) => { answer = resolve })
+  const reads = Array.from({ length: 6 }, () => new AbortController())
+  const outcomes = reads.map((read) => access.read(machineId, read.signal).then(() => "read", (error: unknown) => error))
+  await vi.advanceTimersByTimeAsync(0)
+  expect(routeCalls - before).toBe(4)
+
+  // A read cancelled while waiting leaves without dialing.
+  reads[5]!.abort()
+  expect(await outcomes[5]).toMatchObject({ name: "AbortError" })
+  // A cancelled read still holds its route request, so it keeps its slot until it ends.
+  reads[0]!.abort()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(routeCalls - before).toBe(4)
+
+  answer()
+  await vi.advanceTimersByTimeAsync(0)
+  expect(routeCalls - before).toBe(5)
+  for (const read of reads) read.abort()
+  await vi.advanceTimersByTimeAsync(11_000)
+  await Promise.all(outcomes)
+})
 
 it("keeps what the admitted machine reported about its agents and sessions, and nothing else", async () => {
   vi.setSystemTime(new Date("2026-10-06T14:03:00.000Z"))

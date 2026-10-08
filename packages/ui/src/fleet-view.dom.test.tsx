@@ -365,56 +365,20 @@ it("reads admitted machines on each visit of a surface that stays mounted, as Se
   expect(onReadMachine).toHaveBeenCalledTimes(2)
 })
 
-it("reads at most four machines at once on a visit, as the inventory fan-out does", async () => {
-  const answers: (() => void)[] = []
-  const onReadMachine = vi.fn((_machineId: string, _signal: AbortSignal) => new Promise<void>((resolve) => { answers.push(resolve) }))
-  const clientAccess = Object.fromEntries(Array.from({ length: 6 }, (_, index) =>
-    [`machine-${String(index).repeat(32)}`, admitted(reading({ readAt: "2026-10-06T14:03:00.000Z" }))]))
-  renderHook(() => useReadOnVisit({ active: true, connected: true, clientAccess, onReadMachine }))
-  expect(onReadMachine).toHaveBeenCalledTimes(4)
-
-  await act(async () => { answers[0]?.(); await Promise.resolve(); await Promise.resolve() })
-  expect(onReadMachine).toHaveBeenCalledTimes(5)
-  await act(async () => { for (const answer of answers) answer(); for (let i = 0; i < 6; i += 1) await Promise.resolve() })
-  expect(onReadMachine).toHaveBeenCalledTimes(6)
-  expect(new Set(onReadMachine.mock.calls.map(([machineId]) => machineId)).size).toBe(6)
-})
-
-it("keeps the cap across a quick revisit until the cancelled reads end", async () => {
-  // These reads ignore cancellation, as a route request still in flight can.
-  const answers: (() => void)[] = []
-  const onReadMachine = vi.fn((_machineId: string, _signal: AbortSignal) => new Promise<void>((resolve) => { answers.push(resolve) }))
-  const clientAccess = Object.fromEntries(Array.from({ length: 6 }, (_, index) =>
-    [`machine-${String(index).repeat(32)}`, admitted(reading({ readAt: "2026-10-06T14:03:00.000Z" }))]))
-  const { rerender } = renderHook(({ active }: { active: boolean }) => useReadOnVisit({ active, connected: true, clientAccess, onReadMachine }),
-    { initialProps: { active: true } })
-  expect(onReadMachine).toHaveBeenCalledTimes(4)
-  expect(onReadMachine.mock.calls.every(([, signal]) => !signal.aborted)).toBe(true)
-
-  rerender({ active: false })
-  expect(onReadMachine.mock.calls.every(([, signal]) => signal.aborted)).toBe(true)
-  rerender({ active: true })
-  expect(onReadMachine).toHaveBeenCalledTimes(4)
-
-  await act(async () => { answers[0]?.(); await Promise.resolve(); await Promise.resolve() })
-  expect(onReadMachine).toHaveBeenCalledTimes(5)
-})
-
-it("holds queued reads while the home daemon is not connected and starts them on reconnect", async () => {
-  const answers: (() => void)[] = []
-  const onReadMachine = vi.fn((_machineId: string, _signal: AbortSignal) => new Promise<void>((resolve) => { answers.push(resolve) }))
-  const clientAccess = Object.fromEntries(Array.from({ length: 6 }, (_, index) =>
-    [`machine-${String(index).repeat(32)}`, admitted(reading({ readAt: "2026-10-06T14:03:00.000Z" }))]))
+it("cancels a visit's reads when the home connection drops and asks again on reconnect", () => {
+  const onReadMachine = vi.fn((_machineId: string, _signal: AbortSignal) => new Promise<void>(() => {}))
+  const clientAccess = { [studio.id]: admitted(reading({ readAt: "2026-10-06T14:03:00.000Z" })) }
   const { rerender } = renderHook(({ connected }: { connected: boolean }) => useReadOnVisit({ active: true, connected, clientAccess, onReadMachine }),
     { initialProps: { connected: true } })
-  expect(onReadMachine).toHaveBeenCalledTimes(4)
+  expect(onReadMachine).toHaveBeenCalledTimes(1)
 
   rerender({ connected: false })
-  await act(async () => { answers[0]?.(); await Promise.resolve(); await Promise.resolve() })
-  expect(onReadMachine).toHaveBeenCalledTimes(4)
+  expect(onReadMachine.mock.calls[0]?.[1].aborted).toBe(true)
+  expect(onReadMachine).toHaveBeenCalledTimes(1)
 
   rerender({ connected: true })
-  expect(onReadMachine).toHaveBeenCalledTimes(5)
+  expect(onReadMachine).toHaveBeenCalledTimes(2)
+  expect(onReadMachine.mock.calls[1]?.[1].aborted).toBe(false)
 })
 
 const pending: FleetEntry = {

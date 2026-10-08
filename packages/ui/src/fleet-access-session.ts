@@ -146,18 +146,17 @@ export function fleetAgents(
 // machine was just admitted or just read.
 const freshReadingMs = 30_000
 
-// A visit dials no more machines at once than the inventory fan-out does, so
-// a large fleet does not turn one visit into a burst of connections.
+// No more machines dial at once than in the inventory fan-out, so a large
+// fleet does not turn one visit into a burst of connections. FleetAccessSession
+// holds the count, so it outlives any one surface or visit.
 const readConcurrency = defaultFleetInventoryConcurrency
-
-type QueuedRead = { machineId: string; read: (signal: AbortSignal) => Promise<void> }
 
 // Each admitted machine is read once per visit of a surface that shows its
 // facts (Machines, Settings), or when it is admitted during one, unless its
-// reading is fresh: one connection per machine per visit, not a poll, and at
-// most `readConcurrency` at a time. A machine that does not answer keeps its
-// last reading, marked unanswered in `clientAccess`, and the surface dates
-// it. A visit is while `active` holds and the caller stays mounted.
+// reading is fresh: one read per machine per visit, not a poll. A machine that
+// does not answer keeps its last reading, marked unanswered in `clientAccess`,
+// and the surface dates it. A visit is while `active` holds, the home daemon
+// is connected and the caller stays mounted.
 export function useReadOnVisit({ active, connected, clientAccess, onReadMachine }: {
   active: boolean
   connected: boolean
@@ -169,56 +168,30 @@ export function useReadOnVisit({ active, connected, clientAccess, onReadMachine 
     .map(([machineId]) => machineId)
     .sort()
     .join(" ")
-  const requested = useRef(new Set<string>())
-  // Every read not yet settled, this visit's or a cancelled one from before:
-  // a cancelled read can still hold its route request, so it keeps its slot
-  // until it ends.
-  const inFlight = useRef(new Set<AbortController>())
-  const queued = useRef<QueuedRead[]>([])
-  // Whether queued reads may start: during a visit, with the home daemon connected.
-  const live = useRef(false)
-  // Starts queued reads while fewer than `readConcurrency` are in flight. The
-  // answer, or the lack of one, arrives through clientAccess; each read that
-  // ends makes room for the next.
-  const pump = () => {
-    while (live.current && inFlight.current.size < readConcurrency) {
-      const next = queued.current.shift()
-      if (!next) return
-      const read = new AbortController()
-      inFlight.current.add(read)
-      next.read(read.signal).catch(() => {}).finally(() => {
-        inFlight.current.delete(read)
-        pump()
-      })
-    }
-  }
-  // Ending the visit cancels the reads in flight and drops the ones still
-  // queued, and the next visit asks every machine again. A read cut short was
-  // never answered, so a remount (StrictMode does one in development) asks again too.
+  // The machines this visit has asked, with the signal that cancels each read.
+  const requested = useRef(new Map<string, AbortController>())
+  // Ending the visit, or losing the home connection, cancels what it asked;
+  // a cancelled read is not marked unanswered, and the next visit or the
+  // reconnect asks again. A remount (StrictMode does one in development) does too.
   useEffect(() => {
-    if (!active) return
+    if (!active || !connected) return
     const asked = requested.current
-    const reads = inFlight.current
-    const queue = queued.current
     return () => {
-      live.current = false
-      for (const read of reads) read.abort()
-      queue.length = 0
+      for (const read of asked.values()) read.abort()
       asked.clear()
     }
-  }, [active])
+  }, [active, connected])
   useEffect(() => {
-    // Offline, queued reads wait for the connection rather than fail.
-    live.current = active && connected && onReadMachine !== undefined
     if (!active || !onReadMachine || !connected) return
     for (const machineId of admittedIds.split(" ").filter(Boolean)) {
       const access = clientAccess[machineId]
       if (requested.current.has(machineId) || access?.state !== "admitted") continue
-      requested.current.add(machineId)
+      const read = new AbortController()
+      requested.current.set(machineId, read)
       if (Date.now() - Date.parse(access.reading.readAt) < freshReadingMs) continue
-      queued.current.push({ machineId, read: (signal) => onReadMachine(machineId, signal) })
+      // The answer, or the lack of one, arrives through clientAccess.
+      onReadMachine(machineId, read.signal).catch(() => {})
     }
-    pump()
     // The ids name the machines to read; a new reading of one must not read it
     // again, so clientAccess and onReadMachine are left out of the dependencies.
   }, [admittedIds, connected, active])
@@ -326,14 +299,71 @@ export class FleetAccessSession {
   // Machines and Settings ask this on each visit (useReadOnVisit), so a machine that is
   // down or has no route keeps its access and its last reading, which the
   // caller dates. Only an answer that refuses this credential or this
-  // identity, or a machine no longer enrolled, withdraws access.
+  // identity, or a machine no longer enrolled, withdraws access. At most
+  // `readConcurrency` reads dial at once, across every surface and visit.
   async read(machineId: string, signal: AbortSignal): Promise<void> {
+    await this.#readSlot(signal)
+    const routes: Promise<unknown>[] = []
+    const track = <T>(answer: Promise<T>): Promise<T> => {
+      routes.push(answer.catch(() => {}))
+      return answer
+    }
+    try {
+      await this.#readNow(machineId, signal, () => {
+        const inputs = this.inputs()
+        const bridge = inputs.bridge
+        const fleetRoute = bridge?.fleetRoute
+        return {
+          ...inputs,
+          route: (params, options) => track(inputs.route(params, options)),
+          ...(fleetRoute ? { bridge: { fleetRoute: (id: string, budgetMs: number) => track(fleetRoute.call(bridge, id, budgetMs)) } } : {}),
+        }
+      })
+    } finally {
+      // A cancelled read settles at once, but a route request it started
+      // runs on at the home daemon; the slot frees when that ends too.
+      void Promise.all(routes).then(() => this.#releaseReadSlot())
+    }
+  }
+
+  // A slot is held from dial until the read and its route request end; a
+  // read cancelled while waiting leaves without dialing.
+  #reading = 0
+  readonly #waitingReads: (() => void)[] = []
+
+  #readSlot(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.reject(new DOMException("Read cancelled", "AbortError"))
+    if (this.#reading < readConcurrency) {
+      this.#reading += 1
+      return Promise.resolve()
+    }
+    return new Promise((resolve, reject) => {
+      const start = () => { signal.removeEventListener("abort", cancel); resolve() }
+      const cancel = () => {
+        const index = this.#waitingReads.indexOf(start)
+        if (index !== -1) this.#waitingReads.splice(index, 1)
+        reject(new DOMException("Read cancelled", "AbortError"))
+      }
+      this.#waitingReads.push(start)
+      signal.addEventListener("abort", cancel, { once: true })
+    })
+  }
+
+  // The slot passes straight to the next waiting read, so no new read can
+  // take it in between.
+  #releaseReadSlot(): void {
+    const next = this.#waitingReads.shift()
+    if (next) next()
+    else this.#reading -= 1
+  }
+
+  async #readNow(machineId: string, signal: AbortSignal, inputs: () => ClientInputs): Promise<void> {
     const before = this.#states[machineId]
     try {
       await this.#ask(machineId, signal, "Read cancelled", (reason) => credentialRefusals.has(reason), (_client, _deadline, snapshot, access) => {
         this.#set(machineId, { state: "admitted", deviceId: access.deviceId, reading: machineReading(snapshot, new Date()) })
         return Promise.resolve()
-      })
+      }, inputs)
     } catch (cause) {
       // Still the admission this read started from, so its reading is the
       // one that went unanswered. A refusal or a new admission replaced it.
@@ -352,11 +382,12 @@ export class FleetAccessSession {
     cancelled: string,
     withdraws: (reason: ClientAdmissionError["reason"]) => boolean,
     question: (client: DomovoiClient, deadline: Deadline, snapshot: WorkspaceSnapshot, access: FleetAccess) => Promise<T>,
+    inputs: () => ClientInputs = this.inputs,
   ): Promise<T> {
     const access = this.#access.get(machineId)
     if (!access) throw new ClientAdmissionError("client-credential-required")
     const deadline = Deadline.start(10_000)
-    const client = fleetClient({ ...this.inputs(), access })
+    const client = fleetClient({ ...inputs(), access })
     const close = () => { client.disconnect(); deadline.clear(); signal.removeEventListener("abort", close); this.#readers.get(machineId)?.delete(close) }
     const readers = this.#readers.get(machineId) ?? new Set<() => void>()
     readers.add(close)
