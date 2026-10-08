@@ -2210,7 +2210,7 @@
     {
       "id": "fleet.agents",
       "since": "2026-10-07",
-      "note": "Built as one row per machine and agent below the cards. Agents a machine looked for and did not find are not listed. The state words are Domovoi's provider states (ready, needs sign-in on that machine, found, sign-in not checked, cannot start) rather than the design's token-in-keychain words, because a subscription CLI keeps its own credential and Domovoi does not read where. Authenticate there opens, in the row, the sign-in command to run in a terminal on that machine; Domovoi does not sign in for the provider. A machine this client never read has one unknown row with the reason."
+      "note": "Built as one row per machine and agent below the cards. Agents a machine looked for and did not find are not listed. The state words are Domovoi's provider states (ready, needs sign-in on that machine, found, sign-in not checked, cannot start, adapter unavailable) rather than the design's token-in-keychain words, because a subscription CLI keeps its own credential and Domovoi does not read where. Authenticate there opens, in the row, the sign-in command to run in a terminal on that machine; Domovoi does not sign in for the provider. A machine this client never read has one unknown row with the reason."
     },
     {
       "id": "settings.providers",

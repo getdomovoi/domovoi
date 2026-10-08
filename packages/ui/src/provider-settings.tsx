@@ -330,6 +330,9 @@ const agentDot: Record<AgentTone, string> = {
 
 function agentState(provider: ProviderRuntime): { state: string; tone: AgentTone } {
   if (provider.problem !== undefined) return { state: "cannot start", tone: "destructive" }
+  // Found on that machine, but its Domovoi has no adapter to start sessions
+  // with it, so signing in would not help (sessionCapable, as the launcher reads it).
+  if (!provider.sessionCapable) return { state: "adapter unavailable", tone: "destructive" }
   if (provider.status === "auth-required") return { state: "needs sign-in on that machine", tone: "warning" }
   if (provider.status === "unknown") return { state: "found, sign-in not checked", tone: "muted" }
   return { state: "ready", tone: "success" }
@@ -368,7 +371,7 @@ export function MachineAgentList({ machines }: { machines: readonly MachineAgent
               tone={machine.stale ? "faint" : tone}
               dimmed={machine.stale !== undefined}
               problem={provider.problem}
-              signIn={provider.status === "auth-required" && provider.problem === undefined && !machine.stale ? provider : undefined}
+              signIn={provider.status === "auth-required" && provider.problem === undefined && provider.sessionCapable && !machine.stale ? provider : undefined}
             />
           )
         })

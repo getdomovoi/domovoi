@@ -172,6 +172,27 @@ describe("Settings shell and provider pane", () => {
     expect(markup).not.toContain(">grok</span>")
   })
 
+  it("does not call an agent ready, or offer its sign-in, when this Domovoi cannot start sessions with it", () => {
+    const markup = renderToStaticMarkup(
+      <ProviderSettings
+        providers={providers}
+        secrets={[]}
+        machines={[{ machineId: "m1", label: "workshop", providers: [
+          { ...providers[0]!, sessionCapable: false },
+          { ...providers[1]!, status: "auth-required", sessionCapable: false },
+        ] }]}
+      />,
+    )
+    const rows = [...markup.matchAll(/<li[^>]*>(.*?)<\/li>/gs)].map(([, row]) =>
+      [...row!.matchAll(/data-agent-cell=""[^>]*>([^<]*)</g)].map(([, cell]) => cell))
+
+    expect(rows).toEqual([
+      ["claude-code", "workshop", "adapter unavailable"],
+      ["codex", "workshop", "adapter unavailable"],
+    ])
+    expect(markup).not.toContain("Authenticate there")
+  })
+
   it("hands the fleet's agents to the providers pane", () => {
     const markup = renderToStaticMarkup(
       <SettingsShell
