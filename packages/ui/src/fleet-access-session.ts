@@ -22,14 +22,19 @@ import type { MachineAgents } from "./provider-settings.js"
 export type MachineReading = {
   providers: readonly ProviderRuntime[]
   sessions: readonly Pick<SessionSummary, "id" | "title" | "state">[]
+  // This client's clock. Only compared with other times from this client.
   readAt: string
+  // The home daemon's latest heartbeat from the machine, as this client had
+  // seen it when it asked: the home daemon's clock, so it is compared only
+  // with the home daemon's later heartbeats, never with readAt.
+  heardAt?: string
 }
 
 // The reading keeps what the drawer files a session by (groupSessions), not
 // the session's own state alone: a pending approval means waiting on the
 // operator even while its turn is in flight, and a turn in flight means
 // running, even while the session is archiving.
-export function machineReading(snapshot: WorkspaceSnapshot, readAt: Date): MachineReading {
+export function machineReading(snapshot: WorkspaceSnapshot, readAt: Date, heardAt?: string): MachineReading {
   const gated = new Set(snapshot.approvals.map((approval) => approval.sessionId))
   const filed = ({ id, state, activeTurnId }: SessionSummary): SessionSummary["state"] => {
     if (state === "archived") return state
@@ -40,6 +45,7 @@ export function machineReading(snapshot: WorkspaceSnapshot, readAt: Date): Machi
     providers: snapshot.machine.providers,
     sessions: snapshot.sessions.map((session) => ({ id: session.id, title: session.title, state: filed(session) })),
     readAt: readAt.toISOString(),
+    ...(heardAt === undefined ? {} : { heardAt }),
   }
 }
 
@@ -77,11 +83,14 @@ export function asOf(readAt: string | undefined): string | undefined {
 // The home daemon routes a read only to a healthy or reconnecting machine
 // (eligibility in apps/daemon/src/fleet-client-route.ts). A reconnecting
 // machine is one the home daemon is not hearing, so its reading is current
-// only when this client read it after the home daemon's latest heartbeat. Any
-// other health dates what the machine last said.
-function currentFor(machine: FleetMachine, readAt: string): boolean {
+// only when this client asked after the home daemon's latest heartbeat: the
+// heartbeat it had seen then is still the latest. Both times are the home
+// daemon's, so a skewed client clock cannot decide it. Any other health dates
+// what the machine last said.
+function currentFor(machine: FleetMachine, reading: MachineReading): boolean {
   if (machine.health === "healthy") return true
-  return machine.health === "reconnecting" && Date.parse(readAt) >= Date.parse(machine.heartbeat.lastSeenAt)
+  return machine.health === "reconnecting" && reading.heardAt !== undefined
+    && Date.parse(reading.heardAt) >= Date.parse(machine.heartbeat.lastSeenAt)
 }
 
 // A snapshot the shell holds for a machine: its own home daemon, or the
@@ -118,7 +127,7 @@ export function machineFacts(
     // depend on the home route.
     const stale = useHeld
       ? !held.live
-      : !input.connected || !currentFor(machine, reading.readAt) || admitted?.unanswered === true
+      : !input.connected || !currentFor(machine, reading) || admitted?.unanswered === true
     return { known: true, providers: reading.providers, sessions: reading.sessions, readAt: reading.readAt, stale }
   }
   if (machine.id === input.currentMachineId && input.providers) {
@@ -234,6 +243,9 @@ export class FleetAccessSession {
   readonly #pending = new Map<string, DomovoiClient>()
   readonly #listeners = new Set<() => void>()
   readonly #readers = new Map<string, Set<() => void>>()
+  // The home daemon's latest heartbeat from each machine, from its last fleet
+  // snapshot (retain). A read notes the one it started under.
+  #heard = new Map<string, string>()
 
   constructor(private readonly inputs: () => ClientInputs) {}
   snapshot = (): Readonly<Record<string, FleetAccessState>> => this.#states
@@ -258,6 +270,7 @@ export class FleetAccessSession {
     try {
       if (signal.aborted) return
       if (!credentialSchema.safeParse(credential).success) throw new ClientAdmissionError("client-credential-required")
+      const heardAt = this.#heard.get(machineId)
       client = fleetClient({ ...this.inputs(), access: { machineId, credential } })
       this.#pending.set(machineId, client)
       this.#set(machineId, { state: "checking" })
@@ -266,7 +279,7 @@ export class FleetAccessSession {
       if (signal.aborted || this.#pending.get(machineId) !== client) return
       if (!client.admittedDeviceId) throw new ClientAdmissionError("verification-unavailable")
       this.#access.set(machineId, { machineId, credential, deviceId: client.admittedDeviceId })
-      this.#set(machineId, { state: "admitted", deviceId: client.admittedDeviceId, reading: machineReading(snapshot, new Date()) })
+      this.#set(machineId, { state: "admitted", deviceId: client.admittedDeviceId, reading: machineReading(snapshot, new Date(), heardAt) })
     } catch (cause) {
       if (!signal.aborted && (!client || this.#pending.get(machineId) === client)) {
         const error = fleetAccessError(cause)
@@ -299,6 +312,7 @@ export class FleetAccessSession {
   }
 
   retain(machines: readonly FleetMachine[]): void {
+    this.#heard = new Map(machines.map((machine) => [machine.id, machine.heartbeat.lastSeenAt]))
     const ids = new Set(machines.filter((machine) => !machine.self).map((machine) => machine.id))
     for (const id of Object.keys(this.#states)) if (!ids.has(id)) this.remove(id)
   }
@@ -378,9 +392,10 @@ export class FleetAccessSession {
 
   async #readNow(machineId: string, signal: AbortSignal, inputs: () => ClientInputs): Promise<void> {
     const before = this.#states[machineId]
+    const heardAt = this.#heard.get(machineId)
     try {
       await this.#ask(machineId, signal, "Read cancelled", (reason) => credentialRefusals.has(reason), (_client, _deadline, snapshot, access) => {
-        this.#set(machineId, { state: "admitted", deviceId: access.deviceId, reading: machineReading(snapshot, new Date()) })
+        this.#set(machineId, { state: "admitted", deviceId: access.deviceId, reading: machineReading(snapshot, new Date(), heardAt) })
         return Promise.resolve()
       }, inputs)
     } catch (cause) {

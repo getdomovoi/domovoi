@@ -214,23 +214,48 @@ it("names the day of a reading that is not from today", () => {
   expect(asOf(yesterday.toISOString())).toBe(`as of ${day.format(yesterday)} ${clock.format(yesterday)}`)
 })
 
-it("keeps a reconnecting machine's reading current when this client read it after the home daemon's latest heartbeat", () => {
+it("keeps a reconnecting machine's reading current when this client asked after the home daemon's latest heartbeat, whatever its own clock says", () => {
+  // The home daemon's clock: its latest heartbeat from each machine.
   const heard = "2026-10-06T14:00:00.000Z"
   const machine = (id: string, label: string): FleetEntry => ({ kind: "machine", machine: {
     id, label, self: false, health: "reconnecting", platform: "linux", arch: "x64", version: "0.1.0", protocolVersion: "0.1.0",
     connection: "tailnet", capabilities: ["sessions"], transports: [], heartbeat: { state: "offline", lastSeenAt: heard },
   } })
-  const answered = { id: `machine-${"b".repeat(32)}`, readAt: "2026-10-06T14:05:00.000Z" }
-  const silent = { id: `machine-${"c".repeat(32)}`, readAt: "2026-10-06T13:55:00.000Z" }
-  const rows = fleetAgents([machine(answered.id, "answered"), machine(silent.id, "silent")], {
+  // This client's clock runs behind the home daemon's for the first and
+  // ahead of it for the others, so readAt says nothing about the heartbeat.
+  const answered = { id: `machine-${"b".repeat(32)}`, readAt: "2026-10-06T13:50:00.000Z", heardAt: heard }
+  const before = { id: `machine-${"c".repeat(32)}`, readAt: "2026-10-06T14:05:00.000Z", heardAt: "2026-10-06T13:40:00.000Z" }
+  const unseen = { id: `machine-${"d".repeat(32)}`, readAt: "2026-10-06T14:05:00.000Z" }
+  const rows = fleetAgents([machine(answered.id, "answered"), machine(before.id, "before"), machine(unseen.id, "unseen")], {
     readings: {},
-    clientAccess: Object.fromEntries([answered, silent].map(({ id, readAt }) =>
-      [id, { state: "admitted" as const, deviceId, reading: { providers: [], sessions: [], readAt } }])),
+    clientAccess: Object.fromEntries([answered, before, unseen].map(({ id, ...reading }) =>
+      [id, { state: "admitted" as const, deviceId, reading: { providers: [], sessions: [], ...reading } }])),
     currentMachineId: machineId,
     connected: true,
   })
 
-  expect(rows.map((row) => "stale" in row ? row.stale : undefined)).toEqual([undefined, asOf(silent.readAt)])
+  expect(rows.map((row) => "stale" in row ? row.stale : undefined)).toEqual([undefined, asOf(before.readAt), asOf(unseen.readAt)])
+})
+
+it("notes the home daemon's latest heartbeat it had seen when it asked the machine", async () => {
+  const heartbeat = (lastSeenAt: string): FleetMachine => ({
+    id: machineId, label: "studio", self: false, health: "healthy", platform: "linux", arch: "x64", version: "0.1.0",
+    protocolVersion: "0.1.0", connection: "tailnet", capabilities: ["sessions"], transports: [],
+    heartbeat: { state: "online", lastSeenAt },
+  })
+  access.retain([heartbeat("2026-10-06T14:00:00.000Z")])
+  await admit()
+  expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", reading: { heardAt: "2026-10-06T14:00:00.000Z" } })
+
+  access.retain([heartbeat("2026-10-06T14:02:00.000Z")])
+  const reading = access.read(machineId, new AbortController().signal)
+  await vi.advanceTimersByTimeAsync(0)
+  const socket = sockets.socket(1)
+  completeHandshake(socket)
+  await vi.advanceTimersByTimeAsync(0)
+  respond(socket, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" })
+  await reading
+  expect(access.snapshot()[machineId]).toMatchObject({ state: "admitted", reading: { heardAt: "2026-10-06T14:02:00.000Z" } })
 })
 
 it("dials at most four reads at once, across callers, and frees a slot only when a read ends", async () => {
