@@ -149,7 +149,7 @@ describe("devicePairParamsSchema", () => {
       .toBe("watching")
   })
 
-  it("lets the issuer of a client code name the device it pairs", () => {
+  it("takes a suggested name for the device a client code pairs", () => {
     expect(deviceIssueCodeParamsSchema.parse({ targetClient: "web", label: "  Studio browser " }))
       .toEqual({ targetClient: "web", label: "Studio browser" })
     // Without a label the code is the one the desktop card has always issued.
