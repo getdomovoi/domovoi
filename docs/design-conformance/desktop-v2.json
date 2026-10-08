@@ -1157,7 +1157,7 @@
         "aria-label=\"Policy refusal\""
       ],
       "notes": [
-        "S3.10h draws the card: Refused by policy, there is nothing to approve, the command, why, THE RULE IT BROKE with Set by and Applies to, and the remedy under What you can do instead (policy-refusal-card.tsx). S3.10h2 draws See what a rule can never cover → in that header, opening the rules tab through Thread's onOpenDockTab. The shell passes onOpenDockTab (openSheetTab), so the link opens the tab in the app. Needs protocol and stays a Codex follow-up: the step n of N meta (a plan step's blocker names only an approval), the Target it saw row, and tone-coded alternatives (the wire carries one remedy string, so the list has one neutral row). The drawn Recorded as refusal, actor daemon row is not drawn: the audit records provider.policy-refused with a provider actor"
+        "S3.10h draws the card: Refused by policy, there is nothing to approve, the command, why, THE RULE IT BROKE with Set by and Applies to, and the remedy under What you can do instead (policy-refusal-card.tsx). S3.10h2 draws See what a rule can never cover → in that header, opening the rules tab through Thread's onOpenDockTab. The shell passes onOpenDockTab (openSheetTab), so the link opens the tab in the app. What the card still lacks against the design is a humanRead entry"
       ]
     },
     {
@@ -1185,7 +1185,7 @@
         "Decision receipt"
       ],
       "notes": [
-        "S3.10h2 draws the follow-up row under the latest receipt while connected, as the design hides it offline (approval-receipt.tsx, thread.tsx): Review the changed files opens the changes sheet, Move this session to another machine opens the machine menu's move (not read-only, with a machine to move to), and See the checkpoints → or See the rule → (after an Always) opens that dock tab through Thread's onOpenDockTab. The shell passes onOpenDockTab (openSheetTab), so the link opens the tab in the app. The link reads See the rule, not the drawn See the rule you just created, because another client may have made the decision. The design's title suffixes (migration applied, step 3 rewritten), the follow-up line and the file count in Review the 7 changed files are the sample session's words"
+        "S3.10h2 draws the follow-up row under the latest receipt while connected, as the design hides it offline (approval-receipt.tsx, thread.tsx): Review the changed files opens the changes sheet, Move this session to another machine opens the machine menu's move (not read-only, with a machine to move to), and See the checkpoints → or See the rule → (after an Always) opens that dock tab through Thread's onOpenDockTab. The shell passes onOpenDockTab (openSheetTab), so the link opens the tab in the app. How the receipt differs from the design is a humanRead entry"
       ]
     },
     {
@@ -2269,6 +2269,16 @@
       "id": "dock.tabs",
       "since": "2026-10-02",
       "note": "Three tips in the design are false for the shipped product. Terminal (The raw stream from the machine, read-only. The agent owns this shell.): the tab is an interactive daemon PTY the user creates; one device holds it and types, the others read it until they take the shell, and a watching device reads it through terminal.watch and cannot take it. Q340 A keeps the PTY and asks Claude Design to redraw the tab; since 2026-10-07 the tip reads A shell on the machine, in the session's worktree. One device types at a time; the others can read. Checkpoints (Reverting rewinds the worktree and the thread together): checkpoint.restore resets the worktree only, and Q341 A keeps that; since 2026-10-06 the tip reads In a session with a worktree, every request you allow at a gate takes one first. Reverting resets the worktree; the thread keeps its turns. History (Fork from any turn.): fork is checkpoint-only (turn-row fork closed as a design error, f3252e50), so the tip becomes Fork from any checkpoint. A tab that matches the design here is a tab that says something untrue."
+    },
+    {
+      "id": "conversation.policy-refusal",
+      "since": "2026-10-08",
+      "note": "Built against its evidence, not as drawn. Needs protocol and stays a Codex follow-up: the step n of N meta (a plan step's blocker names only an approval), the Target it saw row, and tone-coded alternatives (the wire carries one remedy string, so the list has one neutral row). The drawn Recorded as refusal, actor daemon row is not drawn: the audit records provider.policy-refused with a provider actor."
+    },
+    {
+      "id": "conversation.receipt",
+      "since": "2026-10-08",
+      "note": "Built against its evidence, not as drawn. The link reads See the rule, not the drawn See the rule you just created, because another client may have made the decision. The design's title suffixes (migration applied, step 3 rewritten), the follow-up line and the file count in Review the 7 changed files are the sample session's words, so the receipt draws none of them."
     },
     {
       "id": "conversation.approval",
