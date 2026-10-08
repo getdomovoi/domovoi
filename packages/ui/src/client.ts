@@ -13,9 +13,11 @@ import {
   fleetChangedNotificationSchema,
   terminalAcceptedSchema,
   terminalClosedNotificationSchema,
+  terminalListResultSchema,
   terminalOwnershipNotificationSchema,
   terminalOutputNotificationSchema,
   terminalSessionSchema,
+  terminalWatchResultSchema,
   systemEmergencyStoppedNotificationSchema,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
@@ -58,6 +60,8 @@ import {
   type SystemEmergencyStopResult,
   type TerminalSession,
   type TerminalOwnershipNotification,
+  type TerminalSummary,
+  type TerminalWatchResult,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -791,6 +795,31 @@ export class DomovoiClient extends EventTarget {
       { terminalId, client: this.kind, clientId: this.clientId },
       (value) => terminalOwnershipNotificationSchema.parse(value),
     )
+  }
+
+  // Reading a terminal, as distinct from holding it. These name no client
+  // identity: a watcher types nothing, so nothing it says about itself is
+  // asked for.
+  listTerminals(sessionId: string): Promise<TerminalSummary[]> {
+    return this.request(
+      "terminal.list",
+      { sessionId },
+      (value) => terminalListResultSchema.parse(value).terminals,
+    )
+  }
+
+  watchTerminal(terminalId: string): Promise<TerminalWatchResult> {
+    return this.request(
+      "terminal.watch",
+      { terminalId },
+      (value) => terminalWatchResultSchema.parse(value),
+    )
+  }
+
+  unwatchTerminal(terminalId: string): Promise<void> {
+    return this.request("terminal.unwatch", { terminalId }, (value) => {
+      terminalAcceptedSchema.parse(value)
+    })
   }
 
   #terminalCommand<M extends "terminal.input" | "terminal.resize" | "terminal.close">(
