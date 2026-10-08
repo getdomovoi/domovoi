@@ -56,6 +56,10 @@ function queryTimeout(deadline?: OperationDeadline): number {
   return timeout
 }
 
+export function windowsHelperTimedOut(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException | null)?.code === "ETIMEDOUT"
+}
+
 // A failed/denied query is never evidence of a different boot or a dead PID.
 export function queryWindowsProcess(pid: number, deadline?: OperationDeadline): { bootId: string; identity: WindowsProcessIdentity | null } {
   const observation = queryWindowsProcesses([pid], deadline)

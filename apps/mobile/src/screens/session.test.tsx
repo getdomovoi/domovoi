@@ -1,10 +1,11 @@
 import { describe, expect, it, jest } from "@jest/globals"
-import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, terminalWatchResultSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
 import { planForSession, planSummary } from "../plan-rows"
 import { sessionDetail } from "../session-detail"
+import { watchFrom, type TerminalWatch } from "../terminal-rows"
 import { SessionScreen } from "./session"
 
 function workspace(): WorkspaceSnapshot {
@@ -496,5 +497,66 @@ describe("SessionScreen start another", () => {
     expect(screen.getByText("Nothing has run yet")).toBeOnTheScreen()
     expect(screen.getByText(/Your first message is what starts it/)).toBeOnTheScreen()
     expect(screen.queryByText(/Nothing has been said/)).toBeNull()
+  })
+})
+
+// Phone v2 frame 04 (B): the thread block that opens the read-only terminal.
+describe("SessionScreen terminals", () => {
+  const owner = { client: "desktop" as const, clientId: "desktop-1", device: { id: `device-${"a".repeat(32)}`, label: "MacBook Pro" } }
+  const watched = (buffer: string, overrides: Record<string, unknown> = {}): TerminalWatch => ({
+    state: "watching",
+    record: watchFrom(terminalWatchResultSchema.parse({
+      terminalId: "terminal-1",
+      sessionId: "session-billing",
+      cols: 120,
+      rows: 34,
+      shell: "/bin/zsh",
+      cwd: "/Users/mira/dev/acme/.domovoi/worktrees/wt-billing-idem",
+      owner,
+      claimHeld: true,
+      openedAt: "2026-10-06T13:52:04.000Z",
+      state: "live",
+      buffer,
+      bufferStartsAt: "2026-10-06T13:52:04.000Z",
+      earlierOutputDropped: false,
+      watchedAt: "2026-10-06T14:06:12.000Z",
+      ...overrides,
+    })),
+  })
+
+  it("shows the tail of each watched terminal and opens it in full", async () => {
+    const lines = Array.from({ length: 14 }, (_, index) => `line ${index + 1}`)
+    const onOpenTerminal = jest.fn<(terminalId: string) => void>()
+    await draw({ terminals: [watched(`${lines.join("\n")}\n`)], onOpenTerminal })
+
+    expect(screen.getByText("zsh · wt-billing-idem")).toBeOnTheScreen()
+    expect(screen.getByText("Live")).toBeOnTheScreen()
+    expect(screen.getByText("Claimed by MacBook Pro")).toBeOnTheScreen()
+    // The tail, about seven lines; the rest is one tap away.
+    expect(screen.getByText(lines.slice(-7).join("\n"))).toBeOnTheScreen()
+    expect(screen.queryByText(/line 7\n/)).toBeNull()
+
+    await fireEvent.press(screen.getByRole("button", { name: "Show all 14 lines" }))
+    expect(onOpenTerminal).toHaveBeenCalledWith("terminal-1")
+  })
+
+  it("says Failed on the block for a shell that exited with an error", async () => {
+    await draw({ terminals: [watched("boom\n", { state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 1 })] })
+    expect(screen.getByText("Failed")).toBeOnTheScreen()
+    expect(screen.getByText("Last claimed by MacBook Pro")).toBeOnTheScreen()
+    expect(screen.getByRole("button", { name: "Show all 1 line" })).toBeOnTheScreen()
+  })
+
+  // Terminal blocks sit above the messages and grow, or appear, as output
+  // arrives. The thread keeps the item a reader is on where it is, rather
+  // than its numeric offset, so that growth does not move what they read.
+  it("keeps what a reader is on in place when terminal blocks above it change", async () => {
+    await draw({ terminals: [watched("line\n")] })
+    expect(screen.getByTestId("thread").props.maintainVisibleContentPosition).toEqual({ minIndexForVisible: 0 })
+  })
+
+  it("draws no terminal block for a session with none", async () => {
+    await draw()
+    expect(screen.queryByText(/Show all/)).toBeNull()
   })
 })

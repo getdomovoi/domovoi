@@ -10,7 +10,7 @@ import type { OperationDeadline } from "../operation-deadline.js"
 import { parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceStatus } from "./install.js"
-import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, queryWindowsProcesses, windowsProcessAlive, WindowsJobStartupError, type WindowsJob, type WindowsJobEmpty } from "./windows-job.js"
+import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, queryWindowsProcesses, windowsHelperTimedOut, windowsProcessAlive, WindowsJobStartupError, type WindowsJob, type WindowsJobEmpty } from "./windows-job.js"
 import { windowsProcessIdentitySchema, prepareSupervisorDirectory, readSupervisorStopRequest, readWindowsSupervisorRecord,
   supervisorBackoffs, supervisorStopPath, writeSupervisorStopRequest, writeWindowsSupervisorRecord, windowsSupervisorRecordSchema,
   type WindowsProcessIdentity, type WindowsSupervisorRecord } from "./supervisor-record.js"
@@ -226,17 +226,37 @@ function terminalWindowsTreeProof(record: WindowsSupervisorRecord): boolean {
 export async function runWindowsSupervisor(path: string, entry: { executable: string; args: string[] }): Promise<WindowsSupervisorRecord> {
   if (process.platform !== "win32") throw new Error("Windows job supervision requires Windows")
   const config = configurationAt(path), home = profileLocation(config.homeDirectory, config.profileDirectory)
-  const lease = claim(home)
+  let lease = claim(home)
   const controller = new AbortController()
   const stop = () => controller.abort()
+  const assertRegistrationNotStopped = () => {
+    if (readSupervisorStopRequest(home)?.registrationId === config.registrationId) throw new Error("This Windows supervisor registration was stopped; reinstall before starting it")
+  }
   let monitor: ReturnType<typeof setInterval> | undefined
   let monitorError: unknown
   try {
-    const observed = queryWindowsProcess(process.pid)
+    let observed: ReturnType<typeof queryWindowsProcess>
+    try { observed = queryWindowsProcess(process.pid) } catch (error) {
+      if (!windowsHelperTimedOut(error)) throw error
+      // Cold first helper spawn at logon: after each of five CI cap hits, the next spawn was fast. Retry once.
+      // The identity query only observes this process; no supervision record has been read or written yet.
+      // Retry without the lease so a waiting stop is blocked for at most one query cap.
+      // Everything after runs under a re-claimed lease, as if this task started later.
+      assertRegistrationNotStopped()
+      lease.release()
+      try { observed = queryWindowsProcess(process.pid) } catch (cause) {
+        throw new Error("Windows supervisor could not read its own process identity: the first helper query reached the 20 s cap at startup and its one retry also failed. This start launched no daemon and wrote no supervision record; any earlier record in the profile's windows-supervisor.json is unchanged, so see domovoi daemon status. The logon task starts the supervisor again at the next logon.", { cause })
+      }
+      try { lease = claim(home) } catch (error) {
+        if (error instanceof WindowsSupervisorBusyError) assertRegistrationNotStopped()
+        throw error
+      }
+      assertRegistrationNotStopped()
+    }
     if (!observed.identity) throw new Error("Windows supervisor birth identity is unavailable")
     const previous = readWindowsSupervisorRecord(home)
     assertWindowsStartup(previous ? recoverWindowsJobClosure(previous, observed.bootId) : undefined, observed.bootId, windowsProcessAlive)
-    if (readSupervisorStopRequest(home)?.registrationId === config.registrationId) throw new Error("This Windows supervisor registration was stopped; reinstall before starting it")
+    assertRegistrationNotStopped()
     process.on("SIGINT", stop); process.on("SIGTERM", stop)
     monitor = setInterval(() => {
       try {

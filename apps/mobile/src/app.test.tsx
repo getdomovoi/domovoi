@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, jest } from "@jest/globals"
 import { demoWorkspace, maximumReviewAnnotations, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { act, fireEvent, render, screen } from "@testing-library/react-native"
+import { AppState, type AppStateStatus } from "react-native"
 
 import { App } from "./app"
+import { terminalListIntervalMs } from "./terminal-rows"
 import { ThemeProvider } from "./theme/theme-provider"
 
 // The phone's root: a stored credential is restored, the daemon is reached
@@ -674,5 +676,394 @@ describe("App", () => {
     expect(screen.queryByText(`acme-api on ${self.name}`)).toBeNull()
     expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
     expect(socket.requests("tool.inventory")).toHaveLength(1)
+  })
+
+  // Phone v2 frame 04: the phone lists the open session's terminals, watches
+  // each, reads live output, and stops watching when the person leaves.
+  describe("terminals", () => {
+    // The app dials again at once when it comes to the foreground, which is
+    // how these tests reconnect rather than waiting out the backoff.
+    const foreground = new Set<(state: AppStateStatus) => void>()
+    // The preset's AppState.addEventListener is already a mock, which
+    // restoreAllMocks would leave with this implementation, so the one it
+    // had is put back by hand.
+    let restoreForeground: (() => void) | undefined
+    beforeEach(() => {
+      foreground.clear()
+      const spy = jest.spyOn(AppState, "addEventListener")
+      const before = spy.getMockImplementation()
+      spy.mockImplementation((_type, listener) => {
+        foreground.add(listener as (state: AppStateStatus) => void)
+        return { remove: () => { foreground.delete(listener as (state: AppStateStatus) => void) } } as ReturnType<typeof AppState.addEventListener>
+      })
+      restoreForeground = () => {
+        if (before) spy.mockImplementation(before)
+        else spy.mockRestore()
+      }
+    })
+    afterEach(() => {
+      restoreForeground?.()
+      restoreForeground = undefined
+    })
+
+    async function comeBack(old: FakeSocket) {
+      await act(async () => { old.close() })
+      await settle()
+      await act(async () => { for (const listener of foreground) listener("active") })
+    }
+
+    const owner ={ client: "desktop", clientId: "desktop-1", device: { id: `device-${"a".repeat(32)}`, label: "MacBook Pro" } }
+    const terminal = {
+      terminalId: "terminal-1",
+      sessionId: audit.id,
+      cols: 120,
+      rows: 34,
+      shell: "/bin/zsh",
+      cwd: "/Users/mira/dev/acme/.domovoi/worktrees/wt-audit",
+      owner,
+      claimHeld: true,
+      openedAt: "2026-10-06T13:52:04.000Z",
+      state: "live",
+    }
+    const watchResult = {
+      ...terminal,
+      buffer: "$ pnpm audit\nfirst\n",
+      bufferStartsAt: "2026-10-06T13:52:04.000Z",
+      earlierOutputDropped: false,
+      watchedAt: "2026-10-06T14:06:12.000Z",
+    }
+
+    async function openAudit() {
+      const snapshot = workspace()
+      snapshot.approvals = []
+      const opened = await openApp(snapshot)
+      await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+      await settle()
+      return opened
+    }
+
+    async function watchOne(socket: FakeSocket) {
+      expect(socket.requests("terminal.list").at(-1)?.params).toEqual({ sessionId: audit.id })
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      expect(socket.requests("terminal.watch").at(-1)?.params).toEqual({ terminalId: "terminal-1" })
+      await act(async () => { socket.answer("terminal.watch", watchResult) })
+      await settle()
+    }
+
+    it("watches the open session's terminals, reads live output, and unwatches on leave", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      expect(screen.getByText("zsh · wt-audit")).toBeOnTheScreen()
+      expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+
+      await act(async () => { socket.push("terminal.output", { terminalId: "terminal-1", data: "third\n" }) })
+      await settle()
+      await fireEvent.press(screen.getByRole("button", { name: "Show all 3 lines" }))
+      expect(screen.getByText("Read-only. Only the claimant can type or resize.")).toBeOnTheScreen()
+      expect(screen.getByText("Claimed by MacBook Pro")).toBeOnTheScreen()
+      expect(screen.getByText("third")).toBeOnTheScreen()
+      // A phone watches; it never types, resizes or claims.
+      expect(socket.sent.filter((frame) => ["terminal.input", "terminal.resize", "terminal.claim", "terminal.create", "terminal.close"].includes(frame.method))).toEqual([])
+
+      await fireEvent.press(screen.getByRole("button", { name: "Back to the thread" }))
+      expect(screen.getByRole("button", { name: "Show all 3 lines" })).toBeOnTheScreen()
+      expect(socket.requests("terminal.unwatch")).toEqual([])
+
+      await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+      await settle()
+      expect(socket.requests("terminal.unwatch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }])
+    })
+
+    // The daemon may have taken a watch whose answer has not come back. Leaving
+    // ends it anyway, rather than leaving output flowing to no screen.
+    it("unwatches a terminal whose watch is still unanswered when the person leaves", async () => {
+      const { socket } = await openAudit()
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      expect(socket.requests("terminal.watch")).toHaveLength(1)
+
+      await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+      await settle()
+      expect(socket.requests("terminal.unwatch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }])
+    })
+
+    // The list after a reconnect is the daemon's word on the terminal's state.
+    it("takes the state from the list after a reconnect, before the new watch answers", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await comeBack(socket)
+      const next = FakeSocket.made.at(-1)!
+      // A new dial, not the old socket opened again.
+      expect(next).not.toBe(socket)
+      await act(async () => {
+        next.readyState = 1
+        next.onopen?.()
+      })
+      await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+      await settle()
+      await act(async () => {
+        next.answer("terminal.list", { terminals: [{ ...terminal, state: "closed", claimHeld: false, closedAt: "2026-10-06T14:09:40.000Z", exitCode: 1 }] })
+      })
+      await settle()
+      expect(screen.getByText("Failed")).toBeOnTheScreen()
+      expect(screen.getByText("Last claimed by MacBook Pro")).toBeOnTheScreen()
+    })
+
+    // No notification says a terminal opened, so the open session's list is
+    // read again while it is on screen, and only a new terminal is watched.
+    it("lists again while the session is open and watches a terminal opened since", async () => {
+      // Timers only: React's act and the promises it waits on keep their
+      // real microtasks and immediates, so the clock jump is the one change.
+      jest.useFakeTimers({ advanceTimers: true, doNotFake: ["nextTick", "setImmediate", "queueMicrotask"] })
+      try {
+        const { socket } = await openAudit()
+        await watchOne(socket)
+        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
+        await settle()
+        expect(socket.requests("terminal.list")).toHaveLength(2)
+        await act(async () => {
+          socket.answer("terminal.list", { terminals: [terminal, { ...terminal, terminalId: "terminal-2", cwd: "/Users/mira/dev/acme" }] })
+        })
+        await settle()
+        expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-2" }])
+        expect(screen.getByText("zsh · acme")).toBeOnTheScreen()
+      } finally {
+        jest.useRealTimers()
+      }
+    })
+
+    // A relist that fails while the watches on this connection still deliver
+    // says nothing about them: the terminal stays Live.
+    it("stays Live when a later list fails on the same connection", async () => {
+      jest.useFakeTimers({ advanceTimers: true, doNotFake: ["nextTick", "setImmediate", "queueMicrotask"] })
+      try {
+        const { socket } = await openAudit()
+        await watchOne(socket)
+        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
+        await settle()
+        const request = socket.requests("terminal.list").at(-1)!
+        await act(async () => {
+          socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32603, message: "busy" } }) })
+        })
+        await settle()
+        expect(screen.getByText("Live")).toBeOnTheScreen()
+        expect(screen.queryByText("Unconfirmed")).toBeNull()
+      } finally {
+        jest.useRealTimers()
+      }
+    })
+
+    // Until the new connection's list answers, nothing held is the daemon's
+    // word on this connection.
+    it("says Unconfirmed when the list after a reconnect is refused", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await comeBack(socket)
+      const next = FakeSocket.made.at(-1)!
+      // A new dial, not the old socket opened again.
+      expect(next).not.toBe(socket)
+      await act(async () => {
+        next.readyState = 1
+        next.onopen?.()
+      })
+      await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+      await settle()
+      const request = next.requests("terminal.list").at(-1)!
+      await act(async () => {
+        next.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "Method not found" } }) })
+      })
+      await settle()
+      expect(screen.getByText("Unconfirmed")).toBeOnTheScreen()
+      expect(screen.getByText(/^Last heard: claimed by/)).toBeOnTheScreen()
+    })
+
+    // A shell's end carries no time, and Restart on a desktop reuses the id
+    // for a new shell, so an end is followed by asking the daemon at once.
+    it("lists again when a shell ends, and watches the new shell Restart opened under its id", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await act(async () => { socket.push("terminal.closed", { terminalId: "terminal-1", exitCode: 0 }) })
+      await settle()
+      expect(socket.requests("terminal.list")).toHaveLength(2)
+      await act(async () => { socket.answer("terminal.list", { terminals: [{ ...terminal, openedAt: "2026-10-06T14:20:00.000Z" }] }) })
+      await settle()
+      expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-1" }])
+      await act(async () => { socket.answer("terminal.watch", { ...watchResult, openedAt: "2026-10-06T14:20:00.000Z", buffer: "$ \n", watchedAt: "2026-10-06T14:20:01.000Z" }) })
+      await settle()
+      expect(screen.getByText("Live")).toBeOnTheScreen()
+      expect(screen.getByRole("button", { name: "Show all 1 line" })).toBeOnTheScreen()
+    })
+
+    it("says Failed when the watched shell exits with an error", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await act(async () => { socket.push("terminal.closed", { terminalId: "terminal-1", exitCode: 1 }) })
+      await settle()
+      expect(screen.getByText("Failed")).toBeOnTheScreen()
+      expect(screen.getByText("Last claimed by MacBook Pro")).toBeOnTheScreen()
+    })
+
+    // A connection can drop again while the new watch is out. Its answer is
+    // lost with the connection, which says nothing about the terminal, so the
+    // output already on screen stays.
+    it("keeps the held output when a rewatch loses its connection", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await comeBack(socket)
+      const next = FakeSocket.made.at(-1)!
+      expect(next).not.toBe(socket)
+      await act(async () => {
+        next.readyState = 1
+        next.onopen?.()
+      })
+      await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+      await settle()
+      await act(async () => { next.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      expect(next.requests("terminal.watch")).toHaveLength(1)
+      await act(async () => { next.close() })
+      await settle()
+      expect(screen.queryByText("The terminal could not be read")).toBeNull()
+      expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+      expect(screen.getByText("Unconfirmed")).toBeOnTheScreen()
+    })
+
+    // A first watch that gets no answer in time is not a refusal: the terminal
+    // is still being read, and the next list asks again.
+    it("keeps reading a terminal whose first watch gets no answer in time", async () => {
+      jest.useFakeTimers({ advanceTimers: true, doNotFake: ["nextTick", "setImmediate", "queueMicrotask"] })
+      try {
+        const { socket } = await openAudit()
+        await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+        await settle()
+        expect(socket.requests("terminal.watch")).toHaveLength(1)
+        await act(async () => { jest.advanceTimersByTime(30_001) })
+        await settle()
+        expect(screen.queryByText("The terminal could not be read")).toBeNull()
+        expect(screen.getByText("Reading the terminal.")).toBeOnTheScreen()
+
+        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
+        await settle()
+        await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+        await settle()
+        expect(socket.requests("terminal.watch")).toHaveLength(2)
+        await act(async () => { socket.answer("terminal.watch", watchResult) })
+        await settle()
+        expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+      } finally {
+        jest.useRealTimers()
+      }
+    })
+
+    // A watch that gets no answer in time may still have been taken. The
+    // output already on screen stays, and the next list asks again.
+    it("keeps the held output when a rewatch gets no answer in time, and asks again", async () => {
+      jest.useFakeTimers({ advanceTimers: true, doNotFake: ["nextTick", "setImmediate", "queueMicrotask"] })
+      try {
+        const { socket } = await openAudit()
+        await watchOne(socket)
+        await comeBack(socket)
+        const next = FakeSocket.made.at(-1)!
+        expect(next).not.toBe(socket)
+        await act(async () => {
+          next.readyState = 1
+          next.onopen?.()
+        })
+        await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+        await settle()
+        await act(async () => { next.answer("terminal.list", { terminals: [terminal] }) })
+        await settle()
+        expect(next.requests("terminal.watch")).toHaveLength(1)
+
+        await act(async () => { jest.advanceTimersByTime(30_001) })
+        await settle()
+        expect(screen.queryByText("The terminal could not be read")).toBeNull()
+        expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+
+        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
+        await settle()
+        await act(async () => { next.answer("terminal.list", { terminals: [terminal] }) })
+        await settle()
+        expect(next.requests("terminal.watch").length).toBeGreaterThan(1)
+      } finally {
+        jest.useRealTimers()
+      }
+    })
+
+    it("says Unconfirmed while the connection is down, and watches again once it is back", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await act(async () => { socket.close() })
+      await settle()
+      expect(screen.getByText("Unconfirmed")).toBeOnTheScreen()
+      expect(screen.getByText("Last heard: claimed by MacBook Pro")).toBeOnTheScreen()
+      // What was read stays on screen while the route is down.
+      expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+
+      await act(async () => { for (const listener of foreground) listener("active") })
+      const next = FakeSocket.made.at(-1)!
+      expect(next).not.toBe(socket)
+      await act(async () => {
+        next.readyState = 1
+        next.onopen?.()
+      })
+      await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+      await settle()
+      await watchOne(next)
+      expect(screen.getByText("Live")).toBeOnTheScreen()
+    })
+
+    // Another client can replace the workspace with one that no longer holds
+    // the open session. The phone goes back to the list, and stops watching.
+    it("unwatches and stops listing when the open session leaves the snapshot", async () => {
+      // Faked from the start, so the relist interval is on this clock and a
+      // leaked one would fire when it jumps.
+      jest.useFakeTimers({ advanceTimers: true, doNotFake: ["nextTick", "setImmediate", "queueMicrotask"] })
+      try {
+        const { socket } = await openAudit()
+        await watchOne(socket)
+        // The interval is live before the session goes.
+        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs) })
+        await settle()
+        expect(socket.requests("terminal.list")).toHaveLength(2)
+
+        const without = workspace()
+        without.approvals = []
+        without.sessions = without.sessions.filter((session) => session.id !== audit.id)
+        await act(async () => { socket.push("workspace.changed", without) })
+        await settle()
+        expect(screen.queryByRole("button", { name: "Back to sessions" })).toBeNull()
+        expect(socket.requests("terminal.unwatch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }])
+
+        await act(async () => { jest.advanceTimersByTime(terminalListIntervalMs * 2) })
+        await settle()
+        expect(socket.requests("terminal.list")).toHaveLength(2)
+      } finally {
+        jest.useRealTimers()
+      }
+    })
+
+    it("closes the full view when the daemon no longer lists its terminal", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await fireEvent.press(screen.getByRole("button", { name: "Show all 2 lines" }))
+      expect(screen.getByRole("button", { name: "Back to the thread" })).toBeOnTheScreen()
+
+      await comeBack(socket)
+      const next = FakeSocket.made.at(-1)!
+      // A new dial, not the old socket opened again.
+      expect(next).not.toBe(socket)
+      await act(async () => {
+        next.readyState = 1
+        next.onopen?.()
+      })
+      await act(async () => { next.answer("system.hello", { ...workspace(), approvals: [], clientAccess: "full" }) })
+      await settle()
+      await act(async () => { next.answer("terminal.list", { terminals: [] }) })
+      await settle()
+      expect(screen.queryByRole("button", { name: "Back to the thread" })).toBeNull()
+      expect(screen.getByRole("button", { name: "Back to sessions" })).toBeOnTheScreen()
+    })
   })
 })

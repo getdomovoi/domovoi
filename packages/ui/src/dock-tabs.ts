@@ -50,7 +50,9 @@ export const dockTabDefinitions: readonly DockTabDefinition[] = [
   {
     id: "terminal",
     label: "Terminal",
-    note: "The raw stream from the machine, read-only. The agent owns this shell.",
+    // Q340 A: the tab is an interactive PTY a person opens, not the agent's
+    // read-only shell the design draws, so the tip does not say otherwise.
+    note: "A shell on the machine, in the session's worktree. One device types at a time; the others can read.",
     Icon: TerminalIcon,
   },
   {
