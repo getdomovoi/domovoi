@@ -10,7 +10,7 @@ import type { OperationDeadline } from "../operation-deadline.js"
 import { parseServiceConfiguration, serializeServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import type { ServiceStatus } from "./install.js"
-import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, queryWindowsProcesses, windowsProcessAlive, WindowsJobStartupError, type WindowsJob, type WindowsJobEmpty } from "./windows-job.js"
+import { launchWindowsJob, queryWindowsJob, queryWindowsProcess, queryWindowsProcesses, windowsHelperTimedOut, windowsProcessAlive, WindowsJobStartupError, type WindowsJob, type WindowsJobEmpty } from "./windows-job.js"
 import { windowsProcessIdentitySchema, prepareSupervisorDirectory, readSupervisorStopRequest, readWindowsSupervisorRecord,
   supervisorBackoffs, supervisorStopPath, writeSupervisorStopRequest, writeWindowsSupervisorRecord, windowsSupervisorRecordSchema,
   type WindowsProcessIdentity, type WindowsSupervisorRecord } from "./supervisor-record.js"
@@ -232,7 +232,17 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
   let monitor: ReturnType<typeof setInterval> | undefined
   let monitorError: unknown
   try {
-    const observed = queryWindowsProcess(process.pid)
+    let observed: ReturnType<typeof queryWindowsProcess>
+    try { observed = queryWindowsProcess(process.pid) } catch (error) {
+      if (!windowsHelperTimedOut(error)) throw error
+      // Cold first spawn at logon: five CI timeouts had fast next spawns (3.6 to 6.3 s); bound startup to two 20 s caps.
+      try { observed = queryWindowsProcess(process.pid) } catch (cause) {
+        const detail = windowsHelperTimedOut(cause)
+          ? "two helper queries each reached the 20 s cap at startup"
+          : "the first helper query reached the 20 s cap at startup and the one retry failed, also capped at 20 s"
+        throw new Error(`Windows supervisor could not read its own process identity: ${detail}. No daemon was launched; no supervision record was written. The logon task starts the supervisor again at the next logon.`, { cause })
+      }
+    }
     if (!observed.identity) throw new Error("Windows supervisor birth identity is unavailable")
     const previous = readWindowsSupervisorRecord(home)
     assertWindowsStartup(previous ? recoverWindowsJobClosure(previous, observed.bootId) : undefined, observed.bootId, windowsProcessAlive)
