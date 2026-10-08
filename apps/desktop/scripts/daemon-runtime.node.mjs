@@ -720,6 +720,30 @@ test("restores the checkout's pnpm workspace state when the deploy fails", async
   }
 })
 
+// PR #769 review (P2): a development install that finishes in the checkout
+// while the deploy runs writes a newer state. The restore keeps that state
+// rather than putting the older snapshot back over it.
+test("keeps a development install's newer workspace state written while the deploy ran", async () => {
+  const { mkdir } = await import("node:fs/promises")
+  const newerState = `${JSON.stringify({ lastValidatedTimestamp: 3, filteredInstall: false, settings: { dev: true, nodeLinker: "isolated" } }, undefined, 2)}\n`
+  for (const before of [developmentState, undefined]) {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-state-newer-"))
+    try {
+      await mkdir(join(root, "node_modules"), { recursive: true })
+      if (before !== undefined) await writeFile(join(root, workspaceState), before)
+      const deploy = await deployThatRecordsProduction(root)
+      const run = async (command, args, options) => {
+        await deploy(command, args, options)
+        await writeFile(join(root, workspaceState), newerState)
+      }
+      await deployDaemon({ repositoryRoot: root, destination: join(root, "out", "daemon"), run })
+      assert.equal(await readFile(join(root, workspaceState), "utf8"), newerState)
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
 // T19 review round 1: a restore that fails after a failed deploy must not hide
 // why the deploy failed. A directory where the state file was makes both the
 // write and the removal fail.

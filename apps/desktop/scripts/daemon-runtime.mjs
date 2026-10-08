@@ -215,6 +215,25 @@ async function keepOnlyCliGraph(root) {
   await removeDanglingLinks(join(root, "node_modules"))
 }
 
+async function restoreWorkspaceState(workspaceState, savedState) {
+  let currentState
+  try {
+    currentState = await readFile(workspaceState)
+  } catch (error) {
+    if (error.code === "ENOENT" && savedState === undefined) return
+  }
+  if (currentState) {
+    if (savedState?.equals(currentState)) return
+    try {
+      if (JSON.parse(currentState.toString("utf8"))?.settings?.dev === true) return
+    } catch {
+      // Invalid JSON still needs restoration.
+    }
+  }
+  if (savedState === undefined) await rm(workspaceState, { force: true })
+  else await writeFile(workspaceState, savedState)
+}
+
 async function deployWorkspacePackage({ name, repositoryRoot, destination, run }) {
   await rm(destination, { recursive: true, force: true })
   const workspaceState = join(repositoryRoot, "node_modules", ".pnpm-workspace-state-v1.json")
@@ -232,12 +251,12 @@ async function deployWorkspacePackage({ name, repositoryRoot, destination, run }
     deployFailure = { error }
     throw error
   } finally {
-    // pnpm deploy records its production install as the checkout's workspace
-    // state. Restoring it keeps the next pnpm command from aborting or
-    // reinstalling for production.
+    // pnpm deploy records a production install as the checkout's workspace state.
+    // Restoring it keeps the next pnpm command from aborting or reinstalling for
+    // production. A development state found afterwards came from a newer command
+    // and is kept.
     try {
-      if (savedState === undefined) await rm(workspaceState, { force: true })
-      else await writeFile(workspaceState, savedState)
+      await restoreWorkspaceState(workspaceState, savedState)
     } catch (restoreError) {
       if (deployFailure) {
         const { error } = deployFailure
