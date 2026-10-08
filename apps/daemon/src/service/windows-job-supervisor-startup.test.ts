@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { claimExclusiveFileLease } from "../file-lease.js"
 import { createServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
-import { readWindowsSupervisorRecord, writeSupervisorStopRequest } from "./supervisor-record.js"
+import { readWindowsSupervisorRecord, writeSupervisorStopRequest, writeWindowsSupervisorRecord } from "./supervisor-record.js"
 import { runWindowsSupervisor } from "./windows-job-supervisor.js"
 import { launchWindowsJob, windowsJobCommand } from "./windows-job.js"
 
@@ -93,7 +93,8 @@ it("fails closed with a stated reason when the retried first query also times ou
   const failure = await runWindowsSupervisor(f.path, { executable: "unused", args: [] }).catch((error: unknown) => error)
   expect(failure).toBeInstanceOf(Error)
   expect((failure as Error).message).toMatch(/^Windows supervisor could not read its own process identity/)
-  expect((failure as Error).message).toContain("No daemon was launched")
+  expect((failure as Error).message).toContain("This start launched no daemon and wrote no supervision record")
+  expect((failure as Error).message).toContain("earlier record")
   expect(((failure as Error).cause as NodeJS.ErrnoException).code).toBe("ETIMEDOUT")
   expect(helperCalls()).toHaveLength(2)
   expect(launchWindowsJob).not.toHaveBeenCalled()
@@ -111,7 +112,8 @@ it("fails closed with the retry's own error as the cause when the retry fails an
   asWindows()
   const failure = await runWindowsSupervisor(f.path, { executable: "unused", args: [] }).catch((error: unknown) => error)
   expect((failure as Error).message).toMatch(/^Windows supervisor could not read its own process identity/)
-  expect((failure as Error).message).toContain("No daemon was launched")
+  expect((failure as Error).message).toContain("This start launched no daemon and wrote no supervision record")
+  expect((failure as Error).message).toContain("earlier record")
   expect((failure as Error).message).not.toMatch(/each reached|also capped/)
   expect(((failure as Error).cause as Error).message).toBe("Access denied")
   expect(helperCalls()).toHaveLength(2)
@@ -133,6 +135,32 @@ it("honors a stop request published during the timed-out first query instead of 
   expect(helperCalls()).toHaveLength(1)
   expect(launchWindowsJob).not.toHaveBeenCalled()
   expect(readWindowsSupervisorRecord(f.home)).toBeUndefined()
+  claimExclusiveFileLease(f.lease, () => new Error("lease still held")).release()
+})
+
+it("honors a stop request published during the retry before any recovery query", async () => {
+  const f = fixture()
+  // A same-boot record with an unfinished kill-on-close attempt makes startup
+  // recovery query the helper again before its own stop-request check.
+  const now = new Date().toISOString(), loop = { pid: 999, start: "1", bootId }
+  writeWindowsSupervisorRecord({ profileDirectory: f.directory }, { version: 1, platform: "win32", supervisorId: randomUUID(), registrationId: f.config.registrationId,
+    configurationDigest: "0".repeat(64), loop, startedAt: now, updatedAt: now, state: "running", reason: null, crashes: 0,
+    attempts: [{ number: 1, job: `Global\\Domovoi-${randomUUID()}`, bootId, startedAt: now, stage: "running", killOnClose: true,
+      child: { pid: 998, start: "2", bootId }, helper: { pid: 997, start: "3", bootId }, empty: null, exitCode: null, backoffMs: 0 }] })
+  let calls = 0
+  await substituteHelper((options) => {
+    if (++calls === 1) throw timedOut()
+    if (calls === 2) writeSupervisorStopRequest({ profileDirectory: f.directory }, { registrationId: f.config.registrationId, supervisorId: randomUUID(), loop })
+    const request = JSON.parse(String(options.input)) as { mode: string; pids?: number[] }
+    return JSON.stringify(request.mode === "inspect"
+      ? { bootId, identities: request.pids!.map((pid) => (pid === process.pid ? { pid, start: "456", bootId } : null)) }
+      : { bootId, jobExists: false, identity: null })
+  })
+  retireOnLaunch(f)
+  asWindows()
+  await expect(runWindowsSupervisor(f.path, { executable: "unused", args: [] })).rejects.toThrow("This Windows supervisor registration was stopped")
+  expect(helperCalls()).toHaveLength(2)
+  expect(launchWindowsJob).not.toHaveBeenCalled()
   claimExclusiveFileLease(f.lease, () => new Error("lease still held")).release()
 })
 
