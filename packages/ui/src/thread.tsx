@@ -97,7 +97,8 @@ import { ApprovalCard } from "./approval-card"
 import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
 import { ThreadComposer } from "./thread-composer"
-import { attachmentName, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
+import { attachmentName, desktopAttachmentLimit, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
+import { composerInbox } from "./composer-inbox"
 import { loadingLineRef, startOpenerRef } from "./start-handoff"
 
 // The fresh-start panel is drawn only on a session nothing has run in, so its
@@ -742,6 +743,20 @@ export function Thread({
     globalThis.addEventListener("keydown", onKeyDown)
     return () => globalThis.removeEventListener("keydown", onKeyDown)
   }, [watching])
+  // A dock surface (the terminal's Attach this output) hands attachments to
+  // this composer by session id. Only a composer that can send opens the
+  // inbox, so the offer is not drawn where it could not be used.
+  const attachmentsRef = useRef(attachments)
+  attachmentsRef.current = attachments
+  useEffect(() => {
+    if (readOnly || !activeSessionId) return
+    return composerInbox.open(activeSessionId, (attachment) => {
+      if (attachmentsRef.current.length >= desktopAttachmentLimit) return "full"
+      attachmentsRef.current = [...attachmentsRef.current, attachment]
+      setAttachments(attachmentsRef.current)
+      return "attached"
+    })
+  }, [activeSessionId, readOnly])
 
   if (!active) {
     const hasProject = snapshot.project !== null
