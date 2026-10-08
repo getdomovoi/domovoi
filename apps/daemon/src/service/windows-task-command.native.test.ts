@@ -13,7 +13,9 @@ import { windowsSchtasksPath } from "./windows-task.js"
 // its own, so the limit servicePlan checks is the one Windows applies. Each
 // task it may have made is deleted afterwards, whatever the outcome.
 it.runIf(process.platform === "win32")("schtasks accepts the installer's 261 character command and refuses 262", () => {
-  const home = "C:\\Users\\domovoi-length-test"
+  // As in install.test.ts: with this home and runtime, a 168-character entry
+  // makes the command exactly 261. Nothing is written under this home.
+  const home = "C:\\Users\\dl"
   const runtime = "C:\\Program Files\\nodejs\\node.exe"
   const entry = (length: number) => `C:\\${"a".repeat(length - 17)}\\dist\\index.js`
   const plan = servicePlan({
