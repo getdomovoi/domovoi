@@ -222,17 +222,29 @@ async function deployWorkspacePackage({ name, repositoryRoot, destination, run }
     if (error.code === "ENOENT") return undefined
     throw error
   })
+  let deployFailure
   // Hoisted: a flat node_modules with real directories and no store links, so
   // the copy under the profile and the packaged copy are the same files with
   // nothing to resolve back into the repository or the app bundle.
   try {
     await run("pnpm", ["--filter", name, "deploy", "--legacy", "--prod", "--config.node-linker=hoisted", destination], { cwd: repositoryRoot, maxBuffer: 16 * 1024 * 1024 })
+  } catch (error) {
+    deployFailure = { error }
+    throw error
   } finally {
     // pnpm deploy records its production install as the checkout's workspace
     // state. Restoring it keeps the next pnpm command from aborting or
     // reinstalling for production.
-    if (savedState === undefined) await rm(workspaceState, { force: true })
-    else await writeFile(workspaceState, savedState)
+    try {
+      if (savedState === undefined) await rm(workspaceState, { force: true })
+      else await writeFile(workspaceState, savedState)
+    } catch (restoreError) {
+      if (deployFailure) {
+        const { error } = deployFailure
+        throw new AggregateError([error, restoreError], `${error instanceof Error ? error.message : String(error)}; failed to restore ${workspaceState}: ${restoreError.message}`)
+      }
+      throw restoreError
+    }
   }
   const store = join(destination, "node_modules", ".pnpm")
   for (const entry of await readdir(store).catch(() => [])) {

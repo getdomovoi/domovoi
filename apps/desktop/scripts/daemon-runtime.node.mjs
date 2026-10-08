@@ -720,6 +720,32 @@ test("restores the checkout's pnpm workspace state when the deploy fails", async
   }
 })
 
+// T19 review round 1: a restore that fails after a failed deploy must not hide
+// why the deploy failed. A directory where the state file was makes both the
+// write and the removal fail.
+test("reports the deploy failure and the failed restore together", async () => {
+  const { mkdir } = await import("node:fs/promises")
+  for (const before of [developmentState, undefined]) {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-state-restore-"))
+    try {
+      await mkdir(join(root, "node_modules"), { recursive: true })
+      if (before !== undefined) await writeFile(join(root, workspaceState), before)
+      const run = async () => {
+        await rm(join(root, workspaceState), { force: true })
+        await mkdir(join(root, workspaceState), { recursive: true })
+        throw new Error("pnpm deploy failed")
+      }
+      await assert.rejects(deployDaemon({ repositoryRoot: root, destination: join(root, "out", "daemon"), run }), (error) => {
+        assert.match(error.message, /pnpm deploy failed/)
+        assert.match(error.message, /pnpm-workspace-state-v1\.json/)
+        return true
+      })
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  }
+})
+
 test("leaves no pnpm workspace state behind when the checkout had none before the deploy", async () => {
   const root = await mkdtemp(join(tmpdir(), "domovoi-runtime-state-absent-"))
   try {
