@@ -495,14 +495,17 @@ export function App() {
         // before this run is retired, so it is told apart here: what is held
         // stays, unconfirmed, for the next connection to watch again.
         if (!current || cause instanceof DaemonNotSentError || cause instanceof DaemonUnconfirmedError) return
-        // No answer in time: the daemon may still have taken the watch. Output
-        // already held stays, unconfirmed, and the next list asks again.
-        const unanswered = cause instanceof DaemonTimeoutError
-        if (unanswered) askAgain.add(terminalId)
+        // No answer in time is not a refusal: the daemon may still have taken
+        // the watch. The entry stays as it is (output already held, unconfirmed,
+        // or still reading) and the next list asks again; its answer replays
+        // the record, so nothing printed meanwhile is lost.
+        if (cause instanceof DaemonTimeoutError) {
+          askAgain.add(terminalId)
+          return
+        }
         setTerminals((held) => {
           const watch = held.get(terminalId)
           if (!watch || !sameShell(watch, openedAt)) return held
-          if (unanswered && watch.state === "watching") return held
           return new Map(held).set(terminalId, {
             state: "failed",
             summary: watchedSummary(watch),
