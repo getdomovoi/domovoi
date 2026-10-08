@@ -365,6 +365,21 @@ it("reads admitted machines on each visit of a surface that stays mounted, as Se
   expect(onReadMachine).toHaveBeenCalledTimes(2)
 })
 
+it("reads at most four machines at once on a visit, as the inventory fan-out does", async () => {
+  const answers: (() => void)[] = []
+  const onReadMachine = vi.fn((_machineId: string, _signal: AbortSignal) => new Promise<void>((resolve) => { answers.push(resolve) }))
+  const clientAccess = Object.fromEntries(Array.from({ length: 6 }, (_, index) =>
+    [`machine-${String(index).repeat(32)}`, admitted(reading({ readAt: "2026-10-06T14:03:00.000Z" }))]))
+  renderHook(() => useReadOnVisit({ active: true, connected: true, clientAccess, onReadMachine }))
+  expect(onReadMachine).toHaveBeenCalledTimes(4)
+
+  await act(async () => { answers[0]?.(); await Promise.resolve(); await Promise.resolve() })
+  expect(onReadMachine).toHaveBeenCalledTimes(5)
+  await act(async () => { for (const answer of answers) answer(); for (let i = 0; i < 6; i += 1) await Promise.resolve() })
+  expect(onReadMachine).toHaveBeenCalledTimes(6)
+  expect(new Set(onReadMachine.mock.calls.map(([machineId]) => machineId)).size).toBe(6)
+})
+
 const pending: FleetEntry = {
   kind: "pending",
   id: "3d5b7a2e-4c1f-4a6b-9e2d-8f7c6b5a4d3e",

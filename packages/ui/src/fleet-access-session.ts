@@ -13,7 +13,7 @@ import type { DomovoiClient } from "./client.js"
 import { ClientAdmissionError } from "./client-admission-policy.js"
 import { Deadline } from "./deadline.js"
 import { fleetAccessError, fleetClient, type FleetAccess } from "./fleet-access.js"
-import type { FleetInventoryReader } from "./fleet-inventories.js"
+import { defaultFleetInventoryConcurrency, type FleetInventoryReader } from "./fleet-inventories.js"
 import type { MachineAgents } from "./provider-settings.js"
 
 // What a machine's own daemon said about its agents and sessions, and when.
@@ -25,14 +25,20 @@ export type MachineReading = {
   readAt: string
 }
 
-// A session with a pending approval is waiting on the operator even while its
-// turn is in flight, as the drawer files it (groupSessions), so the reading
-// keeps that fact rather than the session's own state alone.
+// The reading keeps what the drawer files a session by (groupSessions), not
+// the session's own state alone: a pending approval means waiting on the
+// operator even while its turn is in flight, and a turn in flight means
+// running, even while the session is archiving.
 export function machineReading(snapshot: WorkspaceSnapshot, readAt: Date): MachineReading {
   const gated = new Set(snapshot.approvals.map((approval) => approval.sessionId))
+  const filed = ({ id, state, activeTurnId }: SessionSummary): SessionSummary["state"] => {
+    if (state === "archived") return state
+    if (gated.has(id)) return "waiting"
+    return activeTurnId ? "active" : state
+  }
   return {
     providers: snapshot.machine.providers,
-    sessions: snapshot.sessions.map(({ id, title, state }) => ({ id, title, state: gated.has(id) && state !== "archived" ? "waiting" : state })),
+    sessions: snapshot.sessions.map((session) => ({ id: session.id, title: session.title, state: filed(session) })),
     readAt: readAt.toISOString(),
   }
 }
@@ -56,9 +62,11 @@ export function asOf(readAt: string | undefined): string | undefined {
   return readAt === undefined ? undefined : `as of ${readingClock.format(new Date(readAt))}`
 }
 
-// The home daemon is not hearing from these machines now, so what they last
-// said is dated rather than shown as current.
-const silentHealth: ReadonlySet<FleetMachine["health"]> = new Set(["unreachable", "reconnecting", "degraded"])
+// The home daemon routes a read only to a healthy or reconnecting machine
+// (eligibility in apps/daemon/src/fleet-client-route.ts), and it is not
+// hearing a reconnecting one. Any other health dates what the machine last
+// said rather than showing it as current.
+const currentHealth: FleetMachine["health"] = "healthy"
 
 // A snapshot the shell holds for a machine: its own home daemon, or the
 // machine it is attached to. Live while that connection is open; a closed
@@ -91,7 +99,7 @@ export function machineFacts(
   if (reading) {
     const stale = useHeld
       ? !held.live || unreachable
-      : !input.connected || silentHealth.has(machine.health) || admitted?.unanswered === true
+      : !input.connected || machine.health !== currentHealth || admitted?.unanswered === true
     return { known: true, providers: reading.providers, sessions: reading.sessions, readAt: reading.readAt, stale }
   }
   if (machine.id === input.currentMachineId && input.providers) {
@@ -138,12 +146,18 @@ export function fleetAgents(
 // machine was just admitted or just read.
 const freshReadingMs = 30_000
 
+// A visit dials no more machines at once than the inventory fan-out does, so
+// a large fleet does not turn one visit into a burst of connections.
+const readConcurrency = defaultFleetInventoryConcurrency
+
+type QueuedRead = { machineId: string; read: (signal: AbortSignal) => Promise<void> }
+
 // Each admitted machine is read once per visit of a surface that shows its
 // facts (Machines, Settings), or when it is admitted during one, unless its
-// reading is fresh: one connection per machine per visit, not a poll. A
-// machine that does not answer keeps its last reading, marked unanswered in
-// `clientAccess`, and the surface dates it. A visit is while `active` holds
-// and the caller stays mounted.
+// reading is fresh: one connection per machine per visit, not a poll, and at
+// most `readConcurrency` at a time. A machine that does not answer keeps its
+// last reading, marked unanswered in `clientAccess`, and the surface dates
+// it. A visit is while `active` holds and the caller stays mounted.
 export function useReadOnVisit({ active, connected, clientAccess, onReadMachine }: {
   active: boolean
   connected: boolean
@@ -157,16 +171,35 @@ export function useReadOnVisit({ active, connected, clientAccess, onReadMachine 
     .join(" ")
   const requested = useRef(new Set<string>())
   const pending = useRef(new Map<string, AbortController>())
-  // Ending the visit cancels the reads still waiting, and the next visit asks
-  // every machine again. A read cut short was never answered, so a remount
-  // (StrictMode does one in development) asks again too.
+  const queued = useRef<QueuedRead[]>([])
+  // Starts queued reads while fewer than `readConcurrency` are in flight. The
+  // answer, or the lack of one, arrives through clientAccess; a read that ends
+  // within the visit makes room for the next.
+  const pump = () => {
+    while (pending.current.size < readConcurrency) {
+      const next = queued.current.shift()
+      if (!next) return
+      const read = new AbortController()
+      pending.current.set(next.machineId, read)
+      next.read(read.signal).catch(() => {}).finally(() => {
+        if (pending.current.get(next.machineId) !== read) return
+        pending.current.delete(next.machineId)
+        pump()
+      })
+    }
+  }
+  // Ending the visit cancels the reads in flight and the ones still queued,
+  // and the next visit asks every machine again. A read cut short was never
+  // answered, so a remount (StrictMode does one in development) asks again too.
   useEffect(() => {
     if (!active) return
     const asked = requested.current
     const waiting = pending.current
+    const queue = queued.current
     return () => {
       for (const read of waiting.values()) read.abort()
       waiting.clear()
+      queue.length = 0
       asked.clear()
     }
   }, [active])
@@ -177,13 +210,9 @@ export function useReadOnVisit({ active, connected, clientAccess, onReadMachine 
       if (requested.current.has(machineId) || access?.state !== "admitted") continue
       requested.current.add(machineId)
       if (Date.now() - Date.parse(access.reading.readAt) < freshReadingMs) continue
-      const read = new AbortController()
-      pending.current.set(machineId, read)
-      // The answer, or the lack of one, arrives through clientAccess.
-      onReadMachine(machineId, read.signal).catch(() => {}).finally(() => {
-        if (pending.current.get(machineId) === read) pending.current.delete(machineId)
-      })
+      queued.current.push({ machineId, read: (signal) => onReadMachine(machineId, signal) })
     }
+    pump()
     // The ids name the machines to read; a new reading of one must not read it
     // again, so clientAccess and onReadMachine are left out of the dependencies.
   }, [admittedIds, connected, active])

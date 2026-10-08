@@ -158,6 +158,32 @@ it("reads a session with a pending approval as waiting, as the drawer does", () 
   expect(machineReading(snapshot, new Date()).sessions).toEqual([{ id: "session-billing", title: billing.title, state: "waiting" }])
 })
 
+it("reads a session whose turn is still in flight as running, as the drawer does", () => {
+  const onboarding = demoWorkspace.sessions.find((session) => session.id === "session-onboarding")!
+  const snapshot = { ...demoWorkspace, approvals: [], sessions: [{ ...onboarding, state: "archiving" as const, activeTurnId: "turn-1" }] }
+
+  expect(machineReading(snapshot, new Date()).sessions).toEqual([{ id: "session-onboarding", title: onboarding.title, state: "active" }])
+})
+
+it("dates an admitted reading for every health the home daemon will not route a read to", () => {
+  const readAt = "2026-10-06T14:03:00.000Z"
+  const healths = ["version-mismatch", "upgrade-required", "pairing-required", "credential-store-unavailable", "degraded"] as const
+  const entries: FleetEntry[] = healths.map((health, index) => ({ kind: "machine", machine: {
+    id: `machine-${String(index).repeat(32)}`, label: health, self: false, health, platform: "linux", arch: "x64", version: "0.1.0",
+    protocolVersion: "0.1.0", connection: "tailnet", capabilities: ["sessions"], transports: [],
+    heartbeat: { state: "online", lastSeenAt: "2026-10-06T14:00:00.000Z" },
+  } }))
+  const rows = fleetAgents(entries, {
+    readings: {},
+    clientAccess: Object.fromEntries(healths.map((_, index) =>
+      [`machine-${String(index).repeat(32)}`, { state: "admitted" as const, deviceId, reading: { providers: [], sessions: [], readAt } }])),
+    currentMachineId: machineId,
+    connected: true,
+  })
+
+  expect(rows.map((row) => "stale" in row ? row.stale : undefined)).toEqual(healths.map(() => asOf(readAt)))
+})
+
 async function admit(snapshot = workspaceSnapshot()): Promise<void> {
   const pending = access.authorize(machineId, "a".repeat(43), new AbortController().signal)
   await vi.advanceTimersByTimeAsync(0)
