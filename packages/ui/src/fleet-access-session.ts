@@ -281,7 +281,7 @@ export class FleetAccessSession {
   }
 
   // Reads what an admitted machine reports about its agents and sessions now.
-  // Machines asks this on its own each time it opens, so a machine that is
+  // Machines and Settings ask this on each visit (useReadOnVisit), so a machine that is
   // down or has no route keeps its access and its last reading, which the
   // caller dates. Only an answer that refuses this credential or this
   // identity, or a machine no longer enrolled, withdraws access.

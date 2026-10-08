@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, beforeEach, expect, it } from "vitest"
+import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
 
 import { WorkspaceShell } from "./workspace-shell"
@@ -104,6 +104,43 @@ it.each(["Open its sessions on Studio", "Terminal on Studio"])("assembles author
     await settle()
     expect(screen.getByText("Client credential verified")).toBeTruthy()
     expect(screen.queryByText(/This app no longer holds/)).toBeNull()
+  }
+}, admissionJourneyTimeoutMs)
+
+it("reads an admitted machine again when Settings opens, so its providers are current", async () => {
+  const user = userEvent.setup()
+  render(<WorkspaceShell />)
+  const home = sockets.socket(0)
+  await act(async () => { completeHandshake(home) })
+  await settle()
+  await act(async () => { respond(home, "fleet.list", { entries: [{ kind: "machine", machine }] }) })
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+  await user.click(await screen.findByRole("button", { name: "Authorize this client for Studio" }))
+  const dialog = screen.getByRole("dialog")
+  await user.click(within(dialog).getByLabelText("Client credential"))
+  await user.paste("x".repeat(43))
+  await user.click(within(dialog).getByRole("button", { name: "Verify client access" }))
+  await settle()
+  await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
+  await settle()
+  await act(async () => { completeHandshake(sockets.socket(1), target) })
+  await settle()
+  await act(async () => { respond(sockets.socket(1), "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
+  await settle()
+  expect(screen.getByText("Client credential verified")).toBeTruthy()
+  const routes = sentRequests(home, "fleet.clientRoute").length
+
+  // The admission's reading is fresh for 30 seconds; a minute on, a visit reads again.
+  const realNow = Date.now.bind(Date)
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 60_000)
+  try {
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await settle()
+    expect(screen.getByRole("region", { name: "Providers and tokens" })).toBeTruthy()
+    expect(sentRequests(home, "fleet.clientRoute")).toHaveLength(routes + 1)
+  } finally {
+    clock.mockRestore()
   }
 }, admissionJourneyTimeoutMs)
 
