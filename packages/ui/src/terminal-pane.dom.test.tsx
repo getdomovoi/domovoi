@@ -242,6 +242,26 @@ describe("TerminalPane claim banner", () => {
     expect(screen.queryByText(/the agent owns this shell/u)).toBeNull()
   })
 
+  // A dropped connection releases the claim on the daemon's side, and this
+  // pane cannot see what happens next, so it says neither who holds it nor
+  // that this device does.
+  it("stops claiming the shell while disconnected", async () => {
+    const target = harness()
+    const view = (connected: boolean) => (
+      <TerminalPane connected={connected} controls={target.controls} machineName="worktop" sessionId={sessionId} />
+    )
+    const { rerender } = render(view(true))
+    await act(async () => {
+      target.connect(thisClient)
+    })
+
+    rerender(view(false))
+
+    expect(screen.queryByText("You hold this shell")).toBeNull()
+    expect(screen.queryByText("interactive, this device holds the shell")).toBeNull()
+    expect(screen.getByText("not connected, who holds the shell is not known")).toBeTruthy()
+  })
+
   // A closed terminal holds no claim, so the footer stops saying this device
   // holds it once the shell has exited.
   it("stops claiming the shell once it has exited", async () => {
@@ -615,6 +635,19 @@ describe("TerminalPane on a watching desktop", () => {
     await user.click(screen.getByRole("button", { name: "Attach this output to the composer" }))
     const [attachment] = receive.mock.calls[0]!
     expect("content" in attachment ? attachment.content : "").toMatch(/^\[earlier output was not kept; the record starts here\]/u)
+  })
+
+  // A watch it cannot undo would leave this connection in the shell's
+  // audience after the pane is gone, so watch and unwatch come as a pair.
+  it("does not watch without a way to stop", () => {
+    const target = watcher()
+    const { unwatch: _unwatch, ...rest } = target.controls
+    // @ts-expect-error watch without unwatch is not a TerminalControls
+    const halfPair: TerminalControls = rest
+    render(<TerminalPane connected readOnly controls={halfPair} machineName="worktop" sessionId={sessionId} />)
+
+    expect(target.watch).not.toHaveBeenCalled()
+    expect(screen.getByText("Watching only")).toBeTruthy()
   })
 
   it("keeps the watching empty state when this client cannot watch", () => {

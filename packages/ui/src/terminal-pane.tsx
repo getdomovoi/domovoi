@@ -4,7 +4,6 @@ import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
 import "@xterm/xterm/css/xterm.css"
 
-import { maximumTextAttachmentBytes } from "@getdomovoi/protocol"
 import type {
   TerminalClosedNotification,
   TerminalOutputNotification,
@@ -24,7 +23,7 @@ import { StatusDot, type StatusMeaning } from "./status-dot"
 import { terminalIdForSession } from "./terminal-id"
 import { settleTerminalWrite } from "./terminal-input"
 import { terminalQuickKeyData, terminalQuickKeys } from "./terminal-keys"
-import { terminalBufferOutput } from "./terminal-output-text"
+import { terminalAttachmentText } from "./terminal-output-text"
 
 export type TerminalControls = {
   clientId: string
@@ -45,15 +44,20 @@ export type TerminalControls = {
       ownership: (event: TerminalOwnershipNotification) => void
     },
   ): () => void
-  // Reading without holding: terminal.watch and terminal.unwatch. A client
-  // that cannot watch leaves them out, and a read-only pane then shows its
-  // empty state rather than a stream it cannot fill.
-  watch?(terminalId: string): Promise<TerminalWatchResult>
-  unwatch?(terminalId: string): Promise<void>
   // terminal.list: who holds each of a session's shells, whether that
   // connection is still there, and the grid it set.
   list?(sessionId: string): Promise<TerminalSummary[]>
-}
+} & (
+  // Reading without holding: terminal.watch and terminal.unwatch, as a pair,
+  // because a watch that cannot be undone keeps this connection in the
+  // shell's audience after the pane is gone. A client that cannot watch
+  // leaves both out, and a read-only pane shows its empty state instead.
+  | {
+    watch(terminalId: string): Promise<TerminalWatchResult>
+    unwatch(terminalId: string): Promise<void>
+  }
+  | { watch?: never, unwatch?: never }
+)
 
 // The interval at which a pane that does not hold the shell reads the holder
 // again. The daemon sends no notice when the holder's connection drops or the
@@ -62,18 +66,9 @@ export type TerminalControls = {
 // holder that has gone and output can draw at the holder's previous grid.
 export const terminalHolderRefreshMs = 5_000
 
-// Put ahead of an attachment from a watched record that does not start at the
-// shell's start. It is held outside xterm, because a screen clear or a long
-// scrollback would erase a line written into the stream.
-const droppedRecordMarker = "[earlier output was not kept; the record starts here]"
-// Put ahead of an attachment whose start the attachment byte limit cut.
-const cutToLimitMarker = "[earlier lines were cut to fit the attachment limit]"
 // The pane's xterm history, in rows. Once the normal buffer holds this many
 // rows plus the screen's, xterm drops the oldest row for each new one.
 const terminalScrollback = 5_000
-// Put ahead of an attachment once the history has filled. It says "may",
-// because a buffer exactly full has lost nothing yet.
-const fullHistoryMarker = "[this pane's history filled up; earlier output may be missing from this file]"
 
 function sameOwner(left: TerminalOwner, right: TerminalOwner): boolean {
   return left.client === right.client && left.clientId === right.clientId && left.device?.id === right.device?.id
@@ -153,7 +148,7 @@ export function TerminalPane({
   const [rendered, setRendered] = useState(false)
   // terminal.watch said the record does not start at the shell's start.
   const [earlierDropped, setEarlierDropped] = useState(false)
-  const watching = readOnly && controls.watch !== undefined
+  const watching = readOnly && controls.watch !== undefined && controls.unwatch !== undefined
   const canAttach = useSyncExternalStore(
     composer.subscribe,
     () => composer.canReceive(sessionId),
@@ -165,7 +160,9 @@ export function TerminalPane({
     if (!container || !connected || !sessionId || !terminalId) return
     const watch = controls.watch
     const unwatch = controls.unwatch
-    if (readOnly && !watch) return
+    // Untyped callers can still pass half the pair; never watch without a
+    // way to stop.
+    if (readOnly && (!watch || !unwatch)) return
     let active = true
     let attached = false
     let ownsTerminal = false
@@ -421,28 +418,23 @@ export function TerminalPane({
     await new Promise<void>((resolve) => terminal.write("", resolve))
     // A disconnect or session switch while waiting disposed this renderer.
     if (xtermRef.current !== terminal) return
-    // At most one marker leads the file: the cut that happened last wins,
-    // because what follows starts after it. The longest marker's bytes come
-    // out of the limit up front, so the file fits whichever one it carries.
-    const reserve = Math.max(...[cutToLimitMarker, fullHistoryMarker, droppedRecordMarker]
-      .map((marker) => new TextEncoder().encode(`${marker}\n`).byteLength))
-    const buffer = terminal.buffer.active
-    const { text, truncated } = terminalBufferOutput(buffer, maximumTextAttachmentBytes - reserve)
-    if (!text) {
+    const { content, marked } = terminalAttachmentText(
+      terminal.buffer.active,
+      { historyFilled: historyFilledRef.current, earlierDropped },
+    )
+    if (!content) {
       setAttachNote({ tone: "refused", text: "Nothing has been printed yet." })
       return
     }
-    const historyFull = historyFilledRef.current
-    const marker = truncated ? cutToLimitMarker : historyFull ? fullHistoryMarker : earlierDropped ? droppedRecordMarker : undefined
-    const outcome = composer.offer(sessionId, terminalOutputAttachment(marker ? `${marker}\n${text}` : text))
+    const outcome = composer.offer(sessionId, terminalOutputAttachment(content))
     const attached = "Attached to the composer as terminal-output.txt."
     setAttachNote(
       outcome === "attached"
         ? {
             tone: "done",
-            text: truncated
+            text: marked === "cut"
               ? `${attached} The start was cut to fit the attachment limit.`
-              : historyFull ? `${attached} The pane's history filled up, so earlier output may be missing.` : attached,
+              : marked === "history" ? `${attached} The pane's history filled up, so earlier output may be missing.` : attached,
           }
         : outcome === "full"
           ? { tone: "refused", text: "The composer already holds the most attachments. Remove one to attach this output." }
@@ -464,13 +456,17 @@ export function TerminalPane({
   // Q340 A: the design's footer reads "read-only, the agent owns this shell".
   // Here the shell is an interactive PTY a person opened, so the footer says
   // who can type in it instead. A closed shell holds no claim, so nobody can.
+  // Offline, the daemon has released this connection's claim and may have
+  // handed or closed the shell since, so the footer says that is not known.
   const footerNote = closed
     ? "closed, the shell has exited"
-    : readOnly
-    ? "read-only, this device watches"
-    : writable
-      ? "interactive, this device holds the shell"
-      : "read-only until you take the shell"
+    : !connected
+      ? "not connected, who holds the shell is not known"
+      : readOnly
+        ? "read-only, this device watches"
+        : writable
+          ? "interactive, this device holds the shell"
+          : "read-only until you take the shell"
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-code">
@@ -519,7 +515,7 @@ export function TerminalPane({
           </div>
         ) : null}
       </div>
-      {metadata && !closed ? (
+      {metadata && !closed && connected ? (
         <div
           className={`flex shrink-0 items-center gap-2.5 border-b px-3.5 py-2.5 ${writable ? "bg-ok-background" : "bg-info-background"}`}
         >

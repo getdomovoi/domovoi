@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest"
 
-import { terminalBufferOutput, terminalBufferText } from "./terminal-output-text"
+import { attachmentMarkers, terminalAttachmentText, terminalBufferOutput, terminalBufferText } from "./terminal-output-text"
 
 type Line = { text: string, wrapped?: boolean }
 
@@ -53,5 +53,36 @@ describe("terminalBufferText", () => {
     expect(terminalBufferOutput(buffer([{ text: "first" }, { text: "second" }]), 12)).toEqual({ text: "first\nsecond", truncated: false })
     expect(terminalBufferOutput(buffer([{ text: "first" }, { text: "second" }, { text: "third" }]), 12)).toEqual({ text: "second\nthird", truncated: true })
     expect(terminalBufferOutput(buffer([{ text: "abcdefghij" }]), 4)).toEqual({ text: "ghij", truncated: true })
+  })
+})
+
+describe("terminalAttachmentText", () => {
+  const nothingKnown = { historyFilled: false, earlierDropped: false }
+
+  // Room for a marker is only taken when a marker is needed. Output that fits
+  // the limit whole goes whole, with no marker and nothing cut.
+  it("keeps output that fits the limit whole", () => {
+    const lines = buffer([{ text: "first" }, { text: "second" }])
+    expect(terminalAttachmentText(lines, nothingKnown, 12)).toEqual({ content: "first\nsecond", marked: undefined })
+  })
+
+  it("leads with the cut marker when the limit cuts, and still fits", () => {
+    const lines = buffer(Array.from({ length: 40 }, (_, index) => ({ text: `line ${String(index).padStart(2, "0")}` })))
+    const limit = attachmentMarkers.cut.length + 1 + 30
+    const { content, marked } = terminalAttachmentText(lines, nothingKnown, limit)
+    expect(marked).toBe("cut")
+    expect(content.startsWith(`${attachmentMarkers.cut}\n`)).toBe(true)
+    expect(content.endsWith("line 39")).toBe(true)
+    expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(limit)
+  })
+
+  it("leads with what is already known missing when nothing more is cut", () => {
+    const lines = buffer([{ text: "tail" }])
+    expect(terminalAttachmentText(lines, { historyFilled: true, earlierDropped: true }, 1_000)).toEqual({ content: `${attachmentMarkers.history}\ntail`, marked: "history" })
+    expect(terminalAttachmentText(lines, { historyFilled: false, earlierDropped: true }, 1_000)).toEqual({ content: `${attachmentMarkers.dropped}\ntail`, marked: "dropped" })
+  })
+
+  it("is empty when nothing was printed", () => {
+    expect(terminalAttachmentText(buffer([{ text: "" }]), nothingKnown, 1_000)).toEqual({ content: "", marked: undefined })
   })
 })

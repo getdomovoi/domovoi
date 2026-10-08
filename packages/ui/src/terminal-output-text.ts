@@ -60,6 +60,37 @@ export function terminalBufferOutput(
   return { text: kept.join("\n"), truncated: kept.length < lines.length }
 }
 
+// The lines that lead an attachment whose start is missing, by cause.
+export const attachmentMarkers = {
+  // The attachment byte limit cut the start.
+  cut: "[earlier lines were cut to fit the attachment limit]",
+  // The pane's xterm history filled. "May", because a buffer exactly full
+  // has lost nothing yet.
+  history: "[this pane's history filled up; earlier output may be missing from this file]",
+  // The daemon's record did not start at the shell's start.
+  dropped: "[earlier output was not kept; the record starts here]",
+} as const
+
+export type AttachmentMark = keyof typeof attachmentMarkers
+
+// The text for terminal-output.txt, with at most one marker ahead of it: the
+// cut that happened last, because what follows starts after it. The output is
+// first tried at the full limit, less only a marker already known to be
+// needed, so output that fits whole is never cut to make room for one.
+export function terminalAttachmentText(
+  buffer: TerminalBufferLike,
+  known: { historyFilled: boolean, earlierDropped: boolean },
+  limitBytes: number = maximumTextAttachmentBytes,
+): { content: string, marked: AttachmentMark | undefined } {
+  const lead: AttachmentMark | undefined = known.historyFilled ? "history" : known.earlierDropped ? "dropped" : undefined
+  const leading = lead ? `${attachmentMarkers[lead]}\n` : ""
+  const whole = terminalBufferOutput(buffer, limitBytes - byteLength(leading))
+  if (!whole.text) return { content: "", marked: undefined }
+  if (!whole.truncated) return { content: `${leading}${whole.text}`, marked: lead }
+  const cut = `${attachmentMarkers.cut}\n`
+  return { content: `${cut}${terminalBufferOutput(buffer, limitBytes - byteLength(cut)).text}`, marked: "cut" }
+}
+
 // The newest line alone is past the limit: keep its tail, counted a code
 // point at a time from the end so a multi-byte character is never cut in half.
 function lineTail(line: string, limitBytes: number): string {
