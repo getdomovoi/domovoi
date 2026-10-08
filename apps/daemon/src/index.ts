@@ -78,7 +78,7 @@ async function openWorkspace(target: OpenTarget): Promise<void> {
 
 const help = `Usage: domovoid [options]
        domovoid pair
-       domovoid pair --client <desktop|web|tablet|phone|cli> --label <device label>
+       domovoid pair --client <desktop|web|tablet|phone|cli> [--label <suggested name>]
        domovoid fleet-keychain list
        domovoid fleet-keychain forget <machine-id> --confirm-daemon-stopped
        domovoid open [path]
@@ -93,6 +93,9 @@ const help = `Usage: domovoid [options]
        domovoid skill sign <skill-path> --key <private-key-path>
        domovoid skill trust <public-key> [--trust-file <path>]
        domovoid profile recover --confirm-no-supervisor
+
+Pairing:
+  --label is kept with the code as a suggested name for the device. The device's own name is the one used.
 
 Profile recovery:
   --confirm-no-supervisor asserts that no supervisor will restart this profile.

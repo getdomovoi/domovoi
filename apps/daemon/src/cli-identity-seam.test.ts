@@ -132,12 +132,9 @@ describe("domovoid CLI connection identity", () => {
     expect(result.stdout).toContain("which only this machine can reach")
     expect(payload.url).toBe(`ws://${daemon.address!.host}:${daemon.address!.port}/rpc`)
 
-    // The device calls itself something else; the label on the command line
-    // is the one the daemon keeps.
-    const redeemed = await redeem(payload.url, payload.code, "Workstation")
+    const redeemed = await redeem(payload.url, payload.code, "Operator desktop")
     const token = (redeemed.result as { token: string }).token
     const deviceId = (redeemed.result as { device: { id: string } }).device.id
-    expect((redeemed.result as { device: { label: string } }).device.label).toBe("Operator desktop")
 
     const client = new DomovoiClient(payload.url, "desktop", {
       budgets: { connectMs: 5_000, requestMs: 5_000 }, authToken: token,
@@ -155,9 +152,16 @@ describe("domovoid CLI connection identity", () => {
     expect(again).toHaveProperty("error")
   }, 20_000)
 
-  it("prints a web code a browser types, and the browser pairs under the label", async () => {
+  it("prints a web code a browser types, and the browser pairs under its own name", async () => {
+    const received = vi.spyOn(WebSocket.prototype, "emit")
     const daemon = await startDaemon()
     const result = await runCli(daemon, ["pair", "--client", "web", "--label", "Studio browser"])
+    // The label reaches the daemon with the code, as a suggested name.
+    expect(received.mock.calls.some(([event, bytes]) => {
+      if (event !== "message") return false
+      const message = JSON.parse(String(bytes)) as { method?: string; params?: { targetClient?: string; label?: string } }
+      return message.method === "device.issueCode" && message.params?.targetClient === "web" && message.params.label === "Studio browser"
+    })).toBe(true)
     expect(result).toMatchObject({ exitCode: 0, stderr: "" })
     expect(result.stdout).not.toContain("domovoi-pair:")
     const code = /^Web code: (\S+)$/mu.exec(result.stdout)?.[1]
@@ -165,7 +169,7 @@ describe("domovoid CLI connection identity", () => {
 
     const redeemed = await redeem(`ws://${daemon.address!.host}:${daemon.address!.port}/rpc`, code!, "Firefox")
     expect((redeemed.result as { device: { label: string; binding: unknown } }).device).toMatchObject({
-      label: "Studio browser", binding: { kind: "client", client: "web", clientAccess: "full" },
+      label: "Firefox", binding: { kind: "client", client: "web", clientAccess: "full" },
     })
   }, 20_000)
 

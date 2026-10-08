@@ -12,23 +12,27 @@ export type PairCommandDependencies = {
   stderr: (text: string) => void
 }
 
-const usage = "Usage: domovoid pair\n       domovoid pair --client <desktop|web|tablet|phone|cli> --label <device label>\n"
+const usage = "Usage: domovoid pair\n       domovoid pair --client <desktop|web|tablet|phone|cli> [--label <suggested name>]\n\n--label is kept with the code as a suggested name for the device. The device's own name is the one used.\n"
 
 export async function runPairCommand(
   args: readonly string[],
   dependencies: PairCommandDependencies,
 ): Promise<number> {
   if (args[0] !== "pair") return 1
-  if (args.length === 5 && args[1] === "--client" && args[3] === "--label") {
+  if (args[1] === "--client" && (args.length === 3 || (args.length === 5 && args[3] === "--label"))) {
     const client = clientKindSchema.safeParse(args[2])
-    const label = deviceRenameLabelSchema.safeParse(args[4])
-    if (!client.success || !label.success) { dependencies.stderr(usage); return 1 }
+    const label = args.length === 5 ? deviceRenameLabelSchema.safeParse(args[4]) : undefined
+    if (!client.success || (label !== undefined && !label.success)) { dependencies.stderr(usage); return 1 }
     let issued: DeviceIssueCodeResult
     try {
-      issued = await dependencies.issue(client.data, label.data)
+      issued = label === undefined
+        ? await dependencies.issue(client.data)
+        : await dependencies.issue(client.data, label.data)
     } catch (error) {
       dependencies.stderr(error instanceof CliDeadlineError ? `${error.message}\n`
-        : "Could not ask the daemon for a pairing code. A daemon older than this command refuses the device label, so if this daemon is older, update and restart it, then run this again. Otherwise check that the daemon is running and that this command uses its own credential.\n")
+        : label === undefined
+          ? "Could not ask the daemon for a pairing code. Use this daemon's own credential and an updated daemon.\n"
+          : "Could not ask the daemon for a pairing code. A daemon older than this command refuses --label, so if this daemon is older, update and restart it, or run this again without --label. Otherwise check that the daemon is running and that this command uses its own credential.\n")
       return 1
     }
 
@@ -88,7 +92,7 @@ export async function runPairCommand(
     if (address.loopback) {
       dependencies.stdout(`This daemon answers on ${address.url}, which only this machine can reach. ${client.data === "web" ? "A browser on another device" : "A phone on your network"} needs the daemon on an address it can dial.\n`)
     }
-    dependencies.stdout(`The device appears in this daemon's Devices list as "${label.data}" once it pairs. Revoke it there when it is no longer needed.\n`)
+    dependencies.stdout("The device appears in this daemon's Devices list once it pairs. Revoke it there when it is no longer needed.\n")
     return 0
   }
   if (args.length > 1) {

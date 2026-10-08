@@ -60,6 +60,7 @@ type OpenPairing = {
   // it is shown and cannot be talked up when it is spent.
   targetClient?: ClientKind
   clientAccess?: ClientAccess
+  // Suggested name retained for a follow-up pairing payload; nothing reads it yet.
   label?: string
 }
 
@@ -152,9 +153,10 @@ export class PairingCodeService {
     let paired: DevicePairing
     try {
       paired = this.#devices.pair({
-        // The daemon owner named the device on purpose. The redeeming
-        // device's name is that device's own text, so the issuer's label wins.
-        label: open.label ?? input.label,
+        // The issuer's label is kept only as a suggested name. The device's
+        // own name is used (Q37 B), as the phone's "Name this phone" field
+        // and the CLI's --label promise.
+        label: input.label,
         binding: {
           kind: "client",
           client: open.targetClient,

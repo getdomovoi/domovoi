@@ -62,15 +62,15 @@ describe("PairingCodeService", () => {
     })
   })
 
-  it("names the paired device with the label its issuer gave the code", () => {
+  it("names the paired device by its own name even when the issuer suggested one", () => {
     const { pairing, devices, start } = service()
     const issued = pairing.issue(start, "web", undefined, "Studio browser")
     const paired = pairing.redeem(issued.code, { label: "Firefox on Linux" }, start)
 
-    // The issuer named the device on purpose; the redeeming device's own
-    // name is its text and does not replace the issuer's.
-    expect(paired.device.label).toBe("Studio browser")
-    expect(devices.list().map((device) => device.label)).toEqual(["Studio browser"])
+    // The phone's "Name this phone" field and the CLI's --label promise the
+    // device names itself (Q37 B). The issuer's label is only a suggestion.
+    expect(paired.device.label).toBe("Firefox on Linux")
+    expect(devices.list().map((device) => device.label)).toEqual(["Firefox on Linux"])
   })
 
   it("names the paired device with its own label when the issuer gave none", () => {

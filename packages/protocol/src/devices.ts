@@ -217,7 +217,7 @@ export const deviceConfirmClaimResultSchema = z.object({ device: pairedDeviceSch
 export const deviceIssueCodeParamsSchema = z.object({
   targetClient: clientKindSchema.optional(),
   clientAccess: clientAccessSchema.optional(),
-  // The issuer's label names the device the code pairs.
+  // A suggested name for the device the code pairs; the device's own name is used.
   label: deviceRenameLabelSchema.optional(),
 }).strict().refine((params) => params.label === undefined || params.targetClient !== undefined, {
   path: ["label"],
