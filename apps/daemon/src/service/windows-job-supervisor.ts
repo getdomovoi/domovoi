@@ -243,8 +243,9 @@ export async function runWindowsSupervisor(path: string, entry: { executable: st
       // Honor a stop published during the first cap before retrying, keeping that waiting stop's lease hold within one cap.
       assertRegistrationNotStopped()
       try { observed = queryWindowsProcess(process.pid) } catch (cause) {
-        throw new Error("Windows supervisor could not read its own process identity: the first helper query reached the 20 s cap at startup and its one retry also failed. No daemon was launched; no supervision record was written. The logon task starts the supervisor again at the next logon.", { cause })
+        throw new Error("Windows supervisor could not read its own process identity: the first helper query reached the 20 s cap at startup and its one retry also failed. This start launched no daemon and wrote no supervision record; any earlier record in the profile's windows-supervisor.json is unchanged, so see domovoi daemon status. The logon task starts the supervisor again at the next logon.", { cause })
       }
+      assertRegistrationNotStopped()
     }
     if (!observed.identity) throw new Error("Windows supervisor birth identity is unavailable")
     const previous = readWindowsSupervisorRecord(home)
