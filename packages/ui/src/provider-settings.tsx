@@ -1,6 +1,7 @@
 import { useId, useState } from "react"
 import type { ProviderRuntime } from "@getdomovoi/protocol"
 
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field"
 import { Separator } from "@/components/ui/separator"
@@ -397,16 +398,19 @@ function AgentRow({ name, machine, state, tone, dimmed = false, problem, signIn 
         <span data-agent-cell="" className="min-w-0 text-[11.5px] text-muted-foreground">{state}</span>
         <span className="flex-1" />
         {signIn ? (
-          <button
+          <Button
             type="button"
+            // The link variant carries no fill of its own, so the info pill
+            // keeps its colours in every state, aria-expanded included.
+            variant="link"
             aria-expanded={open}
             aria-controls={noteId}
             aria-label={`Authenticate there: ${name} on ${machine}`}
             onClick={() => setOpen(!open)}
-            className="rounded-full border border-info-border bg-info-background px-2.5 py-[5px] text-[11px] text-info-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+            className="h-auto rounded-full border-info-border bg-info-background px-2.5 py-[5px] text-[11px] font-normal text-info-foreground hover:no-underline"
           >
             Authenticate there
-          </button>
+          </Button>
         ) : null}
       </div>
       {problem ? <p className="m-0 mt-1 pl-[17px] text-micro leading-relaxed text-muted-foreground">{problem}</p> : null}

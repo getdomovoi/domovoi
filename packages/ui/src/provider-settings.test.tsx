@@ -123,6 +123,8 @@ describe("Settings shell and provider pane", () => {
     expect(markup).not.toContain(">kilo</span>")
     // One action, where one is needed: Grok needs sign-in, and the command is named for it.
     expect(markup.match(/>Authenticate there</g)).toHaveLength(1)
+    // A standard control, so it is the shared Button primitive (AGENTS.md).
+    expect(markup).toMatch(/<button data-slot="button"[^>]*>Authenticate there</)
     expect(markup).toContain("grok login")
     expect(markup).not.toContain("data-provider-account-action")
     expect(markup).toContain("OS keychain")
