@@ -119,6 +119,23 @@ it("fails closed with the retry's own error as the cause when the retry fails an
   expect(readWindowsSupervisorRecord(f.home)).toBeUndefined()
 })
 
+it("honors a stop request published during the timed-out first query instead of retrying", async () => {
+  const f = fixture()
+  // A remove, update or stop waits on the startup lease within its own 30 s
+  // deadline. The retry must not hold that lease for a second cap.
+  await substituteHelper(() => {
+    writeSupervisorStopRequest({ profileDirectory: f.directory }, { registrationId: f.config.registrationId, supervisorId: randomUUID(), loop: { pid: process.pid, start: "456", bootId } })
+    throw timedOut()
+  })
+  retireOnLaunch(f)
+  asWindows()
+  await expect(runWindowsSupervisor(f.path, { executable: "unused", args: [] })).rejects.toThrow("This Windows supervisor registration was stopped")
+  expect(helperCalls()).toHaveLength(1)
+  expect(launchWindowsJob).not.toHaveBeenCalled()
+  expect(readWindowsSupervisorRecord(f.home)).toBeUndefined()
+  claimExclusiveFileLease(f.lease, () => new Error("lease still held")).release()
+})
+
 it("does not retry a first query that fails for a reason other than its time cap", async () => {
   const f = fixture()
   await substituteHelper(() => { throw new Error("Access denied") })
