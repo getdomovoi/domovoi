@@ -215,3 +215,39 @@ it("queues output offered in the same batch as Send while a turn runs", async ()
 
   expect(onQueuedChange).toHaveBeenLastCalledWith(expect.objectContaining({ text: "Also check retries", attachments: [output] }))
 })
+
+// A composer paste is judged against the draft as it is at that moment, for
+// room and for its name.
+it("takes a long composer paste as a file when a same-batch removal made room", () => {
+  renderThread()
+  act(() => {
+    composerInbox.offer(sessionId, terminalOutputAttachment("first"))
+    composerInbox.offer(sessionId, terminalOutputAttachment("second"))
+  })
+  const field = screen.getByRole("textbox", { name: "Message" })
+  const longText = Array.from({ length: 60 }, (_, index) => `line ${index}`).join("\n")
+
+  let pasteProceeds = true
+  act(() => {
+    fireEvent.click(screen.getAllByRole("button", { name: /Remove terminal-output\.txt/u })[0]!)
+    pasteProceeds = fireEvent.paste(field, { clipboardData: { getData: () => longText } })
+  })
+
+  expect(pasteProceeds).toBe(false)
+  expect(screen.queryByRole("alert")).toBeNull()
+  expect(screen.getByText("pasted-text-1.txt")).toBeTruthy()
+})
+
+it("names two same-batch composer pastes apart", () => {
+  renderThread()
+  const field = screen.getByRole("textbox", { name: "Message" })
+  const longText = Array.from({ length: 60 }, (_, index) => `line ${index}`).join("\n")
+
+  act(() => {
+    fireEvent.paste(field, { clipboardData: { getData: () => longText } })
+    fireEvent.paste(field, { clipboardData: { getData: () => `${longText}\nmore` } })
+  })
+
+  expect(screen.getByText("pasted-text-1.txt")).toBeTruthy()
+  expect(screen.getByText("pasted-text-2.txt")).toBeTruthy()
+})

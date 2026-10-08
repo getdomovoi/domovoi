@@ -30,6 +30,7 @@ import {
   desktopAttachmentLimit,
   inlineTextPreview,
   pasteOutcome,
+  type PasteOutcome,
   pastedText,
   terminalOutputAttachment,
   workspacePathAttachment,
@@ -113,6 +114,8 @@ export function ThreadComposer({
   prompt: string
   onPromptChange: (prompt: string) => void
   attachments: SessionAttachment[]
+  // Applies an update at once, not at the next render (Thread's setter), so
+  // an add knows whether the draft took it.
   onAttachmentsChange: Dispatch<SetStateAction<SessionAttachment[]>>
   slashOpen: boolean
   // What this session offers the slash commands: the list names it.
@@ -187,20 +190,23 @@ export function ThreadComposer({
   // without one clears what an earlier paste left.
   const pasteAsFile = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const field = event.currentTarget
-    const outcome = pasteOutcome(
-      event.clipboardData.getData("text/plain"),
-      attachments,
-      field.value.length - (field.selectionEnd - field.selectionStart),
-    )
+    const text = event.clipboardData.getData("text/plain")
+    const kept = field.value.length - (field.selectionEnd - field.selectionStart)
+    // Judged against the draft as it is now, for room and for the file's
+    // name: a write since this render (a removal, another paste, Attach this
+    // output) counts. The thread applies the update at once, so the outcome
+    // is known here.
+    let outcome: PasteOutcome = pasteOutcome(text, attachments, kept)
+    onAttachmentsChange((current) => {
+      outcome = pasteOutcome(text, current, kept)
+      return outcome.kind === "file" ? [...current, outcome.attachment] : current
+    })
     if (outcome.kind === "inline") {
       setAttachmentError(outcome.note ?? "")
       return
     }
-    // The draft may have filled since this render. Then the paste is not
-    // prevented, so the text stays in the field as it does past the limit.
-    if (addAttachments([outcome.attachment], `Attach up to ${desktopAttachmentLimit} items per message. The pasted text stayed in the message.`)) {
-      event.preventDefault()
-    }
+    setAttachmentError("")
+    event.preventDefault()
   }
   const takeSlashCommand = (command: SlashCommand) => {
     if (watching) return
