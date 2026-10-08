@@ -206,6 +206,22 @@ describe("WatchingScreen", () => {
     expect(screen.getByText("The shell exited with code 0. No more output will arrive.")).toBeOnTheScreen()
   })
 
+  // Turning Follow off at the end is also a reader stopping to read: what
+  // they see holds still while old output is dropped.
+  it("holds what a reader reads after turning Follow off at the end", async () => {
+    const count = Math.floor(maximumTerminalReplayCharacters / 11)
+    const buffer = Array.from({ length: count }, (_, index) => `row ${String(index).padStart(6, "0")}\n`).join("")
+    const oldest = /\brow 000000\b/
+    const full = watching({ buffer })
+    const { redraw } = await draw(full)
+    await fireEvent.press(screen.getByRole("switch", { name: "Follow output" }))
+    await redraw(more(full, "row new\n".repeat(40)))
+    expect(screen.getByText(oldest)).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "Jump to latest, 40 new" }))
+    expect(screen.queryByText(oldest)).toBeNull()
+    expect(screen.getByText(/\brow new\b/)).toBeOnTheScreen()
+  })
+
   // At the bound each new line drops the oldest. A reader scrolled up keeps
   // reading what they were reading; the view catches up when they come back
   // to the end.

@@ -184,6 +184,10 @@ function WatchingView({ title, watch, connected, notice, onBack, onRetry }: Watc
       setHeldRecord(undefined)
       setOutputBelow(false)
       output.current?.scrollToEnd()
+    } else {
+      // Turning Follow off is a reader stopping to read, at the end or not:
+      // the text holds still from here, as it does for one scrolled up.
+      setHeldRecord((held) => held ?? latestRecord.current)
     }
     setFollow(followToggle)
   }
