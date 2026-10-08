@@ -34,6 +34,11 @@ const unitFile = loginServiceUnitFile
 const agentLabel = loginServiceAgentLabel
 const displayName = loginServiceTaskName
 
+// Microsoft documents 262, but schtasks's own /TR error limits it to 261:
+// https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-create
+// https://adventuresinscm.wordpress.com/2014/06/22/error-value-for-tr-option-cannot-be-more-than-261-characters/
+const windowsTaskCommandLengthLimit = 261
+
 export type ServiceCommand = { command: string; args: string[] }
 
 type ServiceRegistrationPlan =
@@ -225,6 +230,15 @@ export class WindowsTaskPathError extends Error {
   }
 }
 
+type WindowsTaskCommandPart = "Node runtime" | "daemon entry" | "daemon program" | "service configuration"
+
+export class WindowsTaskCommandLengthError extends Error {
+  constructor(readonly length: number, readonly part: WindowsTaskCommandPart, readonly path: string) {
+    super(`The Windows task command is ${length} characters, and schtasks accepts at most ${windowsTaskCommandLengthLimit}. Its longest part is the ${part} ${path} (${path.length} characters). Install Node and Domovoi at shorter absolute paths before installing the service. No service files were changed.`)
+    this.name = "WindowsTaskCommandLengthError"
+  }
+}
+
 // Security review round 5 (#574): systemd expands $ variables and %
 // specifiers in ExecStart. The unit doubles them, but whether systemd undoes
 // that in the executable slot is not certain, so a path that contains one is
@@ -338,8 +352,18 @@ export function servicePlan({
     for (const path of [runtime, execPath, configurationFile.path]) {
       if (path !== undefined && !plainWindowsPath(path)) throw new WindowsTaskPathError(path)
     }
-    if (taskCommand.length > 262) {
-      throw new Error("Windows task command exceeds 262 characters. Install Node and Domovoi at shorter absolute paths before installing the service. No service files were changed.")
+    if (taskCommand.length > windowsTaskCommandLengthLimit) {
+      let part: WindowsTaskCommandPart = runtime === undefined ? "daemon program" : "Node runtime"
+      let path = runtime ?? execPath
+      if (runtime !== undefined && execPath.length > path.length) {
+        part = "daemon entry"
+        path = execPath
+      }
+      if (configurationFile.path.length > path.length) {
+        part = "service configuration"
+        path = configurationFile.path
+      }
+      throw new WindowsTaskCommandLengthError(taskCommand.length, part, path)
     }
     // A Windows service created with sc.exe runs as LocalSystem and belongs to
     // the machine, which is neither what the systemd user unit nor the launchd
