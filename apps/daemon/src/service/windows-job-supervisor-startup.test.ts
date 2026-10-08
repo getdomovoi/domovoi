@@ -164,6 +164,49 @@ it("honors a stop request published during the retry before any recovery query",
   claimExclusiveFileLease(f.lease, () => new Error("lease still held")).release()
 })
 
+it("releases the startup lease during the retry so a stop that publishes late can settle", async () => {
+  const f = fixture()
+  // A stop with no record first queries its own identity, then publishes its
+  // marker and claims the startup lease. Its 30 s deadline must not depend on
+  // this supervisor's second cap, so the retry runs without the lease.
+  let calls = 0, stopSettled = false
+  await substituteHelper((options) => {
+    if (++calls === 1) throw timedOut()
+    if (calls === 2) {
+      writeSupervisorStopRequest({ profileDirectory: f.directory }, { registrationId: f.config.registrationId, supervisorId: randomUUID(), loop: { pid: 999, start: "1", bootId } })
+      try { claimExclusiveFileLease(f.lease, () => new Error("busy")).release(); stopSettled = true } catch { /* Held through the retry. */ }
+    }
+    const request = JSON.parse(String(options.input)) as { pids: number[] }
+    return JSON.stringify({ bootId, identities: request.pids.map((pid) => ({ pid, start: "456", bootId })) })
+  })
+  retireOnLaunch(f)
+  asWindows()
+  await expect(runWindowsSupervisor(f.path, { executable: "unused", args: [] })).rejects.toThrow("This Windows supervisor registration was stopped")
+  expect(stopSettled).toBe(true)
+  expect(helperCalls()).toHaveLength(2)
+  expect(launchWindowsJob).not.toHaveBeenCalled()
+  claimExclusiveFileLease(f.lease, () => new Error("lease still held")).release()
+})
+
+it("refuses to launch when another owner takes the startup lease during the retry", async () => {
+  const f = fixture()
+  let calls = 0
+  let other: ReturnType<typeof claimExclusiveFileLease> | undefined
+  await substituteHelper((options) => {
+    if (++calls === 1) throw timedOut()
+    if (calls === 2) other = claimExclusiveFileLease(f.lease, () => new Error("busy"))
+    const request = JSON.parse(String(options.input)) as { pids: number[] }
+    return JSON.stringify({ bootId, identities: request.pids.map((pid) => ({ pid, start: "456", bootId })) })
+  })
+  retireOnLaunch(f)
+  asWindows()
+  try {
+    await expect(runWindowsSupervisor(f.path, { executable: "unused", args: [] })).rejects.toThrow("Windows supervisor still owns its startup lease")
+    expect(launchWindowsJob).not.toHaveBeenCalled()
+    expect(readWindowsSupervisorRecord(f.home)).toBeUndefined()
+  } finally { other?.release() }
+})
+
 it("does not retry a first query that fails for a reason other than its time cap", async () => {
   const f = fixture()
   await substituteHelper(() => { throw new Error("Access denied") })
