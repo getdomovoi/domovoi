@@ -87,8 +87,12 @@ export function terminalAttachmentText(
   const whole = terminalBufferOutput(buffer, limitBytes - byteLength(leading))
   if (!whole.text) return { content: "", marked: undefined }
   if (!whole.truncated) return { content: `${leading}${whole.text}`, marked: lead }
+  // The cut is taken against the larger of the two reserves. A cut marker
+  // shorter than the known one could otherwise let the whole output back in
+  // and still be labelled as cut.
   const cut = `${attachmentMarkers.cut}\n`
-  return { content: `${cut}${terminalBufferOutput(buffer, limitBytes - byteLength(cut)).text}`, marked: "cut" }
+  const reserve = Math.max(byteLength(cut), byteLength(leading))
+  return { content: `${cut}${terminalBufferOutput(buffer, limitBytes - reserve).text}`, marked: "cut" }
 }
 
 // The newest line alone is past the limit: keep its tail, counted a code

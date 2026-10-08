@@ -82,6 +82,22 @@ describe("terminalAttachmentText", () => {
     expect(terminalAttachmentText(lines, { historyFilled: false, earlierDropped: true }, 1_000)).toEqual({ content: `${attachmentMarkers.dropped}\ntail`, marked: "dropped" })
   })
 
+  // Output that fits beside the short cut marker but not beside the longer
+  // history marker is still cut, and the file says so truthfully.
+  it("cuts against the longer marker when the known one does not fit", () => {
+    const encoder = new TextEncoder()
+    const history = encoder.encode(`${attachmentMarkers.history}\n`).byteLength
+    const cutMarker = encoder.encode(`${attachmentMarkers.cut}\n`).byteLength
+    const limit = 200
+    // Two lines whose total sits between the two room sizes.
+    const total = limit - Math.floor((history + cutMarker) / 2)
+    const lines = buffer([{ text: "a".repeat(10) }, { text: "b".repeat(total - 11) }])
+    const { content, marked } = terminalAttachmentText(lines, { historyFilled: true, earlierDropped: false }, limit)
+    expect(marked).toBe("cut")
+    expect(content).not.toContain("aaaaaaaaaa")
+    expect(encoder.encode(content).byteLength).toBeLessThanOrEqual(limit)
+  })
+
   it("is empty when nothing was printed", () => {
     expect(terminalAttachmentText(buffer([{ text: "" }]), nothingKnown, 1_000)).toEqual({ content: "", marked: undefined })
   })
