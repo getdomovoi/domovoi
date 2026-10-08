@@ -55,7 +55,7 @@ import { FleetAccessSession, fleetAgents, machineReading, type HeldReading } fro
 import { ClientAdmissionError } from "./client-admission-policy"
 import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
 import { Deadline } from "./deadline"
-import { advancePendingElsewhere, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
+import { advancePendingElsewhere, freshRefusal, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
 import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
 import { type ProviderSecretStatus } from "./provider-settings"
@@ -105,6 +105,7 @@ import {
 } from "./workspace-persistence"
 import {
   buildWorkspaceCommands,
+  commandPaletteFrame,
   commandPaletteShortcut,
   commandPaletteTitle,
   workspaceShortcut,
@@ -776,17 +777,24 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // machine, then opens the session once its snapshot arrives.
   const [pendingElsewhere, setPendingElsewhere] = useState<PendingElsewhere | null>(null)
   const windowMachineId = attached?.machineId ?? homeMachineId
+  const refusal = authenticationRequired || protocolError || null
+  const seenRefusal = useRef(refusal)
   useEffect(() => {
+    // Only a refusal that appears ends the pick: the hook keeps the last
+    // machine's error for a render after the window switches.
+    const refused = freshRefusal(seenRefusal.current, refusal)
+    seenRefusal.current = refusal
     if (!pendingElsewhere) return
     const step = advancePendingElsewhere(pendingElsewhere, {
       currentMachineId: windowMachineId,
       snapshotMachineId: snapshot?.machine.id ?? null,
       sessionIds: snapshot?.sessions.map((session) => session.id) ?? [],
+      refused,
     })
     if (step.next !== pendingElsewhere) setPendingElsewhere(step.next)
     if (step.open) openSessionInWorkspace(step.open)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingElsewhere, windowMachineId, snapshot])
+  }, [pendingElsewhere, windowMachineId, snapshot, refusal])
   const searchTargets = windowMachineId ? paletteSearchTargets({
     machines: fleetMachines(fleet?.entries ?? []),
     access: fleetClientAccess,
@@ -808,7 +816,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       }
     },
     open: (machineId: string, sessionId: string) => {
-      if (windowMachineId && switchMachine(machineId)) setPendingElsewhere({ from: windowMachineId, machineId, sessionId, reached: false })
+      if (!windowMachineId || !switchMachine(machineId)) return false
+      setPendingElsewhere({ from: windowMachineId, machineId, sessionId, reached: false })
+      return true
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [JSON.stringify(searchTargets), homeMachineId, accessSession, homeSearch, switchMachine])
@@ -1932,7 +1942,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 title={commandPaletteTitle}
                 titleHidden
                 showCloseButton={false}
-                className="top-1/3 translate-y-0 overflow-hidden rounded-xl! p-0"
+                className={commandPaletteFrame}
                 bodyClassName="p-3"
               />
             }
@@ -1942,6 +1952,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onOpenChange={setCommandPaletteOpen}
             restoreFocusTo={commandPaletteFocusRef.current}
             machineSearch={machineSearch}
+            // A switch the target refused is over for the palette, so the
+            // banner under it can say why.
+            switching={pendingElsewhere && !authenticationRequired && !protocolError ? pendingElsewhere : null}
+            onCancelSwitch={() => setPendingElsewhere(null)}
             {...(firstRunEnabled && !watching ? {
               onOpenFirstRun: () => setDesktopFirstRun((current) => ({ ...current, open: true })),
             } : {})}

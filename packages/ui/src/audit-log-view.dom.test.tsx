@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, render, screen, within } from "@testing-library/react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import type { AuditEntry, AuditQueryPage, AuditQueryParams } from "@getdomovoi/protocol"
@@ -91,7 +91,9 @@ it("stops the clock on an older-entries query once it settles", async () => {
     />,
   )
   await settle()
-  expect(vi.getTimerCount()).toBe(0)
+  // The one timer a settled view keeps is its midnight date refresh; a query
+  // deadline left running would make it two.
+  expect(vi.getTimerCount()).toBe(1)
 
   await act(async () => {
     screen.getByRole("button", { name: "Load older" }).click()
@@ -103,5 +105,111 @@ it("stops the clock on an older-entries query once it settles", async () => {
     expect.objectContaining({ deadline: expect.anything() }),
   )
   expect(screen.getByText("session.archive")).toBeTruthy()
-  expect(vi.getTimerCount()).toBe(0)
+  expect(vi.getTimerCount()).toBe(1)
+})
+
+function renderAudit(entries: AuditEntry[], clientKind?: "desktop" | "web") {
+  const current: AuditQueryPage = { entries, hasMore: false }
+  return render(
+    <AuditLogView
+      connected
+      initialPage={current}
+      {...(clientKind ? { clientKind } : {})}
+      onOpenSkills={vi.fn()}
+      onQuery={vi.fn(async () => current)}
+      onExport={vi.fn()}
+    />,
+  )
+}
+
+it("draws each row as the design's columns: time, action with actor, detail, who and outcome", async () => {
+  const today = new Date()
+  today.setHours(14, 7, 12, 0)
+  renderAudit([{ ...entry, occurredAt: today.toISOString() }])
+  await settle()
+
+  const row = screen.getByRole("article")
+  const time = row.querySelector("time")
+  expect(time?.getAttribute("dateTime")).toBe(today.toISOString())
+  expect(time?.textContent).toBe("14:07:12")
+  expect(within(row).getByText("session.send")).toBeTruthy()
+  expect(within(row).getByText("client")).toBeTruthy()
+  expect(within(row).getByText("request completed").tagName).not.toBe("PRE")
+  expect(within(row).getByText("desktop · desktop-1")).toBeTruthy()
+  expect(within(row).getByText("succeeded")).toBeTruthy()
+  expect(within(row).getByText("target · project-domovoi")).toBeTruthy()
+  expect(within(row).getByText("session · session-111111111111")).toBeTruthy()
+  expect(row.querySelector("pre")).toBeNull()
+})
+
+it("dates a row that was not recorded today", async () => {
+  renderAudit([{ ...entry, occurredAt: new Date(2025, 7, 29, 9, 5, 3).toISOString() }])
+  await settle()
+
+  const time = screen.getByRole("article").querySelector("time")
+  expect(time?.textContent).toContain("09:05:03")
+  expect(time?.textContent).toContain("2025")
+})
+
+it("states the daemon's retention counts and draws no shield icons in the facts", async () => {
+  renderAudit([entry])
+  await settle()
+
+  const facts = screen.getByRole("region", { name: "WHAT THIS LOG IS, AND IS NOT" })
+  expect(within(facts).getByText("Retention is by count: 10,000 activity and 1,000 pre-authentication entries.")).toBeTruthy()
+  expect(within(facts).getByText("Export writes a redacted file here. Moving it is your decision.")).toBeTruthy()
+  expect(within(facts).queryByText(/local audit policy/)).toBeNull()
+  expect(facts.querySelector("svg")).toBeNull()
+  // The design's dots: the first fact success, the other three info.
+  const dots = [...facts.querySelectorAll("[aria-hidden]")].map((dot) => dot.className)
+  expect(dots).toHaveLength(4)
+  expect(dots[0]).toContain("bg-success")
+  for (const dot of dots.slice(1)) expect(dot).toContain("bg-info")
+})
+
+it("dates today's rows once the day has turned and the tab is seen again", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+  vi.setSystemTime(new Date(2026, 9, 6, 23, 59, 0))
+  renderAudit([{ ...entry, occurredAt: new Date(2026, 9, 6, 23, 58, 30).toISOString() }])
+  await settle()
+  const time = () => screen.getByRole("article").querySelector("time")?.textContent ?? ""
+  expect(time()).toBe("23:58:30")
+
+  vi.setSystemTime(new Date(2026, 9, 7, 0, 1, 0))
+  await act(async () => {
+    window.dispatchEvent(new Event("focus"))
+  })
+  expect(time()).not.toBe("23:58:30")
+  expect(time()).toContain("23:58:30")
+})
+
+it("dates today's rows at local midnight in a view that stays focused", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })
+  vi.setSystemTime(new Date(2026, 9, 6, 23, 59, 0))
+  renderAudit([{ ...entry, occurredAt: new Date(2026, 9, 6, 23, 58, 30).toISOString() }])
+  await settle()
+  const time = () => screen.getByRole("article").querySelector("time")?.textContent ?? ""
+  expect(time()).toBe("23:58:30")
+
+  await act(async () => {
+    vi.advanceTimersByTime(2 * 60_000)
+  })
+  expect(time()).not.toBe("23:58:30")
+  expect(time()).toContain("23:58:30")
+})
+
+it("says where the export lands for the client kind", async () => {
+  renderAudit([entry], "web")
+  await settle()
+  expect(screen.getByText("saves to this device · 1 row loaded")).toBeTruthy()
+  cleanup()
+
+  renderAudit([entry, older], "desktop")
+  await settle()
+  expect(screen.getByText("writes a file on this machine · 2 rows loaded")).toBeTruthy()
+  cleanup()
+
+  renderAudit([entry])
+  await settle()
+  expect(screen.getByText("writes a file on this machine · 1 row loaded")).toBeTruthy()
 })

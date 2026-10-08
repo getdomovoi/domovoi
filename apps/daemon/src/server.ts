@@ -109,6 +109,7 @@ import {
 } from "@getdomovoi/protocol"
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
+import { normalizeLegacyEffort } from "./legacy-effort.js"
 import { approvalToolServerFact, type ApprovalScope } from "./approval-facts.js"
 import {
   ApprovalLedger,
@@ -5885,7 +5886,7 @@ export class DomovoiDaemon {
       const ask = agent.permissionCapabilities?.ask === "read-only"
       return rpcMethods["runtime.discover"].result.parse({
         ...identity, status: "ready", models,
-        defaultRuntime: { provider, model: model.id, reasoning: model.defaultReasoningEffort, permissionMode: ask ? "ask" : "plan", auto: false },
+        defaultRuntime: { provider, model: model.id, reasoning: model.defaultReasoningEffort ?? "unset", permissionMode: ask ? "ask" : "plan", auto: false },
         permissionModes: ask ? ["ask", "plan", "build"] : ["plan", "build"],
         supportsAuto: agent.permissionCapabilities?.buildAuto === "pre-execution",
       })
@@ -5938,17 +5939,30 @@ export class DomovoiDaemon {
       ? models.find((candidate) => candidate.isDefault) ?? models[0]
       : models.find((candidate) => candidate.id === runtime.model)
     if (!model) throw new RuntimeValidationError(`Model is not available from ${runtime.provider}`)
+    const defaultReasoningEffort = model.defaultReasoningEffort ?? "unset"
+    // Default model selection falls back from effort carried across providers.
+    // Explicit models accept unset or the old Claude adapter's legacy medium.
+    if (model.supportedReasoningEfforts.length === 0 && model.defaultReasoningEffort === undefined) {
+      if (runtime.model !== "default" && runtime.reasoning !== "unset" && runtime.reasoning !== "medium") {
+        throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")
+      }
+      return { ...runtime, model: model.id, reasoning: "unset" }
+    }
     const supportedReasoningEfforts = model.supportedReasoningEfforts.length > 0
-      ? model.supportedReasoningEfforts
-      : [model.defaultReasoningEffort]
+      ? [...model.supportedReasoningEfforts, ...(model.defaultReasoningEffort === undefined ? ["unset"] : [])]
+      : [defaultReasoningEffort]
     const reasoning = runtime.model === "default"
       && !supportedReasoningEfforts.includes(runtime.reasoning)
-      ? model.defaultReasoningEffort
+      ? defaultReasoningEffort
       : runtime.reasoning
-    if (!supportedReasoningEfforts.includes(reasoning)) {
+    const resolvedReasoning = !supportedReasoningEfforts.includes(reasoning)
+      && supportedReasoningEfforts.includes("unset")
+      ? normalizeLegacyEffort(runtime.provider, reasoning)
+      : reasoning
+    if (!supportedReasoningEfforts.includes(resolvedReasoning)) {
       throw new RuntimeValidationError("Reasoning effort is not supported by the selected model")
     }
-    return { ...runtime, model: model.id, reasoning }
+    return { ...runtime, model: model.id, reasoning: resolvedReasoning }
   }
 
   async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
@@ -7891,7 +7905,7 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, daemonAuthenticationErrorCode, desktopPairingRefusal)
           return
         }
-        const { replacedPairingId, ...issued } = this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess)
+        const { replacedPairingId, ...issued } = this.#pairing.issue(Date.now(), params.targetClient, params.clientAccess, params.label)
         this.#codeReplaced(replacedPairingId)
         // Only a client code reports its outcome, and only to this connection.
         // Issuance can wait in the mutation queue past this connection's close,
@@ -12340,7 +12354,14 @@ export class DomovoiDaemon {
         }
       }
       const recoveredAt = new Date().toISOString()
-      const session = { ...intent.session, updatedAt: recoveredAt }
+      const session = {
+        ...intent.session,
+        runtime: {
+          ...intent.session.runtime,
+          reasoning: normalizeLegacyEffort(intent.session.runtime.provider, intent.session.runtime.reasoning),
+        },
+        updatedAt: recoveredAt,
+      }
       let detail = intent.cleanupStarted
         ? "Worktree cleanup started but did not record completion; preserve the worktree for inspection."
         : "No durable worktree completion receipt exists; the partial worktree requires inspection."

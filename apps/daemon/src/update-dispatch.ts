@@ -10,6 +10,7 @@ import {
 
 import { readLocalProfileFile } from "./local-owner-record.js"
 import { assertProfileLeaseHeld, type ProfileLease } from "./profile-lease.js"
+import { builtSourceCommit } from "./source-commit.js"
 import {
   persistTrustedUpdateMetadata, readTrustedUpdateMetadata, stageVerifiedUpdate,
   type BootstrapInstall, type TrustedUpdateMetadata, type VerifiedUpdateTarget,
@@ -80,7 +81,11 @@ function verificationRefusal(error: unknown): Refusal {
 
 export class DaemonUpdates {
   #options: DaemonUpdateOptions | undefined
-  #status: UpdateStatus = { channel: "stable", currentVersion: buildVersion, state: "idle" }
+  readonly #sourceCommit = builtSourceCommit()
+  #status: UpdateStatus = {
+    channel: "stable", currentVersion: buildVersion, state: "idle",
+    ...(this.#sourceCommit ? { currentSourceCommit: this.#sourceCommit } : {}),
+  }
   #pending: VerifiedUpdateTarget | undefined
   #checking: Promise<UpdateStatus> | undefined
   #stopped = false
@@ -109,6 +114,7 @@ export class DaemonUpdates {
     }
     this.#status = {
       channel: params.channel ?? this.#status.channel, currentVersion: buildVersion,
+      ...(this.#sourceCommit ? { currentSourceCommit: this.#sourceCommit } : {}),
       state: "checking", lastCheckAt: new Date().toISOString(),
     }
     this.#checking = this.#check().finally(() => { this.#checking = undefined })
@@ -134,6 +140,7 @@ export class DaemonUpdates {
   #refused(refusal: Refusal): UpdateStatus {
     return updateStatusSchema.parse({
       channel: this.#status.channel, currentVersion: buildVersion,
+      ...(this.#sourceCommit ? { currentSourceCommit: this.#sourceCommit } : {}),
       ...(this.#status.lastCheckAt ? { lastCheckAt: this.#status.lastCheckAt } : {}),
       state: "failed", refusal,
     })
@@ -205,7 +212,10 @@ export class DaemonUpdates {
       this.#pending = target
       this.#status = target
         ? { ...this.#status, state: "pending", pendingVersion: target.version, pendingSourceCommit: target.sourceCommit }
-        : { channel: this.#status.channel, currentVersion: buildVersion, state: "idle", lastCheckAt: this.#status.lastCheckAt }
+        : {
+          channel: this.#status.channel, currentVersion: buildVersion, state: "idle", lastCheckAt: this.#status.lastCheckAt,
+          ...(this.#sourceCommit ? { currentSourceCommit: this.#sourceCommit } : {}),
+        }
       return this.status()
     } catch (error) {
       return this.#fail(error instanceof UpdateRefusal ? error.refusal : failure)

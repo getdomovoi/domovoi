@@ -4,6 +4,7 @@ import { homedir, hostname } from "node:os"
 import { CredentialStoreError, nativeKeyring, openCredentialStore } from "./credentials.js"
 import { protocolVersion } from "@getdomovoi/protocol"
 
+import { DaemonCommandUnavailableError, loadDaemonCommand } from "./daemon-command.js"
 import { diagnose, renderDoctor } from "./doctor.js"
 import { exitCode, renderExitCodes } from "./exit-codes.js"
 import { readLogs, renderLogs } from "./logs.js"
@@ -20,7 +21,14 @@ const usage = `Usage:
   domovoi doctor [--daemon <ws-url>] [--credential-file <path>]
   domovoi logs   [--limit <n>] [--action <name>] [--outcome <o>] [--session <id>] [--before <id>]
   domovoi skill install <path> [--scope user|project] [--yes]
+  domovoi daemon install|status|remove
 
+daemon: registers, reports on or removes the login service that runs this machine's daemon for
+your user (a systemd user unit, a launch agent, or a Windows logon task), through the daemon
+package's own installer. install saves the non-secret daemon settings of this shell for the
+service. These keep the exit codes of 'domovoid service', not the table below: status exits 0
+when the service is installed, even if it is stopped, and 1 when it is not or its supervision
+failed; install and remove exit 0 on success and 1 on failure.
 doctor: checks the daemon, your credential and the protocol, then for each fleet machine reports
 the route this daemon would choose for you and why the others lost. Exits 1 on any failed probe.
 logs: your own copy of the machine's audit log, read over your channel; nothing is uploaded. It is
@@ -41,10 +49,11 @@ Default daemon: ${defaultEndpoint}
 Exit codes, stable across releases so scripts can branch on them:
 ${renderExitCodes()}`
 
-type Options = { positional: string[]; daemon: string; daemonGiven: boolean; credentialFile?: string; label?: string; limit: number; action?: string; outcome?: string; session?: string; before?: string; scope: "user" | "project"; yes: boolean }
+// given: every option named, in order, so a command that takes none can refuse them.
+type Options = { positional: string[]; given: string[]; daemon: string; daemonGiven: boolean; credentialFile?: string; label?: string; limit: number; action?: string; outcome?: string; session?: string; before?: string; scope: "user" | "project"; yes: boolean }
 
 function parse(argv: string[]): Options {
-  const options: Options = { positional: [], daemon: defaultEndpoint, daemonGiven: false, limit: 50, scope: "user", yes: false }
+  const options: Options = { positional: [], given: [], daemon: defaultEndpoint, daemonGiven: false, limit: 50, scope: "user", yes: false }
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!
     const value = () => {
@@ -53,6 +62,7 @@ function parse(argv: string[]): Options {
       index += 1
       return next
     }
+    if (argument.startsWith("-") && argument !== "--help" && argument !== "-h") options.given.push(argument)
     if (argument === "--daemon") { options.daemon = value(); options.daemonGiven = true }
     else if (argument === "--credential-file") options.credentialFile = value()
     else if (argument === "--label") {
@@ -98,6 +108,21 @@ async function main(argv: string[]): Promise<number> {
   if (command === "pair" && options.positional.length > 1) throw new UsageError("pair takes the pairing code on stdin, not as an argument")
   if (command === "pair" || command === "status" || command === "doctor" || command === "logs") exactly(1, `domovoi ${command}`)
   if (command === "skill" && options.positional[1] === "install") exactly(3, "domovoi skill install <path>")
+
+  if (command === "daemon") {
+    const verb = options.positional[1]
+    if (verb !== "install" && verb !== "status" && verb !== "remove") {
+      throw new UsageError(`domovoi daemon takes one of install, status or remove${verb === undefined ? "" : `; got ${JSON.stringify(verb)}`}`)
+    }
+    exactly(2, `domovoi daemon ${verb}`)
+    // The login service is this machine's. An option naming another daemon,
+    // or any other, would be dropped, so none is taken.
+    if (options.given.length > 0) throw new UsageError(`domovoi daemon ${verb} acts on this machine's login service and takes no options; got ${options.given.join(", ")}`)
+    // The daemon's own command prints its lines and returns its own exit
+    // code (see the usage text); this CLI adds nothing to either.
+    const { runDaemonCommand } = await loadDaemonCommand()
+    return runDaemonCommand([verb])
+  }
 
   const store = () => openCredentialStore({
     keyring: nativeKeyring(), home: homedir(), warn: (text) => process.stderr.write(`${text}\n`),
@@ -224,7 +249,7 @@ main(process.argv.slice(2)).then((code) => { process.exitCode = code }, (error: 
     process.exitCode = exitCode("daemon-unreachable")
     return
   }
-  if (error instanceof CredentialStoreError || error instanceof PairingError || error instanceof SkillInstallError) {
+  if (error instanceof CredentialStoreError || error instanceof PairingError || error instanceof SkillInstallError || error instanceof DaemonCommandUnavailableError) {
     process.stderr.write(`${errorText(error)}\n`)
     process.exitCode = exitCode("internal")
     return

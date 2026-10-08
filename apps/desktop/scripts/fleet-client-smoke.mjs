@@ -9,7 +9,9 @@ import { fileURLToPath, pathToFileURL } from "node:url"
 import electron from "electron"
 import { launchSmokeCommand, launchSmokeElectronArgs, launchSmokeEnvironment } from "./launch-smoke-args.mjs"
 import { executableOnPath, observeSmokeDebugging, smokeDiagnosticLog } from "./desktop-smoke.mjs"
+import { liveProfileSnapshot, liveProfileVerdict, smokeCleanupOutcome } from "./launch-smoke-live-profile.mjs"
 
+const liveProfile = await liveProfileSnapshot()
 const desktopRoot = fileURLToPath(new URL("../", import.meta.url))
 const daemonRequire = createRequire(new URL("../../daemon/package.json", import.meta.url))
 const { WebSocket } = daemonRequire("ws")
@@ -38,7 +40,7 @@ async function bounded(promise, label, maximum = 15_000) {
   } finally { clearTimeout(timer) }
 }
 let backend, desktop, socket, debugging
-let backendOutput = ""
+let backendOutput = "", failed = false
 const closedChildren = new WeakSet()
 const trackChild = child => {
   child.once("close", () => closedChildren.add(child))
@@ -49,6 +51,8 @@ try {
   const electronArgs = launchSmokeElectronArgs({
     platform: process.platform, ci: process.env.CI === "true", desktopRoot, debuggingLogFile: chromiumLog,
     userDataDirectory: electronProfile,
+    // Settings reads the login service on mount (T24).
+    loginServiceOff: true,
   })
   const launch = launchSmokeCommand({ platform: process.platform, env: process.env, electronPath: electron, electronArgs, xvfb })
   const tsconfig = join(directory, "tsconfig.json")
@@ -150,6 +154,10 @@ try {
     await writeFile(join(resolve(images), `${name}-${width}.png`), Buffer.from(image.data, "base64"))
   }
   await text("Home")
+  // The switch reached the main process: the service answers without the
+  // daemon, so no lease was taken under the passwd home (T24).
+  assert.deepEqual(await evaluate("window.domovoiDesktop.daemonService.status()"),
+    { unavailable: "Login service calls are turned off for this test run." })
   await evaluate(`${buttons}.find(button => button.textContent.trim() === 'Skip for now')?.click()`)
   await click("Settings")
   await click("Machines")
@@ -197,7 +205,7 @@ try {
   await click("Settings")
   await click("Machines")
   await click("Terminal on Studio")
-  await text("desktop-owned")
+  await text("You hold this shell")
   await click("Return to home daemon")
   await click("Settings")
   await click("Machines")
@@ -206,6 +214,7 @@ try {
   assert.equal(await evaluate(`${buttons}.find(button => button.getAttribute('aria-label') === 'Use Studio').disabled`), true)
   console.info("DOMOVOI_FLEET_CLIENT_PROOF_OK use=1 terminal=1 inventory=1 comparison=1 remove=1")
 } catch (error) {
+  failed = true
   console.error(backendOutput, debugging?.output() ?? "Desktop not spawned")
   console.error(`Chromium startup log:\n${await smokeDiagnosticLog(chromiumLog)}`)
   throw error
@@ -244,6 +253,19 @@ try {
     ])
   } finally { socket?.terminate(); debugging?.dispose() }
   const failure = retired.find(result => result.status === "rejected")
-  if (failure) throw failure.reason
-  await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+  // Checked once the children are retired and before the rest of the cleanup
+  // can fail. It never throws. An error already on its way out keeps its
+  // place, and this one is printed beside it.
+  const touched = await liveProfileVerdict(liveProfile)
+  const cleanup = []
+  // A child that did not exit keeps the fixture for inspection.
+  if (failure) cleanup.push(failure.reason)
+  else {
+    try {
+      await rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })
+    } catch (error) { cleanup.push(error) }
+  }
+  const outcome = smokeCleanupOutcome({ failed, touched, cleanup })
+  for (const item of outcome.report) console.error(item)
+  if (outcome.error) throw outcome.error
 }

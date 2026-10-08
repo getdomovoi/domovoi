@@ -101,6 +101,33 @@ it("draws claude-code's four levels with the model's default marked", async () =
   expect(within(menu).getAllByText("Model default")).toHaveLength(1)
 })
 
+it("offers Model's own first for Claude with no reported default and lets a user return to it", async () => {
+  const user = userEvent.setup()
+  const onSetRuntime = vi.fn()
+  const claude = { ...runtime, provider: "claude-code", model: "sonnet", reasoning: "unset" }
+  const noDefault: ProviderModel = {
+    provider: "claude-code", id: "sonnet", displayName: "Sonnet", description: "",
+    supportedReasoningEfforts: ["unset", "low", "medium", "high", "max"], isDefault: true,
+  }
+  const view = render(<EffortChip runtime={claude} model={noDefault} pending={false} onSetRuntime={onSetRuntime} />)
+  const chip = screen.getByRole("button", { name: "Model's own" })
+  expect(chip.textContent).toBe("Model's own")
+  expect(screen.queryByRole("button", { name: "unset" })).toBeNull()
+  await user.click(chip)
+  const menu = screen.getByRole("menu")
+  const first = within(menu).getAllByRole("menuitemradio")[0]!
+  expect(first.textContent).toBe("Model's ownunsetSends no effort value, so the model uses its own setting.")
+  expect(first.getAttribute("aria-checked")).toBe("true")
+  expect(within(menu).getByText("No default reported by this model.")).toBeTruthy()
+  expect(within(menu).queryByText("Model default")).toBeNull()
+  await user.click(within(menu).getByRole("menuitemradio", { name: /^High/ }))
+  expect(onSetRuntime).toHaveBeenLastCalledWith({ ...claude, reasoning: "high" })
+  view.rerender(<EffortChip runtime={{ ...claude, reasoning: "high" }} model={noDefault} pending={false} onSetRuntime={onSetRuntime} />)
+  await user.click(screen.getByRole("button", { name: "High" }))
+  await user.click(screen.getByRole("menuitemradio", { name: /^Model's own/ }))
+  expect(onSetRuntime).toHaveBeenLastCalledWith(claude)
+})
+
 // Ruling Q35: the marker is in the menu only; the chip names the level.
 it("keeps the Model default marker off the chip", () => {
   render(<EffortChip runtime={runtime} model={model("codex", ["low", "medium", "high"], "medium")} pending={false} onSetRuntime={vi.fn()} />)

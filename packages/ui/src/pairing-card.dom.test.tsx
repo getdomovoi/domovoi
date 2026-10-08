@@ -1,4 +1,4 @@
-import { encodePairingPayload, phoneAndTabletPromise } from "@getdomovoi/protocol"
+import { clientKindSchema, deviceRenameLabelSchema, encodePairingPayload, phoneAndTabletPromise } from "@getdomovoi/protocol"
 import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
@@ -30,7 +30,7 @@ it("offers a code for a phone, a tablet or a browser, and lists what a paired de
   card({ inAppDaemon: true })
   expect(screen.getByRole("button", { name: "Show a pairing code" })).toBeTruthy()
   expect(screen.getByText("A code lasts 180 seconds. Showing another cancels it.")).toBeTruthy()
-  expect(screen.getByText("domovoid pair --client phone")).toBeTruthy()
+  expect(screen.getByText("domovoid pair --client phone --label Phone")).toBeTruthy()
   const grants = screen.getByRole("list", { name: "A PAIRED DEVICE CAN" })
   for (const line of phoneAndTabletPromise) expect(within(grants).getByText(line.text)).toBeTruthy()
   expect(screen.getByText("While the daemon runs inside this app, quitting the app disconnects every paired device.")).toBeTruthy()
@@ -41,7 +41,40 @@ it("names the shipped launcher by its full path where no link exists", async () 
   const launcher = "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/bin/domovoid"
   const commandLinks = vi.fn(async () => ({ report: { available: true, directory: "~/.local/bin", onPath: true, commands: [{ name: "domovoid", launcher, state: "absent" }] } }))
   render(<CommandLinksProvider bridge={{ commandLinks }}><PairingCard connected onIssueCode={vi.fn()} onCopy={vi.fn()} /></CommandLinksProvider>)
-  expect(await screen.findByText(`${launcher} pair --client phone`)).toBeTruthy()
+  expect(await screen.findByText(`${launcher} pair --client phone --label Phone`)).toBeTruthy()
+})
+
+// The rule apps/daemon/src/pair-command.ts applies: bare `domovoid pair`, or
+// exactly five words `pair --client <kind> --label <device label>`. Anything
+// else prints usage and exits 1, so a line the card prints must pass it.
+function acceptedByPairCommand(line: string): boolean {
+  // Only plain words, so splitting on spaces reads the line as a shell would.
+  if (!/^[A-Za-z0-9 _./:@%+=,-]+$/u.test(line)) return false
+  const [program, ...args] = line.split(" ")
+  if (program !== "domovoid" || args[0] !== "pair") return false
+  if (args.length === 1) return true
+  return args.length === 5 && args[1] === "--client" && args[3] === "--label"
+    && clientKindSchema.safeParse(args[2]).success && deviceRenameLabelSchema.safeParse(args[4]).success
+}
+
+it("prints a pair command the daemon accepts for a phone and a tablet, issued for that kind", async () => {
+  const { user } = card()
+  for (const [name, client] of [["Phone", "phone"], ["Tablet", "tablet"]] as const) {
+    await user.click(screen.getByRole("button", { name }))
+    const line = screen.getByText(/^domovoid pair /u).textContent ?? ""
+    expect(acceptedByPairCommand(line), line).toBe(true)
+    expect(line.split(" ")[3]).toBe(client)
+  }
+})
+
+// `domovoid pair --client web --label <label>` prints a QR and a `domovoi-pair:` payload, and
+// a browser's connect page takes the bare word code alone, so no command is
+// the same code for a browser.
+it("names no command for a web browser, whose connect page takes only the bare code", async () => {
+  const { user } = card()
+  await user.click(screen.getByRole("button", { name: "Web browser" }))
+  expect(screen.queryByText(/domovoid pair/u)).toBeNull()
+  expect(screen.queryByText("The same code as")).toBeNull()
 })
 
 it("shows the daemon's code, its address and a countdown, and copies what the device pastes", async () => {
@@ -74,10 +107,9 @@ it("replaces a code on Show another and says the old one is dead, then expires",
   expect(screen.getByRole("button", { name: "Show another" })).toBeTruthy()
 })
 
-it("draws the browser's certificate line and the web flag", async () => {
+it("draws the browser's certificate line and asks for a web code", async () => {
   const { onIssueCode, user } = card()
   await user.click(screen.getByRole("button", { name: "Web browser" }))
-  expect(screen.getByText("domovoid pair --client web")).toBeTruthy()
   await user.click(screen.getByRole("button", { name: "Show a pairing code" }))
   expect(onIssueCode).toHaveBeenCalledWith("web")
   expect(await screen.findByText("A certificate warning means the address is not this machine's full tailnet name, or its certificate lapsed. Do not click through.")).toBeTruthy()

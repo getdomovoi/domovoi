@@ -65,8 +65,29 @@ function CommandDialog({
 
 function CommandInput({
   className,
+  variant = "default",
   ...props
-}: React.ComponentProps<typeof CommandPrimitive.Input>) {
+}: React.ComponentProps<typeof CommandPrimitive.Input> & {
+  // plain: a search mark and the field, placed on the caller's own row with
+  // no input-group fill (Desktop V2's palette query row). The default stays
+  // the shadcn input.
+  variant?: "default" | "plain"
+}) {
+  if (variant === "plain") {
+    return (
+      <>
+        <SearchIcon aria-hidden strokeWidth={1.5} className="size-4 shrink-0 text-faint" />
+        <CommandPrimitive.Input
+          data-slot="command-input"
+          className={cn(
+            "min-w-0 flex-1 bg-transparent outline-hidden disabled:cursor-not-allowed disabled:opacity-50",
+            className
+          )}
+          {...props}
+        />
+      </>
+    )
+  }
   return (
     <div data-slot="command-input-wrapper" className="p-1 pb-0">
       <InputGroup className="h-8! rounded-lg! border-input/30 bg-input/30 shadow-none! *:data-[slot=input-group-addon]:pl-2!">

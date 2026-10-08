@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto"
 import { chmod, mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { dirname, join } from "node:path"
+import { dirname, join, posix } from "node:path"
 
 import { afterEach, expect, it, vi } from "vitest"
 
 import { localOwnerRecordPath, type ReadyLocalOwner } from "../local-owner-record.js"
+import { claimProfile, ProfileAlreadyOwnedError } from "../profile-lease.js"
 import { callerProfile, createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { removeService, runServiceCommand, type ServiceEffects } from "./install.js"
 import { readServiceRemovalSnapshot, serviceRemovalRecovery, type ServiceRemovalSnapshot } from "./removal-recovery.js"
@@ -24,11 +25,11 @@ function snapshots() {
     url: "ws://127.0.0.1:47831/rpc", serviceRegistrationId: registrationId,
   }
   const before: ServiceRemovalSnapshot = { owner, registrationId, configurationDigest: "sha256:configuration" }
-  return { owner, before, after: structuredClone(before) }
+  return { owner, before, after: structuredClone(before), registrationId }
 }
 function manager(platform: "linux" | "darwin" | "win32") {
   vi.stubEnv("SystemRoot", "C:\\Windows")
-  const { before, after, owner } = snapshots()
+  const { before, after, owner, registrationId } = snapshots()
   const release = vi.fn()
   const effects: ServiceEffects = {
     claimServiceOperation: vi.fn(() => ({ release: vi.fn() })),
@@ -36,11 +37,12 @@ function manager(platform: "linux" | "darwin" | "win32") {
     removalSnapshot: vi.fn().mockImplementationOnce(() => before).mockImplementation(() => after),
     writeRemovalReceipt: vi.fn(), write: vi.fn(async () => {}),
     run: vi.fn(async () => {}), exists: vi.fn(async () => true), remove: vi.fn(async () => {}),
-    // Ruled 2026-09-25: Windows removal first checks that Domovoi registered
-    // the task, from service.json and the task's action.
+    // Supervised Windows tasks require job proof as well as their action.
+    // Q10 B separately permits scheduler retirement of legacy actions.
     ...(platform === "win32"
-      ? { readConfiguration: vi.fn((home: string) => ({
+      ? { stopSupervisor: vi.fn(async () => {}), readConfiguration: vi.fn((home: string) => ({
         ...createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home }),
+        registrationId,
         serviceRuntime: { executable: "C:\\Domovoi\\node.exe", entry: "C:\\Domovoi\\index.js" },
       })) }
       : {}),
@@ -50,7 +52,7 @@ function manager(platform: "linux" | "darwin" | "win32") {
       const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
       if (script.includes("domovoi-task-action:")) {
         const configurationPath = serviceConfigurationPath("C:\\Users\\operator", "win32")
-        const action = { path: "C:\\Domovoi\\node.exe", arguments: `"C:\\Domovoi\\index.js" --service-config "${configurationPath}"`, enabled: true, state: 4 }
+        const action = { path: "C:\\Domovoi\\node.exe", arguments: `"C:\\Domovoi\\index.js" --service-supervise "${configurationPath}"`, enabled: true, state: 4 }
         return { code: 0, stdout: `domovoi-task-action:${JSON.stringify(action)}` }
       }
       return { code: 0, stdout: script.includes("$folder.DeleteTask(") ? "domovoi-task:deleted" : "domovoi-task:1" }
@@ -65,6 +67,7 @@ it.each(["linux", "darwin", "win32"] as const)("records the exact stopped instan
   vi.mocked(effects.writeRemovalReceipt).mockImplementation((_home, _lease, receipt, deadline) => {
     expect(release).not.toHaveBeenCalled()
     expect(effects.remove).toHaveBeenCalled()
+    if (platform === "win32") expect(effects.stopSupervisor).toHaveBeenCalledOnce()
     expect(deadline.remainingMs()).toBeGreaterThan(0)
     expect(receipt).toMatchObject({ instanceId: owner.instanceId, authorization: { registrationId: owner.serviceRegistrationId } })
   })
@@ -81,6 +84,36 @@ it.each(["linux", "darwin", "win32"] as const)("never converts a missing %s job 
   expect(effects.writeRemovalReceipt).not.toHaveBeenCalled()
   expect(effects.remove).toHaveBeenCalled()
   expect(owner.state).toBe("ready")
+})
+
+it("retains Windows configuration without a recovery receipt when a missing task has no tree proof", async () => {
+  const { target, effects } = manager("win32")
+  vi.mocked(effects.capture).mockResolvedValue({ code: 0, stdout: "domovoi-task:missing" })
+  vi.mocked(effects.stopSupervisor!).mockRejectedValue(new Error("Windows tree is unconfirmed. Restart Windows"))
+  await expect(removeService(target, effects)).rejects.toThrow("Restart Windows")
+  expect(effects.remove).not.toHaveBeenCalled()
+  expect(effects.writeRemovalReceipt).not.toHaveBeenCalled()
+  expect(effects.claimProfile).not.toHaveBeenCalled()
+})
+
+it("receipts the exact legacy instance after scheduler retirement under the lease", async () => {
+  const { target, effects, owner, release } = manager("win32"), capture = effects.capture
+  effects.capture = vi.fn(async (...args: Parameters<ServiceEffects["capture"]>) => {
+    const result = await capture(...args)
+    return { ...result, stdout: result.stdout.replace("--service-supervise", "--service-config") }
+  })
+  vi.mocked(effects.writeRemovalReceipt).mockImplementation((_home, _lease, receipt) => {
+    expect(release).not.toHaveBeenCalled()
+    const scripts = vi.mocked(effects.capture).mock.calls.map(([, args]) => Buffer.from(args.at(-1)!, "base64").toString("utf16le"))
+    expect(scripts.some((s) => s.includes("$task.GetInstances(0).Count"))).toBe(true)
+    expect(scripts.at(-1)).toContain("$folder.DeleteTask(")
+    expect(effects.remove).toHaveBeenCalled()
+    expect(receipt).toMatchObject({ instanceId: owner.instanceId, authorization: { registrationId: owner.serviceRegistrationId } })
+  })
+  expect(await removeService(target, effects)).toHaveProperty("profileRecovery", "recorded")
+  expect(effects.stopSupervisor).not.toHaveBeenCalled()
+  expect(effects.writeRemovalReceipt).toHaveBeenCalledOnce()
+  expect(release).toHaveBeenCalledOnce()
 })
 
 it.each(["instance", "machine", "registration", "configuration"])("refuses %s drift before deleting saved launch inputs", async (field) => {
@@ -211,4 +244,96 @@ it.each([
   expect(printed).toMatch(cause)
   expect(printed).toContain("No recovery receipt was written")
   expect(printed).toContain("domovoid profile recover --confirm-no-supervisor")
+})
+
+// T17, found by the packaged smoke (#742): `launchctl bootout` returns while
+// the booted-out daemon is still shutting down and still holds the profile
+// lease. The stand-in daemon here holds a real lease on a temporary profile
+// and lets it go only some time after the bootout, or never.
+async function launchdRemoval(options: { releaseAfterBootoutMs?: number; loadedFrom?: string } = {}) {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-removal-launchd-"))
+  homes.push(home)
+  // launchd paths are POSIX, as install.ts builds them, on every test host.
+  const plist = posix.join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")
+  const { effects } = manager("darwin")
+  const daemon = claimProfile(home)
+  const claim = vi.fn(claimProfile)
+  effects.claimProfile = claim
+  effects.capture = vi.fn(async () => ({ code: 0, stdout: `\tpath = ${options.loadedFrom ?? plist}\n\tstate = running\n` }))
+  vi.mocked(effects.run).mockImplementation(async (command, args) => {
+    if (command === "launchctl" && args[0] === "bootout" && options.releaseAfterBootoutMs !== undefined) {
+      setTimeout(() => daemon.release(), options.releaseAfterBootoutMs)
+    }
+  })
+  return { target: { platform: "darwin" as const, home, uid: 501 }, effects, claim, daemon, plist }
+}
+
+it("waits on macOS for the booted-out daemon to let the profile go, then removes the agent", async () => {
+  const { target, effects, claim, daemon, plist } = await launchdRemoval({ releaseAfterBootoutMs: 300 })
+  try {
+    expect(await removeService(target, effects)).toHaveProperty("profileRecovery", "recorded")
+    expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootout", "gui/501/sh.domovoi.domovoid"], expect.anything())
+    expect(effects.remove).toHaveBeenCalledWith(plist, expect.anything())
+    expect(effects.remove).toHaveBeenCalledWith(serviceConfigurationPath(target.home, "darwin"), expect.anything())
+    expect(effects.writeRemovalReceipt).toHaveBeenCalledOnce()
+    expect(claim.mock.calls.length).toBeGreaterThan(1)
+    // The removal let the profile go again once it was done.
+    claimProfile(target.home).release()
+  } finally { daemon.release() }
+})
+
+it("keeps the macOS agent when the booted-out daemon never lets the profile go within the wait", async () => {
+  const { target, effects, claim, daemon } = await launchdRemoval()
+  try {
+    await expect(removeService(target, effects, { profileReleaseWaitMs: 300 })).rejects.toThrow(/profile/)
+    expect(claim.mock.calls.length).toBeGreaterThan(1)
+    expect(effects.remove).not.toHaveBeenCalled()
+    expect(effects.writeRemovalReceipt).not.toHaveBeenCalled()
+  } finally { daemon.release() }
+})
+
+it("does not wait on macOS when nothing Domovoi loaded was booted out", async () => {
+  const { target, effects, claim, daemon } = await launchdRemoval({ releaseAfterBootoutMs: 300, loadedFrom: "/Library/LaunchAgents/other.plist" })
+  try {
+    await expect(removeService(target, effects)).rejects.toThrow(ProfileAlreadyOwnedError)
+    expect(effects.run).not.toHaveBeenCalled()
+    expect(claim).toHaveBeenCalledOnce()
+    expect(effects.remove).not.toHaveBeenCalled()
+  } finally { daemon.release() }
+})
+
+it.each([undefined, "domovoi daemon remove"])("gives removal-specific timeout advice and succeeds after daemon exit (%s)", async (remove) => {
+  const { target, effects, daemon, plist } = await launchdRemoval()
+  const { owner } = snapshots()
+  effects.readOwner = () => owner
+  const options = { profileReleaseWaitMs: 300, ...(remove === undefined ? {} : {
+    words: { install: "domovoi daemon install", status: "domovoi daemon status", remove, profileRecover: "custom recover" },
+  }) }
+  try {
+    await expect(removeService(target, effects, options)).rejects.toThrow(
+      `The service was stopped, but its daemon did not let the profile go within 1 second. The launch agent file and saved configuration were kept. Run ${remove ?? "domovoid service remove"} again once that daemon has exited.`,
+    )
+    expect(effects.remove).not.toHaveBeenCalled()
+    expect(effects.writeRemovalReceipt).not.toHaveBeenCalled()
+    daemon.release()
+    // The first bootout removed the loaded job even though its daemon was still exiting.
+    vi.mocked(effects.capture).mockResolvedValue({ code: 113, stdout: "Could not find service sh.domovoi.domovoid" })
+    await expect(removeService(target, effects, options)).resolves.toBeDefined()
+    expect(effects.remove).toHaveBeenCalledWith(plist, expect.anything())
+    expect(effects.remove).toHaveBeenCalledWith(serviceConfigurationPath(target.home, "darwin"), expect.anything())
+  } finally { daemon.release() }
+})
+
+it("still claims a Linux profile once after systemd has waited for the stop", async () => {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-removal-systemd-"))
+  homes.push(home)
+  const { effects } = manager("linux")
+  const daemon = claimProfile(home)
+  const claim = vi.fn(claimProfile)
+  effects.claimProfile = claim
+  try {
+    await expect(removeService({ platform: "linux", home }, effects)).rejects.toThrow(ProfileAlreadyOwnedError)
+    expect(claim).toHaveBeenCalledOnce()
+    expect(effects.remove).not.toHaveBeenCalled()
+  } finally { daemon.release() }
 })

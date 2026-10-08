@@ -46,13 +46,16 @@ test("publishes every public workspace package, after the workspace packages it 
   }
 })
 
+// Q3 B: the CLI runs the daemon package's installer, so it needs the daemon
+// published first, as well as the credential store and the protocol.
 test("accepts the chunks Changesets plans for independent packages", () => {
-  assert.deepEqual(evaluatePublishOrder([[protocol, credentialStore], [daemon, cli]]), [])
+  assert.deepEqual(evaluatePublishOrder([[protocol, credentialStore], [daemon], [cli]]), [])
 })
 
-test("reports the CLI in the same chunk as the credential store it depends on", () => {
+test("reports the CLI in the same chunk as the credential store and daemon it depends on", () => {
   assert.deepEqual(evaluatePublishOrder([[protocol], [credentialStore, daemon, cli]]), [
     "@getdomovoi/credential-store must publish in a chunk before @getdomovoi/cli",
+    "@getdomovoi/daemon must publish in a chunk before @getdomovoi/cli",
   ])
 })
 

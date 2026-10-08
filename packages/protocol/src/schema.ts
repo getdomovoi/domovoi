@@ -78,7 +78,8 @@ export const providerModelSchema = z.object({
   displayName: z.string().min(1),
   description: z.string(),
   supportedReasoningEfforts: z.array(reasoningEffortSchema),
-  defaultReasoningEffort: reasoningEffortSchema,
+  // Absent when the provider reports no default; runtimes start at unset.
+  defaultReasoningEffort: reasoningEffortSchema.optional(),
   // Whether an image attachment on a send to this model is delivered. Absent
   // when the daemon did not say, which a client treats as not known rather
   // than as no. Phone v2 frames 13 and 13b.
@@ -87,6 +88,7 @@ export const providerModelSchema = z.object({
 }).superRefine((model, context) => {
   if (
     model.supportedReasoningEfforts.length > 0
+    && model.defaultReasoningEffort !== undefined
     && !model.supportedReasoningEfforts.includes(model.defaultReasoningEffort)
   ) {
     context.addIssue({
