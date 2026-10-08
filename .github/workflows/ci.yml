@@ -114,6 +114,56 @@ jobs:
         run: pnpm test:musl
         if: matrix.os == 'ubuntu-latest'
         timeout-minutes: 10
+      # The packaged app installs, starts and removes its own login service
+      # (docs/desktop-launch-smoke.md). These steps stay inside verify so the
+      # required checks keep covering them (docs/working-rules.md, D6). They
+      # run last because the smoke changes the runner account's service
+      # manager, and on macOS takes the installer's lease under that account's
+      # own ~/.domovoi.
+      - name: Package the desktop app unpacked
+        if: matrix.os != 'windows-latest'
+        run: pnpm --filter @getdomovoi/desktop package:dir
+        timeout-minutes: 15
+      # Run with node, not pnpm: packaging deploys the daemon runtime with
+      # pnpm deploy --prod, which leaves the workspace state marked production,
+      # and a pnpm run after it would reinstall node_modules for production.
+      - name: Packaged service smoke on macOS
+        if: matrix.os == 'macos-latest'
+        env:
+          DOMOVOI_SERVICE_SMOKE_DISPOSABLE_HOST: '1'
+        run: node apps/desktop/scripts/package-service-smoke.mjs
+        timeout-minutes: 10
+      # The systemd user manager reads units only under the home it started
+      # with, so a temporary HOME cannot be installed into. The smoke runs as a
+      # throwaway account with its own lingering manager, from a copy of the
+      # unpacked app it owns, under the Node the app ships.
+      - name: Packaged service smoke on Linux, as a throwaway account
+        if: matrix.os == 'ubuntu-latest'
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          account=domovoi-smoke
+          sudo useradd --create-home --shell /usr/sbin/nologin "$account"
+          home="$(getent passwd "$account" | cut -d: -f6)"
+          uid="$(id -u "$account")"
+          sudo loginctl enable-linger "$account"
+          runtime="/run/user/$uid"
+          for _ in $(seq 1 30); do
+            if sudo test -S "$runtime/systemd/private"; then break; fi
+            sleep 1
+          done
+          sudo test -S "$runtime/systemd/private"
+          smoke="$home/smoke"
+          sudo install -d -m 0700 "$smoke"
+          sudo cp -a apps/desktop/dist/linux-unpacked "$smoke/linux-unpacked"
+          sudo cp apps/desktop/scripts/package-service-smoke.mjs apps/desktop/scripts/desktop-smoke.mjs "$smoke/"
+          sudo chown -R "$account:$account" "$smoke"
+          sudo -u "$account" env -i PATH=/usr/local/bin:/usr/bin:/bin HOME="$home" USER="$account" LOGNAME="$account" \
+            XDG_RUNTIME_DIR="$runtime" CI=true DOMOVOI_SERVICE_SMOKE_DISPOSABLE_HOST=1 \
+            "$smoke/linux-unpacked/resources/daemon-runtime/node/bin/node" "$smoke/package-service-smoke.mjs" --dist "$smoke"
+      - name: Packaged service smoke on Windows (skips with its reason)
+        if: matrix.os == 'windows-latest'
+        run: node apps/desktop/scripts/package-service-smoke.mjs
   audit:
     runs-on: ubuntu-latest
     steps:
