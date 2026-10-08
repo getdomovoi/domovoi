@@ -1,10 +1,10 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, beforeEach, expect, it } from "vitest"
-import { protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
+import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import { fleetSnapshotOverflowErrorCode, maximumFleetEntries, protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
 
 import { WorkspaceShell } from "./workspace-shell"
-import { installFakeWebSocket, completeHandshake, respond, sentRequests, workspaceSnapshot } from "./test-support/fake-websocket"
+import { installFakeWebSocket, completeHandshake, fail, respond, sentRequests, workspaceSnapshot } from "./test-support/fake-websocket"
 
 let sockets: ReturnType<typeof installFakeWebSocket>
 beforeEach(() => { globalThis.localStorage?.clear(); sockets = installFakeWebSocket() })
@@ -28,8 +28,10 @@ const machine: FleetMachine = {
 // and renewal. Windows CI exceeded the single-test default even after paste
 // replaced per-character input. Keep each request and observation bound intact.
 const admissionJourneyTimeoutMs = 15_000
+// The card's primary action names the session count it read, when it read one.
+const openStudio = /^Open its (\d+ )?sessions? on Studio$/u
 
-it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and home return with separate client authority", async (action) => {
+it.each(["Open its sessions on Studio", "Terminal on Studio"])("assembles authorization, %s and home return with separate client authority", async (action) => {
   const user = userEvent.setup()
   render(<WorkspaceShell />)
   const home = sockets.socket(0)
@@ -38,7 +40,7 @@ it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and h
   await act(async () => { respond(home, "fleet.list", { entries: [{ kind: "machine", machine }] }) })
   await user.click(screen.getByRole("button", { name: "Settings" }))
   await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
-  const useButton = await screen.findByRole("button", { name: "Use Studio" })
+  const useButton = await screen.findByRole("button", { name: openStudio })
   await user.click(await screen.findByRole("button", { name: "Authorize this client for Studio" }))
   const dialog = screen.getByRole("dialog")
   // Paste the full generated token as one input event.
@@ -56,8 +58,8 @@ it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and h
   await act(async () => { respond(proof, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
   await settle()
   expect(screen.getByText("Client credential verified")).toBeTruthy()
-  expect(screen.getByRole("button", { name: "Use Studio" }).hasAttribute("disabled")).toBe(false)
-  await user.click(screen.getByRole("button", { name: action }))
+  expect(screen.getByRole("button", { name: openStudio }).hasAttribute("disabled")).toBe(false)
+  await user.click(screen.getByRole("button", { name: action === "Terminal on Studio" ? action : openStudio }))
   await settle()
   await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
   await settle()
@@ -72,7 +74,7 @@ it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and h
     await waitFor(() => expect(sentRequests(remote, "terminal.create")).toHaveLength(1), { timeout: 3_000 })
     expect(sentRequests(home, "terminal.create")).toHaveLength(0)
   }
-  if (action === "Use Studio") {
+  if (action !== "Terminal on Studio") {
     await act(async () => { remote.drop(1008) })
     await settle()
     expect(screen.getByText(/Client access is no longer verified for/)).toBeTruthy()
@@ -84,7 +86,7 @@ it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and h
   await user.click(screen.getByRole("button", { name: "Settings" }))
   await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
   if (action === "Terminal on Studio") await user.click(screen.getByRole("button", { name: "Remove local access" }))
-  expect(screen.getByRole("button", { name: "Use Studio" }).hasAttribute("disabled")).toBe(true)
+  expect(screen.getByRole("button", { name: openStudio }).hasAttribute("disabled")).toBe(true)
   if (action === "Terminal on Studio") expect(screen.getByText(/This app no longer holds/).textContent).toContain("Devices list")
   if (action === "Terminal on Studio") {
     await user.click(screen.getByRole("button", { name: "Authorize this client for Studio" }))
@@ -104,6 +106,65 @@ it.each(["Use Studio", "Terminal on Studio"])("assembles authorization, %s and h
     expect(screen.queryByText(/This app no longer holds/)).toBeNull()
   }
 }, admissionJourneyTimeoutMs)
+
+it("reads an admitted machine again when Settings opens, so its providers are current", async () => {
+  const user = userEvent.setup()
+  render(<WorkspaceShell />)
+  const home = sockets.socket(0)
+  await act(async () => { completeHandshake(home) })
+  await settle()
+  await act(async () => { respond(home, "fleet.list", { entries: [{ kind: "machine", machine }] }) })
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+  await user.click(await screen.findByRole("button", { name: "Authorize this client for Studio" }))
+  const dialog = screen.getByRole("dialog")
+  await user.click(within(dialog).getByLabelText("Client credential"))
+  await user.paste("x".repeat(43))
+  await user.click(within(dialog).getByRole("button", { name: "Verify client access" }))
+  await settle()
+  await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
+  await settle()
+  await act(async () => { completeHandshake(sockets.socket(1), target) })
+  await settle()
+  await act(async () => { respond(sockets.socket(1), "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
+  await settle()
+  expect(screen.getByText("Client credential verified")).toBeTruthy()
+  const routes = sentRequests(home, "fleet.clientRoute").length
+
+  // The admission's reading is fresh for 30 seconds; a minute on, a visit reads again.
+  const realNow = Date.now.bind(Date)
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => realNow() + 60_000)
+  try {
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await settle()
+    expect(screen.getByRole("region", { name: "Providers and tokens" })).toBeTruthy()
+    expect(sentRequests(home, "fleet.clientRoute")).toHaveLength(routes + 1)
+  } finally {
+    clock.mockRestore()
+  }
+}, admissionJourneyTimeoutMs)
+
+it("says in Settings that the fleet list was withheld, rather than listing this machine as the whole fleet", async () => {
+  const user = userEvent.setup()
+  render(<WorkspaceShell />)
+  const home = sockets.socket(0)
+  await act(async () => { completeHandshake(home) })
+  await settle()
+  await act(async () => {
+    fail(home, "fleet.list", {
+      code: fleetSnapshotOverflowErrorCode,
+      message: "Fleet keyring exceeds the wire limit",
+      data: { kind: "fleet-overflow", limit: maximumFleetEntries, totalEntries: 600, entriesNotShown: 600 },
+    })
+  })
+  await settle()
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await settle()
+
+  const providers = await screen.findByRole("region", { name: "Providers and tokens" })
+  expect(providers.textContent).toContain("Fleet list withheld")
+  expect(providers.textContent).toContain("600 entries are not shown")
+})
 
 it("renders refusal and leaves Use disabled when the credential is a daemon root", async () => {
   const user = userEvent.setup()
@@ -131,6 +192,6 @@ it("renders refusal and leaves Use disabled when the credential is a daemon root
   expect(within(dialog).getByText(/Do not use a machine credential or daemon root token/)).toBeTruthy()
   expect(dialog.textContent).not.toContain("x".repeat(43))
   await user.click(within(dialog).getByRole("button", { name: "Cancel" }))
-  expect(screen.getByRole("button", { name: "Use Studio" }).hasAttribute("disabled")).toBe(true)
+  expect(screen.getByRole("button", { name: openStudio }).hasAttribute("disabled")).toBe(true)
   expect(screen.queryByText("Client credential verified")).toBeNull()
 })

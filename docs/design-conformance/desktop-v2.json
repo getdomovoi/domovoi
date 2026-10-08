@@ -403,15 +403,21 @@
       "evidence": [
         "Move a session here",
         "LAST HEARD",
-        "See what stalled"
+        "See what stalled",
+        "[\"TRANSPORT\", transportFact(machine)]",
+        "[\"AGENTS\", facts.known",
+        "[\"SESSIONS\", facts.known",
+        "`Open its ${count} ${count === 1 ? \"session\" : \"sessions\"}`",
+        "unreachable && \"border-danger-border opacity-[.72]\"",
+        "{ known: false, reason: \"no client credential here\" }",
+        {
+          "absent": "No capability reported",
+          "in": "packages/ui/src/fleet-view.tsx"
+        }
       ],
       "presence": [
         "Move a session here"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "a card per machine exists with Move a session here; it is not the drawn card. The design draws a dot, mono name and status pill, four fact rows (TRANSPORT, AGENTS, SESSIONS, LAST HEARD), one primary action (Open its N sessions, or See what stalled when unreachable) and a danger border when unreachable. fleet-view draws a sans name with a Badge, Use, Move, Terminal and Forget buttons, a platform, arch and version line, capability badges and a transports list, and dims an unreachable card with no border. LAST HEARD is buildable from heartbeat.lastSeenAt. Agents and session counts for another machine are client work for admitted machines: FleetAccessSession opens an authenticated DomovoiClient per admitted machine, and its connect() returns that machine's WorkspaceSnapshot with machine.providers and sessions. A machine this client holds no credential for stays unknown, and the card must say so rather than guess. The domovoi cloud transport is M2"
-      }
+      ]
     },
     {
       "id": "fleet.agents",
@@ -428,12 +434,16 @@
       "evidence": [
         "Agents and providers",
         "Tokens live in that machine&apos;s OS keychain",
-        "Authenticate there"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the heading and keychain note are drawn inside this machine's own card and list only this machine's providers; the design draws a panel below the cards with one row per machine and agent, a state, and an action only where one is needed (Authenticate there). Other machines' agents are client work for admitted machines: FleetAccessSession's per-machine DomovoiClient connect() returns that machine's WorkspaceSnapshot, whose machine.providers lists them; machines without an admitted credential stay unknown"
-      }
+        "Authenticate there",
+        "<MachineAgentList machines={agents} />",
+        "needs sign-in on that machine",
+        "reading: machineReading(snapshot, new Date(), heardAt)",
+        "onReadMachine={(machineId, signal) => accessSession.read(machineId, signal)}",
+        {
+          "absent": "Agents and providers on ${machine.label}",
+          "in": "packages/ui/src/fleet-view.tsx"
+        }
+      ]
     },
     {
       "id": "audit.header",
@@ -676,15 +686,17 @@
         {
           "absent": "data-provider-account-action=\"\"\n                    aria-describedby={`provider-account-${provider.id}`}\n                    disabled",
           "in": "packages/ui/src/provider-settings.tsx"
+        },
+        "<MachineAgentList machines={rows} />",
+        "providerMachines={fleet ? fleetAgents(fleet.entries, {",
+        {
+          "absent": "data-provider-account-action",
+          "in": "packages/ui/src/provider-settings.tsx"
         }
       ],
       "presence": [
         "Providers and tokens"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the section lists this machine's providers under SUBSCRIPTION CLIS and DIRECT API KEYS; the design draws one row per provider and machine across the fleet with a dot, state and an action only when one is needed (Authenticate there). Every row carries a permanently disabled Manage, Re-authenticate or Install button; the header says Stored on this machine. Domovoi does not send it to another device. Subscription CLIs own their credentials. in place of the drawn Stored in each machine's OS keychain. Never in a Domovoi account. (Q5, 2026-10-06: M1 has no Domovoi account or hosted relay, so no surface may name one); with no providers the card is empty with no empty state. Other machines' providers are client work for admitted machines (FleetAccessSession's per-machine connect() returns that machine's WorkspaceSnapshot with machine.providers); machines without an admitted credential stay unknown; harness marks stay text-only while the marks are not vendored (the reason Q388 A gives for Skills and Tools)"
-      }
+      ]
     },
     {
       "id": "api-keys",
@@ -2190,6 +2202,21 @@
     }
   ],
   "humanRead": [
+    {
+      "id": "fleet.machine-card",
+      "since": "2026-10-07",
+      "note": "Built as drawn: dot, mono name, status pill, the four facts, one primary action and Move a session here, with a danger border on an unreachable card. Differences. Terminal, Remove local access and Forget sit as quiet controls after the design's two actions, and Authorize this client sits beside the primary on a machine this client holds no credential for, because the design draws no place for them; platform, arch and version are the name's tooltip; the advertised transport list and capability badges are not drawn. TRANSPORT says how the home daemon reaches the machine (loopback for its own daemon, else the connection kind, or direct with the verified endpoint), never the domovoi cloud transport, which is M2. AGENTS and SESSIONS come from that machine's own daemon: the home and attached snapshots, or the reading an admitted machine gave at admission and again each time Machines or Settings opens; a stored reading the machine did not answer a later read of, or an admission reading from a machine whose health is anything but healthy (the home daemon is not hearing it or will not route a read to it), unless it is reconnecting and this client asked it after the home daemon's latest heartbeat (the heartbeat it had seen then is still the latest, so both times are the home daemon's), or any admission reading while this client has no connection to the home daemon, is dated (as of 14:03, with the day for an older reading), and a read that finds the machine down keeps this client's credential. The daemon reports a machine whose dial keeps failing as reconnecting until its heartbeat goes offline, then as unreachable (apps/daemon/src/fleet-enrollment.ts), and the danger border and See what stalled follow that report. A machine with no client credential says unknown and why. Open its N sessions counts the machine's sessions that are not archived; the drawer also lists archived ones, as history. See what stalled opens, in the card, the sessions that were running or waiting at the last reading and says their daemon has not reported them stopped, instead of moving to the design's offline thread."
+    },
+    {
+      "id": "fleet.agents",
+      "since": "2026-10-07",
+      "note": "Built as one row per machine and agent below the cards. Agents a machine looked for and did not find are not listed. The state words are Domovoi's provider states (ready, needs sign-in on that machine, found, sign-in not checked, cannot start, adapter unavailable) rather than the design's token-in-keychain words, because a subscription CLI keeps its own credential and Domovoi does not read where. Authenticate there opens, in the row, the sign-in command to run in a terminal on that machine; Domovoi does not sign in for the provider. A machine this client never read has one unknown row with the reason."
+    },
+    {
+      "id": "settings.providers",
+      "since": "2026-10-07",
+      "note": "Built with the fleet.agents rows, one per machine and agent across the fleet. When the home daemon withholds the fleet list (fleet overflow), the rows list this machine and a line says the list was withheld and how many entries are not shown, as Machines does. The header line is Q18 A (2026-10-06): Stored on each machine that runs the agent. Domovoi does not send it to another device. Subscription CLIs own their credentials. The drawn line names a Domovoi account, which M1 does not have (Q5). Harness marks stay text-only while they are not vendored (Q388 A). LOCAL DAEMON and DIRECT API KEYS stay below the rows."
+    },
     {
       "id": "composer.effort-levels",
       "since": "2026-10-06",
