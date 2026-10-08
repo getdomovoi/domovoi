@@ -395,6 +395,7 @@ function MachineCard({
   facts,
   now,
   inUse,
+  live,
   connected,
   onUse,
   onMoveSessionHere,
@@ -408,6 +409,9 @@ function MachineCard({
   facts: MachineFacts
   now: number
   inUse: boolean
+  // This client holds an open connection to the machine: the home daemon, or
+  // the machine it is attached to.
+  live: boolean
   connected: boolean
   onUse?: ((machineId: string) => void) | undefined
   onMoveSessionHere?: ((machineId: string) => void) | undefined
@@ -423,6 +427,9 @@ function MachineCard({
   const admitted = clientAccess?.state === "admitted"
   const attachment = machineAttachment(machine, admitted)
   const canControl = connected && attachment.selectable
+  // The machine in use serves its terminal over the connection this client
+  // already holds, so that needs no route from the home daemon.
+  const canOpenTerminal = canControl || (inUse && live)
   const showsTerminal = onOpenTerminal && machine.capabilities.includes("terminals")
   const unreachable = machine.health === "unreachable"
   const credentialMissing = !machine.self && !admitted
@@ -505,7 +512,7 @@ function MachineCard({
         ) : null}
         <span className="flex-1" />
         {showsTerminal ? (
-          <Button variant="ghost" className={quietControl} disabled={!canControl} aria-label={`Terminal on ${machine.label}`} onClick={() => onOpenTerminal(machine.id)}>
+          <Button variant="ghost" className={quietControl} disabled={!canOpenTerminal} aria-label={`Terminal on ${machine.label}`} onClick={() => onOpenTerminal(machine.id)}>
             Terminal
           </Button>
         ) : null}
@@ -1392,6 +1399,7 @@ export function FleetView({
                     facts={factsOf(machine)}
                     now={now}
                     inUse={machine.id === currentMachineId}
+                    live={readings[machine.id]?.live === true}
                     connected={connected}
                     clientAccess={clientAccess[machine.id]}
                     {...(onAuthorizeClient && !readOnly ? { onAuthorize: setAuthorizing } : {})}

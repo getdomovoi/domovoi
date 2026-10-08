@@ -347,6 +347,30 @@ it("opens the machine in use while the home daemon is not connected, since that 
   expect(screen.getByRole("button", { name: /^Open its .* on workshop$/u })).toHaveProperty("disabled", true)
 })
 
+it("opens a terminal on the machine in use over its own live connection, without the home daemon", () => {
+  const remote: FleetMachine = { ...studio, health: "unreachable", capabilities: ["sessions", "terminals"] }
+  const access = { [studio.id]: admitted(reading({ readAt: "2026-10-06T14:03:00.000Z" })) }
+  renderFleet({
+    connected: false,
+    currentMachineId: studio.id,
+    entries: entries(local, remote),
+    clientAccess: access,
+    readings: { [studio.id]: held(reading()) },
+  })
+  expect(screen.getByRole("button", { name: "Terminal on studio" })).toHaveProperty("disabled", false)
+  cleanup()
+
+  // Once that connection closes, the terminal needs a route again.
+  renderFleet({
+    connected: false,
+    currentMachineId: studio.id,
+    entries: entries(local, remote),
+    clientAccess: access,
+    readings: { [studio.id]: held(reading(), false) },
+  })
+  expect(screen.getByRole("button", { name: "Terminal on studio" })).toHaveProperty("disabled", true)
+})
+
 it("keeps a live attached reading current even when the home daemon is not hearing that machine", () => {
   renderFleet({
     currentMachineId: studio.id,
