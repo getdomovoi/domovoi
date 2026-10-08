@@ -16,8 +16,9 @@ It covers four of the definition's bullets, plus two runs the definition leans o
 | [6. Service lifecycle on hardware](#6-service-lifecycle-on-hardware) | Logon, logout and reboot behaviour of the login service. |
 
 Written on 2026-10-07 from `main` at `017307b5`. Every label below was read from the code at that
-commit. If a label on screen differs, record what the screen says; the difference is a finding,
-not a reason to skip the row.
+commit, and checked again at `640ac4e7`, which changed the build line in section 1 and the pairing
+command in section 5. If a label on screen differs, record what the screen says; the difference is
+a finding, not a reason to skip the row.
 
 ## Before you start
 
@@ -39,8 +40,10 @@ On each machine:
 - For section 5: Tailscale on the computer and the phone, signed in to the same tailnet.
 
 Record the build. For a package you built, that is `git rev-parse HEAD` in the checkout you
-packaged from. Settings, "About this build", shows only `domovoid <version>` at `017307b5`, so the
-checkout is the only place to read the commit.
+packaged from. Settings, "About this build", shows `domovoid <version> · <commit>`: the first seven
+characters of the commit the running daemon was built from. A daemon built from a checkout whose
+tracked files differ from that commit, or without Git, shows no commit, so package from a clean
+checkout. Untracked files do not count.
 
 ### Run record
 
@@ -109,11 +112,12 @@ SmartScreen shows for an unsigned installer. Record what each OS showed and what
      (`schtasks /query /tn "Domovoi daemon"`).
    - Optional, macOS with the app in Applications and Linux from the `.deb`: Settings, "Terminal
      commands", "Link the commands" puts `domovoid` and `domovoi` in `~/.local/bin`, after which
-     `~/.local/bin/domovoid service status` answers. Linking does not add `~/.local/bin` to your
+     `~/.local/bin/domovoi daemon status` answers, as does the daemon's own
+     `~/.local/bin/domovoid service status`. Linking does not add `~/.local/bin` to your
      shell's PATH; until it is there, give the full path, as this walk does. Domovoi links no
      commands on Windows, from an AppImage, or from an app still running inside the disk image;
      there, use the entry point from
-     [clean-machine setup, Step 2](clean-machine-setup.md#step-2-fix-the-command-you-will-keep-using).
+     [clean-machine setup, Step 2](clean-machine-setup.md#step-2-fix-the-commands-you-will-keep-using).
 4. **The service keeps running.** Quit the app (macOS: Domovoi, Quit Domovoi, or ⌘Q; Windows and
    Linux: the window's Close button). The manager check from step 3 still shows the daemon
    running. Open the app again: Settings shows "Running" and "Quitting this app leaves the daemon
@@ -121,18 +125,22 @@ SmartScreen shows for an unsigned installer. Record what each OS showed and what
 5. **The product says it is unsigned and updated by hand.** Settings, "About this build": the chip
    reads "Not signed" and the line reads "This build is not signed and does not update itself.
    Get new versions from the release page." "Release page" opens
-   `https://github.com/getdomovoi/domovoi/releases` in the browser. Record the `domovoid <version>`
-   label. The label adds a commit only when the daemon reports one, and at `017307b5` it never
-   does, so expect no commit.
+   `https://github.com/getdomovoi/domovoi/releases` in the browser. Record the
+   `domovoid <version> · <commit>` label. The commit is the running daemon's, here the login
+   service's, so it matches the start of the commit recorded for this build. If no commit shows,
+   record that in the notes.
 6. **Update by hand.** **Changes the OS. "Update the service" also changes the profile's runtime
-   copy and service configuration.** Build a package from a later commit and install it over the
-   first, as in step 1. Open the app; it attaches to the running service. Settings shows "The
-   login service runs Domovoi X. This app is Y." and "Update the service" only when the service's
-   version differs from the app's. Both are `0.0.1` at this commit, so two builds at the same
-   version show neither; record which you saw. If the button shows, choose it and record the
-   result. With both builds at `0.0.1` and no commit in "About this build", nothing on screen proves
-   the later build is the one running. Record this row as blocked, with "no build identity shown"
-   in the notes, unless "Update the service" showed and succeeded.
+   copy and service configuration.** Build a package from a later commit, record that commit, and
+   install it over the first, as in step 1. Open the app; it attaches to the running service.
+   Settings shows "The login service runs Domovoi X. This app is Y." and "Update the service" only
+   when the service's version is older than the app's. Both are `0.0.1` at this commit, so two
+   builds at the same version show neither; record which you saw. If the button shows, choose it
+   and record the result. Then compare the commit in "About this build" with the one recorded in
+   step 5. It names the build the running daemon came from, which with the login service on is
+   the service's runtime copy. Record pass when it shows the later commit, and fail when it still
+   shows the step 5 commit, with both commits in the notes. Read from the code, not run: at the
+   same version nothing in this step replaces the service's copy, so expect the step 5 commit.
+   Record blocked, with "no build identity shown" in the notes, only when no commit shows.
 7. **Remove the login service.** **Changes the profile and the OS.** Settings, "Daemon on this
    machine", "Remove", then "Remove the service" in the dialog "Remove the login service?". Expect
    "Removed. Quitting Domovoi now stops the daemon and every session on it." The manager check
@@ -279,7 +287,7 @@ started from the shell that sets them. So:
 1. Remove the login service (section 1, step 7) and quit the app.
 2. Start the daemon in a terminal with the variables for the case, as below. `domovoid` there
    stands for `~/.local/bin/domovoid`, linked in section 1, step 3, or for the entry point from
-   [clean-machine setup](clean-machine-setup.md#step-2-fix-the-command-you-will-keep-using).
+   [clean-machine setup](clean-machine-setup.md#step-2-fix-the-commands-you-will-keep-using).
 3. Open the app. It attaches to that daemon (Settings reads "Not started here").
 4. Before sending, record the worktree: `git -C <repository> worktree list`, then
    `git -C <worktree> status --short` and the content of one changed file.
@@ -421,12 +429,14 @@ open on it, and the phone says so.
    [clean-machine setup, Step 4](clean-machine-setup.md#step-4-reach-the-daemon-from-another-machine)
    instead.
 3. **Pair.** **Changes the profile.** In Settings, "Phone and tablet", choose "Phone", then "Show a
-   pairing code". From a terminal the same code comes from
-   `domovoid pair --client phone --label "<phone name>"`; the label is required. On the phone,
+   pairing code". From a terminal, `domovoid pair --client phone` prints the same kind of code, as
+   a symbol to scan and a line to paste; issuing it ends any code still open, including the one
+   Settings shows. `--label "<name>"` is optional; the daemon keeps it with the code, but nothing
+   shows it yet, and the name typed on the phone is the one used. On the phone,
    under "Pair this phone", choose "Scan a code" (or "Type it" and paste the line), name the
    phone, and choose "Pair with this machine". Expect "Paired with <machine>", then "Open
-   Sessions". The code lasts three minutes and works once.
-4. **Watch a terminal (design frame 04).** Not built on the phone at `017307b5`: the phone lists a
+   Sessions". The code lasts at most three minutes and works once; five wrong codes end it sooner.
+4. **Watch a terminal (design frame 04).** Not built on the phone at `640ac4e7`: the phone lists a
    terminal with a note that it is watched on the desktop, and the pairing grant says "Terminal
    output is not on a phone yet." Record this row as blocked, with "not built" in the notes, unless
    the build under test includes a phone terminal view; then record pass or fail and what it
