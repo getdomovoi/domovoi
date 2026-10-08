@@ -215,12 +215,60 @@ async function keepOnlyCliGraph(root) {
   await removeDanglingLinks(join(root, "node_modules"))
 }
 
+async function restoreWorkspaceState(workspaceState, savedState) {
+  let currentState
+  try {
+    currentState = await readFile(workspaceState)
+  } catch (error) {
+    if (error.code === "ENOENT" && savedState === undefined) return
+  }
+  if (currentState) {
+    if (savedState?.equals(currentState)) return
+    try {
+      const state = JSON.parse(currentState.toString("utf8"))
+      const settings = state?.settings
+      const hasSettings = settings !== null && typeof settings === "object" && !Array.isArray(settings)
+      const recordsDeploy = state?.filteredInstall === true && settings?.dev === false && settings?.nodeLinker === "hoisted"
+      if (hasSettings && !recordsDeploy) return
+    } catch {
+      // Invalid JSON still needs restoration.
+    }
+  }
+  if (savedState === undefined) await rm(workspaceState, { force: true })
+  else await writeFile(workspaceState, savedState)
+}
+
 async function deployWorkspacePackage({ name, repositoryRoot, destination, run }) {
   await rm(destination, { recursive: true, force: true })
+  const workspaceState = join(repositoryRoot, "node_modules", ".pnpm-workspace-state-v1.json")
+  const savedState = await readFile(workspaceState).catch((error) => {
+    if (error.code === "ENOENT") return undefined
+    throw error
+  })
+  let deployFailure
   // Hoisted: a flat node_modules with real directories and no store links, so
   // the copy under the profile and the packaged copy are the same files with
   // nothing to resolve back into the repository or the app bundle.
-  await run("pnpm", ["--filter", name, "deploy", "--legacy", "--prod", "--config.node-linker=hoisted", destination], { cwd: repositoryRoot, maxBuffer: 16 * 1024 * 1024 })
+  try {
+    await run("pnpm", ["--filter", name, "deploy", "--legacy", "--prod", "--config.node-linker=hoisted", destination], { cwd: repositoryRoot, maxBuffer: 16 * 1024 * 1024 })
+  } catch (error) {
+    deployFailure = { error }
+    throw error
+  } finally {
+    // pnpm deploy records a filtered production install with the hoisted linker.
+    // Restore that state or one we cannot attribute to another install, keeping
+    // other installs' states. Restoring keeps the next pnpm command from aborting
+    // or reinstalling for production.
+    try {
+      await restoreWorkspaceState(workspaceState, savedState)
+    } catch (restoreError) {
+      if (deployFailure) {
+        const { error } = deployFailure
+        throw new AggregateError([error, restoreError], `${error instanceof Error ? error.message : String(error)}; failed to restore ${workspaceState}: ${restoreError.message}`)
+      }
+      throw restoreError
+    }
+  }
   const store = join(destination, "node_modules", ".pnpm")
   for (const entry of await readdir(store).catch(() => [])) {
     if (excludedDependency.test(entry)) await rm(join(store, entry), { recursive: true, force: true })
