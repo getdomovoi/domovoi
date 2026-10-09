@@ -73,9 +73,10 @@ function harness() {
     refuseOwnership: (cause: unknown) => claim.reject(cause),
     deliverOutput: (data: string) => handlers?.output({ terminalId, data }),
     deliverClosed: (exitCode: number) => handlers?.closed({ terminalId, exitCode }),
-    deliverOwnership: (owner: string) => handlers?.ownership({
+    deliverOwnership: (owner: string, claimHeld?: boolean) => handlers?.ownership({
       terminalId,
       owner: { client: "web", clientId: owner },
+      ...(claimHeld === undefined ? {} : { claimHeld }),
     }),
   }
 }
@@ -139,6 +140,28 @@ describe("TerminalPane ownership", () => {
       target.deliverOwnership(otherClient)
     })
     expect(screen.getByRole("button", { name: "Take the shell" })).toBeTruthy()
+  })
+
+  it("stops typing when its own claim is released", async () => {
+    const user = userEvent.setup()
+    const target = harness()
+    render(
+      <TerminalPane connected controls={target.controls} machineName="worktop" sessionId={sessionId} />,
+    )
+    await act(async () => {
+      target.connect(thisClient)
+    })
+    expect(screen.getByText("You hold this shell")).toBeTruthy()
+
+    // A release names the last holder, this client, with the claim no longer held.
+    await act(async () => {
+      target.deliverOwnership(thisClient, false)
+    })
+
+    expect(screen.getByText("Nobody holds this shell")).toBeTruthy()
+    expect(screen.getByRole("button", { name: "Take the shell" })).toBeTruthy()
+    await user.click(screen.getByRole("button", { name: "Tab" }))
+    expect(target.write).not.toHaveBeenCalled()
   })
 
   it("reports a refused takeover and stays read-only", async () => {
@@ -365,6 +388,21 @@ describe("TerminalPane on a watching desktop", () => {
     })
 
     expect(screen.getByText("Claimed by a browser")).toBeTruthy()
+  })
+
+  it("says nobody holds the shell once the holder releases it", async () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.resolve(watchResult())
+    })
+    expect(screen.getByText("Claimed by iPhone 16 Pro")).toBeTruthy()
+
+    await act(async () => {
+      target.deliverOwnership(otherClient, false)
+    })
+
+    expect(screen.getByText("Nobody holds this shell")).toBeTruthy()
   })
 
   it("says when the session has no shell open and checks again on request", async () => {
