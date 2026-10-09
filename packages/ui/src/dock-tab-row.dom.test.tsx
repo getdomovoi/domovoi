@@ -126,7 +126,7 @@ describe("the History tab tip", () => {
       nextCursor: "thread:a",
       items: [entry("a", "2026-09-08T14:00:00.000Z")],
     }
-    const onLoad = vi.fn(async (_sessionId: string, options?: { before?: string }) => options?.before ? older : latest)
+    const onLoad = vi.fn(async (_sessionId: string, options?: { before?: string | undefined }) => options?.before ? older : latest)
     render(<HistoryPanel sessionId="session-billing" connected onLoad={onLoad} />)
     await screen.findAllByTestId("history-row")
     expect(times()).toEqual(["14:20", "14:10"])
