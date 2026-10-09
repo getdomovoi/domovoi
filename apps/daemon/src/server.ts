@@ -1684,6 +1684,7 @@ type ActiveTerminal = {
   // size until low water; a burst never creates a queue of notifications.
   pendingResize: { cols: number, rows: number } | undefined
   resizeTimer: ReturnType<typeof setTimeout> | undefined
+  resizeDeferrals: number
   openedAt: number
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
@@ -3963,10 +3964,20 @@ export class DomovoiDaemon {
     // Observe here too: resize-only traffic must stop at high water even when
     // the shell prints nothing. Flushing older output may pause us again.
     if (terminal.outputBackpressure.observe()) return
+    // Wait for the quiet redactor beat without releasing text mid-stream.
+    // Under continuous output with no quiet beat, the resize goes out after
+    // at most 4 extra beats and only the unterminated tail of the current line
+    // can trail it. Backpressure can still hold delivery until low water.
+    if (terminal.redactorFlush !== undefined && terminal.resizeDeferrals < 4) {
+      terminal.resizeDeferrals += 1
+      this.#queueTerminalResize(terminalId, terminal)
+      return
+    }
     terminal.output.flush(terminalId)
     if (terminal.outputBackpressure.paused) return
     const size = terminal.pendingResize
     terminal.pendingResize = undefined
+    terminal.resizeDeferrals = 0
     this.#notifyClients(
       [...terminal.resizeFollowers].filter((candidate) => terminal.audience.has(candidate)
         && (this.#mayWatchTerminals(candidate) || terminal.watchers.has(candidate))),
@@ -6868,6 +6879,7 @@ export class DomovoiDaemon {
           resizeFollowers: new Set(),
           pendingResize: undefined,
           resizeTimer: undefined,
+          resizeDeferrals: 0,
           openedAt: Date.now(),
           reapTimer: undefined,
           output,
@@ -6918,6 +6930,7 @@ export class DomovoiDaemon {
           if (active.resizeTimer !== undefined) clearTimeout(active.resizeTimer)
           active.resizeTimer = undefined
           active.pendingResize = undefined
+          active.resizeDeferrals = 0
           // Whatever redaction was still holding is the tail of what this
           // terminal printed, and losing it would lose output.
           if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
@@ -13081,6 +13094,7 @@ export class DomovoiDaemon {
     if (terminal.resizeTimer !== undefined) clearTimeout(terminal.resizeTimer)
     terminal.resizeTimer = undefined
     terminal.pendingResize = undefined
+    terminal.resizeDeferrals = 0
     if (terminal.redactorFlush !== undefined) clearTimeout(terminal.redactorFlush)
     if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
     terminal.disposeData()

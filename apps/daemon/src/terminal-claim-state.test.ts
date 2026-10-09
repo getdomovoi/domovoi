@@ -443,6 +443,54 @@ describe("bounded terminal resize delivery", () => {
     ])
   })
 
+  it("waits for the quiet redactor beat when a fragment arrives after the resize", async () => {
+    const { owner, follower, print, beat } = await setup()
+    print("hel")
+    await owner.resize()
+    await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
+    print("lo")
+    await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
+    await follower.list()
+    expect(notices(follower, "terminal.resized")).toEqual([])
+
+    await beat()
+    await follower.list()
+    expect(follower.notifications.at(-1)).toEqual({ method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } })
+    const earlier = follower.notifications.slice(0, -1)
+    expect(earlier.every(({ method }) => method === "terminal.output")).toBe(true)
+    expect(earlier.map(({ params }) => params.data).join("")).toBe("hello")
+    expect(notices(follower, "terminal.resized")).toHaveLength(1)
+  })
+
+  it("bounds redactor deferral to five beats and coalesces newer sizes during continuous output", async () => {
+    const { owner, follower, print, beat } = await setup()
+    print("continuous")
+    await owner.resize()
+    for (let halfBeat = 1; halfBeat <= 10; halfBeat += 1) {
+      await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
+      print("x")
+      if (halfBeat === 3) await owner.resize(120, 40)
+      if (halfBeat === 7) await owner.resize(140, 50)
+      await follower.list()
+      if (halfBeat < 10) expect(notices(follower, "terminal.resized")).toEqual([])
+    }
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([{ terminalId, cols: 140, rows: 50 }])
+    await beat()
+    await follower.list()
+    expect(notices(follower, "terminal.resized")).toHaveLength(1)
+
+    // A sent resize resets the allowance for the next pending size.
+    print("another")
+    await owner.resize(150, 60)
+    for (let halfBeat = 1; halfBeat <= 10; halfBeat += 1) {
+      await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
+      print("x")
+      await follower.list()
+      expect(notices(follower, "terminal.resized")).toHaveLength(halfBeat < 10 ? 1 : 2)
+    }
+    expect(notices(follower, "terminal.resized").at(-1)?.params).toEqual({ terminalId, cols: 150, rows: 60 })
+  })
+
   it.each(["close", "exit"] as const)("discards the pending resize when the terminal ends by %s", async (end) => {
     const { owner, follower, exit, beat } = await setup()
     await owner.resize()
