@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest"
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { demoWorkspace, type SessionHistoryEntry, type SessionHistoryPage } from "@getdomovoi/protocol"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { ArtifactDock } from "./artifact-dock"
 import { dockTabDefinitions } from "./dock-tabs"
+import { HistoryPanel } from "./history-panel"
 
 function renderDock(): HTMLElement {
   render(
@@ -67,6 +68,42 @@ describe("the dock tab row follows the design", () => {
     const tip = await screen.findByRole("tooltip")
     expect(tip.textContent).toContain(changes.label)
     expect(tip.textContent).toContain(changes.note)
+  })
+})
+
+// The design's tip offers a fork from any turn, with the oldest row at the
+// bottom. Turn-row fork was closed as a design error (f3252e50): session.fork
+// takes a checkpointId and nothing else, and the History tab offers Fork from
+// here on checkpoint rows only. The tab lists the daemon's page as it comes,
+// oldest first, so the oldest row is at the top (Q40 A).
+describe("the History tab tip", () => {
+  it("offers a fork from a checkpoint and puts the oldest row where the tab does", () => {
+    const tip = dockTabDefinitions.find((definition) => definition.id === "history")?.note ?? ""
+    expect(tip).toBe("Everything that happened in this session, by category, oldest at the top. Fork from a checkpoint.")
+  })
+
+  // The tip's order clause is a claim about the panel, so the panel is held to
+  // it: the daemon pages history oldest first and the tab draws it as given.
+  it("matches the panel, which draws the oldest row first", async () => {
+    const entry = (sourceId: string, createdAt: string): SessionHistoryEntry => ({
+      id: `thread:${sourceId}`,
+      sourceId,
+      sessionId: "session-billing",
+      createdAt,
+      category: "tools",
+      tool: "command",
+      status: "completed",
+      title: sourceId,
+    })
+    const page: SessionHistoryPage = {
+      sessionId: "session-billing",
+      hasMore: false,
+      items: [entry("older", "2026-09-08T14:02:00.000Z"), entry("newer", "2026-09-08T14:32:00.000Z")],
+    }
+    render(<HistoryPanel sessionId="session-billing" connected onLoad={async () => page} />)
+
+    const rows = await screen.findAllByTestId("history-row")
+    expect(rows.map((row) => within(row).getByTestId("history-time").textContent)).toEqual(["14:02", "14:32"])
   })
 })
 
