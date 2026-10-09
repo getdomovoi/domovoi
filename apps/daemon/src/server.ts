@@ -3966,8 +3966,8 @@ export class DomovoiDaemon {
     if (terminal.outputBackpressure.observe()) return
     // Wait for the quiet redactor beat without releasing text mid-stream.
     // Under continuous output with no quiet beat, the resize goes out after
-    // at most 4 extra beats and only the unterminated tail of the current line
-    // can trail it. Backpressure can still hold delivery until low water.
+    // at most 4 extra beats and text the redactor still retains can follow it.
+    // Backpressure can still hold delivery until low water.
     if (terminal.redactorFlush !== undefined && terminal.resizeDeferrals < 4) {
       terminal.resizeDeferrals += 1
       this.#queueTerminalResize(terminalId, terminal)

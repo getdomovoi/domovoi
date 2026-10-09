@@ -491,6 +491,37 @@ describe("bounded terminal resize delivery", () => {
     expect(notices(follower, "terminal.resized").at(-1)?.params).toEqual({ terminalId, cols: 150, rows: 60 })
   })
 
+  it("can deliver a complete line retained by the redactor after a bounded resize", async () => {
+    const { owner, follower, print, beat } = await setup()
+    const heldLine = "API_KEY\n"
+    print(heldLine)
+    await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
+    print(" ")
+    await owner.resize()
+
+    // Whitespace can continue an assignment across a newline, so the redactor
+    // retains this complete line while fragments keep postponing its quiet beat.
+    for (let halfBeat = 1; halfBeat <= 10; halfBeat += 1) {
+      await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
+      print(" ")
+      await follower.list()
+      if (halfBeat < 10) expect(notices(follower, "terminal.resized")).toEqual([])
+    }
+    expect(follower.notifications).toEqual([
+      { method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } },
+    ])
+
+    // Once output becomes quiet, the retained line follows the size. The
+    // ordering limit concerns all retained text, not just an unterminated tail.
+    await beat()
+    await beat()
+    await follower.list()
+    const afterResize = follower.notifications.slice(1)
+    expect(afterResize.every(({ method }) => method === "terminal.output")).toBe(true)
+    expect(afterResize.map(({ params }) => params.data).join("")).toBe(`${heldLine}${" ".repeat(11)}`)
+    expect(notices(follower, "terminal.resized")).toHaveLength(1)
+  })
+
   it.each(["close", "exit"] as const)("discards the pending resize when the terminal ends by %s", async (end) => {
     const { owner, follower, exit, beat } = await setup()
     await owner.resize()

@@ -11,8 +11,8 @@ Preserve claim times across reconnects, report `claimHeld` on ownership changes,
 Resize notifications coalesce to the latest dimensions once per terminal output batch
 and wait for slow readers to drain. They wait for the quiet redactor beat before flushing
 output and sending the size. Under continuous output with no quiet beat, an unpaused resize
-goes out after at most 4 extra beats, and only the unterminated tail of the current line
-can trail it. Closing a terminal drops its pending resize.
+goes out after at most 4 extra beats, and text the redactor still retains can follow it.
+Closing a terminal drops its pending resize.
 
 Protocol version remains `0.8.0`; new fields are optional and older watch requests receive
 no resize notifications.
