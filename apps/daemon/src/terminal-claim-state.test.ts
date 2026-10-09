@@ -379,6 +379,28 @@ describe("bounded terminal resize delivery", () => {
     return { ...harness, owner, follower, beat }
   }
 
+  it("keeps a synchronous create redraw live and outside a same-client replay reply", async () => {
+    const { connect, follower, process, print, beat } = await setup()
+    const next = await connect("owner")
+    print("old grid\n")
+    process.resize.mockImplementation(() => print("new grid\n"))
+    const reply = await next.create(100, 30)
+    expect(reply.result).toMatchObject({ cols: 100, rows: 30, buffer: "old grid\n" })
+    expect(process.resize).toHaveBeenCalledExactlyOnceWith(100, 30)
+    await beat()
+    await beat()
+    await next.list()
+    await follower.list()
+    expect(notices(next, "terminal.output").map(({ params }) => params.data)).toEqual(["new grid\n"])
+    expect(follower.notifications.filter(({ method }) => method !== "terminal.ownership")).toEqual([
+      { method: "terminal.output", params: { terminalId, data: "old grid\n" } },
+      { method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } },
+      { method: "terminal.output", params: { terminalId, data: "new grid\n" } },
+    ])
+    const seen = `${reply.result?.buffer}${notices(next, "terminal.output").map(({ params }) => params.data).join("")}`
+    expect(seen.split("new grid\n")).toHaveLength(2)
+  })
+
   it("keeps the stream paused after a claim drains pending output, until low water", async () => {
     const { connect, follower, process, print, beat } = await setup()
     const claimant = await connect("claimant")

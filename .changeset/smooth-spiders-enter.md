@@ -22,6 +22,9 @@ output from its replay, so that text arrives once through the live stream after 
 Live joins also stop draining when delivery first pauses, retaining queued resize markers
 until low water. Same-client ownership moves through input deliver pending text to the
 new connection even though the input reply carries no replay.
+Reopening a same-client terminal with new dimensions captures its replay before resizing,
+so synchronous redraw output arrives only live, after the resize marker. The create reply
+still reports the new dimensions.
 An empty replay has no start timestamp; if queued output exceeds retained history,
 the watch reply reports that earlier output was dropped.
 

@@ -6790,11 +6790,8 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Terminal belongs to another session")
             return
           }
-          if (this.#ownsTerminal(params.terminalId, existing, socket, { replay: true })) {
-            if (existing.cols !== params.cols || existing.rows !== params.rows) {
-              this.#resizeTerminal(params.terminalId, existing, params.cols, params.rows)
-            }
-          } else if (existing.ownerSocket === undefined) {
+          const ownsTerminal = this.#ownsTerminal(params.terminalId, existing, socket, { replay: true })
+          if (!ownsTerminal && existing.ownerSocket === undefined) {
             existing.owner = this.#terminalOwner(socket, params)
             existing.ownerSocket = socket
             existing.ownerKey = this.#terminalClientKey(socket)
@@ -6809,7 +6806,12 @@ export class DomovoiDaemon {
               claimHeld: true,
             }))
           }
+          // Capture the reply before resizing: a synchronous redraw belongs
+          // only to the live stream, after its resize marker.
           const record = this.#joinTerminalAudience(params.terminalId, existing, socket)
+          if (ownsTerminal && (existing.cols !== params.cols || existing.rows !== params.rows)) {
+            this.#resizeTerminal(params.terminalId, existing, params.cols, params.rows)
+          }
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
