@@ -754,15 +754,18 @@ export function Thread({
   }, [watching])
   // A dock surface (the terminal's Attach this output) hands attachments to
   // this composer by session id. Only a composer that can send opens the
-  // inbox, so the offer is not drawn where it could not be used.
+  // inbox, so the offer is not drawn where it could not be used. It stays
+  // closed while the composer is busy (a send on its way, a checkpoint
+  // restore, a pause, a release), so a send that fails gives its
+  // attachments back to an empty draft.
   useEffect(() => {
-    if (readOnly || !activeSessionId) return
+    if (readOnly || pending || !activeSessionId) return
     return composerInbox.open(activeSessionId, (attachment) => {
       if (attachmentsRef.current.length >= desktopAttachmentLimit) return "full"
       setAttachments((current) => [...current, attachment])
       return "attached"
     })
-  }, [activeSessionId, readOnly, setAttachments])
+  }, [activeSessionId, pending, readOnly, setAttachments])
 
   if (!active) {
     const hasProject = snapshot.project !== null

@@ -251,3 +251,26 @@ it("names two same-batch composer pastes apart", () => {
   expect(screen.getByText("pasted-text-1.txt")).toBeTruthy()
   expect(screen.getByText("pasted-text-2.txt")).toBeTruthy()
 })
+
+// While a message with attachments is on its way, the inbox is closed: a send
+// that fails gives its attachments back to an empty draft for the retry.
+it("closes the inbox while a send is on its way, so a failed send gets its attachments back", async () => {
+  const user = userEvent.setup()
+  let fail: (cause: Error) => void = () => {}
+  const onSend = vi.fn(() => new Promise<void>((_, reject) => { fail = reject }))
+  renderThread({ onSend })
+  const output = terminalOutputAttachment("$ pnpm test\n PASS  webhooks")
+  act(() => { expect(composerInbox.offer(sessionId, output)).toBe("attached") })
+  await user.type(screen.getByRole("textbox", { name: "Message" }), "Why did this pass?")
+  await user.click(screen.getByRole("button", { name: "Send message" }))
+
+  expect(composerInbox.canReceive(sessionId)).toBe(false)
+  expect(composerInbox.offer(sessionId, terminalOutputAttachment("later"))).toBe("closed")
+
+  await act(async () => { fail(new Error("The daemon is not answering")) })
+
+  expect(composerInbox.canReceive(sessionId)).toBe(true)
+  expect(screen.getByText("terminal-output.txt")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Send message" }))
+  expect(onSend).toHaveBeenLastCalledWith(sessionId, "Why did this pass?", undefined, [output])
+})
