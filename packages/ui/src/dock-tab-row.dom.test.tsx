@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest"
+import { describe, expect, it, vi } from "vitest"
 import { render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { demoWorkspace, type SessionHistoryEntry, type SessionHistoryPage } from "@getdomovoi/protocol"
@@ -74,27 +74,31 @@ describe("the dock tab row follows the design", () => {
 // The design's tip offers a fork from any turn, with the oldest row at the
 // bottom. Turn-row fork was closed as a design error (f3252e50): session.fork
 // takes a checkpointId and nothing else, and the History tab offers Fork from
-// here on checkpoint rows only. The tab lists the daemon's page as it comes,
-// oldest first, so the oldest row is at the top (Q40 A).
+// here on checkpoint rows only. The daemon pages history oldest first and the
+// tab turns it round, so the oldest row is at the bottom as drawn.
 describe("the History tab tip", () => {
   it("offers a fork from a checkpoint and puts the oldest row where the tab does", () => {
     const tip = dockTabDefinitions.find((definition) => definition.id === "history")?.note ?? ""
-    expect(tip).toBe("Everything that happened in this session, by category, oldest at the top. Fork from a checkpoint.")
+    expect(tip).toBe("Everything that happened in this session, by category, oldest at the bottom. Fork from a checkpoint.")
   })
 
+  const entry = (sourceId: string, createdAt: string): SessionHistoryEntry => ({
+    id: `thread:${sourceId}`,
+    sourceId,
+    sessionId: "session-billing",
+    createdAt,
+    category: "tools",
+    tool: "command",
+    status: "completed",
+    title: sourceId,
+  })
+  const times = () => screen.getAllByTestId("history-row").map((row) => within(row).getByTestId("history-time").textContent)
+  const follows = (later: Element, earlier: Element) =>
+    Boolean(earlier.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING)
+
   // The tip's order clause is a claim about the panel, so the panel is held to
-  // it: the daemon pages history oldest first and the tab draws it as given.
-  it("matches the panel, which draws the oldest row first", async () => {
-    const entry = (sourceId: string, createdAt: string): SessionHistoryEntry => ({
-      id: `thread:${sourceId}`,
-      sourceId,
-      sessionId: "session-billing",
-      createdAt,
-      category: "tools",
-      tool: "command",
-      status: "completed",
-      title: sourceId,
-    })
+  // it: the daemon pages history oldest first and the tab draws it newest first.
+  it("matches the panel, which draws the newest row first", async () => {
     const page: SessionHistoryPage = {
       sessionId: "session-billing",
       hasMore: false,
@@ -102,8 +106,63 @@ describe("the History tab tip", () => {
     }
     render(<HistoryPanel sessionId="session-billing" connected onLoad={async () => page} />)
 
-    const rows = await screen.findAllByTestId("history-row")
-    expect(rows.map((row) => within(row).getByTestId("history-time").textContent)).toEqual(["14:02", "14:32"])
+    await screen.findAllByTestId("history-row")
+    expect(times()).toEqual(["14:32", "14:02"])
+  })
+
+  // The daemon's cursor is the page's oldest id and the next page holds what
+  // came before it, so an older page belongs under the rows already drawn, and
+  // Load older stays under the oldest row.
+  it("draws an older page below the rows it already has", async () => {
+    const latest: SessionHistoryPage = {
+      sessionId: "session-billing",
+      hasMore: true,
+      nextCursor: "thread:b",
+      items: [entry("b", "2026-09-08T14:10:00.000Z"), entry("c", "2026-09-08T14:20:00.000Z")],
+    }
+    const older: SessionHistoryPage = {
+      sessionId: "session-billing",
+      hasMore: true,
+      nextCursor: "thread:a",
+      items: [entry("a", "2026-09-08T14:00:00.000Z")],
+    }
+    const onLoad = vi.fn(async (_sessionId: string, options?: { before?: string | undefined }) => options?.before ? older : latest)
+    render(<HistoryPanel sessionId="session-billing" connected onLoad={onLoad} />)
+    await screen.findAllByTestId("history-row")
+    expect(times()).toEqual(["14:20", "14:10"])
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Load older" }))
+    await screen.findByText("a")
+    expect(onLoad).toHaveBeenLastCalledWith("session-billing", expect.objectContaining({ before: "thread:b" }), expect.anything())
+    expect(times()).toEqual(["14:20", "14:10", "14:00"])
+    expect(follows(screen.getByRole("button", { name: "Load older" }), screen.getAllByTestId("history-row").at(-1)!)).toBe(true)
+  })
+
+  // Past the retained budget the newest rows are the ones let go, and they
+  // were drawn at the top, so the way back to them is offered there.
+  it("offers Back to latest above the rows once the newest are let go", async () => {
+    const stamp = (minute: number) => `2026-09-08T${String(10 + Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}:00.000Z`
+    const latest: SessionHistoryPage = {
+      sessionId: "session-billing",
+      hasMore: true,
+      nextCursor: "thread:n100",
+      items: Array.from({ length: 150 }, (_, index) => entry(`n${100 + index}`, stamp(100 + index))),
+    }
+    const older: SessionHistoryPage = {
+      sessionId: "session-billing",
+      hasMore: true,
+      nextCursor: "thread:n0",
+      items: Array.from({ length: 100 }, (_, index) => entry(`n${index}`, stamp(index))),
+    }
+    render(<HistoryPanel sessionId="session-billing" connected onLoad={async (_sessionId, options) => options?.before ? older : latest} />)
+    await screen.findAllByTestId("history-row")
+
+    await userEvent.setup().click(screen.getByRole("button", { name: "Load older" }))
+    const back = await screen.findByRole("button", { name: "Back to latest" })
+    const rows = screen.getAllByTestId("history-row")
+    expect(rows).toHaveLength(200)
+    expect(follows(rows[0]!, back)).toBe(true)
+    expect(follows(screen.getByRole("button", { name: "Load older" }), rows.at(-1)!)).toBe(true)
   })
 })
 

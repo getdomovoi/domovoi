@@ -1,5 +1,5 @@
 import { describe, expect, it, jest } from "@jest/globals"
-import { demoWorkspace, type ApprovalRequest } from "@getdomovoi/protocol"
+import { approvalRequestSchema, demoWorkspace, type ApprovalRequest, type WorkingPlan } from "@getdomovoi/protocol"
 import { fireEvent, render, screen, within } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
@@ -181,5 +181,137 @@ describe("ApprovalScreen", () => {
 
     expect(screen.getByText("Not sent: the daemon connection is not open. The gate is still waiting.")).toBeOnTheScreen()
     expect(screen.getByRole("button", { name: "Allow once" })).toBeOnTheScreen()
+  })
+})
+
+// The facts #740 put on the wire: which client started the turn, whether the
+// request reaches outside the project and on what basis, and the plan step the
+// gate blocks. Each is drawn only when the daemon sent it; an absent fact is
+// one the daemon could not decide, and the phone does not decide it instead.
+describe("ApprovalScreen context facts", () => {
+  const connectionId = "11111111-1111-4111-8111-111111111111"
+  const thisPhone = { client: "phone", deviceId: "device-0123456789abcdef0123456789abcdef" } as const
+
+  function card(facts: Partial<Pick<ApprovalRequest, "origin" | "outsideProject">>): ApprovalRequest {
+    return approvalRequestSchema.parse({ ...approval(), ...facts })
+  }
+
+  function plan(request: ApprovalRequest, approvalId = request.id): WorkingPlan {
+    return {
+      sessionId: request.sessionId, revision: 1, structureRevision: 1,
+      createdAt: request.requestedAt, updatedAt: request.requestedAt,
+      steps: [
+        { id: "first", text: "Inspect", status: "completed" },
+        { id: "second", text: "Change", status: "in-progress", blocker: { kind: "approval", approvalId } },
+        { id: "third", text: "Verify", status: "pending" },
+      ],
+    }
+  }
+
+  // The fact row the label heads, read as the person reads it: label, value.
+  function fact(label: string): string | undefined {
+    const row = screen.queryByText(label)?.parent
+    if (!row) return undefined
+    return within(row).queryAllByText(/.+/).map((child) => String(child.props.children)).join(": ")
+  }
+
+  it("says the turn came from you when this phone started it", async () => {
+    await draw({ approval: card({ origin: { client: "phone", connectionId, clientId: thisPhone.deviceId } }), viewer: thisPhone })
+
+    expect(fact("Turn from")).toBe("Turn from: you, on this phone")
+  })
+
+  it.each([
+    [{ client: "desktop", connectionId, clientId: "desktop-owner" }, "a desktop"],
+    [{ client: "phone", connectionId, clientId: "device-ffffffffffffffffffffffffffffffff" }, "another phone"],
+  ] as const)("names the other client when another one started the turn (%j)", async (origin, named) => {
+    await draw({ approval: card({ origin }), viewer: thisPhone })
+
+    expect(fact("Turn from")).toBe(`Turn from: ${named}`)
+  })
+
+  it("does not claim the turn for this phone before it knows its own id", async () => {
+    await draw({ approval: card({ origin: { client: "phone", connectionId, clientId: thisPhone.deviceId } }), viewer: { client: "phone" } })
+
+    expect(fact("Turn from")).toBe("Turn from: a phone")
+    expect(screen.queryByText(/you, on this phone/)).toBeNull()
+  })
+
+  // Only two known ids that differ make it another phone.
+  it("does not call a phone without a client id another phone", async () => {
+    await draw({ approval: card({ origin: { client: "phone", connectionId } }), viewer: thisPhone })
+
+    expect(fact("Turn from")).toBe("Turn from: a phone")
+  })
+
+  it("says the request reaches outside the project, judged by its path", async () => {
+    await draw({ approval: card({ outsideProject: { outside: true, basis: "path" } }) })
+
+    expect(fact("Outside project")).toBe("Outside project: yes, by the path it names")
+    // Worn in the same warning as Affects, because it is the same kind of fact.
+    expect(String(screen.getByText("yes, by the path it names").props.className)).toContain("text-warning")
+  })
+
+  it("says the request stays inside the project, judged by its path", async () => {
+    await draw({ approval: card({ outsideProject: { outside: false, basis: "path" } }) })
+
+    expect(fact("Outside project")).toBe("Outside project: no, by the path it names")
+    expect(String(screen.getByText("no, by the path it names").props.className)).not.toContain("text-warning")
+  })
+
+  it("says the request runs outside the project, judged by its working directory", async () => {
+    await draw({ approval: card({ outsideProject: { outside: true, basis: "working-directory" } }) })
+
+    expect(fact("Outside project")).toBe("Outside project: yes, by where it runs")
+  })
+
+  it("judges by working directory without saying the command stays inside", async () => {
+    await draw({ approval: card({ outsideProject: { outside: false, basis: "working-directory" } }) })
+
+    expect(fact("Outside project")).toBe("Outside project: no, by where it runs, not by what it reaches")
+  })
+
+  it("draws nothing for a fact the daemon did not send", async () => {
+    await draw({ approval: approval(), plans: [], viewer: thisPhone })
+
+    expect(screen.queryByText("Turn from")).toBeNull()
+    expect(screen.queryByText("Outside project")).toBeNull()
+    expect(screen.queryByText("Plan")).toBeNull()
+    expect(screen.queryByText(/^(yes|no),/)).toBeNull()
+    expect(screen.queryByText(/step \d+ of \d+/)).toBeNull()
+  })
+
+  it("gives the plan step when the step's blocker names this approval", async () => {
+    const request = approval()
+    await draw({ approval: request, plans: [plan(request)] })
+
+    expect(fact("Plan")).toBe("Plan: step 2 of 3")
+  })
+
+  it("gives no step when no step's blocker names this approval", async () => {
+    const request = approval()
+    await draw({ approval: request, plans: [plan(request, "approval-other")] })
+
+    expect(screen.queryByText("Plan")).toBeNull()
+    expect(screen.queryByText(/step \d+ of \d+/)).toBeNull()
+  })
+
+  // A watching phone collapses nothing it reads: the facts are the same.
+  it("shows a watching phone the same facts", async () => {
+    const request = card({ origin: { client: "desktop", connectionId }, outsideProject: { outside: true, basis: "path" } })
+    await draw({ approval: request, plans: [plan(request)], viewer: thisPhone, watching: true })
+
+    expect(fact("Turn from")).toBe("Turn from: a desktop")
+    expect(fact("Outside project")).toBe("Outside project: yes, by the path it names")
+    expect(fact("Plan")).toBe("Plan: step 2 of 3")
+  })
+
+  it("orders the new facts among the request's own", async () => {
+    const request = card({ origin: { client: "desktop", connectionId }, outsideProject: { outside: true, basis: "path" } })
+    await draw({ approval: request, plans: [plan(request)], viewer: thisPhone })
+
+    const labels = ["Machine", "Agent", "Mode", "Turn from", "Plan", "Directory", "Outside project", "Affects", "Network", "Estimated", "Checkpoint"]
+    const drawn = screen.getAllByText(new RegExp(`^(${labels.join("|")})$`)).map((node) => String(node.props.children))
+    expect(drawn).toEqual(labels)
   })
 })

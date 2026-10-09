@@ -37,6 +37,7 @@ import { clearCredential, loadCredential, saveCredential, type DaemonCredential 
 import { DaemonNotSentError, DaemonUnconfirmedError } from "./lib/daemon"
 import { DaemonTimeoutError } from "./lib/request-timeout"
 import { useDaemon } from "./lib/use-daemon"
+import { useDeviceIdentity } from "./lib/use-device-identity"
 import { connectedMachineActivity } from "./machine-activity"
 import { launchPhases } from "./launch-state"
 import * as ImagePicker from "expo-image-picker"
@@ -230,6 +231,9 @@ export function App() {
       if (connectTo) void saveCredential({ ...connectTo, client: kind })
     },
   )
+  // Compared with a gate's origin, so the approval screen can say this phone
+  // started the turn.
+  const deviceId = useDeviceIdentity(call, status, connectTo?.token)
   const mutate = useCallback(
     <M extends RpcMethod>(method: M, params: RpcParams<M>) => mutationCall(clientAccess, call, method, params),
     [call, clientAccess],
@@ -904,6 +908,8 @@ export function App() {
             <ApprovalScreen
               approval={openApproval}
               sessionTitle={snapshot?.sessions.find((session) => session.id === openApproval.sessionId)?.title}
+              plans={snapshot?.workingPlans}
+              viewer={{ client, deviceId }}
               pending={deciding}
               notice={notice}
               problem={decideProblem}
