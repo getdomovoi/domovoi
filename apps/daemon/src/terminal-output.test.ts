@@ -82,3 +82,102 @@ describe("TerminalOutputBackpressure", () => {
     expect(onLowWater).toHaveBeenCalledOnce()
   })
 })
+
+describe("terminal output resize markers", () => {
+  function stream(pauseOutput = () => false, pauseResize = () => false) {
+    const events: string[] = []
+    const scheduled = new Set<() => void>()
+    const batcher = new TerminalOutputBatcher(
+      (id, data) => { events.push(`${id}:output:${data}`); return pauseOutput() },
+      (callback) => { scheduled.add(callback); return callback },
+      (timer) => { scheduled.delete(timer as () => void) },
+      (id, size) => { events.push(`${id}:resize:${size.cols}x${size.rows}`); return pauseResize() },
+    )
+    const beat = () => {
+      for (const callback of [...scheduled]) { scheduled.delete(callback); callback() }
+    }
+    return { batcher, events, scheduled, beat }
+  }
+
+  it("drains partial old output and the marker immediately, then batches new output", () => {
+    const { batcher, events, scheduled, beat } = stream()
+    batcher.push("t", "old ")
+    batcher.push("t", "grid")
+    expect(events).toEqual([])
+    batcher.pushResize("t", { cols: 100, rows: 30 })
+    expect(events).toEqual(["t:output:old grid", "t:resize:100x30"])
+    expect(scheduled.size).toBe(0)
+    batcher.push("t", "new grid")
+    expect(events).toHaveLength(2)
+    beat()
+    expect(events).toEqual(["t:output:old grid", "t:resize:100x30", "t:output:new grid"])
+  })
+
+  it("coalesces adjacent queued markers without moving output across a marker", () => {
+    let paused = true
+    const { batcher, events } = stream(() => paused)
+    batcher.push("t", "x".repeat(maximumTerminalOutputChunkCharacters))
+    events.length = 0
+    batcher.pushResize("t", { cols: 90, rows: 30 })
+    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.push("t", "between")
+    batcher.pushResize("t", { cols: 110, rows: 40 })
+    batcher.pushResize("t", { cols: 120, rows: 40 })
+    batcher.push("t", "after")
+    expect(events).toEqual([])
+    paused = false
+    batcher.resume("t")
+    expect(events).toEqual(["t:resize:100x30", "t:output:between", "t:resize:120x40", "t:output:after"])
+  })
+
+  it("stops after a marker pauses and resumes all following events in order", () => {
+    let paused = true
+    const { batcher, events, beat } = stream(() => false, () => paused)
+    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.push("t", "new grid")
+    batcher.pushResize("t", { cols: 120, rows: 40 })
+    batcher.push("t", "next grid")
+    beat()
+    expect(events).toEqual(["t:resize:100x30"])
+    paused = false
+    batcher.resume("t")
+    expect(events).toEqual(["t:resize:100x30", "t:output:new grid", "t:resize:120x40", "t:output:next grid"])
+  })
+
+  it("holds a marker when draining its preceding output pauses", () => {
+    let paused = true
+    const { batcher, events } = stream(() => paused)
+    batcher.push("t", "old grid")
+    batcher.pushResize("t", { cols: 100, rows: 30 })
+    expect(events).toEqual(["t:output:old grid"])
+    paused = false
+    batcher.resume("t")
+    expect(events).toEqual(["t:output:old grid", "t:resize:100x30"])
+  })
+
+  it("flushes paused output and markers in order and cancels the pending beat", () => {
+    const { batcher, events, scheduled, beat } = stream(() => true)
+    batcher.push("t", "old")
+    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.push("t", "middle")
+    batcher.pushResize("t", { cols: 120, rows: 40 })
+    batcher.push("t", "tail")
+    batcher.flush("t")
+    expect(events).toEqual(["t:output:old", "t:resize:100x30", "t:output:middle", "t:resize:120x40", "t:output:tail"])
+    expect(scheduled.size).toBe(0)
+    beat()
+    expect(events).toHaveLength(5)
+  })
+
+  it("keeps a pause when the last full output chunk emptied the queue", () => {
+    let paused = true
+    const { batcher, events, beat } = stream(() => paused)
+    batcher.push("t", "x".repeat(maximumTerminalOutputChunkCharacters))
+    batcher.push("t", "held")
+    beat()
+    expect(events).toHaveLength(1)
+    paused = false
+    batcher.resume("t")
+    expect(events.at(-1)).toBe("t:output:held")
+  })
+})

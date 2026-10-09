@@ -12,7 +12,9 @@ type Cancel = (timer: Timer) => void
 const scheduleTimeout: Schedule = (callback, delay) => setTimeout(callback, delay)
 const cancelTimeout: Cancel = (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>)
 
-type PendingOutput = { data: string; paused: boolean; timer?: Timer }
+type TerminalSize = { cols: number; rows: number }
+type OutputEntry = { kind: "output"; data: string } | { kind: "resize"; size: TerminalSize }
+type PendingOutput = { entries: OutputEntry[]; paused: boolean; timer?: Timer }
 
 export class TerminalOutputBatcher {
   readonly #pending = new Map<string, PendingOutput>()
@@ -21,15 +23,26 @@ export class TerminalOutputBatcher {
     readonly emit: (terminalId: string, data: string) => boolean | void,
     readonly schedule: Schedule = scheduleTimeout,
     readonly cancel: Cancel = cancelTimeout,
+    readonly emitResize: (terminalId: string, size: TerminalSize) => boolean | void = () => {},
   ) {}
 
   push(terminalId: string, data: string): void {
     if (!data) return
-    const pending = this.#pending.get(terminalId) ?? { data: "", paused: false }
-    pending.data += data
+    const pending = this.#pending.get(terminalId) ?? { entries: [], paused: false }
+    const tail = pending.entries.at(-1)
+    if (tail?.kind === "output") tail.data += data
+    else pending.entries.push({ kind: "output", data })
     this.#pending.set(terminalId, pending)
-    if (pending.paused) return
-    this.#drain(terminalId, pending, false)
+    if (!pending.paused) this.#drain(terminalId, pending, false)
+  }
+
+  pushResize(terminalId: string, size: TerminalSize): void {
+    const pending = this.#pending.get(terminalId) ?? { entries: [], paused: false }
+    const tail = pending.entries.at(-1)
+    if (tail?.kind === "resize") tail.size = size
+    else pending.entries.push({ kind: "resize", size })
+    this.#pending.set(terminalId, pending)
+    if (!pending.paused) this.#drain(terminalId, pending, false)
   }
 
   resume(terminalId: string): void {
@@ -39,24 +52,35 @@ export class TerminalOutputBatcher {
     this.#drain(terminalId, pending, true)
   }
 
+  #emitNext(terminalId: string, pending: PendingOutput): boolean | void {
+    const entry = pending.entries[0]!
+    if (entry.kind === "resize") {
+      pending.entries.shift()
+      return this.emitResize(terminalId, entry.size)
+    }
+    const chunk = entry.data.slice(0, maximumTerminalOutputChunkCharacters)
+    entry.data = entry.data.slice(chunk.length)
+    if (!entry.data) pending.entries.shift()
+    return this.emit(terminalId, chunk)
+  }
+
   #drain(terminalId: string, pending: PendingOutput, includePartial: boolean): void {
-    while (
-      pending.data.length >= maximumTerminalOutputChunkCharacters
-      || (includePartial && pending.data.length > 0)
-    ) {
-      const chunk = pending.data.slice(0, maximumTerminalOutputChunkCharacters)
-      pending.data = pending.data.slice(chunk.length)
-      if (this.emit(terminalId, chunk) === true) {
+    while (pending.entries.length > 0) {
+      const entry = pending.entries[0]!
+      // A marker is a boundary: even a partial chunk before it goes first.
+      if (entry.kind === "output" && entry.data.length < maximumTerminalOutputChunkCharacters
+        && !includePartial && pending.entries.length === 1) break
+      if (this.#emitNext(terminalId, pending) === true) {
         pending.paused = true
-        if (pending.timer !== undefined) this.cancel(pending.timer)
-        pending.timer = undefined
         break
       }
     }
-    if (!pending.data) {
+    if (pending.paused || pending.entries.length === 0) {
       if (pending.timer !== undefined) this.cancel(pending.timer)
-      this.#pending.delete(terminalId)
-    } else if (!pending.paused && pending.timer === undefined) {
+      pending.timer = undefined
+      // Keep an empty paused queue so a later push cannot bypass high water.
+      if (!pending.paused) this.#pending.delete(terminalId)
+    } else if (pending.timer === undefined) {
       const timer = this.schedule(() => {
         if (this.#pending.get(terminalId) !== pending || pending.timer !== timer) return
         pending.timer = undefined
@@ -71,9 +95,7 @@ export class TerminalOutputBatcher {
     if (!pending) return
     if (pending.timer !== undefined) this.cancel(pending.timer)
     this.#pending.delete(terminalId)
-    for (let offset = 0; offset < pending.data.length; offset += maximumTerminalOutputChunkCharacters) {
-      this.emit(terminalId, pending.data.slice(offset, offset + maximumTerminalOutputChunkCharacters))
-    }
+    while (pending.entries.length > 0) this.#emitNext(terminalId, pending)
   }
 }
 
