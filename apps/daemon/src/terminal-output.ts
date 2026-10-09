@@ -81,6 +81,10 @@ export class TerminalOutputBackpressure {
   #paused = false
   #timer: Timer | undefined
 
+  get paused(): boolean {
+    return this.#paused
+  }
+
   constructor(
     readonly process: { pause?(): void; resume?(): void },
     readonly bufferedBytes: () => number,

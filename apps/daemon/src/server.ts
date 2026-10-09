@@ -1680,6 +1680,10 @@ type ActiveTerminal = {
   watchers: Set<RpcOutboundSocket>
   // Only watchers that opted into the new resize notification receive it.
   resizeFollowers: Set<RpcOutboundSocket>
+  // At most one resize per batch beat, none while paused. Keep only the latest
+  // size until low water; a burst never creates a queue of notifications.
+  pendingResize: { cols: number, rows: number } | undefined
+  resizeTimer: ReturnType<typeof setTimeout> | undefined
   openedAt: number
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
@@ -3942,6 +3946,34 @@ export class DomovoiDaemon {
       openedAt: new Date(terminal.openedAt).toISOString(),
       state: "live",
     }
+  }
+
+  #queueTerminalResize(terminalId: string, terminal: ActiveTerminal): void {
+    terminal.pendingResize = { cols: terminal.cols, rows: terminal.rows }
+    if (terminal.resizeTimer !== undefined) return
+    terminal.resizeTimer = setTimeout(() => {
+      terminal.resizeTimer = undefined
+      this.#flushTerminalResize(terminalId, terminal)
+    }, terminalOutputBatchDelayMilliseconds)
+    terminal.resizeTimer.unref?.()
+  }
+
+  #flushTerminalResize(terminalId: string, terminal: ActiveTerminal): void {
+    if (this.#terminals.get(terminalId) !== terminal || terminal.pendingResize === undefined || terminal.resizeTimer !== undefined) return
+    // Observe here too: resize-only traffic must stop at high water even when
+    // the shell prints nothing. Flushing older output may pause us again.
+    if (terminal.outputBackpressure.observe()) return
+    terminal.output.flush(terminalId)
+    if (terminal.outputBackpressure.paused) return
+    const size = terminal.pendingResize
+    terminal.pendingResize = undefined
+    this.#notifyClients(
+      [...terminal.resizeFollowers].filter((candidate) => terminal.audience.has(candidate)
+        && (this.#mayWatchTerminals(candidate) || terminal.watchers.has(candidate))),
+      "terminal.resized",
+      { terminalId, ...size },
+    )
+    terminal.outputBackpressure.observe()
   }
 
   #closedTerminalSummary(closed: ClosedTerminal): TerminalSummary {
@@ -6764,12 +6796,7 @@ export class DomovoiDaemon {
               existing.process.resize(params.cols, params.rows)
               existing.cols = params.cols
               existing.rows = params.rows
-              this.#notifyClients(
-                [...existing.resizeFollowers].filter((candidate) => existing.audience.has(candidate)
-                  && (this.#mayWatchTerminals(candidate) || existing.watchers.has(candidate))),
-                "terminal.resized",
-                { terminalId: params.terminalId, cols: params.cols, rows: params.rows },
-              )
+              this.#queueTerminalResize(params.terminalId, existing)
             }
           } else if (existing.ownerSocket === undefined) {
             existing.owner = this.#terminalOwner(socket, params)
@@ -6814,7 +6841,10 @@ export class DomovoiDaemon {
           () => this.#maximumAuthenticatedClientBufferedBytes(),
           undefined,
           undefined,
-          () => output.resume(params.terminalId),
+          () => {
+            output.resume(params.terminalId)
+            this.#flushTerminalResize(params.terminalId, activeTerminal)
+          },
         )
         const output = new TerminalOutputBatcher((terminalId, data) => {
           this.#notifyTerminalAudience(activeTerminal, "terminal.output", { terminalId, data })
@@ -6836,6 +6866,8 @@ export class DomovoiDaemon {
           audience: new Set([socket]),
           watchers: new Set(),
           resizeFollowers: new Set(),
+          pendingResize: undefined,
+          resizeTimer: undefined,
           openedAt: Date.now(),
           reapTimer: undefined,
           output,
@@ -6883,6 +6915,9 @@ export class DomovoiDaemon {
           const active = this.#terminals.get(params.terminalId)
           if (!active || active.process !== process) return
           this.#terminals.delete(params.terminalId)
+          if (active.resizeTimer !== undefined) clearTimeout(active.resizeTimer)
+          active.resizeTimer = undefined
+          active.pendingResize = undefined
           // Whatever redaction was still holding is the tail of what this
           // terminal printed, and losing it would lose output.
           if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
@@ -7083,12 +7118,7 @@ export class DomovoiDaemon {
           terminal.process.resize(params.cols, params.rows)
           terminal.cols = params.cols
           terminal.rows = params.rows
-          this.#notifyClients(
-            [...terminal.resizeFollowers].filter((candidate) => terminal.audience.has(candidate)
-              && (this.#mayWatchTerminals(candidate) || terminal.watchers.has(candidate))),
-            "terminal.resized",
-            { terminalId: params.terminalId, cols: params.cols, rows: params.rows },
-          )
+          this.#queueTerminalResize(params.terminalId, terminal)
         }
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
@@ -13048,6 +13078,9 @@ export class DomovoiDaemon {
     const terminal = this.#terminals.get(terminalId)
     if (!terminal) return false
     this.#terminals.delete(terminalId)
+    if (terminal.resizeTimer !== undefined) clearTimeout(terminal.resizeTimer)
+    terminal.resizeTimer = undefined
+    terminal.pendingResize = undefined
     if (terminal.redactorFlush !== undefined) clearTimeout(terminal.redactorFlush)
     if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
     terminal.disposeData()

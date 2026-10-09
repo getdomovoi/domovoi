@@ -1,10 +1,11 @@
 import { once } from "node:events"
 
-import { demoWorkspace, protocolVersion } from "@getdomovoi/protocol"
+import { demoWorkspace, protocolVersion, terminalOutputBatchDelayMilliseconds, terminalWebSocketHighWaterBytes } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
 import { DomovoiDaemon } from "./server.js"
+import type { RpcOutboundSocket } from "./rpc-outbound.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import type { TerminalProcess } from "./terminal.js"
 
@@ -19,9 +20,10 @@ type Notice = { method: string, params: Record<string, unknown> }
 type Connection = Awaited<ReturnType<Awaited<ReturnType<typeof start>>["connect"]>>
 
 afterEach(async () => {
+  vi.useRealTimers()
   for (const socket of sockets.splice(0)) socket.terminate()
   await Promise.all(daemons.splice(0).map((daemon) => daemon.stop()))
-  vi.useRealTimers()
+  vi.restoreAllMocks()
 })
 
 async function start() {
@@ -31,23 +33,28 @@ async function start() {
   let print = (_data: string) => {}
   let exit = (_event: { exitCode: number }) => {}
   const process = {
-    process: "zsh", write: vi.fn(), resize: vi.fn(), kill: vi.fn(),
+    process: "zsh", write: vi.fn(), resize: vi.fn(), kill: vi.fn(), pause: vi.fn(), resume: vi.fn(),
     onData: vi.fn((listener: typeof print) => { print = listener; return { dispose: vi.fn() } }),
     onExit: vi.fn((listener: typeof exit) => { exit = listener; return { dispose: vi.fn() } }),
   } satisfies TerminalProcess
   const snapshot = structuredClone(demoWorkspace)
   const session = snapshot.sessions[0]!
   session.workspacePath = "/worktrees/terminal-claim-state"
+  const serverSockets = new Set<RpcOutboundSocket>()
   const daemon = new DomovoiDaemon({
     port: 0,
     store: new SqliteWorkspaceStore(":memory:", snapshot),
     terminalService: { spawn: vi.fn(() => process) },
     terminalReapGraceMs: graceMs,
+    rpcOutboundBackpressure: {
+      bufferedBytes: (socket) => { serverSockets.add(socket); return socket.bufferedAmount },
+    },
     errorSink: vi.fn(),
   })
   daemons.push(daemon)
   const { port } = await daemon.start()
   const connect = async (clientId: string, client = "desktop", authToken = daemon.authToken) => {
+    const previousSockets = new Set(serverSockets)
     const socket = new WebSocket(`ws://127.0.0.1:${port}/rpc`, { handshakeTimeout: 5_000 })
     sockets.push(socket)
     await once(socket, "open")
@@ -69,9 +76,11 @@ async function start() {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
     })
     expect((await rpc("system.hello", { client, clientId, clientVersion: "0.0.1", protocolVersion, authToken })).error).toBeUndefined()
+    const serverSocket = [...serverSockets].find((candidate) => !previousSockets.has(candidate))!
+    expect(serverSocket).toBeDefined()
     const identity = { terminalId, client, clientId }
     return {
-      socket, rpc, notifications, identity,
+      socket, serverSocket, rpc, notifications, identity,
       create: (cols = 80, rows = 24) => rpc("terminal.create", { ...identity, sessionId: session.id, cols, rows }),
       claim: () => rpc("terminal.claim", identity),
       release: () => rpc("terminal.release", identity),
@@ -87,6 +96,7 @@ async function start() {
 const notices = (connection: Connection, method: string) => connection.notifications.filter((notice) => notice.method === method)
 const claimedOwner = (clientId: string, claimedAt = firstTime) => ({ client: "desktop", clientId, claimedAt })
 const notOwner = { message: "Terminal is owned by another client" }
+const waitForResizeBeat = () => new Promise((resolve) => setTimeout(resolve, terminalOutputBatchDelayMilliseconds * 2))
 
 describe("releasing a terminal claim", () => {
   it("announces an unheld live shell, keeps output until unwatch, and refuses former-holder mutations", async () => {
@@ -246,6 +256,7 @@ describe("opt-in terminal resize notifications", () => {
     expect((await legacy.watch()).error).toBeUndefined()
     for (const connection of [follower, ...restricted]) expect((await connection.watch(true)).error).toBeUndefined()
     expect((await owner.resize()).error).toBeUndefined()
+    await waitForResizeBeat()
     for (const connection of [owner, legacy, follower, bystander, ...restricted]) await connection.list()
     const resized = { method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } }
     for (const connection of [follower, ...restricted]) expect(notices(connection, "terminal.resized")).toEqual([resized])
@@ -257,10 +268,13 @@ describe("opt-in terminal resize notifications", () => {
     await owner.resize()
     await owner.create(100, 30)
     await legacy.create(150, 40)
+    await waitForResizeBeat()
     await follower.list()
     expect(notices(follower, "terminal.resized")).toEqual([resized])
     await owner.create(100, 31)
+    await waitForResizeBeat()
     await owner.resize(101, 31)
+    await waitForResizeBeat()
     await follower.list()
     expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([
       { terminalId, cols: 100, rows: 30 },
@@ -277,16 +291,19 @@ describe("opt-in terminal resize notifications", () => {
     await follower.watch(true)
     await follower.watch()
     await owner.resize()
+    await waitForResizeBeat()
     await follower.list()
     expect(notices(follower, "terminal.resized")).toEqual([])
     await follower.watch(true)
     await owner.watch(true)
     await owner.resize(101, 30)
+    await waitForResizeBeat()
     await follower.list()
     expect(notices(follower, "terminal.resized")).toHaveLength(1)
     expect(notices(owner, "terminal.resized")).toHaveLength(1)
     for (const connection of [owner, follower]) expect((await connection.rpc("terminal.unwatch", { terminalId })).error).toBeUndefined()
     await owner.resize(102, 30)
+    await waitForResizeBeat()
     print("owner still reads\n")
     await vi.waitFor(() => expect(notices(owner, "terminal.output")).toHaveLength(1))
     await follower.list()
@@ -303,14 +320,17 @@ describe("opt-in terminal resize notifications", () => {
     await first.close()
     await vi.waitFor(() => expect(notices(sibling, "terminal.ownership")).toHaveLength(1))
     await sibling.resize()
+    await waitForResizeBeat()
     expect(notices(sibling, "terminal.resized")).toEqual([])
     const next = await connect("owner")
     await next.watch()
     await sibling.resize(110, 30)
+    await waitForResizeBeat()
     await next.list()
     expect(notices(next, "terminal.resized")).toEqual([])
     await next.watch(true)
     await sibling.resize(120, 30)
+    await waitForResizeBeat()
     await next.list()
     expect(notices(next, "terminal.resized")).toHaveLength(1)
   })
@@ -324,7 +344,112 @@ describe("opt-in terminal resize notifications", () => {
     expect((await follower.watch(true)).result).toMatchObject({ state: "closed", claimHeld: false })
     await owner.create()
     await owner.resize()
+    await waitForResizeBeat()
     await follower.list()
     expect(follower.notifications).toEqual([])
+  })
+})
+
+describe("bounded terminal resize delivery", () => {
+  async function setup() {
+    const harness = await start()
+    const owner = await harness.connect("owner")
+    const follower = await harness.connect("follower")
+    await owner.create()
+    await follower.watch(true)
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] })
+    const beat = async () => {
+      await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds)
+      // A reply follows notifications already sent on this connection.
+      await owner.list()
+    }
+    return { ...harness, owner, follower, beat }
+  }
+
+  it.each(["resize", "create"] as const)("coalesces ten rapid holder %s calls into one latest size per beat", async (method) => {
+    const { owner, follower, beat } = await setup()
+    for (let index = 0; index < 10; index += 1) expect((await owner[method](100 + index, 30)).error).toBeUndefined()
+    await follower.list()
+    expect(notices(follower, "terminal.resized")).toEqual([])
+    await beat()
+    await follower.list()
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([{ terminalId, cols: 109, rows: 30 }])
+    await beat()
+    await follower.list()
+    expect(notices(follower, "terminal.resized")).toHaveLength(1)
+  })
+
+  it("holds only the latest size while paused and sends it once at low water", async () => {
+    const { owner, follower, process, print, beat } = await setup()
+    let bufferedBytes = terminalWebSocketHighWaterBytes + 1
+    Object.defineProperty(follower.serverSocket, "bufferedAmount", { get: () => bufferedBytes })
+    print("output fills the socket\n")
+    await beat()
+    expect(process.pause).toHaveBeenCalledOnce()
+    for (let index = 0; index < 10; index += 1) await owner.resize(100 + index, 30)
+    await beat()
+    await beat()
+    // Use the healthy holder as the barrier; a response to the slow watcher
+    // would correctly take the ordinary RPC high-water close path.
+    expect(notices(follower, "terminal.resized")).toEqual([])
+    bufferedBytes = 0
+    await beat()
+    await follower.list()
+    expect(process.resume).toHaveBeenCalledOnce()
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([{ terminalId, cols: 109, rows: 30 }])
+    await beat()
+    await follower.list()
+    expect(notices(follower, "terminal.resized")).toHaveLength(1)
+  })
+
+  it.each(["before resize\n", "prompt before resize"])("delivers earlier output %j before the size notification", async (data) => {
+    const { owner, follower, print, beat } = await setup()
+    print(data)
+    await owner.resize()
+    await beat()
+    await follower.list()
+    expect(follower.notifications.at(-1)).toEqual({ method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } })
+    const output = follower.notifications.slice(0, -1)
+    // Redaction may split a prompt across output frames. Every byte must
+    // still arrive before the resize, including the tail released on this beat.
+    expect(output.every(({ method, params }) => method === "terminal.output" && params.terminalId === terminalId)).toBe(true)
+    expect(output.map(({ params }) => params.data).join("")).toBe(data)
+  })
+
+  it("pauses resize-only traffic when a resize fills the follower buffer", async () => {
+    const { owner, follower, process, beat } = await setup()
+    let bufferedBytes = terminalWebSocketHighWaterBytes - 1
+    Object.defineProperty(follower.serverSocket, "bufferedAmount", { get: () => bufferedBytes })
+    const send = follower.serverSocket.send.bind(follower.serverSocket)
+    vi.spyOn(follower.serverSocket, "send").mockImplementation((message) => {
+      send(message)
+      bufferedBytes += Buffer.byteLength(message)
+    })
+    await owner.resize()
+    await beat()
+    expect(process.pause).toHaveBeenCalledOnce()
+    expect(notices(follower, "terminal.resized")).toHaveLength(1)
+    for (let index = 0; index < 10; index += 1) await owner.resize(110 + index, 30)
+    await beat()
+    await beat()
+    expect(notices(follower, "terminal.resized")).toHaveLength(1)
+    bufferedBytes = 0
+    await beat()
+    await follower.list()
+    expect(process.resume).toHaveBeenCalledOnce()
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([
+      { terminalId, cols: 100, rows: 30 },
+      { terminalId, cols: 119, rows: 30 },
+    ])
+  })
+
+  it.each(["close", "exit"] as const)("discards the pending resize when the terminal ends by %s", async (end) => {
+    const { owner, follower, exit, beat } = await setup()
+    await owner.resize()
+    if (end === "close") expect((await owner.rpc("terminal.close", owner.identity)).error).toBeUndefined()
+    else exit()
+    await beat()
+    await follower.list()
+    expect(follower.notifications.map(({ method }) => method)).toEqual(["terminal.closed"])
   })
 })
