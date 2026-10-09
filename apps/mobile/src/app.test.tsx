@@ -129,6 +129,33 @@ describe("App", () => {
     expect(screen.getByText(billing.title)).toBeOnTheScreen()
   })
 
+  // The gate's origin is compared with the device id the daemon holds for this
+  // phone, and its step is read from the plan the snapshot carries. Until
+  // device.current answers, the phone says only the kind of client.
+  it("says a gate's turn came from this phone once the daemon names the device, with its plan step", async () => {
+    const deviceId = "device-0123456789abcdef0123456789abcdef"
+    const raised = workspace()
+    raised.approvals[0] = { ...approval, origin: { client: "phone", connectionId: "11111111-1111-4111-8111-111111111111", clientId: deviceId } }
+    raised.workingPlans = raised.workingPlans.map((plan) => plan.sessionId !== approval.sessionId ? plan : {
+      ...plan,
+      steps: plan.steps.map((step) => step.status === "in-progress" ? { ...step, blocker: { kind: "approval" as const, approvalId: approval.id } } : step),
+    })
+    const { socket } = await openApp(raised)
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+
+    expect(screen.getByText("a phone")).toBeOnTheScreen()
+    expect(screen.getByText("step 3 of 4")).toBeOnTheScreen()
+    expect(socket.requests("device.current")).toHaveLength(1)
+
+    await act(async () => {
+      socket.answer("device.current", { kind: "client", machineId: raised.machine.id, deviceId, client: "phone", clientAccess: "full" })
+    })
+    await settle()
+
+    expect(screen.getByText("you, on this phone")).toBeOnTheScreen()
+    expect(screen.queryByText("a phone")).toBeNull()
+  })
+
   it("answers the gate it opened with one approval.resolve carrying that approval's id", async () => {
     const { socket } = await openApp(workspace())
     await fireEvent.press(screen.getByRole("button", { name: billing.title }))

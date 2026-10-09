@@ -297,7 +297,12 @@
       "evidence": [
         ": \"Waiting on you\"}",
         "Always allow this",
-        "Nothing has run yet."
+        "Nothing has run yet.",
+        "key: \"Turn from\"",
+        "key: \"Plan\"",
+        "key: \"Outside project\"",
+        "approvalPlanStep(plans ?? [], approval)",
+        "phoneApprovalFacts(approval, { plans, viewer })"
       ]
     },
     {
@@ -840,6 +845,11 @@
       "id": "gate.screen",
       "since": "2026-09-18",
       "note": "full-width primary decision with the two alternatives smaller, 52 and 48px targets: arrangement, not copy"
+    },
+    {
+      "id": "gate.screen",
+      "since": "2026-10-06",
+      "note": "approved difference, Q17 A (autopilot standing ruling 2026-10-06): frame 02 draws none of the approval facts #740 (7d3c60e3) put on the wire; the phone draws them as fact rows, each only when the daemon sent it. Turn from after Mode: you, on this phone when the origin's client id is this phone's paired device id from device.current, another phone only when both ids are known and differ, else the origin's kind only. Plan after it: step n of N from approvalPlanStep, the Desktop v2 and CLI wording. Outside project after Directory, in the warning tone when outside, naming its basis: by the path it names, or by where it runs, and an inside working directory adds not by what it reaches. Absent facts draw nothing. A real device check of the rows is owed to fetzy"
     },
     {
       "id": "sessions.list",
