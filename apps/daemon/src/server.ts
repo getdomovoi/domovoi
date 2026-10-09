@@ -3978,12 +3978,9 @@ export class DomovoiDaemon {
     const size = terminal.pendingResize
     terminal.pendingResize = undefined
     terminal.resizeDeferrals = 0
-    this.#notifyClients(
-      [...terminal.resizeFollowers].filter((candidate) => terminal.audience.has(candidate)
-        && (this.#mayWatchTerminals(candidate) || terminal.watchers.has(candidate))),
-      "terminal.resized",
-      { terminalId, ...size },
-    )
+    const followers = [...terminal.resizeFollowers].filter((candidate) => terminal.audience.has(candidate)
+      && (this.#mayWatchTerminals(candidate) || terminal.watchers.has(candidate)))
+    this.#notifyClients(followers, "terminal.resized", { terminalId, ...size })
     terminal.outputBackpressure.observe()
   }
 
