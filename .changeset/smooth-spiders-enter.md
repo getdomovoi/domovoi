@@ -17,6 +17,10 @@ complete lines, can follow the notice. Resizing does not release that text.
 While output is paused for slow readers, adjacent resize markers coalesce to the latest
 dimensions and wait for low water. Resizes with no eligible follower do not observe
 backpressure. Closing a terminal flushes queued output and markers before its closed notice.
+Joining or rejoining a paused terminal preserves that pause. The reply excludes queued
+output from its replay, so that text arrives once through the live stream after resume.
+An empty replay has no start timestamp; if queued output exceeds retained history,
+the watch reply reports that earlier output was dropped.
 
 Protocol version remains `0.8.0`; new fields are optional and older watch requests receive
 no resize notifications.

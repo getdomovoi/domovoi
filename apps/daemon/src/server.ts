@@ -4003,15 +4003,31 @@ export class DomovoiDaemon {
     }
   }
 
-  // A connection joins at a boundary: output still waiting in the batch goes
-  // to the audience it was printed for before the newcomer is added, so what
-  // it reads next from the record and what reaches it live never overlap. A
-  // connection already watching gets the same boundary, since the record it
-  // is about to read holds that waiting output too.
-  #joinTerminalAudience(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket, watching = false): void {
-    terminal.output.flush(terminalId)
+  // Unpaused joins flush before reading the replay. Paused joins instead
+  // exclude queued output from their replay, since they will receive it live
+  // on resume. Neither a new reader nor a rejoin may flush a paused stream.
+  #joinTerminalAudience(
+    terminalId: string,
+    terminal: ActiveTerminal,
+    socket: RpcOutboundSocket,
+    { watching = false, replay = true }: { watching?: boolean; replay?: boolean } = {},
+  ): TerminalReplayRecord {
+    // A claim or disconnect handoff has no replay reply. Admit its reader before
+    // an unpaused flush so those bytes reach it live instead of being lost.
+    if (!replay) terminal.audience.add(socket)
+    if (!terminal.outputBackpressure.paused) terminal.output.flush(terminalId)
     terminal.audience.add(socket)
     if (watching) terminal.watchers.add(socket)
+    const record = terminal.replay.record()
+    const queued = terminal.output.queuedOutputCharacters(terminalId)
+    // Replay and batching receive the same redacted text, so all queued output
+    // is a suffix of the replay, or covers it entirely after replay eviction.
+    const text = record.text.slice(0, Math.max(0, record.text.length - queued))
+    return {
+      text,
+      startsAt: text.length > 0 ? record.startsAt : undefined,
+      dropped: record.dropped || queued > record.text.length,
+    }
   }
 
   // Called once the terminal has left #terminals and its last output has been
@@ -6793,11 +6809,7 @@ export class DomovoiDaemon {
               claimHeld: true,
             }))
           }
-          // Repeated create calls by an existing reader must not force queued
-          // resize markers past high water. A new reader still joins at a boundary.
-          if (!existing.audience.has(socket) || !existing.outputBackpressure.paused) {
-            this.#joinTerminalAudience(params.terminalId, existing, socket)
-          }
+          const record = this.#joinTerminalAudience(params.terminalId, existing, socket)
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
@@ -6808,7 +6820,7 @@ export class DomovoiDaemon {
               rows: existing.rows,
               shell: existing.shell,
               cwd: existing.cwd,
-              buffer: existing.replay.read(),
+              buffer: record.text,
               owner: existing.owner,
             }),
           })
@@ -6875,6 +6887,8 @@ export class DomovoiDaemon {
               // A read this large is a burst, and the tail redaction holds back
               // would otherwise leave it under the batcher's threshold, so a
               // client about to be dropped for slowness would never see it.
+              // While paused, a flush would push markers past high water;
+              // resume delivers the burst in stream order instead.
               if (text.length >= maximumTerminalOutputChunkCharacters - terminalRedactionCarryCharacters
                 && !active.outputBackpressure.paused) {
                 active.output.flush(params.terminalId)
@@ -6957,7 +6971,7 @@ export class DomovoiDaemon {
         if (!sameClaim) terminal.owner = this.#terminalOwner(socket, params)
         terminal.ownerSocket = socket
         terminal.ownerKey = this.#terminalClientKey(socket)
-        terminal.audience.add(socket)
+        this.#joinTerminalAudience(params.terminalId, terminal, socket, { replay: false })
         if (terminal.reapTimer !== undefined) {
           clearTimeout(terminal.reapTimer)
           terminal.reapTimer = undefined
@@ -7029,12 +7043,13 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
+        const record = terminal
+          ? this.#joinTerminalAudience(params.terminalId, terminal, socket, { watching: true })
+          : closed!.record
         if (terminal) {
-          this.#joinTerminalAudience(params.terminalId, terminal, socket, true)
           if (params.followResize) terminal.resizeFollowers.add(socket)
           else terminal.resizeFollowers.delete(socket)
         }
-        const record = terminal ? terminal.replay.record() : closed!.record
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -13131,10 +13146,8 @@ export class DomovoiDaemon {
       terminal.resizeFollowers.delete(socket)
       if (terminal.ownerSocket !== socket) continue
       if (sameClient) {
-        // No record is read here, so output still waiting in the batch goes on
-        // to the same client's other connection rather than being cut off.
         terminal.ownerSocket = sameClient
-        terminal.audience.add(sameClient)
+        this.#joinTerminalAudience(terminalId, terminal, sameClient, { replay: false })
         this.#announceTerminalOwnership(terminalId, terminal)
         continue
       }

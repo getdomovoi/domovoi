@@ -169,6 +169,26 @@ describe("terminal output resize markers", () => {
     expect(events).toHaveLength(5)
   })
 
+  it("counts only queued output across markers, partial drains, resume and flush", () => {
+    let paused = true
+    const { batcher } = stream(() => paused)
+    expect(batcher.queuedOutputCharacters("t")).toBe(0)
+    batcher.push("t", `${"x".repeat(maximumTerminalOutputChunkCharacters)}tail`)
+    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.push("t", "after")
+    expect(batcher.queuedOutputCharacters("t")).toBe(9)
+    expect(batcher.queuedOutputCharacters("other")).toBe(0)
+    batcher.resume("t")
+    expect(batcher.queuedOutputCharacters("t")).toBe(5)
+    paused = false
+    batcher.resume("t")
+    expect(batcher.queuedOutputCharacters("t")).toBe(0)
+    batcher.push("t", "pending")
+    expect(batcher.queuedOutputCharacters("t")).toBe(7)
+    batcher.flush("t")
+    expect(batcher.queuedOutputCharacters("t")).toBe(0)
+  })
+
   it("keeps a pause when the last full output chunk emptied the queue", () => {
     let paused = true
     const { batcher, events, beat } = stream(() => paused)

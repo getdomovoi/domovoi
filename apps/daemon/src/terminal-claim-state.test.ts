@@ -1,6 +1,6 @@
 import { once } from "node:events"
 
-import { demoWorkspace, maximumTerminalOutputChunkCharacters, protocolVersion, terminalOutputBatchDelayMilliseconds, terminalWebSocketHighWaterBytes } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumTerminalOutputChunkCharacters, maximumTerminalReplayCharacters, protocolVersion, terminalOutputBatchDelayMilliseconds, terminalWebSocketHighWaterBytes } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
@@ -378,6 +378,133 @@ describe("bounded terminal resize delivery", () => {
     }
     return { ...harness, owner, follower, beat }
   }
+
+  async function pausedJoin() {
+    const harness = await setup()
+    const slow = await harness.connect("slow-unrelated")
+    let bufferedBytes = terminalWebSocketHighWaterBytes + 1
+    Object.defineProperty(slow.serverSocket, "bufferedAmount", { get: () => bufferedBytes })
+    const historyTime = new Date().toISOString()
+    harness.print("history\n")
+    await harness.beat()
+    await harness.follower.list()
+    expect(harness.process.pause).toHaveBeenCalledOnce()
+    harness.owner.notifications.length = 0
+    harness.follower.notifications.length = 0
+    return { ...harness, historyTime, drain: () => { bufferedBytes = 0 } }
+  }
+
+  it.each(["new", "existing"] as const)("keeps a paused %s watcher replay separate from queued output and markers", async (membership) => {
+    const { connect, owner, follower, process, print, beat, drain, historyTime } = await pausedJoin()
+    const joiner = membership === "new" ? await connect("joiner") : follower
+    print("q1")
+    await beat()
+    await owner.resize()
+    const reply = await joiner.watch(true)
+    expect(reply.result).toMatchObject({ buffer: "history\n", bufferStartsAt: historyTime, earlierOutputDropped: false })
+    await follower.list()
+    expect(joiner.notifications).toEqual([])
+    expect(follower.notifications).toEqual([])
+    expect(owner.notifications).toEqual([])
+    expect(process.resume).not.toHaveBeenCalled()
+    drain()
+    await beat()
+    await joiner.list()
+    await follower.list()
+    const events = [
+      { method: "terminal.output", params: { terminalId, data: "q1" } },
+      { method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } },
+    ]
+    expect(joiner.notifications).toEqual(events)
+    expect(follower.notifications).toEqual(events)
+    expect(owner.notifications).toEqual(events.slice(0, 1))
+    await beat()
+    await joiner.list()
+    expect(joiner.notifications).toEqual(events)
+  })
+
+  it("keeps five resize and watch rounds paused and coalesces their markers", async () => {
+    const { owner, follower, process, beat, drain } = await pausedJoin()
+    for (let round = 0; round < 5; round += 1) {
+      await owner.resize(100 + round, 30)
+      await follower.watch(true)
+    }
+    expect.soft(notices(follower, "terminal.resized")).toEqual([])
+    expect(process.resume).not.toHaveBeenCalled()
+    drain()
+    await beat()
+    await follower.list()
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([{ terminalId, cols: 104, rows: 30 }])
+  })
+
+  it.each(["existing", "new", "reconnected", "unheld"] as const)("keeps a paused create separate from queued output for a client that is %s", async (membership) => {
+    const { connect, owner, follower, print, beat, drain } = await pausedJoin()
+    const joiner = membership === "existing" ? owner : await connect(membership === "reconnected" ? "owner" : "joiner")
+    print("q1")
+    await beat()
+    expect((await owner.resize()).error).toBeUndefined()
+    if (membership === "unheld") await owner.release()
+    const reply = await joiner.create(100, 30)
+    expect(reply.result?.buffer).toBe("history\n")
+    await follower.list()
+    expect(notices(joiner, "terminal.output")).toEqual([])
+    expect(notices(follower, "terminal.output")).toEqual([])
+    expect(notices(follower, "terminal.resized")).toEqual([])
+    drain()
+    await beat()
+    await joiner.list()
+    await follower.list()
+    expect(notices(joiner, "terminal.output").map(({ params }) => params.data)).toEqual(["q1"])
+    expect(notices(follower, "terminal.output").map(({ params }) => params.data)).toEqual(["q1"])
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([{ terminalId, cols: 100, rows: 30 }])
+    expect(`${reply.result?.buffer}${notices(joiner, "terminal.output").map(({ params }) => params.data).join("")}`).toBe("history\nq1")
+  })
+
+  it.each(["claim", "input", "disconnect"] as const)("keeps the stream paused when a new connection joins through %s", async (method) => {
+    const { connect, owner, follower, print, beat, drain } = await pausedJoin()
+    const joiner = await connect(method === "claim" ? "claimant" : "owner")
+    print("q1")
+    await beat()
+    await owner.resize()
+    if (method === "disconnect") await owner.close()
+    else {
+      const reply = method === "claim" ? await joiner.claim() : await joiner.rpc("terminal.input", { ...joiner.identity, data: "x" })
+      expect(reply.error).toBeUndefined()
+    }
+    await joiner.list()
+    await follower.list()
+    expect(notices(joiner, "terminal.output")).toEqual([])
+    expect(notices(follower, "terminal.output")).toEqual([])
+    expect(notices(follower, "terminal.resized")).toEqual([])
+    drain()
+    await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds)
+    await joiner.list()
+    await follower.list()
+    expect(notices(joiner, "terminal.output").map(({ params }) => params.data)).toEqual(["q1"])
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([{ terminalId, cols: 100, rows: 30 }])
+  })
+
+  it.each([false, true])("omits a paused replay timestamp when all retained text is queued (overflow: %s)", async (overflow) => {
+    const { connect, owner, follower, print, beat } = await setup()
+    // Pause with a resize, leaving the replay empty before queuing text.
+    const slow = await connect("slow-unrelated")
+    let bufferedBytes = terminalWebSocketHighWaterBytes + 1
+    Object.defineProperty(slow.serverSocket, "bufferedAmount", { get: () => bufferedBytes })
+    await owner.resize()
+    await follower.list()
+    const text = overflow ? `${"x".repeat(maximumTerminalReplayCharacters + 1)}\n` : "q1\n"
+    print(text)
+    const joiner = await connect("joiner")
+    const reply = await joiner.watch(true)
+    expect(reply.result?.buffer).toHaveLength(0)
+    expect(reply.result?.earlierOutputDropped).toBe(overflow)
+    expect(reply.result).not.toHaveProperty("bufferStartsAt")
+    expect(joiner.notifications).toEqual([])
+    bufferedBytes = 0
+    await beat()
+    await joiner.list()
+    expect(notices(joiner, "terminal.output").map(({ params }) => params.data).join("")).toBe(text)
+  })
 
   it.each(["resize", "create"] as const)("orders a %s marker before a synchronous PTY redraw and after queued old output", async (method) => {
     const { owner, follower, process, print, beat } = await setup()
