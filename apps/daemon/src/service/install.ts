@@ -73,8 +73,10 @@ export type CapturedRun = { code: number; stdout: string; stderr?: string }
 export type ServiceEffects = {
   readConfiguration?: (home: string, platform: string) => ServiceConfiguration | undefined
   stopSupervisor?: (path: string, deadline: OperationDeadline, options?: { retire?: boolean; previousConfigurationDigest?: string; confirmNoLaunch?: () => Promise<boolean>; stopTask?: () => Promise<boolean> }) => Promise<unknown>
-  claimServiceOperation: () => ReturnType<typeof claimServiceOperation>
-  claimServiceStatusRead?: () => FileLease | undefined
+  claimServiceOperation: {
+    (): FileLease
+    (access: "status"): FileLease | undefined
+  }
   claimProfile: (homeDirectory: ProfileLocation) => ProfileLease
   registeredProfile?: (home: string, platform: string) => ProfileLocation | undefined
   removalSnapshot: typeof readServiceRemovalSnapshot
@@ -1546,11 +1548,10 @@ async function statusWithDeadline(
 
 export function serviceStatus(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
-  effects: Pick<ServiceEffects, "capture" | "exists" | "claimServiceOperation" | "claimServiceStatusRead" | "supervisorStatus" | "readConfiguration">,
+  effects: Pick<ServiceEffects, "capture" | "exists" | "claimServiceOperation" | "supervisorStatus" | "readConfiguration">,
 ): Promise<ServiceStatus> {
   return serviceOperation({
-    claimServiceOperation: () => effects.claimServiceStatusRead
-      ? effects.claimServiceStatusRead() : effects.claimServiceOperation(),
+    claimServiceOperation: () => effects.claimServiceOperation("status"),
   }, (deadline) => statusWithDeadline(target, effects, deadline))
 }
 
@@ -1719,17 +1720,23 @@ function managerDirectory(command: string): { cwd?: string } {
 }
 
 export function nodeServiceEffects(options: { userHomeDirectory?: string } = {}): ServiceEffects {
+  // Manager names are per OS user, not per caller-selected HOME or profile.
+  // One effect keeps status reads and mutations on the same lease when a
+  // fixture overrides the claim to isolate the operator's service lock.
+  function claimOperation(): FileLease
+  function claimOperation(access: "status"): FileLease | undefined
+  function claimOperation(access?: "status"): FileLease | undefined {
+    const home = options.userHomeDirectory ?? userInfo().homedir
+    return access === "status" ? claimServiceStatusRead(home) : claimServiceOperation(home)
+  }
+
   return {
     readConfiguration: (home, platform) => {
       try { return parseServiceConfiguration(readLocalProfileFile(serviceConfigurationPath(home, platform), 64 * 1024)) }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error }
     },
     stopSupervisor: process.platform === "win32" ? stopWindowsSupervisor : (path, deadline) => stopGuestSupervisor(path, deadline),
-    // Manager names are per OS user, not per caller-selected HOME or profile.
-    // An alternate shell HOME must not create a second lock for the same job.
-    // The override isolates tests from the operator's actual service lock.
-    claimServiceOperation: () => claimServiceOperation(options.userHomeDirectory ?? userInfo().homedir),
-    claimServiceStatusRead: () => claimServiceStatusRead(options.userHomeDirectory ?? userInfo().homedir),
+    claimServiceOperation: claimOperation,
     claimProfile,
     registeredProfile: (home, platform) => {
       let text: string

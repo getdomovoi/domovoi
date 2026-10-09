@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process"
 import { once } from "node:events"
 import { existsSync, mkdtempSync, readdirSync, statSync, utimesSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -9,6 +9,11 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { removeScratchDirectory } from "../test-scratch.js"
 import { nodeServiceEffects, serviceStatus } from "./install.js"
 import { claimServiceOperation, ServiceOperationBusyError } from "./operation-lease.js"
+
+vi.mock("node:os", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:os")>()
+  return { ...actual, userInfo: vi.fn(actual.userInfo) }
+})
 
 const homes: string[] = []
 afterEach(async () => {
@@ -104,6 +109,40 @@ describe("read-only service status leases", () => {
       resume.resolve()
       await pending
     }
+  })
+
+  it("keeps status in the temporary home when a fixture overrides only the operation claim", async () => {
+    const f = fixture()
+    const native = fixture()
+    // Model the native account with another scratch home, including in the
+    // failing case where an inherited status effect bypasses the override.
+    const nativeInfo = userInfo()
+    const nativeUserInfo = vi.mocked(userInfo).mockReturnValue({ ...nativeInfo, homedir: native.home }).mockClear()
+    const entered = latch(), resume = latch()
+    const effects = {
+      ...nodeServiceEffects(),
+      claimServiceOperation: nodeServiceEffects({ userHomeDirectory: f.home }).claimServiceOperation,
+      exists: f.effects.exists,
+      supervisorStatus: f.effects.supervisorStatus,
+      capture: async () => {
+        entered.resolve()
+        await resume.promise
+        return { code: 0, stdout: "active" }
+      },
+    }
+    const pending = serviceStatus(f.target, effects)
+    try {
+      await entered.promise
+      // Release an unexpected successful writer too, so the red run cleans up.
+      expect(() => claimServiceOperation(f.home).release()).toThrow(ServiceOperationBusyError)
+      claimServiceOperation(native.home).release()
+      expect(nativeUserInfo).not.toHaveBeenCalled()
+    } finally {
+      resume.resolve()
+      await pending
+      nativeUserInfo.mockReset()
+    }
+    claimServiceOperation(f.home).release()
   })
 
   it.skipIf(process.platform === "win32")("preserves a killed writer's journal beside a zero-byte lease", async () => {
