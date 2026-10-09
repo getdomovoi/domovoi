@@ -26,7 +26,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 
-async function start() {
+async function start({ terminalReapGraceMs = graceMs }: { terminalReapGraceMs?: number } = {}) {
   // Keep network and reap timers real; only the claim clock is controlled.
   vi.useFakeTimers({ toFake: ["Date"] })
   vi.setSystemTime(new Date(firstTime))
@@ -37,6 +37,7 @@ async function start() {
     onData: vi.fn((listener: typeof print) => { print = listener; return { dispose: vi.fn() } }),
     onExit: vi.fn((listener: typeof exit) => { exit = listener; return { dispose: vi.fn() } }),
   } satisfies TerminalProcess
+  const spawn = vi.fn(() => process)
   const snapshot = structuredClone(demoWorkspace)
   const session = snapshot.sessions[0]!
   session.workspacePath = "/worktrees/terminal-claim-state"
@@ -44,8 +45,8 @@ async function start() {
   const daemon = new DomovoiDaemon({
     port: 0,
     store: new SqliteWorkspaceStore(":memory:", snapshot),
-    terminalService: { spawn: vi.fn(() => process) },
-    terminalReapGraceMs: graceMs,
+    terminalService: { spawn },
+    terminalReapGraceMs,
     rpcOutboundBackpressure: {
       bufferedBytes: (socket) => { serverSockets.add(socket); return socket.bufferedAmount },
     },
@@ -90,7 +91,7 @@ async function start() {
       close: async () => { socket.close(); await once(socket, "close") },
     }
   }
-  return { daemon, connect, process, print: (data: string) => print(data), exit: () => exit({ exitCode: 0 }) }
+  return { daemon, connect, process, spawn, print: (data: string) => print(data), exit: () => exit({ exitCode: 0 }) }
 }
 
 const notices = (connection: Connection, method: string) => connection.notifications.filter((notice) => notice.method === method)
@@ -175,7 +176,7 @@ describe("releasing a terminal claim", () => {
     await owner.close()
     const reconnected = await connect("owner")
     await new Promise((resolve) => setTimeout(resolve, graceMs * 3))
-    expect((await reconnected.watch()).result).toMatchObject({ claimHeld: false, owner: claimedOwner("owner") })
+    expect((await reconnected.watch()).result).toMatchObject({ state: "live", claimHeld: false, owner: claimedOwner("owner") })
     expect((await reconnected.resize()).error).toMatchObject(notOwner)
     expect(notices(reconnected, "terminal.ownership")).toEqual([])
     expect(process.kill).not.toHaveBeenCalled()
@@ -213,7 +214,7 @@ describe("claim time", () => {
   })
 
   it.each([true, false])("preserves claim time on disconnect with a sibling already connected: %s", async (hasSibling) => {
-    const { connect } = await start()
+    const { connect } = await start({ terminalReapGraceMs: 60_000 })
     const first = await connect("owner")
     await first.create()
     vi.setSystemTime(new Date(nextTime))
@@ -221,20 +222,31 @@ describe("claim time", () => {
     await first.close()
     const next = sibling ?? await connect("owner")
     await vi.waitFor(() => expect(notices(next, "terminal.ownership").at(-1)?.params).toEqual({ terminalId, owner: claimedOwner("owner"), claimHeld: true }), { timeout: 2_000 })
-    expect((await next.watch()).result).toMatchObject({ owner: claimedOwner("owner"), claimHeld: true })
+    expect((await next.watch()).result).toMatchObject({ state: "live", owner: claimedOwner("owner"), claimHeld: true })
   })
 
   it("timestamps create taking an unheld shell from a different disconnected client and cancels reaping", async () => {
-    const { connect, process } = await start()
+    const reapGraceMs = 60_000
+    const { connect, process, spawn } = await start({ terminalReapGraceMs: reapGraceMs })
     const first = await connect("owner")
     const next = await connect("other")
     await first.create()
+    const scheduled = vi.spyOn(globalThis, "setTimeout")
+    const cancelled = vi.spyOn(globalThis, "clearTimeout")
     await first.close()
-    await vi.waitFor(async () => expect((await next.watch()).result).toMatchObject({ claimHeld: false }), { timeout: 2_000 })
+    await vi.waitFor(async () => expect((await next.watch()).result).toMatchObject({ state: "live", claimHeld: false }), { timeout: 2_000 })
+    const reapIndex = scheduled.mock.calls.findIndex(([, delay]) => delay === reapGraceMs)
+    expect(reapIndex).toBeGreaterThanOrEqual(0)
+    const reapTimer = scheduled.mock.results[reapIndex]!.value
+    expect(reapTimer).toBeDefined()
+    expect(cancelled).not.toHaveBeenCalledWith(reapTimer)
     vi.setSystemTime(new Date(nextTime))
     expect((await next.create()).result).toMatchObject({ owner: claimedOwner("other", nextTime) })
     expect(notices(next, "terminal.ownership").at(-1)?.params).toEqual({ terminalId, owner: claimedOwner("other", nextTime), claimHeld: true })
-    await new Promise((resolve) => setTimeout(resolve, graceMs * 3))
+    // Check the exact scheduled reap was cancelled, without sleeping through
+    // the grace window or relying on the callback's owner guard to hide a leak.
+    expect(cancelled).toHaveBeenCalledWith(reapTimer)
+    expect(spawn).toHaveBeenCalledOnce()
     expect(process.kill).not.toHaveBeenCalled()
   })
 })
