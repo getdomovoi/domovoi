@@ -4003,9 +4003,9 @@ export class DomovoiDaemon {
     }
   }
 
-  // Unpaused joins flush before reading the replay. Paused joins instead
-  // exclude queued output from their replay, since they will receive it live
-  // on resume. Neither a new reader nor a rejoin may flush a paused stream.
+  // Live joins drain before reading the replay, stopping if delivery pauses.
+  // Exclude the output still queued after that drain from the reply, since
+  // the reader will receive it live on resume.
   #joinTerminalAudience(
     terminalId: string,
     terminal: ActiveTerminal,
@@ -4013,9 +4013,9 @@ export class DomovoiDaemon {
     { watching = false, replay = true }: { watching?: boolean; replay?: boolean } = {},
   ): TerminalReplayRecord {
     // A claim or disconnect handoff has no replay reply. Admit its reader before
-    // an unpaused flush so those bytes reach it live instead of being lost.
+    // the drain so those bytes reach it live instead of being lost.
     if (!replay) terminal.audience.add(socket)
-    if (!terminal.outputBackpressure.paused) terminal.output.flush(terminalId)
+    terminal.output.drainNow(terminalId)
     terminal.audience.add(socket)
     if (watching) terminal.watchers.add(socket)
     const record = terminal.replay.record()
@@ -6790,7 +6790,7 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Terminal belongs to another session")
             return
           }
-          if (this.#ownsTerminal(params.terminalId, existing, socket)) {
+          if (this.#ownsTerminal(params.terminalId, existing, socket, { replay: true })) {
             if (existing.cols !== params.cols || existing.rows !== params.rows) {
               this.#resizeTerminal(params.terminalId, existing, params.cols, params.rows)
             }
@@ -6887,11 +6887,11 @@ export class DomovoiDaemon {
               // A read this large is a burst, and the tail redaction holds back
               // would otherwise leave it under the batcher's threshold, so a
               // client about to be dropped for slowness would never see it.
-              // While paused, a flush would push markers past high water;
-              // resume delivers the burst in stream order instead.
+              // The live drain respects any pause caused by this burst; only
+              // close and exit may flush markers past high water.
               if (text.length >= maximumTerminalOutputChunkCharacters - terminalRedactionCarryCharacters
                 && !active.outputBackpressure.paused) {
-                active.output.flush(params.terminalId)
+                active.output.drainNow(params.terminalId)
               }
             }
             emit(active.redactor.push(data))
@@ -13100,14 +13100,19 @@ export class DomovoiDaemon {
 
   // A connection that authenticated as the owning client holds the terminal,
   // so the owner's reconnect is not refused as another client's.
-  #ownsTerminal(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket): boolean {
+  #ownsTerminal(
+    terminalId: string,
+    terminal: ActiveTerminal,
+    socket: RpcOutboundSocket,
+    { replay = false }: { replay?: boolean } = {},
+  ): boolean {
     if (terminal.ownerSocket === socket) return true
     const key = this.#terminalClientKey(socket)
     if (key === undefined || terminal.ownerKey !== key) return false
-    // Wherever ownership moves, the new owner also hears the terminal, from
-    // the same boundary as any other connection that joins.
+    // Only create returns a replay. Other ownership moves must admit the new
+    // reader before draining so it receives pending output live.
     terminal.ownerSocket = socket
-    this.#joinTerminalAudience(terminalId, terminal, socket)
+    this.#joinTerminalAudience(terminalId, terminal, socket, { replay })
     if (terminal.reapTimer !== undefined) {
       clearTimeout(terminal.reapTimer)
       terminal.reapTimer = undefined

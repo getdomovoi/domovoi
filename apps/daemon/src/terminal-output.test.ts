@@ -169,6 +169,36 @@ describe("terminal output resize markers", () => {
     expect(events).toHaveLength(5)
   })
 
+  it("drains partial output now and preserves a resulting pause until resume", () => {
+    let paused = true
+    const { batcher, events, scheduled, beat } = stream(() => paused)
+    batcher.push("t", "pending")
+    batcher.drainNow("t")
+    expect(events).toEqual(["t:output:pending"])
+    expect(scheduled.size).toBe(0)
+    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.push("t", "after")
+    batcher.drainNow("t")
+    beat()
+    expect(events).toEqual(["t:output:pending"])
+    expect(batcher.queuedOutputCharacters("t")).toBe(5)
+    paused = false
+    batcher.resume("t")
+    expect(events).toEqual(["t:output:pending", "t:resize:100x30", "t:output:after"])
+    expect(batcher.queuedOutputCharacters("t")).toBe(0)
+  })
+
+  it("drains partial output now without leaving a duplicate scheduled delivery", () => {
+    const { batcher, events, scheduled, beat } = stream()
+    batcher.drainNow("unknown")
+    batcher.push("t", "partial")
+    batcher.drainNow("t")
+    expect(events).toEqual(["t:output:partial"])
+    expect(scheduled.size).toBe(0)
+    beat()
+    expect(events).toEqual(["t:output:partial"])
+  })
+
   it("counts only queued output across markers, partial drains, resume and flush", () => {
     let paused = true
     const { batcher } = stream(() => paused)

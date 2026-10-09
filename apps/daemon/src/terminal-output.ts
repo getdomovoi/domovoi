@@ -52,6 +52,12 @@ export class TerminalOutputBatcher {
     this.#drain(terminalId, pending, true)
   }
 
+  drainNow(terminalId: string): void {
+    const pending = this.#pending.get(terminalId)
+    if (!pending || pending.paused) return
+    this.#drain(terminalId, pending, true)
+  }
+
   queuedOutputCharacters(terminalId: string): number {
     return this.#pending.get(terminalId)?.entries.reduce(
       (total, entry) => total + (entry.kind === "output" ? entry.data.length : 0),
@@ -97,6 +103,7 @@ export class TerminalOutputBatcher {
     }
   }
 
+  // Final delivery ignores pauses. Live stream boundaries must use drainNow.
   flush(terminalId: string): void {
     const pending = this.#pending.get(terminalId)
     if (!pending) return

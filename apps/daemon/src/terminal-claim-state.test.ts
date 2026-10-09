@@ -379,6 +379,43 @@ describe("bounded terminal resize delivery", () => {
     return { ...harness, owner, follower, beat }
   }
 
+  it("keeps the stream paused after a claim drains pending output, until low water", async () => {
+    const { connect, follower, process, print, beat } = await setup()
+    const claimant = await connect("claimant")
+    const unrelated = await connect("slow-unrelated")
+    let bufferedBytes = terminalWebSocketHighWaterBytes + 1
+    Object.defineProperty(unrelated.serverSocket, "bufferedAmount", { get: () => bufferedBytes })
+    print("pending\n")
+    expect((await claimant.claim()).error).toBeUndefined()
+    expect(process.pause).toHaveBeenCalledOnce()
+    expect((await claimant.resize()).error).toBeUndefined()
+    await follower.list()
+    expect(notices(follower, "terminal.output").map(({ params }) => params.data)).toEqual(["pending\n"])
+    expect(notices(follower, "terminal.resized")).toEqual([])
+    await beat()
+    expect(process.resume).not.toHaveBeenCalled()
+    bufferedBytes = 0
+    await beat()
+    await follower.list()
+    expect(process.resume).toHaveBeenCalledOnce()
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([{ terminalId, cols: 100, rows: 30 }])
+    await beat()
+    await follower.list()
+    expect(notices(follower, "terminal.resized")).toHaveLength(1)
+  })
+
+  it("delivers pending output once to a same-client connection taking ownership through input", async () => {
+    const { connect, print, beat } = await setup()
+    const next = await connect("owner")
+    print("pending before input\n")
+    expect((await next.rpc("terminal.input", { ...next.identity, data: "x" })).error).toBeUndefined()
+    expect(notices(next, "terminal.output").map(({ params }) => params.data)).toEqual(["pending before input\n"])
+    await beat()
+    await beat()
+    await next.list()
+    expect(notices(next, "terminal.output").map(({ params }) => params.data)).toEqual(["pending before input\n"])
+  })
+
   async function pausedJoin() {
     const harness = await setup()
     const slow = await harness.connect("slow-unrelated")
