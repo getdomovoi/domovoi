@@ -36,12 +36,48 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
   const effects = nodeServiceEffects({ userHomeDirectory: directory })
   const plan = windowsTaskRemovalPlan(name)
   let created = false, started = false, removed = false
+  // Phase timings go to the CI log as each phase ends, so a run that reaches
+  // its deadline still shows where the time went. They assert nothing.
+  const began = performance.now()
+  let lastMark = began
+  const timing = (phase: string) => {
+    const now = performance.now()
+    console.log(`[windows supervision ${mode}] ${phase}: ${Math.round(now - lastMark)} ms (elapsed ${Math.round(now - began)} ms)`)
+    lastMark = now
+  }
   const capture = (command: ServiceCommand, active = deadline) => withinServiceDeadline(active,
     () => effects.capture(command.command, command.args, active))
-  const poll = async (test: () => boolean) => {
-    while (!test()) { deadline.throwIfExpired(); await withinServiceDeadline(deadline, () => delay(100, undefined, { signal: deadline.signal })) }
+  const poll = async (test: () => boolean, observe?: () => void) => {
+    while (!test()) { observe?.(); deadline.throwIfExpired(); await withinServiceDeadline(deadline, () => delay(100, undefined, { signal: deadline.signal })) }
   }
   const record = () => readWindowsSupervisorRecord(profile)
+  // Splits a wait for attempt n into the supervisor stages the record shows:
+  // the previous job's exit proof, backoff, launch intent, prepared job, and
+  // resumed job. The remainder, after the last stage, is daemon readiness.
+  const stages = (attempt: number) => {
+    const seen = new Set<string>()
+    return () => {
+      const state = record()
+      const mark = (stage: string, reached: boolean | undefined) => {
+        if (reached && !seen.has(stage)) { seen.add(stage); timing(`attempt ${attempt} ${stage}`) }
+      }
+      // The supervisor records the exit proof and its backoff in one write.
+      mark("previous exit proven", attempt > 1 && !!state?.attempts[attempt - 2]?.empty)
+      const current = state?.attempts[attempt - 1]
+      mark("launch intent recorded", !!current)
+      mark("job prepared", current && current.stage !== "intent")
+      mark("job resumed", state?.attempts.length === attempt && state.state === "running")
+    }
+  }
+  const describeRecord = () => {
+    try {
+      const state = record()
+      const owner = readLocalOwnerRecord(profile)
+      return JSON.stringify({ state: state?.state, reason: state?.reason, crashes: state?.crashes, updatedAt: state?.updatedAt,
+        attempts: state?.attempts.map((a) => ({ number: a.number, stage: a.stage, startedAt: a.startedAt, emptyAt: a.empty?.at ?? null,
+          exitCode: a.exitCode, backoffMs: a.backoffMs })), owner: owner?.state ?? null })
+    } catch (error) { return `unreadable: ${String(error)}` }
+  }
   const readyInstance = () => {
     const owner = readLocalOwnerRecord(profile)
     if (owner?.state !== "ready") throw new Error("Expected a ready daemon owner")
@@ -69,6 +105,7 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
   }
   try {
     expect(await capture(plan.inspect)).toMatchObject({ code: 0, stdout: "domovoi-task:missing\r\n" })
+    timing("task absent before install")
     await mkdir(join(directory, ".domovoi"), { recursive: true })
     await mkdir(profile.profileDirectory)
     const config = { ...createServiceConfiguration({ DOMOVOI_PROFILE_DIR: profile.profileDirectory, DOMOVOI_HOST: "127.0.0.1", DOMOVOI_PORT: "0" },
@@ -97,6 +134,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
 [Console]::Out.WriteLine('created')
 `))
     expect(registration).toMatchObject({ code: 0, stdout: "created\r\n" })
+    timing("install: task registered")
     expect((await capture(windowsTaskSettingsCommand(name))).code).toBe(0)
     const xml = await capture({ command: windowsSchtasksPath(), args: ["/query", "/tn", name, "/xml"] })
     expect(xml.code).toBe(0)
@@ -106,25 +144,33 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
     expect(settings).toMatch(/<ExecutionTimeLimit>PT0S<\/ExecutionTimeLimit>/)
     expect(settings).toMatch(/<DisallowStartIfOnBatteries>false<\/DisallowStartIfOnBatteries>/)
     expect(settings).toMatch(/<StopIfGoingOnBatteries>false<\/StopIfGoingOnBatteries>/)
+    timing("install: settings applied and read back")
     if (mode === "unstarted") {
       expect(record()).toBeUndefined()
       expect(existsSync(join(profile.profileDirectory, "windows-supervisor-lease.sqlite"))).toBe(false)
       await removeService({ platform: "win32", home: directory }, scoped)
+      timing("removal")
       expect(record()).toMatchObject({ state: "stopped", attempts: [] })
       expect(existsSync(path)).toBe(false)
       expect(await capture(plan.inspect)).toMatchObject({ code: 0, stdout: "domovoi-task:missing\r\n" })
       removed = true
+      timing("absent after removal")
       return
     }
     started = true
     await withinServiceDeadline(deadline, () => effects.run(windowsSchtasksPath(), ["/run", "/tn", name], deadline))
-    await poll(() => running(1))
+    timing("task started")
+    await poll(() => running(1), stages(1))
+    timing("attempt 1 daemon ready")
     const first = record()!
     expect(await serviceStatus({ platform: "win32", home: directory }, scoped)).toMatchObject({ installed: true, running: true })
+    timing("status: running")
     if (mode === "exhaustion") {
       const firstInstance = readyInstance()
       killDaemon(first)
-      await poll(() => running(2, firstInstance))
+      timing("crash 1: daemon killed")
+      await poll(() => running(2, firstInstance), stages(2))
+      timing("attempt 2 daemon ready")
       const second = record()!
       expect(second.attempts[1]!.child!.pid).not.toBe(first.attempts[0]!.child!.pid)
       expect(second.attempts[0]!.empty).toMatchObject({ activeProcesses: 0, terminated: true })
@@ -132,13 +178,18 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
       expect(record()).toMatchObject({ state: "running", crashes: 1 })
       expect(record()!.attempts).toHaveLength(2)
       expect(record()!.attempts[1]!.child!.pid).toBe(second.attempts[1]!.child!.pid)
+      timing("attempt 2 held for 3 s")
       for (const next of [3, 4]) {
         const previousInstance = readyInstance()
         killDaemon(record()!)
-        await poll(() => running(next, previousInstance))
+        timing(`crash ${next - 1}: daemon killed`)
+        await poll(() => running(next, previousInstance), stages(next))
+        timing(`attempt ${next} daemon ready`)
       }
       killDaemon(record()!)
+      timing("crash 4: daemon killed")
       await poll(() => record()?.state === "exhausted")
+      timing("exhaustion recorded")
       expect(record()!.attempts).toHaveLength(4)
       const stdout = vi.fn(), stderr = vi.fn()
       // This is the production CLI handler's exit code, with only the manager
@@ -147,27 +198,33 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
         execPath: entry, runtime: process.execPath, environment: { DOMOVOI_PROFILE_DIR: profile.profileDirectory }, stdout, stderr })).toBe(1)
       expect(stdout).toHaveBeenCalledWith(expect.stringContaining("supervision exhausted after 4 crashes"))
       expect(stderr).not.toHaveBeenCalled()
+      timing("status: exhausted")
     } else {
       await disableWindowsTask(plan, effects, deadline)
       await stopWindowsSupervisor(path, deadline, { retire: false, stopTask: async () => {
         expect(readSupervisorStopRequest(profile)?.registrationId).toBe(config.registrationId)
         return await stopWindowsTask(plan, effects, deadline) === "stopped"
       } })
+      timing("supervisor stopped")
       expect(readSupervisorStopRequest(profile)).toBeUndefined()
       expect(record()).toMatchObject({ state: "stopped", reason: "deliberate-stop" })
       await withinServiceDeadline(deadline, () => delay(3_000, undefined, { signal: deadline.signal }))
       expect(record()!.attempts).toHaveLength(1)
       expect(queryWindowsProcess(first.attempts[0]!.child!.pid).identity).not.toEqual(first.attempts[0]!.child)
+      timing("stopped held for 3 s")
     }
     await removeService({ platform: "win32", home: directory }, scoped)
+    timing("removal")
     expect(record()!.attempts.every((a) => a.empty?.activeProcesses === 0 && a.empty.terminated)).toBe(true)
     const children = record()!.attempts.map((attempt) => attempt.child!)
     const observed = queryWindowsProcesses(children.map((child) => child.pid))
     children.forEach((child, index) => expect(observed.identities[index]).not.toEqual(child))
     expect(await capture(plan.inspect)).toMatchObject({ code: 0, stdout: "domovoi-task:missing\r\n" })
     removed = true
+    timing("daemon trees and task absent after removal")
   } finally {
     deadline.clear()
+    if (!removed) timing(`not completed; record ${describeRecord()}`)
     const cleanup = OperationDeadline.start(cleanupBudget)
     try {
       if (created && !removed) {
@@ -179,6 +236,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
       }
       // A failed proof retains this directory and UUID task for inspection.
       await removeScratchDirectory(directory)
+      timing("cleanup")
     } finally { cleanup.clear() }
   }
 }, lifecycleBudget + cleanupBudget + 1_000)
