@@ -164,6 +164,12 @@ export function HistoryPanel({
     setHistoryRefresh(reset.historyRefresh)
   }
 
+  // The daemon pages oldest first and an older page is merged in front, so the
+  // page stays in one ascending order across pages. The design draws newest
+  // first, so the whole list turns round here: an older page lands under the
+  // rows already drawn, and Load older stays under the oldest one.
+  const entries = page ? [...page.items].reverse() : []
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-col gap-2 border-b p-3">
@@ -214,9 +220,12 @@ export function HistoryPanel({
             contributes no intrinsic width to that table and still fills it,
             so the rows are bound to the viewport and truncate has an edge. */}
         <div data-testid="history-content" className="flex w-0 min-w-full flex-col p-3">
-          {page?.items.length ? (
+          {/* Past the retained budget the newest rows are the ones let go, and
+              they sat at the top, so the way back to them sits there too. */}
+          {historyWindowed ? <Button className="mb-3 self-center" variant="ghost" size="sm" disabled={loading} onClick={backToLatest}>Back to latest</Button> : null}
+          {entries.length ? (
           <div data-testid="history-rows" className="rounded-xl border">
-          {page.items.map((entry) => {
+          {entries.map((entry) => {
             const detail = sessionHistoryEntryDetail(entry, { worktreeName })
             const body = sessionHistoryEntryBody(entry)
             const outcome = sessionHistoryEntryOutcome(entry)
@@ -311,7 +320,6 @@ export function HistoryPanel({
             </EmptyHeader></Empty>
           ) : null}
           {error ? <Alert variant="destructive" className="my-3"><CircleStopIcon /><AlertTitle>History unavailable</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
-          {historyWindowed ? <Button className="my-3 self-center" variant="ghost" size="sm" disabled={loading} onClick={backToLatest}>Back to latest</Button> : null}
           {page?.hasMore ? <Button className="my-3 self-center" variant="outline" size="sm" disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading" : "Load older"}</Button> : null}
           {loading && !page ? <p role="status" className="p-4 text-center font-machine text-[10px] text-faint">Loading history</p> : null}
         </div>
