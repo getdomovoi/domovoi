@@ -11,7 +11,8 @@ async function entries(profile: string): Promise<string[] | undefined> {
 }
 
 async function leaseMetadata(profile: string, names: string[]) {
-  return new Map(await Promise.all(names.filter((name) => /\.sqlite(?:-journal)?$/.test(name)).map(async (name) => {
+  // Live daemon checkpoints may change state and usage databases during tests.
+  return new Map(await Promise.all(names.filter((name) => /-lease\.sqlite(?:-journal)?$/.test(name)).map(async (name) => {
     const { ctimeNs, mtimeNs } = await stat(join(profile, name), { bigint: true })
     return [name, { ctimeNs, mtimeNs }] as const
   })))

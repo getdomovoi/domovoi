@@ -44,6 +44,16 @@ describe("native profile metadata guard", () => {
     await expect(verify()).rejects.toThrow(/native Domovoi profile.*lease/)
   })
 
+  it.each(["state.sqlite", "usage.sqlite"])("allows changed mtime for the live daemon's %s", async (name) => {
+    const f = fixture()
+    mkdirSync(f.profile)
+    const path = join(f.profile, name)
+    writeFileSync(path, "")
+    const verify = await nativeProfileEntryGuard(f.home)
+    utimesSync(path, new Date(0), new Date(0))
+    await expect(verify()).resolves.toBeUndefined()
+  })
+
   it.skipIf(process.platform === "win32")("reports lease ctime changes without a file mtime change", async () => {
     const f = fixture()
     mkdirSync(f.profile)
