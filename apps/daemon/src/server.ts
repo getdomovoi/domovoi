@@ -3953,10 +3953,16 @@ export class DomovoiDaemon {
     // Queue the boundary before resize(), which can synchronously redraw the PTY.
     // Text the redactor still retains here can follow the notice, even complete
     // lines. Resizing must not release that text or alter secret detection.
-    if (this.#terminalResizeFollowers(terminal).length > 0) terminal.output.pushResize(terminalId, { cols, rows })
+    // Keep boundaries even without followers: a follower may join while paused.
+    terminal.output.pushResize(terminalId, { cols, rows }, { cols: terminal.cols, rows: terminal.rows })
     terminal.process.resize(cols, rows)
     terminal.cols = cols
     terminal.rows = rows
+  }
+
+  #terminalJoinSize(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket): { cols: number; rows: number } {
+    const queuedSize = terminal.resizeFollowers.has(socket) ? terminal.output.queuedStartSize(terminalId) : undefined
+    return queuedSize ?? { cols: terminal.cols, rows: terminal.rows }
   }
 
   #closedTerminalSummary(closed: ClosedTerminal): TerminalSummary {
@@ -6818,8 +6824,7 @@ export class DomovoiDaemon {
             result: rpcMethods[method].result.parse({
               terminalId: params.terminalId,
               sessionId: existing.sessionId,
-              cols: existing.cols,
-              rows: existing.rows,
+              ...this.#terminalJoinSize(params.terminalId, existing, socket),
               shell: existing.shell,
               cwd: existing.cwd,
               buffer: record.text,
@@ -7057,6 +7062,7 @@ export class DomovoiDaemon {
           id: request.id,
           result: rpcMethods[method].result.parse({
             ...(terminal ? this.#terminalSummary(params.terminalId, terminal) : this.#closedTerminalSummary(closed!)),
+            ...(terminal ? this.#terminalJoinSize(params.terminalId, terminal, socket) : {}),
             buffer: record.text,
             ...(record.startsAt === undefined ? {} : { bufferStartsAt: new Date(record.startsAt).toISOString() }),
             earlierOutputDropped: record.dropped,

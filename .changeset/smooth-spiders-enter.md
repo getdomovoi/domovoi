@@ -24,7 +24,11 @@ until low water. Same-client ownership moves through input deliver pending text 
 new connection even though the input reply carries no replay.
 Reopening a same-client terminal with new dimensions captures its replay before resizing,
 so synchronous redraw output arrives only live, after the resize marker. The create reply
-still reports the new dimensions.
+reports the dimensions at the start of its queued live suffix when the connection follows
+resizes; other create replies report the new dimensions. A following watch reply also
+reports the starting grid of its queued suffix. Resize boundaries are retained even when
+no follower exists yet, so a follower joining during a pause receives old-grid output
+before the notice that advances it to the new dimensions.
 An empty replay has no start timestamp; if queued output exceeds retained history,
 the watch reply reports that earlier output was dropped.
 

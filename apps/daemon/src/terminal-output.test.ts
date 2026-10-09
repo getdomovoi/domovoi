@@ -104,7 +104,7 @@ describe("terminal output resize markers", () => {
     batcher.push("t", "old ")
     batcher.push("t", "grid")
     expect(events).toEqual([])
-    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.pushResize("t", { cols: 100, rows: 30 }, { cols: 80, rows: 24 })
     expect(events).toEqual(["t:output:old grid", "t:resize:100x30"])
     expect(scheduled.size).toBe(0)
     batcher.push("t", "new grid")
@@ -118,11 +118,11 @@ describe("terminal output resize markers", () => {
     const { batcher, events } = stream(() => paused)
     batcher.push("t", "x".repeat(maximumTerminalOutputChunkCharacters))
     events.length = 0
-    batcher.pushResize("t", { cols: 90, rows: 30 })
-    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.pushResize("t", { cols: 90, rows: 30 }, { cols: 80, rows: 24 })
+    batcher.pushResize("t", { cols: 100, rows: 30 }, { cols: 90, rows: 30 })
     batcher.push("t", "between")
-    batcher.pushResize("t", { cols: 110, rows: 40 })
-    batcher.pushResize("t", { cols: 120, rows: 40 })
+    batcher.pushResize("t", { cols: 110, rows: 40 }, { cols: 100, rows: 30 })
+    batcher.pushResize("t", { cols: 120, rows: 40 }, { cols: 110, rows: 40 })
     batcher.push("t", "after")
     expect(events).toEqual([])
     paused = false
@@ -133,9 +133,9 @@ describe("terminal output resize markers", () => {
   it("stops after a marker pauses and resumes all following events in order", () => {
     let paused = true
     const { batcher, events, beat } = stream(() => false, () => paused)
-    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.pushResize("t", { cols: 100, rows: 30 }, { cols: 80, rows: 24 })
     batcher.push("t", "new grid")
-    batcher.pushResize("t", { cols: 120, rows: 40 })
+    batcher.pushResize("t", { cols: 120, rows: 40 }, { cols: 100, rows: 30 })
     batcher.push("t", "next grid")
     beat()
     expect(events).toEqual(["t:resize:100x30"])
@@ -148,7 +148,7 @@ describe("terminal output resize markers", () => {
     let paused = true
     const { batcher, events } = stream(() => paused)
     batcher.push("t", "old grid")
-    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.pushResize("t", { cols: 100, rows: 30 }, { cols: 80, rows: 24 })
     expect(events).toEqual(["t:output:old grid"])
     paused = false
     batcher.resume("t")
@@ -158,9 +158,9 @@ describe("terminal output resize markers", () => {
   it("flushes paused output and markers in order and cancels the pending beat", () => {
     const { batcher, events, scheduled, beat } = stream(() => true)
     batcher.push("t", "old")
-    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.pushResize("t", { cols: 100, rows: 30 }, { cols: 80, rows: 24 })
     batcher.push("t", "middle")
-    batcher.pushResize("t", { cols: 120, rows: 40 })
+    batcher.pushResize("t", { cols: 120, rows: 40 }, { cols: 100, rows: 30 })
     batcher.push("t", "tail")
     batcher.flush("t")
     expect(events).toEqual(["t:output:old", "t:resize:100x30", "t:output:middle", "t:resize:120x40", "t:output:tail"])
@@ -176,7 +176,7 @@ describe("terminal output resize markers", () => {
     batcher.drainNow("t")
     expect(events).toEqual(["t:output:pending"])
     expect(scheduled.size).toBe(0)
-    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.pushResize("t", { cols: 100, rows: 30 }, { cols: 80, rows: 24 })
     batcher.push("t", "after")
     batcher.drainNow("t")
     beat()
@@ -204,7 +204,7 @@ describe("terminal output resize markers", () => {
     const { batcher } = stream(() => paused)
     expect(batcher.queuedOutputCharacters("t")).toBe(0)
     batcher.push("t", `${"x".repeat(maximumTerminalOutputChunkCharacters)}tail`)
-    batcher.pushResize("t", { cols: 100, rows: 30 })
+    batcher.pushResize("t", { cols: 100, rows: 30 }, { cols: 80, rows: 24 })
     batcher.push("t", "after")
     expect(batcher.queuedOutputCharacters("t")).toBe(9)
     expect(batcher.queuedOutputCharacters("other")).toBe(0)
@@ -217,6 +217,33 @@ describe("terminal output resize markers", () => {
     expect(batcher.queuedOutputCharacters("t")).toBe(7)
     batcher.flush("t")
     expect(batcher.queuedOutputCharacters("t")).toBe(0)
+  })
+
+  it("tracks the starting grid across coalesced markers and partial drains", () => {
+    let pauseOutput = true
+    let pauseResize = true
+    const { batcher } = stream(() => pauseOutput, () => pauseResize)
+    expect(batcher.queuedStartSize("t")).toBeUndefined()
+    batcher.push("t", "x".repeat(maximumTerminalOutputChunkCharacters))
+    batcher.push("t", "old")
+    batcher.pushResize("t", { cols: 90, rows: 27 }, { cols: 80, rows: 24 })
+    batcher.pushResize("t", { cols: 100, rows: 30 }, { cols: 90, rows: 27 })
+    batcher.push("t", "middle")
+    batcher.pushResize("t", { cols: 120, rows: 40 }, { cols: 100, rows: 30 })
+    expect(batcher.queuedStartSize("t")).toEqual({ cols: 80, rows: 24 })
+    expect(batcher.queuedStartSize("other")).toBeUndefined()
+    batcher.resume("t") // Old output drains, but its boundary still waits.
+    expect(batcher.queuedStartSize("t")).toEqual({ cols: 80, rows: 24 })
+    pauseOutput = false
+    batcher.resume("t") // The coalesced boundary drains and pauses delivery.
+    expect(batcher.queuedStartSize("t")).toEqual({ cols: 100, rows: 30 })
+    pauseResize = false
+    batcher.resume("t")
+    expect(batcher.queuedStartSize("t")).toBeUndefined()
+    batcher.push("t", "current grid")
+    expect(batcher.queuedStartSize("t")).toBeUndefined()
+    batcher.flush("t")
+    expect(batcher.queuedStartSize("t")).toBeUndefined()
   })
 
   it("keeps a pause when the last full output chunk emptied the queue", () => {

@@ -460,7 +460,7 @@ describe("bounded terminal resize delivery", () => {
     await beat()
     await owner.resize()
     const reply = await joiner.watch(true)
-    expect(reply.result).toMatchObject({ buffer: "history\n", bufferStartsAt: historyTime, earlierOutputDropped: false })
+    expect(reply.result).toMatchObject({ cols: 80, rows: 24, buffer: "history\n", bufferStartsAt: historyTime, earlierOutputDropped: false })
     await follower.list()
     expect(joiner.notifications).toEqual([])
     expect(follower.notifications).toEqual([])
@@ -480,6 +480,57 @@ describe("bounded terminal resize delivery", () => {
     await beat()
     await joiner.list()
     expect(joiner.notifications).toEqual(events)
+  })
+
+  it.each([true, false])("starts a paused follower at the queued grid (follower at resize: %s)", async (hadFollower) => {
+    const { connect, owner, follower, print, beat, drain } = await pausedJoin()
+    if (!hadFollower) await follower.watch()
+    print("old\n")
+    await owner.resize(100, 30)
+    const joiner = await connect("joiner")
+    const reply = await joiner.watch(true)
+    expect.soft(reply.result).toMatchObject({ cols: 80, rows: 24, buffer: "history\n" })
+    expect(joiner.notifications).toEqual([])
+    drain()
+    await beat()
+    await joiner.list()
+    await follower.list()
+    const events = [
+      { method: "terminal.output", params: { terminalId, data: "old\n" } },
+      { method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } },
+    ]
+    expect.soft(joiner.notifications).toEqual(events)
+    expect(follower.notifications).toEqual(hadFollower ? events : events.slice(0, 1))
+    await beat()
+    await joiner.list()
+    expect(joiner.notifications).toEqual(events)
+  })
+
+  it("reports current dimensions to a paused non-follower", async () => {
+    const { connect, owner, print } = await pausedJoin()
+    print("old\n")
+    await owner.resize(100, 30)
+    const joiner = await connect("joiner")
+    expect((await joiner.watch()).result).toMatchObject({ cols: 100, rows: 30, buffer: "history\n" })
+    expect(joiner.notifications).toEqual([])
+  })
+
+  it.each([false, true])("starts a paused follower create at the queued grid (prior resize: %s)", async (priorResize) => {
+    const { owner, print, beat, drain } = await pausedJoin()
+    await owner.watch(true)
+    print("old\n")
+    if (priorResize) await owner.resize(90, 27)
+    expect((await owner.create(100, 30)).result).toMatchObject({ cols: 80, rows: 24, buffer: "history\n" })
+    expect(owner.notifications).toEqual([])
+    drain()
+    await beat()
+    const events = [
+      { method: "terminal.output", params: { terminalId, data: "old\n" } },
+      { method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } },
+    ]
+    expect(owner.notifications).toEqual(events)
+    await beat()
+    expect(owner.notifications).toEqual(events)
   })
 
   it("keeps five resize and watch rounds paused and coalesces their markers", async () => {

@@ -13,7 +13,8 @@ const scheduleTimeout: Schedule = (callback, delay) => setTimeout(callback, dela
 const cancelTimeout: Cancel = (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>)
 
 type TerminalSize = { cols: number; rows: number }
-type OutputEntry = { kind: "output"; data: string } | { kind: "resize"; size: TerminalSize }
+type OutputEntry = { kind: "output"; data: string }
+  | { kind: "resize"; size: TerminalSize; previousSize: TerminalSize }
 type PendingOutput = { entries: OutputEntry[]; paused: boolean; timer?: Timer }
 
 export class TerminalOutputBatcher {
@@ -36,11 +37,11 @@ export class TerminalOutputBatcher {
     if (!pending.paused) this.#drain(terminalId, pending, false)
   }
 
-  pushResize(terminalId: string, size: TerminalSize): void {
+  pushResize(terminalId: string, size: TerminalSize, previousSize: TerminalSize): void {
     const pending = this.#pending.get(terminalId) ?? { entries: [], paused: false }
     const tail = pending.entries.at(-1)
     if (tail?.kind === "resize") tail.size = size
-    else pending.entries.push({ kind: "resize", size })
+    else pending.entries.push({ kind: "resize", size, previousSize })
     this.#pending.set(terminalId, pending)
     if (!pending.paused) this.#drain(terminalId, pending, false)
   }
@@ -56,6 +57,13 @@ export class TerminalOutputBatcher {
     const pending = this.#pending.get(terminalId)
     if (!pending || pending.paused) return
     this.#drain(terminalId, pending, true)
+  }
+
+  // Coalescing changes only the destination size, preserving the grid before
+  // the first queued boundary. No boundary means the current grid still applies.
+  queuedStartSize(terminalId: string): TerminalSize | undefined {
+    const marker = this.#pending.get(terminalId)?.entries.find((entry) => entry.kind === "resize")
+    return marker?.previousSize
   }
 
   queuedOutputCharacters(terminalId: string): number {
