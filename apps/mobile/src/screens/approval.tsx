@@ -1,8 +1,9 @@
 import { useState } from "react"
 import { Pressable, View } from "react-native"
-import type { ApprovalRequest } from "@getdomovoi/protocol"
+import type { ApprovalRequest, WorkingPlan } from "@getdomovoi/protocol"
 
 import type { ConnectionNotice } from "../connection-notice"
+import { approvalContextFacts, type ApprovalViewer } from "../lib/approval-context"
 
 import { BlurBackdrop } from "../components/blur-backdrop"
 import { ConnectionBanner } from "../components/connection-banner"
@@ -30,9 +31,28 @@ export function approvalFacts(approval: ApprovalRequest): Array<{ key: string, v
   ]
 }
 
+// The phone's list: the request's own facts with the context the wire carries
+// beside them. Who started the turn and the plan step it blocks sit with the
+// agent and mode; whether it reaches outside the project sits with the
+// directory it was judged against. A context fact the daemon did not send is
+// not drawn, because absent means it could not decide.
+export function phoneApprovalFacts(
+  approval: ApprovalRequest,
+  context: { plans?: readonly WorkingPlan[] | undefined, viewer?: ApprovalViewer | undefined },
+): Array<{ key: string, value: string, tone?: string }> {
+  const { origin, step, outsideProject } = approvalContextFacts(approval, context)
+  return approvalFacts(approval).flatMap((fact) => {
+    if (fact.key === "Mode") return [fact, ...(origin ? [origin] : []), ...(step ? [step] : [])]
+    if (fact.key === "Directory") return [fact, ...(outsideProject ? [outsideProject] : [])]
+    return [fact]
+  })
+}
+
 export function ApprovalScreen({
   approval,
   sessionTitle,
+  plans,
+  viewer,
   pending,
   notice,
   problem = "",
@@ -46,6 +66,10 @@ export function ApprovalScreen({
   // which piece of work is asking. The machine stands in when the phone has
   // no session by that id.
   sessionTitle?: string | undefined
+  // The session plans the phone holds, read for the step this gate blocks.
+  plans?: readonly WorkingPlan[] | undefined
+  // This phone, compared with the client that started the turn.
+  viewer?: ApprovalViewer | undefined
   pending: boolean
   // A watching phone reads the gate in full and answers nothing. The daemon
   // refuses its decisions; the screen does not offer them.
@@ -112,7 +136,7 @@ export function ApprovalScreen({
           </View>
 
           <Card flush>
-            {approvalFacts(approval).map((fact, index) => (
+            {phoneApprovalFacts(approval, { plans, viewer }).map((fact, index) => (
               <View
                 key={fact.key}
                 className={cn(
