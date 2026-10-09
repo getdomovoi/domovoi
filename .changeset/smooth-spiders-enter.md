@@ -10,11 +10,13 @@ Released shells keep running unheld and require a new claim before input, resize
 Preserve claim times across reconnects, report `claimHeld` on ownership changes, and send
 `terminal.resized` only to watchers that request `followResize`.
 
-Resize notifications coalesce to the latest dimensions once per terminal output batch
-and wait for slow readers to drain. They wait for the quiet redactor beat before flushing
-output and sending the size. Under continuous output with no quiet beat, an unpaused resize
-goes out after at most 4 extra beats, and text the redactor still retains can follow it.
-Closing a terminal drops its pending resize.
+Resize notifications mark their position in the output stream before the PTY is resized.
+Already-redacted output queued before a resize is sent before the notice; output drawn
+for the new grid follows it. Text the redactor still retains at the resize, including
+complete lines, can follow the notice. Resizing does not release that text.
+While output is paused for slow readers, adjacent resize markers coalesce to the latest
+dimensions and wait for low water. Resizes with no eligible follower do not observe
+backpressure. Closing a terminal flushes queued output and markers before its closed notice.
 
 Protocol version remains `0.8.0`; new fields are optional and older watch requests receive
 no resize notifications.

@@ -1680,11 +1680,6 @@ type ActiveTerminal = {
   watchers: Set<RpcOutboundSocket>
   // Only watchers that opted into the new resize notification receive it.
   resizeFollowers: Set<RpcOutboundSocket>
-  // At most one resize per batch beat, none while paused. Keep only the latest
-  // size until low water; a burst never creates a queue of notifications.
-  pendingResize: { cols: number, rows: number } | undefined
-  resizeTimer: ReturnType<typeof setTimeout> | undefined
-  resizeDeferrals: number
   openedAt: number
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
@@ -3949,39 +3944,19 @@ export class DomovoiDaemon {
     }
   }
 
-  #queueTerminalResize(terminalId: string, terminal: ActiveTerminal): void {
-    terminal.pendingResize = { cols: terminal.cols, rows: terminal.rows }
-    if (terminal.resizeTimer !== undefined) return
-    terminal.resizeTimer = setTimeout(() => {
-      terminal.resizeTimer = undefined
-      this.#flushTerminalResize(terminalId, terminal)
-    }, terminalOutputBatchDelayMilliseconds)
-    terminal.resizeTimer.unref?.()
+  #terminalResizeFollowers(terminal: ActiveTerminal): RpcOutboundSocket[] {
+    return [...terminal.resizeFollowers].filter((candidate) => terminal.audience.has(candidate)
+      && (this.#mayWatchTerminals(candidate) || terminal.watchers.has(candidate)))
   }
 
-  #flushTerminalResize(terminalId: string, terminal: ActiveTerminal): void {
-    if (this.#terminals.get(terminalId) !== terminal || terminal.pendingResize === undefined || terminal.resizeTimer !== undefined) return
-    // Observe here too: resize-only traffic must stop at high water even when
-    // the shell prints nothing. Flushing older output may pause us again.
-    if (terminal.outputBackpressure.observe()) return
-    // Wait for the quiet redactor beat without releasing text mid-stream.
-    // Under continuous output with no quiet beat, the resize goes out after
-    // at most 4 extra beats and text the redactor still retains can follow it.
-    // Backpressure can still hold delivery until low water.
-    if (terminal.redactorFlush !== undefined && terminal.resizeDeferrals < 4) {
-      terminal.resizeDeferrals += 1
-      this.#queueTerminalResize(terminalId, terminal)
-      return
-    }
-    terminal.output.flush(terminalId)
-    if (terminal.outputBackpressure.paused) return
-    const size = terminal.pendingResize
-    terminal.pendingResize = undefined
-    terminal.resizeDeferrals = 0
-    const followers = [...terminal.resizeFollowers].filter((candidate) => terminal.audience.has(candidate)
-      && (this.#mayWatchTerminals(candidate) || terminal.watchers.has(candidate)))
-    this.#notifyClients(followers, "terminal.resized", { terminalId, ...size })
-    terminal.outputBackpressure.observe()
+  #resizeTerminal(terminalId: string, terminal: ActiveTerminal, cols: number, rows: number): void {
+    // Queue the boundary before resize(), which can synchronously redraw the PTY.
+    // Text the redactor still retains here can follow the notice, even complete
+    // lines. Resizing must not release that text or alter secret detection.
+    if (this.#terminalResizeFollowers(terminal).length > 0) terminal.output.pushResize(terminalId, { cols, rows })
+    terminal.process.resize(cols, rows)
+    terminal.cols = cols
+    terminal.rows = rows
   }
 
   #closedTerminalSummary(closed: ClosedTerminal): TerminalSummary {
@@ -6801,10 +6776,7 @@ export class DomovoiDaemon {
           }
           if (this.#ownsTerminal(params.terminalId, existing, socket)) {
             if (existing.cols !== params.cols || existing.rows !== params.rows) {
-              existing.process.resize(params.cols, params.rows)
-              existing.cols = params.cols
-              existing.rows = params.rows
-              this.#queueTerminalResize(params.terminalId, existing)
+              this.#resizeTerminal(params.terminalId, existing, params.cols, params.rows)
             }
           } else if (existing.ownerSocket === undefined) {
             existing.owner = this.#terminalOwner(socket, params)
@@ -6821,7 +6793,11 @@ export class DomovoiDaemon {
               claimHeld: true,
             }))
           }
-          this.#joinTerminalAudience(params.terminalId, existing, socket)
+          // Repeated create calls by an existing reader must not force queued
+          // resize markers past high water. A new reader still joins at a boundary.
+          if (!existing.audience.has(socket) || !existing.outputBackpressure.paused) {
+            this.#joinTerminalAudience(params.terminalId, existing, socket)
+          }
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
@@ -6849,13 +6825,15 @@ export class DomovoiDaemon {
           () => this.#maximumAuthenticatedClientBufferedBytes(),
           undefined,
           undefined,
-          () => {
-            output.resume(params.terminalId)
-            this.#flushTerminalResize(params.terminalId, activeTerminal)
-          },
+          () => output.resume(params.terminalId),
         )
         const output = new TerminalOutputBatcher((terminalId, data) => {
           this.#notifyTerminalAudience(activeTerminal, "terminal.output", { terminalId, data })
+          return outputBackpressure.observe()
+        }, undefined, undefined, (terminalId, size) => {
+          const followers = this.#terminalResizeFollowers(activeTerminal)
+          if (followers.length === 0) return false
+          this.#notifyClients(followers, "terminal.resized", { terminalId, ...size })
           return outputBackpressure.observe()
         })
         const activeTerminal: ActiveTerminal = {
@@ -6874,9 +6852,6 @@ export class DomovoiDaemon {
           audience: new Set([socket]),
           watchers: new Set(),
           resizeFollowers: new Set(),
-          pendingResize: undefined,
-          resizeTimer: undefined,
-          resizeDeferrals: 0,
           openedAt: Date.now(),
           reapTimer: undefined,
           output,
@@ -6900,7 +6875,8 @@ export class DomovoiDaemon {
               // A read this large is a burst, and the tail redaction holds back
               // would otherwise leave it under the batcher's threshold, so a
               // client about to be dropped for slowness would never see it.
-              if (text.length >= maximumTerminalOutputChunkCharacters - terminalRedactionCarryCharacters) {
+              if (text.length >= maximumTerminalOutputChunkCharacters - terminalRedactionCarryCharacters
+                && !active.outputBackpressure.paused) {
                 active.output.flush(params.terminalId)
               }
             }
@@ -6924,10 +6900,6 @@ export class DomovoiDaemon {
           const active = this.#terminals.get(params.terminalId)
           if (!active || active.process !== process) return
           this.#terminals.delete(params.terminalId)
-          if (active.resizeTimer !== undefined) clearTimeout(active.resizeTimer)
-          active.resizeTimer = undefined
-          active.pendingResize = undefined
-          active.resizeDeferrals = 0
           // Whatever redaction was still holding is the tail of what this
           // terminal printed, and losing it would lose output.
           if (active.redactorFlush !== undefined) clearTimeout(active.redactorFlush)
@@ -7125,10 +7097,7 @@ export class DomovoiDaemon {
           return
         }
         if (terminal.cols !== params.cols || terminal.rows !== params.rows) {
-          terminal.process.resize(params.cols, params.rows)
-          terminal.cols = params.cols
-          terminal.rows = params.rows
-          this.#queueTerminalResize(params.terminalId, terminal)
+          this.#resizeTerminal(params.terminalId, terminal, params.cols, params.rows)
         }
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
@@ -13088,10 +13057,6 @@ export class DomovoiDaemon {
     const terminal = this.#terminals.get(terminalId)
     if (!terminal) return false
     this.#terminals.delete(terminalId)
-    if (terminal.resizeTimer !== undefined) clearTimeout(terminal.resizeTimer)
-    terminal.resizeTimer = undefined
-    terminal.pendingResize = undefined
-    terminal.resizeDeferrals = 0
     if (terminal.redactorFlush !== undefined) clearTimeout(terminal.redactorFlush)
     if (terminal.reapTimer !== undefined) clearTimeout(terminal.reapTimer)
     terminal.disposeData()

@@ -1,6 +1,6 @@
 import { once } from "node:events"
 
-import { demoWorkspace, protocolVersion, terminalOutputBatchDelayMilliseconds, terminalWebSocketHighWaterBytes } from "@getdomovoi/protocol"
+import { demoWorkspace, maximumTerminalOutputChunkCharacters, protocolVersion, terminalOutputBatchDelayMilliseconds, terminalWebSocketHighWaterBytes } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 
@@ -8,6 +8,7 @@ import { DomovoiDaemon } from "./server.js"
 import type { RpcOutboundSocket } from "./rpc-outbound.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import type { TerminalProcess } from "./terminal.js"
+import { TerminalOutputBackpressure } from "./terminal-output.js"
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -378,17 +379,105 @@ describe("bounded terminal resize delivery", () => {
     return { ...harness, owner, follower, beat }
   }
 
-  it.each(["resize", "create"] as const)("coalesces ten rapid holder %s calls into one latest size per beat", async (method) => {
+  it.each(["resize", "create"] as const)("orders a %s marker before a synchronous PTY redraw and after queued old output", async (method) => {
+    const { owner, follower, process, print, beat } = await setup()
+    print("old grid\n")
+    process.resize.mockImplementation(() => print("new grid\n"))
+    expect((await owner[method](100, 30)).error).toBeUndefined()
+    await beat()
+    await follower.list()
+    expect(follower.notifications).toEqual([
+      { method: "terminal.output", params: { terminalId, data: "old grid\n" } },
+      { method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } },
+      { method: "terminal.output", params: { terminalId, data: "new grid\n" } },
+    ])
+  })
+
+  it.each(["plain", "none"] as const)("does not observe resize backpressure with %s watchers and a slow unrelated client", async (watch) => {
+    const { connect, owner, follower, process, beat } = await setup()
+    if (watch === "plain") await follower.watch()
+    else await follower.rpc("terminal.unwatch", { terminalId })
+    const unrelated = await connect("unrelated")
+    Object.defineProperty(unrelated.serverSocket, "bufferedAmount", { get: () => terminalWebSocketHighWaterBytes + 1 })
+    const observed = vi.spyOn(TerminalOutputBackpressure.prototype, "observe")
+    await owner.resize()
+    await beat()
+    await owner.create(120, 40)
+    await beat()
+    await follower.list()
+    expect(observed).not.toHaveBeenCalled()
+    expect(process.pause).not.toHaveBeenCalled()
+    expect(notices(follower, "terminal.resized")).toEqual([])
+  })
+
+  it.each(["resize", "create"] as const)("queues one latest %s marker while paused before output drawn afterward", async (method) => {
+    const { owner, follower, process, print, beat } = await setup()
+    let bufferedBytes = terminalWebSocketHighWaterBytes + 1
+    Object.defineProperty(follower.serverSocket, "bufferedAmount", { get: () => bufferedBytes })
+    print("old grid\n")
+    await beat()
+    expect(process.pause).toHaveBeenCalledOnce()
+    for (let index = 0; index < 10; index += 1) await owner[method](100 + index, 30)
+    print("new grid\n")
+    await beat()
+    await beat()
+    expect(follower.notifications).toEqual([{ method: "terminal.output", params: { terminalId, data: "old grid\n" } }])
+    bufferedBytes = 0
+    await beat()
+    await follower.list()
+    expect(follower.notifications).toEqual([
+      { method: "terminal.output", params: { terminalId, data: "old grid\n" } },
+      { method: "terminal.resized", params: { terminalId, cols: 109, rows: 30 } },
+      { method: "terminal.output", params: { terminalId, data: "new grid\n" } },
+    ])
+  })
+
+  it("skips observation when the last follower leaves before a queued marker drains", async () => {
+    const { connect, owner, follower, print, beat } = await setup()
+    const unrelated = await connect("unrelated")
+    let bufferedBytes = terminalWebSocketHighWaterBytes + 1
+    Object.defineProperty(unrelated.serverSocket, "bufferedAmount", { get: () => bufferedBytes })
+    print("old grid\n")
+    await beat()
+    await owner.resize()
+    await follower.rpc("terminal.unwatch", { terminalId })
+    const observed = vi.spyOn(TerminalOutputBackpressure.prototype, "observe")
+    bufferedBytes = 0
+    await beat()
+    await follower.list()
+    expect(observed).not.toHaveBeenCalled()
+    expect(notices(follower, "terminal.resized")).toEqual([])
+  })
+
+  it.each(["resize", "create"] as const)("holds a large synchronous redraw after a %s marker pauses the stream", async (method) => {
+    const { owner, follower, process, print, beat } = await setup()
+    let bufferedBytes = terminalWebSocketHighWaterBytes + 1
+    Object.defineProperty(follower.serverSocket, "bufferedAmount", { get: () => bufferedBytes })
+    const redraw = `${"x".repeat(maximumTerminalOutputChunkCharacters * 2)}\n`
+    process.resize.mockImplementation(() => print(redraw))
+    await owner[method](100, 30)
+    await beat()
+    expect(process.pause).toHaveBeenCalledOnce()
+    expect(follower.notifications).toEqual([
+      { method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } },
+    ])
+    bufferedBytes = 0
+    await beat()
+    await follower.list()
+    expect(follower.notifications[0]?.method).toBe("terminal.resized")
+    expect(notices(follower, "terminal.output").map(({ params }) => params.data).join("")).toBe(redraw)
+  })
+
+  it.each(["resize", "create"] as const)("sends each unpaused holder %s boundary immediately without deferred duplicates", async (method) => {
     const { owner, follower, beat } = await setup()
     for (let index = 0; index < 10; index += 1) expect((await owner[method](100 + index, 30)).error).toBeUndefined()
     await follower.list()
-    expect(notices(follower, "terminal.resized")).toEqual([])
+    const sizes = Array.from({ length: 10 }, (_, index) => ({ terminalId, cols: 100 + index, rows: 30 }))
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual(sizes)
+    await beat()
     await beat()
     await follower.list()
-    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([{ terminalId, cols: 109, rows: 30 }])
-    await beat()
-    await follower.list()
-    expect(notices(follower, "terminal.resized")).toHaveLength(1)
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual(sizes)
   })
 
   it("holds only the latest size while paused and sends it once at low water", async () => {
@@ -414,18 +503,25 @@ describe("bounded terminal resize delivery", () => {
     expect(notices(follower, "terminal.resized")).toHaveLength(1)
   })
 
-  it.each(["before resize\n", "prompt before resize"])("delivers earlier output %j before the size notification", async (data) => {
+  it.each([
+    { data: "before resize\n", released: "before resize\n", retained: "" },
+    { data: "prompt before resize", released: "prompt before ", retained: "resize" },
+  ])("orders already-redacted output before the size and retained text after it: $data", async ({ data, released, retained }) => {
     const { owner, follower, print, beat } = await setup()
     print(data)
     await owner.resize()
+    await follower.list()
+    expect(follower.notifications).toEqual([
+      { method: "terminal.output", params: { terminalId, data: released } },
+      { method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } },
+    ])
+    await beat()
     await beat()
     await follower.list()
-    expect(follower.notifications.at(-1)).toEqual({ method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } })
-    const output = follower.notifications.slice(0, -1)
-    // Redaction may split a prompt across output frames. Every byte must
-    // still arrive before the resize, including the tail released on this beat.
-    expect(output.every(({ method, params }) => method === "terminal.output" && params.terminalId === terminalId)).toBe(true)
-    expect(output.map(({ params }) => params.data).join("")).toBe(data)
+    expect(follower.notifications.slice(2)).toEqual(retained
+      ? [{ method: "terminal.output", params: { terminalId, data: retained } }]
+      : [])
+    expect(notices(follower, "terminal.output").map(({ params }) => params.data).join("")).toBe(data)
   })
 
   it("pauses resize-only traffic when a resize fills the follower buffer", async () => {
@@ -455,7 +551,7 @@ describe("bounded terminal resize delivery", () => {
     ])
   })
 
-  it("waits for the quiet redactor beat when a fragment arrives after the resize", async () => {
+  it("sends the resize immediately while fragments still wait for the quiet redactor beat", async () => {
     const { owner, follower, print, beat } = await setup()
     print("hel")
     await owner.resize()
@@ -463,47 +559,61 @@ describe("bounded terminal resize delivery", () => {
     print("lo")
     await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
     await follower.list()
-    expect(notices(follower, "terminal.resized")).toEqual([])
+    expect(follower.notifications).toEqual([
+      { method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } },
+    ])
 
     await beat()
+    await beat()
     await follower.list()
-    expect(follower.notifications.at(-1)).toEqual({ method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } })
-    const earlier = follower.notifications.slice(0, -1)
-    expect(earlier.every(({ method }) => method === "terminal.output")).toBe(true)
-    expect(earlier.map(({ params }) => params.data).join("")).toBe("hello")
+    const afterResize = follower.notifications.slice(1)
+    expect(afterResize.every(({ method }) => method === "terminal.output")).toBe(true)
+    expect(afterResize.map(({ params }) => params.data).join("")).toBe("hello")
     expect(notices(follower, "terminal.resized")).toHaveLength(1)
   })
 
-  it("bounds redactor deferral to five beats and coalesces newer sizes during continuous output", async () => {
+  it("delivers each unpaused resize without waiting for quiet during continuous output", async () => {
     const { owner, follower, print, beat } = await setup()
     print("continuous")
     await owner.resize()
+    await follower.list()
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([{ terminalId, cols: 100, rows: 30 }])
     for (let halfBeat = 1; halfBeat <= 10; halfBeat += 1) {
       await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
       print("x")
       if (halfBeat === 3) await owner.resize(120, 40)
       if (halfBeat === 7) await owner.resize(140, 50)
       await follower.list()
-      if (halfBeat < 10) expect(notices(follower, "terminal.resized")).toEqual([])
+      expect(notices(follower, "terminal.resized")).toHaveLength(halfBeat < 3 ? 1 : halfBeat < 7 ? 2 : 3)
     }
-    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([{ terminalId, cols: 140, rows: 50 }])
+    expect(notices(follower, "terminal.resized").map(({ params }) => params)).toEqual([
+      { terminalId, cols: 100, rows: 30 },
+      { terminalId, cols: 120, rows: 40 },
+      { terminalId, cols: 140, rows: 50 },
+    ])
+    await beat()
     await beat()
     await follower.list()
-    expect(notices(follower, "terminal.resized")).toHaveLength(1)
+    expect(notices(follower, "terminal.resized")).toHaveLength(3)
+    expect(notices(follower, "terminal.output").map(({ params }) => params.data).join("")).toBe(`continuous${"x".repeat(10)}`)
 
-    // A sent resize resets the allowance for the next pending size.
     print("another")
     await owner.resize(150, 60)
+    await follower.list()
+    expect(notices(follower, "terminal.resized").at(-1)?.params).toEqual({ terminalId, cols: 150, rows: 60 })
     for (let halfBeat = 1; halfBeat <= 10; halfBeat += 1) {
       await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
       print("x")
       await follower.list()
-      expect(notices(follower, "terminal.resized")).toHaveLength(halfBeat < 10 ? 1 : 2)
+      expect(notices(follower, "terminal.resized")).toHaveLength(4)
     }
-    expect(notices(follower, "terminal.resized").at(-1)?.params).toEqual({ terminalId, cols: 150, rows: 60 })
+    await beat()
+    await beat()
+    await follower.list()
+    expect(notices(follower, "terminal.output").map(({ params }) => params.data).join("")).toBe(`continuous${"x".repeat(10)}another${"x".repeat(10)}`)
   })
 
-  it("can deliver a complete line retained by the redactor after a bounded resize", async () => {
+  it("can deliver a complete line retained by the redactor after an immediate resize", async () => {
     const { owner, follower, print, beat } = await setup()
     const heldLine = "API_KEY\n"
     print(heldLine)
@@ -517,7 +627,7 @@ describe("bounded terminal resize delivery", () => {
       await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
       print(" ")
       await follower.list()
-      if (halfBeat < 10) expect(notices(follower, "terminal.resized")).toEqual([])
+      expect(notices(follower, "terminal.resized")).toHaveLength(1)
     }
     expect(follower.notifications).toEqual([
       { method: "terminal.resized", params: { terminalId, cols: 100, rows: 30 } },
@@ -534,13 +644,22 @@ describe("bounded terminal resize delivery", () => {
     expect(notices(follower, "terminal.resized")).toHaveLength(1)
   })
 
-  it.each(["close", "exit"] as const)("discards the pending resize when the terminal ends by %s", async (end) => {
-    const { owner, follower, exit, beat } = await setup()
+  it.each(["close", "exit"] as const)("flushes the paused resize before the terminal ends by %s", async (end) => {
+    const { owner, follower, process, print, exit, beat } = await setup()
+    let bufferedBytes = terminalWebSocketHighWaterBytes + 1
+    Object.defineProperty(follower.serverSocket, "bufferedAmount", { get: () => bufferedBytes })
+    print("old grid\n")
+    await beat()
+    expect(process.pause).toHaveBeenCalledOnce()
     await owner.resize()
+    expect(notices(follower, "terminal.resized")).toEqual([])
+    // End before the low-water beat can resume the queued stream.
+    bufferedBytes = 0
     if (end === "close") expect((await owner.rpc("terminal.close", owner.identity)).error).toBeUndefined()
     else exit()
     await beat()
     await follower.list()
-    expect(follower.notifications.map(({ method }) => method)).toEqual(["terminal.closed"])
+    expect(follower.notifications.map(({ method }) => method)).toEqual(["terminal.output", "terminal.resized", "terminal.closed"])
+    expect(notices(follower, "terminal.resized")[0]?.params).toEqual({ terminalId, cols: 100, rows: 30 })
   })
 })
