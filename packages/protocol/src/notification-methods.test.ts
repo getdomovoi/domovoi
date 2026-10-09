@@ -11,6 +11,7 @@ describe("notificationMethods", () => {
       "terminal.output": protocol.terminalOutputNotificationSchema,
       "terminal.closed": protocol.terminalClosedNotificationSchema,
       "terminal.ownership": protocol.terminalOwnershipNotificationSchema,
+      "terminal.resized": protocol.terminalResizedNotificationSchema,
       "fleet.changed": protocol.fleetChangedNotificationSchema,
       "system.emergencyStopped": protocol.systemEmergencyStoppedNotificationSchema,
       "device.codeOutcome": protocol.deviceCodeOutcomeNotificationSchema,
