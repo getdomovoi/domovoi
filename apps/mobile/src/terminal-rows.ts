@@ -132,8 +132,11 @@ export function withNotification(record: TerminalRecord, notification: TerminalN
   if (notification.params.terminalId !== record.summary.terminalId) return record
   if (notification.method === "terminal.ownership") {
     if (record.summary.state === "closed") return record
-    // A moved claim is something heard, so a gap after it starts there.
-    return { ...record, summary: { ...record.summary, owner: notification.params.owner, claimHeld: true }, lastHeardAt: now.toISOString() }
+    // A moved claim is something heard, so a gap after it starts there. A
+    // release names the last holder with claimHeld false; a daemon from before
+    // release omits it, and its notices always mean held.
+    const claimHeld = notification.params.claimHeld ?? true
+    return { ...record, summary: { ...record.summary, owner: notification.params.owner, claimHeld }, lastHeardAt: now.toISOString() }
   }
   if (record.summary.state === "closed") return record
   if (notification.method === "terminal.closed") {
