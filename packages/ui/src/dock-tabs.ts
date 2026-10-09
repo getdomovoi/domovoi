@@ -58,7 +58,10 @@ export const dockTabDefinitions: readonly DockTabDefinition[] = [
   {
     id: "history",
     label: "History",
-    note: "Everything that happened in this session, by category, oldest at the bottom. Fork from any turn.",
+    // The design's tip forks from any turn with the oldest row at the bottom.
+    // session.fork takes a checkpointId, so only checkpoint rows fork, and the
+    // tab lists the daemon's page oldest first (Q40 A).
+    note: "Everything that happened in this session, by category, oldest at the top. Fork from any checkpoint.",
     Icon: ClockIcon,
   },
   {
