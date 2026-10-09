@@ -3954,7 +3954,9 @@ export class DomovoiDaemon {
     // Text the redactor still retains here can follow the notice, even complete
     // lines. Resizing must not release that text or alter secret detection.
     // Keep boundaries even without followers: a follower may join while paused.
-    terminal.output.pushResize(terminalId, { cols, rows }, { cols: terminal.cols, rows: terminal.rows })
+    terminal.output.pushResize(terminalId, { cols, rows }, { cols: terminal.cols, rows: terminal.rows }, {
+      eager: this.#terminalResizeFollowers(terminal).length > 0,
+    })
     terminal.process.resize(cols, rows)
     terminal.cols = cols
     terminal.rows = rows

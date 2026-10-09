@@ -113,6 +113,52 @@ describe("terminal output resize markers", () => {
     expect(events).toEqual(["t:output:old grid", "t:resize:100x30", "t:output:new grid"])
   })
 
+  it("defers a boundary and following partial output to the original batch beat", () => {
+    const { batcher, events, scheduled, beat } = stream()
+    batcher.push("t", "prompt before ")
+    const timer = [...scheduled][0]
+    batcher.pushResize("t", { cols: 100, rows: 30 }, { cols: 80, rows: 24 }, { eager: false })
+    batcher.push("t", "resize")
+    expect(events).toEqual([])
+    expect([...scheduled]).toEqual([timer])
+    expect(batcher.queuedStartSize("t")).toEqual({ cols: 80, rows: 24 })
+    beat()
+    expect(events).toEqual(["t:output:prompt before ", "t:resize:100x30", "t:output:resize"])
+    beat()
+    expect(events).toHaveLength(3)
+  })
+
+  it("preserves the full-chunk threshold across a deferred boundary", () => {
+    const { batcher, events, beat } = stream()
+    batcher.push("t", "old")
+    batcher.pushResize("t", { cols: 100, rows: 30 }, { cols: 80, rows: 24 }, { eager: false })
+    batcher.push("t", "n".repeat(maximumTerminalOutputChunkCharacters - 4))
+    expect(events).toEqual([])
+    batcher.push("t", "ab")
+    expect(events).toEqual([
+      "t:output:old", "t:resize:100x30",
+      `t:output:${"n".repeat(maximumTerminalOutputChunkCharacters - 4)}a`,
+    ])
+    beat()
+    expect(events.at(-1)).toBe("t:output:b")
+  })
+
+  it("coalesces deferred resize-only traffic until the next ordinary output beat", () => {
+    const { batcher, events, scheduled, beat } = stream()
+    batcher.pushResize("t", { cols: 90, rows: 27 }, { cols: 80, rows: 24 }, { eager: false })
+    batcher.pushResize("t", { cols: 100, rows: 30 }, { cols: 90, rows: 27 }, { eager: false })
+    expect(events).toEqual([])
+    expect(scheduled.size).toBe(0)
+    beat()
+    expect(events).toEqual([])
+    batcher.push("t", "new grid")
+    expect(scheduled.size).toBe(1)
+    expect(events).toEqual([])
+    beat()
+    expect(events).toEqual(["t:resize:100x30", "t:output:new grid"])
+    expect(scheduled.size).toBe(0)
+  })
+
   it("coalesces adjacent queued markers without moving output across a marker", () => {
     let paused = true
     const { batcher, events } = stream(() => paused)

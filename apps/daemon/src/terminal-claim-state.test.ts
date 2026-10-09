@@ -647,6 +647,63 @@ describe("bounded terminal resize delivery", () => {
     expect(notices(follower, "terminal.resized")).toEqual([])
   })
 
+  it.each(["plain", "none"] as const)("keeps pending prompt output on its batch beat with %s watchers", async (watch) => {
+    const { connect, owner, follower, process, print, beat } = await setup()
+    if (watch === "plain") await follower.watch()
+    else await follower.rpc("terminal.unwatch", { terminalId })
+    const slow = await connect("slow-unrelated")
+    let bufferedBytes = terminalWebSocketHighWaterBytes + 1
+    Object.defineProperty(slow.serverSocket, "bufferedAmount", { get: () => bufferedBytes })
+    const observed = vi.spyOn(TerminalOutputBackpressure.prototype, "observe")
+    print("prompt before resize")
+    await owner.resize()
+    expect.soft(owner.notifications).toEqual([])
+    expect.soft(observed).not.toHaveBeenCalled()
+    expect.soft(process.pause).not.toHaveBeenCalled()
+    await beat()
+    expect(notices(owner, "terminal.output").map(({ params }) => params.data)).toEqual(["prompt before "])
+    expect(observed).toHaveBeenCalledOnce()
+    expect(process.pause).toHaveBeenCalledOnce()
+    bufferedBytes = 0
+    await beat()
+    await beat()
+    expect(notices(owner, "terminal.output").map(({ params }) => params.data)).toEqual(["prompt before ", "resize"])
+    expect(notices(owner, "terminal.resized")).toEqual([])
+    expect(observed).toHaveBeenCalledTimes(2)
+  })
+
+  it("does not start an output batch clock for a resize without followers", async () => {
+    const { owner, follower, print } = await setup()
+    await follower.watch()
+    await owner.resize()
+    await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
+    print("new grid\n")
+    await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
+    await owner.list()
+    expect(owner.notifications).toEqual([])
+    await vi.advanceTimersByTimeAsync(terminalOutputBatchDelayMilliseconds / 2)
+    await owner.list()
+    expect(notices(owner, "terminal.output").map(({ params }) => params.data)).toEqual(["new grid\n"])
+  })
+
+  it("batches output on both sides of a resize without followers until the beat", async () => {
+    const { owner, follower, process, print, beat } = await setup()
+    await follower.watch()
+    const observed = vi.spyOn(TerminalOutputBackpressure.prototype, "observe")
+    print("old\n")
+    process.resize.mockImplementation(() => print("new\n"))
+    await owner.resize()
+    expect(owner.notifications).toEqual([])
+    expect(observed).not.toHaveBeenCalled()
+    await beat()
+    // Keep the grid boundary, even though no reader currently receives its marker.
+    expect(notices(owner, "terminal.output").map(({ params }) => params.data)).toEqual(["old\n", "new\n"])
+    expect(notices(owner, "terminal.resized")).toEqual([])
+    expect(observed).toHaveBeenCalledTimes(2)
+    await beat()
+    expect(notices(owner, "terminal.output")).toHaveLength(2)
+  })
+
   it.each(["resize", "create"] as const)("queues one latest %s marker while paused before output drawn afterward", async (method) => {
     const { owner, follower, process, print, beat } = await setup()
     let bufferedBytes = terminalWebSocketHighWaterBytes + 1

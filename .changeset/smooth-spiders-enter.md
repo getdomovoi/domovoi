@@ -28,7 +28,10 @@ reports the dimensions at the start of its queued live suffix when the connectio
 resizes; other create replies report the new dimensions. A following watch reply also
 reports the starting grid of its queued suffix. Resize boundaries are retained even when
 no follower exists yet, so a follower joining during a pause receives old-grid output
-before the notice that advances it to the new dimensions.
+before the notice that advances it to the new dimensions. Without an eligible follower,
+resize boundaries wait for normal batch delivery instead of flushing partial output early.
+A retained boundary can split an output notification at that delivery, preserving the
+old-grid and new-grid ordering needed by a follower that joins before the queue drains.
 An empty replay has no start timestamp; if queued output exceeds retained history,
 the watch reply reports that earlier output was dropped.
 
