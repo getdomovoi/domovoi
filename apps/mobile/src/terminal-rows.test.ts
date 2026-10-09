@@ -427,6 +427,17 @@ describe("withNotification", () => {
     expect(claimantLine(record.summary, true)).toBe("Claimed by Studio")
   })
 
+  // A release names the last holder with the claim no longer held.
+  it("says the claim was given up when the holder releases it", () => {
+    const record = withNotification(
+      watchFrom(watched()),
+      { method: "terminal.ownership", params: { terminalId: "terminal-1", owner: { client: "web", clientId: "web-1", device: { id: `device-${"b".repeat(32)}`, label: "Studio" } }, claimHeld: false } },
+      at,
+    )
+    expect(record.summary.claimHeld).toBe(false)
+    expect(claimantLine(record.summary, true)).toBe("Last claimed by Studio")
+  })
+
   // A claim that moved is something heard, so a gap after it starts there.
   it("hears a move of the claim as recently as any output", () => {
     const later = new Date("2026-10-06T14:30:00.000Z")

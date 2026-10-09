@@ -1021,13 +1021,17 @@ const terminalDimensionSchema = z.number().int().min(2).max(1_000)
 // claimant gave, plus the paired device the daemon verified on that
 // connection, when there is one. A root bearer has no device. The label is
 // the one at claim time; renaming the device later does not rewrite it.
-export const terminalOwnerSchema = z.object({
+const terminalClientIdentitySchema = z.object({
   client: clientKindSchema,
   clientId: clientIdentityIdSchema,
   device: deviceReferenceSchema.optional(),
 })
 
-const terminalClientIdentitySchema = terminalOwnerSchema
+export const terminalOwnerSchema = terminalClientIdentitySchema.extend({
+  // When this claim began. Release keeps the last holder and time; clients
+  // show "since" only while claimHeld is true. Older daemons omit the time.
+  claimedAt: dateTimeSchema.optional(),
+})
 
 export const terminalCreateParamsSchema = z.object({
   terminalId: terminalIdSchema,
@@ -1055,6 +1059,10 @@ export const terminalClaimParamsSchema = z.object({
   terminalId: terminalIdSchema,
 }).extend(terminalClientIdentitySchema.shape)
 
+export const terminalReleaseParamsSchema = z.object({
+  terminalId: terminalIdSchema,
+}).extend(terminalClientIdentitySchema.shape)
+
 export const terminalSessionSchema = z.object({
   terminalId: terminalIdSchema,
   sessionId: z.string().min(1),
@@ -1072,7 +1080,11 @@ export const terminalAcceptedSchema = z.object({ accepted: z.literal(true) })
 // identity because it types nothing: the daemon knows the connection, and
 // nothing a watcher says about itself could authorize input, a resize or the
 // claim. Phone v2 frame 04.
-export const terminalWatchParamsSchema = z.object({ terminalId: terminalIdSchema }).strict()
+export const terminalWatchParamsSchema = z.object({
+  terminalId: terminalIdSchema,
+  // Older clients reject unknown notifications, so resize delivery is opt-in.
+  followResize: z.literal(true).optional(),
+}).strict()
 export const terminalUnwatchParamsSchema = z.object({ terminalId: terminalIdSchema }).strict()
 export const terminalListParamsSchema = z.object({ sessionId: z.string().min(1) }).strict()
 // A closed terminal stays readable this long, then the daemon drops it.
@@ -1106,8 +1118,8 @@ const terminalSummaryShape = {
   cwd: z.string().min(1),
   owner: terminalOwnerSchema,
   // The owner is the last connection to hold the claim; claimHeld says whether
-  // that connection is still attached, or the terminal is waiting to be reaped.
-  // A closed terminal holds no claim.
+  // that connection is still attached. Released and closed terminals hold no
+  // claim; a disconnected holder can reclaim during the reap grace window.
   claimHeld: z.boolean(),
   openedAt: dateTimeSchema,
   ...terminalStateShape,
@@ -1140,7 +1152,15 @@ export const terminalClosedNotificationSchema = z.object({
 export const terminalOwnershipNotificationSchema = z.object({
   terminalId: terminalIdSchema,
   owner: terminalOwnerSchema,
+  // Absent means held: older daemons only announced a new holder.
+  claimHeld: z.boolean().optional(),
 })
+
+export const terminalResizedNotificationSchema = z.object({
+  terminalId: terminalIdSchema,
+  cols: terminalDimensionSchema,
+  rows: terminalDimensionSchema,
+}).strict()
 
 export const systemPauseAllParamsSchema = z.object({
   client: clientKindSchema,
@@ -1560,6 +1580,10 @@ export const rpcMethods = {
     params: terminalClaimParamsSchema,
     result: terminalOwnershipNotificationSchema,
   },
+  "terminal.release": {
+    params: terminalReleaseParamsSchema,
+    result: terminalOwnershipNotificationSchema,
+  },
   "terminal.input": { params: terminalInputParamsSchema, result: terminalAcceptedSchema },
   "terminal.resize": { params: terminalResizeParamsSchema, result: terminalAcceptedSchema },
   "terminal.close": { params: terminalCloseParamsSchema, result: terminalAcceptedSchema },
@@ -1803,6 +1827,7 @@ export const notificationMethods = {
   "terminal.output": terminalOutputNotificationSchema,
   "terminal.closed": terminalClosedNotificationSchema,
   "terminal.ownership": terminalOwnershipNotificationSchema,
+  "terminal.resized": terminalResizedNotificationSchema,
   "fleet.changed": fleetChangedNotificationSchema,
   "system.emergencyStopped": systemEmergencyStoppedNotificationSchema,
   // Sent only to the connection that issued the code it names.
@@ -1820,6 +1845,7 @@ export const rpcMethodAuthorizations = {
   "artifact.authorize": "observe",
   "terminal.create": "control",
   "terminal.claim": "control",
+  "terminal.release": "control",
   "terminal.input": "control",
   "terminal.resize": "control",
   "terminal.close": "control",
@@ -1920,6 +1946,7 @@ export const rpcMethodMutations = {
   "artifact.authorize": "read-only",
   "terminal.create": "read-only",
   "terminal.claim": "read-only",
+  "terminal.release": "read-only",
   "terminal.input": "read-only",
   "terminal.resize": "read-only",
   "terminal.close": "read-only",
@@ -2043,6 +2070,8 @@ export function isRefusedWithoutPersistence(method: RpcMethod): boolean {
 // until unwatch or disconnect), and unwatch. terminal.create, claim, input,
 // resize and close stay out: a handheld reads the shell, and only the one
 // connection holding the claim types into it, resizes it or ends it.
+// Release stays out too: a handheld can neither create nor claim a terminal,
+// so it never holds the claim to release.
 export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
   // Watch.
   "system.hello",
@@ -2134,6 +2163,7 @@ export type TerminalOwner = z.infer<typeof terminalOwnerSchema>
 export type TerminalOutputNotification = z.infer<typeof terminalOutputNotificationSchema>
 export type TerminalClosedNotification = z.infer<typeof terminalClosedNotificationSchema>
 export type TerminalOwnershipNotification = z.infer<typeof terminalOwnershipNotificationSchema>
+export type TerminalResizedNotification = z.infer<typeof terminalResizedNotificationSchema>
 export type EmergencyStopOutcomes = z.infer<typeof emergencyStopOutcomesSchema>
 export type EmergencyStopFailure = z.infer<typeof emergencyStopFailureSchema>
 export type SystemEmergencyStopResult = z.infer<typeof systemEmergencyStopResultSchema>

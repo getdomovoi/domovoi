@@ -232,17 +232,20 @@ export function TerminalPane({
         setClosed(true)
         terminal.write(`\r\n[process exited${exitCode === undefined ? "" : ` ${exitCode}`}]\r\n`)
       },
-      ownership: ({ owner }) => {
+      ownership: ({ owner, claimHeld }) => {
+        // A release names the last holder with claimHeld false. A daemon from
+        // before release omits claimHeld, and its notices always mean held.
+        const held = claimHeld ?? true
         // A watcher never holds the shell, whatever the notification says.
         const owned = ownsTerminal
-        ownsTerminal = !readOnly && owner.clientId === controls.clientId
+        ownsTerminal = !readOnly && held && owner.clientId === controls.clientId
         terminal.options.disableStdin = !ownsTerminal
         // Taking the shell makes this pane's grid the shell's grid.
         if (ownsTerminal && !owned && attached) {
           refit()
           void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
         }
-        setClaimHeld(true)
+        setClaimHeld(held)
         setMetadata((current) => current ? { ...current, owner } : current)
       },
     })
@@ -370,7 +373,8 @@ export function TerminalPane({
     )
   }
 
-  const writable = !readOnly && metadata?.owner.clientId === controls.clientId
+  // A released shell still names its last holder, so the name alone is not the claim.
+  const writable = !readOnly && claimHeld && metadata?.owner.clientId === controls.clientId
   const terminalStatus: TerminalStatus = closed ? "closed"
     : !connected ? "disconnected"
       : metadata ? "connected"
@@ -414,7 +418,10 @@ export function TerminalPane({
   const claim = () => {
     if (!terminalId || readOnly) return
     void controls.claim(terminalId).then(
-      ({ owner }) => setMetadata((current) => current ? { ...current, owner } : current),
+      ({ owner, claimHeld: held }) => {
+        setClaimHeld(held ?? true)
+        setMetadata((current) => current ? { ...current, owner } : current)
+      },
       (cause: unknown) => {
         setError(failure(cause, "Terminal takeover failed"))
       },

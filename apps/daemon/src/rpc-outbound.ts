@@ -46,6 +46,7 @@ const terminalNotifications = new Set([
   "terminal.output",
   "terminal.closed",
   "terminal.ownership",
+  "terminal.resized",
 ])
 
 /**

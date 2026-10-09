@@ -1666,9 +1666,9 @@ type ActiveTerminal = {
   // Ownership is the connection that holds it, and any later direct connection
   // that authenticated as the same client (its hello identity, or its paired
   // device). The owner broadcast to every client is caller-supplied and
-  // authorizes nothing. A released ownership waits through a grace window for
-  // that client to reconnect, then the terminal is reaped rather than
-  // stranded forever.
+  // authorizes nothing. A disconnected owner gets a grace window to reconnect
+  // before reaping. An explicit release clears the key and keeps the shell
+  // running unheld, so reconnecting cannot silently take the claim back.
   ownerSocket: RpcOutboundSocket | undefined
   ownerKey: string | undefined
   // The connections that opened, claimed or watch this terminal. Its output,
@@ -1678,6 +1678,8 @@ type ActiveTerminal = {
   // credential reads a terminal only this way, and terminal.watch types,
   // resizes, closes and claims nothing.
   watchers: Set<RpcOutboundSocket>
+  // Only watchers that opted into the new resize notification receive it.
+  resizeFollowers: Set<RpcOutboundSocket>
   openedAt: number
   reapTimer: ReturnType<typeof setTimeout> | undefined
   output: TerminalOutputBatcher
@@ -3942,6 +3944,29 @@ export class DomovoiDaemon {
     }
   }
 
+  #terminalResizeFollowers(terminal: ActiveTerminal): RpcOutboundSocket[] {
+    return [...terminal.resizeFollowers].filter((candidate) => terminal.audience.has(candidate)
+      && (this.#mayWatchTerminals(candidate) || terminal.watchers.has(candidate)))
+  }
+
+  #resizeTerminal(terminalId: string, terminal: ActiveTerminal, cols: number, rows: number): void {
+    // Queue the boundary before resize(), which can synchronously redraw the PTY.
+    // Text the redactor still retains here can follow the notice, even complete
+    // lines. Resizing must not release that text or alter secret detection.
+    // Keep boundaries even without followers: a follower may join while paused.
+    terminal.output.pushResize(terminalId, { cols, rows }, { cols: terminal.cols, rows: terminal.rows }, {
+      eager: this.#terminalResizeFollowers(terminal).length > 0,
+    })
+    terminal.process.resize(cols, rows)
+    terminal.cols = cols
+    terminal.rows = rows
+  }
+
+  #terminalJoinSize(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket): { cols: number; rows: number } {
+    const queuedSize = terminal.resizeFollowers.has(socket) ? terminal.output.queuedStartSize(terminalId) : undefined
+    return queuedSize ?? { cols: terminal.cols, rows: terminal.rows }
+  }
+
   #closedTerminalSummary(closed: ClosedTerminal): TerminalSummary {
     return {
       ...closed.summary,
@@ -3981,19 +4006,36 @@ export class DomovoiDaemon {
     return {
       client: params.client,
       clientId: params.clientId,
+      claimedAt: new Date().toISOString(),
       ...this.#decidingDevice(socket),
     }
   }
 
-  // A connection joins at a boundary: output still waiting in the batch goes
-  // to the audience it was printed for before the newcomer is added, so what
-  // it reads next from the record and what reaches it live never overlap. A
-  // connection already watching gets the same boundary, since the record it
-  // is about to read holds that waiting output too.
-  #joinTerminalAudience(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket, watching = false): void {
-    terminal.output.flush(terminalId)
+  // Live joins drain before reading the replay, stopping if delivery pauses.
+  // Exclude the output still queued after that drain from the reply, since
+  // the reader will receive it live on resume.
+  #joinTerminalAudience(
+    terminalId: string,
+    terminal: ActiveTerminal,
+    socket: RpcOutboundSocket,
+    { watching = false, replay = true }: { watching?: boolean; replay?: boolean } = {},
+  ): TerminalReplayRecord {
+    // A claim or disconnect handoff has no replay reply. Admit its reader before
+    // the drain so those bytes reach it live instead of being lost.
+    if (!replay) terminal.audience.add(socket)
+    terminal.output.drainNow(terminalId)
     terminal.audience.add(socket)
     if (watching) terminal.watchers.add(socket)
+    const record = terminal.replay.record()
+    const queued = terminal.output.queuedOutputCharacters(terminalId)
+    // Replay and batching receive the same redacted text, so all queued output
+    // is a suffix of the replay, or covers it entirely after replay eviction.
+    const text = record.text.slice(0, Math.max(0, record.text.length - queued))
+    return {
+      text,
+      startsAt: text.length > 0 ? record.startsAt : undefined,
+      dropped: record.dropped || queued > record.text.length,
+    }
   }
 
   // Called once the terminal has left #terminals and its last output has been
@@ -6756,11 +6798,8 @@ export class DomovoiDaemon {
             this.#error(socket, request.id, invalidParams, "Terminal belongs to another session")
             return
           }
-          if (this.#ownsTerminal(params.terminalId, existing, socket)) {
-            existing.process.resize(params.cols, params.rows)
-            existing.cols = params.cols
-            existing.rows = params.rows
-          } else if (existing.ownerSocket === undefined) {
+          const ownsTerminal = this.#ownsTerminal(params.terminalId, existing, socket, { replay: true })
+          if (!ownsTerminal && existing.ownerSocket === undefined) {
             existing.owner = this.#terminalOwner(socket, params)
             existing.ownerSocket = socket
             existing.ownerKey = this.#terminalClientKey(socket)
@@ -6772,20 +6811,25 @@ export class DomovoiDaemon {
             this.#notifyTerminalAudience(existing, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
               terminalId: params.terminalId,
               owner: existing.owner,
+              claimHeld: true,
             }))
           }
-          this.#joinTerminalAudience(params.terminalId, existing, socket)
+          // Capture the reply before resizing: a synchronous redraw belongs
+          // only to the live stream, after its resize marker.
+          const record = this.#joinTerminalAudience(params.terminalId, existing, socket)
+          if (ownsTerminal && (existing.cols !== params.cols || existing.rows !== params.rows)) {
+            this.#resizeTerminal(params.terminalId, existing, params.cols, params.rows)
+          }
           this.#sendResult(socket, method, {
             jsonrpc: "2.0",
             id: request.id,
             result: rpcMethods[method].result.parse({
               terminalId: params.terminalId,
               sessionId: existing.sessionId,
-              cols: existing.cols,
-              rows: existing.rows,
+              ...this.#terminalJoinSize(params.terminalId, existing, socket),
               shell: existing.shell,
               cwd: existing.cwd,
-              buffer: existing.replay.read(),
+              buffer: record.text,
               owner: existing.owner,
             }),
           })
@@ -6807,6 +6851,11 @@ export class DomovoiDaemon {
         const output = new TerminalOutputBatcher((terminalId, data) => {
           this.#notifyTerminalAudience(activeTerminal, "terminal.output", { terminalId, data })
           return outputBackpressure.observe()
+        }, undefined, undefined, (terminalId, size) => {
+          const followers = this.#terminalResizeFollowers(activeTerminal)
+          if (followers.length === 0) return false
+          this.#notifyClients(followers, "terminal.resized", { terminalId, ...size })
+          return outputBackpressure.observe()
         })
         const activeTerminal: ActiveTerminal = {
           sessionId: session.id,
@@ -6823,6 +6872,7 @@ export class DomovoiDaemon {
           ownerKey: this.#terminalClientKey(socket),
           audience: new Set([socket]),
           watchers: new Set(),
+          resizeFollowers: new Set(),
           openedAt: Date.now(),
           reapTimer: undefined,
           output,
@@ -6846,8 +6896,11 @@ export class DomovoiDaemon {
               // A read this large is a burst, and the tail redaction holds back
               // would otherwise leave it under the batcher's threshold, so a
               // client about to be dropped for slowness would never see it.
-              if (text.length >= maximumTerminalOutputChunkCharacters - terminalRedactionCarryCharacters) {
-                active.output.flush(params.terminalId)
+              // The live drain respects any pause caused by this burst; only
+              // close and exit may flush markers past high water.
+              if (text.length >= maximumTerminalOutputChunkCharacters - terminalRedactionCarryCharacters
+                && !active.outputBackpressure.paused) {
+                active.output.drainNow(params.terminalId)
               }
             }
             emit(active.redactor.push(data))
@@ -6922,10 +6975,12 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        terminal.owner = this.#terminalOwner(socket, params)
+        const sameClaim = terminal.ownerSocket === socket
+          || (terminal.ownerKey !== undefined && terminal.ownerKey === this.#terminalClientKey(socket))
+        if (!sameClaim) terminal.owner = this.#terminalOwner(socket, params)
         terminal.ownerSocket = socket
         terminal.ownerKey = this.#terminalClientKey(socket)
-        terminal.audience.add(socket)
+        this.#joinTerminalAudience(params.terminalId, terminal, socket, { replay: false })
         if (terminal.reapTimer !== undefined) {
           clearTimeout(terminal.reapTimer)
           terminal.reapTimer = undefined
@@ -6933,6 +6988,40 @@ export class DomovoiDaemon {
         const ownership = rpcMethods[method].result.parse({
           terminalId: params.terminalId,
           owner: terminal.owner,
+          claimHeld: true,
+        })
+        this.#notifyTerminalAudience(terminal, "terminal.ownership", ownership)
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: ownership })
+        return
+      }
+
+      if (method === "terminal.release") {
+        const params = paramsResult.data as RpcParams<"terminal.release">
+        if (!this.#requestMayNameClient(socket, params.clientId)) {
+          this.#error(socket, request.id, invalidParams, "A request cannot name a paired device's id it did not authenticate as")
+          return
+        }
+        const terminal = this.#terminals.get(params.terminalId)
+        if (!terminal) {
+          this.#error(socket, request.id, invalidParams, "Terminal does not exist")
+          return
+        }
+        if (!this.#ownsTerminal(params.terminalId, terminal, socket)) {
+          this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
+          return
+        }
+        terminal.ownerSocket = undefined
+        terminal.ownerKey = undefined
+        if (terminal.reapTimer !== undefined) {
+          clearTimeout(terminal.reapTimer)
+          terminal.reapTimer = undefined
+        }
+        // Explicit release keeps the live shell and its audience without a
+        // reap timer. The last holder remains visible until the next claim.
+        const ownership = rpcMethods[method].result.parse({
+          terminalId: params.terminalId,
+          owner: terminal.owner,
+          claimHeld: false,
         })
         this.#notifyTerminalAudience(terminal, "terminal.ownership", ownership)
         this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: ownership })
@@ -6963,13 +7052,19 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        if (terminal) this.#joinTerminalAudience(params.terminalId, terminal, socket, true)
-        const record = terminal ? terminal.replay.record() : closed!.record
+        const record = terminal
+          ? this.#joinTerminalAudience(params.terminalId, terminal, socket, { watching: true })
+          : closed!.record
+        if (terminal) {
+          if (params.followResize) terminal.resizeFollowers.add(socket)
+          else terminal.resizeFollowers.delete(socket)
+        }
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
           result: rpcMethods[method].result.parse({
             ...(terminal ? this.#terminalSummary(params.terminalId, terminal) : this.#closedTerminalSummary(closed!)),
+            ...(terminal ? this.#terminalJoinSize(params.terminalId, terminal, socket) : {}),
             buffer: record.text,
             ...(record.startsAt === undefined ? {} : { bufferStartsAt: new Date(record.startsAt).toISOString() }),
             earlierOutputDropped: record.dropped,
@@ -6986,9 +7081,10 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal does not exist")
           return
         }
-        // The holder of the claim stays in the audience: its output is part
-        // of holding the shell, and only closing or releasing the claim ends it.
+        // The holder stays in the audience. Release also keeps it listening;
+        // once it no longer holds the claim, unwatch removes it from the audience.
         terminal?.watchers.delete(socket)
+        terminal?.resizeFollowers.delete(socket)
         if (terminal && terminal.ownerSocket !== socket) terminal.audience.delete(socket)
         this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: rpcMethods[method].result.parse({ accepted: true }) })
         return
@@ -7025,9 +7121,9 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Terminal is owned by another client")
           return
         }
-        terminal.process.resize(params.cols, params.rows)
-        terminal.cols = params.cols
-        terminal.rows = params.rows
+        if (terminal.cols !== params.cols || terminal.rows !== params.rows) {
+          this.#resizeTerminal(params.terminalId, terminal, params.cols, params.rows)
+        }
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
@@ -13014,14 +13110,19 @@ export class DomovoiDaemon {
 
   // A connection that authenticated as the owning client holds the terminal,
   // so the owner's reconnect is not refused as another client's.
-  #ownsTerminal(terminalId: string, terminal: ActiveTerminal, socket: RpcOutboundSocket): boolean {
+  #ownsTerminal(
+    terminalId: string,
+    terminal: ActiveTerminal,
+    socket: RpcOutboundSocket,
+    { replay = false }: { replay?: boolean } = {},
+  ): boolean {
     if (terminal.ownerSocket === socket) return true
     const key = this.#terminalClientKey(socket)
     if (key === undefined || terminal.ownerKey !== key) return false
-    // Wherever ownership moves, the new owner also hears the terminal, from
-    // the same boundary as any other connection that joins.
+    // Only create returns a replay. Other ownership moves must admit the new
+    // reader before draining so it receives pending output live.
     terminal.ownerSocket = socket
-    this.#joinTerminalAudience(terminalId, terminal, socket)
+    this.#joinTerminalAudience(terminalId, terminal, socket, { replay })
     if (terminal.reapTimer !== undefined) {
       clearTimeout(terminal.reapTimer)
       terminal.reapTimer = undefined
@@ -13036,6 +13137,7 @@ export class DomovoiDaemon {
     this.#notifyTerminalAudience(terminal, "terminal.ownership", rpcMethods["terminal.claim"].result.parse({
       terminalId,
       owner: terminal.owner,
+      claimHeld: true,
     }))
   }
 
@@ -13056,12 +13158,11 @@ export class DomovoiDaemon {
     for (const [terminalId, terminal] of this.#terminals) {
       terminal.audience.delete(socket)
       terminal.watchers.delete(socket)
+      terminal.resizeFollowers.delete(socket)
       if (terminal.ownerSocket !== socket) continue
       if (sameClient) {
-        // No record is read here, so output still waiting in the batch goes on
-        // to the same client's other connection rather than being cut off.
         terminal.ownerSocket = sameClient
-        terminal.audience.add(sameClient)
+        this.#joinTerminalAudience(terminalId, terminal, sameClient, { replay: false })
         this.#announceTerminalOwnership(terminalId, terminal)
         continue
       }

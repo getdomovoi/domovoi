@@ -39,6 +39,18 @@ function manualScheduler() {
 }
 
 describe("RpcOutboundBackpressure", () => {
+  it("sends terminal.resized past high water without closing the watcher", () => {
+    const socket = new FakeSocket()
+    socket.bufferedAmount = 101
+    const policy = new RpcOutboundBackpressure({ highWaterBytes: 100, lowWaterBytes: 25 })
+
+    policy.notify(socket, "terminal.resized", "latest-size", () => "resync")
+
+    expect(socket.close).not.toHaveBeenCalled()
+    expect(socket.sent).toEqual(["latest-size"])
+    expect(policy.retainedClientCount).toBe(0)
+  })
+
   it("preserves healthy frames and response order", () => {
     const socket = new FakeSocket()
     const policy = new RpcOutboundBackpressure({ highWaterBytes: 100, lowWaterBytes: 25 })

@@ -12,7 +12,10 @@ type Cancel = (timer: Timer) => void
 const scheduleTimeout: Schedule = (callback, delay) => setTimeout(callback, delay)
 const cancelTimeout: Cancel = (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>)
 
-type PendingOutput = { data: string; paused: boolean; timer?: Timer }
+type TerminalSize = { cols: number; rows: number }
+type OutputEntry = { kind: "output"; data: string }
+  | { kind: "resize"; size: TerminalSize; previousSize: TerminalSize }
+type PendingOutput = { entries: OutputEntry[]; paused: boolean; timer?: Timer }
 
 export class TerminalOutputBatcher {
   readonly #pending = new Map<string, PendingOutput>()
@@ -21,65 +24,125 @@ export class TerminalOutputBatcher {
     readonly emit: (terminalId: string, data: string) => boolean | void,
     readonly schedule: Schedule = scheduleTimeout,
     readonly cancel: Cancel = cancelTimeout,
+    readonly emitResize: (terminalId: string, size: TerminalSize) => boolean | void = () => {},
   ) {}
 
   push(terminalId: string, data: string): void {
     if (!data) return
-    const pending = this.#pending.get(terminalId) ?? { data: "", paused: false }
-    pending.data += data
+    const pending = this.#pending.get(terminalId) ?? { entries: [], paused: false }
+    const tail = pending.entries.at(-1)
+    if (tail?.kind === "output") tail.data += data
+    else pending.entries.push({ kind: "output", data })
     this.#pending.set(terminalId, pending)
-    if (pending.paused) return
-    this.#drain(terminalId, pending, false)
+    if (!pending.paused) this.#drain(terminalId, pending, "batch")
+  }
+
+  pushResize(
+    terminalId: string,
+    size: TerminalSize,
+    previousSize: TerminalSize,
+    { eager = true }: { eager?: boolean } = {},
+  ): void {
+    const pending = this.#pending.get(terminalId) ?? { entries: [], paused: false }
+    const tail = pending.entries.at(-1)
+    if (tail?.kind === "resize") tail.size = size
+    else pending.entries.push({ kind: "resize", size, previousSize })
+    this.#pending.set(terminalId, pending)
+    if (!pending.paused) this.#drain(terminalId, pending, eager ? "boundary" : "batch")
   }
 
   resume(terminalId: string): void {
     const pending = this.#pending.get(terminalId)
     if (!pending?.paused) return
     pending.paused = false
-    this.#drain(terminalId, pending, true)
+    this.#drain(terminalId, pending, "all")
   }
 
-  #drain(terminalId: string, pending: PendingOutput, includePartial: boolean): void {
-    while (
-      pending.data.length >= maximumTerminalOutputChunkCharacters
-      || (includePartial && pending.data.length > 0)
-    ) {
-      const chunk = pending.data.slice(0, maximumTerminalOutputChunkCharacters)
-      pending.data = pending.data.slice(chunk.length)
-      if (this.emit(terminalId, chunk) === true) {
+  drainNow(terminalId: string): void {
+    const pending = this.#pending.get(terminalId)
+    if (!pending || pending.paused) return
+    this.#drain(terminalId, pending, "all")
+  }
+
+  // Coalescing changes only the destination size, preserving the grid before
+  // the first queued boundary. No boundary means the current grid still applies.
+  queuedStartSize(terminalId: string): TerminalSize | undefined {
+    const marker = this.#pending.get(terminalId)?.entries.find((entry) => entry.kind === "resize")
+    return marker?.previousSize
+  }
+
+  queuedOutputCharacters(terminalId: string): number {
+    return this.#pending.get(terminalId)?.entries.reduce(
+      (total, entry) => total + (entry.kind === "output" ? entry.data.length : 0),
+      0,
+    ) ?? 0
+  }
+
+  #emitNext(terminalId: string, pending: PendingOutput, outputLimit = maximumTerminalOutputChunkCharacters): boolean | void {
+    const entry = pending.entries[0]!
+    if (entry.kind === "resize") {
+      pending.entries.shift()
+      return this.emitResize(terminalId, entry.size)
+    }
+    const chunk = entry.data.slice(0, outputLimit)
+    entry.data = entry.data.slice(chunk.length)
+    if (!entry.data) pending.entries.shift()
+    return this.emit(terminalId, chunk)
+  }
+
+  #drain(terminalId: string, pending: PendingOutput, mode: "batch" | "boundary" | "all"): void {
+    // Deferred markers preserve grids without advancing the character threshold
+    // or batch beat. A boundary can split a chunk, but cannot release extra text.
+    let batchRemaining = mode === "batch"
+      ? Math.floor(this.queuedOutputCharacters(terminalId) / maximumTerminalOutputChunkCharacters) * maximumTerminalOutputChunkCharacters
+      : Infinity
+    while (pending.entries.length > 0) {
+      if (batchRemaining === 0) break
+      const entry = pending.entries[0]!
+      // An eager resize drains partial output before its boundary, not after it.
+      if (entry.kind === "output" && entry.data.length < maximumTerminalOutputChunkCharacters
+        && mode === "boundary" && pending.entries.length === 1) break
+      const outputLimit = Math.min(batchRemaining, maximumTerminalOutputChunkCharacters)
+      if (entry.kind === "output") batchRemaining -= Math.min(entry.data.length, outputLimit)
+      if (this.#emitNext(terminalId, pending, outputLimit) === true) {
         pending.paused = true
-        if (pending.timer !== undefined) this.cancel(pending.timer)
-        pending.timer = undefined
         break
       }
     }
-    if (!pending.data) {
+    // A deferred marker alone must not start a timer for output arriving later.
+    const onlyDeferredBoundaries = mode === "batch" && this.queuedOutputCharacters(terminalId) === 0
+    if (pending.paused || pending.entries.length === 0 || onlyDeferredBoundaries) {
       if (pending.timer !== undefined) this.cancel(pending.timer)
-      this.#pending.delete(terminalId)
-    } else if (!pending.paused && pending.timer === undefined) {
+      pending.timer = undefined
+      // Keep an empty paused queue so a later push cannot bypass high water.
+      if (!pending.paused && pending.entries.length === 0) this.#pending.delete(terminalId)
+    } else if (pending.timer === undefined) {
       const timer = this.schedule(() => {
         if (this.#pending.get(terminalId) !== pending || pending.timer !== timer) return
         pending.timer = undefined
-        this.#drain(terminalId, pending, true)
+        this.#drain(terminalId, pending, "all")
       }, terminalOutputBatchDelayMilliseconds)
       pending.timer = timer
     }
   }
 
+  // Final delivery ignores pauses. Live stream boundaries must use drainNow.
   flush(terminalId: string): void {
     const pending = this.#pending.get(terminalId)
     if (!pending) return
     if (pending.timer !== undefined) this.cancel(pending.timer)
     this.#pending.delete(terminalId)
-    for (let offset = 0; offset < pending.data.length; offset += maximumTerminalOutputChunkCharacters) {
-      this.emit(terminalId, pending.data.slice(offset, offset + maximumTerminalOutputChunkCharacters))
-    }
+    while (pending.entries.length > 0) this.#emitNext(terminalId, pending)
   }
 }
 
 export class TerminalOutputBackpressure {
   #paused = false
   #timer: Timer | undefined
+
+  get paused(): boolean {
+    return this.#paused
+  }
 
   constructor(
     readonly process: { pause?(): void; resume?(): void },
