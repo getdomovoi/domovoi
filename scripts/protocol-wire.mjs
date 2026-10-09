@@ -36,6 +36,7 @@ export const notificationSchemas = {
   "terminal.output": "terminalOutputNotificationSchema",
   "terminal.closed": "terminalClosedNotificationSchema",
   "terminal.ownership": "terminalOwnershipNotificationSchema",
+  "terminal.resized": "terminalResizedNotificationSchema",
   "fleet.changed": "fleetChangedNotificationSchema",
   "system.emergencyStopped": "systemEmergencyStoppedNotificationSchema",
   "device.codeOutcome": "deviceCodeOutcomeNotificationSchema",
