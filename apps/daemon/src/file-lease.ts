@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync } from "node:fs"
+import { chmodSync, mkdirSync, statSync } from "node:fs"
 import { dirname } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
@@ -27,6 +27,32 @@ export function claimExclusiveFileLease(path: string, busy: () => Error): FileLe
     throw error
   }
 
+  return retainLease(database)
+}
+
+export function claimSharedFileLease(path: string, busy: () => Error): FileLease | undefined {
+  try { statSync(path) } catch (error) {
+    // During the very first install, status may see half-written state without
+    // a lease file. The next read is correct. Never create or unlink the lease.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw error
+  }
+
+  let database: DatabaseSync | undefined
+  try {
+    database = new DatabaseSync(path, { readOnly: true })
+    // BEGIN is deferred: the read acquires the shared lock until release.
+    database.exec("PRAGMA busy_timeout = 0; BEGIN; SELECT count(*) FROM sqlite_master;")
+  } catch (error) {
+    database?.close()
+    const code = (error as { errcode?: number }).errcode
+    if (code === 5 || code === 6) throw busy()
+    throw error
+  }
+  return retainLease(database)
+}
+
+function retainLease(database: DatabaseSync): FileLease {
   heldLeases.add(database)
   let released = false
   return {

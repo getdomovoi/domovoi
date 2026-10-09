@@ -8,6 +8,7 @@ import { runWslServiceCommand } from "./wsl-install.js"
 import { stopGuestSupervisor } from "./supervisor-command.js"
 
 import type { DaemonEnvironment } from "../config.js"
+import type { FileLease } from "../file-lease.js"
 import { OperationDeadline } from "../operation-deadline.js"
 import { claimProfile, ProfileAlreadyOwnedError, type ProfileLease } from "../profile-lease.js"
 import { localOwnerRemovalReceiptPath, writeLocalOwnerRemovalReceipt } from "../local-owner-removal.js"
@@ -15,7 +16,7 @@ import { readServiceRemovalSnapshot, serviceRemovalReceipt, serviceRemovalRecove
 import { assertServiceProfile, createServiceConfiguration, registeredWithoutConfiguration, ServiceProfileUnknownError, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
 import { readLocalProfileFile } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
-import { claimServiceOperation } from "./operation-lease.js"
+import { claimServiceOperation, claimServiceStatusRead } from "./operation-lease.js"
 import { launchdPlist, launchdPlistProgram, systemdUnit, systemdUnitProgram } from "./units.js"
 import { isRecordedServiceProgram } from "./restore-target.js"
 import { disableWindowsTask, readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsSchtasksPath, windowsTaskDisabledAndIdle, windowsTaskRemovalPlan, windowsTaskSettingsCommand, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
@@ -72,7 +73,10 @@ export type CapturedRun = { code: number; stdout: string; stderr?: string }
 export type ServiceEffects = {
   readConfiguration?: (home: string, platform: string) => ServiceConfiguration | undefined
   stopSupervisor?: (path: string, deadline: OperationDeadline, options?: { retire?: boolean; previousConfigurationDigest?: string; confirmNoLaunch?: () => Promise<boolean>; stopTask?: () => Promise<boolean> }) => Promise<unknown>
-  claimServiceOperation: () => ReturnType<typeof claimServiceOperation>
+  claimServiceOperation: {
+    (): FileLease
+    (access: "status"): FileLease | undefined
+  }
   claimProfile: (homeDirectory: ProfileLocation) => ProfileLease
   registeredProfile?: (home: string, platform: string) => ProfileLocation | undefined
   removalSnapshot: typeof readServiceRemovalSnapshot
@@ -466,7 +470,7 @@ async function writeUnit(path: string, contents: string, deadline: OperationDead
   }
 }
 
-async function serviceOperation<T>(effects: Pick<ServiceEffects, "claimServiceOperation">, operation: (deadline: OperationDeadline) => Promise<T>): Promise<T> {
+async function serviceOperation<T>(effects: { claimServiceOperation: () => FileLease | undefined }, operation: (deadline: OperationDeadline) => Promise<T>): Promise<T> {
   const deadline = OperationDeadline.start(30_000)
   let lease: ReturnType<typeof claimServiceOperation> | undefined
   try {
@@ -1546,7 +1550,9 @@ export function serviceStatus(
   target: Pick<ServiceTarget, "platform" | "home" | "uid">,
   effects: Pick<ServiceEffects, "capture" | "exists" | "claimServiceOperation" | "supervisorStatus" | "readConfiguration">,
 ): Promise<ServiceStatus> {
-  return serviceOperation(effects, (deadline) => statusWithDeadline(target, effects, deadline))
+  return serviceOperation({
+    claimServiceOperation: () => effects.claimServiceOperation("status"),
+  }, (deadline) => statusWithDeadline(target, effects, deadline))
 }
 
 export type ServiceCommandWords = { install: string; status: string; remove: string; profileRecover: string }
@@ -1714,16 +1720,23 @@ function managerDirectory(command: string): { cwd?: string } {
 }
 
 export function nodeServiceEffects(options: { userHomeDirectory?: string } = {}): ServiceEffects {
+  // Manager names are per OS user, not per caller-selected HOME or profile.
+  // One effect keeps status reads and mutations on the same lease when a
+  // fixture overrides the claim to isolate the operator's service lock.
+  function claimOperation(): FileLease
+  function claimOperation(access: "status"): FileLease | undefined
+  function claimOperation(access?: "status"): FileLease | undefined {
+    const home = options.userHomeDirectory ?? userInfo().homedir
+    return access === "status" ? claimServiceStatusRead(home) : claimServiceOperation(home)
+  }
+
   return {
     readConfiguration: (home, platform) => {
       try { return parseServiceConfiguration(readLocalProfileFile(serviceConfigurationPath(home, platform), 64 * 1024)) }
       catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error }
     },
     stopSupervisor: process.platform === "win32" ? stopWindowsSupervisor : (path, deadline) => stopGuestSupervisor(path, deadline),
-    // Manager names are per OS user, not per caller-selected HOME or profile.
-    // An alternate shell HOME must not create a second lock for the same job.
-    // The override isolates tests from the operator's actual service lock.
-    claimServiceOperation: () => claimServiceOperation(options.userHomeDirectory ?? userInfo().homedir),
+    claimServiceOperation: claimOperation,
     claimProfile,
     registeredProfile: (home, platform) => {
       let text: string
