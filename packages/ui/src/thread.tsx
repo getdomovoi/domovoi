@@ -1,4 +1,4 @@
-import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react"
 import {
   ArchiveIcon,
   ArrowDownIcon,
@@ -97,7 +97,8 @@ import { ApprovalCard } from "./approval-card"
 import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
 import { ThreadComposer } from "./thread-composer"
-import { attachmentName, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
+import { attachmentName, desktopAttachmentLimit, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
+import { composerInbox } from "./composer-inbox"
 import { loadingLineRef, startOpenerRef } from "./start-handoff"
 
 // The fresh-start panel is drawn only on a session nothing has run in, so its
@@ -548,7 +549,16 @@ export function Thread({
   // from empty. Everything else still resets.
   const draftSessionId = snapshot.activeSessionId
   const [prompt, setPrompt] = useState(() => sessionDraftStore.read(draftSessionId).prompt)
-  const [attachments, setAttachments] = useState<SessionAttachment[]>(() => [...sessionDraftStore.read(draftSessionId).attachments])
+  const [attachments, setAttachmentsState] = useState<SessionAttachment[]>(() => [...sessionDraftStore.read(draftSessionId).attachments])
+  // Every write to the draft's attachments goes through this ref, applied at
+  // once, so a write that lands before the next render (a file read that
+  // finished, the terminal's Attach this output) builds on the write before
+  // it rather than on the last render.
+  const attachmentsRef = useRef(attachments)
+  const setAttachments = useCallback((next: SetStateAction<SessionAttachment[]>) => {
+    attachmentsRef.current = typeof next === "function" ? next(attachmentsRef.current) : next
+    setAttachmentsState(attachmentsRef.current)
+  }, [])
   const [slashDismissed, setSlashDismissed] = useState(false)
   const slashOpen = connected && !watching && prompt.startsWith("/") && !slashDismissed
   const threadViewport = useRef<HTMLDivElement>(null)
@@ -742,6 +752,20 @@ export function Thread({
     globalThis.addEventListener("keydown", onKeyDown)
     return () => globalThis.removeEventListener("keydown", onKeyDown)
   }, [watching])
+  // A dock surface (the terminal's Attach this output) hands attachments to
+  // this composer by session id. Only a composer that can send opens the
+  // inbox, so the offer is not drawn where it could not be used. It stays
+  // closed while the composer is busy (a send on its way, a checkpoint
+  // restore, a pause, a release), so a send that fails gives its
+  // attachments back to an empty draft.
+  useEffect(() => {
+    if (readOnly || pending || !activeSessionId) return
+    return composerInbox.open(activeSessionId, (attachment) => {
+      if (attachmentsRef.current.length >= desktopAttachmentLimit) return "full"
+      setAttachments((current) => [...current, attachment])
+      return "attached"
+    })
+  }, [activeSessionId, pending, readOnly, setAttachments])
 
   if (!active) {
     const hasProject = snapshot.project !== null
@@ -845,7 +869,8 @@ export function Thread({
     />
   )
 
-  const sendPrompt = async (nextPrompt: string, { fromComposer }: { fromComposer: boolean }, sendAttachments = attachments) => {
+  // The draft as it is now: a write since the last render goes with the message.
+  const sendPrompt = async (nextPrompt: string, { fromComposer }: { fromComposer: boolean }, sendAttachments = attachmentsRef.current) => {
     if (watching) return
     setPending(true)
     setSendError("")
@@ -959,7 +984,7 @@ export function Thread({
         text: outcome.text,
         state: "waiting",
         ...(skillSelection ? { skillIds: [...skillSelection] } : {}),
-        ...(attachments.length > 0 ? { attachments } : {}),
+        ...(attachmentsRef.current.length > 0 ? { attachments: attachmentsRef.current } : {}),
       })
       setPrompt("")
       setAttachments([])
@@ -1299,7 +1324,7 @@ export function Thread({
               <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-info" />
               <div className="min-w-0 flex-1">
                 <div className="text-[12px] leading-[1.5] text-info-foreground">This device was paired to watch only.</div>
-                <div className="mt-1 text-[11px] leading-[1.5] text-info-dim">No sends, approvals, terminal or writes. Reads stream as normal.</div>
+                <div className="mt-1 text-[11px] leading-[1.5] text-info-dim">No sends, approvals, terminal input or writes. Reads stream as normal.</div>
               </div>
             </div>
           ) : archiveReadOnly ? (
@@ -1439,9 +1464,11 @@ export function Thread({
               // The same draft as the composer, so the same conversion. The
               // file is drawn in the composer; the editor says where it went.
               const field = event.currentTarget
+              // Read against the draft as it is now: a write since the last
+              // render (Attach this output) counts toward the limit.
               const outcome = pasteOutcome(
                 event.clipboardData.getData("text/plain"),
-                attachments,
+                attachmentsRef.current,
                 field.value.length - (field.selectionEnd - field.selectionStart),
               )
               if (outcome.kind === "inline") {

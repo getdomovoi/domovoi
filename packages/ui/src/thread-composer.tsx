@@ -30,6 +30,7 @@ import {
   desktopAttachmentLimit,
   inlineTextPreview,
   pasteOutcome,
+  type PasteOutcome,
   pastedText,
   terminalOutputAttachment,
   workspacePathAttachment,
@@ -113,6 +114,8 @@ export function ThreadComposer({
   prompt: string
   onPromptChange: (prompt: string) => void
   attachments: SessionAttachment[]
+  // Applies an update at once, not at the next render (Thread's setter), so
+  // an add knows whether the draft took it.
   onAttachmentsChange: Dispatch<SetStateAction<SessionAttachment[]>>
   slashOpen: boolean
   // What this session offers the slash commands: the list names it.
@@ -149,14 +152,19 @@ export function ThreadComposer({
   const slashQuery = prompt.split(/\s/u, 1)[0] ?? ""
   const paletteShortcut = composerPlatform() === "darwin" ? "⌘K" : "Ctrl+K"
 
-  const addAttachments = (next: SessionAttachment[]) => {
-    const combined = [...attachments, ...next]
-    if (combined.length > desktopAttachmentLimit) {
-      setAttachmentError(`Attach up to ${desktopAttachmentLimit} items per message.`)
-      return
-    }
-    setAttachmentError("")
-    onAttachmentsChange(combined)
+  // A file or clipboard read awaits before it adds, so the draft may have
+  // grown or shrunk since this render. The limit is checked only against the
+  // draft as it is then. The thread applies an update at once, so the refusal
+  // is known here; a setter that defers it only skips the message. Says
+  // whether the attachments went in.
+  const addAttachments = (next: SessionAttachment[], refusal = `Attach up to ${desktopAttachmentLimit} items per message.`) => {
+    let refused = false
+    onAttachmentsChange((current) => {
+      refused = current.length + next.length > desktopAttachmentLimit
+      return refused ? current : [...current, ...next]
+    })
+    setAttachmentError(refused ? refusal : "")
+    return !refused
   }
   const attachWorkspacePath = () => {
     try {
@@ -182,17 +190,23 @@ export function ThreadComposer({
   // without one clears what an earlier paste left.
   const pasteAsFile = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const field = event.currentTarget
-    const outcome = pasteOutcome(
-      event.clipboardData.getData("text/plain"),
-      attachments,
-      field.value.length - (field.selectionEnd - field.selectionStart),
-    )
+    const text = event.clipboardData.getData("text/plain")
+    const kept = field.value.length - (field.selectionEnd - field.selectionStart)
+    // Judged against the draft as it is now, for room and for the file's
+    // name: a write since this render (a removal, another paste, Attach this
+    // output) counts. The thread applies the update at once, so the outcome
+    // is known here.
+    let outcome: PasteOutcome = pasteOutcome(text, attachments, kept)
+    onAttachmentsChange((current) => {
+      outcome = pasteOutcome(text, current, kept)
+      return outcome.kind === "file" ? [...current, outcome.attachment] : current
+    })
     if (outcome.kind === "inline") {
       setAttachmentError(outcome.note ?? "")
       return
     }
+    setAttachmentError("")
     event.preventDefault()
-    addAttachments([outcome.attachment])
   }
   const takeSlashCommand = (command: SlashCommand) => {
     if (watching) return
