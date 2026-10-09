@@ -456,6 +456,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     transferSession,
     previewTransfer,
     releaseSession,
+    listTerminals,
+    unwatchTerminal,
+    watchTerminal,
     writeTerminal,
     authenticationRequired,
     protocolError,
@@ -470,7 +473,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     resize: resizeTerminal,
     close: closeTerminal,
     subscribe: subscribeTerminal,
-  }), [claimTerminal, closeTerminal, createTerminal, resizeTerminal, subscribeTerminal, terminalClientId, writeTerminal])
+    // A watching desktop reads the shell through terminal.watch, the way the
+    // phone does, instead of an empty state.
+    watch: watchTerminal,
+    unwatch: unwatchTerminal,
+    // A pane that does not hold the shell rereads the holder and its grid.
+    list: listTerminals,
+  }), [claimTerminal, closeTerminal, createTerminal, listTerminals, resizeTerminal, subscribeTerminal, terminalClientId, unwatchTerminal, watchTerminal, writeTerminal])
   // Home remains connected while a remote workspace is in use. Its registry,
   // enrollment and client-route verifier never come from the selected target.
   useEffect(() => {
@@ -1806,6 +1815,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         ) : surface === "audit" ? (
           <AuditLogView
             connected={connected}
+            clientKind={clientKind}
             onOpenSkills={() => setSurface("skills")}
             onQuery={queryAudit}
             onExport={exportAudit}
@@ -1849,7 +1859,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                     />
                   </div>
                 </main>
-              ) : <Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} connectionId={connectionId} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntime} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} />}</ResizablePanel>
+              ) : <Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} connectionId={connectionId} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={attached ? undefined : pairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntime} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} onOpenDockTab={openSheetTab} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} />}</ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces(<Button ref={dockUnpinButtonRef} variant="ghost" size="icon-sm" className="size-7 flex-none rounded-full bg-accent text-primary" aria-pressed aria-label="Unpin" onClick={() => setDockPinned(false)}><PinIcon className="size-[15px]" /></Button>, true)}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
