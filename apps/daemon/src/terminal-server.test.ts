@@ -1532,7 +1532,7 @@ describe("terminal RPC", () => {
     expect(terminal.resize).toHaveBeenCalledWith(120, 40)
     await waitForDaemon(() => expect(ownership).toContainEqual(expect.objectContaining({
       method: "terminal.ownership",
-      params: { terminalId: "terminal-reconnect", owner: { client: "desktop", clientId: "desktop-owner" } },
+      params: { terminalId: "terminal-reconnect", owner: { client: "desktop", clientId: "desktop-owner", claimedAt: expect.any(String) }, claimHeld: true },
     })))
 
     watcher.socket.close()

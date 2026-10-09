@@ -124,7 +124,7 @@ describe("a phone reading a terminal", () => {
     expect(listed.result).toEqual({
       terminals: [{
         terminalId: "terminal-1", sessionId: session.id, cols: 120, rows: 34, shell: "zsh", cwd: "/worktrees/wt-billing-idem",
-        owner: { client: "desktop", clientId: "desktop-owner" }, claimHeld: true, openedAt: expect.any(String), state: "live",
+        owner: { client: "desktop", clientId: "desktop-owner", claimedAt: expect.any(String) }, claimHeld: true, openedAt: expect.any(String), state: "live",
       }],
     })
     expect((listed.result as { terminals: Record<string, unknown>[] }).terminals[0]).not.toHaveProperty("buffer")
@@ -164,7 +164,7 @@ describe("a phone reading a terminal", () => {
     expect(await other.call("terminal.claim", { terminalId: "terminal-1", client: "desktop", clientId: "desktop-other" })).not.toHaveProperty("error")
     await waitForDaemon(() => expect(phone.notifications).toContainEqual({
       method: "terminal.ownership",
-      params: { terminalId: "terminal-1", owner: { client: "desktop", clientId: "desktop-other" } },
+      params: { terminalId: "terminal-1", owner: { client: "desktop", clientId: "desktop-other", claimedAt: expect.any(String) }, claimHeld: true },
     }))
 
     expect(await phone.call("terminal.unwatch", { terminalId: "terminal-1" })).toMatchObject({ result: { accepted: true } })
