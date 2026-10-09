@@ -108,6 +108,7 @@ import {
   commandPaletteFrame,
   commandPaletteShortcut,
   commandPaletteTitle,
+  shortcutLabel,
   workspaceShortcut,
   type CommandPalettePlatform,
 } from "./workspace-commands"
@@ -256,6 +257,18 @@ function serviceOutcomeMovesDaemon(action: "install" | "remove" | "update", outc
   if (outcome.reason !== "failed") return false
   if (outcome.daemon === "restarted" || outcome.daemon === "attached") return true
   return outcome.service !== null && serviceChangedBy(action, outcome.service)
+}
+
+// mod+N with no other modifier: Cmd+N on macOS, Ctrl+N elsewhere. On macOS
+// Ctrl+N stays a text field's next-line key.
+function newSessionShortcut(
+  event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "shiftKey" | "altKey">,
+  platform: CommandPalettePlatform,
+): boolean {
+  if (event.key.toLowerCase() !== "n" || event.shiftKey || event.altKey) return false
+  return platform === "darwin"
+    ? event.metaKey && !event.ctrlKey
+    : event.ctrlKey && !event.metaKey
 }
 
 // A request that starts a new session, kept so a refused one can be made again.
@@ -1436,6 +1449,31 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [commandPlatform, hasSnapshot, workspaceShortcutsBound])
 
+  // mod+N runs the title bar's New session, the key its tip names. Q41 A: the
+  // desktop's alone, as Q291 A keeps the two above, because a browser tab never
+  // receives Cmd+N or Ctrl+N. The listener reads the action through a ref so a
+  // project or attachment change does not leave it calling an old one.
+  const newSession = () => snapshot?.project ? setLauncherMode("session") : requestOpenProject()
+  const newSessionRef = useRef(newSession)
+  newSessionRef.current = newSession
+  useEffect(() => {
+    if (!workspaceShortcutsBound || watching) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!newSessionShortcut(event, commandPlatform) || event.defaultPrevented || event.isComposing || event.repeat) return
+      const focused = focusedElement()
+      // A dialog holds focus while it is open: the palette, the launcher, a
+      // confirm. Opening the launcher there would stack a second modal on it.
+      if (focused && closestComposed(focused, "[role='dialog'], [role='alertdialog']")) return
+      // Ctrl+N is the shell's next-history key, so a focused terminal keeps
+      // it. On macOS the shortcut is Cmd+N, which the terminal does not use.
+      if (focused && commandPlatform !== "darwin" && closestComposed(focused, ".xterm")) return
+      event.preventDefault()
+      newSessionRef.current()
+    }
+    globalThis.addEventListener("keydown", onKeyDown)
+    return () => globalThis.removeEventListener("keydown", onKeyDown)
+  }, [commandPlatform, watching, workspaceShortcutsBound])
+
   useEffect(() => {
     if (!snapshot) return
     setWorkspaceUi((current) => reconcileWorkspaceUiState(current, {
@@ -1597,7 +1635,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     <SurfaceCodeReload.Provider value={reloadForNewCode}>
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={() => snapshot?.project ? setLauncherMode("session") : requestOpenProject()} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => { if (!watching) setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" })) }} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={connected ? attached ? "remote" : "local" : "unreachable"} theme={resolvedTheme} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => { if (!watching) setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" })) }} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={connected ? attached ? "remote" : "local" : "unreachable"} theme={resolvedTheme} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
