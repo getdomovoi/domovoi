@@ -24,6 +24,7 @@ function renderTopBar() {
       onOpenCommands={vi.fn()}
       onToggleTheme={vi.fn()}
       commandShortcut="Ctrl+K"
+      newSessionShortcut="Ctrl+N"
       sessionsDrawer={<button type="button" aria-label="Sessions" className="electron-no-drag focus-visible:ring-2">Sessions</button>}
     />,
   )

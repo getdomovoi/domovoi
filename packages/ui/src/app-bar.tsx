@@ -60,6 +60,7 @@ export function AppBar({
   onOpenSettings,
   onToggleTheme,
   commandShortcut,
+  newSessionShortcut,
   sessionsDrawer,
   title,
   machineTransport,
@@ -82,6 +83,9 @@ export function AppBar({
   onOpenSettings?: (() => void) | undefined
   onToggleTheme?: (() => void) | undefined
   commandShortcut?: string | undefined
+  // The key the shell binds to New session, drawn in its tip. A shell that
+  // binds none passes none, so the tip names no key that does nothing.
+  newSessionShortcut?: string | undefined
   sessionsDrawer?: ReactNode | undefined
   title?: string | undefined
   machineTransport?: string | undefined
@@ -98,7 +102,6 @@ export function AppBar({
   const titleText = title ?? activeSession?.title ?? snapshot?.project?.name ?? "Domovoi"
   const transport = machineTransport ?? (connected ? "local" : "unreachable")
   const watching = clientAccess === "watching"
-  const newSessionShortcut = commandShortcut === "Ctrl+K" ? "Ctrl+N" : "⌘N"
   const appearanceLabel = theme === "dark" ? "Light appearance" : "Dark appearance"
 
   return (
@@ -117,7 +120,7 @@ export function AppBar({
             <PlusIcon className="size-4" />
           </Button>
         </TooltipTrigger>
-        <TooltipContent side="bottom" sideOffset={7} showArrow={false} className={titlebarTipClassName}>New session · {newSessionShortcut}</TooltipContent>
+        <TooltipContent side="bottom" sideOffset={7} showArrow={false} className={titlebarTipClassName}>{newSessionShortcut ? `New session · ${newSessionShortcut}` : "New session"}</TooltipContent>
       </Tooltip>
       <div className="flex min-w-0 flex-1 justify-center">
         <Button
