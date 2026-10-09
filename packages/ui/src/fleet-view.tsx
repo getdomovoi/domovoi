@@ -1153,6 +1153,7 @@ function FleetOverflowAlert({ overflow }: { overflow: FleetSnapshotOverflow }) {
 export function FleetView({
   connected,
   entries,
+  daemonTimeOffsetMs = 0,
   fleetOverflow,
   currentMachineId,
   devicesMachineLabel,
@@ -1177,6 +1178,7 @@ export function FleetView({
 }: {
   connected: boolean
   entries: FleetEntry[]
+  daemonTimeOffsetMs?: number
   fleetOverflow: FleetSnapshotOverflow | null
   currentMachineId: string
   devicesMachineLabel: string | undefined
@@ -1225,7 +1227,8 @@ export function FleetView({
   const [forgetting, setForgetting] = useState<FleetMachine | null>(null)
   const [forgetPending, setForgetPending] = useState(false)
   const [forgetNotice, setForgetNotice] = useState<ForgetMachineNotice | null>(null)
-  const now = useNow(15_000)
+  // LAST HEARD compares daemon timestamps while continuing to tick locally.
+  const now = useNow(15_000) + daemonTimeOffsetMs
 
   // Each visit of this view reads every admitted machine whose reading is not fresh.
   useReadOnVisit({ active: true, connected, clientAccess, onReadMachine })

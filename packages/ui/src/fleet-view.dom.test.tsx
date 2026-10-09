@@ -14,6 +14,36 @@ import { remoteControlRefusal } from "./machine-selection.js"
 
 afterEach(cleanup)
 
+it("corrects LAST HEARD for a skewed client clock and keeps ticking", async () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] })
+  vi.setSystemTime(new Date("2026-10-09T14:00:00.000Z"))
+  try {
+    const snapshot = {
+      entries: entries({ ...local, heartbeat: { state: "online" as const, lastSeenAt: "2026-10-09T11:59:30.000Z" } }),
+      daemonTime: "2026-10-09T12:00:00.000Z",
+    }
+    const props = {
+      connected: true, entries: snapshot.entries, fleetOverflow: null,
+      currentMachineId: local.id, devicesMachineLabel: local.label, currentSessionCount: 0,
+      onOpenSkills: vi.fn(), onListDevices: async () => ({ devices: [] }),
+      onRevokeDevice: vi.fn(), onRotateDevice: vi.fn(), onRenameDevice: vi.fn(),
+    }
+    const offset = Date.parse(snapshot.daemonTime) - Date.now()
+    const view = render(<TooltipProvider><FleetView {...props} daemonTimeOffsetMs={offset} /></TooltipProvider>)
+    await act(async () => {})
+    const heard = () => facts(screen.getByRole("group", { name: "workshop" }))["LAST HEARD"]
+    expect(heard()).toBe("30s ago")
+    await act(async () => { vi.advanceTimersByTime(15_000) })
+    expect(heard()).toBe("45s ago")
+    // A snapshot without daemon time supplies no offset, preserving the fallback.
+    view.rerender(<TooltipProvider><FleetView {...props} /></TooltipProvider>)
+    expect(heard()).toBe("2h ago")
+  } finally {
+    cleanup()
+    vi.useRealTimers()
+  }
+})
+
 it("shows client authorization next to disabled remote controls and names its authority", async () => {
   const user = userEvent.setup()
   render(<TooltipProvider><FleetView connected entries={entries(local, studio)} fleetOverflow={null}
