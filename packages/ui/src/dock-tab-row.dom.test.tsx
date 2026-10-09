@@ -79,7 +79,7 @@ describe("the dock tab row follows the design", () => {
 describe("the History tab tip", () => {
   it("offers a fork from a checkpoint and puts the oldest row where the tab does", () => {
     const tip = dockTabDefinitions.find((definition) => definition.id === "history")?.note ?? ""
-    expect(tip).toBe("Everything that happened in this session, by category, oldest at the top. Fork from any checkpoint.")
+    expect(tip).toBe("Everything that happened in this session, by category, oldest at the top. Fork from a checkpoint.")
   })
 
   // The tip's order clause is a claim about the panel, so the panel is held to
