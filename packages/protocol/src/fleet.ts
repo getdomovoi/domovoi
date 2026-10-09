@@ -158,6 +158,7 @@ export const fleetQuarantinedEntrySchema = z.object({
 
 export const fleetSnapshotSchema = z.object({
   entries: z.array(fleetEntrySchema).max(maximumFleetEntries),
+  daemonTime: offsetDateTimeSchema.optional(),
   registry: z.object({
     state: z.literal("degraded"),
     quarantined: z.array(fleetQuarantinedEntrySchema).min(1).max(maximumFleetEntries),

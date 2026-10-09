@@ -166,6 +166,15 @@ describe("fleetMachineFactsSchema", () => {
 })
 
 describe("fleetSnapshotSchema", () => {
+  it("validates optional daemon time while accepting older snapshots", () => {
+    const snapshot = { entries: [described(machine)] }
+    expect(fleetSnapshotSchema.parse(snapshot)).toEqual(snapshot)
+    expect(fleetSnapshotSchema.safeParse({ ...snapshot, daemonTime: "not-a-time" }).success).toBe(false)
+    expect(fleetSnapshotSchema.safeParse({ ...snapshot, daemonTime: "2026-10-09T12:00:00" }).success).toBe(false)
+    const timed = { ...snapshot, daemonTime: "2026-10-09T12:00:00.000+02:00" }
+    expect(fleetSnapshotSchema.parse(timed)).toEqual(timed)
+  })
+
   it("rejects two machines sharing an identifier", () => {
     expect(fleetSnapshotSchema.safeParse({ entries: [described(machine), described(machine)] }).success).toBe(false)
   })
