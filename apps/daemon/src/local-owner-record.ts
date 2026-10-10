@@ -45,9 +45,50 @@ export function localOwnerSecretPath(homeDirectory: ProfileLocation): string {
   return join(profileDirectory(homeDirectory), "local-owner.key")
 }
 
+export type OwnerRecordReplacement = {
+  platform: NodeJS.Platform
+  rename(from: string, to: string): void
+  pause(ms: number): void
+  now(): number
+}
+const sharingRefusals = new Set(["EPERM", "EACCES", "EBUSY"])
+const sharingBudgetMs = 5_000
+const sharingPauseCapMs = 250
+const nodeReplacement: OwnerRecordReplacement = {
+  platform: process.platform,
+  rename: renameSync,
+  pause: (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) },
+  now: () => performance.now(),
+}
+
+// Windows MoveFileEx refuses to replace a file another process holds open:
+// the desktop or CLI reading this record, or an antivirus scan. Readers hold it
+// for milliseconds, so retry for at most five seconds, the same bound as the
+// Windows supervisor record. The wait is synchronous so that no queued rename
+// can outlive the profile lease (see below); it blocks this process's event
+// loop for at most that budget. Elsewhere these codes are not sharing and fail
+// at once.
+function replaceOwnerRecord(staging: string, path: string, effects: OwnerRecordReplacement): void {
+  const expiresAt = effects.now() + sharingBudgetMs
+  let pauseMs = 5
+  for (;;) {
+    try { effects.rename(staging, path); return } catch (error) {
+      const code = (error as NodeJS.ErrnoException | null)?.code ?? ""
+      if (effects.platform !== "win32" || !sharingRefusals.has(code)) throw error
+      const remaining = expiresAt - effects.now()
+      if (remaining <= 0) {
+        throw new Error(`Could not replace ${path}: the file stayed held open by another process for ${sharingBudgetMs / 1_000} s (Windows sharing refusal ${code}). The local owner record was not updated.`, { cause: error })
+      }
+      effects.pause(Math.min(pauseMs, remaining))
+      pauseMs = Math.min(pauseMs * 2, sharingPauseCapMs)
+    }
+  }
+}
+
 // These bounded, local metadata operations are serialized while holding the
 // profile lease. No queued rename may outlive release and replace a new owner.
-export function writeLocalOwnerRecord(homeDirectory: ProfileLocation, record: LocalOwnerRecord): void {
+export function writeLocalOwnerRecord(homeDirectory: ProfileLocation, record: LocalOwnerRecord,
+  replacement: OwnerRecordReplacement = nodeReplacement): void {
   const parsed = localOwnerRecordSchema.parse(record)
   const text = `${JSON.stringify(parsed)}\n`
   if (Buffer.byteLength(text) > maximumLocalOwnerRecordBytes) throw new Error("Local owner record exceeds its size limit")
@@ -56,7 +97,7 @@ export function writeLocalOwnerRecord(homeDirectory: ProfileLocation, record: Lo
   try {
     writeFileSync(staging, text, { mode: 0o600, flag: "wx" })
     if (process.platform !== "win32") chmodSync(staging, 0o600)
-    renameSync(staging, path)
+    replaceOwnerRecord(staging, path, replacement)
   } finally {
     rmSync(staging, { force: true })
   }

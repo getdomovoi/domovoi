@@ -1,6 +1,7 @@
 import { randomBytes } from "node:crypto"
 import { once } from "node:events"
-import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
+import { existsSync, readdirSync, renameSync } from "node:fs"
+import { chmod, mkdir, mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -14,7 +15,7 @@ import { verifyLocalOwnerProof } from "./local-owner-proof.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import {
   localOwnerRecordPath, localOwnerSecretPath, maximumLocalOwnerRecordBytes,
-  readLocalOwnerRecord, readLocalOwnerSecret,
+  readLocalOwnerRecord, readLocalOwnerSecret, writeLocalOwnerRecord, type OwnerRecordReplacement,
 } from "./local-owner-record.js"
 import {
   createProductionDaemon, type ProductionDaemonHandle,
@@ -100,5 +101,56 @@ it("refuses oversized, malformed and non-private records without echoing their c
   if (process.platform !== "win32") {
     await chmod(path, 0o644)
     expect(() => readLocalOwnerRecord(homeDirectory)).toThrow("owner record is invalid or inaccessible")
+  }
+})
+
+// Windows MoveFileEx refuses to replace a file another process holds open. A
+// supervised daemon died at startup on CI when a status poll held this record.
+async function replacement(platform: NodeJS.Platform, refusals: string[], held = false) {
+  const homeDirectory = await mkdtemp(join(tmpdir(), "domovoi-local-owner-"))
+  homes.push(homeDirectory)
+  await mkdir(join(homeDirectory, ".domovoi"))
+  let clock = 0
+  const pauses: number[] = []
+  const refused = [...refusals]
+  const effects: OwnerRecordReplacement = {
+    platform,
+    now: () => clock,
+    pause: (ms) => { pauses.push(ms); clock += ms },
+    rename: (from, to) => {
+      const code = held ? refusals[0] : refused.shift()
+      if (code) throw Object.assign(new Error(`${code}: rename refused`), { code, syscall: "rename" })
+      renameSync(from, to)
+    },
+  }
+  const staged = () => readdirSync(join(homeDirectory, ".domovoi")).filter((name) => name.endsWith(".partial"))
+  return { homeDirectory, effects, pauses, staged }
+}
+
+it.each(["EPERM", "EACCES", "EBUSY"])("retries a Windows %s sharing refusal and replaces the owner record", async (code) => {
+  const { homeDirectory, effects, pauses, staged } = await replacement("win32", [code, code])
+  writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" }, effects)
+  expect(readLocalOwnerRecord(homeDirectory)).toEqual({ version: 1, state: "none" })
+  expect(pauses).toEqual([5, 10])
+  expect(staged()).toEqual([])
+})
+
+it("gives up a held Windows owner record after five seconds and names the sharing failure", async () => {
+  // The file stays held for the whole budget.
+  const { homeDirectory, effects, pauses, staged } = await replacement("win32", ["EPERM"], true)
+  expect(() => writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" }, effects))
+    .toThrow(/local-owner\.json.*held open by another process.*5 s/)
+  expect(pauses.reduce((total, ms) => total + ms, 0)).toBe(5_000)
+  expect(Math.max(...pauses)).toBe(250)
+  expect(existsSync(localOwnerRecordPath(homeDirectory))).toBe(false)
+  expect(staged()).toEqual([])
+})
+
+it("does not retry a refusal outside Windows sharing", async () => {
+  for (const [platform, code] of [["linux", "EPERM"], ["darwin", "EBUSY"], ["win32", "ENOENT"]] as const) {
+    const { homeDirectory, effects, pauses, staged } = await replacement(platform, [code])
+    expect(() => writeLocalOwnerRecord(homeDirectory, { version: 1, state: "none" }, effects)).toThrow(`${code}: rename refused`)
+    expect(pauses).toEqual([])
+    expect(staged()).toEqual([])
   }
 })
