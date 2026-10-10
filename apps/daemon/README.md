@@ -224,8 +224,11 @@ The actions name these operator procedures:
 The current UI is unchanged. Existing clients still receive only valid ordinary lifecycle rows;
 they do not render quarantine diagnostics yet. The new field is emitted only for that explicit
 inspection request, since older parsers reject unknown fields even when a new parser calls them
-optional. Ordinary `fleet.list`, enrollment and forget results, and `fleet.changed` retain their
-previous shape. Inspection clients must request diagnostics again after a change notification.
+optional. Ordinary `fleet.list`, enrollment and forget results, and `fleet.changed` still omit
+registry metadata. Since protocol 0.8 they carry `daemonTime`, the daemon's clock when it built the
+reply, so a client measures heartbeat ages against the daemon rather than its own clock; a client
+falls back to its own clock when the field is absent. Version admission refuses 0.7 clients, whose
+strict parsers would reject the field, so none of them receives it. Inspection clients must request diagnostics again after a change notification.
 Quarantine is never described as a machine that was never enrolled.
 
 ## Configured fleet routes
