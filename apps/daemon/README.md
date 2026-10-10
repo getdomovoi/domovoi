@@ -1218,6 +1218,26 @@ systemctl --user show <unit> --property=LoadState    # LoadState=not-found
 
 Remove the `domovoi-systemd-` home only once the unit reports `LoadState=not-found`.
 
+`src/service/windows-task.native.test.ts`, `src/service/windows-task-command.native.test.ts` and
+`src/service/windows-job.native.test.ts` run only on Windows, and there only when `CI` is set to a
+value other than empty, `0` or `false` in any letter case, or when `DOMOVOI_NATIVE_SERVICE_TESTS=1`.
+Otherwise, on Windows they skip and print the reason; on other systems they skip without one. The first two register throwaway logon tasks in your account, named
+`Domovoi-supervision-test-<uuid>`, `Domovoi-legacy-shape-test-<uuid>`,
+`Domovoi-com-shape-test-<uuid>`, `Domovoi-long-command-test-<uuid>`,
+`Domovoi-program-length-test-<uuid>` and `Domovoi-quotes-test-<uuid>`. Their cleanup deletes each
+task even when a test fails, but a run killed before cleanup leaves it registered, and nothing
+removes it later. Remove a leftover task by hand, with the command the cleanup uses:
+
+```powershell
+schtasks /query /tn "<name>" /xml
+schtasks /delete /tn "<name>" /f
+```
+
+For `Domovoi-supervision-test-<uuid>`, the `<Arguments>` in that XML name a `service.json` inside its
+throwaway `domovoi-task-` home under the temporary directory. Remove that home only once
+`schtasks /query /tn "<name>"` reports that the task does not exist. The job tests register no task;
+a run killed before their cleanup leaves only processes, which end when you sign out.
+
 ## Loaded fixture checks
 
 The journal delivery test has its own 20-second budget (30 seconds on Windows), and the native
