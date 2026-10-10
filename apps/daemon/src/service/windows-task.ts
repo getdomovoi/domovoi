@@ -90,6 +90,8 @@ export function windowsTaskRegistrationCommand(name: string, user: string, actio
   const path = action.path.startsWith('"') && action.path.endsWith('"') ? action.path : `"${action.path}"`
   // TASK_CREATE_OR_UPDATE (6) replaces /f; interactive token (3) needs no password.
   // https://learn.microsoft.com/en-us/windows/win32/taskschd/taskfolder-registertaskdefinition
+  // Override Task Scheduler's default 72-hour limit and battery stops for the whole logon session.
+  // https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-executiontimelimit
   const script = `
 $ErrorActionPreference = 'Stop'
 $scheduler = New-Object -ComObject 'Schedule.Service'
