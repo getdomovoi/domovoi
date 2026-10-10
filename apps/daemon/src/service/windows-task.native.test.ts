@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
-import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, stat } from "node:fs/promises"
 import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -10,8 +10,8 @@ import { expect, it, vi } from "vitest"
 import { OperationDeadline } from "../operation-deadline.js"
 import { readLocalOwnerRecord } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
-import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
-import { nodeServiceEffects, removeService, runServiceCommand, servicePlan, serviceStatus, type ServiceCommand, type ServiceEffects } from "./install.js"
+import { createServiceConfiguration, parseServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
+import { installService, nodeServiceEffects, removeService, runServiceCommand, serviceStatus, type ServiceCommand, type ServiceEffects } from "./install.js"
 import { disableWindowsTask, stopWindowsTask, windowsPowerShellPath, windowsSchtasksPath, windowsTaskRemovalPlan } from "./windows-task.js"
 import { updateDaemonService } from "./desktop-service.js"
 import { readSupervisorStopRequest, readWindowsSupervisorRecord, type WindowsSupervisorRecord } from "./supervisor-record.js"
@@ -98,8 +98,9 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
     return state?.state === "running" && state.attempts.length === attempt && owner?.state === "ready"
       && owner.instanceId !== previousInstance
   }
-  // The only substitution redirects the task name. All scheduler, helper,
-  // record, status-handler and removal operations execute their real paths.
+  // Redirect every manager call to this UUID task. The unstarted case also
+  // fails the demand start, after the real installer has registered the task.
+  // All helper, record, status-handler and removal paths remain real.
   const renamed = ({ command, args }: ServiceCommand): ServiceCommand => {
     if (command === windowsSchtasksPath() && args[0] === "/run" && args[1] === "/tn" && args[2] === "Domovoi daemon") {
       return { command, args: ["/run", "/tn", name] }
@@ -112,9 +113,13 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
   }
   const scoped: ServiceEffects = { ...effects,
     capture: (command, args, active) => capture(renamed({ command, args }), active),
-    run: (command, args, active) => {
+    run: async (command, args, active) => {
       const named = renamed({ command, args })
-      return effects.run(named.command, named.args, active)
+      if (command === windowsSchtasksPath() && args[0] === "/run") {
+        if (mode === "unstarted") throw new Error("Injected failure before demand start")
+        started = true
+      }
+      await effects.run(named.command, named.args, active)
     },
   }
   const killDaemon = (state: WindowsSupervisorRecord) => {
@@ -125,19 +130,20 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
   try {
     expect(await capture(plan.inspect)).toMatchObject({ code: 0, stdout: "domovoi-task:missing\r\n" })
     timing("task absent before install")
-    await mkdir(join(directory, ".domovoi"), { recursive: true })
-    await mkdir(profile.profileDirectory)
-    const config = { ...createServiceConfiguration({ DOMOVOI_PROFILE_DIR: profile.profileDirectory, DOMOVOI_HOST: "127.0.0.1", DOMOVOI_PORT: "0" },
-      { platform: "win32", homeDirectory: directory, workingDirectory: directory }), registrationId: randomUUID(),
-      serviceRuntime: { executable: process.execPath, entry } }
-    await writeFile(path, serializeServiceConfiguration(config))
-    // The production plan, with only its name redirected to the absent UUID task.
-    const install = servicePlan({ platform: "win32", home: directory, user: userInfo().username,
-      execPath: entry, runtime: process.execPath, configuration: config })
+    await mkdir(profile.profileDirectory, { recursive: true })
+    const configuration = createServiceConfiguration({ DOMOVOI_PROFILE_DIR: profile.profileDirectory, DOMOVOI_HOST: "127.0.0.1", DOMOVOI_PORT: "0" },
+      { platform: "win32", homeDirectory: directory, workingDirectory: directory })
     expect(`"${process.execPath}" "${entry}" --service-supervise "${path}"`.length).toBeGreaterThan(261)
     created = true
-    const registration = await capture(renamed(install.commands[0]!))
-    expect(registration.code, registration.stderr).toBe(0)
+    const install = installService({ platform: "win32", home: directory, user: userInfo().username,
+      execPath: entry, runtime: process.execPath, configuration }, scoped)
+    // installService always requests a start. Fail that boundary to retain the
+    // never-launched registration while exercising its real writes and register.
+    if (mode === "unstarted") await expect(install).rejects.toThrow("Injected failure before demand start")
+    else expect(await install).toMatchObject({ kind: "task" })
+    const config = parseServiceConfiguration(readFileSync(path, "utf8"))
+    expect(config.serviceRuntime).toEqual({ executable: process.execPath, entry })
+    expect(config.registrationId).toBeDefined()
     timing("install: task registered")
     const xml = await capture({ command: windowsSchtasksPath(), args: ["/query", "/tn", name, "/xml"] })
     expect(xml.code).toBe(0)
@@ -160,9 +166,8 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
       timing("absent after removal")
       return
     }
-    started = true
-    await withinServiceDeadline(deadline, () => effects.run(windowsSchtasksPath(), ["/run", "/tn", name], deadline))
-    timing("task started")
+    expect(started).toBe(true)
+    timing("task started by install")
     await poll(() => running(1), stages(1))
     timing("attempt 1 daemon ready")
     const first = record()!
