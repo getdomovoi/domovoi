@@ -71,8 +71,8 @@ most 260 characters under Task Scheduler's
 The PowerShell registration command line must be at most 32,766 characters, leaving room for the
 terminating null required by
 [CreateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw).
-The script is UTF-16 and base64 encoded, and the program, arguments and user inside it are UTF-8 and
-base64 encoded again, so an ASCII task command of about 8,000 characters fits; non-ASCII characters
+The script is UTF-16 and base64 encoded, and the task name, program, arguments and user inside it are
+UTF-8 and base64 encoded again, so an ASCII task command of about 8,000 characters fits; non-ASCII characters
 fit fewer.
 Both refusals happen before file writes and name the length and the responsible path part.
 Use shorter absolute installation paths if either limit is exceeded.
@@ -513,3 +513,9 @@ environment references in command lines, launchd takes the program and each argu
 XML-escaped strings, and Task Scheduler accepts the program and arguments
 as separate COM action fields. See [systemd.service](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)
 and [Task Scheduler registration](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskfolder-registertaskdefinition).
+The daemon's Task Scheduler scripts carry every runtime value as UTF-8 base64 data that the script
+decodes: the Windows task's name, user, program and arguments, and the WSL task's name, registration
+source, `wsl.exe` path and arguments, which hold the distribution, Linux user and guest paths. The
+Windows job helper's script is fixed source and reads its launch values as JSON on standard input.
+PowerShell ends a single-quoted string at the smart quotes ’ ‘ ‚ ‛ as well as at the ASCII
+apostrophe, so doubling the apostrophe alone would not keep a value inside its string.
