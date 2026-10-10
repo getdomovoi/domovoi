@@ -17,46 +17,58 @@ import {
 // The command palette and the launcher load the first time one opens. Here
 // their code arrives only when a test lets it, as a slow or stalled chunk
 // would. Each test loads the shell afresh, since a loaded chunk never
-// suspends again.
-const chunks = vi.hoisted(() => {
-  const held = () => {
-    let release = () => {}
-    const ready = new Promise<void>((resolve) => { release = resolve })
-    return { ready, release }
+// suspends again, and registers both mocks afresh: vi.resetModules keeps what
+// a mock factory returned, so a mock registered once for the file would hold
+// back only the first open, and each later test would race the cached code.
+type HeldChunk = { ready: Promise<void>, release: () => void, requested: boolean }
+
+function held(): HeldChunk {
+  let release = () => {}
+  const ready = new Promise<void>((resolve) => { release = resolve })
+  return { ready, release, requested: false }
+}
+
+const chunks = { palette: held(), launcher: held() }
+
+// Loads a test let through without waiting for them. Each one settles before
+// the next test registers its mocks, so a late one cannot fill the new mock in.
+let loads: Promise<unknown>[] = []
+
+function heldBack(chunk: HeldChunk) {
+  return async (importOriginal: () => Promise<unknown>) => {
+    chunk.requested = true
+    const load = chunk.ready.then(importOriginal)
+    loads.push(load)
+    return load
   }
-  return { held, palette: held(), launcher: held() }
-})
-
-vi.mock("./command-palette", async (importOriginal) => {
-  await chunks.palette.ready
-  return importOriginal()
-})
-
-vi.mock("./launcher-dialog", async (importOriginal) => {
-  await chunks.launcher.ready
-  return importOriginal()
-})
+}
 
 let harness: FakeWebSocketHarness
 
 beforeEach(() => {
   try { localStorage.removeItem(workspaceUiStorageKey) } catch { /* a browser with site data blocked still runs the test */ }
   harness = installFakeWebSocket()
-  chunks.palette = chunks.held()
-  chunks.launcher = chunks.held()
+  chunks.palette = held()
+  chunks.launcher = held()
   vi.resetModules()
+  vi.doMock("./command-palette", heldBack(chunks.palette))
+  vi.doMock("./launcher-dialog", heldBack(chunks.launcher))
   // No idle time here: nothing is fetched before a test opens it.
   vi.stubGlobal("requestIdleCallback", () => 0)
   vi.stubGlobal("cancelIdleCallback", () => {})
 })
 
-afterEach(() => {
+afterEach(async () => {
   chunks.palette.release()
   chunks.launcher.release()
   cleanup()
   harness.uninstall()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  await Promise.allSettled(loads)
+  loads = []
+  // The mock records a load a few promise turns after the load itself.
+  await new Promise((resolve) => setTimeout(resolve, 0))
 })
 
 const settle = () => act(async () => {
@@ -158,6 +170,7 @@ it("lets a launcher opened before its code arrives be closed, and keeps it close
   await user.click(opener)
   await settle()
 
+  expect(chunks.launcher.requested).toBe(true)
   const loading = screen.getByRole("dialog", { name: "Start a session" })
   expect(loading.getAttribute("aria-busy")).toBe("true")
   expect(loading.contains(document.activeElement)).toBe(true)
@@ -181,6 +194,7 @@ it("lets a palette opened before its code arrives be closed, and keeps it closed
   await user.keyboard("{Control>}k{/Control}")
   await settle()
 
+  expect(chunks.palette.requested).toBe(true)
   const loading = screen.getByRole("dialog", { name: "Domovoi commands" })
   expect(loading.getAttribute("aria-busy")).toBe("true")
   expect(loading.contains(document.activeElement)).toBe(true)
@@ -201,6 +215,7 @@ it("replaces the loading launcher with the launcher once its code arrives", asyn
   const user = userEvent.setup()
   await user.click(screen.getByRole("button", { name: "New session" }))
   await settle()
+  expect(chunks.launcher.requested).toBe(true)
   expect(screen.getByRole("dialog", { name: "Start a session" }).getAttribute("aria-busy")).toBe("true")
 
   await arrive(chunks.launcher)
@@ -223,6 +238,7 @@ it("replaces the loading palette with the palette once its code arrives", async 
   opener.focus()
   await user.keyboard("{Control>}k{/Control}")
   await settle()
+  expect(chunks.palette.requested).toBe(true)
   expect(screen.getByRole("dialog", { name: "Domovoi commands" }).getAttribute("aria-busy")).toBe("true")
 
   await arrive(chunks.palette)
