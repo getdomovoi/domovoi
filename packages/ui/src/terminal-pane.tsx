@@ -10,6 +10,7 @@ import type {
   TerminalOutputNotification,
   TerminalOwner,
   TerminalOwnershipNotification,
+  TerminalResizedNotification,
   TerminalSession,
   TerminalSummary,
   TerminalWatchResult,
@@ -20,6 +21,7 @@ import { Button } from "./components/ui/button"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
 import { composerInbox, type ComposerInbox } from "./composer-inbox"
 import { terminalOutputAttachment } from "./desktop-attachments"
+import { readingTime } from "./fleet-access-session"
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { terminalIdForSession } from "./terminal-id"
 import { settleTerminalWrite } from "./terminal-input"
@@ -34,6 +36,9 @@ export type TerminalControls = {
     terminalId: string,
   ): Promise<TerminalSession>
   claim(terminalId: string): Promise<TerminalOwnershipNotification>
+  // terminal.release: the holder gives up its claim and the shell keeps
+  // running with nobody holding it. A client without it offers no release.
+  release?(terminalId: string): Promise<TerminalOwnershipNotification>
   write(terminalId: string, data: string): Promise<void>
   resize(terminalId: string, cols: number, rows: number): Promise<void>
   close(terminalId: string): Promise<void>
@@ -43,6 +48,8 @@ export type TerminalControls = {
       output: (event: TerminalOutputNotification) => void
       closed: (event: TerminalClosedNotification) => void
       ownership: (event: TerminalOwnershipNotification) => void
+      // terminal.resized, sent only to a watch that asked with followResize.
+      resized: (event: TerminalResizedNotification) => void
     },
   ): () => void
   // terminal.list: who holds each of a session's shells, whether that
@@ -53,18 +60,25 @@ export type TerminalControls = {
   // because a watch that cannot be undone keeps this connection in the
   // shell's audience after the pane is gone. A client that cannot watch
   // leaves both out, and a read-only pane shows its empty state instead.
+  // followResize asks for terminal.resized; followsResize in the reply says
+  // the daemon accepted it. A daemon from before the notice does not.
   | {
-    watch(terminalId: string): Promise<TerminalWatchResult>
+    watch(
+      terminalId: string,
+      options?: { followResize: true },
+    ): Promise<TerminalWatchResult & { followsResize?: boolean }>
     unwatch(terminalId: string): Promise<void>
   }
   | { watch?: never, unwatch?: never }
 )
 
 // The interval at which a pane that does not hold the shell reads the holder
-// again. The daemon sends no notice when the holder's connection drops or the
-// holder resizes, so between reads (this interval plus the reply's time, or
-// longer when a read fails or the page throttles timers) the banner can name a
-// holder that has gone and output can draw at the holder's previous grid.
+// again. The daemon sends no notice when the holder's connection drops, so
+// between reads (this interval plus the reply's time, or longer when a read
+// fails or the page throttles timers) the banner can name a holder that has
+// gone. A watch the daemon sends terminal.resized for takes the grid from that
+// notice; any other pane also takes it from these reads, so until the next one
+// its output can draw at the holder's previous grid.
 export const terminalHolderRefreshMs = 5_000
 
 // The pane's xterm history, in rows. Once the normal buffer holds this many
@@ -72,7 +86,10 @@ export const terminalHolderRefreshMs = 5_000
 const terminalScrollback = 5_000
 
 function sameOwner(left: TerminalOwner, right: TerminalOwner): boolean {
-  return left.client === right.client && left.clientId === right.clientId && left.device?.id === right.device?.id
+  return left.client === right.client
+    && left.clientId === right.clientId
+    && left.device?.id === right.device?.id
+    && left.claimedAt === right.claimedAt
 }
 
 // The states the pane can be in, each with the atom's meaning for it. Keyed on
@@ -147,6 +164,10 @@ export function TerminalPane({
   const [closed, setClosed] = useState(false)
   const [restartKey, setRestartKey] = useState(0)
   const [attachNote, setAttachNote] = useState<AttachNote>()
+  const [releasing, setReleasing] = useState(false)
+  // The mounted renderer's ownership handler, for this pane's own claim and
+  // release replies.
+  const applyOwnershipRef = useRef<((ownership: TerminalOwnershipNotification) => void) | undefined>(undefined)
   // Whether an xterm is mounted to read output from. A disconnect disposes it
   // while the last metadata stays on screen.
   const [rendered, setRendered] = useState(false)
@@ -178,6 +199,7 @@ export function TerminalPane({
     setMissing(false)
     setError("")
     setClosed(false)
+    setReleasing(false)
     setAttachNote(undefined)
     setEarlierDropped(false)
     setRecordFull(false)
@@ -226,27 +248,45 @@ export function TerminalPane({
       fit.fit()
       noteHistory()
     }
+    // Whether the daemon sends this pane terminal.resized, so the grid comes
+    // from that notice and not from the holder reads below.
+    let followsResize = false
+    // An ownership notice, or the reply to this pane's own claim or release:
+    // the reply settles the claim even if the notice is still on its way.
+    const applyOwnership = ({ owner, claimHeld, terminalId: named }: TerminalOwnershipNotification) => {
+      // A reply can arrive after the pane moved to another session's shell.
+      if (named !== terminalId) return
+      // A release names the last holder with claimHeld false. A daemon from
+      // before release omits claimHeld, and its notices always mean held.
+      const held = claimHeld ?? true
+      // A watcher never holds the shell, whatever the notification says.
+      const owned = ownsTerminal
+      ownsTerminal = !readOnly && held && owner.clientId === controls.clientId
+      terminal.options.disableStdin = !ownsTerminal
+      // Taking the shell makes this pane's grid the shell's grid.
+      if (ownsTerminal && !owned && attached) {
+        refit()
+        void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
+      }
+      setClaimHeld(held)
+      setMetadata((current) => current ? { ...current, owner } : current)
+    }
+    applyOwnershipRef.current = applyOwnership
     const unsubscribe = controls.subscribe(terminalId, {
       output: ({ data }) => terminal.write(data),
       closed: ({ exitCode }) => {
         setClosed(true)
         terminal.write(`\r\n[process exited${exitCode === undefined ? "" : ` ${exitCode}`}]\r\n`)
       },
-      ownership: ({ owner, claimHeld }) => {
-        // A release names the last holder with claimHeld false. A daemon from
-        // before release omits claimHeld, and its notices always mean held.
-        const held = claimHeld ?? true
-        // A watcher never holds the shell, whatever the notification says.
-        const owned = ownsTerminal
-        ownsTerminal = !readOnly && held && owner.clientId === controls.clientId
-        terminal.options.disableStdin = !ownsTerminal
-        // Taking the shell makes this pane's grid the shell's grid.
-        if (ownsTerminal && !owned && attached) {
-          refit()
-          void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
-        }
-        setClaimHeld(held)
-        setMetadata((current) => current ? { ...current, owner } : current)
+      ownership: applyOwnership,
+      resized: ({ cols, rows }) => {
+        if (!attached || ownsTerminal) return
+        // xterm parses writes later, and a resize applies at once. Resizing
+        // once the output queued before the notice is parsed keeps that output
+        // at the grid it was printed for.
+        terminal.write("", () => {
+          if (active && !ownsTerminal) resizeTo(cols, rows)
+        })
       },
     })
     const input = terminal.onData((data) => {
@@ -265,10 +305,13 @@ export function TerminalPane({
       void controls.resize(terminalId, terminal.cols, terminal.rows).catch(() => undefined)
     })
     observer.observe(container)
-    // Nothing on the wire says when the holder's connection drops or the
-    // holder resizes, so a pane that does not hold the shell reads both from
-    // terminal.list on an interval. Replies come in order on one connection,
-    // so a reply never undoes an ownership notice that arrived before it.
+    // Nothing on the wire says when the holder's connection drops, so a pane
+    // that does not hold the shell reads the holder from terminal.list on an
+    // interval. Replies come in order on one connection, so a reply never
+    // undoes an ownership notice that arrived before it. A pane the daemon
+    // sends no terminal.resized reads the holder's grid here too; one it does
+    // takes the grid from the notice, which is ordered with the output and
+    // the list reply is not.
     const list = controls.list
     const holderRefresh = list ? setInterval(() => {
       if (!attached || ownsTerminal) return
@@ -278,17 +321,18 @@ export function TerminalPane({
         if (!current || current.state !== "live") return
         setClaimHeld(current.claimHeld)
         setMetadata((shown) => shown && !sameOwner(shown.owner, current.owner) ? { ...shown, owner: current.owner } : shown)
-        if (terminal.cols !== current.cols || terminal.rows !== current.rows) resizeTo(current.cols, current.rows)
+        if (!followsResize && (terminal.cols !== current.cols || terminal.rows !== current.rows)) resizeTo(current.cols, current.rows)
       }, () => undefined)
     }, holderRefreshMs) : undefined
     if (readOnly && watch) {
       // The watching desktop reads the shell the way the phone does: the
       // daemon's kept record, then what it prints from here on. Nothing it
       // does reaches the process, and it never opens a shell of its own.
-      void watch(terminalId).then(
+      void watch(terminalId, { followResize: true }).then(
         (record) => {
           if (!active) return
           attached = true
+          followsResize = record.followsResize === true
           const { buffer, claimHeld: held, cols, cwd, owner, rows, shell, state } = record
           setMetadata({ terminalId, sessionId, cols, rows, shell, cwd, buffer, owner })
           setClaimHeld(held)
@@ -336,6 +380,7 @@ export function TerminalPane({
     }
     return () => {
       active = false
+      if (applyOwnershipRef.current === applyOwnership) applyOwnershipRef.current = undefined
       if (holderRefresh !== undefined) clearInterval(holderRefresh)
       setRendered(false)
       unsubscribe()
@@ -418,12 +463,24 @@ export function TerminalPane({
   const claim = () => {
     if (!terminalId || readOnly) return
     void controls.claim(terminalId).then(
-      ({ owner, claimHeld: held }) => {
-        setClaimHeld(held ?? true)
-        setMetadata((current) => current ? { ...current, owner } : current)
-      },
+      (ownership) => applyOwnershipRef.current?.(ownership),
       (cause: unknown) => {
         setError(failure(cause, "Terminal takeover failed"))
+      },
+    )
+  }
+  const releaseShell = controls.release
+  const release = () => {
+    if (!terminalId || !writable || !releaseShell || releasing) return
+    setReleasing(true)
+    void releaseShell(terminalId).then(
+      (ownership) => {
+        setReleasing(false)
+        applyOwnershipRef.current?.(ownership)
+      },
+      (cause: unknown) => {
+        setReleasing(false)
+        setError(failure(cause, "Terminal release failed"))
       },
     )
   }
@@ -461,11 +518,15 @@ export function TerminalPane({
   }
 
   const holder = metadata?.owner
+  // Desktop V2 draws "Claimed by iPhone 16 Pro since 14:04". The time is the
+  // daemon's claim time; an older daemon sends none, and the line ends at
+  // the holder. A release keeps the time, so it is read only while held.
+  const since = holder?.claimedAt === undefined ? "" : ` since ${readingTime(holder.claimedAt)}`
   const claimText = writable
     ? "You hold this shell"
     : !claimHeld
       ? "Nobody holds this shell"
-      : `Claimed by ${holder?.device?.label ?? (holder ? clientNoun[holder.client] : "another device")}`
+      : `Claimed by ${holder?.device?.label ?? (holder ? clientNoun[holder.client] : "another device")}${since}`
   const claimNote = writable
     ? "One claimant at a time. Other devices can watch."
     : readOnly
@@ -553,6 +614,16 @@ export function TerminalPane({
               onClick={claim}
             >
               Take the shell
+            </Button>
+          ) : writable && releaseShell ? (
+            <Button
+              variant="outline"
+              size="xs"
+              className="shrink-0 border-ok-border text-ok-foreground"
+              disabled={releasing}
+              onClick={release}
+            >
+              Release the shell
             </Button>
           ) : null}
         </div>

@@ -32,6 +32,8 @@ function harness() {
   const create = deferred<TerminalSession>()
   const claim = deferred<TerminalOwnershipNotification>()
   const claimRequest = vi.fn(() => claim.promise)
+  const release = deferred<TerminalOwnershipNotification>()
+  const releaseRequest = vi.fn((_terminalId: string) => release.promise)
   const write = vi.fn(async () => undefined)
   const resize = vi.fn(async () => undefined)
   const close = vi.fn(async () => undefined)
@@ -40,6 +42,7 @@ function harness() {
     clientId: thisClient,
     create: () => create.promise,
     claim: claimRequest,
+    release: releaseRequest,
     write,
     resize,
     close,
@@ -56,6 +59,14 @@ function harness() {
     resize,
     close,
     claimRequest,
+    releaseRequest,
+    grantRelease: (owner: string) => release.resolve({
+      terminalId,
+      owner: { client: "web", clientId: owner },
+      claimHeld: false,
+    }),
+    refuseRelease: (cause: unknown) => release.reject(cause),
+    deliverResized: (cols: number, rows: number) => handlers?.resized?.({ terminalId, cols, rows }),
     connect: (owner: string) => create.resolve({
       terminalId,
       sessionId,
@@ -193,7 +204,9 @@ const phone = {
   device: { id: "device-0123456789abcdef0123456789abcdef", label: "iPhone 16 Pro" },
 }
 
-function watchResult(over: Partial<TerminalWatchResult> = {}): TerminalWatchResult {
+type WatchReply = Awaited<ReturnType<NonNullable<TerminalControls["watch"]>>>
+
+function watchResult(over: Partial<WatchReply> = {}): WatchReply {
   return {
     terminalId,
     sessionId,
@@ -215,9 +228,9 @@ function watchResult(over: Partial<TerminalWatchResult> = {}): TerminalWatchResu
 // Each watch call gets its own reply, so a retry is answered on its own.
 function watcher() {
   const target = harness()
-  const replies: ReturnType<typeof deferred<TerminalWatchResult>>[] = []
-  const watch = vi.fn((_terminalId: string) => {
-    const reply = deferred<TerminalWatchResult>()
+  const replies: ReturnType<typeof deferred<WatchReply>>[] = []
+  const watch = vi.fn((_terminalId: string, _options?: { followResize: true }) => {
+    const reply = deferred<WatchReply>()
     replies.push(reply)
     return reply.promise
   })
@@ -225,7 +238,7 @@ function watcher() {
   const create = vi.fn(target.controls.create)
   const controls: TerminalControls = { ...target.controls, create, watch, unwatch }
   const watched = {
-    resolve: (result: TerminalWatchResult) => replies.at(-1)!.resolve(result),
+    resolve: (result: WatchReply) => replies.at(-1)!.resolve(result),
     reject: (cause: unknown) => replies.at(-1)!.reject(cause),
   }
   return { ...target, controls, create, watch, unwatch, watched }
@@ -318,6 +331,105 @@ describe("TerminalPane claim banner", () => {
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Take the shell" }).disabled).toBe(false)
     expect(screen.getByText("read-only until you take the shell")).toBeTruthy()
   })
+
+  // Desktop V2 dock terminal: the holder's banner offers Release the shell.
+  // The shell keeps running with nobody holding it, and any device can take it.
+  it("releases the shell this desktop holds", async () => {
+    const user = userEvent.setup()
+    const target = harness()
+    render(<TerminalPane connected controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.connect(thisClient)
+    })
+
+    await user.click(screen.getByRole("button", { name: "Release the shell" }))
+    expect(target.releaseRequest).toHaveBeenCalledWith(terminalId)
+    // One request at a time: the button waits for the daemon's answer.
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Release the shell" }).disabled).toBe(true)
+    await act(async () => {
+      target.grantRelease(thisClient)
+    })
+
+    expect(screen.getByText("Nobody holds this shell")).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Release the shell" })).toBeNull()
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Take the shell" }).disabled).toBe(false)
+    expect(screen.getByText("read-only until you take the shell")).toBeTruthy()
+    // The reply alone stops input; the ownership notice may still be on its way.
+    await user.click(screen.getByRole("button", { name: "Tab" }))
+    expect(target.write).not.toHaveBeenCalled()
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Interrupt ⌃C" }).disabled).toBe(true)
+  })
+
+  it("reports a refused release and keeps the claim", async () => {
+    const user = userEvent.setup()
+    const target = harness()
+    render(<TerminalPane connected controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.connect(thisClient)
+    })
+
+    await user.click(screen.getByRole("button", { name: "Release the shell" }))
+    await act(async () => {
+      target.refuseRelease(new Error(""))
+    })
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Terminal release failed")
+    expect(screen.getByText("You hold this shell")).toBeTruthy()
+    expect(screen.getByRole<HTMLButtonElement>("button", { name: "Release the shell" }).disabled).toBe(false)
+  })
+
+  it("offers no release to a pane that does not hold the shell, or cannot release", async () => {
+    const target = harness()
+    render(<TerminalPane connected controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.connect(otherClient)
+    })
+    expect(screen.queryByRole("button", { name: "Release the shell" })).toBeNull()
+    cleanup()
+
+    const older = harness()
+    const { release: _release, ...withoutRelease } = older.controls
+    render(<TerminalPane connected controls={withoutRelease} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      older.connect(thisClient)
+    })
+    expect(screen.getByText("You hold this shell")).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Release the shell" })).toBeNull()
+  })
+
+  it("says since when the holder took the shell", async () => {
+    const target = harness()
+    const claimedAt = new Date()
+    claimedAt.setHours(14, 4, 0, 0)
+    const controls: TerminalControls = {
+      ...target.controls,
+      create: async () => ({
+        terminalId, sessionId, cols: 80, rows: 24, shell: "bash", cwd: "/worktrees/demo", buffer: "",
+        owner: { ...phone, claimedAt: claimedAt.toISOString() },
+      }),
+    }
+    render(<TerminalPane connected controls={controls} machineName="worktop" sessionId={sessionId} />)
+
+    expect(await screen.findByText("Claimed by iPhone 16 Pro since 14:04")).toBeTruthy()
+  })
+
+  it("gives the day of a claim taken before today", async () => {
+    const target = harness()
+    const claimedAt = new Date()
+    claimedAt.setDate(claimedAt.getDate() - 3)
+    claimedAt.setHours(9, 30, 0, 0)
+    const day = new Intl.DateTimeFormat("en-GB", { day: "2-digit", month: "short" }).format(claimedAt)
+    const controls: TerminalControls = {
+      ...target.controls,
+      create: async () => ({
+        terminalId, sessionId, cols: 80, rows: 24, shell: "bash", cwd: "/worktrees/demo", buffer: "",
+        owner: { ...phone, claimedAt: claimedAt.toISOString() },
+      }),
+    }
+    render(<TerminalPane connected controls={controls} machineName="worktop" sessionId={sessionId} />)
+
+    expect(await screen.findByText(`Claimed by iPhone 16 Pro since ${day} 09:30`)).toBeTruthy()
+  })
 })
 
 describe("TerminalPane on a watching desktop", () => {
@@ -328,7 +440,7 @@ describe("TerminalPane on a watching desktop", () => {
       <TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />,
     )
 
-    expect(target.watch).toHaveBeenCalledWith(terminalId)
+    expect(target.watch).toHaveBeenCalledWith(terminalId, { followResize: true })
     expect(target.create).not.toHaveBeenCalled()
     await act(async () => {
       target.watched.resolve(watchResult())
@@ -403,6 +515,63 @@ describe("TerminalPane on a watching desktop", () => {
     })
 
     expect(screen.getByText("Nobody holds this shell")).toBeTruthy()
+  })
+
+  // A release keeps the last holder and its claim time, so the time alone
+  // does not mean anyone holds the shell.
+  it("drops since once the holder releases the shell", async () => {
+    const target = watcher()
+    const claimedAt = new Date()
+    claimedAt.setHours(14, 4, 0, 0)
+    const owner = { ...phone, claimedAt: claimedAt.toISOString() }
+    render(<TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.resolve(watchResult({ owner }))
+    })
+    expect(screen.getByText("Claimed by iPhone 16 Pro since 14:04")).toBeTruthy()
+
+    await act(async () => {
+      target.deliverOwnership(otherClient, false)
+    })
+
+    expect(screen.getByText("Nobody holds this shell")).toBeTruthy()
+    expect(screen.queryByText(/since/u)).toBeNull()
+  })
+
+  // terminal.resized arrives in order with the output, so output printed for
+  // the old grid draws at the old grid and output after it at the new one.
+  it("redraws at the holder's grid when the daemon says it changed", async () => {
+    const target = watcher()
+    const list = vi.fn(async (_sessionId: string) => {
+      const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, followsResize: _follows, ...listed } = watchResult()
+      return [listed]
+    })
+    const { container } = render(
+      <TerminalPane connected readOnly controls={{ ...target.controls, list }} holderRefreshMs={20} machineName="worktop" sessionId={sessionId} />,
+    )
+    await act(async () => {
+      target.watched.resolve(watchResult({ followsResize: true, buffer: "" }))
+    })
+    const rowsDrawn = () => [...container.querySelectorAll(".xterm-rows > div")].map((row) => (row.textContent ?? "").replace(/\u00a0/gu, " "))
+    await vi.waitFor(() => expect(rowsDrawn()).toHaveLength(24))
+
+    await act(async () => {
+      target.deliverOutput("\x1b[1;120HX")
+      target.deliverResized(132, 40)
+      target.deliverOutput("\x1b[2;120HY")
+    })
+
+    await vi.waitFor(() => {
+      const rows = rowsDrawn()
+      expect(rows).toHaveLength(40)
+      // At 80 columns the first cursor move clamps to the last column.
+      expect(rows[0]!.indexOf("X")).toBe(79)
+      expect(rows[1]!.indexOf("Y")).toBe(119)
+    })
+    // The daemon's list still says 80 by 24 here, and a pane that follows
+    // the notice does not take its grid from the list.
+    await vi.waitFor(() => expect(list.mock.calls.length).toBeGreaterThan(2))
+    expect(rowsDrawn()).toHaveLength(40)
   })
 
   it("says when the session has no shell open and checks again on request", async () => {
@@ -575,7 +744,7 @@ describe("TerminalPane on a watching desktop", () => {
 
     expect(target.unwatch).toHaveBeenCalledTimes(1)
     expect(target.unwatch).toHaveBeenCalledWith(terminalId)
-    expect(target.watch).toHaveBeenLastCalledWith("terminal-session-other")
+    expect(target.watch).toHaveBeenLastCalledWith("terminal-session-other", { followResize: true })
   })
 
   // The daemon sends nothing when the holder's connection drops, and nothing
@@ -584,7 +753,7 @@ describe("TerminalPane on a watching desktop", () => {
   it("rereads the holder and its grid while it does not hold the shell", async () => {
     const target = watcher()
     const listing = (over: Partial<TerminalWatchResult>) => {
-      const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, ...listed } = watchResult(over)
+      const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, followsResize: _follows, ...listed } = watchResult(over)
       return listed
     }
     let answer = listing({ claimHeld: false })
@@ -884,7 +1053,7 @@ describe("Attach this output to the composer", () => {
     composer.open(sessionId, receive)
     const target = watcher()
     const listing = (over: Partial<TerminalWatchResult>) => {
-      const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, ...listed } = watchResult(over)
+      const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, followsResize: _follows, ...listed } = watchResult(over)
       return listed
     }
     const list = vi.fn(async (_sessionId: string) => [listing({ cols: 20 })])
@@ -919,7 +1088,7 @@ describe("Attach this output to the composer", () => {
     const receive = vi.fn((_attachment: SessionAttachment) => "attached" as const)
     composer.open(sessionId, receive)
     const target = watcher()
-    const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, ...listed } = watchResult({ cols: 160, rows: 5 })
+    const { buffer: _buffer, earlierOutputDropped: _dropped, watchedAt: _watchedAt, followsResize: _follows, ...listed } = watchResult({ cols: 160, rows: 5 })
     const list = vi.fn(async (_sessionId: string) => [listed])
     const controls: TerminalControls = { ...target.controls, list }
     const { container } = render(
