@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { closeSync, constants, fsyncSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
+import { replaceFileSync, type FileReplacement } from "@getdomovoi/credential-store"
 import { dateTimeSchema, machineIdSchema, utf16MaxLength } from "@getdomovoi/protocol"
 import { z } from "zod"
 
@@ -50,7 +51,7 @@ export function readLocalOwnerRemovalReceipt(homeDirectory: ProfileLocation): Lo
 
 export function writeLocalOwnerRemovalReceipt(
   homeDirectory: ProfileLocation, lease: ProfileLease, receipt: LocalOwnerRemovalReceipt,
-  deadline: OperationDeadline,
+  deadline: OperationDeadline, replacement: Partial<FileReplacement> = {},
 ): void {
   deadline.throwIfExpired()
   assertProfileLeaseHeld(lease)
@@ -75,7 +76,9 @@ export function writeLocalOwnerRemovalReceipt(
     fsyncSync(descriptor)
     closeFile()
     deadline.throwIfExpired()
-    renameSync(staging, path)
+    // Windows refuses to replace a receipt another process is reading, such
+    // as removal recovery or status; retry that within the deadline.
+    replaceFileSync(staging, path, { rename: renameSync, ...replacement }, { deadline })
     published = true
     // Windows does not expose directory fsync through Node. Receipt contents
     // are flushed before rename on every platform; POSIX also flushes the name.

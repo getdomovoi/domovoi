@@ -10,15 +10,17 @@ vi.mock("node:fs/promises", async (original) => ({
   ...await original<typeof import("node:fs/promises")>(),
   lstat: vi.fn((...args: Parameters<typeof lstat>) => actualLstat(...args)),
   open: vi.fn((...args: Parameters<typeof open>) => actualOpen(...args)),
+  rename: vi.fn((...args: Parameters<typeof rename>) => actualRename(...args)),
   unlink: vi.fn((...args: Parameters<typeof unlink>) => actualUnlink(...args)),
 }))
-const { lstat: actualLstat, open: actualOpen, unlink: actualUnlink } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
+const { lstat: actualLstat, open: actualOpen, rename: actualRename, unlink: actualUnlink } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
 const keyring = (): Keyring => ({ available: vi.fn(async () => true), get: vi.fn(), set: vi.fn(), delete: vi.fn() })
 const options = (ring = keyring()) => ({ keyring: ring, warn: vi.fn(), fileWarning: (path: string) => `private file: ${path}`, unavailable: (cause?: Error) => `keychain refused: ${cause?.message ?? "absent"}` })
 const roots: string[] = []
 async function mkdtemp(prefix: string) { const root = await createTempDirectory(prefix); roots.push(root); return root }
 afterEach(async () => {
   vi.restoreAllMocks()
+  vi.mocked(rename).mockReset()
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
@@ -325,5 +327,25 @@ describe("publishFileDurably", () => {
     await writeFile(join(root, "file.tmp"), "new")
     await publishFileDurably(join(root, "file.tmp"), join(root, "file"))
     expect(await readFile(join(root, "file"), "utf8")).toBe("new")
+  })
+
+  // Windows MoveFileEx refuses to replace a file another process holds open,
+  // such as a desktop or CLI status read of update or runtime metadata.
+  it("retries a Windows sharing refusal on the rename, then publishes once", async () => {
+    const root = await mkdtemp(join(tmpdir(), "credential-store-publish-"))
+    const staging = join(root, "file.tmp")
+    const path = join(root, "file")
+    await writeFile(path, "old")
+    await writeFile(staging, "new")
+    const renamed = vi.fn()
+    const refusal = (code: string) => Object.assign(new Error(`${code}: rename refused`), { code, syscall: "rename" })
+    vi.mocked(rename).mockClear().mockRejectedValueOnce(refusal("EPERM")).mockRejectedValueOnce(refusal("EBUSY"))
+    const real = Object.getOwnPropertyDescriptor(process, "platform")!
+    Object.defineProperty(process, "platform", { ...real, value: "win32" })
+    try { await publishFileDurably(staging, path, renamed) } finally { Object.defineProperty(process, "platform", real) }
+    expect(await readFile(path, "utf8")).toBe("new")
+    expect(rename).toHaveBeenCalledTimes(3)
+    expect(renamed).toHaveBeenCalledOnce()
+    expect(await readdir(root)).toEqual(["file"])
   })
 })

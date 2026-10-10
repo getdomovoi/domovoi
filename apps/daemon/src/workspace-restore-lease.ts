@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 import { closeSync, mkdirSync, openSync, readSync, renameSync, unlinkSync, writeFileSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
+import { replaceFile, replaceFileSync } from "@getdomovoi/credential-store"
 import { z } from "zod"
 import { claimExclusiveFileLease, type FileLease } from "./file-lease.js"
 
@@ -165,23 +166,28 @@ export class RestoreOperationLease {
   // refuses to reclaim a record that lists children or cannot be read. A
   // flush cost up to 0.85 s per write on Windows runners, three writes per
   // Git command.
+  //
+  // Windows refuses to replace the record while another process holds it
+  // open, such as an antivirus scan of the record renamed milliseconds
+  // earlier. Both publishes retry that for at most five seconds.
   #publishNow(): void {
     mkdirSync(dirname(this.#ownerPath), { recursive: true, mode: 0o700 })
     const temporary = `${this.#ownerPath}.${randomUUID()}.tmp`
     writeFileSync(temporary, JSON.stringify(this.#owner), { flag: "wx", mode: 0o600 })
-    renameSync(temporary, this.#ownerPath)
+    replaceFileSync(temporary, this.#ownerPath, { rename: renameSync })
   }
 
   // Writes are queued so that concurrent commands rename in order, and each
   // write captures the owner state when it runs, so the last rename carries
-  // the latest state. Only the write is asynchronous; the rename stays
-  // synchronous, as the durability lint requires of a bare rename.
+  // the latest state. The rename itself is the synchronous one, as the
+  // durability lint requires of a bare rename; a sharing retry waits without
+  // blocking the event loop, still inside the queue.
   #publish(): Promise<void> {
     const write = this.#published.catch(() => undefined).then(async () => {
       await mkdir(dirname(this.#ownerPath), { recursive: true, mode: 0o700 })
       const temporary = `${this.#ownerPath}.${randomUUID()}.tmp`
       await writeFile(temporary, JSON.stringify(this.#owner), { flag: "wx", mode: 0o600 })
-      renameSync(temporary, this.#ownerPath)
+      await replaceFile(temporary, this.#ownerPath, { rename: renameSync })
     })
     this.#published = write
     return write

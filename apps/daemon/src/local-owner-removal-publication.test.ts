@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
-import { closeSync, fsyncSync, mkdtempSync, readFileSync, rmSync } from "node:fs"
+import { closeSync, fsyncSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -11,7 +11,7 @@ import { claimProfile, type ProfileLease } from "./profile-lease.js"
 
 vi.mock("node:fs", async (original) => {
   const fs = await original<typeof import("node:fs")>()
-  return { ...fs, closeSync: vi.fn(fs.closeSync), fsyncSync: vi.fn(fs.fsyncSync), rmSync: vi.fn(fs.rmSync) }
+  return { ...fs, closeSync: vi.fn(fs.closeSync), fsyncSync: vi.fn(fs.fsyncSync), renameSync: vi.fn(fs.renameSync), rmSync: vi.fn(fs.rmSync) }
 })
 const actual = await vi.importActual<typeof import("node:fs")>("node:fs")
 const resources: Array<{ home: string; lease: ProfileLease; deadline: OperationDeadline }> = []
@@ -67,4 +67,20 @@ it("does not publish after flushing spent the original deadline", () => {
   vi.mocked(fsyncSync).mockImplementationOnce((descriptor) => { actual.fsyncSync(descriptor); clock += 5_001 })
   expect(() => writeLocalOwnerRemovalReceipt(home, lease, receipt, deadline)).toThrow(localOwnerRemovalReceiptPath(home))
   expect(readFileSync(localOwnerRemovalReceiptPath(home), "utf8")).toBe(prior)
+})
+
+// Windows MoveFileEx refuses to replace a file another process holds open,
+// such as a status or removal recovery read of the previous receipt.
+it("retries a Windows sharing refusal when replacing the receipt", () => {
+  const { home, lease, deadline, receipt } = setup()
+  const next = { ...receipt, instanceId: randomUUID() }
+  const refusal = (code: string) => () => { throw Object.assign(new Error(`${code}: rename refused`), { code, syscall: "rename" }) }
+  vi.mocked(renameSync).mockClear().mockImplementationOnce(refusal("EPERM")).mockImplementationOnce(refusal("EBUSY"))
+  // The profile path follows the host; only the replacement behaves as on Windows.
+  try {
+    writeLocalOwnerRemovalReceipt(home, lease, next, deadline, { platform: "win32" })
+    expect(renameSync).toHaveBeenCalledTimes(3)
+  } finally { vi.mocked(renameSync).mockReset() }
+  expect(JSON.parse(readFileSync(localOwnerRemovalReceiptPath(home), "utf8"))).toEqual(next)
+  expect(readdirSync(dirname(localOwnerRemovalReceiptPath(home))).filter((name) => name.endsWith(".partial"))).toEqual([])
 })

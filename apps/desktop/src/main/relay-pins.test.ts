@@ -14,7 +14,9 @@ vi.mock("node:fs/promises", async (original) => {
   return {
     ...actual,
     rename: async (...args: Parameters<typeof actual.rename>) => {
-      if (renamed.refuse) throw Object.assign(new Error("injected rename refusal"), { code: "EACCES" })
+      // EIO, not a Windows sharing code: publishFileDurably retries EPERM,
+      // EACCES and EBUSY on Windows for five seconds before failing.
+      if (renamed.refuse) throw Object.assign(new Error("injected rename refusal"), { code: "EIO" })
       return actual.rename(...args)
     },
     unlink: async (...args: Parameters<typeof actual.unlink>) => {
