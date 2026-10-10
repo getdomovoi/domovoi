@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { windowsTaskData } from "./windows-task-test-support.js"
 import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import {
   DaemonServiceRuntimeMissingError,
@@ -172,8 +173,7 @@ describe("installDaemonService", () => {
     const effects = dependencies({ platform: "win32", home: "C:\\Users\\dl", user: "dl", capture: noTask() })
     const windowsRuntime = { nodePath: "C:\\Program Files\\Domovoi\\runtime\\node.exe", daemonEntryPath: "C:\\Program Files\\Domovoi\\runtime\\daemon\\index.js" }
     expect(await installDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
-    const created = vi.mocked(effects.run).mock.calls.find(([, args]) => args[0] === "/create")![1]
-    expect(created[created.indexOf("/tr") + 1]).toMatch(/^"C:\\Program Files\\Domovoi\\runtime\\node\.exe" "C:\\Program Files\\Domovoi\\runtime\\daemon\\index\.js" --service-supervise /)
+    expect(createdTaskCommand(effects)).toMatch(/^"C:\\Program Files\\Domovoi\\runtime\\node\.exe" "C:\\Program Files\\Domovoi\\runtime\\daemon\\index\.js" --service-supervise /)
   })
 })
 
@@ -366,9 +366,8 @@ describe("readDaemonServiceRuntimeVersion", () => {
     const exec = (command: string, args?: string) => `    <Exec>\n      <Command>${command}</Command>\n${args === undefined ? "" : `      <Arguments>${args}</Arguments>\n`}    </Exec>\n`
     const windowsWritten = (copy: string) => {
       const plan = written("win32", "C:\\Users\\dana", copy)
-      const create = plan.commands.find((command) => command.args[0] === "/create")!
-      const [, command = "", args = ""] = /^("[^"]*") (.*)$/u.exec(create.args[create.args.indexOf("/tr") + 1]!)!
-      return taskXml(exec(command, args))
+      const action = registeredAction(plan.commands[0]!.args)!
+      return taskXml(exec(action.path, action.arguments))
     }
     const read = (platform: string, home: string, definition: string) => readDaemonServiceRuntimeVersion({
       platform, home, readDefinition: async () => definition, capture: vi.fn(async () => ({ code: 0, stdout: definition })), readConfiguration: saved(platform, home),
@@ -431,8 +430,8 @@ function windowsDependencies(overrides: Partial<DaemonServiceDependencies & Serv
 }
 
 function createdTaskCommand(effects: ServiceEffects): string {
-  const created = vi.mocked(effects.run).mock.calls.find(([, args]) => args[0] === "/create")![1]
-  return created[created.indexOf("/tr") + 1]!
+  const action = vi.mocked(effects.run).mock.calls.map(([, args]) => registeredAction(args)).find((action) => action !== undefined)!
+  return `${action.path} ${action.arguments}`
 }
 
 describe("security review round 1: the handoff waits for the operation lease", () => {
@@ -767,15 +766,15 @@ function managerFake(platform: "darwin" | "linux" | "win32", start: {
     }),
     run: vi.fn(async (command: string, args: string[]) => {
       // schtasks runs from its path under SystemRoot (review F3), named short here.
-      const line = `${command === "C:\\Windows\\System32\\schtasks.exe" ? "schtasks" : command} ${args[0]}`
+      const action = registeredAction(args)
+      const line = action ? "register task" : `${command === "C:\\Windows\\System32\\schtasks.exe" ? "schtasks" : command} ${args[0]}`
       ran.push(line)
-      if (start.failing === args[0] && failuresLeft > 0) {
+      if (start.failing === (action ? "register" : args[0]) && failuresLeft > 0) {
         failuresLeft -= 1
         if (start.foreignLoadsOnFailure) job = { path: start.foreignLoadsOnFailure, running: true }
         throw new Error(`${line} failed`)
       }
-      if (args[0] === "/create") taskEnabled = true
-      if (args[0] === "/create") task = { path: `"${args[args.indexOf("/tr") + 1]!.split('" "')[0]!.slice(1)}"`, arguments: args[args.indexOf("/tr") + 1]!.split('" ').slice(1).join('" ') }
+      if (action) { taskEnabled = true; task = action }
       if (args[0] === "bootout") {
         job = undefined
         if (start.bootoutUnloadsThenFails) throw new Error("Boot-out failed: 5: Input/output error")
@@ -811,26 +810,26 @@ describe("security review round 3", () => {
 
   // Finding 1: the record must name what the manager registered.
   it("puts the previous service.json back when the new Windows task cannot be registered", async () => {
-    const fake = managerFake("win32", { files: { [windowsConfigurationPath]: oldWindowsConfiguration }, task: oldWindowsTask, failing: "/create" })
-    await expect(installDaemonService({ runtime: windowsRuntime }, fake.effects)).rejects.toThrow("schtasks /create failed")
+    const fake = managerFake("win32", { files: { [windowsConfigurationPath]: oldWindowsConfiguration }, task: oldWindowsTask, failing: "register" })
+    await expect(installDaemonService({ runtime: windowsRuntime }, fake.effects)).rejects.toThrow("register task failed")
     expect(fake.files.get(windowsConfigurationPath)).toBe(oldWindowsConfiguration)
     expect(await readDaemonServiceStatus(fake.effects)).toMatchObject({ installed: true })
   })
 
   it("says so when the previous service.json cannot be put back either", async () => {
-    const fake = managerFake("win32", { files: { [windowsConfigurationPath]: oldWindowsConfiguration }, task: oldWindowsTask, failing: "/create" })
+    const fake = managerFake("win32", { files: { [windowsConfigurationPath]: oldWindowsConfiguration }, task: oldWindowsTask, failing: "register" })
     const write = fake.effects.write
     fake.effects.write = vi.fn(async (path: string, contents: string, deadline) => {
       if (contents === oldWindowsConfiguration) throw new Error("disk full")
       await write(path, contents, deadline)
     })
     await expect(installDaemonService({ runtime: windowsRuntime }, fake.effects))
-      .rejects.toThrow("schtasks /create failed. Putting back the previous service files also failed: disk full.")
+      .rejects.toThrow("register task failed. Putting back the previous service files also failed: disk full.")
   })
 
   it("removes a new service.json when a first Windows task cannot be registered", async () => {
-    const fake = managerFake("win32", { failing: "/create" })
-    await expect(installDaemonService({ runtime: windowsRuntime }, fake.effects)).rejects.toThrow("schtasks /create failed")
+    const fake = managerFake("win32", { failing: "register" })
+    await expect(installDaemonService({ runtime: windowsRuntime }, fake.effects)).rejects.toThrow("register task failed")
     expect(fake.files.has(windowsConfigurationPath)).toBe(false)
   })
 
@@ -867,7 +866,7 @@ describe("security review round 3", () => {
     }
   })
 
-  // Finding 3: /create /f must not overwrite a task Domovoi did not register.
+  // Finding 3: registration must not overwrite a task Domovoi did not register.
   it("refuses to install over a same-named task Domovoi did not register, before the handoff", async () => {
     const foreign = { path: "C:\\Tools\\other.exe", arguments: "--serve" }
     const fake = managerFake("win32", { task: foreign })
@@ -885,8 +884,8 @@ describe("security review round 3", () => {
   it("reinstalls over the task Domovoi registered", async () => {
     const fake = managerFake("win32", { files: { [windowsConfigurationPath]: oldWindowsConfiguration }, task: oldWindowsTask })
     await installDaemonService({ runtime: windowsRuntime }, fake.effects)
-    // The PowerShell step between them lifts the 72 hour limit and battery stops.
-    expect(fake.ran).toEqual(["schtasks /create", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe -NoLogo", "schtasks /run"])
+    // The COM registration includes the execution limit and battery settings.
+    expect(fake.ran).toEqual(["register task", "schtasks /run"])
   })
 
   // Finding 4: a job still loaded from Domovoi's plist, but not running,
@@ -1355,3 +1354,11 @@ describe("installDaemonService keeps the runtime a registered definition names",
     expect(state.version).toBe("new")
   })
 })
+
+function registeredAction(args: string[]): { path: string; arguments: string } | undefined {
+  if (!args.includes("-EncodedCommand")) return undefined
+  const body = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+  const value = (property: string) => windowsTaskData(body, `$action.${property}`)
+  const path = value("Path"), arguments_ = value("Arguments")
+  return path === undefined || arguments_ === undefined ? undefined : { path, arguments: arguments_ }
+}

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
+import { windowsTaskData } from "./windows-task-test-support.js"
 import { OperationDeadline } from "../operation-deadline.js"
 import { createServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { installService, removeService, runServiceCommand, servicePlan, serviceStatus, type ServiceEffects } from "./install.js"
@@ -40,7 +41,7 @@ function fixture() {
 
 it("registers the logon supervisor action", () => {
   const plan = servicePlan(target)
-  expect(plan.commands.find((c) => c.args.includes("/tr"))?.args.join(" ")).toContain("--service-supervise")
+  expect(registeredAction(plan.commands[0]!.args)?.arguments).toContain("--service-supervise")
 })
 
 it("returns status exit 1 on exhaustion even with a registered running task", async () => {
@@ -120,7 +121,7 @@ it.each(["before-reinstall", "during-stop"] as const)("reinstalls with proven te
   expect(f.effects.stopSupervisor).toHaveBeenCalledOnce()
   expect(f.events.indexOf("prove-empty")).toBeLessThan(f.events.indexOf("write"))
   expect(f.effects.write).toHaveBeenCalled()
-  expect(vi.mocked(f.effects.run).mock.calls.some(([, args]) => args[0] === "/create")).toBe(true)
+  expect(vi.mocked(f.effects.run).mock.calls.some(([, args]) => registeredAction(args) !== undefined)).toBe(true)
 })
 
 it("refuses reinstall of a missing task when its tree proof fails", async () => {
@@ -144,8 +145,8 @@ it("migrates a legacy install to a supervised action after retiring it", async (
   await installService(target, f.effects)
   expect(f.events.indexOf("stop-task")).toBeLessThan(f.events.indexOf("write"))
   expect(f.events).toContain("delete-task")
-  const creation = vi.mocked(f.effects.run).mock.calls.find(([, args]) => args[0] === "/create")
-  expect(creation?.[1].join(" ")).toContain("--service-supervise")
+  const creation = vi.mocked(f.effects.run).mock.calls.find(([, args]) => registeredAction(args) !== undefined)
+  expect(registeredAction(creation![1])?.arguments).toContain("--service-supervise")
   expect(f.effects.stopSupervisor).not.toHaveBeenCalled()
 })
 
@@ -173,12 +174,12 @@ it("keeps a stopped legacy registration when writing the replacement fails", asy
 it("restores a disabled legacy registration if supervised registration fails", async () => {
   const f = fixture(); f.task.flag = "--service-config"
   f.effects.run = vi.fn(async (_command, args) => {
-    if (args[0] === "/create" && args.join(" ").includes("--service-supervise")) throw new Error("create failed")
-    if (args[0] === "/create") { f.task.exists = true; f.task.enabled = true }
+    if (registeredAction(args)?.arguments.includes("--service-supervise")) throw new Error("create failed")
+    if (registeredAction(args) !== undefined) { f.task.exists = true; f.task.enabled = true }
   })
   await expect(installService(target, f.effects)).rejects.toThrow("create failed")
   expect(f.task).toMatchObject({ exists: true, enabled: false, running: false })
-  expect(vi.mocked(f.effects.run).mock.calls.some(([, args]) => args[0] === "/create" && args.join(" ").includes("--service-config"))).toBe(true)
+  expect(vi.mocked(f.effects.run).mock.calls.some(([, args]) => registeredAction(args)?.arguments.includes("--service-config"))).toBe(true)
 })
 
 it.each(["remove", "install"] as const)("retains a legacy task and config if %s cannot confirm zero instances", async (operation) => {
@@ -268,13 +269,14 @@ it.each([
   })
   let registrationFailed = false
   f.effects.run = vi.fn(async (_command, args) => {
-    if (args[0] === "/create") {
+    if (registeredAction(args) !== undefined) {
       if (phase.startsWith("register") && !registrationFailed) {
         registrationFailed = true
         if (phase === "register-deleted") f.task.exists = false
         throw new Error("register failed")
       }
-      const action = /^"([^"]+)" "([^"]+)" --service-supervise /.exec(args[args.indexOf("/tr") + 1]!)
+      const registered = registeredAction(args)!
+      const action = /^"([^"]+)" "([^"]+)" --service-supervise /.exec(`${registered.path} ${registered.arguments}`)
       if (!action) throw new Error("Invalid restored action")
       f.task.path = action[1]!; f.task.entry = action[2]!; f.task.exists = true; f.task.enabled = true
     }
@@ -308,3 +310,11 @@ it("reports a failed task restoration together with the original reinstall failu
     .rejects.toThrow("publication failed. Restoring the previous Windows task also failed: scheduler denied restoration")
   expect(f.task.enabled).toBe(false)
 })
+
+function registeredAction(args: string[]): { path: string; arguments: string } | undefined {
+  if (!args.includes("-EncodedCommand")) return undefined
+  const body = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+  const value = (property: string) => windowsTaskData(body, `$action.${property}`)
+  const path = value("Path"), arguments_ = value("Arguments")
+  return path === undefined || arguments_ === undefined ? undefined : { path, arguments: arguments_ }
+}

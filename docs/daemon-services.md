@@ -63,12 +63,19 @@ alone does not rewrite service-manager configuration.
 The installer writes `<user-home>/.domovoi/service.json`. The installed command names the Node
 runtime, daemon entry point, and `--service-config <path>` explicitly. On startup the production
 factory receives the saved settings, not daemon variables inherited from the supervisor.
-Windows installation refuses command lines over 261 characters before writing files. This is
-schtasks's own limit; its documentation says 262. The refusal names the command's length and its
-longest part. Use shorter absolute installation paths. With Node in `C:\Program Files\nodejs`,
-the measured fit is up to about a 33-character user profile folder name for an npm global install
-and about 25 for the desktop runtime copy. Node version managers that keep Node and global
-packages in deep folders, such as fnm-style layouts, can exceed the limit at any user name length.
+Windows install and update register the logon task through the Task Scheduler COM API, with the
+program and arguments in separate fields. The old `schtasks /tr` limit of 261 characters no longer
+applies, so Node version manager layouts such as fnm can install. The quoted program must be at
+most 260 characters under Task Scheduler's
+[pathType schema](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-pathtype-simpletype).
+The PowerShell registration command line must be at most 32,766 characters, leaving room for the
+terminating null required by
+[CreateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw).
+The script is UTF-16 and base64 encoded, and the program, arguments and user inside it are UTF-8 and
+base64 encoded again, so an ASCII task command of about 8,000 characters fits; non-ASCII characters
+fit fewer.
+Both refusals happen before file writes and name the length and the responsible path part.
+Use shorter absolute installation paths if either limit is exceeded.
 
 The versioned file contains a fresh installation registration UUID, listener host and port,
 remote-listener opt-in, TLS certificate and key
@@ -251,10 +258,11 @@ Global-name and daemon-identity check. Helper-written receipt files and session-
 are not used. Intent-only attempts without prepared kill-on-close confirmation still refuse
 same-boot recovery. Real sign-out/sign-in acceptance remains **[H]**, fetzy's hardware run.
 
-Every `schtasks /create /sc onlogon /rl LIMITED` is followed by the Task Scheduler COM settings
-step, before `/run`: `ExecutionTimeLimit` is `PT0S`, and `DisallowStartIfOnBatteries` and
-`StopIfGoingOnBatteries` are false. This replaces Task Scheduler's default run limit and battery
-stops. Install, update and rollback use the same settings step. Failure there fails the operation.
+Each COM registration creates a logon trigger for the asking user with limited rights and an
+interactive token, then sets `ExecutionTimeLimit` to `PT0S`, and `DisallowStartIfOnBatteries` and
+`StopIfGoingOnBatteries` to false before registering the definition and running it. This replaces
+Task Scheduler's default run limit and battery stops. Install, update and rollback use the same
+registration builder. A registration failure fails the operation.
 Both Windows native test files passed on `27f7f370`: restart, exhaustion, stop, removal, XML
 read-back, job containment and Global-name recovery after helper death.
 Actual logon acceptance remains **[H]**, fetzy's hardware run. A manual task start is not logon acceptance.
@@ -287,7 +295,7 @@ if it cannot settle any new supervised attempt. A successful migration uses supe
 configuration deletion or Windows restart is required for legacy migration.
 
 For an existing supervised registration, reinstall disables and retires it before changing its
-configuration. If runtime publication, configuration writing or `/create` fails, Domovoi restores
+configuration. If runtime publication, configuration writing or task registration fails, Domovoi restores
 the prior action and its enabled state after restoring the old configuration. A deleted task is
 re-created; rollback never issues `/run`. If configuration restoration fails, Domovoi does not
 re-enable the old task. An expired operation cannot roll back commands that may still complete;
@@ -491,5 +499,5 @@ has stopped. Replacement of the configuration and unit is not one cross-file tra
 Launch escaping follows the managers' own rules, not a shell: systemd expands specifiers and
 environment references in command lines, launchd takes the program and each argument as separate
 XML-escaped strings, and Task Scheduler accepts the program and arguments
-through `/tr`. See [systemd.service](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)
-and [schtasks create](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-create).
+as separate COM action fields. See [systemd.service](https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html)
+and [Task Scheduler registration](https://learn.microsoft.com/en-us/windows/win32/taskschd/taskfolder-registertaskdefinition).

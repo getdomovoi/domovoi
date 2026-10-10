@@ -20,7 +20,7 @@ import { withinServiceDeadline } from "./deadline.js"
 import { claimServiceOperation, claimServiceStatusRead } from "./operation-lease.js"
 import { launchdPlist, launchdPlistProgram, systemdUnit, systemdUnitProgram } from "./units.js"
 import { isRecordedServiceProgram } from "./restore-target.js"
-import { disableWindowsTask, readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsSchtasksPath, windowsTaskDisabledAndIdle, windowsTaskRemovalPlan, windowsTaskSettingsCommand, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
+import { disableWindowsTask, readWindowsTaskAction, readWindowsTaskState, removeWindowsTask, stopWindowsTask, WindowsTaskRemovalError, windowsSchtasksPath, windowsTaskDisabledAndIdle, windowsTaskRemovalPlan, windowsTaskRegistrationCommand, type WindowsTaskAction, type WindowsTaskRemovalPlan } from "./windows-task.js"
 import { claimProfileAfterStop, currentInstance, DaemonServiceUpdateError, OwnerInstances, releaseWhenSettled, seconds, within, type InFlight, type ServiceSwap } from "./update-outcome.js"
 import { readLocalOwnerRecord, type LocalOwnerRecord } from "../local-owner-record.js"
 import { readWindowsSupervisorStatus, stopWindowsSupervisor, windowsTreeUnknown } from "./windows-job-supervisor.js"
@@ -36,12 +36,13 @@ const unitFile = loginServiceUnitFile
 const agentLabel = loginServiceAgentLabel
 const displayName = loginServiceTaskName
 
-// Microsoft documents 262, but schtasks's own /TR error limits it to 261:
-// https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-create
-// https://adventuresinscm.wordpress.com/2014/06/22/error-value-for-tr-option-cannot-be-more-than-261-characters/
-const windowsTaskCommandLengthLimit = 261
+// Exec Command uses pathType; CreateProcess includes a terminating null.
+// https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-pathtype-simpletype
+// https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw
+const windowsTaskProgramLengthLimit = 260
+const windowsRegistrationLengthLimit = 32_766
 
-export type ServiceCommand = { command: string; args: string[] }
+export type ServiceCommand = { command: string; args: string[]; registersWindowsTask?: true }
 
 type ServiceRegistrationPlan =
   | { kind: "file"; path: string; contents: string; commands: ServiceCommand[] }
@@ -238,8 +239,10 @@ export class WindowsTaskPathError extends Error {
 type WindowsTaskCommandPart = "Node runtime" | "daemon entry" | "daemon program" | "service configuration"
 
 export class WindowsTaskCommandLengthError extends Error {
-  constructor(readonly length: number, readonly part: WindowsTaskCommandPart, readonly path: string) {
-    super(`The Windows task command is ${length} characters, and schtasks accepts at most ${windowsTaskCommandLengthLimit}. Its longest part is the ${part} ${path} (${path.length} characters). Install Node and Domovoi at shorter absolute paths before installing the service. No service files were changed.`)
+  constructor(readonly length: number, readonly part: WindowsTaskCommandPart, readonly path: string, readonly registrationLength?: number) {
+    super(registrationLength === undefined
+      ? `The Windows task program is ${length} characters with its quotes, and Task Scheduler accepts at most 260. It is the ${part} ${path}. Install ${part === "Node runtime" ? "Node" : "Domovoi"} at a shorter absolute path before installing the service. No service files were changed.`
+      : `The Windows task command is ${length} characters, too long to register: the PowerShell command that carries it to Task Scheduler would be ${registrationLength} characters, and a Windows command line holds at most 32,766. Its longest part is the ${part} ${path} (${path.length} characters). Install Node and Domovoi at shorter absolute paths before installing the service. No service files were changed.`)
     this.name = "WindowsTaskCommandLengthError"
   }
 }
@@ -357,7 +360,15 @@ export function servicePlan({
     for (const path of [runtime, execPath, configurationFile.path]) {
       if (path !== undefined && !plainWindowsPath(path)) throw new WindowsTaskPathError(path)
     }
-    if (taskCommand.length > windowsTaskCommandLengthLimit) {
+    const quotedProgram = `"${runtime ?? execPath}"`
+    if (quotedProgram.length > windowsTaskProgramLengthLimit) {
+      throw new WindowsTaskCommandLengthError(quotedProgram.length, runtime === undefined ? "daemon program" : "Node runtime", runtime ?? execPath)
+    }
+    const registration = windowsTaskRegistrationCommand(displayName, assertUser(user), {
+      path: quotedProgram, arguments: taskCommand.slice(quotedProgram.length + 1),
+    })
+    const registrationLength = [registration.command, ...registration.args].join(" ").length + (registration.command.includes(" ") ? 2 : 0)
+    if (registrationLength > windowsRegistrationLengthLimit) {
       let part: WindowsTaskCommandPart = runtime === undefined ? "daemon program" : "Node runtime"
       let path = runtime ?? execPath
       if (runtime !== undefined && execPath.length > path.length) {
@@ -368,7 +379,7 @@ export function servicePlan({
         part = "service configuration"
         path = configurationFile.path
       }
-      throw new WindowsTaskCommandLengthError(taskCommand.length, part, path)
+      throw new WindowsTaskCommandLengthError(taskCommand.length, part, path, registrationLength)
     }
     // A Windows service created with sc.exe runs as LocalSystem and belongs to
     // the machine, which is neither what the systemd user unit nor the launchd
@@ -378,26 +389,7 @@ export function servicePlan({
       configuration: configurationFile,
       kind: "task",
       commands: [
-        {
-          // Under SystemRoot, never a schtasks found by name (review F3).
-          command: windowsSchtasksPath(),
-          args: [
-            "/create",
-            "/tn",
-            displayName,
-            "/tr",
-            taskCommand,
-            "/sc",
-            "onlogon",
-            "/ru",
-            assertUser(user),
-            "/rl",
-            "LIMITED",
-            "/f",
-          ],
-        },
-        // No 72 hour limit or battery stops for the daemon (windows-task.ts).
-        windowsTaskSettingsCommand(displayName),
+        registration,
         { command: windowsSchtasksPath(), args: ["/run", "/tn", displayName] },
       ],
     }
@@ -606,8 +598,8 @@ async function loadPreviousAgent(target: ServiceTarget, plan: ServicePlan, previ
 // The command that makes the manager adopt the new definition. A failure up
 // to and including it leaves the manager on what it ran before; after it, the
 // new definition is the registered one.
-function registersDefinition({ command, args }: ServiceCommand): boolean {
-  return (win32.basename(command).toLowerCase() === "schtasks.exe" && args[0] === "/create")
+function registersDefinition({ command, args, registersWindowsTask }: ServiceCommand): boolean {
+  return registersWindowsTask === true
     || (command === "launchctl" && args[0] === "bootstrap")
     || (command === "systemctl" && args.includes("daemon-reload"))
 }
@@ -746,10 +738,10 @@ async function installWithDeadline(
     }
     assertServiceProfile(previous, callerProfile, target.platform)
   }
-  // Security review round 3 (#574): schtasks /create /f replaces a task of
+  // Security review round 3 (#574): COM registration replaces a task of
   // the same name, so a task Domovoi did not register refuses the install, by
   // the same check status and removal use, before anything changes.
-  let legacyWindowsCommand: string | undefined
+  let legacyWindowsCommand: ValidatedWindowsTask | undefined
   let restoreSupervisedWindows: (() => Promise<void>) | undefined
   if (target.platform === "win32" && !target.configuration.wsl) {
     const owner = await windowsTaskOwner(assertHome(target.home), effects, deadline)
@@ -772,13 +764,13 @@ async function installWithDeadline(
       if (owner === "supervised" || effects.readConfiguration?.(assertHome(target.home), "win32") !== undefined) {
         if (!effects.stopSupervisor) throw new Error("Windows supervisor evidence is missing; replacement refused")
         const removal = windowsTaskRemovalPlan(displayName)
-        let previousTask: { action: WindowsTaskAction; command: string; runtime: ServiceRuntimeRecord | undefined } | undefined
+        let previousTask: ValidatedWindowsTask & { enabled: boolean; runtime: ServiceRuntimeRecord | undefined } | undefined
         if (owner === "supervised") {
           const action = await readWindowsTaskAction(displayName, effects, deadline)
           const runtime = effects.readConfiguration?.(assertHome(target.home), "win32")?.serviceRuntime
           const command = action === "missing" ? undefined : domovoiTaskCommand(action, plan.configuration.path, runtime)
           if (action === "missing" || !command || !action.arguments.includes('" --service-supervise "')) throw new Error("Windows supervisor registration changed before reinstall")
-          previousTask = { action, command, runtime }
+          previousTask = { ...command, enabled: action.enabled, runtime }
         }
         await disableWindowsTask(removal, effects, deadline)
         await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, {
@@ -797,19 +789,15 @@ async function installWithDeadline(
           // restores the logon registration only, never issues a demand start.
           restoreSupervisedWindows = async () => {
             const current = await readWindowsTaskAction(displayName, effects, deadline)
-            if (current !== "missing" && domovoiTaskCommand(current, plan.configuration.path, previous.runtime) !== previous.command) {
+            if (current !== "missing" && domovoiTaskCommand(current, plan.configuration.path, previous.runtime)?.command !== previous.command) {
               throw new Error("Windows task action changed during reinstall; restoration refused")
             }
             if (current === "missing") {
-              const create = plan.commands.find((command) => command.args[0] === "/create")
-              if (!create) throw new Error("Windows task registration command is unavailable")
-              const args = create.args.map((arg, index) => create.args[index - 1] === "/tr" ? previous.command : arg)
-              await withinServiceDeadline(deadline, () => effects.run(create.command, args, deadline))
-              const settings = windowsTaskSettingsCommand(displayName)
-              await withinServiceDeadline(deadline, () => effects.run(settings.command, settings.args, deadline))
+              const restore = windowsTaskRegistrationCommand(displayName, assertUser(target.user), previous.action)
+              await withinServiceDeadline(deadline, () => effects.run(restore.command, restore.args, deadline))
             }
             await withinServiceDeadline(deadline, () => effects.run(windowsSchtasksPath(),
-              ["/change", "/tn", displayName, previous.action.enabled ? "/enable" : "/disable"], deadline))
+              ["/change", "/tn", displayName, previous.enabled ? "/enable" : "/disable"], deadline))
           }
         }
       }
@@ -897,10 +885,10 @@ async function installWithDeadline(
           await putPreviousFilesBack(previousFiles, effects, deadline, cause)
           configurationRestored = true
           if (legacyWindowsCommand && legacyWindowsRemoved && index === registering) {
-            // Preserve the old action for a retry if /create failed after deletion.
+            // Preserve the old action for a retry if registration failed after deletion.
             // Do not restart it: legacy descendants have no job-object evidence.
-            const restoreArgs = args.map((arg, position) => args[position - 1] === "/tr" ? legacyWindowsCommand! : arg)
-            await withinServiceDeadline(deadline, () => effects.run(command, restoreArgs, deadline))
+            const restore = windowsTaskRegistrationCommand(displayName, assertUser(target.user), legacyWindowsCommand.action)
+            await withinServiceDeadline(deadline, () => effects.run(restore.command, restore.args, deadline))
             await disableWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
           }
           if (bootoutSent) await loadPreviousAgent(target, plan, previousFiles, effects, deadline, cause)
@@ -1015,13 +1003,15 @@ export type ServiceUpdateWaits = {
   budgetMs: number
 }
 
-// The command a Domovoi logon task runs, as servicePlan writes it, rebuilt
+type ValidatedWindowsTask = { action: Pick<WindowsTaskAction, "path" | "arguments">; command: string }
+
+// The action and command a Domovoi logon task runs, as servicePlan writes them, rebuilt
 // from the task's action; undefined for an action of any other shape, or one
 // that runs anything but the runtime and entry service.json records, which is
 // never registered again (security review rounds 2 and 3). Task Scheduler may
 // report the program with the quotes schtasks was given, so one pair is
-// dropped.
-function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): string | undefined {
+// dropped before rebuilding both forms from the checked parts.
+function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): ValidatedWindowsTask | undefined {
   const execPath = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
   const quoted = /^"([^"]*)" (--service-config|--service-supervise) "([^"]*)"$/.exec(action.arguments)
   if (!quoted) return undefined
@@ -1038,7 +1028,8 @@ function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string
   } catch (cause) {
     throw new DaemonServiceUpdateError("nothing-changed", cause)
   }
-  return `"${execPath}" "${entry}" ${flag} "${configurationPath}"`
+  const validated = { path: `"${execPath}"`, arguments: `"${entry}" ${flag} "${configurationPath}"` }
+  return { action: validated, command: `${validated.path} ${validated.arguments}` }
 }
 
 // The install's refusals for one Windows task path (security review rounds
@@ -1241,10 +1232,8 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
     if (previous === "missing") throw new DaemonServiceUpdateError("not-installed")
     const previousCommand = domovoiTaskCommand(previous, plan.configuration.path, recorded)
     if (previousCommand === undefined) throw new DaemonServiceUpdateError("changed-outside")
-    const restoreCommands = plan.commands.map((command) => command.args[0] !== "/create" ? command : {
-      ...command,
-      args: command.args.map((arg, index) => command.args[index - 1] === "/tr" ? previousCommand : arg),
-    })
+    const restoreCommands = plan.commands.map((command) => command.registersWindowsTask
+      ? windowsTaskRegistrationCommand(displayName, assertUser(target.user), previousCommand.action) : command)
     const legacy = !previous.arguments.includes('" --service-supervise "')
     let legacyRemoved = false
     let newRegistrationSucceeded = false
@@ -1288,7 +1277,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
           await writeIn(deadline)(plan.configuration.path, plan.configuration.contents)
         })
         await startIn(deadline)(plan.commands, (command) => {
-          if (command.args[0] === "/create") newRegistrationSucceeded = true
+          if (command.registersWindowsTask) newRegistrationSucceeded = true
         })
         return plan
       },

@@ -80,22 +80,44 @@ ${body}
   }
 }
 
-// schtasks /create cannot set these and registers Task Scheduler's defaults,
-// which Microsoft documents as a 72 hour execution limit, and battery rules
-// that keep a task from starting on battery and stop it when power is lost.
-// The logon task runs the daemon for the whole session, and the defaults
-// would end it there, so right after each /create this sets what the WSL task sets
-// (wsl-task.ts) and registers the change in place (TASK_UPDATE, 4) under the
-// task's own principal and logon type, with no password.
-// https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-executiontimelimit
-export function windowsTaskSettingsCommand(name: string): ServiceCommand {
-  return taskCommand(windowsPowerShellPath(), name, `
-$definition = $task.Definition
+// Values are data: PowerShell also recognizes smart quotes as delimiters.
+const encodedValue = (value: string) => `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(value, "utf8").toString("base64")}'))`
+
+// Keep the quoted program shape schtasks stored, including when restoring a
+// task whose program Task Scheduler already reports in quotes.
+export function windowsTaskRegistrationCommand(name: string, user: string, action: { path: string; arguments: string }): ServiceCommand {
+  if (/['‘’‚‛]/u.test(name)) throw new Error("Windows task name must not contain single quotes")
+  const path = action.path.startsWith('"') && action.path.endsWith('"') ? action.path : `"${action.path}"`
+  // TASK_CREATE_OR_UPDATE (6) replaces /f; interactive token (3) needs no password.
+  // https://learn.microsoft.com/en-us/windows/win32/taskschd/taskfolder-registertaskdefinition
+  // Override Task Scheduler's default 72-hour limit and battery stops for the whole logon session.
+  // https://learn.microsoft.com/en-us/windows/win32/taskschd/tasksettings-executiontimelimit
+  const script = `
+$ErrorActionPreference = 'Stop'
+$scheduler = New-Object -ComObject 'Schedule.Service'
+$scheduler.Connect()
+$folder = $scheduler.GetFolder('\\')
+$name = '${name}'
+$definition = $scheduler.NewTask(0)
+$definition.Principal.UserId = ${encodedValue(user)}
+$definition.Principal.LogonType = 3
+$definition.Principal.RunLevel = 0
+$trigger = $definition.Triggers.Create(9)
+$trigger.UserId = ${encodedValue(user)}
 $definition.Settings.ExecutionTimeLimit = 'PT0S'
 $definition.Settings.DisallowStartIfOnBatteries = $false
 $definition.Settings.StopIfGoingOnBatteries = $false
-$null = $folder.RegisterTaskDefinition($name, $definition, 4, $definition.Principal.UserId, $null, [int]$definition.Principal.LogonType, $null)
-[Console]::Out.WriteLine('domovoi-task:' + [int]$folder.GetTask($name).State)`)
+$action = $definition.Actions.Create(0)
+$action.Path = ${encodedValue(path)}
+$action.Arguments = ${encodedValue(action.arguments)}
+$user = ${encodedValue(user)}
+$null = $folder.RegisterTaskDefinition($name, $definition, 6, $user, $null, 3, $null)
+`
+  return {
+    command: windowsPowerShellPath(),
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+    registersWindowsTask: true,
+  }
 }
 
 export function windowsTaskRemovalPlan(name: string): WindowsTaskRemovalPlan {

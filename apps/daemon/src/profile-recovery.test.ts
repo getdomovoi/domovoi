@@ -19,6 +19,7 @@ import { claimProfile } from "./profile-lease.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./service/configuration.js"
 import { installService, nodeServiceEffects, removeService } from "./service/install.js"
 import { windowsJobCommand } from "./service/windows-job.js"
+import { windowsTaskData } from "./service/windows-task-test-support.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { waitForFixtureStartup } from "./test-wait-for.js"
 
@@ -170,26 +171,27 @@ it("assigns a fresh registration on every install and invalidates an earlier rec
     const home = await setup(deadline)
     const node = withoutLoginctl(nodeServiceEffects({ userHomeDirectory: home }))
     // The fixture never starts a manager task. Model the registration that
-    // /create publishes, including the disabled, zero-instance proof on retry.
-    // Leaving reads real while mocking writes invents a missing registration.
-    let taskCommand: string | undefined
+    // the Task Scheduler COM registration publishes, including the disabled,
+    // zero-instance proof on retry. Leaving reads real while mocking writes
+    // invents a missing registration.
+    let taskAction: { path: string; arguments: string } | undefined
     let taskEnabled = false
     const effects: ReturnType<typeof nodeServiceEffects> = {
       ...node,
       run: vi.fn(async (_command, args) => {
-        if (process.platform === "win32" && args[0] === "/create") {
-          taskCommand = args[args.indexOf("/tr") + 1]
-          taskEnabled = true
-        }
+        if (process.platform !== "win32" || !args.includes("-EncodedCommand")) return
+        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+        const path = windowsTaskData(script, "$action.Path"), argumentsText = windowsTaskData(script, "$action.Arguments")
+        if (path === undefined || argumentsText === undefined) return
+        taskAction = { path, arguments: argumentsText }
+        taskEnabled = true
       }),
       capture: async (command, args, operation) => {
         if (process.platform !== "win32") return node.capture(command, args, operation)
-        if (taskCommand === undefined) return { code: 0, stdout: "domovoi-task:missing" }
+        if (taskAction === undefined) return { code: 0, stdout: "domovoi-task:missing" }
         const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
         if (script.includes("domovoi-task-action:")) {
-          const parts = /^"([^"]+)" (.*)$/.exec(taskCommand)
-          if (!parts) throw new Error("Fixture received an invalid task command")
-          return { code: 0, stdout: "domovoi-task-action:" + JSON.stringify({ path: parts[1], arguments: parts[2], enabled: taskEnabled, state: taskEnabled ? 3 : 1 }) }
+          return { code: 0, stdout: "domovoi-task-action:" + JSON.stringify({ ...taskAction, enabled: taskEnabled, state: taskEnabled ? 3 : 1 }) }
         }
         if (script.includes("$task.Enabled = $false")) taskEnabled = false
         if (script.includes("$task.GetInstances(0).Count")) return { code: 0, stdout: `domovoi-task:${taskEnabled ? 0 : 1}` }
