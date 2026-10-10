@@ -10,7 +10,7 @@ import { removeScratchDirectory } from "../test-scratch.js"
 import { createServiceConfiguration } from "./configuration.js"
 import { stagedRuntimeCopy } from "./desktop-service.js"
 import { isDomovoiTaskAction, nodeServiceEffects, servicePlan, type ServiceCommand } from "./install.js"
-import { readWindowsTaskAction, removeWindowsTask, windowsSchtasksPath, windowsTaskRegistrationCommand, windowsTaskRemovalPlan } from "./windows-task.js"
+import { readWindowsTaskAction, removeWindowsTask, windowsPowerShellPath, windowsSchtasksPath, windowsTaskRegistrationCommand, windowsTaskRemovalPlan } from "./windows-task.js"
 
 // Task 50: the installer registers its logon task through the Task Scheduler
 // COM API, the program and its arguments apart, instead of schtasks /create
@@ -45,6 +45,34 @@ const xmlAction = (xml: string) => ({
   command: /<Command>([^<]*)<\/Command>/u.exec(xml)?.[1],
   arguments: /<Arguments>([^<]*)<\/Arguments>/u.exec(xml)?.[1],
 })
+// Parse the XML with PowerShell's XML reader so entity-escaped account names
+// compare as account data. Normalize differing name/SID forms through Windows.
+async function assertTaskAccounts(legacyXml: string, currentXml: string, deadline: OperationDeadline): Promise<void> {
+  const data = (value: string) => `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(value, "utf8").toString("base64")}'))`
+  const script = `
+$ErrorActionPreference = 'Stop'
+$legacy = [xml](${data(legacyXml)})
+$current = [xml](${data(currentXml)})
+$principal = [string]$current.Task.Principals.Principal.UserId
+$trigger = [string]$current.Task.Triggers.LogonTrigger.UserId
+$legacyPrincipal = [string]$legacy.Task.Principals.Principal.UserId
+function Resolve-Sid([string]$account) {
+  if ($account -match '^S-1-') { return ([System.Security.Principal.SecurityIdentifier]::new($account)).Value }
+  return ([System.Security.Principal.NTAccount]::new($account)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+}
+if (-not $principal -or -not $trigger -or -not $legacyPrincipal) { throw 'A task principal or COM logon trigger has no UserId' }
+# PowerShell's -ieq is case-insensitive. Resolve account names only when forms differ.
+$sameTrigger = $principal -ieq $trigger
+if (-not $sameTrigger) { $sameTrigger = (Resolve-Sid $principal) -ieq (Resolve-Sid $trigger) }
+$sameLegacy = $principal -ieq $legacyPrincipal
+if (-not $sameLegacy) { $sameLegacy = (Resolve-Sid $principal) -ieq (Resolve-Sid $legacyPrincipal) }
+[Console]::Out.WriteLine((ConvertTo-Json -Compress @{ sameTrigger = $sameTrigger; sameLegacy = $sameLegacy }))
+`
+  const result = await effects.capture(windowsPowerShellPath(), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], deadline)
+  expect(result.code, result.stderr).toBe(0)
+  expect(JSON.parse(result.stdout)).toEqual({ sameTrigger: true, sameLegacy: true })
+}
+
 const plan = (home: string, execPath: string, runtime: string) => servicePlan({
   platform: "win32", home, user: userInfo().username, execPath, runtime,
   configuration: createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home }),
@@ -81,6 +109,7 @@ it.runIf(process.platform === "win32")("registers the action an older Domovoi's 
     }
     console.log(`[task shape] schtasks principal and triggers:\n${/<Triggers>[\s\S]*?<\/Principals>/u.exec(legacyXml)?.[0] ?? legacyXml}`)
     console.log(`[task shape] COM principal and triggers:\n${/<Triggers>[\s\S]*?<\/Principals>/u.exec(currentXml)?.[0] ?? currentXml}`)
+    await assertTaskAccounts(legacyXml, currentXml, deadline)
   } finally {
     deadline.clear()
     for (const name of [legacy, current]) schtasks(["/delete", "/tn", name, "/f"])
