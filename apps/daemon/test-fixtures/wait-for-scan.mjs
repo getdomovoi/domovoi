@@ -1,7 +1,7 @@
 // @ts-check
-// Worker for test-wait-for.test.ts: lists every direct vi.waitFor call in the
-// *.test.ts files under workerData.root whose timeout is not a positive
-// numeric literal, and the files it had to parse.
+// Worker for src/test-wait-for.test.ts: lists every direct vi.waitFor call
+// in the *.test.ts files under workerData.root whose timeout is not a
+// positive numeric literal, and the files it had to parse.
 //
 // It runs on a worker thread because `vitest run --coverage` profiles every
 // function on the test's own thread, the TypeScript parser included, and that
@@ -26,10 +26,16 @@ async function scanWaitForTimeouts(root) {
     const text = await readFile(path, "utf8")
     const relative = entry.replaceAll("\\", "/")
     // Parsing is most of the cost of the scan. A property named waitFor spells
-    // the word in the text once its \u escapes are decoded, so any other file
-    // cannot hold an offender and skips the parse. Decoding escapes outside
-    // identifiers too only admits extra files, never hides one.
-    if (/\bwaitFor\b/.test(text.includes("\\u") ? decodeUnicodeEscapes(text) : text) === false) continue
+    // the word in the text once its \uXXXX escapes are decoded, so any other
+    // file cannot hold an offender and skips the parse. Decoding escapes
+    // outside identifiers too only admits extra files, never hides one.
+    // TypeScript 5.9 can drop identifier text before a braced \u{...}
+    // escape, so decoding may not give the name it reads; a file with a
+    // braced escape always parses.
+    if (
+      text.includes("\\u{") === false
+      && /\bwaitFor\b/.test(text.includes("\\u") ? decodeUnicodeEscapes(text) : text) === false
+    ) continue
     parsed.push(relative)
     const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest)
     /** @param {ts.Node} node */
@@ -67,12 +73,9 @@ async function scanWaitForTimeouts(root) {
 /** @param {string} text */
 function decodeUnicodeEscapes(text) {
   return text.replace(
-    /\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})/g,
-    /** @type {(escape: string, braced?: string, four?: string) => string} */
-    (escape, braced, four) => {
-      const point = Number.parseInt(braced ?? four ?? "", 16)
-      return point <= 0x10ffff ? String.fromCodePoint(point) : escape
-    },
+    /\\u([0-9a-fA-F]{4})/g,
+    /** @type {(escape: string, code: string) => string} */
+    (_escape, code) => String.fromCharCode(Number.parseInt(code, 16)),
   )
 }
 

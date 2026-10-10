@@ -176,6 +176,16 @@ describe("daemon waitFor timeout scan", () => {
     expect(offenders.sort()).toEqual(["braced.test.ts:1", "four.test.ts:1"])
   })
 
+  // TypeScript 5.9 can drop identifier text before a braced escape: it reads
+  // this name as waitFor although decoding the text gives wJUNKaitFor.
+  it("finds a name TypeScript reads as waitFor across a braced escape", async () => {
+    await write("dropped.test.ts", "await vi.\\u0077JUNK\\u{61}itFor(() => {})\n")
+
+    const { offenders } = await scanWaitForTimeouts(root)
+
+    expect(offenders).toEqual(["dropped.test.ts:1"])
+  })
+
   // Parsing is most of the cost of the scan, so a file that cannot name waitFor
   // even after its escapes are decoded must not reach the parser.
   it("parses only files whose decoded text can name waitFor", async () => {
@@ -196,9 +206,9 @@ describe("daemon waitFor timeout scan", () => {
 
 // Lists every direct vi.waitFor call in the *.test.ts files under root whose
 // timeout is not a positive numeric literal, and the files it had to parse.
-// The scan runs on a worker thread; test-wait-for-scan.mjs says why.
+// The scan runs on a worker thread; test-fixtures/wait-for-scan.mjs says why.
 async function scanWaitForTimeouts(root: string) {
-  const worker = new Worker(new URL("./test-wait-for-scan.mjs", import.meta.url), { workerData: { root } })
+  const worker = new Worker(new URL("../test-fixtures/wait-for-scan.mjs", import.meta.url), { workerData: { root } })
   try {
     const report = await new Promise<unknown>((resolve, reject) => {
       worker.once("message", resolve)
