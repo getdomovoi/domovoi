@@ -18,16 +18,25 @@ import { readSupervisorStopRequest, readWindowsSupervisorRecord, type WindowsSup
 import { stopWindowsSupervisor } from "./windows-job-supervisor.js"
 import { queryWindowsProcess, queryWindowsProcesses } from "./windows-job.js"
 import { removeScratchDirectory } from "../test-scratch.js"
+import { nativeServiceTestsEnabled } from "../test-native-service-gate.js"
 
 // Real 1/5/15 second backoffs plus Windows compiler, manager and startup time.
 // No test speed knob is exposed in the production configuration.
 const lifecycleBudget = 180_000
 const cleanupBudget = 60_000
+// Carved out of cleanupBudget, so a stop step that spends its whole slice
+// still leaves the removal time of its own.
+const removalBudget = 20_000
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`
 const powershell = (script: string): ServiceCommand => ({ command: windowsPowerShellPath(),
   args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")] })
 
-it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] as const)("proves native Windows supervised %s and removal", async (mode) => {
+// These tests register a real logon task for whoever runs them, and an
+// interrupted run leaves it registered. They run on CI and, on a developer
+// machine, only with DOMOVOI_NATIVE_SERVICE_TESTS=1.
+const windowsNative = process.platform === "win32" && nativeServiceTestsEnabled("Windows")
+
+it.runIf(windowsNative).each(["exhaustion", "stop", "unstarted"] as const)("proves native Windows supervised %s and removal", async (mode) => {
   const name = `Domovoi-supervision-test-${randomUUID()}`
   const deadline = OperationDeadline.start(lifecycleBudget)
   const base = await mkdtemp(join(tmpdir(), "domovoi-task-"))
@@ -40,6 +49,7 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
   const effects = nodeServiceEffects({ userHomeDirectory: directory })
   const plan = windowsTaskRemovalPlan(name)
   let created = false, started = false, removed = false
+  const failures: unknown[] = []
   // Phase timings go to the CI log as each phase ends, so a run that reaches
   // its deadline still shows where the time went. They assert nothing.
   const began = performance.now()
@@ -247,6 +257,9 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
     expect(await capture(plan.inspect)).toMatchObject({ code: 0, stdout: "domovoi-task:missing\r\n" })
     removed = true
     timing("daemon trees and task absent after removal")
+  } catch (error) {
+    failures.push(error)
+    throw error
   } finally {
     deadline.clear()
     if (!removed) {
@@ -257,18 +270,50 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
       catch (error) { output = `unreadable: ${String(error)}` }
       console.log(`[windows supervision ${mode}] daemon output tail:\n${output}`)
     }
-    const cleanup = OperationDeadline.start(cleanupBudget)
-    try {
-      if (created && !removed) {
-        await capture(plan.disable!, cleanup)
-        if (started) await stopWindowsSupervisor(path, cleanup)
-        expect((await capture(plan.stop, cleanup)).code).toBe(0)
-        const present = await capture(plan.inspect, cleanup)
-        if (present.stdout.trim() !== "domovoi-task:missing") expect((await capture(plan.remove, cleanup)).code).toBe(0)
-      }
-      // A failed proof retains this directory and UUID task for inspection.
-      await removeScratchDirectory(base)
-      timing("cleanup")
-    } finally { cleanup.clear() }
+    // Each step runs whatever the steps before it did, so a disable, stop or
+    // supervisor wait that fails never skips the removal of the logon task.
+    const failed: unknown[] = []
+    const step = async (work: () => Promise<unknown>) => {
+      try { await work() } catch (error) { failed.push(error) }
+    }
+    let absent = !created || removed
+    if (!absent) {
+      const stopping = OperationDeadline.start(cleanupBudget - removalBudget)
+      try {
+        await step(() => capture(plan.disable!, stopping))
+        if (started) await step(() => stopWindowsSupervisor(path, stopping))
+        await step(async () => expect((await capture(plan.stop, stopping)).code).toBe(0))
+      } finally { stopping.clear() }
+      const removal = OperationDeadline.start(removalBudget)
+      try {
+        await step(async () => {
+          const present = await capture(plan.inspect, removal)
+          if (present.stdout.trim() !== "domovoi-task:missing") expect((await capture(plan.remove, removal)).code).toBe(0)
+        })
+        // The plan's removal refuses a task that is not disabled and stopped.
+        // schtasks /delete /f does not, so a stop step that failed above still
+        // leaves no logon task registered in this account.
+        await step(async () => {
+          let present = await capture(plan.inspect, removal)
+          if (present.stdout.trim() !== "domovoi-task:missing") {
+            await capture({ command: windowsSchtasksPath(), args: ["/delete", "/tn", name, "/f"] }, removal)
+            present = await capture(plan.inspect, removal)
+          }
+          if (present.code !== 0 || present.stdout.trim() !== "domovoi-task:missing") throw new Error(`Task Scheduler still lists ${name}`)
+          absent = true
+        })
+      } finally { removal.clear() }
+    }
+    // The directory holds the task's configuration, so it goes only once the
+    // task is gone. A task still registered keeps it for inspection.
+    if (absent) await step(() => removeScratchDirectory(base))
+    timing("cleanup")
+    if (failed.length > 0) {
+      const recovery = absent ? "" : ` If schtasks /query /tn "${name}" still answers, run schtasks /delete /tn "${name}" /f, then remove ${base}.`
+      // Thrown from the finally, this replaces the body's own failure, so that
+      // failure travels inside it.
+      // eslint-disable-next-line no-unsafe-finally
+      throw new AggregateError([...failures, ...failed], `Native Windows task cleanup for ${name} did not complete.${recovery}`)
+    }
   }
 }, lifecycleBudget + cleanupBudget + 1_000)

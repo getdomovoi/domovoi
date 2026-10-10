@@ -11,8 +11,15 @@ import { createServiceConfiguration, serializeServiceConfiguration } from "./con
 import { readWindowsSupervisorRecord } from "./supervisor-record.js"
 import { readWindowsSupervisorStatus, stopWindowsSupervisor } from "./windows-job-supervisor.js"
 import { OperationDeadline } from "../operation-deadline.js"
+import { windowsTreeKill } from "../claude-process.js"
+import { nativeServiceTestsEnabled } from "../test-native-service-gate.js"
 
-it.runIf(process.platform === "win32")("inspects a live process without module progress on stderr", () => {
+// These tests start real job objects, supervisors and daemon trees in the
+// account that runs them, and an interrupted run leaves them running. They run
+// on CI and, on a developer machine, only with DOMOVOI_NATIVE_SERVICE_TESTS=1.
+const windowsNative = process.platform === "win32" && nativeServiceTestsEnabled("Windows")
+
+it.runIf(windowsNative)("inspects a live process without module progress on stderr", () => {
   const command = windowsJobCommand()
   const result = spawnSync(command.command, command.args, {
     input: JSON.stringify({ mode: "inspect", pids: [process.pid] }) + "\n",
@@ -24,7 +31,7 @@ it.runIf(process.platform === "win32")("inspects a live process without module p
   expect(result.stderr).toBe("")
 }, 120_000)
 
-it.runIf(process.platform === "win32").each([
+it.runIf(windowsNative).each([
   { mode: "unknown" },
   { mode: 1 },
   { mode: "inspect", pids: [String(process.pid)] },
@@ -56,7 +63,7 @@ it.runIf(process.platform === "win32").each([
   expect(result.stderr).toContain("Windows job helper failed; no shutdown proof. Error ")
 }, 120_000)
 
-it.runIf(process.platform === "win32")("contains descendants, gates resume, refuses collisions, and cross-checks the boot counter", async () => {
+it.runIf(windowsNative)("contains descendants, gates resume, refuses collisions, and cross-checks the boot counter", async () => {
   const directory = mkdtempSync(join(tmpdir(), "Domovoi-tëst-ü-"))
   const marker = join(directory, "child.json")
   const before = queryWindowsProcess(process.pid)
@@ -151,12 +158,21 @@ function supervisorFixture(prefix: string) {
       while (!ended()) { cleanup.throwIfExpired(); await delay(100) }
       // A failed proof retains the test profile and its evidence for inspection.
       rmSync(home, { recursive: true, force: true })
+    } catch (error) {
+      // A supervisor that did not stop keeps its job helper and the daemon
+      // tree running in this account after the run. It is this test's own
+      // child and its exit has not been observed, so Node still holds its
+      // process handle and its PID cannot name another process. Ending its
+      // tree ends the helper, and the job, which kills on close, takes the
+      // daemon and its descendants with it.
+      if (!ended() && supervisor.pid !== undefined) await windowsTreeKill(supervisor.pid).catch(() => supervisor.kill())
+      throw error
     } finally { cleanup.clear() }
   }
   return { home, directory, marker, poll, ended, restart: () => { supervisor = start() }, cleanup }
 }
 
-it.runIf(process.platform === "win32")("recovers a supervisor after helper death closes its Global job", async () => {
+it.runIf(windowsNative)("recovers a supervisor after helper death closes its Global job", async () => {
   const f = supervisorFixture("domovoi-helper-death-")
   const { home, marker, poll, ended } = f
   try {
@@ -180,7 +196,7 @@ it.runIf(process.platform === "win32")("recovers a supervisor after helper death
   } finally { await f.cleanup() }
 }, 155_000)
 
-it.runIf(process.platform === "win32")("keeps supervising while an open record delays crash publication", async () => {
+it.runIf(windowsNative)("keeps supervising while an open record delays crash publication", async () => {
   const f = supervisorFixture("domovoi-record-held-")
   let handle: number | undefined
   try {
