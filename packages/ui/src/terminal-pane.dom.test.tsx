@@ -241,7 +241,7 @@ function watcher() {
     resolve: (result: WatchReply) => replies.at(-1)!.resolve(result),
     reject: (cause: unknown) => replies.at(-1)!.reject(cause),
   }
-  return { ...target, controls, create, watch, unwatch, watched }
+  return { ...target, controls, create, watch, unwatch, watched, replies }
 }
 
 // xterm parses writes asynchronously. Output is parsed in order, so once the
@@ -376,6 +376,29 @@ describe("TerminalPane claim banner", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("Terminal release failed")
     expect(screen.getByText("You hold this shell")).toBeTruthy()
     expect(screen.getByRole<HTMLButtonElement>("button", { name: "Release the shell" }).disabled).toBe(false)
+  })
+
+  // A release answered after the pane moved to another session's shell says
+  // nothing about the shell now shown.
+  it("keeps a late release answer off the next session's shell", async () => {
+    const user = userEvent.setup()
+    const target = harness()
+    const view = (id: string) => (
+      <TerminalPane connected controls={target.controls} machineName="worktop" sessionId={id} />
+    )
+    const { rerender } = render(view(sessionId))
+    await act(async () => {
+      target.connect(thisClient)
+    })
+    await user.click(screen.getByRole("button", { name: "Release the shell" }))
+
+    rerender(view("session-other"))
+    await act(async () => {
+      target.refuseRelease(new Error("Terminal release refused"))
+    })
+
+    expect(screen.queryByRole("alert")).toBeNull()
+    expect(screen.getByRole("button", { name: "Interrupt ⌃C" })).toBeTruthy()
   })
 
   it("offers no release to a pane that does not hold the shell, or cannot release", async () => {
@@ -745,6 +768,27 @@ describe("TerminalPane on a watching desktop", () => {
     expect(target.unwatch).toHaveBeenCalledTimes(1)
     expect(target.unwatch).toHaveBeenCalledWith(terminalId)
     expect(target.watch).toHaveBeenLastCalledWith("terminal-session-other", { followResize: true })
+  })
+
+  // A watch can still be on the wire when the pane moves on: the client asks
+  // again without followResize when an older daemon refuses it. An unwatch
+  // sent before that second watch would leave this connection watching, so
+  // the unwatch follows the watch's answer.
+  it("stops watching a shell whose watch was still unanswered when the pane moved", async () => {
+    const target = watcher()
+    const view = (id: string) => (
+      <TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={id} />
+    )
+    const { rerender } = render(view(sessionId))
+
+    rerender(view("session-other"))
+    expect(target.unwatch).not.toHaveBeenCalled()
+
+    await act(async () => {
+      target.replies[0]!.resolve(watchResult())
+    })
+    expect(target.unwatch).toHaveBeenCalledTimes(1)
+    expect(target.unwatch).toHaveBeenCalledWith(terminalId)
   })
 
   // The daemon sends nothing when the holder's connection drops, and nothing

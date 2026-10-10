@@ -168,6 +168,9 @@ export function TerminalPane({
   // The mounted renderer's ownership handler, for this pane's own claim and
   // release replies.
   const applyOwnershipRef = useRef<((ownership: TerminalOwnershipNotification) => void) | undefined>(undefined)
+  // Counts the renderers the pane has mounted, so a reply can tell whether
+  // the pane still shows the shell it asked about.
+  const generationRef = useRef(0)
   // Whether an xterm is mounted to read output from. A disconnect disposes it
   // while the last metadata stays on screen.
   const [rendered, setRendered] = useState(false)
@@ -184,6 +187,9 @@ export function TerminalPane({
   )
 
   useEffect(() => {
+    // A claim or release answered after this point belongs to the pane as it
+    // was, not to whatever shell it shows next.
+    generationRef.current += 1
     const container = containerRef.current
     if (!container || !connected || !sessionId || !terminalId) return
     const watch = controls.watch
@@ -324,12 +330,18 @@ export function TerminalPane({
         if (!followsResize && (terminal.cols !== current.cols || terminal.rows !== current.rows)) resizeTo(current.cols, current.rows)
       }, () => undefined)
     }, holderRefreshMs) : undefined
+    // Settles once the watch has its answer. The client can ask a second time
+    // (without followResize, for an older daemon), so an unwatch sent before
+    // the answer could reach the daemon ahead of that second watch.
+    let watchAnswered: Promise<void> | undefined
+    let watchSettled = false
     if (readOnly && watch) {
       // The watching desktop reads the shell the way the phone does: the
       // daemon's kept record, then what it prints from here on. Nothing it
       // does reaches the process, and it never opens a shell of its own.
-      void watch(terminalId, { followResize: true }).then(
+      watchAnswered = watch(terminalId, { followResize: true }).then(
         (record) => {
+          watchSettled = true
           if (!active) return
           attached = true
           followsResize = record.followsResize === true
@@ -345,6 +357,7 @@ export function TerminalPane({
           }
         },
         (cause: unknown) => {
+          watchSettled = true
           if (!active) return
           const message = failure(cause, "Terminal could not be read")
           if (message === terminalMissing) setMissing(true)
@@ -390,7 +403,11 @@ export function TerminalPane({
       scrolled.dispose()
       terminal.dispose()
       if (xtermRef.current === terminal) xtermRef.current = null
-      if (readOnly && unwatch) void unwatch(terminalId).catch(() => undefined)
+      if (readOnly && unwatch) {
+        const stop = () => void unwatch(terminalId).catch(() => undefined)
+        if (watchSettled || !watchAnswered) stop()
+        else void watchAnswered.then(stop)
+      }
     }
   }, [connected, controls, historyRows, holderRefreshMs, readOnly, restartKey, sessionId, terminalId])
 
@@ -462,23 +479,29 @@ export function TerminalPane({
   }
   const claim = () => {
     if (!terminalId || readOnly) return
+    const generation = generationRef.current
     void controls.claim(terminalId).then(
-      (ownership) => applyOwnershipRef.current?.(ownership),
+      (ownership) => {
+        if (generationRef.current === generation) applyOwnershipRef.current?.(ownership)
+      },
       (cause: unknown) => {
-        setError(failure(cause, "Terminal takeover failed"))
+        if (generationRef.current === generation) setError(failure(cause, "Terminal takeover failed"))
       },
     )
   }
   const releaseShell = controls.release
   const release = () => {
     if (!terminalId || !writable || !releaseShell || releasing) return
+    const generation = generationRef.current
     setReleasing(true)
     void releaseShell(terminalId).then(
       (ownership) => {
+        if (generationRef.current !== generation) return
         setReleasing(false)
         applyOwnershipRef.current?.(ownership)
       },
       (cause: unknown) => {
+        if (generationRef.current !== generation) return
         setReleasing(false)
         setError(failure(cause, "Terminal release failed"))
       },
