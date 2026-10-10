@@ -32,21 +32,26 @@ childProcess.execFile = (command, args, options, callback) => {
   // Lingering (service/linger.ts) is off until this log records an
   // enable-linger with no later disable-linger. The account's own is never read.
   let lingering = false
-  // The command the last /create registered, read back as Task Scheduler
+  // The action from the last COM registration, read back as Task Scheduler
   // reports an action: the quoted program, then its arguments.
   let created
   for (const line of readFileSync(process.env.DOMOVOI_TEST_MANAGER_LOG, "utf8").split("\n").filter(Boolean)) {
     const entry = JSON.parse(line)
-    if ((schtasks(entry.command) && entry.args[0] === "/create") || (entry.command === "launchctl" && entry.args[0] === "bootstrap")) registered = true
-    if (schtasks(entry.command) && entry.args[0] === "/create") created = entry.args[entry.args.indexOf("/tr") + 1]
+    const body = decode(entry)
+    if (body.includes("$folder.RegisterTaskDefinition(")) {
+      const value = (property) => windowsTaskData(body, `$action.${property}`)
+      created = { path: value("Path"), arguments: value("Arguments") }
+      if (created.path === undefined || created.arguments === undefined) throw new Error("Invalid task registration")
+      registered = true
+    }
+    if (entry.command === "launchctl" && entry.args[0] === "bootstrap") registered = true
     if (decode(entry).includes("$folder.DeleteTask(") || (entry.command === "launchctl" && entry.args[0] === "bootout")) registered = false
     if (entry.command === "loginctl" && entry.args[0] === "enable-linger") lingering = true
     if (entry.command === "loginctl" && entry.args[0] === "disable-linger") lingering = false
   }
-  const [program, ...rest] = (created ?? "").split("\" ")
   const action = created === undefined
     ? { path: `"${process.execPath}"`, arguments: `"${process.argv[1]}" --service-config "${path.win32.join(home, ".domovoi", "service.json")}"` }
-    : { path: `${program}"`, arguments: rest.join("\" ") }
+    : created
   action.enabled = true
   action.state = 1
   const printed = command === "launchctl" && args[0] === "print"
@@ -93,3 +98,10 @@ childProcess.execFile = (command, args, options, callback) => {
   process.send({ state: "manager-held" })
 }
 syncBuiltinESMExports()
+
+// Decode only the data expression emitted by the Windows registration builder.
+function windowsTaskData(script, property) {
+  const line = script.split("\n").find((line) => line.startsWith(`${property} = `))
+  const encoded = / = \[System\.Text\.Encoding\]::UTF8\.GetString\(\[System\.Convert\]::FromBase64String\('([A-Za-z0-9+/=]*)'\)\)$/.exec(line ?? "")?.[1]
+  return encoded === undefined ? undefined : Buffer.from(encoded, "base64").toString("utf8")
+}
