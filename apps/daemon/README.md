@@ -1175,6 +1175,30 @@ cd apps/daemon
 DOMOVOI_LIVE_PROVIDERS=1 npx vitest run src/live-provider-contract.test.ts --coverage.enabled=false
 ```
 
+## Native service tests
+
+`src/service/launchd-agent.native.test.ts` and `src/service/systemd-unit.native.test.ts` install
+a throwaway agent or unit into the service manager of the account that runs them: a launchd job
+in your `gui/<uid>` domain, or a systemd user unit. Their cleanup boots it out or disables it even
+when a test fails, but a run that is killed before cleanup leaves it loaded. They run when `CI` is
+set and otherwise skip, printing the reason. To run them on your own machine:
+
+```sh
+cd apps/daemon
+DOMOVOI_NATIVE_SERVICE_TESTS=1 npx vitest run src/service/launchd-agent.native.test.ts --coverage.enabled=false
+```
+
+Only `1` opts in. A leftover launchd test job is named `sh.domovoi.domovoid.native-test-<uuid>`.
+List and remove one with:
+
+```sh
+launchctl list | grep native-test
+launchctl bootout gui/$(id -u)/sh.domovoi.domovoid.native-test-<uuid>
+```
+
+A leftover systemd unit is `domovoi-native-test-<uuid>.service`; remove it with
+`systemctl --user disable --now <unit>` and `systemctl --user reset-failed <unit>`.
+
 ## Loaded fixture checks
 
 The journal delivery test has its own 20-second budget (30 seconds on Windows), and the native
