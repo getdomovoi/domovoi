@@ -376,8 +376,9 @@ attempted unit's failed state, because a run that ends in
 failure stays loaded and listed as failed after its fragment file is deleted, and it then requires
 the manager to list nothing failed under that name. Outside CI these native proofs skip unless
 `DOMOVOI_NATIVE_SERVICE_TESTS=1` is set, and with it a machine without the systemd user
-manager's private socket still skips them. A stop file that cannot be written does not skip the
-disable. Linux CI starts that manager, and test
+manager's private socket still skips them. The stop file has its own two-second slice of the
+cleanup budget, so a write that fails or never returns does not skip the disable. Linux CI starts
+that manager, and test
 collection itself also refuses a missing socket rather than trusting the earlier workflow check.
 A stale socket reaches the bounded manager query and fails instead of being treated as absence.
 The same harness has portable safety tests with a simulated manager and real private files; those
@@ -433,9 +434,12 @@ overwrite a label that already exists, and it counts a manager it cannot read as
 than as absence. The removal in its cleanup is armed only once launchd has said the label is
 unused, and only immediately before the bootstrap that can leave one behind, so a run that refuses
 at the preflight asks launchd to retire nothing. Once armed, the bootout runs whatever failed
-before it, a label that still answers is booted out again, and the throwaway home is removed last
-whatever happened, because launchd retires a label without reading its plist. The error keeps the
-test's own failure and names the `launchctl bootout` command for a label that still answers. The
+before it, and a label that still answers is booted out again. The stop file the fixture watches
+has its own two-second slice of the cleanup budget, so a write that fails or never returns cannot
+skip the bootout. The throwaway home is removed last, and only once launchd no longer lists the
+label: a label still loaded keeps its script and stop file, so a relaunch finds the fixture rather
+than a missing file. The error keeps the test's own failure and, for a label that still answers,
+names the `launchctl bootout` command and the home to remove after it. The
 native tests run only on CI or with `DOMOVOI_NATIVE_SERVICE_TESTS=1`, decided before the domain
 probe, because a run killed before its cleanup leaves the agent loaded in the operator's own
 domain. Beyond that, its gate is that domain, so a session without one,

@@ -3,21 +3,29 @@ import { randomUUID } from "node:crypto"
 import { existsSync, realpathSync } from "node:fs"
 import { copyFile, mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, posix } from "node:path"
+import { dirname, join, posix } from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 
 import { expect, it, vi } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
+import { nativeServiceTestsRun, runningInCi } from "../test-native-service-gate.js"
 import { waitForDaemon } from "../test-wait-for.js"
 import { createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { installService, nodeServiceEffects, removeService, serviceStatus, type CapturedRun, type ServiceEffects, type ServicePlan } from "./install.js"
-import { nativeServiceTestsRun, runningInCi } from "./native-service-gate.test-support.js"
+
+// A passthrough, so one scripted cleanup test can make the stop file write hang.
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>()
+  return { ...actual, writeFile: vi.fn(actual.writeFile) }
+})
 
 const lifecycleBudget = 60_000
 const supervisionBudget = 90_000
 const cleanupBudget = 30_000
+// Carved out of cleanupBudget, so the whole cleanup still fits it.
+const stopMarkerBudget = 2_000
 // The scripted-manager tests never wait for launchd, so their budget only has
 // to cover a temporary directory and a few file writes.
 const scriptedBudget = 15_000
@@ -289,23 +297,29 @@ async function withThrowawayAgent(
     throw error
   } finally {
     deadline.clear()
-    const cleanup = OperationDeadline.start(cleanupBudget)
-    // Each step runs whatever the steps before it did. A stop file that cannot
-    // be written must not skip the bootout, and a wait that fails must not
-    // leave the temporary home behind.
+    // Each step runs whatever the steps before it did, so a step that fails
+    // never skips the ones after it.
     const failed: unknown[] = []
     const step = async (work: () => Promise<unknown>) => {
       try { await work() } catch (error) { failed.push(error) }
     }
+    // Cleanup runs whatever the assertions did, and never depends on the
+    // removal under test having worked. A deliberately broken remover may
+    // have left a live process: ask the fixture to exit through its own
+    // private path, never kill by a PID which might have been reused. The
+    // stop file is a courtesy; the bootout is what retires the agent. So the
+    // stop file has its own slice of the cleanup budget, and a write that
+    // never returns cannot spend the deadline the bootout needs.
+    const ready = readyPath
+    if (ready !== undefined && existsSync(ready)) {
+      const stopping = OperationDeadline.start(stopMarkerBudget)
+      try { await step(() => withinServiceDeadline(stopping, () => writeFile(`${ready}.stop`, "stop"))) }
+      finally { stopping.clear() }
+    }
+    const cleanup = OperationDeadline.start(cleanupBudget - stopMarkerBudget)
+    // Nothing of ours is in the domain until the bootout is armed.
+    let retired = !bootoutArmed
     try {
-      // Cleanup runs whatever the assertions did, and never depends on the
-      // removal under test having worked. A deliberately broken remover may
-      // have left a live process: ask the fixture to exit through its own
-      // private path, never kill by a PID which might have been reused.
-      const ready = readyPath
-      if (ready !== undefined && existsSync(ready)) {
-        await step(() => withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop")))
-      }
       if (bootoutArmed) {
         // An install that failed after launchd accepted the job still leaves
         // one to retire, and booting out a label that was never bootstrapped
@@ -325,24 +339,25 @@ async function withThrowawayAgent(
               throw new Error(`${target} is still loaded`)
             }
           }, { timeout: 10_000, interval: 250 }))
+          retired = true
         })
-        const started = pid
-        if (started !== undefined) await step(() => withinServiceDeadline(cleanup, () => waitForDaemon(() => {
-          cleanup.throwIfExpired()
-          expect(() => process.kill(started, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
-        })))
       }
-      // The home goes last and goes whatever happened above. launchd retires a
-      // label without reading its plist, so keeping the home helps no
-      // recovery, while removing it takes away the program a loaded leftover
-      // would relaunch.
+      const started = pid
+      if (bootoutArmed && started !== undefined) await step(() => withinServiceDeadline(cleanup, () => waitForDaemon(() => {
+        cleanup.throwIfExpired()
+        expect(() => process.kill(started, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
+      })))
+      // The home goes last, and only once launchd no longer lists the label.
+      // A label still loaded keeps its script and stop marker: without them a
+      // crash relaunches into a missing file and fails on every throttle
+      // interval, and the fixture can no longer be asked to exit.
       const created = installedHome
-      if (created !== undefined) await step(() => rm(created, { recursive: true, force: true }))
+      if (created !== undefined && retired) await step(() => rm(created, { recursive: true, force: true }))
     } finally { cleanup.clear() }
     if (failed.length > 0) {
-      const recovery = bootoutArmed
-        ? ` If launchctl print ${target} still answers, run launchctl bootout ${target}.`
-        : ""
+      const recovery = retired
+        ? ""
+        : ` If launchctl print ${target} still answers, run launchctl bootout ${target}, then remove ${installedHome ?? "its home"}.`
       // Thrown from the finally, this replaces the body's own failure, so that
       // failure travels inside it.
       // eslint-disable-next-line no-unsafe-finally
@@ -694,7 +709,7 @@ it("boots out and removes the home even when an earlier cleanup step fails", asy
     attempted = throwaway.target
     home = throwaway.home
     await expect(throwaway.install(deadline)).rejects.toThrow()
-    await mkdir(posix.dirname(throwaway.readyPath), { recursive: true })
+    await mkdir(dirname(throwaway.readyPath), { recursive: true })
     await writeFile(throwaway.readyPath, "1")
     // A directory where the stop file goes makes that write fail.
     await mkdir(`${throwaway.readyPath}.stop`)
@@ -703,12 +718,65 @@ it("boots out and removes the home even when an earlier cleanup step fails", asy
 
   expect(bootouts(refused.calls)).toEqual([`launchctl bootout ${attempted}`])
   expect(home !== undefined && existsSync(home)).toBe(false)
-  // Neither failure hides the other, and the message names the way out.
+  // Neither failure hides the other.
   expect(failure).toBeInstanceOf(AggregateError)
   const reasons = (failure as AggregateError).errors.map((error) => String(error))
   expect(reasons.some((reason) => reason.includes("the body failed"))).toBe(true)
   expect(reasons.some((reason) => /EISDIR|EPERM|EACCES/.test(reason))).toBe(true)
-  expect((failure as AggregateError).message).toContain(`launchctl bootout ${attempted}`)
+}, scriptedBudget + cleanupBudget + 1_000)
+
+it("boots out and removes the home when the stop file write never returns", async () => {
+  // A write that hangs used to spend the whole cleanup deadline, and the
+  // bootout after it then refused to start.
+  const writer = vi.mocked(writeFile)
+  const original = writer.getMockImplementation()
+  if (original === undefined) throw new Error("The real file writer must be available")
+  writer.mockImplementation((path, ...rest) => (String(path).endsWith(".stop")
+    ? new Promise<void>(() => {})
+    : original(path, ...rest)))
+  const refused = scriptedManager((_call, service) => notFound(service), new Error("the scripted manager refused the bootstrap"))
+  let attempted: string | undefined
+  let home: string | undefined
+  try {
+    const failure = await withThrowawayAgent(scriptedBudget, async (throwaway, deadline) => {
+      attempted = throwaway.target
+      home = throwaway.home
+      await expect(throwaway.install(deadline)).rejects.toThrow()
+      await mkdir(dirname(throwaway.readyPath), { recursive: true })
+      await original(throwaway.readyPath, "1")
+    }, refused.effects).then(() => undefined, (error: unknown) => error)
+    expect(bootouts(refused.calls)).toEqual([`launchctl bootout ${attempted}`])
+    expect(home !== undefined && existsSync(home)).toBe(false)
+    // The stalled write is still reported, and nothing is left to retire by hand.
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect((failure as AggregateError).message).not.toContain("launchctl bootout")
+  } finally {
+    writer.mockImplementation(original)
+    if (home !== undefined) await rm(home, { recursive: true, force: true })
+  }
+}, scriptedBudget + cleanupBudget + 1_000)
+
+it("keeps the home and names the way out when the agent stays loaded", async () => {
+  // A label launchd keeps listing after every bootout is a job still loaded.
+  // Its script and stop marker stay, so a crash does not relaunch into a
+  // missing file, and the error names the command that retires it by hand.
+  const stuck = scriptedManager((call, service) => (call === 1
+    ? notFound(service)
+    : printedAgent(service, `/tmp/${productionAgent}`)), new Error("the scripted manager refused the bootstrap"))
+  let attempted: string | undefined
+  let home: string | undefined
+  try {
+    const failure = await withThrowawayAgent(scriptedBudget, async (throwaway, deadline) => {
+      attempted = throwaway.target
+      home = throwaway.home
+      await expect(throwaway.install(deadline)).rejects.toThrow()
+    }, stuck.effects).then(() => undefined, (error: unknown) => error)
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect((failure as AggregateError).message).toContain(`run launchctl bootout ${attempted}, then remove ${home}`)
+    expect(home !== undefined && existsSync(home)).toBe(true)
+  } finally {
+    if (home !== undefined) await rm(home, { recursive: true, force: true })
+  }
 }, scriptedBudget + cleanupBudget + 1_000)
 
 it("asks again when the agent outlives the first bootout", async () => {

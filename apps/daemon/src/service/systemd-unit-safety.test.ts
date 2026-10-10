@@ -18,7 +18,7 @@ type Body = Parameters<typeof withThrowawayUnit>[1]
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>()
-  return { ...actual, rm: vi.fn(actual.rm) }
+  return { ...actual, rm: vi.fn(actual.rm), writeFile: vi.fn(actual.writeFile) }
 })
 
 // Lifecycle safety does not require a runnable Unix unit. Keep the actual
@@ -218,6 +218,31 @@ it("still disables the unit when its stop file cannot be written", async () => {
     expect(loaded()).toBe(false)
     for (const path of paths) expect(existsSync(path)).toBe(false)
   })
+}, safetyBudget + 6_000)
+
+it("still disables the unit when its stop file write never returns", async () => {
+  // A write that hangs used to spend the whole cleanup deadline, and the
+  // disable after it then refused to start.
+  const writer = vi.mocked(writeFile)
+  const original = writer.getMockImplementation()
+  if (original === undefined) throw new Error("The real file writer must be available")
+  writer.mockImplementation((path, ...rest) => (String(path).endsWith(".stop")
+    ? new Promise<void>(() => {})
+    : original(path, ...rest)))
+  try {
+    await scenario({}, async ({ run, calls, paths, loaded }) => {
+      await run(async (unit, deadline) => {
+        await unit.install(deadline)
+        await mkdir(dirname(unit.readyPath), { recursive: true })
+        await original(unit.readyPath, "1")
+      })
+      expect(calls.some((args) => args[1] === "disable")).toBe(true)
+      expect(loaded()).toBe(false)
+      for (const path of paths) expect(existsSync(path)).toBe(false)
+    })
+  } finally {
+    writer.mockImplementation(original)
+  }
 }, safetyBudget + 6_000)
 
 it.each(["held", "recreated"] as const)("reclaims a %s native fixture home through shared cleanup", async (kind) => {

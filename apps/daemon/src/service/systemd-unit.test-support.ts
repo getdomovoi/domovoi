@@ -16,6 +16,8 @@ import { installService, nodeServiceEffects, type CapturedRun, type ServiceEffec
 export const lifecycleBudget = 60_000
 export const supervisionBudget = 90_000
 export const cleanupBudget = 30_000
+// Carved out of cleanupBudget, so the whole cleanup still fits it.
+const stopMarkerBudget = 2_000
 const productionUnit = "domovoid.service"
 
 export function systemdConfigHome(configured: string | undefined, home: string): string {
@@ -134,20 +136,24 @@ export async function withThrowawayUnit(
   let cleanupArmed = false
   const failures: unknown[] = []
   async function cleanupUnit(): Promise<void> {
-    const cleanup = OperationDeadline.start(cleanupBudget)
+    // Cleanup runs whatever the assertions did, and never depends on the
+    // removal under test having worked. A deliberately broken remover may have
+    // left a live process: ask the fixture to exit through its own private
+    // path, never kill by a PID which might have been reused. The stop file is
+    // a courtesy; disable --now below is what stops the unit. So the stop file
+    // has its own slice of the cleanup budget, and neither a write that fails
+    // nor one that never returns can skip the disable or spend its deadline.
+    // Its failure is kept and reported only if the cleanup fails later.
+    const ready = readyPath
+    if (cleanupArmed && ready !== undefined && existsSync(ready)) {
+      const stopping = OperationDeadline.start(stopMarkerBudget)
+      try { await withinServiceDeadline(stopping, () => writeFile(`${ready}.stop`, "stop")) }
+      catch (error) { failures.push(error) }
+      finally { stopping.clear() }
+    }
+    const cleanup = OperationDeadline.start(cleanupBudget - stopMarkerBudget)
     try {
       if (cleanupArmed) {
-        // Cleanup runs whatever the assertions did, and never depends on the
-        // removal under test having worked. A deliberately broken remover may
-        // have left a live process: ask the fixture to exit through its own
-        // private path, never kill by a PID which might have been reused.
-        // The stop file is a courtesy; disable --now below is what stops the
-        // unit, so a stop file that cannot be written must not skip it. Its
-        // failure is kept and reported only if the cleanup fails later.
-        const ready = readyPath
-        if (ready !== undefined && existsSync(ready)) {
-          await withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop")).catch((error: unknown) => { failures.push(error) })
-        }
         const disabled = await systemctl(["--user", "disable", "--now", unit], cleanup)
         if (disabled.code !== 0) {
           const remaining = await systemctl(["--user", "show", unit, "--property=LoadState"], cleanup)

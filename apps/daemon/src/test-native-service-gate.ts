@@ -1,4 +1,4 @@
-import { runningInCi } from "../../vitest.global-setup.js"
+import { runningInCi } from "../vitest.global-setup.js"
 
 // The native service tests install real jobs into the account that runs them:
 // launchd agents in the gui domain, systemd user units, Windows scheduled tasks

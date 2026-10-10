@@ -6,10 +6,10 @@ import { setTimeout as delay } from "node:timers/promises"
 import { expect, it, vi } from "vitest"
 
 import type { OperationDeadline } from "../operation-deadline.js"
+import { nativeServiceTestsRun } from "../test-native-service-gate.js"
 import { waitForDaemon } from "../test-wait-for.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { removeService, serviceStatus } from "./install.js"
-import { nativeServiceTestsRun } from "./native-service-gate.test-support.js"
 import { cleanupBudget, lifecycleBudget, supervisionBudget, systemdConfigHome, systemdManagerAvailable, systemdProofRequired, withThrowawayUnit } from "./systemd-unit.test-support.js"
 
 const host = {

@@ -1,6 +1,6 @@
 import { expect, it } from "vitest"
 
-import { nativeServiceOptIn, nativeServiceTestsEnabled, nativeServiceTestsRun } from "./native-service-gate.test-support.js"
+import { nativeServiceOptIn, nativeServiceTestsEnabled, nativeServiceTestsRun } from "../test-native-service-gate.js"
 
 // The native service tests load real launchd, systemd and Windows scheduler
 // jobs into the account that runs them. These cases check only the predicate
