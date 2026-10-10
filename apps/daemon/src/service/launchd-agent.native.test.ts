@@ -331,13 +331,17 @@ async function withThrowawayAgent(
           // stop answering for the label rather than sampling it once. A
           // label that still answers is asked again, because a bootstrap still
           // in flight when the body's deadline fired lands after the first
-          // bootout, and waiting alone would leave that agent loaded.
+          // bootout, and waiting alone would leave that agent loaded. Only
+          // launchd naming the label as missing counts as retired: a print
+          // that fails any other way leaves the label possibly loaded.
           await withinServiceDeadline(cleanup, () => vi.waitFor(async () => {
             cleanup.throwIfExpired()
-            if ((await launchctl(["print", target], cleanup)).code === 0) {
+            const presence = presenceOf(await launchctl(["print", target], cleanup), label)
+            if (presence === "present") {
               await launchctl(["bootout", target], cleanup)
               throw new Error(`${target} is still loaded`)
             }
+            if (presence === "unknown") throw new Error(`launchd did not say whether ${target} is still loaded`)
           }, { timeout: 10_000, interval: 250 }))
           retired = true
         })
@@ -771,6 +775,29 @@ it("keeps the home and names the way out when the agent stays loaded", async () 
       home = throwaway.home
       await expect(throwaway.install(deadline)).rejects.toThrow()
     }, stuck.effects).then(() => undefined, (error: unknown) => error)
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect((failure as AggregateError).message).toContain(`run launchctl bootout ${attempted}, then remove ${home}`)
+    expect(home !== undefined && existsSync(home)).toBe(true)
+  } finally {
+    if (home !== undefined) await rm(home, { recursive: true, force: true })
+  }
+}, scriptedBudget + cleanupBudget + 1_000)
+
+it("keeps the home when launchd cannot say the agent is gone", async () => {
+  // A failed print is not absence: a manager that stops answering after the
+  // bootout may still hold the label, so only launchd naming the label as
+  // missing counts as retired.
+  const unreadable = scriptedManager((call, service) => (call === 1
+    ? notFound(service)
+    : { code: 1, stdout: "", stderr: "Bad request.\n" }), new Error("the scripted manager refused the bootstrap"))
+  let attempted: string | undefined
+  let home: string | undefined
+  try {
+    const failure = await withThrowawayAgent(scriptedBudget, async (throwaway, deadline) => {
+      attempted = throwaway.target
+      home = throwaway.home
+      await expect(throwaway.install(deadline)).rejects.toThrow()
+    }, unreadable.effects).then(() => undefined, (error: unknown) => error)
     expect(failure).toBeInstanceOf(AggregateError)
     expect((failure as AggregateError).message).toContain(`run launchctl bootout ${attempted}, then remove ${home}`)
     expect(home !== undefined && existsSync(home)).toBe(true)

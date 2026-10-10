@@ -436,9 +436,9 @@ unused, and only immediately before the bootstrap that can leave one behind, so 
 at the preflight asks launchd to retire nothing. Once armed, the bootout runs whatever failed
 before it, and a label that still answers is booted out again. The stop file the fixture watches
 has its own two-second slice of the cleanup budget, so a write that fails or never returns cannot
-skip the bootout. The throwaway home is removed last, and only once launchd no longer lists the
-label: a label still loaded keeps its script and stop file, so a relaunch finds the fixture rather
-than a missing file. The error keeps the test's own failure and, for a label that still answers,
+skip the bootout. The throwaway home is removed last, and only once launchd answers that it cannot
+find the label; a print that fails any other way counts as still loaded. A label still loaded
+keeps its script and stop file, so a relaunch finds the fixture rather than a missing file. The error keeps the test's own failure and, for a label that still answers,
 names the `launchctl bootout` command and the home to remove after it. The
 native tests run only on CI or with `DOMOVOI_NATIVE_SERVICE_TESTS=1`, decided before the domain
 probe, because a run killed before its cleanup leaves the agent loaded in the operator's own
