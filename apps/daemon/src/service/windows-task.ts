@@ -55,16 +55,22 @@ export function windowsSchtasksPath(): string {
   return win32.join(windowsSystemRoot(), "System32", "schtasks.exe")
 }
 
+// Values are data: PowerShell ends a single-quoted string at the smart quotes
+// ’ ‘ ‚ ‛ as well as at the ASCII apostrophe, so doubling the apostrophe alone
+// does not keep a value inside its string. Every value a script carries is
+// this expression, whose only literal is base64, never the value's own text.
+export const encodedValue = (value: string) => `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(value, "utf8").toString("base64")}'))`
+
 function taskCommand(executable: string, name: string, body: string): ServiceCommand {
   // PowerShell is only a bridge to the typed Task Scheduler API. No localized
   // schtasks output decides whether a process is stopped. Encode the script as
-  // UTF-16LE and quote the one literal, never interpolate a shell command line.
+  // UTF-16LE and pass the name as data, never interpolate a shell command line.
   const script = `
 $ErrorActionPreference = 'Stop'
 $scheduler = New-Object -ComObject 'Schedule.Service'
 $scheduler.Connect()
 $folder = $scheduler.GetFolder('\\')
-$name = '${name.replaceAll("'", "''")}'
+$name = ${encodedValue(name)}
 try { $task = $folder.GetTask($name) } catch {
   if ($_.Exception.GetBaseException().HResult -eq -2147024894) {
     [Console]::Out.WriteLine('domovoi-task:missing')
@@ -80,9 +86,6 @@ ${body}
   }
 }
 
-// Values are data: PowerShell also recognizes smart quotes as delimiters.
-const encodedValue = (value: string) => `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(value, "utf8").toString("base64")}'))`
-
 // Keep the quoted program shape schtasks stored, including when restoring a
 // task whose program Task Scheduler already reports in quotes.
 export function windowsTaskRegistrationCommand(name: string, user: string, action: { path: string; arguments: string }): ServiceCommand {
@@ -97,7 +100,7 @@ $ErrorActionPreference = 'Stop'
 $scheduler = New-Object -ComObject 'Schedule.Service'
 $scheduler.Connect()
 $folder = $scheduler.GetFolder('\\')
-$name = '${name}'
+$name = ${encodedValue(name)}
 $definition = $scheduler.NewTask(0)
 $definition.Principal.UserId = ${encodedValue(user)}
 $definition.Principal.LogonType = 3

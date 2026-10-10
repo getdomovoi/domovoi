@@ -11,7 +11,7 @@ import { removeScratchDirectory } from "../test-scratch.js"
 import { createServiceConfiguration } from "./configuration.js"
 import { stagedRuntimeCopy } from "./desktop-service.js"
 import { isDomovoiTaskAction, nodeServiceEffects, servicePlan, type ServiceCommand } from "./install.js"
-import { readWindowsTaskAction, removeWindowsTask, windowsPowerShellPath, windowsSchtasksPath, windowsTaskRegistrationCommand, windowsTaskRemovalPlan } from "./windows-task.js"
+import { encodedValue, readWindowsTaskAction, removeWindowsTask, windowsPowerShellPath, windowsSchtasksPath, windowsTaskRegistrationCommand, windowsTaskRemovalPlan } from "./windows-task.js"
 
 // Task 50: the installer registers its logon task through the Task Scheduler
 // COM API, the program and its arguments apart, instead of schtasks /create
@@ -30,9 +30,9 @@ const decode = (command: ServiceCommand) => Buffer.from(command.args.at(-1)!, "b
 // The installer's own registration, with only the task name redirected.
 const renamed = (command: ServiceCommand, name: string): ServiceCommand => {
   const script = decode(command)
-  const named = "$name = 'Domovoi daemon'"
+  const named = `$name = ${encodedValue("Domovoi daemon")}`
   if (!script.includes(named)) throw new Error("The registration does not name the Domovoi task")
-  return { command: command.command, args: [...command.args.slice(0, -1), Buffer.from(script.replace(named, `$name = '${name}'`), "utf16le").toString("base64")] }
+  return { command: command.command, args: [...command.args.slice(0, -1), Buffer.from(script.replace(named, `$name = ${encodedValue(name)}`), "utf16le").toString("base64")] }
 }
 const register = async (command: ServiceCommand, name: string, deadline: OperationDeadline) => {
   const named = renamed(command, name)
@@ -220,7 +220,7 @@ it.runIf(windowsNative)("registers a task program of 260 characters with its quo
     const longer = decode(windowsTaskRegistrationCommand("Domovoi daemon", userInfo().username, {
       path: runtime.replace("\\node.exe", "n\\node.exe"), arguments: `"${entry}" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"`,
     }))
-    const probe = { command: registration.command, args: [...registration.args.slice(0, -1), Buffer.from(longer.replace("$name = 'Domovoi daemon'", `$name = '${over}'`), "utf16le").toString("base64")] }
+    const probe = { command: registration.command, args: [...registration.args.slice(0, -1), Buffer.from(longer.replace(`$name = ${encodedValue("Domovoi daemon")}`, `$name = ${encodedValue(over)}`), "utf16le").toString("base64")] }
     const outcome = await effects.run(probe.command, probe.args, deadline).then(() => "accepted", (error: unknown) => `refused: ${String(error)}`)
     console.log(`[task program length] a 261 character Command with its quotes was ${outcome}`)
   } catch (error) {

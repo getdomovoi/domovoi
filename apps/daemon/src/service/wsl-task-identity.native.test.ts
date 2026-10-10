@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest"
 
 import { removeScratchDirectory } from "../test-scratch.js"
 import { windowsPowerShellPath } from "./windows-task.js"
-import { wslTaskPlan } from "./wsl-task.js"
+import { wslTaskPlan, type WslTaskTarget } from "./wsl-task.js"
 
 const run = promisify(execFile)
 
@@ -73,14 +73,14 @@ function New-Object {
 }
 `
 
-async function inspectInjectedTask(change: string, oldUserComparison = false) {
+async function inspectInjectedTask(change: string, oldUserComparison = false, target: Partial<WslTaskTarget> = {}) {
   const powershell = windowsPowerShellPath()
   const plan = wslTaskPlan({
     name: "Domovoi injected task",
     registrationId: "08a1f2da-12e3-4b2c-9e4f-0123456789ab",
     distribution: "injected-distribution", linuxUser: "fixture",
     executable: "/usr/bin/node", args: ["/fixture/daemon.js"],
-    powershell, wsl: "C:\\Windows\\System32\\wsl.exe",
+    powershell, wsl: "C:\\Windows\\System32\\wsl.exe", ...target,
   })
   let inspect = decode(plan.inspect.args)
   if (oldUserComparison) {
@@ -121,6 +121,16 @@ describe.runIf(process.platform === "win32")("WSL task ownership guard in Window
     // Console.Out bypasses Out-Null. Account for registration and inspection.
     expect((await inspectInjectedTask(change)).stdout.trim().split(/\r?\n/))
       .toEqual(["domovoi-task:created", "domovoi-task:3"])
+  }, testBudgetMs)
+
+  // PowerShell ends a single-quoted string at these smart quotes as well as at
+  // the ASCII apostrophe. Every value reaches the script as base64 data, so the
+  // registration and the ownership checks both still run on such values.
+  it("registers and inspects a task whose name, distribution, user and guest paths hold smart quotes", async () => {
+    expect((await inspectInjectedTask("", false, {
+      name: "Domovoi ’injected‘ task", distribution: "injected’distribution‚", linuxUser: "o’neil‛",
+      executable: "/usr/bin/o’node", args: ["/fixture/‘daemon’.js", "'$(touch nope)’"],
+    })).stdout.trim().split(/\r?\n/)).toEqual(["domovoi-task:created", "domovoi-task:3"])
   }, testBudgetMs)
 
   it.each([

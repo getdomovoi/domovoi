@@ -3,6 +3,7 @@ import { runDaemonCommand } from "../daemon-command.js"
 
 import { createServiceConfiguration, parseServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { runServiceCommand, servicePlan, type ServiceCommandDependencies } from "./install.js"
+import { windowsTaskData } from "./windows-task-test-support.js"
 
 const home = "/home/test"
 const registrationId = "12345678-1234-4123-8123-123456789abc"
@@ -318,8 +319,9 @@ describe("WSL service installation", () => {
     expect(plan.kind).toBe("task")
     expect(plan.commands.map((entry) => entry.command)).toEqual([wsl.powershell, wsl.powershell])
     const script = Buffer.from(plan.commands[0]!.args.at(-1)!, "base64").toString("utf16le")
-    expect(script).toContain("--service-supervise")
-    expect(script).toContain("--distribution Ubuntu --user test --exec")
+    const actionArguments = windowsTaskData(script, "$actionArguments")
+    expect(actionArguments).toContain("--service-supervise")
+    expect(actionArguments).toMatch(/^--distribution Ubuntu --user test --exec /)
     expect(script).toContain("$definition.Settings.RestartCount = 0")
     expect(script).toContain("$definition.Triggers.Create(9)")
   })

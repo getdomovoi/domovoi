@@ -1,7 +1,7 @@
 import { posix } from "node:path"
 
 import type { ServiceCommand } from "./install.js"
-import type { WindowsTaskRemovalPlan } from "./windows-task.js"
+import { encodedValue, type WindowsTaskRemovalPlan } from "./windows-task.js"
 
 export type WslTaskTarget = {
   name: string
@@ -26,7 +26,6 @@ export type WslTaskPlan = {
   removal: WindowsTaskRemovalPlan
 }
 
-const literal = (value: string) => "'" + value.replaceAll("'", "''") + "'"
 const invalidText = (value: string) => [...value].some((character) => character < " " || character === "\x7f")
 const windowsAbsolute = (value: string) => /^[A-Za-z]:[\\/]/.test(value)
 const state = "[Console]::Out.WriteLine('domovoi-task:' + [int]$task.State)"
@@ -58,15 +57,19 @@ export function wslTaskPlan(target: WslTaskTarget): WslTaskPlan {
   const prefix = ["--distribution", target.distribution, "--user", target.linuxUser, "--exec"].join(" ")
   const args = prefix + " " + [target.executable, ...target.args].map(argument).join(" ")
   if (args.length > 16_384) throw new Error("WSL task action arguments exceed 16 Ki UTF-16 code units")
-  const source = literal("domovoi-wsl:" + target.registrationId)
-  const actionPath = literal(target.wsl)
-  const actionArgs = literal(args)
+  // Every value enters the script as UTF-8 base64 data, once, in the part
+  // every command shares. A quoted literal is not enough: PowerShell ends a
+  // single-quoted string at ’ ‘ ‚ ‛ as well as at the ASCII apostrophe, and the
+  // distribution, the Linux user and the guest paths are all in the arguments.
   const common = `
 $ErrorActionPreference = 'Stop'
 $scheduler = New-Object -ComObject 'Schedule.Service'
 $scheduler.Connect()
 $folder = $scheduler.GetFolder('\\')
-$name = ${literal(target.name)}
+$name = ${encodedValue(target.name)}
+$taskSource = ${encodedValue("domovoi-wsl:" + target.registrationId)}
+$actionPath = ${encodedValue(target.wsl)}
+$actionArguments = ${encodedValue(args)}
 $currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
 $ownerSid = $currentUserSid.Value
 `
@@ -85,7 +88,7 @@ try { $task = $folder.GetTask($name) } catch {
   }
   throw
 }
-if ($task.Definition.RegistrationInfo.Source -cne ${source}) { throw 'WSL task ownership mismatch: Source' }
+if ($task.Definition.RegistrationInfo.Source -cne $taskSource) { throw 'WSL task ownership mismatch: Source' }
 # Task Scheduler may return an account name instead of the registered SID.
 try {
   try { $taskUserSid = [System.Security.Principal.SecurityIdentifier]::new([string]$task.Definition.Principal.UserId) }
@@ -99,8 +102,8 @@ if ([int]$task.Definition.Principal.RunLevel -ne 0) { throw 'WSL task ownership 
 if ($task.Definition.Actions.Count -ne 1) { throw 'WSL task ownership mismatch: action count' }
 $action = $task.Definition.Actions.Item(1)
 if ([int]$action.Type -ne 0) { throw 'WSL task ownership mismatch: action type' }
-if ($action.Path -cne ${actionPath}) { throw 'WSL task ownership mismatch: action path' }
-if ($action.Arguments -cne ${actionArgs}) { throw 'WSL task ownership mismatch: action args' }
+if ($action.Path -cne $actionPath) { throw 'WSL task ownership mismatch: action path' }
+if ($action.Arguments -cne $actionArguments) { throw 'WSL task ownership mismatch: action args' }
 `
   const inspect = command(owned + state)
   const plan: WslTaskPlan = {
@@ -108,7 +111,7 @@ if ($action.Arguments -cne ${actionArgs}) { throw 'WSL task ownership mismatch: 
     action: { path: target.wsl, arguments: args },
     register: command(`
 $definition = $scheduler.NewTask(0)
-$definition.RegistrationInfo.Source = ${source}
+$definition.RegistrationInfo.Source = $taskSource
 $definition.RegistrationInfo.Description = 'Domovoi WSL daemon at user logon. No Windows boot supervision.'
 $definition.Principal.UserId = $ownerSid
 $definition.Principal.LogonType = 3
@@ -127,8 +130,8 @@ $definition.Settings.StopIfGoingOnBatteries = $false
 $definition.Settings.RunOnlyIfIdle = $false
 $definition.Settings.RunOnlyIfNetworkAvailable = $false
 $action = $definition.Actions.Create(0)
-$action.Path = ${actionPath}
-$action.Arguments = ${actionArgs}
+$action.Path = $actionPath
+$action.Arguments = $actionArguments
 $null = $folder.RegisterTaskDefinition($name, $definition, 2, $ownerSid, $null, 3, $null)
 [Console]::Out.WriteLine('domovoi-task:created')
 `),
