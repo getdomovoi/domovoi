@@ -20,28 +20,40 @@ import {
 // suspends again, and registers both mocks afresh: vi.resetModules keeps what
 // a mock factory returned, so a mock registered once for the file would hold
 // back only the first open, and each later test would race the cached code.
-type HeldChunk = { ready: Promise<void>, release: () => void, requested: boolean }
+type HeldChunk = {
+  ready: Promise<void>
+  release: () => void
+  // Settles once the shell has asked for the code, which can take a few
+  // turns after the open: the import goes through the module runner first.
+  requested: Promise<void>
+  request: () => void
+  ended: boolean
+}
 
 function held(): HeldChunk {
   let release = () => {}
   const ready = new Promise<void>((resolve) => { release = resolve })
-  return { ready, release, requested: false }
+  let request = () => {}
+  const requested = new Promise<void>((resolve) => { request = resolve })
+  return { ready, release, requested, request, ended: false }
 }
 
 const chunks = { palette: held(), launcher: held() }
 
-// Loads a test let through without waiting for them. Each one settles before
-// the next test registers its mocks, so a late one cannot fill the new mock in.
-let loads: Promise<unknown>[] = []
-
 function heldBack(chunk: HeldChunk) {
   return async (importOriginal: () => Promise<unknown>) => {
-    chunk.requested = true
-    const load = chunk.ready.then(importOriginal)
-    loads.push(load)
-    return load
+    chunk.request()
+    await chunk.ready
+    const actual = await importOriginal()
+    // A load that lands after its test has ended never settles, so it cannot
+    // fill in the mock the next test registers.
+    return chunk.ended ? new Promise<never>(() => {}) : actual
   }
 }
+
+// Waits until the open has asked for the held code, so a check on the
+// stand-in cannot pass or fail on how fast the import is dispatched.
+const requested = (chunk: HeldChunk) => act(async () => { await chunk.requested })
 
 let harness: FakeWebSocketHarness
 
@@ -59,15 +71,14 @@ beforeEach(() => {
 })
 
 afterEach(async () => {
-  chunks.palette.release()
-  chunks.launcher.release()
+  chunks.palette.ended = true
+  chunks.launcher.ended = true
   cleanup()
   harness.uninstall()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
-  await Promise.allSettled(loads)
-  loads = []
-  // The mock records a load a few promise turns after the load itself.
+  // A load that returned just before the test ended is recorded by the mock
+  // a few promise turns later; let that finish before the next registration.
   await new Promise((resolve) => setTimeout(resolve, 0))
 })
 
@@ -170,7 +181,7 @@ it("lets a launcher opened before its code arrives be closed, and keeps it close
   await user.click(opener)
   await settle()
 
-  expect(chunks.launcher.requested).toBe(true)
+  await requested(chunks.launcher)
   const loading = screen.getByRole("dialog", { name: "Start a session" })
   expect(loading.getAttribute("aria-busy")).toBe("true")
   expect(loading.contains(document.activeElement)).toBe(true)
@@ -194,7 +205,7 @@ it("lets a palette opened before its code arrives be closed, and keeps it closed
   await user.keyboard("{Control>}k{/Control}")
   await settle()
 
-  expect(chunks.palette.requested).toBe(true)
+  await requested(chunks.palette)
   const loading = screen.getByRole("dialog", { name: "Domovoi commands" })
   expect(loading.getAttribute("aria-busy")).toBe("true")
   expect(loading.contains(document.activeElement)).toBe(true)
@@ -215,7 +226,7 @@ it("replaces the loading launcher with the launcher once its code arrives", asyn
   const user = userEvent.setup()
   await user.click(screen.getByRole("button", { name: "New session" }))
   await settle()
-  expect(chunks.launcher.requested).toBe(true)
+  await requested(chunks.launcher)
   expect(screen.getByRole("dialog", { name: "Start a session" }).getAttribute("aria-busy")).toBe("true")
 
   await arrive(chunks.launcher)
@@ -238,7 +249,7 @@ it("replaces the loading palette with the palette once its code arrives", async 
   opener.focus()
   await user.keyboard("{Control>}k{/Control}")
   await settle()
-  expect(chunks.palette.requested).toBe(true)
+  await requested(chunks.palette)
   expect(screen.getByRole("dialog", { name: "Domovoi commands" }).getAttribute("aria-busy")).toBe("true")
 
   await arrive(chunks.palette)
