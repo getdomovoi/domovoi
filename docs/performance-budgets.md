@@ -35,7 +35,7 @@ daemon-ready milestones plus main-process RSS. Interpret it as local diagnostic 
 
 | Surface | Alpha budget | Stable gate |
 | --- | --- | --- |
-| Startup | Web JS 1,290,000 startup bytes and 400,000 lazy bytes; web CSS 128,000; desktop renderer JS 1,290,000 startup bytes and 400,000 lazy bytes; renderer CSS 128,000; main 44,544; preload 10,752 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
+| Startup | Web JS 1,290,000 startup bytes and 400,000 lazy bytes; web CSS 136,000; desktop renderer JS 1,290,000 startup bytes and 400,000 lazy bytes; renderer CSS 136,000; main 44,544; preload 10,752 | Startup graph measured from the built `index.html` entry and `modulepreload` links, lazy chunks reported separately; desktop creates its hidden window before awaiting daemon startup and records bounded milestones |
 | Memory | 100 thread items in a client snapshot; 200 retained history items; 65,536 terminal replay characters | Active-session snapshot window, bounded history merge/DOM, bounded terminal replay |
 | Long threads | 100 snapshot/rendered items; 100 items per history page; 32,768 Markdown characters and 500 lines per item | Durable history remains daemon-owned and pageable; client and quick-view tests enforce windows |
 | Terminal throughput | 65,536 characters per notification; 16 ms batching; WebSocket pause/resume at 1,048,576/262,144 buffered bytes | Fake-clock batching and backpressure tests plus protocol payload validation; bytes remain ordered and lossless |
@@ -48,6 +48,12 @@ screens add more utility classes and a ceiling that fails on the next screen tea
 were raised again to 128,000 on 2026-10-01 for the rest of the desktop chrome pass, after the
 titlebar slice measured the web sheet at 123,931. If a measurement approaches it again, check what
 is unused before raising it further.
+
+Both were raised to 136,000 on 2026-10-09, by maintainer decision. The S3.10 design slices had
+taken the web sheet to 127,830 and the renderer sheet to 126,673. Two slices had already dropped
+drawn details to fit (the approval card's amber halo and its expanding ring), and the remaining
+approved slices, including the terminal pane's release, claim time and resize states, add more
+utility classes.
 
 The startup JavaScript budgets, web and desktop renderer, were 1,250,000 until 2026-10-01. The
 production dependency batch (#678) left the web entry at 1,248,657 bytes, and the multi-project
