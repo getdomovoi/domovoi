@@ -1198,7 +1198,8 @@ launchctl bootout gui/$(id -u)/sh.domovoi.domovoid.native-test-<uuid>
 
 Read the job's `path` with `launchctl print gui/$(id -u)/<label>` before the bootout. Its
 throwaway home is the `domovoi-launchd-` directory under `$TMPDIR` above `Library/LaunchAgents` in
-that path. Remove that directory only after `launchctl print` no longer answers for the label.
+that path. Remove that directory only after `launchctl print` says it could not find the label; any
+other failure from it does not show that the job is gone.
 
 A leftover systemd unit is `domovoi-native-test-<uuid>.service`; remove it with
 `systemctl --user disable --now <unit>` and `systemctl --user reset-failed <unit>`.
