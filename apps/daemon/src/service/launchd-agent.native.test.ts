@@ -13,6 +13,7 @@ import { waitForDaemon } from "../test-wait-for.js"
 import { createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { installService, nodeServiceEffects, removeService, serviceStatus, type CapturedRun, type ServiceEffects, type ServicePlan } from "./install.js"
+import { nativeServiceTestsRun, runningInCi } from "./native-service-gate.test-support.js"
 
 const lifecycleBudget = 60_000
 const supervisionBudget = 90_000
@@ -49,11 +50,6 @@ function classifyDomainProbe(probe: Pick<SpawnSyncReturns<string>, "error" | "si
   return { reachable: true, detail: `${domain} answered` }
 }
 
-function runningInCi(environment: NodeJS.ProcessEnv): boolean {
-  const flag = environment.CI
-  return flag !== undefined && flag !== "" && flag !== "0" && flag.toLowerCase() !== "false"
-}
-
 // CI is fail loud; a developer machine is not. This file is the only native
 // macOS proof there is, and a skipped test reports exactly like a passing one,
 // so an unreachable domain on the macOS CI leg throws with the reason the probe
@@ -70,7 +66,11 @@ function domainGate(environment: { platform: string; ci: boolean }, probe: Domai
   return false
 }
 
-const domainReachable = domainGate(
+// The two native tests below load a real agent into the gui domain of whoever
+// runs them, and an interrupted run leaves it loaded there. They run on CI and,
+// on a developer machine, only with DOMOVOI_NATIVE_SERVICE_TESTS=1. The gate is
+// decided before the domain probe, so a skipped run asks launchd nothing.
+const domainReachable = nativeServiceTestsRun("launchd", () => domainGate(
   { platform: process.platform, ci: runningInCi(process.env) },
   process.platform === "darwin" && uid >= 0
     ? classifyDomainProbe(spawnSync("launchctl", ["print", domain], {
@@ -80,7 +80,7 @@ const domainReachable = domainGate(
       killSignal: "SIGKILL",
     }))
     : { reachable: false, detail: `${process.platform} has no per-user launchd domain for uid ${uid}` },
-)
+))
 
 // The throwaway agent's own names. `agentPath` is absent until the throwaway
 // home exists, and while it is absent no bootstrap is a command this test may

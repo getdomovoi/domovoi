@@ -18,7 +18,9 @@ export { runningInCi }
 export function nativeServiceTestsEnabled(
   manager: string,
   environment: NodeJS.ProcessEnv = process.env,
-  print: (line: string) => void = (line) => console.warn(line),
+  // Straight to stderr: this suite's runs do not show console output, and a
+  // reason nobody sees is no better than a silent skip.
+  print: (line: string) => void = (line) => { process.stderr.write(`${line}\n`) },
 ): boolean {
   if (runningInCi(environment) || environment[nativeServiceOptIn] === "1") return true
   print(`Skipping the native ${manager} tests: they load real ${manager} jobs into this account, so they run only on CI. `
