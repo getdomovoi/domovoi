@@ -1,8 +1,9 @@
-import { readFile, readdir } from "node:fs/promises"
-import { join } from "node:path"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import { Worker } from "node:worker_threads"
 
-import ts from "typescript"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   daemonWaitTimeoutMs, fixtureStartupTimeoutMs, productionRpcTimeoutMs, waitForDaemon, waitForFixtureStartup,
@@ -122,45 +123,109 @@ describe("daemon assertion waits", () => {
   })
 
   it("requires every direct vi.waitFor in the daemon suite to name a positive timeout", async () => {
-    const offenders: string[] = []
-    const entries = await readdir(import.meta.dirname, { recursive: true })
-    for (const entry of entries.filter((path) => path.endsWith(".test.ts"))) {
-      const path = join(import.meta.dirname, entry)
-      const text = await readFile(path, "utf8")
-      // Parsing every file under coverage outgrew the 5 s Linux budget. A call
-      // named waitFor needs the whole word in the text, or a \u escape that
-      // spells it, so any other file cannot hold an offender and skips the parse.
-      if (/\bwaitFor\b/.test(text) === false && text.includes("\\u") === false) continue
-      const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest)
-      const visit = (node: ts.Node) => {
-        if (
-          ts.isCallExpression(node)
-          && ts.isPropertyAccessExpression(node.expression)
-          && node.expression.expression.getText(source) === "vi"
-          && node.expression.name.text === "waitFor"
-        ) {
-          const options = node.arguments[1]
-          const timeout = options && ts.isObjectLiteralExpression(options)
-            ? options.properties.find((property) => (
-              ts.isPropertyAssignment(property) && property.name.getText(source) === "timeout"
-            ))
-            : undefined
-          const value = timeout && ts.isPropertyAssignment(timeout) ? timeout.initializer : options
-          if (
-            value === undefined
-            || ts.isNumericLiteral(value) === false
-            || Number.isFinite(Number(value.text)) === false
-            || Number(value.text) <= 0
-          ) {
-            const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1
-            offenders.push(`${entry.replaceAll("\\", "/")}:${line}`)
-          }
-        }
-        ts.forEachChild(node, visit)
-      }
-      visit(source)
-    }
+    const { offenders, parsed } = await scanWaitForTimeouts(import.meta.dirname)
 
     expect(offenders).toEqual([])
+    // This file names waitFor, so a scan that read the wrong tree cannot pass.
+    expect(parsed).toContain("test-wait-for.test.ts")
   })
 })
+
+describe("daemon waitFor timeout scan", () => {
+  let root: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "domovoi-wait-for-scan-"))
+  })
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  async function write(path: string, text: string) {
+    await mkdir(dirname(join(root, path)), { recursive: true })
+    await writeFile(join(root, path), text)
+  }
+
+  it("names each direct vi.waitFor without a positive literal timeout", async () => {
+    await write("bare.test.ts", "await vi.waitFor(() => {})\n")
+    await write("zero.test.ts", "\nawait vi.waitFor(() => {}, { timeout: 0 })\n")
+    await write("negative.test.ts", "await vi.waitFor(() => {}, -1)\n")
+    await write("variable.test.ts", "const timeout = 100\nawait vi.waitFor(() => {}, { timeout })\n")
+    await write("nested/deeper/interval.test.ts", "await vi.waitFor(() => {}, { interval: 10 })\n")
+    await write("bounded.test.ts", "await vi.waitFor(() => {}, { timeout: 2_000 })\nawait vi.waitFor(() => {}, 500)\n")
+    await write("helper.ts", "await vi.waitFor(() => {})\n")
+
+    const { offenders } = await scanWaitForTimeouts(root)
+
+    expect(offenders.sort()).toEqual([
+      "bare.test.ts:1",
+      "negative.test.ts:1",
+      "nested/deeper/interval.test.ts:1",
+      "variable.test.ts:2",
+      "zero.test.ts:2",
+    ])
+  })
+
+  it("finds a waitFor property spelled with unicode escapes", async () => {
+    await write("four.test.ts", "await vi.wait\\u0046or(() => {})\n")
+    await write("braced.test.ts", "await vi.\\u{77}aitFor(() => {})\n")
+
+    const { offenders } = await scanWaitForTimeouts(root)
+
+    expect(offenders.sort()).toEqual(["braced.test.ts:1", "four.test.ts:1"])
+  })
+
+  // TypeScript 5.9 can drop identifier text before a braced escape: it reads
+  // this name as waitFor although decoding the text gives wJUNKaitFor.
+  it("finds a name TypeScript reads as waitFor across a braced escape", async () => {
+    await write("dropped.test.ts", "await vi.\\u0077JUNK\\u{61}itFor(() => {})\n")
+
+    const { offenders } = await scanWaitForTimeouts(root)
+
+    expect(offenders).toEqual(["dropped.test.ts:1"])
+  })
+
+  // Parsing is most of the cost of the scan, so a file that cannot name waitFor
+  // even after its escapes are decoded must not reach the parser.
+  it("parses only files whose decoded text can name waitFor", async () => {
+    await write("escaped-string.test.ts", "expect(label).toBe(\"caf\\u00e9\")\n")
+    await write("plain.test.ts", "expect(1).toBe(1)\n")
+    await write("caller.test.ts", "await vi.waitFor(() => {}, 100)\n")
+
+    const { offenders, parsed } = await scanWaitForTimeouts(root)
+
+    expect(offenders).toEqual([])
+    expect(parsed.sort()).toEqual(["caller.test.ts"])
+  })
+
+  it("fails when the scan cannot read the suite", async () => {
+    await expect(scanWaitForTimeouts(join(root, "missing"))).rejects.toThrow("ENOENT")
+  })
+})
+
+// Lists every direct vi.waitFor call in the *.test.ts files under root whose
+// timeout is not a positive numeric literal, and the files it had to parse.
+// The scan runs on a worker thread; test-fixtures/wait-for-scan.mjs says why.
+async function scanWaitForTimeouts(root: string) {
+  const worker = new Worker(new URL("../test-fixtures/wait-for-scan.mjs", import.meta.url), { workerData: { root } })
+  try {
+    const report = await new Promise<unknown>((resolve, reject) => {
+      worker.once("message", resolve)
+      worker.once("error", reject)
+      worker.once("exit", (code) => reject(new Error(`The waitFor scan exited with code ${code} before it reported`)))
+    })
+    if (isScanReport(report) === false) throw new Error("The waitFor scan sent a report of an unknown shape")
+    return report
+  } finally {
+    await worker.terminate()
+  }
+}
+
+function isScanReport(value: unknown): value is { offenders: string[], parsed: string[] } {
+  if (typeof value !== "object" || value === null) return false
+  const { offenders, parsed } = value as Record<string, unknown>
+  return [offenders, parsed].every((list) => (
+    Array.isArray(list) && list.every((item) => typeof item === "string")
+  ))
+}
