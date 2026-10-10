@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest"
 
+import { windowsTaskData } from "./windows-task-test-support.js"
 import { wslTaskPlan } from "./wsl-task.js"
 
 const input = {
@@ -34,9 +35,11 @@ describe("Windows supervision of a WSL daemon", () => {
   it("keeps wsl.exe in the action with an explicit guest user and executable", () => {
     const plan = wslTaskPlan(input)
     const body = script(plan.register.args)
-    expect(body).toContain("$action.Path = 'C:\\Windows\\System32\\wsl.exe'")
-    expect(body).toContain("--distribution Ubuntu-test''s-distro --user alice --exec \"/opt/domovoi/bin/node\"")
-    expect(body).toContain("\"/home/alice/repo $HOME/daemon.js\"")
+    expect(body).toContain("$action.Path = $actionPath")
+    expect(windowsTaskData(body, "$actionPath")).toBe("C:\\Windows\\System32\\wsl.exe")
+    const actionArguments = windowsTaskData(body, "$actionArguments")
+    expect(actionArguments).toContain("--distribution Ubuntu-test's-distro --user alice --exec \"/opt/domovoi/bin/node\"")
+    expect(actionArguments).toContain("\"/home/alice/repo $HOME/daemon.js\"")
     expect(body).not.toContain("Start-Process")
     expect(body).not.toContain("cmd.exe")
     expect(body).not.toContain("sh -c")
@@ -47,7 +50,8 @@ describe("Windows supervision of a WSL daemon", () => {
     expect(plan.action).toEqual({ path: input.wsl,
       arguments: '--distribution Ubuntu-test\'s-distro --user alice --exec "/opt/domovoi/bin/node" '
         + '"/home/alice/repo $HOME/daemon.js" "--service-config" "/home/alice/.domovoi/service.json"' })
-    expect(script(plan.register.args)).toContain("$action.Arguments = '" + plan.action.arguments.replaceAll("'", "''") + "'")
+    expect(script(plan.register.args)).toContain("$action.Arguments = $actionArguments")
+    expect(windowsTaskData(script(plan.register.args), "$actionArguments")).toBe(plan.action.arguments)
   })
 
   it("leaves retries to the guest loop without a runtime or battery stop", () => {
@@ -64,7 +68,7 @@ describe("Windows supervision of a WSL daemon", () => {
     const plan = wslTaskPlan(input)
     for (const command of [plan.start, plan.disable, plan.inspect, plan.removal.stop, plan.removal.inspect, plan.removal.remove]) {
       const body = script(command.args)
-      expect(body).toContain("domovoi-wsl:08a1f2da-12e3-4b2c-9e4f-0123456789ab")
+      expect(windowsTaskData(body, "$taskSource")).toBe("domovoi-wsl:08a1f2da-12e3-4b2c-9e4f-0123456789ab")
       expect(body).toContain("$task.Definition.Actions.Count -ne 1")
       expect(body).toContain("$action.Arguments -cne")
       expect(body).toContain("$taskUserSid.Equals($currentUserSid)")
@@ -77,13 +81,13 @@ describe("Windows supervision of a WSL daemon", () => {
   })
 
   it.each([
-    { term: "Source", condition: "$task.Definition.RegistrationInfo.Source -cne 'domovoi-wsl:08a1f2da-12e3-4b2c-9e4f-0123456789ab'" },
+    { term: "Source", condition: "$task.Definition.RegistrationInfo.Source -cne $taskSource" },
     { term: "UserId", condition: "-not $taskUserSid.Equals($currentUserSid)" },
     { term: "LogonType", condition: "[int]$task.Definition.Principal.LogonType -ne 3" },
     { term: "RunLevel", condition: "[int]$task.Definition.Principal.RunLevel -ne 0" },
     { term: "action count", condition: "$task.Definition.Actions.Count -ne 1" },
     { term: "action type", condition: "[int]$action.Type -ne 0" },
-    { term: "action path", condition: "$action.Path -cne 'C:\\Windows\\System32\\wsl.exe'" },
+    { term: "action path", condition: "$action.Path -cne $actionPath" },
     { term: "action args", condition: "$action.Arguments -cne" },
   ])("names $term in its own refusal before any task mutation", ({ term, condition }) => {
     const plan = wslTaskPlan(input)
@@ -102,7 +106,26 @@ describe("Windows supervision of a WSL daemon", () => {
 
   it("quotes literal Windows argv without shell expansion or trailing-backslash loss", () => {
     const body = script(wslTaskPlan({ ...input, args: ["a\"b", "tail\\", "'$(touch nope)"] }).register.args)
-    expect(body).toContain("\"a\\\"b\" \"tail\\\\\" \"''$(touch nope)\"")
+    expect(windowsTaskData(body, "$actionArguments")).toContain("\"a\\\"b\" \"tail\\\\\" \"'$(touch nope)\"")
+  })
+
+  // PowerShell ends a single-quoted string at ’ ‘ ‚ ‛ as well as at the ASCII
+  // apostrophe, so doubling only the apostrophe let a smart quote end it.
+  it("passes the name, distribution, user and guest paths with smart quotes only as UTF-8 base64 data", () => {
+    const target = { ...input, name: "Domovoi WSL ’ test", distribution: "Ubuntu’;throw‘x", linuxUser: "o’neil‚‛",
+      executable: "/opt/o’neil/node", args: ["/home/o’neil/daemon.js", "‘$(touch nope)’"], wsl: "C:\\Users\\O’Neil\\wsl.exe" }
+    const plan = wslTaskPlan(target)
+    expect(plan.action.arguments).toBe("--distribution Ubuntu’;throw‘x --user o’neil‚‛ --exec \"/opt/o’neil/node\" "
+      + "\"/home/o’neil/daemon.js\" \"‘$(touch nope)’\"")
+    for (const command of [plan.register, plan.start, plan.disable, plan.inspect, plan.removal.stop, plan.removal.remove]) {
+      const body = script(command.args)
+      expect(windowsTaskData(body, "$name")).toBe(target.name)
+      expect(windowsTaskData(body, "$taskSource")).toBe("domovoi-wsl:" + target.registrationId)
+      expect(windowsTaskData(body, "$actionPath")).toBe(target.wsl)
+      expect(windowsTaskData(body, "$actionArguments")).toBe(plan.action.arguments)
+      expect(body).not.toMatch(/[‘’‚‛]/u)
+      expect(body).not.toContain("throw‘x")
+    }
   })
 
   it("bounds the encoded PowerShell command as well as the guest argv", () => {

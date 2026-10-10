@@ -7,6 +7,7 @@ import { createServiceConfiguration, type ServiceConfiguration } from "./configu
 import { nodeServiceEffects, removeService, runServiceCommand, type ServiceEffects } from "./install.js"
 import { ServiceOperationBusyError } from "./operation-lease.js"
 import { windowsTaskRemovalPlan } from "./windows-task.js"
+import { windowsTaskData } from "./windows-task-test-support.js"
 
 beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
 afterEach(() => { vi.unstubAllEnvs() })
@@ -359,14 +360,15 @@ describe("Task Scheduler command boundary", () => {
     },
   )
 
-  it("uses a noninteractive encoded script and quotes task names as data", () => {
+  it("uses a noninteractive encoded script and passes task names as data", () => {
     const name = "a'; throw 'not a command"
     const plan = windowsTaskRemovalPlan(name)
     for (const command of [plan.stop, plan.inspect, plan.remove]) {
       expect(command.command).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")
       expect(command.args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
       const script = Buffer.from(command.args.at(-1)!, "base64").toString("utf16le")
-      expect(script).toContain("$name = 'a''; throw ''not a command'")
+      expect(windowsTaskData(script, "$name")).toBe(name)
+      expect(script).not.toContain("not a command")
       expect(script).toContain("$ErrorActionPreference = 'Stop'")
       expect(script).toContain(".HResult -eq -2147024894")
       expect(script).not.toContain("-ExecutionPolicy")
@@ -376,6 +378,19 @@ describe("Task Scheduler command boundary", () => {
     expect(stop).toContain(".HResult -ne -2147216629")
     const remove = Buffer.from(plan.remove.args.at(-1)!, "base64").toString("utf16le")
     expect(remove.indexOf("if ([int]$task.State -ne 1)")).toBeLessThan(remove.indexOf("$folder.DeleteTask($name, 0)"))
+  })
+
+  // PowerShell ends a single-quoted string at ’ ‘ ‚ ‛ as well as at the ASCII
+  // apostrophe, so doubling only the apostrophe let a smart quote end it.
+  it("passes a task name with smart quotes only as UTF-8 base64 data", () => {
+    const name = "a’; throw ‘not a command‚ ‛'"
+    const plan = windowsTaskRemovalPlan(name)
+    for (const command of [plan.disable!, plan.stop, plan.inspect, plan.remove]) {
+      const script = Buffer.from(command.args.at(-1)!, "base64").toString("utf16le")
+      expect(windowsTaskData(script, "$name")).toBe(name)
+      expect(script).not.toContain("not a command")
+      expect(script).not.toMatch(/[‘’‚‛]/u)
+    }
   })
 })
 

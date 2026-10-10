@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { windowsTaskRegistrationCommand } from "./windows-task.js"
+import { windowsTaskData } from "./windows-task-test-support.js"
 
 beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
 afterEach(() => { vi.unstubAllEnvs() })
@@ -21,7 +22,7 @@ it("round-trips untrusted registration values only through UTF-8 base64 data", (
     expect(script).not.toContain(expected)
   }
   expect(script).not.toContain(value)
-  expect(script).toContain("$name = 'Domovoi daemon'")
+  expect(windowsTaskData(script, "$name")).toBe("Domovoi daemon")
   expect(script).toContain("$folder.RegisterTaskDefinition($name, $definition, 6, $user, $null, 3, $null)")
 })
 

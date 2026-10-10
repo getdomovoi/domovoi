@@ -250,7 +250,7 @@ describe("servicePlan", () => {
     const plan = servicePlan(windows)
     expect(plan.kind).toBe("task")
     const script = windowsScriptOf(plan.commands[0]!)
-    expect(script).toContain("$name = 'Domovoi daemon'")
+    expect(windowsTaskData(script, "$name")).toBe("Domovoi daemon")
     expect(windowsTaskData(script, "$definition.Principal.UserId")).toBe("dl")
     // TASK_LOGON_INTERACTIVE_TOKEN (3) and TASK_RUNLEVEL_LUA (0), never highest.
     expect(script).toContain("$definition.Principal.LogonType = 3")

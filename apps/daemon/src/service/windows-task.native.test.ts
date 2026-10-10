@@ -12,7 +12,7 @@ import { readLocalOwnerRecord } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { createServiceConfiguration, parseServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { installService, nodeServiceEffects, removeService, runServiceCommand, serviceStatus, type ServiceCommand, type ServiceEffects } from "./install.js"
-import { disableWindowsTask, stopWindowsTask, windowsPowerShellPath, windowsSchtasksPath, windowsTaskRemovalPlan } from "./windows-task.js"
+import { disableWindowsTask, encodedValue, stopWindowsTask, windowsPowerShellPath, windowsSchtasksPath, windowsTaskRemovalPlan } from "./windows-task.js"
 import { updateDaemonService } from "./desktop-service.js"
 import { readSupervisorStopRequest, readWindowsSupervisorRecord, type WindowsSupervisorRecord } from "./supervisor-record.js"
 import { stopWindowsSupervisor } from "./windows-job-supervisor.js"
@@ -23,7 +23,6 @@ import { removeScratchDirectory } from "../test-scratch.js"
 // No test speed knob is exposed in the production configuration.
 const lifecycleBudget = 180_000
 const cleanupBudget = 60_000
-const literal = (value: string) => `'${value.replaceAll("'", "''")}'`
 const powershell = (script: string): ServiceCommand => ({ command: windowsPowerShellPath(),
   args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")] })
 
@@ -107,9 +106,9 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
     }
     if (command !== windowsPowerShellPath()) throw new Error("Unexpected manager command")
     const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-    const named = `$name = ${literal("Domovoi daemon")}`
+    const named = `$name = ${encodedValue("Domovoi daemon")}`
     if (!script.includes(named)) throw new Error("Refusing a command outside the UUID task")
-    return powershell(script.replace(named, `$name = ${literal(name)}`))
+    return powershell(script.replace(named, `$name = ${encodedValue(name)}`))
   }
   const scoped: ServiceEffects = { ...effects,
     capture: (command, args, active) => capture(renamed({ command, args }), active),
