@@ -473,6 +473,45 @@ describe("App", () => {
     expect(screen.getByText("1 open annotation was over the per-turn limit")).toBeOnTheScreen()
   })
 
+  // #781: heartbeat times are the daemon's. A phone whose clock is two hours
+  // ahead would call a machine heard from five minutes ago silent for two
+  // hours, so the age is measured by the daemonTime of the snapshot that
+  // carried the heartbeat, on the list and on a pushed fleet alike.
+  it("ages a machine's last heartbeat by the daemon's clock", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("tab", { name: "Machines" }))
+    await settle()
+    const daemonNow = Date.now() - 2 * 60 * 60_000
+    // Half a minute of slack: the screen's clock ticks every 30 s, so it can
+    // read a little before the snapshot arrived.
+    const remote = (label: string, minutesAgo: number) => ({
+      kind: "machine",
+      machine: {
+        id: `machine-${"c".repeat(32)}`, label, platform: "linux", arch: "x64", version: "0.0.1", connection: "tailnet",
+        capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
+        heartbeat: { state: "offline", lastSeenAt: new Date(daemonNow - (minutesAgo + 0.5) * 60_000).toISOString() }, health: "unreachable", self: false,
+      },
+    })
+    await act(async () => {
+      socket.answer("fleet.list", { entries: [remote("wsl", 5)], daemonTime: new Date(daemonNow).toISOString() })
+    })
+    await settle()
+    expect(screen.getByText("wsl cannot be reached. Last seen 5m ago.")).toBeOnTheScreen()
+
+    await act(async () => {
+      socket.push("fleet.changed", { entries: [remote("wsl", 7)], daemonTime: new Date(daemonNow).toISOString() })
+    })
+    await settle()
+    expect(screen.getByText("wsl cannot be reached. Last seen 7m ago.")).toBeOnTheScreen()
+
+    // A daemon from before daemonTime: the phone's own clock, as before.
+    await act(async () => {
+      socket.push("fleet.changed", { entries: [remote("wsl", 7)] })
+    })
+    await settle()
+    expect(screen.getByText("wsl cannot be reached. Last seen 2h ago.")).toBeOnTheScreen()
+  })
+
   // Ruling Q211: the phone Tools screen reads tool.inventory for the machine
   // it is connected to and shows what the repository holds back. It reads
   // and never asks to trust.

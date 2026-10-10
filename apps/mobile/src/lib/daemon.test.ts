@@ -30,7 +30,7 @@ function withSocket(send: (payload: string) => void): FakeSocket {
 }
 
 function connection(handlers: {
-  onFleet?: (entries: unknown[]) => void
+  onFleet?: (snapshot: unknown) => void
   onSnapshot?: (snapshot: unknown) => void
   onHello?: (snapshot: unknown) => void
   onDelta?: (delta: unknown) => void
@@ -141,16 +141,18 @@ describe("DaemonConnection.call", () => {
 describe("DaemonConnection notifications", () => {
   const entries = [{ kind: "unenrolled", machineId: `machine-${"a".repeat(32)}` }]
 
+  // With the daemon's time, so the phone measures heartbeat ages on its clock.
   it("hands on a fleet the daemon pushed, so an open list stops going stale", () => {
     const socket = withSocket(() => {})
     const onFleet = vi.fn()
     const daemon = connection({ onFleet })
     daemon.connect()
+    const daemonTime = "2026-10-10T12:00:00.000Z"
     try {
       socket.onmessage?.({
-        data: JSON.stringify({ jsonrpc: "2.0", method: "fleet.changed", params: { entries } }),
+        data: JSON.stringify({ jsonrpc: "2.0", method: "fleet.changed", params: { entries, daemonTime } }),
       })
-      expect(onFleet).toHaveBeenCalledWith(entries)
+      expect(onFleet).toHaveBeenCalledWith({ entries, daemonTime })
     } finally { daemon.close() }
   })
 

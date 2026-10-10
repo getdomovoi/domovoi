@@ -12,7 +12,6 @@ import {
   turnSkillSelectionFor,
   workspaceSnapshotSchema,
   type ApprovalDecision,
-  type FleetEntry,
   type PermissionMode,
   type RpcMethod,
   type RpcParams,
@@ -48,7 +47,7 @@ import { startLikeRequest } from "./start-like"
 import { ApprovalScreen } from "./screens/approval"
 import { DenyExplainScreen } from "./screens/deny-explain"
 import { ArtifactScreen, type PreviewRender } from "./screens/artifact"
-import { fleetLoader } from "./fleet-load"
+import { fleetLoader, fleetNow, type HeldFleet } from "./fleet-load"
 import { freshSessionReadiness, startFreshSession } from "./fresh-session"
 import { phoneRefusalFrom, type PhoneRefusal } from "./session-refusal"
 import { MachinesScreen } from "./screens/fleet"
@@ -175,7 +174,8 @@ export function App() {
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillProblem, setSkillProblem] = useState("")
-  const [fleet, setFleet] = useState<FleetEntry[] | undefined>(undefined)
+  // The entries with the daemon's clock offset of the snapshot they came in.
+  const [fleet, setFleet] = useState<HeldFleet | undefined>(undefined)
   const [fleetLoading, setFleetLoading] = useState(false)
   const [fleetProblem, setFleetProblem] = useState("")
   const [confirmPause, setConfirmPause] = useState(false)
@@ -1197,10 +1197,11 @@ export function App() {
             ) : snapshot ? (
               <SessionsScreen
                 snapshot={snapshot}
-                fleet={fleet}
+                fleet={fleet?.entries}
                 notice={notice}
                 refreshing={refreshing}
                 now={now}
+                fleetNow={fleetNow(fleet, now)}
                 onOpenApproval={setOpenApprovalId}
                 onRefresh={() => void refreshWorkspace()}
                 onStartSession={() => {
@@ -1248,13 +1249,15 @@ export function App() {
               />
             ) : (
             <MachinesScreen
-              fleet={fleet}
+              fleet={fleet?.entries}
               activity={activity}
               loading={fleetLoading}
               problem={fleetProblem}
               notice={notice}
               connected={status === "open"}
-              now={now}
+              // Machines measures only heartbeat ages, so its clock is the
+              // daemon's, by the offset kept with the fleet on screen.
+              now={fleetNow(fleet, now)}
               onRefresh={() => void loadFleet()}
               onOpen={() => selectTab("sessions")}
               onOpenTools={() => setToolsOpen(true)}

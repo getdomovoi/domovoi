@@ -7,7 +7,7 @@ import {
   rpcResponseSchema,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
-  type FleetEntry,
+  type FleetSnapshot,
   type RpcMethod,
   type RpcParams,
   type RpcResult,
@@ -137,8 +137,9 @@ export class DaemonConnection {
       onHello?: (hello: RpcResult<"system.hello">) => void
       onDelta: (delta: Parameters<typeof applyWorkspaceDelta>[1]) => void
       // The daemon pushes the whole fleet whenever it changes, so a list on
-      // screen stops being a claim about when the tab was opened.
-      onFleet: (entries: FleetEntry[]) => void
+      // screen stops being a claim about when the tab was opened. The whole
+      // snapshot, so its daemonTime travels with its entries.
+      onFleet: (snapshot: FleetSnapshot) => void
       onTerminal?: (notification: TerminalNotification) => void
       onStatus: (status: DaemonStatus) => void
       // The cause rather than its sentence, because whether a refusal is worth
@@ -213,7 +214,7 @@ export class DaemonConnection {
       // way. Without it the Fleet tab shows what was true when it was opened.
       if (message.method === "fleet.changed") {
         const parsed = fleetSnapshotSchema.safeParse(message.params)
-        if (parsed.success) this.handlers.onFleet(parsed.data.entries)
+        if (parsed.success) this.handlers.onFleet(parsed.data)
         else this.handlers.onProtocolError("The daemon sent a fleet.changed notification this app could not read")
         return
       }
