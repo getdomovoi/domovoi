@@ -16,6 +16,13 @@ type WorkspaceSnapshotState = {
   snapshot: WorkspaceSnapshot | null
 }
 
+function receivedFleet(snapshot: FleetSnapshot) {
+  return {
+    snapshot,
+    daemonTimeOffsetMs: snapshot.daemonTime === undefined ? 0 : Date.parse(snapshot.daemonTime) - Date.now(),
+  }
+}
+
 export function visibleWorkspaceSnapshot(
   state: WorkspaceSnapshotState,
   target: string,
@@ -120,7 +127,9 @@ export function useWorkspace(
   const [emergencyStopError, setEmergencyStopError] = useState<string | null>(null)
   // The fleet is daemon state, held here so every surface reads one list.
   // null means the daemon has not described it on this connection.
-  const [fleet, setFleet] = useState<FleetSnapshot | null>(null)
+  // Keep the heartbeats and their receipt-time clock offset in one state value.
+  const [fleetState, setFleet] = useState<ReturnType<typeof receivedFleet> | null>(null)
+  const fleet = fleetState?.snapshot ?? null
   // A withheld list is the daemon's verdict, not an empty fleet, and it is
   // held apart from `fleet` so no surface can read null as nothing paired.
   const [fleetOverflow, setFleetOverflow] = useState<FleetSnapshotOverflow | null>(null)
@@ -238,7 +247,7 @@ export function useWorkspace(
       void client.listFleet().then(
         (next) => {
           if (!active || !isCurrentConnection(clientRef.current, client)) return
-          setFleet(next)
+          setFleet(receivedFleet(next))
           setFleetOverflow(null)
         },
         (cause: unknown) => {
@@ -252,7 +261,7 @@ export function useWorkspace(
     }
     const onFleetChanged = (event: Event) => {
       if (active && isCurrentConnection(clientRef.current, client)) {
-        setFleet((event as CustomEvent<FleetSnapshot>).detail)
+        setFleet(receivedFleet((event as CustomEvent<FleetSnapshot>).detail))
         setFleetOverflow(null)
       }
     }
@@ -748,7 +757,7 @@ export function useWorkspace(
         deadline,
         enroll: (params, remaining) => client.enrollMachine(params, { deadline: remaining }),
       })
-      if (isCurrentConnection(clientRef.current, client)) setFleet(paired.fleet)
+      if (isCurrentConnection(clientRef.current, client)) setFleet(receivedFleet(paired.fleet))
       return paired
     } finally {
       deadline.clear()
@@ -765,7 +774,7 @@ export function useWorkspace(
     if (!client) throw new Error("Daemon connection is not open")
     const result = await client.forgetMachine(params, options)
     if (result.outcome !== "refused" && isCurrentConnection(clientRef.current, client)) {
-      setFleet(result.fleet)
+      setFleet(receivedFleet(result.fleet))
     }
     return result
   }, [])
@@ -935,6 +944,7 @@ export function useWorkspace(
     endpointUrl,
     exportAudit,
     fleet,
+    fleetDaemonTimeOffsetMs: fleetState?.daemonTimeOffsetMs ?? 0,
     fleetOverflow,
     forgetMachine,
     forkSession,
