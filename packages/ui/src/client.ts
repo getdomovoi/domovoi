@@ -16,6 +16,7 @@ import {
   terminalListResultSchema,
   terminalOwnershipNotificationSchema,
   terminalOutputNotificationSchema,
+  terminalResizedNotificationSchema,
   terminalSessionSchema,
   terminalWatchResultSchema,
   systemEmergencyStoppedNotificationSchema,
@@ -68,6 +69,16 @@ import {
 import { Deadline, DeadlineExceededError, deadlineBudget, describeTarget } from "./deadline.js"
 import { ClientAdmissionError, parseClientAdmission, verifyClientAdmission, type ClientAdmission } from "./client-admission-policy.js"
 import type { ClientSocket, ClientSocketFactory } from "./client-socket.js"
+
+// How a daemon refuses parameters its schema does not know, such as a
+// terminal.watch followResize sent to a daemon from before terminal.resized.
+const invalidParamsErrorCode = -32602
+const invalidParamsMessage = "Method parameters are invalid"
+
+export type TerminalWatchOptions = { followResize?: boolean }
+// followsResize: the daemon accepted followResize and sends terminal.resized
+// for this watch.
+export type TerminalWatch = TerminalWatchResult & { followsResize: boolean }
 
 // The daemon's typed error data rides along: a refusal such as a withheld
 // fleet list carries facts the surface has to show, and a code alone cannot.
@@ -797,6 +808,16 @@ export class DomovoiClient extends EventTarget {
     )
   }
 
+  // The holder gives up its claim. The shell keeps running with nobody
+  // holding it, and the reply names the last holder with claimHeld false.
+  releaseTerminal(terminalId: string): Promise<TerminalOwnershipNotification> {
+    return this.request(
+      "terminal.release",
+      { terminalId, client: this.kind, clientId: this.clientId },
+      (value) => terminalOwnershipNotificationSchema.parse(value),
+    )
+  }
+
   // Reading a terminal, as distinct from holding it. These name no client
   // identity: a watcher types nothing, so nothing it says about itself is
   // asked for.
@@ -808,12 +829,23 @@ export class DomovoiClient extends EventTarget {
     )
   }
 
-  watchTerminal(terminalId: string): Promise<TerminalWatchResult> {
-    return this.request(
+  // followResize asks the daemon to send terminal.resized when the holder
+  // changes the grid. A daemon from before that notice refuses the field as
+  // invalid parameters; the watch is then asked again without it, and
+  // followsResize says which one the daemon accepted.
+  async watchTerminal(terminalId: string, options: TerminalWatchOptions = {}): Promise<TerminalWatch> {
+    const watch = (followResize: boolean) => this.request(
       "terminal.watch",
-      { terminalId },
-      (value) => terminalWatchResultSchema.parse(value),
+      followResize ? { terminalId, followResize: true as const } : { terminalId },
+      (value) => ({ ...terminalWatchResultSchema.parse(value), followsResize: followResize }),
     )
+    if (!options.followResize) return watch(false)
+    try {
+      return await watch(true)
+    } catch (cause) {
+      if (!(cause instanceof DaemonRpcError) || cause.code !== invalidParamsErrorCode || cause.message !== invalidParamsMessage) throw cause
+      return watch(false)
+    }
   }
 
   unwatchTerminal(terminalId: string): Promise<void> {
@@ -1230,6 +1262,18 @@ export class DomovoiClient extends EventTarget {
         } else {
           this.#reportProtocolError(
             "Daemon sent a terminal.ownership notification this client could not parse",
+          )
+        }
+        return
+      }
+      // Sent only to a watch that asked with followResize.
+      if (notification.data.method === "terminal.resized") {
+        const resized = terminalResizedNotificationSchema.safeParse(notification.data.params)
+        if (resized.success) {
+          this.dispatchEvent(new CustomEvent("terminal-resized", { detail: resized.data }))
+        } else {
+          this.#reportProtocolError(
+            "Daemon sent a terminal.resized notification this client could not parse",
           )
         }
         return
