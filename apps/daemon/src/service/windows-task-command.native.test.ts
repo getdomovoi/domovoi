@@ -102,13 +102,18 @@ it.runIf(process.platform === "win32")("registers the action an older Domovoi's 
     const legacyXml = queryXml(legacy), currentXml = queryXml(current)
     expect(xmlAction(currentXml)).toEqual(xmlAction(legacyXml))
     // Run only while the user is logged on, with limited rights, as /ru with
-    // no password and /rl LIMITED registered.
+    // no password and /rl LIMITED registered. Task Scheduler writes no
+    // RunLevel element for limited rights (LeastPrivilege, the default), as
+    // the first Windows run of this test showed for schtasks, so both must
+    // carry the same RunLevel, and neither the highest one.
+    const runLevel = (xml: string) => /<RunLevel>([^<]*)<\/RunLevel>/u.exec(xml)?.[1] ?? "LeastPrivilege"
     for (const xml of [legacyXml, currentXml]) {
       expect(xml).toMatch(/<LogonType>InteractiveToken<\/LogonType>/u)
-      expect(xml).toMatch(/<RunLevel>LeastPrivilege<\/RunLevel>/u)
+      expect(runLevel(xml)).toBe("LeastPrivilege")
     }
-    console.log(`[task shape] schtasks principal and triggers:\n${/<Triggers>[\s\S]*?<\/Principals>/u.exec(legacyXml)?.[0] ?? legacyXml}`)
-    console.log(`[task shape] COM principal and triggers:\n${/<Triggers>[\s\S]*?<\/Principals>/u.exec(currentXml)?.[0] ?? currentXml}`)
+    const block = (xml: string, element: string) => new RegExp(`<${element}>[\\s\\S]*?</${element}>`, "u").exec(xml)?.[0] ?? `no ${element}`
+    console.log(`[task shape] schtasks principals and triggers:\n${block(legacyXml, "Principals")}\n${block(legacyXml, "Triggers")}`)
+    console.log(`[task shape] COM principals and triggers:\n${block(currentXml, "Principals")}\n${block(currentXml, "Triggers")}`)
     await assertTaskAccounts(legacyXml, currentXml, deadline)
   } finally {
     deadline.clear()
