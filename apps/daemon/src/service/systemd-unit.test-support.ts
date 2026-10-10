@@ -141,9 +141,12 @@ export async function withThrowawayUnit(
         // removal under test having worked. A deliberately broken remover may
         // have left a live process: ask the fixture to exit through its own
         // private path, never kill by a PID which might have been reused.
+        // The stop file is a courtesy; disable --now below is what stops the
+        // unit, so a stop file that cannot be written must not skip it. Its
+        // failure is kept and reported only if the cleanup fails later.
         const ready = readyPath
         if (ready !== undefined && existsSync(ready)) {
-          await withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop"))
+          await withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop")).catch((error: unknown) => { failures.push(error) })
         }
         const disabled = await systemctl(["--user", "disable", "--now", unit], cleanup)
         if (disabled.code !== 0) {

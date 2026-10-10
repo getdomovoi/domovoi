@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs"
 import { lstat, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, posix, relative } from "node:path"
+import { dirname, join, posix, relative } from "node:path"
 
 import { expect, it, vi } from "vitest"
 
@@ -199,6 +199,23 @@ it("still retires an attempted installation after the body fails", async () => {
     await expect(run(async (unit, deadline) => { await unit.install(deadline); throw failure })).rejects.toBe(failure)
     expect(calls.some((args) => args[1] === "enable")).toBe(true)
     expect(calls.some((args) => args[1] === "disable")).toBe(true)
+    for (const path of paths) expect(existsSync(path)).toBe(false)
+  })
+}, safetyBudget + 6_000)
+
+it("still disables the unit when its stop file cannot be written", async () => {
+  // The stop file is a courtesy to the fixture; disable --now is what stops
+  // the unit. A stop file that cannot be written used to skip the disable and
+  // leave the unit enabled in the operator's manager.
+  await scenario({}, async ({ run, calls, paths, loaded }) => {
+    await run(async (unit, deadline) => {
+      await unit.install(deadline)
+      await mkdir(dirname(unit.readyPath), { recursive: true })
+      await writeFile(unit.readyPath, "1")
+      await mkdir(`${unit.readyPath}.stop`)
+    })
+    expect(calls.some((args) => args[1] === "disable")).toBe(true)
+    expect(loaded()).toBe(false)
     for (const path of paths) expect(existsSync(path)).toBe(false)
   })
 }, safetyBudget + 6_000)
