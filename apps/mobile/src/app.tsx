@@ -34,7 +34,7 @@ import { ShellNotice } from "./components/shell-notice"
 import { SkillSheet } from "./components/skill-sheet"
 import { normalizeTab, TabBar, type Tab } from "./components/tab-bar"
 import { clearCredential, loadCredential, saveCredential, type DaemonCredential } from "./lib/credentials"
-import { DaemonNotSentError, DaemonUnconfirmedError } from "./lib/daemon"
+import { DaemonNotSentError, DaemonUnconfirmedError, watchTerminal } from "./lib/daemon"
 import { DaemonTimeoutError } from "./lib/request-timeout"
 import { useDaemon } from "./lib/use-daemon"
 import { useDeviceIdentity } from "./lib/use-device-identity"
@@ -484,7 +484,9 @@ export function App() {
     const sameShell = (watch: TerminalWatch | undefined, openedAt: string) => watch !== undefined && watchedSummary(watch).openedAt === openedAt
     const watchOne = (terminalId: string, openedAt: string) => {
       watched.set(terminalId, openedAt)
-      call("terminal.watch", { terminalId }).then((result) => {
+      // Asks to follow the holder's resizes, and asks an older daemon again
+      // without that while this run still wants the watch.
+      watchTerminal(call, terminalId, () => current).then((result) => {
         // Answered after the person left: the watch is no one's, so it ends.
         if (!current) {
           call("terminal.unwatch", { terminalId }).catch(() => {})

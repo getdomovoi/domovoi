@@ -139,6 +139,13 @@ export function withNotification(record: TerminalRecord, notification: TerminalN
     return { ...record, summary: { ...record.summary, owner: notification.params.owner, claimHeld }, lastHeardAt: now.toISOString() }
   }
   if (record.summary.state === "closed") return record
+  if (notification.method === "terminal.resized") {
+    // The holder's new grid, heard because the watch asked with followResize.
+    // The phone draws lines and lets them wrap at its own width, so only the
+    // size it names changes; nothing held is redrawn.
+    const { cols, rows } = notification.params
+    return { ...record, summary: { ...record.summary, cols, rows }, lastHeardAt: now.toISOString() }
+  }
   if (notification.method === "terminal.closed") {
     const { exitCode, signal } = notification.params
     // The notification carries no time, and the phone's clock is not the
@@ -414,7 +421,9 @@ export function terminalTitle(summary: TerminalSummary): string {
   return `${lastSegment(summary.shell)} · ${lastSegment(summary.cwd)}`
 }
 
-// The claimant's size. A phone never resizes it, so long lines wrap here.
+// The claimant's size. A phone never resizes it, so long lines wrap here. It
+// follows the claimant's resizes when the daemon sends terminal.resized, and
+// otherwise the next list.
 export function terminalSize(summary: TerminalSummary): string {
   return `${summary.cols}×${summary.rows}`
 }

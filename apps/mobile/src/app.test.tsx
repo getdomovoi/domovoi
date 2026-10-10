@@ -63,6 +63,11 @@ class FakeSocket {
     if (!request) throw new Error(`nothing asked for ${method}`)
     this.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) })
   }
+  refuse(method: string, code: number, message: string) {
+    const request = this.requests(method).at(-1)
+    if (!request) throw new Error(`nothing asked for ${method}`)
+    this.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code, message } }) })
+  }
   push(method: string, params: unknown) {
     this.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", method, params }) })
   }
@@ -773,7 +778,7 @@ describe("App", () => {
       expect(socket.requests("terminal.list").at(-1)?.params).toEqual({ sessionId: audit.id })
       await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
       await settle()
-      expect(socket.requests("terminal.watch").at(-1)?.params).toEqual({ terminalId: "terminal-1" })
+      expect(socket.requests("terminal.watch").at(-1)?.params).toEqual({ terminalId: "terminal-1", followResize: true })
       await act(async () => { socket.answer("terminal.watch", watchResult) })
       await settle()
     }
@@ -815,6 +820,52 @@ describe("App", () => {
       expect(socket.requests("terminal.unwatch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }])
     })
 
+    // #779: the holder's resize reaches a watch that asked with followResize,
+    // so the size the phone names follows the holder's grid without a relist.
+    it("names the holder's grid after it resizes", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await fireEvent.press(screen.getByRole("button", { name: "Show all 2 lines" }))
+      expect(screen.getByText("120×34")).toBeOnTheScreen()
+
+      await act(async () => { socket.push("terminal.resized", { terminalId: "terminal-1", cols: 80, rows: 24 }) })
+      await settle()
+      expect(screen.getByText("80×24")).toBeOnTheScreen()
+      expect(screen.queryByText("120×34")).toBeNull()
+      // Following the grid is still only reading it.
+      expect(socket.sent.filter((frame) => frame.method === "terminal.resize")).toEqual([])
+    })
+
+    // A daemon from before terminal.resized refuses the field as invalid
+    // parameters. The watch is asked for again without it, and reads as before.
+    it("watches an older daemon's terminal without following its resizes", async () => {
+      const { socket } = await openAudit()
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      await act(async () => { socket.refuse("terminal.watch", -32602, "Method parameters are invalid") })
+      await settle()
+      expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([
+        { terminalId: "terminal-1", followResize: true },
+        { terminalId: "terminal-1" },
+      ])
+      await act(async () => { socket.answer("terminal.watch", watchResult) })
+      await settle()
+      expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+      expect(screen.queryByText("Method parameters are invalid")).toBeNull()
+    })
+
+    // Refused after the person left: no watch was taken, so none is asked for.
+    it("does not ask an older daemon again for a terminal the person left", async () => {
+      const { socket } = await openAudit()
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+      await settle()
+      await act(async () => { socket.refuse("terminal.watch", -32602, "Method parameters are invalid") })
+      await settle()
+      expect(socket.requests("terminal.watch")).toHaveLength(1)
+    })
+
     // The list after a reconnect is the daemon's word on the terminal's state.
     it("takes the state from the list after a reconnect, before the new watch answers", async () => {
       const { socket } = await openAudit()
@@ -853,7 +904,7 @@ describe("App", () => {
           socket.answer("terminal.list", { terminals: [terminal, { ...terminal, terminalId: "terminal-2", cwd: "/Users/mira/dev/acme" }] })
         })
         await settle()
-        expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-2" }])
+        expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1", followResize: true }, { terminalId: "terminal-2", followResize: true }])
         expect(screen.getByText("zsh · acme")).toBeOnTheScreen()
       } finally {
         jest.useRealTimers()
@@ -915,7 +966,7 @@ describe("App", () => {
       expect(socket.requests("terminal.list")).toHaveLength(2)
       await act(async () => { socket.answer("terminal.list", { terminals: [{ ...terminal, openedAt: "2026-10-06T14:20:00.000Z" }] }) })
       await settle()
-      expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-1" }])
+      expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1", followResize: true }, { terminalId: "terminal-1", followResize: true }])
       await act(async () => { socket.answer("terminal.watch", { ...watchResult, openedAt: "2026-10-06T14:20:00.000Z", buffer: "$ \n", watchedAt: "2026-10-06T14:20:01.000Z" }) })
       await settle()
       expect(screen.getByText("Live")).toBeOnTheScreen()
