@@ -1201,8 +1201,22 @@ throwaway home is the `domovoi-launchd-` directory under `$TMPDIR` above `Librar
 that path. Remove that directory only after `launchctl print` says it could not find the label; any
 other failure from it does not show that the job is gone.
 
-A leftover systemd unit is `domovoi-native-test-<uuid>.service`; remove it with
-`systemctl --user disable --now <unit>` and `systemctl --user reset-failed <unit>`.
+A leftover systemd unit is `domovoi-native-test-<uuid>.service`. Its fragment is in
+`$XDG_RUNTIME_DIR/systemd/user`, and `systemctl --user cat <unit>` shows its `ExecStart`, which
+names a script inside its throwaway `domovoi-systemd-` home under the temporary directory. Note
+that home, then remove the unit the way the test cleanup does:
+
+```sh
+systemctl --user disable --now <unit>
+systemctl --user is-active <unit>    # must not print active
+rm -f "$XDG_RUNTIME_DIR/systemd/user/<unit>" \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/default.target.wants/<unit>"
+systemctl --user daemon-reload
+systemctl --user reset-failed <unit>
+systemctl --user show <unit> --property=LoadState    # LoadState=not-found
+```
+
+Remove the `domovoi-systemd-` home only once the unit reports `LoadState=not-found`.
 
 ## Loaded fixture checks
 
