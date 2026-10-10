@@ -25,7 +25,7 @@ import {
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>()
-  return { ...actual, writeFile: vi.fn(actual.writeFile) }
+  return { ...actual, rename: vi.fn(actual.rename), writeFile: vi.fn(actual.writeFile) }
 })
 
 function configuration(homeDirectory: string, platform: string) {
@@ -268,6 +268,31 @@ describe("installService", () => {
       expect(await within(() => filesystem.readdir(directory))).toEqual(["service.json"])
     } finally {
       vi.mocked(filesystem.writeFile).mockImplementation(originalWrite)
+      await removeScratchDirectory(directory)
+      deadline.clear()
+    }
+  })
+
+  // Windows MoveFileEx refuses to replace service.json while the supervisor or
+  // a status read holds it open.
+  it("retries a Windows sharing refusal when replacing a service file", async () => {
+    const deadline = OperationDeadline.start(5_000)
+    const within = <T>(operation: () => Promise<T>) => withinServiceDeadline(deadline, operation)
+    const directory = await within(() => mkdtemp(join(tmpdir(), "domovoi-service-sharing-")))
+    const path = join(directory, "service.json")
+    const refusal = (code: string) => Object.assign(new Error(`${code}: rename refused`), { code, syscall: "rename" })
+    const real = Object.getOwnPropertyDescriptor(process, "platform")!
+    try {
+      await within(() => writeFile(path, "previous complete settings"))
+      vi.mocked(filesystem.rename).mockClear().mockRejectedValueOnce(refusal("EPERM")).mockRejectedValueOnce(refusal("EACCES"))
+      Object.defineProperty(process, "platform", { ...real, value: "win32" })
+      try { await within(() => nodeServiceEffects().write(path, "replacement settings", deadline)) }
+      finally { Object.defineProperty(process, "platform", real) }
+      expect(await within(() => readFile(path, "utf8"))).toBe("replacement settings")
+      expect(filesystem.rename).toHaveBeenCalledTimes(3)
+      expect(await within(() => filesystem.readdir(directory))).toEqual(["service.json"])
+    } finally {
+      vi.mocked(filesystem.rename).mockReset()
       await removeScratchDirectory(directory)
       deadline.clear()
     }

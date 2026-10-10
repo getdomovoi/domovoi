@@ -259,6 +259,42 @@ describe("restore owner reclamation", () => {
     }
   })
 
+  // Windows MoveFileEx refuses to replace a file another process holds open,
+  // such as an antivirus scan of the record written milliseconds earlier.
+  it("retries a Windows sharing refusal on both record replacements", async () => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-restore-sharing-"))
+    directories.push(root)
+    const ownerPath = join(root, ".restore-leases", "session-test.json")
+    const refusal = (code: string) => () => { throw Object.assign(new Error(`${code}: rename refused`), { code, syscall: "rename" }) }
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs")
+    vi.mocked(renameSync).mockImplementation(actual.renameSync)
+    const real = Object.getOwnPropertyDescriptor(process, "platform")!
+    Object.defineProperty(process, "platform", { ...real, value: "win32" })
+    let lease: RestoreOperationLease | undefined
+    const child = new EventEmitter() as ChildProcess
+    Object.defineProperty(child, "pid", { value: 45678 })
+    try {
+      // The constructor's synchronous publish.
+      vi.mocked(renameSync).mockImplementationOnce(refusal("EPERM")).mockImplementationOnce(refusal("EBUSY"))
+      lease = new RestoreOperationLease(root, "session-test", randomUUID())
+      expect(JSON.parse(await readFile(ownerPath, "utf8"))).toMatchObject({ starting: 0, children: [] })
+      // The queued publish of a starting command.
+      vi.mocked(renameSync).mockImplementationOnce(refusal("EACCES")).mockImplementationOnce(refusal("EPERM"))
+      const pending = Object.assign(new Promise<void>((resolve) => child.once("close", () => resolve())), { child }) as PromiseWithChild<void>
+      const result = lease.run(() => trackRestoreCommand(() => pending))
+      await recorded(ownerPath, { starting: 0, children: [45678] })
+      child.emit("close", 0, null)
+      await result
+      expect(JSON.parse(await readFile(ownerPath, "utf8"))).toMatchObject({ starting: 0, children: [] })
+      expect(vi.mocked(renameSync)).toHaveBeenCalledTimes(8)
+      expect((await readdir(join(root, ".restore-leases"))).filter((name) => name.endsWith(".tmp"))).toEqual([])
+    } finally {
+      Object.defineProperty(process, "platform", real)
+      child.emit("close", 0, null)
+      lease?.release()
+    }
+  })
+
   it("refuses to reclaim a claim whose record was torn mid-write", async () => {
     const f = await abandonedClaim()
     const whole = await readFile(f.ownerPath, "utf8")

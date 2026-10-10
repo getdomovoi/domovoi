@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { chmod, mkdir, rename, rm, stat, writeFile } from "node:fs/promises"
 import { dirname, posix, win32 } from "node:path"
 import { userInfo } from "node:os"
+import { replaceFile } from "@getdomovoi/credential-store"
 import { loginServiceAgentLabel, loginServiceHomePaths, loginServiceTaskName, loginServiceUnitFile } from "@getdomovoi/protocol"
 import { installedWslTask } from "./wsl-registration.js"
 import { runWslServiceCommand } from "./wsl-install.js"
@@ -452,11 +453,13 @@ async function writeUnit(path: string, contents: string, deadline: OperationDead
     // against the deadline, so this settles only once the file is known to be
     // published or not; a caller that ran out of time (withinServiceDeadline)
     // can wait for it before restoring. The write honours the abort signal,
-    // and no rename starts after the deadline.
+    // and no rename starts after the deadline. Windows refuses to replace
+    // service.json while the supervisor or a status read holds it open; the
+    // rename retries that for at most five seconds, inside the deadline.
     deadline.throwIfExpired()
     await writeFile(staging, contents, { flag: "wx", mode: 0o600, signal: deadline.signal })
     deadline.throwIfExpired()
-    await rename(staging, path)
+    await replaceFile(staging, path, { rename }, { deadline })
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "EEXIST") throw error
     try {
