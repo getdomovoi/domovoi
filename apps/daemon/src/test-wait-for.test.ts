@@ -1,8 +1,9 @@
-import { readFile, readdir } from "node:fs/promises"
-import { join } from "node:path"
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
 
 import ts from "typescript"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import {
   daemonWaitTimeoutMs, fixtureStartupTimeoutMs, productionRpcTimeoutMs, waitForDaemon, waitForFixtureStartup,
@@ -122,45 +123,125 @@ describe("daemon assertion waits", () => {
   })
 
   it("requires every direct vi.waitFor in the daemon suite to name a positive timeout", async () => {
-    const offenders: string[] = []
-    const entries = await readdir(import.meta.dirname, { recursive: true })
-    for (const entry of entries.filter((path) => path.endsWith(".test.ts"))) {
-      const path = join(import.meta.dirname, entry)
-      const text = await readFile(path, "utf8")
-      // Parsing every file under coverage outgrew the 5 s Linux budget. A call
-      // named waitFor needs the whole word in the text, or a \u escape that
-      // spells it, so any other file cannot hold an offender and skips the parse.
-      if (/\bwaitFor\b/.test(text) === false && text.includes("\\u") === false) continue
-      const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest)
-      const visit = (node: ts.Node) => {
-        if (
-          ts.isCallExpression(node)
-          && ts.isPropertyAccessExpression(node.expression)
-          && node.expression.expression.getText(source) === "vi"
-          && node.expression.name.text === "waitFor"
-        ) {
-          const options = node.arguments[1]
-          const timeout = options && ts.isObjectLiteralExpression(options)
-            ? options.properties.find((property) => (
-              ts.isPropertyAssignment(property) && property.name.getText(source) === "timeout"
-            ))
-            : undefined
-          const value = timeout && ts.isPropertyAssignment(timeout) ? timeout.initializer : options
-          if (
-            value === undefined
-            || ts.isNumericLiteral(value) === false
-            || Number.isFinite(Number(value.text)) === false
-            || Number(value.text) <= 0
-          ) {
-            const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1
-            offenders.push(`${entry.replaceAll("\\", "/")}:${line}`)
-          }
-        }
-        ts.forEachChild(node, visit)
-      }
-      visit(source)
-    }
+    const { offenders } = await scanWaitForTimeouts(import.meta.dirname)
 
     expect(offenders).toEqual([])
   })
 })
+
+describe("daemon waitFor timeout scan", () => {
+  let root: string
+
+  beforeEach(async () => {
+    root = await mkdtemp(join(tmpdir(), "domovoi-wait-for-scan-"))
+  })
+
+  afterEach(async () => {
+    await rm(root, { recursive: true, force: true })
+  })
+
+  async function write(path: string, text: string) {
+    await mkdir(dirname(join(root, path)), { recursive: true })
+    await writeFile(join(root, path), text)
+  }
+
+  it("names each direct vi.waitFor without a positive literal timeout", async () => {
+    await write("bare.test.ts", "await vi.waitFor(() => {})\n")
+    await write("zero.test.ts", "\nawait vi.waitFor(() => {}, { timeout: 0 })\n")
+    await write("negative.test.ts", "await vi.waitFor(() => {}, -1)\n")
+    await write("variable.test.ts", "const timeout = 100\nawait vi.waitFor(() => {}, { timeout })\n")
+    await write("nested/deeper/interval.test.ts", "await vi.waitFor(() => {}, { interval: 10 })\n")
+    await write("bounded.test.ts", "await vi.waitFor(() => {}, { timeout: 2_000 })\nawait vi.waitFor(() => {}, 500)\n")
+    await write("helper.ts", "await vi.waitFor(() => {})\n")
+
+    const { offenders } = await scanWaitForTimeouts(root)
+
+    expect(offenders.sort()).toEqual([
+      "bare.test.ts:1",
+      "negative.test.ts:1",
+      "nested/deeper/interval.test.ts:1",
+      "variable.test.ts:2",
+      "zero.test.ts:2",
+    ])
+  })
+
+  it("finds a waitFor property spelled with unicode escapes", async () => {
+    await write("four.test.ts", "await vi.wait\\u0046or(() => {})\n")
+    await write("braced.test.ts", "await vi.\\u{77}aitFor(() => {})\n")
+
+    const { offenders } = await scanWaitForTimeouts(root)
+
+    expect(offenders.sort()).toEqual(["braced.test.ts:1", "four.test.ts:1"])
+  })
+
+  // Parsing is most of the cost of the scan, so a file that cannot name waitFor
+  // even after its escapes are decoded must not reach the parser.
+  it("parses only files whose decoded text can name waitFor", async () => {
+    await write("escaped-string.test.ts", "expect(label).toBe(\"caf\\u00e9\")\n")
+    await write("plain.test.ts", "expect(1).toBe(1)\n")
+    await write("caller.test.ts", "await vi.waitFor(() => {}, 100)\n")
+
+    const { offenders, parsed } = await scanWaitForTimeouts(root)
+
+    expect(offenders).toEqual([])
+    expect(parsed.sort()).toEqual(["caller.test.ts"])
+  })
+})
+
+// Lists every direct vi.waitFor call in the *.test.ts files under root whose
+// timeout is not a positive numeric literal, and the files it had to parse.
+async function scanWaitForTimeouts(root: string) {
+  const offenders: string[] = []
+  const parsed: string[] = []
+  const entries = await readdir(root, { recursive: true })
+  for (const entry of entries.filter((path) => path.endsWith(".test.ts"))) {
+    const path = join(root, entry)
+    const text = await readFile(path, "utf8")
+    const relative = entry.replaceAll("\\", "/")
+    // Parsing is most of the cost of the scan. A property named waitFor spells
+    // the word in the text once its \u escapes are decoded, so any other file
+    // cannot hold an offender and skips the parse. Decoding escapes outside
+    // identifiers too only admits extra files, never hides one.
+    if (/\bwaitFor\b/.test(text.includes("\\u") ? decodeUnicodeEscapes(text) : text) === false) continue
+    parsed.push(relative)
+    const source = ts.createSourceFile(path, text, ts.ScriptTarget.Latest)
+    const visit = (node: ts.Node) => {
+      if (
+        ts.isCallExpression(node)
+        && ts.isPropertyAccessExpression(node.expression)
+        && node.expression.expression.getText(source) === "vi"
+        && node.expression.name.text === "waitFor"
+      ) {
+        const options = node.arguments[1]
+        const timeout = options && ts.isObjectLiteralExpression(options)
+          ? options.properties.find((property) => (
+            ts.isPropertyAssignment(property) && property.name.getText(source) === "timeout"
+          ))
+          : undefined
+        const value = timeout && ts.isPropertyAssignment(timeout) ? timeout.initializer : options
+        if (
+          value === undefined
+          || ts.isNumericLiteral(value) === false
+          || Number.isFinite(Number(value.text)) === false
+          || Number(value.text) <= 0
+        ) {
+          const line = source.getLineAndCharacterOfPosition(node.getStart(source)).line + 1
+          offenders.push(`${relative}:${line}`)
+        }
+      }
+      ts.forEachChild(node, visit)
+    }
+    visit(source)
+  }
+  return { offenders, parsed }
+}
+
+function decodeUnicodeEscapes(text: string) {
+  return text.replace(
+    /\\u\{([0-9a-fA-F]+)\}|\\u([0-9a-fA-F]{4})/g,
+    (escape, braced?: string, four?: string) => {
+      const point = Number.parseInt(braced ?? four ?? "", 16)
+      return point <= 0x10ffff ? String.fromCodePoint(point) : escape
+    },
+  )
+}
