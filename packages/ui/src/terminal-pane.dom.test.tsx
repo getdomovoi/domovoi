@@ -791,6 +791,43 @@ describe("TerminalPane on a watching desktop", () => {
     expect(target.unwatch).toHaveBeenCalledWith(terminalId)
   })
 
+  // The watch a pane is showing is never stopped by the unwatch an earlier
+  // one deferred: moving away and back, or mounting a new pane, before the
+  // first watch answers leaves the live one watching.
+  it("keeps the newer watch of a shell when an older one answers late", async () => {
+    const target = watcher()
+    const view = (id: string) => (
+      <TerminalPane connected readOnly controls={target.controls} machineName="worktop" sessionId={id} />
+    )
+    const { rerender, unmount } = render(view(sessionId))
+    rerender(view("session-other"))
+    rerender(view(sessionId))
+    expect(target.watch).toHaveBeenCalledTimes(3)
+
+    await act(async () => {
+      target.replies[0]!.resolve(watchResult())
+      target.replies[1]!.reject(new Error("Terminal does not exist"))
+    })
+    expect(target.unwatch).not.toHaveBeenCalledWith(terminalId)
+    expect(target.unwatch).toHaveBeenCalledWith("terminal-session-other")
+
+    await act(async () => {
+      target.replies[2]!.resolve(watchResult())
+    })
+    unmount()
+    expect(target.unwatch).toHaveBeenCalledWith(terminalId)
+
+    // A pane mounted afresh shares the connection, so the same holds.
+    const fresh = watcher()
+    const first = render(<TerminalPane connected readOnly controls={fresh.controls} machineName="worktop" sessionId={sessionId} />)
+    first.unmount()
+    render(<TerminalPane connected readOnly controls={fresh.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      fresh.replies[0]!.resolve(watchResult())
+    })
+    expect(fresh.unwatch).not.toHaveBeenCalled()
+  })
+
   // The daemon sends nothing when the holder's connection drops, and nothing
   // when the holder resizes. terminal.list carries both, so a pane that does
   // not hold the shell reads it again on a short interval.

@@ -81,6 +81,12 @@ export type TerminalControls = {
 // its output can draw at the holder's previous grid.
 export const terminalHolderRefreshMs = 5_000
 
+// The latest watch each connection's panes started, per terminal. The daemon
+// keeps one watch per connection and terminal, so a pane's unwatch would also
+// stop a newer pane's watch of the same shell; an unwatch is sent only while
+// the watch it ends is still the latest. Keyed on the connection's unwatch.
+const latestWatches = new WeakMap<(terminalId: string) => Promise<void>, Map<string, object>>()
+
 // The pane's xterm history, in rows. Once the normal buffer holds this many
 // rows plus the screen's, xterm drops the oldest row for each new one.
 const terminalScrollback = 5_000
@@ -335,7 +341,11 @@ export function TerminalPane({
     // the answer could reach the daemon ahead of that second watch.
     let watchAnswered: Promise<void> | undefined
     let watchSettled = false
+    const watchToken = {}
+    const latest = unwatch ? latestWatches.get(unwatch) ?? new Map<string, object>() : undefined
+    if (unwatch && latest) latestWatches.set(unwatch, latest)
     if (readOnly && watch) {
+      latest?.set(terminalId, watchToken)
       // The watching desktop reads the shell the way the phone does: the
       // daemon's kept record, then what it prints from here on. Nothing it
       // does reaches the process, and it never opens a shell of its own.
@@ -404,7 +414,11 @@ export function TerminalPane({
       terminal.dispose()
       if (xtermRef.current === terminal) xtermRef.current = null
       if (readOnly && unwatch) {
-        const stop = () => void unwatch(terminalId).catch(() => undefined)
+        const stop = () => {
+          if (latest?.get(terminalId) !== watchToken) return
+          latest.delete(terminalId)
+          void unwatch(terminalId).catch(() => undefined)
+        }
         if (watchSettled || !watchAnswered) stop()
         else void watchAnswered.then(stop)
       }
