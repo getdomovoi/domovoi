@@ -441,6 +441,10 @@ export function App() {
   // list the session's terminals now rather than at the next interval.
   const rewatch = useRef<((terminalId: string, openedAt: string) => void) | undefined>(undefined)
   const relistNow = useRef<(() => void) | undefined>(undefined)
+  // The newest watch asked for each terminal, across runs. The daemon holds
+  // one watch per connection and terminal, so a late answer to an older run's
+  // watch may end it only while no newer run has asked for that terminal.
+  const latestWatch = useRef(new Map<string, object>())
   // Read when a run ends: a connection that has closed took its watches with
   // it, so there is nothing to unwatch on it.
   const socketOpen = useRef(status === "open")
@@ -484,12 +488,16 @@ export function App() {
     const sameShell = (watch: TerminalWatch | undefined, openedAt: string) => watch !== undefined && watchedSummary(watch).openedAt === openedAt
     const watchOne = (terminalId: string, openedAt: string) => {
       watched.set(terminalId, openedAt)
+      const asked = {}
+      latestWatch.current.set(terminalId, asked)
       // Asks to follow the holder's resizes, and asks an older daemon again
       // without that while this run still wants the watch.
       watchTerminal(call, terminalId, () => current).then((result) => {
-        // Answered after the person left: the watch is no one's, so it ends.
+        // Answered after the person left: the watch is no one's, so it ends,
+        // unless a newer run has since asked for the same terminal and the
+        // daemon's one watch is now that run's.
         if (!current) {
-          call("terminal.unwatch", { terminalId }).catch(() => {})
+          if (latestWatch.current.get(terminalId) === asked) call("terminal.unwatch", { terminalId }).catch(() => {})
           return
         }
         setTerminals((held) => sameShell(held.get(terminalId), result.openedAt)

@@ -58,8 +58,9 @@ class FakeSocket {
   requests(method: string): Frame[] {
     return this.sent.filter((frame) => frame.method === method)
   }
-  answer(method: string, result: unknown) {
-    const request = this.requests(method).at(-1)
+  // The latest request for the method, or the one at `which`.
+  answer(method: string, result: unknown, which = -1) {
+    const request = this.requests(method).at(which)
     if (!request) throw new Error(`nothing asked for ${method}`)
     this.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) })
   }
@@ -852,6 +853,31 @@ describe("App", () => {
       await settle()
       expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
       expect(screen.queryByText("Method parameters are invalid")).toBeNull()
+    })
+
+    // The daemon holds one watch per connection and terminal. An answer to the
+    // watch asked before the person left and came back lands after the new
+    // watch; ending it then would end the new one, and the open view would
+    // hear nothing more.
+    it("keeps the new watch when the watch from before leaving answers late", async () => {
+      const { socket } = await openAudit()
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+      await settle()
+      expect(socket.requests("terminal.unwatch")).toHaveLength(1)
+      await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+      await settle()
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      expect(socket.requests("terminal.watch")).toHaveLength(2)
+
+      await act(async () => { socket.answer("terminal.watch", watchResult, 0) })
+      await settle()
+      expect(socket.requests("terminal.unwatch")).toHaveLength(1)
+      await act(async () => { socket.answer("terminal.watch", watchResult, 1) })
+      await settle()
+      expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
     })
 
     // Refused after the person left: no watch was taken, so none is asked for.
