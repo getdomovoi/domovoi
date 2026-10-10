@@ -197,6 +197,7 @@ async function withThrowawayAgent(
   // launchd to bootstrap it. Until then nothing of ours is in the domain, and a
   // removal could only reach an agent somebody else owns.
   let bootoutArmed = false
+  const failures: unknown[] = []
   try {
     const created = await withinServiceDeadline(deadline, () => mkdtemp(join(tmpdir(), "domovoi-launchd-")))
     installedHome = created
@@ -283,9 +284,19 @@ async function withThrowawayAgent(
       }),
       observed: (observed) => { pid = observed },
     }, deadline)
+  } catch (error) {
+    failures.push(error)
+    throw error
   } finally {
     deadline.clear()
     const cleanup = OperationDeadline.start(cleanupBudget)
+    // Each step runs whatever the steps before it did. A stop file that cannot
+    // be written must not skip the bootout, and a wait that fails must not
+    // leave the temporary home behind.
+    const failed: unknown[] = []
+    const step = async (work: () => Promise<unknown>) => {
+      try { await work() } catch (error) { failed.push(error) }
+    }
     try {
       // Cleanup runs whatever the assertions did, and never depends on the
       // removal under test having worked. A deliberately broken remover may
@@ -293,29 +304,50 @@ async function withThrowawayAgent(
       // private path, never kill by a PID which might have been reused.
       const ready = readyPath
       if (ready !== undefined && existsSync(ready)) {
-        await withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop"))
+        await step(() => withinServiceDeadline(cleanup, () => writeFile(`${ready}.stop`, "stop")))
       }
       if (bootoutArmed) {
         // An install that failed after launchd accepted the job still leaves
         // one to retire, and booting out a label that was never bootstrapped
         // only answers non-zero.
-        await launchctl(["bootout", target], cleanup)
+        await step(async () => {
+          await launchctl(["bootout", target], cleanup)
+          // Booting out is asynchronous: the command returns before launchd
+          // has finished retiring the job, so this waits for the domain to
+          // stop answering for the label rather than sampling it once. A
+          // label that still answers is asked again, because a bootstrap still
+          // in flight when the body's deadline fired lands after the first
+          // bootout, and waiting alone would leave that agent loaded.
+          await withinServiceDeadline(cleanup, () => vi.waitFor(async () => {
+            cleanup.throwIfExpired()
+            if ((await launchctl(["print", target], cleanup)).code === 0) {
+              await launchctl(["bootout", target], cleanup)
+              throw new Error(`${target} is still loaded`)
+            }
+          }, { timeout: 10_000, interval: 250 }))
+        })
         const started = pid
-        if (started !== undefined) await withinServiceDeadline(cleanup, () => waitForDaemon(() => {
+        if (started !== undefined) await step(() => withinServiceDeadline(cleanup, () => waitForDaemon(() => {
           cleanup.throwIfExpired()
           expect(() => process.kill(started, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }))
-        }))
-        // Booting out is asynchronous: the command returns before launchd has
-        // finished retiring the job, so this waits for the domain to stop
-        // answering for the label rather than sampling it once.
-        await withinServiceDeadline(cleanup, () => vi.waitFor(async () => {
-          cleanup.throwIfExpired()
-          expect((await launchctl(["print", target], cleanup)).code).not.toBe(0)
-        }, { timeout: 10_000, interval: 250 }))
+        })))
       }
+      // The home goes last and goes whatever happened above. launchd retires a
+      // label without reading its plist, so keeping the home helps no
+      // recovery, while removing it takes away the program a loaded leftover
+      // would relaunch.
       const created = installedHome
-      if (created !== undefined) await withinServiceDeadline(cleanup, () => rm(created, { recursive: true, force: true }))
+      if (created !== undefined) await step(() => rm(created, { recursive: true, force: true }))
     } finally { cleanup.clear() }
+    if (failed.length > 0) {
+      const recovery = bootoutArmed
+        ? ` If launchctl print ${target} still answers, run launchctl bootout ${target}.`
+        : ""
+      // Thrown from the finally, this replaces the body's own failure, so that
+      // failure travels inside it.
+      // eslint-disable-next-line no-unsafe-finally
+      throw new AggregateError([...failures, ...failed], `Native launchd cleanup for ${label} did not complete.${recovery}`)
+    }
   }
 }
 
@@ -648,6 +680,53 @@ it.runIf(posixTemporaryHome)("sends the installer's own bootstrap through the fe
     `launchctl bootout ${bootstrapped}`,
   ])
   expect(commands(withBootstrap.calls).some((command) => command.endsWith(`/${productionLabel}`))).toBe(false)
+}, scriptedBudget + cleanupBudget + 1_000)
+
+it("boots out and removes the home even when an earlier cleanup step fails", async () => {
+  // The cleanup used to run its steps in one sequence, so a stop file it could
+  // not write skipped the bootout and left the agent loaded, and any failed
+  // wait skipped the temporary home. Here the stop file cannot be written, the
+  // body itself fails, and the install was attempted, so a bootout is owed.
+  const refused = scriptedManager((_call, service) => notFound(service), new Error("the scripted manager refused the bootstrap"))
+  let attempted: string | undefined
+  let home: string | undefined
+  const failure = await withThrowawayAgent(scriptedBudget, async (throwaway, deadline) => {
+    attempted = throwaway.target
+    home = throwaway.home
+    await expect(throwaway.install(deadline)).rejects.toThrow()
+    await mkdir(posix.dirname(throwaway.readyPath), { recursive: true })
+    await writeFile(throwaway.readyPath, "1")
+    // A directory where the stop file goes makes that write fail.
+    await mkdir(`${throwaway.readyPath}.stop`)
+    throw new Error("the body failed")
+  }, refused.effects).then(() => undefined, (error: unknown) => error)
+
+  expect(bootouts(refused.calls)).toEqual([`launchctl bootout ${attempted}`])
+  expect(home !== undefined && existsSync(home)).toBe(false)
+  // Neither failure hides the other, and the message names the way out.
+  expect(failure).toBeInstanceOf(AggregateError)
+  const reasons = (failure as AggregateError).errors.map((error) => String(error))
+  expect(reasons.some((reason) => reason.includes("the body failed"))).toBe(true)
+  expect(reasons.some((reason) => /EISDIR|EPERM|EACCES/.test(reason))).toBe(true)
+  expect((failure as AggregateError).message).toContain(`launchctl bootout ${attempted}`)
+}, scriptedBudget + cleanupBudget + 1_000)
+
+it("asks again when the agent outlives the first bootout", async () => {
+  // launchd can still list the label after a bootout it accepted, and a
+  // bootstrap still in flight when the body's deadline fired lands after the
+  // first bootout. Waiting alone leaves that agent loaded; asking again
+  // retires it.
+  let calls: readonly ManagerCall[] = []
+  const lingering = scriptedManager((_call, service) => (bootouts(calls).length === 1
+    ? printedAgent(service, `/tmp/${productionAgent}`)
+    : notFound(service)), new Error("the scripted manager refused the bootstrap"))
+  calls = lingering.calls
+  let attempted: string | undefined
+  await withThrowawayAgent(scriptedBudget, async (throwaway, deadline) => {
+    attempted = throwaway.target
+    await expect(throwaway.install(deadline)).rejects.toThrow()
+  }, lingering.effects)
+  expect(bootouts(lingering.calls)).toEqual([`launchctl bootout ${attempted}`, `launchctl bootout ${attempted}`])
 }, scriptedBudget + cleanupBudget + 1_000)
 
 it("compares the file launchd names, not the spelling it uses", async () => {
