@@ -71,7 +71,9 @@ most 260 characters under Task Scheduler's
 The PowerShell registration command line must be at most 32,766 characters, leaving room for the
 terminating null required by
 [CreateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw).
-UTF-16/base64 encoding leaves room for a task command of roughly 10,000 characters in practice.
+The script is UTF-16 and base64 encoded, and the program, arguments and user inside it are UTF-8 and
+base64 encoded again, so an ASCII task command of about 8,000 characters fits; non-ASCII characters
+fit fewer.
 Both refusals happen before file writes and name the length and the responsible path part.
 Use shorter absolute installation paths if either limit is exceeded.
 
