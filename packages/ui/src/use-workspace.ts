@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 
-import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, StateRecovery, ToolInventory, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalSession, TerminalSummary, TerminalWatchResult, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
+import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, StateRecovery, ToolInventory, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalResizedNotification, TerminalSession, TerminalSummary, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
-import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint } from "./client"
+import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint, type TerminalWatch, type TerminalWatchOptions } from "./client"
 import type { ClientAdmission } from "./client-admission-policy"
 import { Deadline } from "./deadline"
 import { applyWorkspaceDelta, openCommentReviewFor } from "@getdomovoi/protocol"
@@ -834,16 +834,27 @@ export function useWorkspace(
     return client.claimTerminal(terminalId)
   }, [])
 
+  const releaseTerminal = useCallback(async (
+    terminalId: string,
+  ): Promise<TerminalOwnershipNotification> => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.releaseTerminal(terminalId)
+  }, [])
+
   const listTerminals = useCallback(async (sessionId: string): Promise<TerminalSummary[]> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
     return client.listTerminals(sessionId)
   }, [])
 
-  const watchTerminal = useCallback(async (terminalId: string): Promise<TerminalWatchResult> => {
+  const watchTerminal = useCallback(async (
+    terminalId: string,
+    options?: TerminalWatchOptions,
+  ): Promise<TerminalWatch> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    return client.watchTerminal(terminalId)
+    return client.watchTerminal(terminalId, options)
   }, [])
 
   const unwatchTerminal = useCallback(async (terminalId: string): Promise<void> => {
@@ -858,10 +869,15 @@ export function useWorkspace(
       output: (event: TerminalOutputNotification) => void
       closed: (event: TerminalClosedNotification) => void
       ownership: (event: TerminalOwnershipNotification) => void
+      resized?: (event: TerminalResizedNotification) => void
     },
   ): (() => void) => {
     const client = clientRef.current
     if (!client) return () => {}
+    const resized = (event: Event) => {
+      const detail = (event as CustomEvent<TerminalResizedNotification>).detail
+      if (detail.terminalId === terminalId) handlers.resized?.(detail)
+    }
     const output = (event: Event) => {
       const detail = (event as CustomEvent<TerminalOutputNotification>).detail
       if (detail.terminalId === terminalId) handlers.output(detail)
@@ -877,10 +893,12 @@ export function useWorkspace(
     client.addEventListener("terminal-output", output)
     client.addEventListener("terminal-closed", closed)
     client.addEventListener("terminal-ownership", ownership)
+    client.addEventListener("terminal-resized", resized)
     return () => {
       client.removeEventListener("terminal-output", output)
       client.removeEventListener("terminal-closed", closed)
       client.removeEventListener("terminal-ownership", ownership)
+      client.removeEventListener("terminal-resized", resized)
     }
   }, [])
 
@@ -928,6 +946,7 @@ export function useWorkspace(
     authorizeArtifact,
     authenticationRequired,
     claimTerminal,
+    releaseTerminal,
     closeTerminal,
     connected,
     connectionId,
