@@ -24,9 +24,10 @@ import { nativeServiceTestsEnabled } from "../test-native-service-gate.js"
 // No test speed knob is exposed in the production configuration.
 const lifecycleBudget = 180_000
 const cleanupBudget = 60_000
-// Carved out of cleanupBudget, so a stop step that spends its whole slice
-// still leaves the removal time of its own.
-const removalBudget = 20_000
+// Carved out of cleanupBudget, so a stop or removal step that spends its whole
+// slice still leaves the steps after it time of their own.
+const removalBudget = 15_000
+const deletionBudget = 15_000
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`
 const powershell = (script: string): ServiceCommand => ({ command: windowsPowerShellPath(),
   args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")] })
@@ -278,7 +279,7 @@ it.runIf(windowsNative).each(["exhaustion", "stop", "unstarted"] as const)("prov
     }
     let absent = !created || removed
     if (!absent) {
-      const stopping = OperationDeadline.start(cleanupBudget - removalBudget)
+      const stopping = OperationDeadline.start(cleanupBudget - removalBudget - deletionBudget)
       try {
         await step(() => capture(plan.disable!, stopping))
         if (started) await step(() => stopWindowsSupervisor(path, stopping))
@@ -290,19 +291,23 @@ it.runIf(windowsNative).each(["exhaustion", "stop", "unstarted"] as const)("prov
           const present = await capture(plan.inspect, removal)
           if (present.stdout.trim() !== "domovoi-task:missing") expect((await capture(plan.remove, removal)).code).toBe(0)
         })
-        // The plan's removal refuses a task that is not disabled and stopped.
-        // schtasks /delete /f does not, so a stop step that failed above still
-        // leaves no logon task registered in this account.
+      } finally { removal.clear() }
+      // The plan's removal refuses a task that is not disabled and stopped.
+      // schtasks /delete /f does not, so a stop step that failed above still
+      // leaves no logon task registered in this account. Its own slice keeps a
+      // removal that ran out of time from starving it.
+      const deletion = OperationDeadline.start(deletionBudget)
+      try {
         await step(async () => {
-          let present = await capture(plan.inspect, removal)
+          let present = await capture(plan.inspect, deletion)
           if (present.stdout.trim() !== "domovoi-task:missing") {
-            await capture({ command: windowsSchtasksPath(), args: ["/delete", "/tn", name, "/f"] }, removal)
-            present = await capture(plan.inspect, removal)
+            await capture({ command: windowsSchtasksPath(), args: ["/delete", "/tn", name, "/f"] }, deletion)
+            present = await capture(plan.inspect, deletion)
           }
           if (present.code !== 0 || present.stdout.trim() !== "domovoi-task:missing") throw new Error(`Task Scheduler still lists ${name}`)
           absent = true
         })
-      } finally { removal.clear() }
+      } finally { deletion.clear() }
     }
     // The directory holds the task's configuration, so it goes only once the
     // task is gone. A task still registered keeps it for inspection.

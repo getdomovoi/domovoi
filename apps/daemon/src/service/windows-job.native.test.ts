@@ -11,7 +11,6 @@ import { createServiceConfiguration, serializeServiceConfiguration } from "./con
 import { readWindowsSupervisorRecord } from "./supervisor-record.js"
 import { readWindowsSupervisorStatus, stopWindowsSupervisor } from "./windows-job-supervisor.js"
 import { OperationDeadline } from "../operation-deadline.js"
-import { windowsTreeKill } from "../claude-process.js"
 import { nativeServiceTestsEnabled } from "../test-native-service-gate.js"
 
 // These tests start real job objects, supervisors and daemon trees in the
@@ -78,6 +77,7 @@ it.runIf(windowsNative)("contains descendants, gates resume, refuses collisions,
   expect(before.bootId).toBe(`windows-boot:${counter}`)
   const jobName = `Global\\Domovoi-${randomUUID()}`
   let job: WindowsJob | undefined
+  const failures: unknown[] = []
   try {
     vi.stubEnv("PSModulePath", "C:\\PowerShell 7\\Modules;C:\\Domovoi-tëst-ü\\User's Modules")
     const executable = process.execPath
@@ -107,10 +107,19 @@ it.runIf(windowsNative)("contains descendants, gates resume, refuses collisions,
     expect(await job.exited).toMatchObject({ activeProcesses: 0, terminated: true, stopped: false, bootId: before.bootId })
     expect(queryWindowsProcess(pids!.descendant).identity).not.toEqual(descendant)
     expect(queryWindowsProcess(process.pid)).toEqual(before)
+  } catch (error) {
+    failures.push(error)
+    throw error
   } finally {
     vi.unstubAllEnvs()
-    // Never delete the proof directory if cleanup cannot be established.
-    if (job) await job.stop()
+    // Never delete the proof directory if cleanup cannot be established. The
+    // test's own failure travels with a failed stop.
+    try { if (job) await job.stop() } catch (error) {
+      // Thrown from the finally, this replaces the body's own failure, so that
+      // failure travels inside it.
+      // eslint-disable-next-line no-unsafe-finally
+      throw new AggregateError([...failures, error], "Native Windows job cleanup did not complete", { cause: error })
+    }
     rmSync(directory, { recursive: true, force: true })
   }
 }, 90_000)
@@ -150,7 +159,8 @@ function supervisorFixture(prefix: string) {
       await delay(100)
     }
   }
-  const cleanup = async () => {
+  // The test's own failure travels with any cleanup failure.
+  const cleanup = async (failures: unknown[]) => {
     deadline.clear()
     const cleanup = OperationDeadline.start(30_000)
     try {
@@ -160,13 +170,12 @@ function supervisorFixture(prefix: string) {
       rmSync(home, { recursive: true, force: true })
     } catch (error) {
       // A supervisor that did not stop keeps its job helper and the daemon
-      // tree running in this account after the run. It is this test's own
-      // child and its exit has not been observed, so Node still holds its
-      // process handle and its PID cannot name another process. Ending its
-      // tree ends the helper, and the job, which kills on close, takes the
-      // daemon and its descendants with it.
-      if (!ended() && supervisor.pid !== undefined) await windowsTreeKill(supervisor.pid).catch(() => supervisor.kill())
-      throw error
+      // tree running in this account after the run. Node ends its own child
+      // through the process handle it holds, never by a PID that may have
+      // been reused. The helper reads a closed input as a stop and terminates
+      // the job, which takes the daemon and its descendants with it.
+      if (!ended()) supervisor.kill("SIGKILL")
+      throw new AggregateError([...failures, error], "Native Windows supervisor cleanup did not complete", { cause: error })
     } finally { cleanup.clear() }
   }
   return { home, directory, marker, poll, ended, restart: () => { supervisor = start() }, cleanup }
@@ -175,6 +184,7 @@ function supervisorFixture(prefix: string) {
 it.runIf(windowsNative)("recovers a supervisor after helper death closes its Global job", async () => {
   const f = supervisorFixture("domovoi-helper-death-")
   const { home, marker, poll, ended } = f
+  const failures: unknown[] = []
   try {
     await poll("first running attempt", () => readWindowsSupervisorRecord(home)?.state === "running" && existsSync(marker))
     const first = readWindowsSupervisorRecord(home)!, attempt = first.attempts[0]!
@@ -193,12 +203,16 @@ it.runIf(windowsNative)("recovers a supervisor after helper death closes its Glo
       return record?.state === "running" && record.supervisorId !== first.supervisorId
     })
     expect(readWindowsSupervisorRecord(home)!.attempts[0]!.job).not.toBe(attempt.job)
-  } finally { await f.cleanup() }
+  } catch (error) {
+    failures.push(error)
+    throw error
+  } finally { await f.cleanup(failures) }
 }, 155_000)
 
 it.runIf(windowsNative)("keeps supervising while an open record delays crash publication", async () => {
   const f = supervisorFixture("domovoi-record-held-")
   let handle: number | undefined
+  const failures: unknown[] = []
   try {
     await f.poll("first running attempt", () => readWindowsSupervisorRecord(f.home)?.state === "running" && existsSync(f.marker))
     const first = readWindowsSupervisorRecord(f.home)!, attempt = first.attempts[0]!
@@ -218,8 +232,11 @@ it.runIf(windowsNative)("keeps supervising while an open record delays crash pub
       return record?.state === "running" && record.supervisorId === first.supervisorId && record.attempts.length === 2 && record.crashes === 1
     })
     expect(f.ended()).toBe(false)
+  } catch (error) {
+    failures.push(error)
+    throw error
   } finally {
     if (handle !== undefined) closeSync(handle)
-    await f.cleanup()
+    await f.cleanup(failures)
   }
 }, 155_000)

@@ -40,26 +40,35 @@ const register = async (command: ServiceCommand, name: string, deadline: Operati
 }
 // Stdin is closed so a password prompt fails at once instead of waiting.
 const schtasks = (args: string[]) => spawnSync(windowsSchtasksPath(), args, { input: "", encoding: "utf8", timeout: 30_000, windowsHide: true })
-// schtasks may emit UTF-16 through its redirected output.
-// Deletes each task whatever the test did. Every delete stands alone, and only
-// Task Scheduler reporting the task missing afterwards counts as removed: a
-// task it still lists, or one it cannot answer for, fails the test with the
-// command that removes it by hand, and the test's own failure travels with it.
-async function deleteTasks(names: string[], failures: unknown[]): Promise<void> {
-  const left: string[] = []
-  const deadline = OperationDeadline.start(60_000)
-  try {
-    for (const name of names) {
-      schtasks(["/delete", "/tn", name, "/f"])
-      const { inspect } = windowsTaskRemovalPlan(name)
+// Each task's cleanup has its own slices, the delete and then Task Scheduler's
+// answer, so one slow task never spends another's time. Every test's timeout
+// covers its body's deadline plus the cleanup of two tasks.
+const bodyBudget = 120_000
+const deleteBudget = 10_000
+const verifyBudget = 15_000
+const testBudget = bodyBudget + 2 * (deleteBudget + verifyBudget) + 5_000
+// Deletes each task whatever the test did, then runs the test's other cleanup.
+// Every step stands alone, and only Task Scheduler reporting a task missing
+// afterwards counts as removed: a task it still lists, or one it cannot answer
+// for, fails the test with the command that removes it by hand. The test's own
+// failure travels with every cleanup failure.
+async function cleanUp(failures: unknown[], names: string[], after?: () => Promise<void>): Promise<void> {
+  const failed: unknown[] = []
+  for (const name of names) {
+    spawnSync(windowsSchtasksPath(), ["/delete", "/tn", name, "/f"], { input: "", encoding: "utf8", timeout: deleteBudget, windowsHide: true })
+    const { inspect } = windowsTaskRemovalPlan(name)
+    const deadline = OperationDeadline.start(verifyBudget)
+    try {
       const state = await effects.capture(inspect.command, inspect.args, deadline).catch(() => undefined)
-      if (state?.code !== 0 || state.stdout.trim() !== "domovoi-task:missing") left.push(name)
-    }
-  } finally { deadline.clear() }
-  if (left.length > 0) {
-    throw new AggregateError(failures, `Native Windows task cleanup did not complete. Run schtasks /delete /tn "<name>" /f for ${left.join(", ")}.`)
+      if (state?.code !== 0 || state.stdout.trim() !== "domovoi-task:missing") {
+        failed.push(new Error(`Task Scheduler still lists ${name}, or did not answer. Run schtasks /delete /tn "${name}" /f.`))
+      }
+    } finally { deadline.clear() }
   }
+  if (after) { try { await after() } catch (error) { failed.push(error) } }
+  if (failed.length > 0) throw new AggregateError([...failures, ...failed], "Native Windows task cleanup did not complete")
 }
+// schtasks may emit UTF-16 through its redirected output.
 const queryXml = (name: string) => {
   const queried = schtasks(["/query", "/tn", name, "/xml"])
   expect(queried.status, `${queried.stdout}${queried.stderr}`).toBe(0)
@@ -110,7 +119,7 @@ it.runIf(windowsNative)("registers the action an older Domovoi's schtasks /creat
   const command = `"${runtime}" "${entry}" --service-supervise "${configurationPath}"`
   const legacy = `Domovoi-legacy-shape-test-${randomUUID()}`
   const current = `Domovoi-com-shape-test-${randomUUID()}`
-  const deadline = OperationDeadline.start(120_000)
+  const deadline = OperationDeadline.start(bodyBudget)
   const failures: unknown[] = []
   try {
     // What an older Domovoi ran, with this test's name and no /f.
@@ -145,9 +154,9 @@ it.runIf(windowsNative)("registers the action an older Domovoi's schtasks /creat
     throw error
   } finally {
     deadline.clear()
-    await deleteTasks([legacy, current], failures)
+    await cleanUp(failures, [legacy, current])
   }
-}, 150_000)
+}, testBudget)
 
 it.runIf(windowsNative)("registers, reads back and removes a task command well over 261 characters", async () => {
   const base = await mkdtemp(join(tmpdir(), "domovoi-long-"))
@@ -161,7 +170,7 @@ it.runIf(windowsNative)("registers, reads back and removes a task command well o
   const entry = join(copy, "daemon", "dist", "index.js")
   const configurationPath = join(home, ".domovoi", "service.json")
   const name = `Domovoi-long-command-test-${randomUUID()}`
-  const deadline = OperationDeadline.start(120_000)
+  const deadline = OperationDeadline.start(bodyBudget)
   const failures: unknown[] = []
   let removed = false
   try {
@@ -186,10 +195,9 @@ it.runIf(windowsNative)("registers, reads back and removes a task command well o
     throw error
   } finally {
     deadline.clear()
-    try { await deleteTasks(removed ? [] : [name], failures) }
-    finally { await removeScratchDirectory(base) }
+    await cleanUp(failures, removed ? [] : [name], () => removeScratchDirectory(base))
   }
-}, 150_000)
+}, testBudget)
 
 // Task Scheduler's schema gives an Exec Command at most 260 characters
 // (pathType). The installer refuses a longer program, quotes included; this
@@ -201,7 +209,7 @@ it.runIf(windowsNative)("registers a task program of 260 characters with its quo
   const entry = "C:\\Program Files\\Domovoi\\dist\\index.js"
   const accepted = `Domovoi-program-length-test-${randomUUID()}`
   const over = `Domovoi-program-length-test-${randomUUID()}`
-  const deadline = OperationDeadline.start(120_000)
+  const deadline = OperationDeadline.start(bodyBudget)
   const failures: unknown[] = []
   try {
     const registration = plan(home, entry, runtime).commands[0]!
@@ -220,14 +228,14 @@ it.runIf(windowsNative)("registers a task program of 260 characters with its quo
     throw error
   } finally {
     deadline.clear()
-    await deleteTasks([accepted, over], failures)
+    await cleanUp(failures, [accepted, over])
   }
-}, 150_000)
+}, testBudget)
 
 it.runIf(windowsNative)("round-trips smart and ASCII apostrophes in the program and arguments", async () => {
   const name = `Domovoi-quotes-test-${randomUUID()}`
   const action = { path: `"C:\\Users\\O’Neil'\\node.exe"`, arguments: `"C:\\Users\\O’Neil'\\index.js" --value "‘日本語'"` }
-  const deadline = OperationDeadline.start(120_000)
+  const deadline = OperationDeadline.start(bodyBudget)
   const failures: unknown[] = []
   let removed = false
   try {
@@ -241,6 +249,6 @@ it.runIf(windowsNative)("round-trips smart and ASCII apostrophes in the program 
     throw error
   } finally {
     deadline.clear()
-    await deleteTasks(removed ? [] : [name], failures)
+    await cleanUp(failures, removed ? [] : [name])
   }
-}, 150_000)
+}, testBudget)

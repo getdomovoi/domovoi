@@ -1220,8 +1220,8 @@ Remove the `domovoi-systemd-` home only once the unit reports `LoadState=not-fou
 
 `src/service/windows-task.native.test.ts`, `src/service/windows-task-command.native.test.ts` and
 `src/service/windows-job.native.test.ts` run only on Windows, and there only when `CI` is set to a
-value other than empty, `0` or `false`, or when `DOMOVOI_NATIVE_SERVICE_TESTS=1`. Otherwise they
-skip, printing the reason. The first two register throwaway logon tasks in your account, named
+value other than empty, `0` or `false` in any letter case, or when `DOMOVOI_NATIVE_SERVICE_TESTS=1`.
+Otherwise, on Windows they skip and print the reason; on other systems they skip without one. The first two register throwaway logon tasks in your account, named
 `Domovoi-supervision-test-<uuid>`, `Domovoi-legacy-shape-test-<uuid>`,
 `Domovoi-com-shape-test-<uuid>`, `Domovoi-long-command-test-<uuid>`,
 `Domovoi-program-length-test-<uuid>` and `Domovoi-quotes-test-<uuid>`. Their cleanup deletes each
