@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { existsSync, readFileSync } from "node:fs"
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
-import { tmpdir } from "node:os"
+import { mkdir, mkdtemp, stat, writeFile } from "node:fs/promises"
+import { tmpdir, userInfo } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { setTimeout as delay } from "node:timers/promises"
@@ -11,8 +11,9 @@ import { OperationDeadline } from "../operation-deadline.js"
 import { readLocalOwnerRecord } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { createServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
-import { nodeServiceEffects, removeService, runServiceCommand, serviceStatus, type ServiceCommand, type ServiceEffects } from "./install.js"
-import { disableWindowsTask, stopWindowsTask, windowsPowerShellPath, windowsSchtasksPath, windowsTaskRemovalPlan, windowsTaskSettingsCommand } from "./windows-task.js"
+import { nodeServiceEffects, removeService, runServiceCommand, servicePlan, serviceStatus, type ServiceCommand, type ServiceEffects } from "./install.js"
+import { disableWindowsTask, stopWindowsTask, windowsPowerShellPath, windowsSchtasksPath, windowsTaskRemovalPlan } from "./windows-task.js"
+import { updateDaemonService } from "./desktop-service.js"
 import { readSupervisorStopRequest, readWindowsSupervisorRecord, type WindowsSupervisorRecord } from "./supervisor-record.js"
 import { stopWindowsSupervisor } from "./windows-job-supervisor.js"
 import { queryWindowsProcess, queryWindowsProcesses } from "./windows-job.js"
@@ -29,10 +30,13 @@ const powershell = (script: string): ServiceCommand => ({ command: windowsPowerS
 it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] as const)("proves native Windows supervised %s and removal", async (mode) => {
   const name = `Domovoi-supervision-test-${randomUUID()}`
   const deadline = OperationDeadline.start(lifecycleBudget)
-  const directory = await mkdtemp(join(tmpdir(), "domovoi-task-"))
+  const base = await mkdtemp(join(tmpdir(), "domovoi-task-"))
+  const entry = fileURLToPath(new URL("../../dist/index.js", import.meta.url))
+  // Exceed the former command limit without needlessly lengthening SQLite paths.
+  const shortCommand = `"${process.execPath}" "${entry}" --service-supervise "${serviceConfigurationPath(base, "win32")}"`
+  const directory = join(base, "h".repeat(Math.max(1, 280 - shortCommand.length)))
   const profile = { profileDirectory: join(directory, "profile") }
   const path = serviceConfigurationPath(directory, "win32")
-  const entry = fileURLToPath(new URL("../../dist/index.js", import.meta.url))
   const effects = nodeServiceEffects({ userHomeDirectory: directory })
   const plan = windowsTaskRemovalPlan(name)
   let created = false, started = false, removed = false
@@ -96,13 +100,23 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
   }
   // The only substitution redirects the task name. All scheduler, helper,
   // record, status-handler and removal operations execute their real paths.
-  const scoped: ServiceEffects = { ...effects, capture: (command, args, active) => {
+  const renamed = ({ command, args }: ServiceCommand): ServiceCommand => {
+    if (command === windowsSchtasksPath() && args[0] === "/run" && args[1] === "/tn" && args[2] === "Domovoi daemon") {
+      return { command, args: ["/run", "/tn", name] }
+    }
     if (command !== windowsPowerShellPath()) throw new Error("Unexpected manager command")
     const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
     const named = `$name = ${literal("Domovoi daemon")}`
     if (!script.includes(named)) throw new Error("Refusing a command outside the UUID task")
-    return capture(powershell(script.replace(named, `$name = ${literal(name)}`)), active)
-  } }
+    return powershell(script.replace(named, `$name = ${literal(name)}`))
+  }
+  const scoped: ServiceEffects = { ...effects,
+    capture: (command, args, active) => capture(renamed({ command, args }), active),
+    run: (command, args, active) => {
+      const named = renamed({ command, args })
+      return effects.run(named.command, named.args, active)
+    },
+  }
   const killDaemon = (state: WindowsSupervisorRecord) => {
     const child = state.attempts.at(-1)?.child
     expect(child).not.toBeNull()
@@ -117,30 +131,14 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
       { platform: "win32", homeDirectory: directory, workingDirectory: directory }), registrationId: randomUUID(),
       serviceRuntime: { executable: process.execPath, entry } }
     await writeFile(path, serializeServiceConfiguration(config))
-    // TASK_CREATE (2), never overwrite an existing task. The same limited-user
-    // logon shape as installation, but its name and profile belong to this test.
+    // The production plan, with only its name redirected to the absent UUID task.
+    const install = servicePlan({ platform: "win32", home: directory, user: userInfo().username,
+      execPath: entry, runtime: process.execPath, configuration: config })
+    expect(`"${process.execPath}" "${entry}" --service-supervise "${path}"`.length).toBeGreaterThan(261)
     created = true
-    const registration = await capture(powershell(`
-$ErrorActionPreference = 'Stop'
-$scheduler = New-Object -ComObject 'Schedule.Service'
-$scheduler.Connect()
-$folder = $scheduler.GetFolder('\\')
-$definition = $scheduler.NewTask(0)
-$definition.Settings.AllowDemandStart = $true
-$definition.Principal.UserId = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-$definition.Principal.LogonType = 3
-$definition.Principal.RunLevel = 0
-$trigger = $definition.Triggers.Create(9)
-$trigger.UserId = $definition.Principal.UserId
-$action = $definition.Actions.Create(0)
-$action.Path = ${literal(process.execPath)}
-$action.Arguments = ${literal(`"${entry}" --service-supervise "${path}"`)}
-$null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $definition.Principal.UserId, $null, 3, $null)
-[Console]::Out.WriteLine('created')
-`))
-    expect(registration).toMatchObject({ code: 0, stdout: "created\r\n" })
+    const registration = await capture(renamed(install.commands[0]!))
+    expect(registration.code, registration.stderr).toBe(0)
     timing("install: task registered")
-    expect((await capture(windowsTaskSettingsCommand(name))).code).toBe(0)
     const xml = await capture({ command: windowsSchtasksPath(), args: ["/query", "/tn", name, "/xml"] })
     expect(xml.code).toBe(0)
     // schtasks may emit UTF-16 through its redirected output. These three XML
@@ -205,6 +203,23 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
       expect(stderr).not.toHaveBeenCalled()
       timing("status: exhausted")
     } else {
+      const runtime = { nodePath: process.execPath, daemonEntryPath: entry }
+      const dependencies = { ...scoped, platform: "win32", home: directory, user: userInfo().username,
+        runtimeFile: async (file: string) => (await stat(file)).isFile() ? "file" as const : "not-file" as const }
+      const oldInstance = readyInstance()
+      expect(await updateDaemonService({ runtime }, dependencies)).toMatchObject({ kind: "task" })
+      expect(readyInstance()).not.toBe(oldInstance)
+      expect(await serviceStatus({ platform: "win32", home: directory }, scoped)).toMatchObject({ installed: true, running: true })
+      timing("update: new instance ready")
+      const updatedInstance = readyInstance()
+      let failStart = true
+      await expect(updateDaemonService({ runtime }, { ...dependencies, run: async (command, args, active) => {
+        if (args[0] === "/run" && failStart) { failStart = false; throw new Error("Injected demand-start failure") }
+        await scoped.run(command, args, active)
+      } })).rejects.toMatchObject({ outcome: "swap-failed-restored" })
+      expect(readyInstance()).not.toBe(updatedInstance)
+      expect(await serviceStatus({ platform: "win32", home: directory }, scoped)).toMatchObject({ installed: true, running: true })
+      timing("update rollback: restored instance ready")
       await disableWindowsTask(plan, effects, deadline)
       await stopWindowsSupervisor(path, deadline, { retire: false, stopTask: async () => {
         expect(readSupervisorStopRequest(profile)?.registrationId).toBe(config.registrationId)
@@ -247,7 +262,7 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
         if (present.stdout.trim() !== "domovoi-task:missing") expect((await capture(plan.remove, cleanup)).code).toBe(0)
       }
       // A failed proof retains this directory and UUID task for inspection.
-      await removeScratchDirectory(directory)
+      await removeScratchDirectory(base)
       timing("cleanup")
     } finally { cleanup.clear() }
   }

@@ -153,14 +153,15 @@ function fake(platform: string, home: string, overrides: Partial<Fake> = {}, con
     }),
     write: vi.fn(async (path: string, contents: string) => { order.push(`write ${path}`); files.set(path, contents) }),
     run: vi.fn(async (command: string, args: string[]) => {
-      // The step after /create that lifts the 72 hour limit and battery stops.
-      order.push(script(args).includes("ExecutionTimeLimit = 'PT0S'") ? "set task settings" : `${tool(command)} ${args.join(" ")}`)
+      // Registration includes the execution limit and battery settings.
+      order.push(registeredAction(args) ? "register task" : `${tool(command)} ${args.join(" ")}`)
       if (args[0] === "bootout") agentLoaded = false
       if (args[0] === "bootstrap") {
         agentLoaded = true
         effects.agentLoadedFrom = effects.bootstrapLoadsFrom ?? args[2]!
       }
-      if (args[0] === "/create") { effects.task.definition = args[args.indexOf("/tr") + 1]!; effects.task.enabled = true }
+      const action = registeredAction(args)
+      if (action) { effects.task.definition = `${action.path} ${action.arguments}`; effects.task.enabled = true }
       if (args[0] === "/run") {
         if (effects.task.running) return
         effects.task.running = true
@@ -565,7 +566,7 @@ describe("updateDaemonService with a Windows logon task", () => {
       return result
     })
     effects.run = vi.fn(async (command, args, deadline) => {
-      if (args[0] === "/create") {
+      if (registeredAction(args)) {
         if (++creates === 1) throw new Error("create failed")
         exists = true
       }
@@ -604,9 +605,9 @@ describe("updateDaemonService with a Windows logon task", () => {
     const legacyCommand = oldWindowsCommand.replace("--service-supervise", "--service-config")
     effects.task.definition = legacyCommand
     const run = effects.run
-    let settings = 0
+    let runs = 0
     effects.run = vi.fn(async (command, args, deadline) => {
-      if (script(args).includes("ExecutionTimeLimit") && ++settings === 1) throw new Error("settings failed")
+      if (args[0] === "/run" && ++runs === 1) throw new Error("run failed")
       await run(command, args, deadline)
     })
     await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toMatchObject({ outcome: "swap-failed-restored" })
@@ -617,11 +618,11 @@ describe("updateDaemonService with a Windows logon task", () => {
   it("stops the task, holds the profile, re-registers it with the new command and runs it", async () => {
     const effects = fake("win32", "C:\\Users\\dl")
     expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
-    const created = vi.mocked(effects.run).mock.calls.find(([, args]) => args[0] === "/create")![1]
-    expect(created[created.indexOf("/tr") + 1]).toMatch(/^"C:\\Program Files\\Domovoi\\runtime-2\\node\.exe" "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index\.js" --service-supervise /)
-    expect(created).toContain("/f")
+    const created = registeredActions(effects)[0]!
+    expect(`${created.path} ${created.arguments}`).toMatch(/^"C:\\Program Files\\Domovoi\\runtime-2\\node\.exe" "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index\.js" --service-supervise /)
+    expect(script(vi.mocked(effects.run).mock.calls[0]![1])).toContain("$definition, 6, 'dl', $null, 3, $null)")
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
-      "read task", "disable task", "prove Windows", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "set task", "schtasks /run",
+      "read task", "disable task", "prove Windows", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "register task", "schtasks /run",
     ])
   })
 
@@ -634,7 +635,7 @@ describe("updateDaemonService with a Windows logon task", () => {
     const publish = vi.fn(async () => { effects.order.push("publish") })
     await updateDaemonService({ runtime: windowsRuntime, staged: { runtime: staged, publish } }, effects)
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
-      "read task", "disable task", "prove Windows", "stop task", "claim", "publish", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "schtasks /create", "set task", "schtasks /run",
+      "read task", "disable task", "prove Windows", "stop task", "claim", "publish", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "register task", "schtasks /run",
     ])
   })
 
@@ -649,13 +650,13 @@ describe("updateDaemonService with a Windows logon task", () => {
     await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(
       "Domovoi could not start the service on the new runtime: ERROR: Access is denied. The previous service was put back and is running.",
     )
-    const restoredTask = vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create").at(-1)![1]
-    expect(restoredTask[restoredTask.indexOf("/tr") + 1]).toBe("\"C:\\Program Files\\Domovoi\\runtime-1\\node.exe\" \"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-supervise \"C:\\Users\\dl\\.domovoi\\service.json\"")
+    const restoredTask = registeredActions(effects).at(-1)!
+    expect(`${restoredTask.path} ${restoredTask.arguments}`).toBe("\"C:\\Program Files\\Domovoi\\runtime-1\\node.exe\" \"C:\\Program Files\\Domovoi\\runtime-1\\daemon\\index.js\" --service-supervise \"C:\\Users\\dl\\.domovoi\\service.json\"")
     expect(effects.stopSupervisor).toHaveBeenNthCalledWith(1, "C:\\Users\\dl\\.domovoi\\service.json", expect.any(OperationDeadline), { retire: false, stopTask: expect.any(Function), confirmNoLaunch: expect.any(Function) })
     expect(effects.stopSupervisor).toHaveBeenNthCalledWith(2, "C:\\Users\\dl\\.domovoi\\service.json", expect.any(OperationDeadline), {
       retire: false, stopTask: expect.any(Function), confirmNoLaunch: expect.any(Function), previousConfigurationDigest: expect.stringMatching(/^[0-9a-f]{64}$/),
     })
-    expect(effects.order.slice(-3)).toEqual([expect.stringMatching(/^schtasks \/create /), "set task settings", "schtasks /run /tn Domovoi daemon"])
+    expect(effects.order.slice(-2)).toEqual(["register task", "schtasks /run /tn Domovoi daemon"])
   })
 
   // Review of 77c28291 (P1): a task held running through the stop wait ran
@@ -679,7 +680,7 @@ describe("updateDaemonService with a Windows logon task", () => {
     const refused = updateDaemonService({ runtime: windowsRuntime }, effects)
     await expect(refused).rejects.toBeInstanceOf(DaemonServiceUpdateError)
     await expect(refused).rejects.toMatchObject({ outcome: "swap-failed-restored" })
-    const created = vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create").map(([, args]) => args[args.indexOf("/tr") + 1])
+    const created = registeredActions(effects).map((action) => `${action.path} ${action.arguments}`)
     expect(created).toEqual([expect.stringContaining("runtime-1")])
     expect(effects.order.at(-1)).toBe("schtasks /run /tn Domovoi daemon")
     expect(effects.serviceLease.release).toHaveBeenCalledOnce()
@@ -693,17 +694,23 @@ describe("updateDaemonService with a Windows logon task", () => {
     expect(effects.run).not.toHaveBeenCalled()
   })
 
-  // schtasks /create resets a task's settings to Task Scheduler's defaults, a
-  // 72 hour execution limit and stops on battery, so each registration, the
-  // swap's and the restore's, is followed by the settings step before its run.
-  it("sets the execution limit and battery settings after every registration", async () => {
+  // Both the swap and restore set the execution limit and battery rules
+  // inside their registration, before running the task.
+  it("sets the execution limit and battery settings in every registration", async () => {
     const effects = fake("win32", "C:\\Users\\dl", { crashingStarts: 1 })
     await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
-    const steps = vi.mocked(effects.run).mock.calls.map(([command, args]) => tool(command) === "schtasks" ? args[0] : script(args).includes("ExecutionTimeLimit = 'PT0S'") ? "settings" : command)
-    expect(steps).toEqual(["/create", "settings", "/run", "/create", "settings", "/run"])
+    const steps = vi.mocked(effects.run).mock.calls.map(([command, args]) => tool(command) === "schtasks" ? args[0] : registeredAction(args) ? "registration" : command)
+    expect(steps).toEqual(["registration", "/run", "registration", "/run"])
+    for (const [, args] of vi.mocked(effects.run).mock.calls.filter(([, args]) => registeredAction(args))) {
+      const body = script(args)
+      for (const setting of ["$definition.Settings.ExecutionTimeLimit = 'PT0S'", "$definition.Settings.DisallowStartIfOnBatteries = $false", "$definition.Settings.StopIfGoingOnBatteries = $false"]) {
+        expect(body.indexOf(setting)).toBeGreaterThan(-1)
+        expect(body.indexOf(setting)).toBeLessThan(body.indexOf("$folder.RegisterTaskDefinition("))
+      }
+    }
     // Review F3: the swap's and the restore's schtasks are the one under SystemRoot.
-    expect(vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create" || args[0] === "/run").map(([command]) => command))
-      .toEqual(Array(4).fill("C:\\Windows\\System32\\schtasks.exe"))
+    expect(vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/run").map(([command]) => command))
+      .toEqual(Array(2).fill("C:\\Windows\\System32\\schtasks.exe"))
   })
 
   // Task 50: a Node version manager keeps Node and its global packages in
@@ -878,7 +885,7 @@ describe("review round 2 probes", () => {
     const effects = fake("win32", "C:\\Users\\dl", { lateReadyMs: 60 })
     await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
     expect(effects.task.runningDefinition).toBe(oldWindowsCommand)
-    expect(effects.order.slice(-5)).toEqual(["stop task", "write C:\\Users\\dl\\.domovoi\\service.json", expect.stringMatching(/^schtasks \/create /), "set task settings", "schtasks /run /tn Domovoi daemon"])
+    expect(effects.order.slice(-4)).toEqual(["stop task", "write C:\\Users\\dl\\.domovoi\\service.json", "register task", "schtasks /run /tn Domovoi daemon"])
   })
 
   // Job proof now precedes scheduler stop. Disabling the task and ending its
@@ -1355,8 +1362,8 @@ describe("security review round 2", () => {
     })
     failFirst(effects, (args) => args[0] === "/run")
     await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
-    const restoredTask = vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create").at(-1)![1]
-    expect(restoredTask[restoredTask.indexOf("/tr") + 1]).toBe(oldWindowsCommand)
+    const restoredTask = registeredActions(effects).at(-1)!
+    expect(`${restoredTask.path} ${restoredTask.arguments}`).toBe(oldWindowsCommand)
   })
 
   it("refuses a saved WSL runtime of another shape before any change, and never registers it", async () => {
@@ -2112,3 +2119,11 @@ describe("updateDaemonService when the deadline expires around the publish (roun
     expect(check).not.toHaveBeenCalled()
   })
 })
+
+function registeredAction(args: string[]): { path: string; arguments: string } | undefined {
+  if (!args.includes("-EncodedCommand")) return undefined
+  const body = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+  const value = (property: string) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+  const path = value("Path"), arguments_ = value("Arguments")
+  return path === undefined || arguments_ === undefined ? undefined : { path, arguments: arguments_ }
+}

@@ -91,11 +91,11 @@ describe("distributed service CLI", () => {
         .map((line) => JSON.parse(line) as { command: string; args: string[] })
       // A Windows install first asks Task Scheduler whether a task of the same
       // name exists (security review round 3), so the launch command is the
-      // /create call's, not the first manager call's.
+      // COM registration's, not the first manager call's.
       // schtasks is named by its path under SystemRoot (review F3).
-      const create = commands.find(({ command, args }) => command.endsWith("\\System32\\schtasks.exe") && args[0] === "/create")
+      const create = commands.find(({ command, args }) => command.endsWith("powershell.exe") && Buffer.from(args.at(-1)!, "base64").toString("utf16le").includes("$folder.RegisterTaskDefinition("))
       const launch = process.platform === "win32"
-        ? create!.args[create!.args.indexOf("/tr") + 1]!
+        ? registeredTaskCommand(create!.args)
         : await within(() => readFile(process.platform === "darwin"
           ? join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")
           : join(home, ".config", "systemd", "user", "domovoid.service"), "utf8"))
@@ -285,3 +285,11 @@ describe("supervisor CLI dispatch", () => {
     } finally { vi.unstubAllGlobals(); vi.restoreAllMocks(); vi.resetModules() }
   })
 })
+
+function registeredTaskCommand(args: string[]) {
+  const body = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+  const value = (property: string) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+  const path = value("Path"), arguments_ = value("Arguments")
+  if (path === undefined || arguments_ === undefined) throw new Error("Invalid task registration")
+  return `${path} ${arguments_}`
+}

@@ -169,9 +169,7 @@ const withoutSqliteNotice = (stderr) => stderr.replace(/^\(node:\d+\) Experiment
 // service manager expects a daemon. The OS boundary is the manager shim, so no
 // real service is installed and the operator's profile is never read.
 test("domovoi daemon from the installed packages registers the daemon's worker entry, not the CLI's", { timeout: 900_000 }, async (t) => {
-  // schtasks refuses a command over 261 characters, and the installer
-  // refuses it first. The runner's own temporary directory, D:\a\_temp, is
-  // shorter than the user's, so the node, entry and configuration paths fit.
+  // Prefer the runner's scratch directory for the installed package fixture.
   const scratch = process.platform === "win32" && process.env.RUNNER_TEMP ? process.env.RUNNER_TEMP : tmpdir()
   const root = await realpath(await mkdtemp(join(scratch, "domovoi-cli-")))
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -213,12 +211,12 @@ test("domovoi daemon from the installed packages registers the daemon's worker e
   assert.equal(withoutSqliteNotice(installed.stderr), "")
   assert.match(installed.stdout, /^Installed the Domovoi daemon service /mu)
   // What the manager was told to run: the unit, the launch agent, or the
-  // command Task Scheduler's /create received.
+  // program and arguments the COM registration received.
   const launch = process.platform === "win32"
     ? (() => {
       const create = readFileSync(join(home, "manager.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line))
-        .findLast(({ command, args }) => command.endsWith("\\System32\\schtasks.exe") && args[0] === "/create")
-      return create.args[create.args.indexOf("/tr") + 1]
+        .findLast(({ command, args }) => command.endsWith("powershell.exe") && Buffer.from(args.at(-1), "base64").toString("utf16le").includes("$folder.RegisterTaskDefinition("))
+      return registeredTaskCommand(create.args)
     })()
     : await readFile(process.platform === "darwin"
       ? join(home, "Library/LaunchAgents/sh.domovoi.domovoid.plist")
@@ -237,3 +235,11 @@ test("domovoi daemon from the installed packages registers the daemon's worker e
     await assert.rejects(domovoi("status"), (error) => error.code === 1 && /^not installed, not running: /u.test(error.stdout))
   }
 })
+
+function registeredTaskCommand(args) {
+  const body = Buffer.from(args.at(-1), "base64").toString("utf16le")
+  const value = (property) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+  const path = value("Path"), arguments_ = value("Arguments")
+  if (path === undefined || arguments_ === undefined) throw new Error("Invalid task registration")
+  return `${path} ${arguments_}`
+}

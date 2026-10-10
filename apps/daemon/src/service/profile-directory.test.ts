@@ -22,8 +22,7 @@ async function fixture() {
   })
   // The runtime is named, as the CLI and the desktop name it, so the install
   // records it and removal can tell the service is Domovoi's.
-  // Fixed short paths: nothing here runs them, and a Windows temp home is long
-  // enough that paths under it push the task command past 261 characters.
+  // Fixed synthetic paths: the manager fake registers them without running them.
   const runtime = process.platform === "win32" ? "C:\\domovoi\\node.exe" : "/domovoi/node"
   const execPath = process.platform === "win32" ? "C:\\domovoi\\domovoid.js" : "/domovoi/domovoid.js"
   const target = { home, platform: process.platform, uid: 1000, user: "domovoi-test", execPath, runtime, configuration }
@@ -31,10 +30,10 @@ async function fixture() {
   // Removal first asks which task action or plist the job runs from (security
   // review rounds 1 and 2); these answer with Domovoi's own.
   // A Windows install first asks whether a task exists (security review
-  // round 3); none does until this fixture's /create.
+  // round 3); none does until this fixture's COM registration.
   let registered = false
   const effects = { ...nodeServiceEffects({ userHomeDirectory: home }),
-    run: vi.fn(async (_command: string, args: string[]) => { if (args[0] === "/create") registered = true }),
+    run: vi.fn(async (_command: string, args: string[]) => { if (Buffer.from(args.at(-1)!, "base64").toString("utf16le").includes("$folder.RegisterTaskDefinition(")) registered = true }),
     capture: vi.fn(async (command: string, args: string[]) => {
       if (process.platform === "win32") {
         const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")

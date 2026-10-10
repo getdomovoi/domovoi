@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { OperationDeadline } from "../operation-deadline.js"
 import { createProductionDaemon } from "../production-daemon.js"
 import { createServiceConfiguration } from "./configuration.js"
+import { windowsTaskRegistrationCommand } from "./windows-task.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { removeScratchDirectory } from "../test-scratch.js"
 
@@ -18,6 +19,7 @@ import {
   serviceRemovalPlan,
   serviceStatus,
   servicePlan,
+  WindowsTaskCommandLengthError,
   type CapturedRun,
   type ServiceCommandDependencies,
   type ServiceEffects,
@@ -827,7 +829,7 @@ describe("runServiceCommand", () => {
       ...(target.platform === "linux" ? { lingerEnabledByDomovoi: false } : {}),
     })
     const launch = target.platform === "win32"
-      ? vi.mocked(dependencies.run).mock.calls[0]?.[1].join(" ")
+      ? windowsScriptOf({ args: vi.mocked(dependencies.run).mock.calls[0]![1] })
       : vi.mocked(dependencies.write).mock.calls.find(([path]) => !path.endsWith("service.json"))?.[1]
     expect(launch).toContain(target.platform === "win32" ? "--service-supervise" : "--service-config")
     expect(launch).toContain(configuration![0])
@@ -924,7 +926,7 @@ it("reinstalls over the logon task Domovoi registered, lifting its run limit bef
     }),
   })
   await expect(installService(windowsScript, dependencies)).resolves.toMatchObject({ kind: "task" })
-  expect(vi.mocked(dependencies.run).mock.calls.map(([command, args]) => command === "C:\\Windows\\System32\\schtasks.exe" ? args[0] : "settings")).toEqual(["/create", "settings", "/run"])
+  expect(vi.mocked(dependencies.run).mock.calls.map(([command, args]) => command === "C:\\Windows\\System32\\schtasks.exe" ? args[0] : "registration")).toEqual(["registration", "/run"])
 })
 
 // Decided 2026-09-17 (SHIP-PLAN S1.1): a Linux install turns lingering on and
@@ -1096,5 +1098,45 @@ describe("Linux lingering", () => {
     expect(await runServiceCommand(["service", "remove"], dependencies)).toBe(0)
     expect(dependencies.remove).toHaveBeenCalledWith("/home/dl/.domovoi/service.json", expect.any(OperationDeadline))
     expect(dependencies.stderr).toHaveBeenCalledWith("Could not turn off lingering for dl, which Domovoi turned on at install: Access denied. Lingering stays on, so dl's user services keep running after logout. Run loginctl disable-linger if nothing else needs it.\n")
+  })
+})
+
+
+describe("Windows COM registration literals and transport", () => {
+  beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
+
+  it("preserves apostrophes and Unicode in the user, program and arguments", () => {
+    const home = "C:\\Users\\D'ávid", runtime = "C:\\N'ode\\node.exe", entry = "C:\\D'omovoi\\index.js"
+    const plan = servicePlan({ ...windowsScript, home, user: "D'ávid", runtime, execPath: entry,
+      configuration: configuration(home, "win32") })
+    expect(registeredWindowsAction(plan)).toEqual({ path: `"${runtime}"`, arguments: `"${entry}" --service-supervise "${home}\\.domovoi\\service.json"` })
+    const script = windowsScriptOf(plan.commands[0]!)
+    expect(script).toContain("$definition.Principal.UserId = 'D''ávid'")
+    expect(script).toContain("$trigger.UserId = 'D''ávid'")
+    expect(script).toContain("$definition, 6, 'D''ávid', $null, 3, $null)")
+    expect(script).toContain("$ErrorActionPreference = 'Stop'")
+  })
+
+  it("counts the quotes around a PowerShell path containing spaces in its refusal", () => {
+    vi.stubEnv("SystemRoot", "C:\\Windows Folder")
+    const entry = `C:\\${"a".repeat(12_000)}\\index.js`
+    const action = { path: `"${windowsScript.runtime}"`, arguments: `"${entry}" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"` }
+    const registration = windowsTaskRegistrationCommand("Domovoi daemon", "dl", action)
+    const length = [registration.command, ...registration.args].join(" ").length + 2
+    expect(() => servicePlan({ ...windowsScript, execPath: entry })).toThrow(
+      new WindowsTaskCommandLengthError(`${action.path} ${action.arguments}`.length, "daemon entry", entry, length),
+    )
+  })
+
+  it("names the service configuration when it is the longest part of an oversized registration", () => {
+    const home = `C:\\${"'".repeat(3_990)}`
+    const entry = `C:\\${"'".repeat(3_800)}\\index.js`
+    try {
+      servicePlan({ ...windowsScript, home, execPath: entry, configuration: configuration(home, "win32") })
+      expect.unreachable("The registration must not fit")
+    } catch (error) {
+      expect(error).toBeInstanceOf(WindowsTaskCommandLengthError)
+      expect(error).toMatchObject({ part: "service configuration", path: `${home}\\.domovoi\\service.json` })
+    }
   })
 })

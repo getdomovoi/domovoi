@@ -239,12 +239,12 @@ const domovoi = (args: string[], environment: NodeJS.ProcessEnv) => runWithShim(
 const domovoid = (args: string[], environment: NodeJS.ProcessEnv) => runWithShim([process.execPath, "--import", managerShim, daemonEntry, "service", ...args], environment)
 
 // What the service manager was told to run: the unit, the launch agent, or the
-// command Task Scheduler's /create received.
+// program and arguments the COM registration received.
 async function registeredLaunch(home: string): Promise<string> {
   if (process.platform === "win32") {
     const commands = (await readFile(join(home, "manager.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line) as { command: string; args: string[] })
-    const create = commands.findLast(({ command, args }) => command.endsWith("\\System32\\schtasks.exe") && args[0] === "/create")!
-    return create.args[create.args.indexOf("/tr") + 1]!
+    const create = commands.findLast(({ command, args }) => command.endsWith("powershell.exe") && Buffer.from(args.at(-1)!, "base64").toString("utf16le").includes("$folder.RegisterTaskDefinition("))!
+    return registeredTaskCommand(create.args)
   }
   return readFile(process.platform === "darwin"
     ? join(home, "Library", "LaunchAgents", "sh.domovoi.domovoid.plist")
@@ -375,3 +375,11 @@ describe("domovoi daemon", { timeout: 60_000 }, () => {
     } finally { await done() }
   })
 })
+
+function registeredTaskCommand(args: string[]) {
+  const body = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+  const value = (property: string) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+  const path = value("Path"), arguments_ = value("Arguments")
+  if (path === undefined || arguments_ === undefined) throw new Error("Invalid task registration")
+  return `${path} ${arguments_}`
+}
