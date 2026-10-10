@@ -113,14 +113,17 @@ it.runIf(windowsNative)("contains descendants, gates resume, refuses collisions,
   } finally {
     vi.unstubAllEnvs()
     // Never delete the proof directory if cleanup cannot be established. The
-    // test's own failure travels with a failed stop.
-    try { if (job) await job.stop() } catch (error) {
+    // test's own failure travels with every cleanup failure.
+    const failed: unknown[] = []
+    let stopped = true
+    try { if (job) await job.stop() } catch (error) { failed.push(error); stopped = false }
+    if (stopped) { try { rmSync(directory, { recursive: true, force: true }) } catch (error) { failed.push(error) } }
+    if (failed.length > 0) {
       // Thrown from the finally, this replaces the body's own failure, so that
       // failure travels inside it.
       // eslint-disable-next-line no-unsafe-finally
-      throw new AggregateError([...failures, error], "Native Windows job cleanup did not complete", { cause: error })
+      throw new AggregateError([...failures, ...failed], "Native Windows job cleanup did not complete")
     }
-    rmSync(directory, { recursive: true, force: true })
   }
 }, 90_000)
 
@@ -236,7 +239,14 @@ it.runIf(windowsNative)("keeps supervising while an open record delays crash pub
     failures.push(error)
     throw error
   } finally {
-    if (handle !== undefined) closeSync(handle)
-    await f.cleanup(failures)
+    // The handle's close stands alone, so the supervisor cleanup always runs,
+    // and every failure travels with the others.
+    const closing: unknown[] = []
+    if (handle !== undefined) { try { closeSync(handle) } catch (error) { closing.push(error) } }
+    await f.cleanup([...failures, ...closing])
+    if (closing.length > 0) {
+      // eslint-disable-next-line no-unsafe-finally
+      throw new AggregateError([...failures, ...closing], "Native Windows record handle cleanup did not complete")
+    }
   }
 }, 155_000)
