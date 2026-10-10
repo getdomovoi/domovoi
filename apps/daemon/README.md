@@ -1175,6 +1175,49 @@ cd apps/daemon
 DOMOVOI_LIVE_PROVIDERS=1 npx vitest run src/live-provider-contract.test.ts --coverage.enabled=false
 ```
 
+## Native service tests
+
+`src/service/launchd-agent.native.test.ts` and `src/service/systemd-unit.native.test.ts` install
+a throwaway agent or unit into the service manager of the account that runs them: a launchd job
+in your `gui/<uid>` domain, or a systemd user unit. Their cleanup boots it out or disables it even
+when a test fails, but a run that is killed before cleanup leaves it loaded. They run when `CI` is
+set and otherwise skip, printing the reason. To run them on your own machine:
+
+```sh
+cd apps/daemon
+DOMOVOI_NATIVE_SERVICE_TESTS=1 npx vitest run src/service/launchd-agent.native.test.ts --coverage.enabled=false
+```
+
+Only `1` opts in. A leftover launchd test job is named `sh.domovoi.domovoid.native-test-<uuid>`.
+List and remove one with:
+
+```sh
+launchctl list | grep native-test
+launchctl bootout gui/$(id -u)/sh.domovoi.domovoid.native-test-<uuid>
+```
+
+Read the job's `path` with `launchctl print gui/$(id -u)/<label>` before the bootout. Its
+throwaway home is the `domovoi-launchd-` directory under `$TMPDIR` above `Library/LaunchAgents` in
+that path. Remove that directory only after `launchctl print` says it could not find the label; any
+other failure from it does not show that the job is gone.
+
+A leftover systemd unit is `domovoi-native-test-<uuid>.service`. Its fragment is in
+`$XDG_RUNTIME_DIR/systemd/user`, and `systemctl --user cat <unit>` shows its `ExecStart`, which
+names a script inside its throwaway `domovoi-systemd-` home under the temporary directory. Note
+that home, then remove the unit the way the test cleanup does:
+
+```sh
+systemctl --user disable --now <unit>
+systemctl --user is-active <unit>    # must not print active
+rm -f "$XDG_RUNTIME_DIR/systemd/user/<unit>" \
+  "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/default.target.wants/<unit>"
+systemctl --user daemon-reload
+systemctl --user reset-failed <unit>
+systemctl --user show <unit> --property=LoadState    # LoadState=not-found
+```
+
+Remove the `domovoi-systemd-` home only once the unit reports `LoadState=not-found`.
+
 ## Loaded fixture checks
 
 The journal delivery test has its own 20-second budget (30 seconds on Windows), and the native

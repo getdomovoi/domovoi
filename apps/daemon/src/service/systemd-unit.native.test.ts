@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { expect, it, vi } from "vitest"
 
 import type { OperationDeadline } from "../operation-deadline.js"
+import { nativeServiceTestsRun } from "../test-native-service-gate.js"
 import { waitForDaemon } from "../test-wait-for.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { removeService, serviceStatus } from "./install.js"
@@ -15,9 +16,11 @@ const host = {
   runtimeDirectory: process.env.XDG_RUNTIME_DIR ?? "",
   configHome: systemdConfigHome(process.env.XDG_CONFIG_HOME, homedir()),
 }
-const managerRunning = systemdManagerAvailable({
+// These tests enable a real unit in the user manager of whoever runs them. They
+// run on CI and, on a developer machine, only with DOMOVOI_NATIVE_SERVICE_TESTS=1.
+const managerRunning = nativeServiceTestsRun("systemd", () => systemdManagerAvailable({
   platform: process.platform, runtimeDirectory: host.runtimeDirectory, required: systemdProofRequired(process.env.CI),
-})
+}))
 // The native supervision assertions read RestartSec back from the manager.
 const restartDelay = "5s"
 const noRestartWindowMs = 8_000

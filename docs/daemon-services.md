@@ -382,8 +382,11 @@ manager cleanup only when the installation is attempted. A collision or unknown 
 authorizes disabling a unit, resetting its state or deleting its files. That cleanup resets the
 attempted unit's failed state, because a run that ends in
 failure stays loaded and listed as failed after its fragment file is deleted, and it then requires
-the manager to list nothing failed under that name. Outside CI, a machine without the systemd user
-manager's private socket skips these native proofs. Linux CI starts that manager, and test
+the manager to list nothing failed under that name. Outside CI these native proofs skip unless
+`DOMOVOI_NATIVE_SERVICE_TESTS=1` is set, and with it a machine without the systemd user
+manager's private socket still skips them. The stop file has its own two-second slice of the
+cleanup budget, so a write that fails or never returns does not skip the disable. Linux CI starts
+that manager, and test
 collection itself also refuses a missing socket rather than trusting the earlier workflow check.
 A stale socket reaches the bounded manager query and fails instead of being treated as absence.
 The same harness has portable safety tests with a simulated manager and real private files; those
@@ -438,7 +441,16 @@ agent the operator has, and a plist path in their real `Library/LaunchAgents`. I
 overwrite a label that already exists, and it counts a manager it cannot read as unknown rather
 than as absence. The removal in its cleanup is armed only once launchd has said the label is
 unused, and only immediately before the bootstrap that can leave one behind, so a run that refuses
-at the preflight asks launchd to retire nothing. Its gate is that domain, so a session without one,
+at the preflight asks launchd to retire nothing. Once armed, the bootout runs whatever failed
+before it, and a label that still answers is booted out again. The stop file the fixture watches
+has its own two-second slice of the cleanup budget, so a write that fails or never returns cannot
+skip the bootout. The throwaway home is removed last, and only once launchd answers that it cannot
+find the label; a print that fails any other way counts as still loaded. A label still loaded
+keeps its script and stop file, so a relaunch finds the fixture rather than a missing file. The error keeps the test's own failure and, for a label that still answers,
+names the `launchctl bootout` command and the home to remove after it. The
+native tests run only on CI or with `DOMOVOI_NATIVE_SERVICE_TESTS=1`, decided before the domain
+probe, because a run killed before its cleanup leaves the agent loaded in the operator's own
+domain. Beyond that, its gate is that domain, so a session without one,
 such as a plain ssh login, skips; the probe that reads it is bounded, because it runs before any
 test deadline applies. On CI that gate throws instead of skipping. The macOS leg asserts the same
 domain before the suite and refuses to run as uid 0, and the test file refuses to skip there as
