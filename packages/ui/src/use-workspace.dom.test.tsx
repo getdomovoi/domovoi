@@ -455,6 +455,48 @@ describe("useWorkspace fleet", () => {
     expect(view.result.current.fleet).toEqual(unenrolled)
   })
 
+  it("keeps each fleet reply with its receipt-time offset and resets absent times", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-09T14:00:00.000Z"))
+    try {
+      const view = mountWorkspace()
+      const socket = harness.socket(0)
+      await drive(() => completeHandshake(socket))
+      const listed = { ...enrolledFleet, daemonTime: "2026-10-09T12:00:00.000Z" }
+      await drive(() => respond(socket, "fleet.list", listed))
+      expect(view.result.current.fleet).toEqual(listed)
+      expect(view.result.current.fleetDaemonTimeOffsetMs).toBe(-7_200_000)
+
+      now.mockReturnValue(Date.parse("2026-10-09T14:01:00.000Z"))
+      const changed = { ...unenrolled, daemonTime: "2026-10-09T12:00:30.000Z" }
+      await drive(() => notify(socket, "fleet.changed", changed))
+      expect(view.result.current.fleet).toEqual(changed)
+      expect(view.result.current.fleetDaemonTimeOffsetMs).toBe(-7_230_000)
+      await drive(() => notify(socket, "fleet.changed", unenrolled))
+      expect(view.result.current.fleet).toEqual(unenrolled)
+      expect(view.result.current.fleetDaemonTimeOffsetMs).toBe(0)
+
+      let paired!: Promise<unknown>
+      await drive(() => {
+        paired = view.result.current.pairMachine({ endpoint: "wss://workshop.tailnet:47831/rpc", code: "hearth-quiet-ember-42", label: "studio" })
+      })
+      await drive(() => respond(socket, "fleet.enroll", { outcome: "enrolled", machineId, fleet: listed }))
+      await expect(paired).resolves.toMatchObject({ outcome: "enrolled" })
+      expect(view.result.current.fleet).toEqual(listed)
+      expect(view.result.current.fleetDaemonTimeOffsetMs).toBe(-7_260_000)
+
+      let forgotten!: Promise<unknown>
+      await drive(() => { forgotten = view.result.current.forgetMachine({ machineId }) })
+      await drive(() => respond(socket, "fleet.forget", {
+        outcome: "forgotten", machineId, remoteRevocation: "unconfirmed", fleet: { entries: [] },
+      }))
+      await expect(forgotten).resolves.toMatchObject({ outcome: "forgotten" })
+      expect(view.result.current.fleet).toEqual({ entries: [] })
+      expect(view.result.current.fleetDaemonTimeOffsetMs).toBe(0)
+    } finally {
+      now.mockRestore()
+    }
+  })
+
   it("replaces the fleet when the daemon says it changed", async () => {
     const view = mountWorkspace()
     const socket = harness.socket(0)
