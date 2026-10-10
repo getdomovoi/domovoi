@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync } from "node:fs"
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -52,12 +52,14 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
   }
   const record = () => readWindowsSupervisorRecord(profile)
   // Splits a wait for attempt n into the supervisor stages the record shows:
-  // the previous job's exit proof, backoff, launch intent, prepared job, and
-  // resumed job. The remainder, after the last stage, is daemon readiness.
+  // the previous job's exit proof, launch intent, prepared job, and resumed
+  // job. The remainder, after the last stage, is daemon readiness. Timing is
+  // diagnostic only: a failed extra read is skipped, never fails the poll.
   const stages = (attempt: number) => {
     const seen = new Set<string>()
     return () => {
-      const state = record()
+      let state: WindowsSupervisorRecord | undefined
+      try { state = record() } catch { return }
       const mark = (stage: string, reached: boolean | undefined) => {
         if (reached && !seen.has(stage)) { seen.add(stage); timing(`attempt ${attempt} ${stage}`) }
       }
@@ -69,14 +71,17 @@ it.runIf(process.platform === "win32").each(["exhaustion", "stop", "unstarted"] 
       mark("job resumed", state?.attempts.length === attempt && state.state === "running")
     }
   }
+  // Each record is read on its own, so one unreadable file keeps the other.
   const describeRecord = () => {
+    let supervisor: unknown, owner: unknown
     try {
       const state = record()
-      const owner = readLocalOwnerRecord(profile)
-      return JSON.stringify({ state: state?.state, reason: state?.reason, crashes: state?.crashes, updatedAt: state?.updatedAt,
-        attempts: state?.attempts.map((a) => ({ number: a.number, stage: a.stage, startedAt: a.startedAt, emptyAt: a.empty?.at ?? null,
-          exitCode: a.exitCode, backoffMs: a.backoffMs })), owner: owner?.state ?? null })
-    } catch (error) { return `unreadable: ${String(error)}` }
+      supervisor = state && { state: state.state, reason: state.reason, crashes: state.crashes, updatedAt: state.updatedAt,
+        attempts: state.attempts.map((a) => ({ number: a.number, stage: a.stage, startedAt: a.startedAt, emptyAt: a.empty?.at ?? null,
+          exitCode: a.exitCode, backoffMs: a.backoffMs })) }
+    } catch (error) { supervisor = `unreadable: ${String(error)}` }
+    try { owner = readLocalOwnerRecord(profile)?.state ?? null } catch (error) { owner = `unreadable: ${String(error)}` }
+    return JSON.stringify({ supervisor, owner })
   }
   const readyInstance = () => {
     const owner = readLocalOwnerRecord(profile)
@@ -224,7 +229,14 @@ $null = $folder.RegisterTaskDefinition(${literal(name)}, $definition, 2, $defini
     timing("daemon trees and task absent after removal")
   } finally {
     deadline.clear()
-    if (!removed) timing(`not completed; record ${describeRecord()}`)
+    if (!removed) {
+      timing(`not completed; record ${describeRecord()}`)
+      // The supervised daemon's own output names why an attempt exited early.
+      let output: string
+      try { output = readFileSync(join(profile.profileDirectory, "windows-daemon.log"), "utf8").slice(-4_000) }
+      catch (error) { output = `unreadable: ${String(error)}` }
+      console.log(`[windows supervision ${mode}] daemon output tail:\n${output}`)
+    }
     const cleanup = OperationDeadline.start(cleanupBudget)
     try {
       if (created && !removed) {
