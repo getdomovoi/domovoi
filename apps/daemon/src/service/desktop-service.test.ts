@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { windowsTaskData } from "./windows-task-test-support.js"
 import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import {
   DaemonServiceRuntimeMissingError,
@@ -1357,7 +1358,7 @@ describe("installDaemonService keeps the runtime a registered definition names",
 function registeredAction(args: string[]): { path: string; arguments: string } | undefined {
   if (!args.includes("-EncodedCommand")) return undefined
   const body = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-  const value = (property: string) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+  const value = (property: string) => windowsTaskData(body, `$action.${property}`)
   const path = value("Path"), arguments_ = value("Arguments")
   return path === undefined || arguments_ === undefined ? undefined : { path, arguments: arguments_ }
 }

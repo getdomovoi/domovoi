@@ -4,6 +4,7 @@ import { join } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { windowsTaskData } from "./windows-task-test-support.js"
 import type { LocalOwnerRecord } from "../local-owner-record.js"
 import { OperationDeadline } from "../operation-deadline.js"
 import { ProfileAlreadyOwnedError } from "../profile-lease.js"
@@ -620,7 +621,8 @@ describe("updateDaemonService with a Windows logon task", () => {
     expect(await updateDaemonService({ runtime: windowsRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
     const created = registeredActions(effects)[0]!
     expect(`${created.path} ${created.arguments}`).toMatch(/^"C:\\Program Files\\Domovoi\\runtime-2\\node\.exe" "C:\\Program Files\\Domovoi\\runtime-2\\daemon\\index\.js" --service-supervise /)
-    expect(script(vi.mocked(effects.run).mock.calls[0]![1])).toContain("$definition, 6, 'dl', $null, 3, $null)")
+    expect(windowsTaskData(script(vi.mocked(effects.run).mock.calls[0]![1]), "$user")).toBe("dl")
+    expect(script(vi.mocked(effects.run).mock.calls[0]![1])).toContain("$definition, 6, $user, $null, 3, $null)")
     expect(effects.order.map((entry) => entry.split(" ").slice(0, 2).join(" "))).toEqual([
       "read task", "disable task", "prove Windows", "stop task", "claim", "write C:\\Users\\dl\\.domovoi\\service.json", "release", "register task", "schtasks /run",
     ])
@@ -748,10 +750,10 @@ describe("updateDaemonService with a Windows logon task", () => {
 })
 
 // The program and arguments each Windows registration in these runs gave Task
-// Scheduler, read from the PowerShell literals it set on the new action.
+// Scheduler, read from the base64 data it set on the new action.
 function registeredActions(effects: Fake): { path: string | undefined; arguments: string | undefined }[] {
   return vi.mocked(effects.run).mock.calls.map(([, args]) => script(args)).filter((body) => body.includes("$definition.Actions.Create(0)")).map((body) => {
-    const value = (property: string) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+    const value = (property: string) => windowsTaskData(body, `$action.${property}`)
     return { path: value("Path"), arguments: value("Arguments") }
   })
 }
@@ -2123,7 +2125,7 @@ describe("updateDaemonService when the deadline expires around the publish (roun
 function registeredAction(args: string[]): { path: string; arguments: string } | undefined {
   if (!args.includes("-EncodedCommand")) return undefined
   const body = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-  const value = (property: string) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+  const value = (property: string) => windowsTaskData(body, `$action.${property}`)
   const path = value("Path"), arguments_ = value("Arguments")
   return path === undefined || arguments_ === undefined ? undefined : { path, arguments: arguments_ }
 }

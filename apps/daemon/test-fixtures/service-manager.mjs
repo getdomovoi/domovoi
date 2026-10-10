@@ -39,7 +39,7 @@ childProcess.execFile = (command, args, options, callback) => {
     const entry = JSON.parse(line)
     const body = decode(entry)
     if (body.includes("$folder.RegisterTaskDefinition(")) {
-      const value = (property) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+      const value = (property) => windowsTaskData(body, `$action.${property}`)
       created = { path: value("Path"), arguments: value("Arguments") }
       if (created.path === undefined || created.arguments === undefined) throw new Error("Invalid task registration")
       registered = true
@@ -98,3 +98,10 @@ childProcess.execFile = (command, args, options, callback) => {
   process.send({ state: "manager-held" })
 }
 syncBuiltinESMExports()
+
+// Decode only the data expression emitted by the Windows registration builder.
+function windowsTaskData(script, property) {
+  const line = script.split("\n").find((line) => line.startsWith(`${property} = `))
+  const encoded = / = \[System\.Text\.Encoding\]::UTF8\.GetString\(\[System\.Convert\]::FromBase64String\('([A-Za-z0-9+/=]*)'\)\)$/.exec(line ?? "")?.[1]
+  return encoded === undefined ? undefined : Buffer.from(encoded, "base64").toString("utf8")
+}

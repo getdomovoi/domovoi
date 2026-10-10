@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { windowsTaskData } from "./windows-task-test-support.js"
 import { OperationDeadline } from "../operation-deadline.js"
 import { createProductionDaemon } from "../production-daemon.js"
 import { createServiceConfiguration } from "./configuration.js"
@@ -66,10 +67,10 @@ function windowsScriptOf(entry: { args: string[] }): string {
   return Buffer.from(entry.args.at(-1)!, "base64").toString("utf16le")
 }
 // The program and arguments a Windows plan's registration gives Task
-// Scheduler, read from the PowerShell literals it sets on the action.
+// Scheduler, read from the base64 data it sets on the action.
 function registeredWindowsAction(plan: { commands: { args: string[] }[] }): { path: string | undefined; arguments: string | undefined } {
   const script = windowsScriptOf(plan.commands[0]!)
-  const value = (property: string) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(script)?.[1]?.replaceAll("''", "'")
+  const value = (property: string) => windowsTaskData(script, `$action.${property}`)
   return { path: value("Path"), arguments: value("Arguments") }
 }
 
@@ -250,15 +251,16 @@ describe("servicePlan", () => {
     expect(plan.kind).toBe("task")
     const script = windowsScriptOf(plan.commands[0]!)
     expect(script).toContain("$name = 'Domovoi daemon'")
-    expect(script).toContain("$definition.Principal.UserId = 'dl'")
+    expect(windowsTaskData(script, "$definition.Principal.UserId")).toBe("dl")
     // TASK_LOGON_INTERACTIVE_TOKEN (3) and TASK_RUNLEVEL_LUA (0), never highest.
     expect(script).toContain("$definition.Principal.LogonType = 3")
     expect(script).toContain("$definition.Principal.RunLevel = 0")
     // TASK_TRIGGER_LOGON (9), for this user's logon.
     expect(script).toContain("$trigger = $definition.Triggers.Create(9)")
-    expect(script).toContain("$trigger.UserId = 'dl'")
+    expect(windowsTaskData(script, "$trigger.UserId")).toBe("dl")
     // TASK_CREATE_OR_UPDATE (6), as /f replaced a task of the same name.
-    expect(script).toContain("$folder.RegisterTaskDefinition($name, $definition, 6, 'dl', $null, 3, $null)")
+    expect(windowsTaskData(script, "$user")).toBe("dl")
+    expect(script).toContain("$folder.RegisterTaskDefinition($name, $definition, 6, $user, $null, 3, $null)")
     expect(plan.commands[1]).toEqual({ command: "C:\\Windows\\System32\\schtasks.exe", args: ["/run", "/tn", "Domovoi daemon"] })
   })
 
@@ -829,7 +831,7 @@ describe("runServiceCommand", () => {
       ...(target.platform === "linux" ? { lingerEnabledByDomovoi: false } : {}),
     })
     const launch = target.platform === "win32"
-      ? windowsScriptOf({ args: vi.mocked(dependencies.run).mock.calls[0]![1] })
+      ? windowsTaskData(windowsScriptOf({ args: vi.mocked(dependencies.run).mock.calls[0]![1] }), "$action.Arguments")
       : vi.mocked(dependencies.write).mock.calls.find(([path]) => !path.endsWith("service.json"))?.[1]
     expect(launch).toContain(target.platform === "win32" ? "--service-supervise" : "--service-config")
     expect(launch).toContain(configuration![0])
@@ -1102,7 +1104,7 @@ describe("Linux lingering", () => {
 })
 
 
-describe("Windows COM registration literals and transport", () => {
+describe("Windows COM registration data and transport", () => {
   beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
 
   it("preserves apostrophes and Unicode in the user, program and arguments", () => {
@@ -1111,9 +1113,10 @@ describe("Windows COM registration literals and transport", () => {
       configuration: configuration(home, "win32") })
     expect(registeredWindowsAction(plan)).toEqual({ path: `"${runtime}"`, arguments: `"${entry}" --service-supervise "${home}\\.domovoi\\service.json"` })
     const script = windowsScriptOf(plan.commands[0]!)
-    expect(script).toContain("$definition.Principal.UserId = 'D''ávid'")
-    expect(script).toContain("$trigger.UserId = 'D''ávid'")
-    expect(script).toContain("$definition, 6, 'D''ávid', $null, 3, $null)")
+    expect(windowsTaskData(script, "$definition.Principal.UserId")).toBe("D'ávid")
+    expect(windowsTaskData(script, "$trigger.UserId")).toBe("D'ávid")
+    expect(windowsTaskData(script, "$user")).toBe("D'ávid")
+    expect(script).toContain("$definition, 6, $user, $null, 3, $null)")
     expect(script).toContain("$ErrorActionPreference = 'Stop'")
   })
 
@@ -1129,8 +1132,8 @@ describe("Windows COM registration literals and transport", () => {
   })
 
   it("names the service configuration when it is the longest part of an oversized registration", () => {
-    const home = `C:\\${"'".repeat(3_990)}`
-    const entry = `C:\\${"'".repeat(3_800)}\\index.js`
+    const home = `C:\\${"’".repeat(3_990)}`
+    const entry = `C:\\${"’".repeat(3_800)}\\index.js`
     try {
       servicePlan({ ...windowsScript, home, execPath: entry, configuration: configuration(home, "win32") })
       expect.unreachable("The registration must not fit")

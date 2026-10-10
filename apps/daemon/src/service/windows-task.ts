@@ -80,11 +80,13 @@ ${body}
   }
 }
 
-const literal = (value: string) => "'" + value.replaceAll("'", "''") + "'"
+// Values are data: PowerShell also recognizes smart quotes as delimiters.
+const encodedValue = (value: string) => `[System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${Buffer.from(value, "utf8").toString("base64")}'))`
 
 // Keep the quoted program shape schtasks stored, including when restoring a
 // task whose program Task Scheduler already reports in quotes.
 export function windowsTaskRegistrationCommand(name: string, user: string, action: { path: string; arguments: string }): ServiceCommand {
+  if (/['‘’‚‛]/u.test(name)) throw new Error("Windows task name must not contain single quotes")
   const path = action.path.startsWith('"') && action.path.endsWith('"') ? action.path : `"${action.path}"`
   // TASK_CREATE_OR_UPDATE (6) replaces /f; interactive token (3) needs no password.
   // https://learn.microsoft.com/en-us/windows/win32/taskschd/taskfolder-registertaskdefinition
@@ -93,20 +95,21 @@ $ErrorActionPreference = 'Stop'
 $scheduler = New-Object -ComObject 'Schedule.Service'
 $scheduler.Connect()
 $folder = $scheduler.GetFolder('\\')
-$name = ${literal(name)}
+$name = '${name}'
 $definition = $scheduler.NewTask(0)
-$definition.Principal.UserId = ${literal(user)}
+$definition.Principal.UserId = ${encodedValue(user)}
 $definition.Principal.LogonType = 3
 $definition.Principal.RunLevel = 0
 $trigger = $definition.Triggers.Create(9)
-$trigger.UserId = ${literal(user)}
+$trigger.UserId = ${encodedValue(user)}
 $definition.Settings.ExecutionTimeLimit = 'PT0S'
 $definition.Settings.DisallowStartIfOnBatteries = $false
 $definition.Settings.StopIfGoingOnBatteries = $false
 $action = $definition.Actions.Create(0)
-$action.Path = ${literal(path)}
-$action.Arguments = ${literal(action.arguments)}
-$null = $folder.RegisterTaskDefinition($name, $definition, 6, ${literal(user)}, $null, 3, $null)
+$action.Path = ${encodedValue(path)}
+$action.Arguments = ${encodedValue(action.arguments)}
+$user = ${encodedValue(user)}
+$null = $folder.RegisterTaskDefinition($name, $definition, 6, $user, $null, 3, $null)
 `
   return {
     command: windowsPowerShellPath(),

@@ -238,8 +238,15 @@ test("domovoi daemon from the installed packages registers the daemon's worker e
 
 function registeredTaskCommand(args) {
   const body = Buffer.from(args.at(-1), "base64").toString("utf16le")
-  const value = (property) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+  const value = (property) => windowsTaskData(body, `$action.${property}`)
   const path = value("Path"), arguments_ = value("Arguments")
   if (path === undefined || arguments_ === undefined) throw new Error("Invalid task registration")
   return `${path} ${arguments_}`
+}
+
+// Decode only the data expression emitted by the Windows registration builder.
+function windowsTaskData(script, property) {
+  const line = script.split("\n").find((line) => line.startsWith(`${property} = `))
+  const encoded = / = \[System\.Text\.Encoding\]::UTF8\.GetString\(\[System\.Convert\]::FromBase64String\('([A-Za-z0-9+/=]*)'\)\)$/.exec(line ?? "")?.[1]
+  return encoded === undefined ? undefined : Buffer.from(encoded, "base64").toString("utf8")
 }

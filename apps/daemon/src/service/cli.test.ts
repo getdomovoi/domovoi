@@ -9,6 +9,7 @@ import { promisify } from "node:util"
 
 import { protocolVersion } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
+import { windowsTaskData } from "./windows-task-test-support.js"
 import { WebSocket } from "ws"
 
 import { OperationDeadline } from "../operation-deadline.js"
@@ -288,7 +289,7 @@ describe("supervisor CLI dispatch", () => {
 
 function registeredTaskCommand(args: string[]) {
   const body = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-  const value = (property: string) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+  const value = (property: string) => windowsTaskData(body, `$action.${property}`)
   const path = value("Path"), arguments_ = value("Arguments")
   if (path === undefined || arguments_ === undefined) throw new Error("Invalid task registration")
   return `${path} ${arguments_}`

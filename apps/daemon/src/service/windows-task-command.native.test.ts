@@ -10,7 +10,7 @@ import { removeScratchDirectory } from "../test-scratch.js"
 import { createServiceConfiguration } from "./configuration.js"
 import { stagedRuntimeCopy } from "./desktop-service.js"
 import { isDomovoiTaskAction, nodeServiceEffects, servicePlan, type ServiceCommand } from "./install.js"
-import { readWindowsTaskAction, removeWindowsTask, windowsSchtasksPath, windowsTaskRemovalPlan } from "./windows-task.js"
+import { readWindowsTaskAction, removeWindowsTask, windowsSchtasksPath, windowsTaskRegistrationCommand, windowsTaskRemovalPlan } from "./windows-task.js"
 
 // Task 50: the installer registers its logon task through the Task Scheduler
 // COM API, the program and its arguments apart, instead of schtasks /create
@@ -142,12 +142,31 @@ it.runIf(process.platform === "win32")("registers a task program of 260 characte
     const action = await readWindowsTaskAction(accepted, effects, deadline)
     expect(action).not.toBe("missing")
     expect((action as Exclude<typeof action, "missing">).path).toHaveLength(260)
-    const longer = decode(registration).replace(`'"${runtime}"'`, `'"${runtime.replace("\\node.exe", "n\\node.exe")}"'`)
+    const longer = decode(windowsTaskRegistrationCommand("Domovoi daemon", userInfo().username, {
+      path: runtime.replace("\\node.exe", "n\\node.exe"), arguments: `"${entry}" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"`,
+    }))
     const probe = { command: registration.command, args: [...registration.args.slice(0, -1), Buffer.from(longer.replace("$name = 'Domovoi daemon'", `$name = '${over}'`), "utf16le").toString("base64")] }
     const outcome = await effects.run(probe.command, probe.args, deadline).then(() => "accepted", (error: unknown) => `refused: ${String(error)}`)
     console.log(`[task program length] a 261 character Command with its quotes was ${outcome}`)
   } finally {
     deadline.clear()
     for (const name of [accepted, over]) schtasks(["/delete", "/tn", name, "/f"])
+  }
+}, 150_000)
+
+it.runIf(process.platform === "win32")("round-trips smart and ASCII apostrophes in the program and arguments", async () => {
+  const name = `Domovoi-quotes-test-${randomUUID()}`
+  const action = { path: `"C:\\Users\\O’Neil'\\node.exe"`, arguments: `"C:\\Users\\O’Neil'\\index.js" --value "‘日本語'"` }
+  const deadline = OperationDeadline.start(120_000)
+  let removed = false
+  try {
+    await register(windowsTaskRegistrationCommand("Domovoi daemon", userInfo().username, action), name, deadline)
+    expect(await readWindowsTaskAction(name, effects, deadline)).toMatchObject(action)
+    expect(await removeWindowsTask(windowsTaskRemovalPlan(name), effects, deadline, true)).toBe("removed")
+    removed = true
+    expect(await readWindowsTaskAction(name, effects, deadline)).toBe("missing")
+  } finally {
+    deadline.clear()
+    if (!removed) schtasks(["/delete", "/tn", name, "/f"])
   }
 }, 150_000)

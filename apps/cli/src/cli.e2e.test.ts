@@ -378,8 +378,15 @@ describe("domovoi daemon", { timeout: 60_000 }, () => {
 
 function registeredTaskCommand(args: string[]) {
   const body = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-  const value = (property: string) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+  const value = (property: string) => windowsTaskData(body, `$action.${property}`)
   const path = value("Path"), arguments_ = value("Arguments")
   if (path === undefined || arguments_ === undefined) throw new Error("Invalid task registration")
   return `${path} ${arguments_}`
+}
+
+// Decode only the data expression emitted by the Windows registration builder.
+function windowsTaskData(script: string, property: string): string | undefined {
+  const line = script.split("\n").find((line) => line.startsWith(`${property} = `))
+  const encoded = / = \[System\.Text\.Encoding\]::UTF8\.GetString\(\[System\.Convert\]::FromBase64String\('([A-Za-z0-9+/=]*)'\)\)$/.exec(line ?? "")?.[1]
+  return encoded === undefined ? undefined : Buffer.from(encoded, "base64").toString("utf8")
 }
