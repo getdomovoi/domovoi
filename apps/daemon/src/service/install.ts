@@ -741,8 +741,7 @@ async function installWithDeadline(
   // Security review round 3 (#574): COM registration replaces a task of
   // the same name, so a task Domovoi did not register refuses the install, by
   // the same check status and removal use, before anything changes.
-  let legacyWindowsCommand: string | undefined
-  let legacyWindowsAction: WindowsTaskAction | undefined
+  let legacyWindowsCommand: ValidatedWindowsTask | undefined
   let restoreSupervisedWindows: (() => Promise<void>) | undefined
   if (target.platform === "win32" && !target.configuration.wsl) {
     const owner = await windowsTaskOwner(assertHome(target.home), effects, deadline)
@@ -752,7 +751,6 @@ async function installWithDeadline(
       if (action === "missing" || !action.arguments.includes('" --service-config "')) throw new Error("Legacy Windows registration changed before migration")
       legacyWindowsCommand = domovoiTaskCommand(action, plan.configuration.path, effects.readConfiguration?.(assertHome(target.home), "win32")?.serviceRuntime)
       if (!legacyWindowsCommand) throw new WindowsTaskNotDomovoiError(displayName)
-      legacyWindowsAction = action
       // Q10 B: legacy tasks retain scheduler-only retirement. Keep the stopped
       // registration until the new files are ready, so a failed write is retryable.
       if (await stopWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline) !== "stopped") throw new Error("Legacy Windows registration disappeared before migration")
@@ -766,13 +764,13 @@ async function installWithDeadline(
       if (owner === "supervised" || effects.readConfiguration?.(assertHome(target.home), "win32") !== undefined) {
         if (!effects.stopSupervisor) throw new Error("Windows supervisor evidence is missing; replacement refused")
         const removal = windowsTaskRemovalPlan(displayName)
-        let previousTask: { action: WindowsTaskAction; command: string; runtime: ServiceRuntimeRecord | undefined } | undefined
+        let previousTask: ValidatedWindowsTask & { enabled: boolean; runtime: ServiceRuntimeRecord | undefined } | undefined
         if (owner === "supervised") {
           const action = await readWindowsTaskAction(displayName, effects, deadline)
           const runtime = effects.readConfiguration?.(assertHome(target.home), "win32")?.serviceRuntime
           const command = action === "missing" ? undefined : domovoiTaskCommand(action, plan.configuration.path, runtime)
           if (action === "missing" || !command || !action.arguments.includes('" --service-supervise "')) throw new Error("Windows supervisor registration changed before reinstall")
-          previousTask = { action, command, runtime }
+          previousTask = { ...command, enabled: action.enabled, runtime }
         }
         await disableWindowsTask(removal, effects, deadline)
         await withinServiceDeadline(deadline, () => effects.stopSupervisor!(plan.configuration.path, deadline, {
@@ -791,7 +789,7 @@ async function installWithDeadline(
           // restores the logon registration only, never issues a demand start.
           restoreSupervisedWindows = async () => {
             const current = await readWindowsTaskAction(displayName, effects, deadline)
-            if (current !== "missing" && domovoiTaskCommand(current, plan.configuration.path, previous.runtime) !== previous.command) {
+            if (current !== "missing" && domovoiTaskCommand(current, plan.configuration.path, previous.runtime)?.command !== previous.command) {
               throw new Error("Windows task action changed during reinstall; restoration refused")
             }
             if (current === "missing") {
@@ -799,7 +797,7 @@ async function installWithDeadline(
               await withinServiceDeadline(deadline, () => effects.run(restore.command, restore.args, deadline))
             }
             await withinServiceDeadline(deadline, () => effects.run(windowsSchtasksPath(),
-              ["/change", "/tn", displayName, previous.action.enabled ? "/enable" : "/disable"], deadline))
+              ["/change", "/tn", displayName, previous.enabled ? "/enable" : "/disable"], deadline))
           }
         }
       }
@@ -886,10 +884,10 @@ async function installWithDeadline(
         if (index <= registering && previousFiles && !deadline.signal.aborted) {
           await putPreviousFilesBack(previousFiles, effects, deadline, cause)
           configurationRestored = true
-          if (legacyWindowsAction && legacyWindowsRemoved && index === registering) {
+          if (legacyWindowsCommand && legacyWindowsRemoved && index === registering) {
             // Preserve the old action for a retry if registration failed after deletion.
             // Do not restart it: legacy descendants have no job-object evidence.
-            const restore = windowsTaskRegistrationCommand(displayName, assertUser(target.user), legacyWindowsAction)
+            const restore = windowsTaskRegistrationCommand(displayName, assertUser(target.user), legacyWindowsCommand.action)
             await withinServiceDeadline(deadline, () => effects.run(restore.command, restore.args, deadline))
             await disableWindowsTask(windowsTaskRemovalPlan(displayName), effects, deadline)
           }
@@ -1005,13 +1003,15 @@ export type ServiceUpdateWaits = {
   budgetMs: number
 }
 
-// The command a Domovoi logon task runs, as servicePlan writes it, rebuilt
+type ValidatedWindowsTask = { action: Pick<WindowsTaskAction, "path" | "arguments">; command: string }
+
+// The action and command a Domovoi logon task runs, as servicePlan writes them, rebuilt
 // from the task's action; undefined for an action of any other shape, or one
 // that runs anything but the runtime and entry service.json records, which is
 // never registered again (security review rounds 2 and 3). Task Scheduler may
 // report the program with the quotes schtasks was given, so one pair is
-// dropped.
-function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): string | undefined {
+// dropped before rebuilding both forms from the checked parts.
+function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string, recorded: ServiceRuntimeRecord | undefined): ValidatedWindowsTask | undefined {
   const execPath = /^"([^"]*)"$/.exec(action.path)?.[1] ?? action.path
   const quoted = /^"([^"]*)" (--service-config|--service-supervise) "([^"]*)"$/.exec(action.arguments)
   if (!quoted) return undefined
@@ -1028,7 +1028,8 @@ function domovoiTaskCommand(action: WindowsTaskAction, configurationPath: string
   } catch (cause) {
     throw new DaemonServiceUpdateError("nothing-changed", cause)
   }
-  return `"${execPath}" "${entry}" ${flag} "${configurationPath}"`
+  const validated = { path: `"${execPath}"`, arguments: `"${entry}" ${flag} "${configurationPath}"` }
+  return { action: validated, command: `${validated.path} ${validated.arguments}` }
 }
 
 // The install's refusals for one Windows task path (security review rounds
@@ -1232,7 +1233,7 @@ export function prepareServiceUpdate(target: ServiceTarget, effects: ServiceUpda
     const previousCommand = domovoiTaskCommand(previous, plan.configuration.path, recorded)
     if (previousCommand === undefined) throw new DaemonServiceUpdateError("changed-outside")
     const restoreCommands = plan.commands.map((command) => command.registersWindowsTask
-      ? windowsTaskRegistrationCommand(displayName, assertUser(target.user), previous) : command)
+      ? windowsTaskRegistrationCommand(displayName, assertUser(target.user), previousCommand.action) : command)
     const legacy = !previous.arguments.includes('" --service-supervise "')
     let legacyRemoved = false
     let newRegistrationSucceeded = false

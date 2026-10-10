@@ -4,6 +4,7 @@ import { join } from "node:path"
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import * as windowsTask from "./windows-task.js"
 import { windowsTaskData } from "./windows-task-test-support.js"
 import type { LocalOwnerRecord } from "../local-owner-record.js"
 import { OperationDeadline } from "../operation-deadline.js"
@@ -1350,6 +1351,29 @@ describe("security review round 2", () => {
       expect(effects.run).not.toHaveBeenCalled()
       expect(effects.order).toEqual(["read task action"])
     }
+  })
+
+  it("restores the rebuilt action when Task Scheduler reports the program unquoted", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    const capture = effects.capture
+    effects.capture = vi.fn(async (command: string, args: string[], deadline: OperationDeadline) => {
+      if (!script(args).includes("domovoi-task-action")) return capture(command, args, deadline)
+      return { code: 0, stdout: `domovoi-task-action:${JSON.stringify({ path: oldNode,
+        arguments: `"${oldEntry}" --service-supervise "${windowsConfiguration}"`, enabled: true, state: 4 })}\n` }
+    })
+    const registration = vi.spyOn(windowsTask, "windowsTaskRegistrationCommand")
+    try {
+      failFirst(effects, (args) => args[0] === "/run")
+      await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
+      // Check the adapter input as well as the script: the adapter's quoting
+      // would otherwise hide a restore that still hands it the raw action.
+      expect(registration).toHaveBeenCalledWith("Domovoi daemon", "dl", {
+        path: `"${oldNode}"`, arguments: `"${oldEntry}" --service-supervise "${windowsConfiguration}"`,
+      })
+      expect(registeredActions(effects).at(-1)).toEqual({
+        path: `"${oldNode}"`, arguments: `"${oldEntry}" --service-supervise "${windowsConfiguration}"`,
+      })
+    } finally { registration.mockRestore() }
   })
 
   // Control: Task Scheduler may report the program with the quotes schtasks
