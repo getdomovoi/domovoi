@@ -737,6 +737,98 @@ describe("DomovoiClient", () => {
     client.disconnect()
   })
 
+  it("gives up its claim with terminal.release", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      budgets,
+      clientId: "desktop-client-1",
+    })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+
+    const releasing = client.releaseTerminal("terminal-1")
+    const request = JSON.parse(socket.sent.at(-1)!) as { method: string, params: unknown }
+    expect(request.method).toBe("terminal.release")
+    expect(request.params).toEqual({ terminalId: "terminal-1", client: "desktop", clientId: "desktop-client-1" })
+    socket.receive({
+      jsonrpc: "2.0",
+      id: 2,
+      result: {
+        terminalId: "terminal-1",
+        owner: { client: "desktop", clientId: "desktop-client-1", claimedAt: "2026-10-09T14:04:00.000Z" },
+        claimHeld: false,
+      },
+    })
+    await expect(releasing).resolves.toMatchObject({ claimHeld: false, owner: { clientId: "desktop-client-1" } })
+    client.disconnect()
+  })
+
+  // terminal.resized is opt-in per watch, because a client that does not know
+  // the notice reports it as a protocol error. A daemon from before it refuses
+  // the field, and the watch goes ahead without it.
+  it("follows the holder's grid when the daemon can say it changed", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "desktop", {
+      budgets,
+      clientId: "desktop-client-1",
+    })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    const resized = vi.fn()
+    const protocolErrors = vi.fn()
+    client.addEventListener("terminal-resized", resized)
+    client.addEventListener("protocol-error", protocolErrors)
+    const watched = {
+      terminalId: "terminal-1",
+      sessionId: "session-billing",
+      cols: 120,
+      rows: 32,
+      shell: "bash",
+      cwd: "/worktrees/billing",
+      owner: { client: "phone", clientId: "phone-client-1" },
+      claimHeld: true,
+      openedAt: "2026-10-07T14:04:00.000Z",
+      state: "live",
+      buffer: "",
+      earlierOutputDropped: false,
+      watchedAt: "2026-10-07T14:05:00.000Z",
+    }
+
+    const following = client.watchTerminal("terminal-1", { followResize: true })
+    expect((JSON.parse(socket.sent.at(-1)!) as { params: unknown }).params).toEqual({ terminalId: "terminal-1", followResize: true })
+    socket.receive({ jsonrpc: "2.0", id: 2, result: watched })
+    await expect(following).resolves.toMatchObject({ followsResize: true, cols: 120 })
+
+    socket.receive({ jsonrpc: "2.0", method: "terminal.resized", params: { terminalId: "terminal-1", cols: 132, rows: 40 } })
+    expect((resized.mock.calls[0]![0] as CustomEvent).detail).toEqual({ terminalId: "terminal-1", cols: 132, rows: 40 })
+    expect(protocolErrors).not.toHaveBeenCalled()
+
+    // An older daemon's strict params refuse the field.
+    const older = client.watchTerminal("terminal-1", { followResize: true })
+    socket.receive({ jsonrpc: "2.0", id: 3, error: { code: -32602, message: "Method parameters are invalid" } })
+    await vi.waitFor(() => expect(socket.sent).toHaveLength(4))
+    expect((JSON.parse(socket.sent.at(-1)!) as { params: unknown }).params).toEqual({ terminalId: "terminal-1" })
+    socket.receive({ jsonrpc: "2.0", id: 4, result: watched })
+    await expect(older).resolves.toMatchObject({ followsResize: false })
+
+    // Any other refusal is the answer, not a reason to ask again.
+    const missing = client.watchTerminal("terminal-1", { followResize: true })
+    socket.receive({ jsonrpc: "2.0", id: 5, error: { code: -32602, message: "Terminal does not exist" } })
+    await expect(missing).rejects.toThrow("Terminal does not exist")
+    expect(socket.sent).toHaveLength(5)
+
+    // A plain watch never asks for the notice.
+    const plain = client.watchTerminal("terminal-1")
+    expect((JSON.parse(socket.sent.at(-1)!) as { params: unknown }).params).toEqual({ terminalId: "terminal-1" })
+    socket.receive({ jsonrpc: "2.0", id: 6, result: watched })
+    await expect(plain).resolves.toMatchObject({ followsResize: false })
+    client.disconnect()
+  })
+
   it("does not retry a rejected daemon credential", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", {
       budgets,
