@@ -23,12 +23,15 @@ import { nativeServiceTestsEnabled } from "../test-native-service-gate.js"
 // Real 1/5/15 second backoffs plus Windows compiler, manager and startup time.
 // No test speed knob is exposed in the production configuration.
 const lifecycleBudget = 180_000
-const cleanupBudget = 60_000
-// Carved out of cleanupBudget, so a stop or removal step that spends its whole
+// The cleanup's slices. Each step has its own, so one that spends its whole
 // slice still leaves the steps after it time of their own.
+const disableBudget = 10_000
+const supervisorStopBudget = 20_000
+const taskStopBudget = 10_000
 const removalBudget = 15_000
 const deletionBudget = 10_000
 const verificationBudget = 10_000
+const cleanupBudget = disableBudget + supervisorStopBudget + taskStopBudget + removalBudget + deletionBudget + verificationBudget
 // Scratch removal retries for a few seconds after the cleanup slices.
 const scratchBudget = 10_000
 const literal = (value: string) => `'${value.replaceAll("'", "''")}'`
@@ -274,55 +277,48 @@ it.runIf(windowsNative).each(["exhaustion", "stop", "unstarted"] as const)("prov
       catch (error) { output = `unreadable: ${String(error)}` }
       console.log(`[windows supervision ${mode}] daemon output tail:\n${output}`)
     }
-    // Each step runs whatever the steps before it did, so a disable, stop or
-    // supervisor wait that fails never skips the removal of the logon task.
+    // Each step runs whatever the steps before it did, on a slice of its own,
+    // and reports whether it completed. A disable, stop or supervisor wait that
+    // fails or runs out of time never skips the removal of the logon task.
     const failed: unknown[] = []
-    const step = async (work: () => Promise<unknown>) => {
-      try { await work() } catch (error) { failed.push(error) }
+    const step = async (budget: number, work: (active: OperationDeadline) => Promise<unknown>) => {
+      const active = OperationDeadline.start(budget)
+      try { await work(active); return true } catch (error) { failed.push(error); return false } finally { active.clear() }
     }
     let absent = !created || removed
+    // Nothing of this test runs until the task was created.
+    let stopped = true
     if (!absent) {
-      const stopping = OperationDeadline.start(cleanupBudget - removalBudget - deletionBudget - verificationBudget)
-      try {
-        await step(() => capture(plan.disable!, stopping))
-        if (started) await step(() => stopWindowsSupervisor(path, stopping))
-        await step(async () => expect((await capture(plan.stop, stopping)).code).toBe(0))
-      } finally { stopping.clear() }
-      let removedByPlan = false
-      const removal = OperationDeadline.start(removalBudget)
-      try {
-        await step(async () => {
-          const present = await capture(plan.inspect, removal)
-          if (present.stdout.trim() !== "domovoi-task:missing") expect((await capture(plan.remove, removal)).code).toBe(0)
-          removedByPlan = true
-        })
-      } finally { removal.clear() }
+      const disabled = await step(disableBudget, (active) => capture(plan.disable!, active))
+      const supervisorStopped = !started || await step(supervisorStopBudget, (active) => stopWindowsSupervisor(path, active))
+      const taskStopped = await step(taskStopBudget, async (active) => expect((await capture(plan.stop, active)).code).toBe(0))
+      stopped = disabled && supervisorStopped && taskStopped
+      const removedByPlan = await step(removalBudget, async (active) => {
+        const present = await capture(plan.inspect, active)
+        if (present.stdout.trim() !== "domovoi-task:missing") expect((await capture(plan.remove, active)).code).toBe(0)
+      })
       // The plan's removal refuses a task that is not disabled and stopped.
       // schtasks /delete /f does not, so a stop step that failed above still
-      // leaves no logon task registered in this account. It runs on its own
-      // slice, without a read first, so a removal or an inspection that ran
-      // out of time cannot keep it from running.
-      if (!removedByPlan) {
-        const deletion = OperationDeadline.start(deletionBudget)
-        try { await step(() => capture({ command: windowsSchtasksPath(), args: ["/delete", "/tn", name, "/f"] }, deletion)) }
-        finally { deletion.clear() }
-      }
+      // leaves no logon task registered in this account. It runs without a
+      // read first, so a removal or an inspection that ran out of time cannot
+      // keep it from running. It does not stop a running supervisor.
+      if (!removedByPlan) await step(deletionBudget, (active) => capture({ command: windowsSchtasksPath(), args: ["/delete", "/tn", name, "/f"] }, active))
       // Only Task Scheduler reporting the task missing counts as removed.
-      const verification = OperationDeadline.start(verificationBudget)
-      try {
-        await step(async () => {
-          const present = await capture(plan.inspect, verification)
-          if (present.code !== 0 || present.stdout.trim() !== "domovoi-task:missing") throw new Error(`Task Scheduler still lists ${name}, or did not answer`)
-          absent = true
-        })
-      } finally { verification.clear() }
+      await step(verificationBudget, async (active) => {
+        const present = await capture(plan.inspect, active)
+        if (present.code !== 0 || present.stdout.trim() !== "domovoi-task:missing") throw new Error(`Task Scheduler still lists ${name}, or did not answer`)
+        absent = true
+      })
     }
-    // The directory holds the task's configuration, so it goes only once the
-    // task is gone. A task still registered keeps it for inspection.
-    if (absent) await step(() => removeScratchDirectory(base))
+    // The directory holds the task's configuration and the supervisor's
+    // records, so it goes only once the task is gone and every stop completed.
+    // Otherwise it is kept for inspection.
+    if (absent && stopped) await step(scratchBudget, () => removeScratchDirectory(base))
     timing("cleanup")
     if (failed.length > 0) {
-      const recovery = absent ? "" : ` If schtasks /query /tn "${name}" still answers, run schtasks /delete /tn "${name}" /f, then remove ${base}.`
+      const recovery = (absent ? "" : ` If schtasks /query /tn "${name}" still answers, run schtasks /delete /tn "${name}" /f.`)
+        + (stopped ? "" : ` Its supervisor may still be running: end the process whose command line names ${path}.`)
+        + (absent && stopped ? "" : ` Then remove ${base}.`)
       // Thrown from the finally, this replaces the body's own failure, so that
       // failure travels inside it.
       // eslint-disable-next-line no-unsafe-finally
