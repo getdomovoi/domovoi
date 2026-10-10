@@ -580,3 +580,25 @@ describe("follow", () => {
     expect(showJump(followToggle(followStart), true, true)).toBe(true)
   })
 })
+
+// #779: a watch that asked with followResize hears terminal.resized when the
+// holder changes the grid. The phone draws lines rather than a grid, so only
+// the size it names follows.
+describe("withNotification and terminal.resized", () => {
+  const resized = { method: "terminal.resized" as const, params: { terminalId: "terminal-1", cols: 80, rows: 24 } }
+
+  it("names the holder's new grid and counts the notice as heard", () => {
+    const record = withNotification(watchFrom(watched()), resized, at)
+    expect(terminalSize(record.summary)).toBe("80×24")
+    expect(record.lastHeardAt).toBe(at.toISOString())
+    // The text is the same text; nothing is redrawn at a width.
+    expect(record.text).toBe(watchFrom(watched()).text)
+  })
+
+  it("leaves another terminal's record and a closed shell's size alone", () => {
+    const record = watchFrom(watched())
+    expect(withNotification(record, { ...resized, params: { ...resized.params, terminalId: "terminal-2" } }, at)).toBe(record)
+    const closed = watchFrom(watched({ state: "closed", closedAt: "2026-10-06T14:09:40.000Z", exitCode: 0, claimHeld: false }))
+    expect(withNotification(closed, resized, at)).toBe(closed)
+  })
+})

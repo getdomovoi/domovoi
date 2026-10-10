@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { demoWorkspace, terminalWatchResultSchema } from "@getdomovoi/protocol"
 
-import { DaemonConnection, DaemonNotSentError, DaemonProtocolError, DaemonUnconfirmedError } from "./daemon"
+import { DaemonConnection, DaemonError, DaemonNotSentError, DaemonProtocolError, DaemonUnconfirmedError, watchTerminal, type TerminalWatchCall } from "./daemon"
 
 vi.mock("@getdomovoi/protocol", async (importOriginal) => ({
   ...await importOriginal<typeof import("@getdomovoi/protocol")>(),
@@ -30,7 +30,7 @@ function withSocket(send: (payload: string) => void): FakeSocket {
 }
 
 function connection(handlers: {
-  onFleet?: (entries: unknown[]) => void
+  onFleet?: (snapshot: unknown) => void
   onSnapshot?: (snapshot: unknown) => void
   onHello?: (snapshot: unknown) => void
   onDelta?: (delta: unknown) => void
@@ -141,16 +141,18 @@ describe("DaemonConnection.call", () => {
 describe("DaemonConnection notifications", () => {
   const entries = [{ kind: "unenrolled", machineId: `machine-${"a".repeat(32)}` }]
 
+  // With the daemon's time, so the phone measures heartbeat ages on its clock.
   it("hands on a fleet the daemon pushed, so an open list stops going stale", () => {
     const socket = withSocket(() => {})
     const onFleet = vi.fn()
     const daemon = connection({ onFleet })
     daemon.connect()
+    const daemonTime = "2026-10-10T12:00:00.000Z"
     try {
       socket.onmessage?.({
-        data: JSON.stringify({ jsonrpc: "2.0", method: "fleet.changed", params: { entries } }),
+        data: JSON.stringify({ jsonrpc: "2.0", method: "fleet.changed", params: { entries, daemonTime } }),
       })
-      expect(onFleet).toHaveBeenCalledWith(entries)
+      expect(onFleet).toHaveBeenCalledWith({ entries, daemonTime })
     } finally { daemon.close() }
   })
 
@@ -211,6 +213,77 @@ describe("DaemonConnection notifications", () => {
         { method: "terminal.closed", params: { terminalId: "terminal-1", exitCode: 1 } },
       ])
     } finally { daemon.close() }
+  })
+
+  // #779: sent only to a watch that asked with followResize.
+  it("hands on a watched terminal's new grid", () => {
+    const socket = withSocket(() => {})
+    const onTerminal = vi.fn()
+    const onProtocolError = vi.fn()
+    const daemon = connection({ onTerminal, onProtocolError })
+    daemon.connect()
+    try {
+      socket.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", method: "terminal.resized", params: { terminalId: "terminal-1", cols: 80, rows: 24 } }) })
+      expect(onTerminal.mock.calls.map(([notification]) => notification)).toEqual([
+        { method: "terminal.resized", params: { terminalId: "terminal-1", cols: 80, rows: 24 } },
+      ])
+      expect(onProtocolError).not.toHaveBeenCalled()
+    } finally { daemon.close() }
+  })
+})
+
+describe("watchTerminal", () => {
+  const result = terminalWatchResultSchema.parse({
+    terminalId: "terminal-1",
+    sessionId: "session-1",
+    cols: 120,
+    rows: 34,
+    shell: "/bin/zsh",
+    cwd: "/tmp",
+    owner: { client: "desktop", clientId: "desktop-1" },
+    claimHeld: true,
+    openedAt: "2026-10-06T13:52:04.000Z",
+    state: "live",
+    buffer: "",
+    earlierOutputDropped: false,
+    watchedAt: "2026-10-06T14:06:12.000Z",
+  })
+  const refused = new DaemonError("Method parameters are invalid", -32602, undefined)
+  type WatchCall = TerminalWatchCall
+
+  it("asks to follow the holder's resizes", async () => {
+    const call = vi.fn<WatchCall>(async () => result)
+    await expect(watchTerminal(call, "terminal-1", () => true)).resolves.toBe(result)
+    expect(call.mock.calls).toEqual([["terminal.watch", { terminalId: "terminal-1", followResize: true }]])
+  })
+
+  // A daemon from before terminal.resized refuses the field it does not know.
+  it("asks again without followResize when an older daemon refuses the field", async () => {
+    const call = vi.fn<WatchCall>()
+      .mockRejectedValueOnce(refused)
+      .mockResolvedValueOnce(result)
+    await expect(watchTerminal(call, "terminal-1", () => true)).resolves.toBe(result)
+    expect(call.mock.calls).toEqual([
+      ["terminal.watch", { terminalId: "terminal-1", followResize: true }],
+      ["terminal.watch", { terminalId: "terminal-1" }],
+    ])
+  })
+
+  // Asked again after the person left, the watch would be no one's.
+  it("does not ask again for a watch no one wants any more", async () => {
+    const call = vi.fn<WatchCall>(async () => { throw refused })
+    await expect(watchTerminal(call, "terminal-1", () => false)).rejects.toBe(refused)
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it("passes on any other failure without asking again", async () => {
+    const other = new DaemonError("Terminal not found", -32602, undefined)
+    const unknown = new DaemonError("Method parameters are invalid", -32000, undefined)
+    for (const cause of [other, unknown, new DaemonUnconfirmedError("closed")]) {
+      const call = vi.fn<WatchCall>(async () => { throw cause })
+      await expect(watchTerminal(call, "terminal-1", () => true)).rejects.toBe(cause)
+      expect(call).toHaveBeenCalledTimes(1)
+    }
   })
 })
 

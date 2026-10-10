@@ -21,12 +21,15 @@ function workspace(): WorkspaceSnapshot {
 }
 
 async function draw(overrides: Partial<Parameters<typeof SessionsScreen>[0]> = {}) {
+  // Unless a test says otherwise, the daemon's clock agrees with the phone's.
+  const now = overrides.now ?? Date.now()
   const props = {
     snapshot: workspace(),
     fleet: undefined,
     notice: undefined,
     refreshing: false,
-    now: Date.now(),
+    now,
+    fleetNow: now,
     onOpenSession: jest.fn<(sessionId: string) => void>(),
     onOpenApproval: jest.fn<(approvalId: string) => void>(),
     onRefresh: jest.fn<() => void>(),
@@ -90,6 +93,38 @@ describe("SessionsScreen", () => {
     expect(screen.getByText("wsl")).toBeOnTheScreen()
     expect(screen.getByText("last seen 2d ago")).toBeOnTheScreen()
     expect(screen.queryByText("mac-mini")).toBeNull()
+  })
+
+  // #781: a heartbeat's time is the daemon's, so how long a machine has been
+  // silent is measured on the daemon's clock (fleetNow). How long a session
+  // has waited on you stays on the phone's.
+  it("measures a machine's silence on the daemon's clock and a wait on the phone's", async () => {
+    const snapshot = workspace()
+    const approval = snapshot.approvals[0]
+    if (!approval) throw new Error("fixture needs a pending approval")
+    await draw({
+      snapshot,
+      now: Date.parse(approval.requestedAt) + 4 * 60_000,
+      fleetNow: Date.parse("2026-09-18T00:05:00.000Z"),
+      fleet: [entry("mac-mini", "healthy", true), entry("wsl", "unreachable")],
+    })
+
+    expect(screen.getByText("last seen 5m ago")).toBeOnTheScreen()
+    expect(screen.getByText(`${snapshot.machine.name} · 4m`)).toBeOnTheScreen()
+  })
+
+  it("measures a quiet machine's silence on the daemon's clock", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    await draw({
+      snapshot: idle,
+      now: Date.parse("2026-09-20T00:00:00.000Z"),
+      fleetNow: Date.parse("2026-09-18T00:05:00.000Z"),
+      fleet: [entry("mac-mini", "healthy", true), entry("wsl", "unreachable")],
+    })
+
+    expect(screen.getByText("last seen 5m ago")).toBeOnTheScreen()
   })
 
   it("draws no UNREACHABLE line when every machine answers", async () => {

@@ -12,7 +12,6 @@ import {
   turnSkillSelectionFor,
   workspaceSnapshotSchema,
   type ApprovalDecision,
-  type FleetEntry,
   type PermissionMode,
   type RpcMethod,
   type RpcParams,
@@ -34,7 +33,7 @@ import { ShellNotice } from "./components/shell-notice"
 import { SkillSheet } from "./components/skill-sheet"
 import { normalizeTab, TabBar, type Tab } from "./components/tab-bar"
 import { clearCredential, loadCredential, saveCredential, type DaemonCredential } from "./lib/credentials"
-import { DaemonNotSentError, DaemonUnconfirmedError } from "./lib/daemon"
+import { DaemonNotSentError, DaemonUnconfirmedError, watchTerminal } from "./lib/daemon"
 import { DaemonTimeoutError } from "./lib/request-timeout"
 import { useDaemon } from "./lib/use-daemon"
 import { useDeviceIdentity } from "./lib/use-device-identity"
@@ -48,7 +47,7 @@ import { startLikeRequest } from "./start-like"
 import { ApprovalScreen } from "./screens/approval"
 import { DenyExplainScreen } from "./screens/deny-explain"
 import { ArtifactScreen, type PreviewRender } from "./screens/artifact"
-import { fleetLoader } from "./fleet-load"
+import { fleetLoader, fleetNow, type HeldFleet } from "./fleet-load"
 import { freshSessionReadiness, startFreshSession } from "./fresh-session"
 import { phoneRefusalFrom, type PhoneRefusal } from "./session-refusal"
 import { MachinesScreen } from "./screens/fleet"
@@ -175,7 +174,8 @@ export function App() {
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillProblem, setSkillProblem] = useState("")
-  const [fleet, setFleet] = useState<FleetEntry[] | undefined>(undefined)
+  // The entries with the daemon's clock offset of the snapshot they came in.
+  const [fleet, setFleet] = useState<HeldFleet | undefined>(undefined)
   const [fleetLoading, setFleetLoading] = useState(false)
   const [fleetProblem, setFleetProblem] = useState("")
   const [confirmPause, setConfirmPause] = useState(false)
@@ -441,6 +441,10 @@ export function App() {
   // list the session's terminals now rather than at the next interval.
   const rewatch = useRef<((terminalId: string, openedAt: string) => void) | undefined>(undefined)
   const relistNow = useRef<(() => void) | undefined>(undefined)
+  // The newest watch asked for each terminal, across runs. The daemon holds
+  // one watch per connection and terminal, so a late answer to an older run's
+  // watch may end it only while no newer run has asked for that terminal.
+  const latestWatch = useRef(new Map<string, object>())
   // Read when a run ends: a connection that has closed took its watches with
   // it, so there is nothing to unwatch on it.
   const socketOpen = useRef(status === "open")
@@ -484,10 +488,16 @@ export function App() {
     const sameShell = (watch: TerminalWatch | undefined, openedAt: string) => watch !== undefined && watchedSummary(watch).openedAt === openedAt
     const watchOne = (terminalId: string, openedAt: string) => {
       watched.set(terminalId, openedAt)
-      call("terminal.watch", { terminalId }).then((result) => {
-        // Answered after the person left: the watch is no one's, so it ends.
+      const asked = {}
+      latestWatch.current.set(terminalId, asked)
+      // Asks to follow the holder's resizes, and asks an older daemon again
+      // without that while this run still wants the watch.
+      watchTerminal(call, terminalId, () => current).then((result) => {
+        // Answered after the person left: the watch is no one's, so it ends,
+        // unless a newer run has since asked for the same terminal and the
+        // daemon's one watch is now that run's.
         if (!current) {
-          call("terminal.unwatch", { terminalId }).catch(() => {})
+          if (latestWatch.current.get(terminalId) === asked) call("terminal.unwatch", { terminalId }).catch(() => {})
           return
         }
         setTerminals((held) => sameShell(held.get(terminalId), result.openedAt)
@@ -1187,10 +1197,11 @@ export function App() {
             ) : snapshot ? (
               <SessionsScreen
                 snapshot={snapshot}
-                fleet={fleet}
+                fleet={fleet?.entries}
                 notice={notice}
                 refreshing={refreshing}
                 now={now}
+                fleetNow={fleetNow(fleet, now)}
                 onOpenApproval={setOpenApprovalId}
                 onRefresh={() => void refreshWorkspace()}
                 onStartSession={() => {
@@ -1238,13 +1249,15 @@ export function App() {
               />
             ) : (
             <MachinesScreen
-              fleet={fleet}
+              fleet={fleet?.entries}
               activity={activity}
               loading={fleetLoading}
               problem={fleetProblem}
               notice={notice}
               connected={status === "open"}
-              now={now}
+              // Machines measures only heartbeat ages, so its clock is the
+              // daemon's, by the offset kept with the fleet on screen.
+              now={fleetNow(fleet, now)}
               onRefresh={() => void loadFleet()}
               onOpen={() => selectTab("sessions")}
               onOpenTools={() => setToolsOpen(true)}

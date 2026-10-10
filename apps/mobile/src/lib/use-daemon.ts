@@ -4,7 +4,7 @@ import {
   applyWorkspaceDelta,
   daemonAuthenticationErrorCode,
   type ClientAccess,
-  type FleetEntry,
+  type FleetSnapshot,
   type WorkspaceDelta,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -23,8 +23,9 @@ export function useDaemon(
   // the app kept it, or a token typed into Settings.
   client: HandheldClient | undefined,
   // Where a pushed fleet goes. Held in a ref so the connection is not torn down
-  // and rebuilt every time the caller renders a new closure.
-  onFleet: (entries: FleetEntry[]) => void,
+  // and rebuilt every time the caller renders a new closure. The whole
+  // snapshot, so the daemon's time arrives with the entries it describes.
+  onFleet: (snapshot: FleetSnapshot) => void,
   // Told the kind the daemon accepted for a credential of unknown kind, once.
   onKindLearned?: (kind: HandheldClient) => void,
 ) {
@@ -113,8 +114,8 @@ export function useDaemon(
           if (!current()) return
           setSnapshot((held) => held ? applyWorkspaceDelta(held, delta) : held)
         },
-        onFleet: (entries) => {
-          if (current()) fleetSink.current(entries)
+        onFleet: (snapshot) => {
+          if (current()) fleetSink.current(snapshot)
         },
         // A watch belongs to the connection that asked for it, so a replaced
         // connection's late output is not this one's.
