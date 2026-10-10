@@ -1812,6 +1812,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           <FleetView
             connected={home.connected}
             entries={fleet?.entries ?? (home.snapshot ? [localFleetEntry(home.snapshot)] : [])}
+            daemonTimeOffsetMs={home.fleetDaemonTimeOffsetMs}
             fleetOverflow={fleetOverflow}
             clientKind={clientKind}
             clientAccess={fleetClientAccess}

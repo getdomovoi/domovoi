@@ -31,6 +31,34 @@ const admissionJourneyTimeoutMs = 15_000
 // The card's primary action names the session count it read, when it read one.
 const openStudio = /^Open its (\d+ )?sessions? on Studio$/u
 
+it("passes daemon time from fleet.list through the shell to LAST HEARD", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-09T14:00:00.000Z"))
+  try {
+    const user = userEvent.setup()
+    render(<WorkspaceShell />)
+    const home = sockets.socket(0)
+    await act(async () => { completeHandshake(home) })
+    await settle()
+    await act(async () => {
+      respond(home, "fleet.list", {
+        daemonTime: "2026-10-09T12:00:00.000Z",
+        entries: [{ kind: "machine", machine: {
+          ...machine,
+          heartbeat: { state: "online", lastSeenAt: "2026-10-09T11:59:30.000Z" },
+        } }],
+      })
+    })
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+
+    const card = await screen.findByRole("group", { name: "Studio" })
+    const lastHeard = within(card).getAllByRole("term").find((term) => term.textContent === "LAST HEARD")
+    expect(lastHeard?.nextElementSibling?.textContent).toBe("30s ago")
+  } finally {
+    clock.mockRestore()
+  }
+})
+
 it.each(["Open its sessions on Studio", "Terminal on Studio"])("assembles authorization, %s and home return with separate client authority", async (action) => {
   const user = userEvent.setup()
   render(<WorkspaceShell />)
