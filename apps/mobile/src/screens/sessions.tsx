@@ -183,6 +183,7 @@ export function SessionsScreen({
   notice,
   refreshing,
   now,
+  fleetNow,
   onOpenSession,
   onOpenApproval,
   onRefresh,
@@ -198,8 +199,12 @@ export function SessionsScreen({
   notice: ConnectionNotice | undefined
   refreshing: boolean
   // Passed in rather than read from the clock here, so what the screen draws is
-  // a function of what it was given.
+  // a function of what it was given. How long a session has waited on you.
   now: number
+  // The daemon's time now, by the offset kept with the fleet. A heartbeat's
+  // time is the daemon's, so how long a machine has been silent is measured
+  // on this clock rather than the phone's.
+  fleetNow: number
   onOpenSession: (sessionId: string) => void
   onOpenApproval: (approvalId: string) => void
   onRefresh: () => void
@@ -251,7 +256,7 @@ export function SessionsScreen({
                 {idleSentence(snapshot.machine.name, fleet, notice !== undefined)}
               </Text>
             </Card>
-            {fleet ? <IdleFleet fleet={fleet} now={now} stale={notice !== undefined} /> : null}
+            {fleet ? <IdleFleet fleet={fleet} now={fleetNow} stale={notice !== undefined} /> : null}
             <Button
               title="Start a session"
               variant="primary"
@@ -281,7 +286,7 @@ export function SessionsScreen({
 
         {/* With nothing listed, the idle card's fleet rows already name the
             machines that do not answer. */}
-        {!empty && fleet ? <UnreachableMachines fleet={fleet} now={now} /> : null}
+        {!empty && fleet ? <UnreachableMachines fleet={fleet} now={fleetNow} /> : null}
       </PageScroller>
     </View>
   )

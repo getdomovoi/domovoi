@@ -58,10 +58,16 @@ class FakeSocket {
   requests(method: string): Frame[] {
     return this.sent.filter((frame) => frame.method === method)
   }
-  answer(method: string, result: unknown) {
-    const request = this.requests(method).at(-1)
+  // The latest request for the method, or the one at `which`.
+  answer(method: string, result: unknown, which = -1) {
+    const request = this.requests(method).at(which)
     if (!request) throw new Error(`nothing asked for ${method}`)
     this.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, result }) })
+  }
+  refuse(method: string, code: number, message: string) {
+    const request = this.requests(method).at(-1)
+    if (!request) throw new Error(`nothing asked for ${method}`)
+    this.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: request.id, error: { code, message } }) })
   }
   push(method: string, params: unknown) {
     this.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", method, params }) })
@@ -467,6 +473,45 @@ describe("App", () => {
     expect(screen.getByText("1 open annotation was over the per-turn limit")).toBeOnTheScreen()
   })
 
+  // #781: heartbeat times are the daemon's. A phone whose clock is two hours
+  // ahead would call a machine heard from five minutes ago silent for two
+  // hours, so the age is measured by the daemonTime of the snapshot that
+  // carried the heartbeat, on the list and on a pushed fleet alike.
+  it("ages a machine's last heartbeat by the daemon's clock", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("tab", { name: "Machines" }))
+    await settle()
+    const daemonNow = Date.now() - 2 * 60 * 60_000
+    // Half a minute of slack: the screen's clock ticks every 30 s, so it can
+    // read a little before the snapshot arrived.
+    const remote = (label: string, minutesAgo: number) => ({
+      kind: "machine",
+      machine: {
+        id: `machine-${"c".repeat(32)}`, label, platform: "linux", arch: "x64", version: "0.0.1", connection: "tailnet",
+        capabilities: ["sessions"], protocolVersion: "0.2.0", transports: [],
+        heartbeat: { state: "offline", lastSeenAt: new Date(daemonNow - (minutesAgo + 0.5) * 60_000).toISOString() }, health: "unreachable", self: false,
+      },
+    })
+    await act(async () => {
+      socket.answer("fleet.list", { entries: [remote("wsl", 5)], daemonTime: new Date(daemonNow).toISOString() })
+    })
+    await settle()
+    expect(screen.getByText("wsl cannot be reached. Last seen 5m ago.")).toBeOnTheScreen()
+
+    await act(async () => {
+      socket.push("fleet.changed", { entries: [remote("wsl", 7)], daemonTime: new Date(daemonNow).toISOString() })
+    })
+    await settle()
+    expect(screen.getByText("wsl cannot be reached. Last seen 7m ago.")).toBeOnTheScreen()
+
+    // A daemon from before daemonTime: the phone's own clock, as before.
+    await act(async () => {
+      socket.push("fleet.changed", { entries: [remote("wsl", 7)] })
+    })
+    await settle()
+    expect(screen.getByText("wsl cannot be reached. Last seen 2h ago.")).toBeOnTheScreen()
+  })
+
   // Ruling Q211: the phone Tools screen reads tool.inventory for the machine
   // it is connected to and shows what the repository holds back. It reads
   // and never asks to trust.
@@ -773,7 +818,7 @@ describe("App", () => {
       expect(socket.requests("terminal.list").at(-1)?.params).toEqual({ sessionId: audit.id })
       await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
       await settle()
-      expect(socket.requests("terminal.watch").at(-1)?.params).toEqual({ terminalId: "terminal-1" })
+      expect(socket.requests("terminal.watch").at(-1)?.params).toEqual({ terminalId: "terminal-1", followResize: true })
       await act(async () => { socket.answer("terminal.watch", watchResult) })
       await settle()
     }
@@ -815,6 +860,77 @@ describe("App", () => {
       expect(socket.requests("terminal.unwatch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }])
     })
 
+    // #779: the holder's resize reaches a watch that asked with followResize,
+    // so the size the phone names follows the holder's grid without a relist.
+    it("names the holder's grid after it resizes", async () => {
+      const { socket } = await openAudit()
+      await watchOne(socket)
+      await fireEvent.press(screen.getByRole("button", { name: "Show all 2 lines" }))
+      expect(screen.getByText("120×34")).toBeOnTheScreen()
+
+      await act(async () => { socket.push("terminal.resized", { terminalId: "terminal-1", cols: 80, rows: 24 }) })
+      await settle()
+      expect(screen.getByText("80×24")).toBeOnTheScreen()
+      expect(screen.queryByText("120×34")).toBeNull()
+      // Following the grid is still only reading it.
+      expect(socket.sent.filter((frame) => frame.method === "terminal.resize")).toEqual([])
+    })
+
+    // A daemon from before terminal.resized refuses the field as invalid
+    // parameters. The watch is asked for again without it, and reads as before.
+    it("watches an older daemon's terminal without following its resizes", async () => {
+      const { socket } = await openAudit()
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      await act(async () => { socket.refuse("terminal.watch", -32602, "Method parameters are invalid") })
+      await settle()
+      expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([
+        { terminalId: "terminal-1", followResize: true },
+        { terminalId: "terminal-1" },
+      ])
+      await act(async () => { socket.answer("terminal.watch", watchResult) })
+      await settle()
+      expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+      expect(screen.queryByText("Method parameters are invalid")).toBeNull()
+    })
+
+    // The daemon holds one watch per connection and terminal. An answer to the
+    // watch asked before the person left and came back lands after the new
+    // watch; ending it then would end the new one, and the open view would
+    // hear nothing more.
+    it("keeps the new watch when the watch from before leaving answers late", async () => {
+      const { socket } = await openAudit()
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+      await settle()
+      expect(socket.requests("terminal.unwatch")).toHaveLength(1)
+      await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+      await settle()
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      expect(socket.requests("terminal.watch")).toHaveLength(2)
+
+      await act(async () => { socket.answer("terminal.watch", watchResult, 0) })
+      await settle()
+      expect(socket.requests("terminal.unwatch")).toHaveLength(1)
+      await act(async () => { socket.answer("terminal.watch", watchResult, 1) })
+      await settle()
+      expect(screen.getByRole("button", { name: "Show all 2 lines" })).toBeOnTheScreen()
+    })
+
+    // Refused after the person left: no watch was taken, so none is asked for.
+    it("does not ask an older daemon again for a terminal the person left", async () => {
+      const { socket } = await openAudit()
+      await act(async () => { socket.answer("terminal.list", { terminals: [terminal] }) })
+      await settle()
+      await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+      await settle()
+      await act(async () => { socket.refuse("terminal.watch", -32602, "Method parameters are invalid") })
+      await settle()
+      expect(socket.requests("terminal.watch")).toHaveLength(1)
+    })
+
     // The list after a reconnect is the daemon's word on the terminal's state.
     it("takes the state from the list after a reconnect, before the new watch answers", async () => {
       const { socket } = await openAudit()
@@ -853,7 +969,7 @@ describe("App", () => {
           socket.answer("terminal.list", { terminals: [terminal, { ...terminal, terminalId: "terminal-2", cwd: "/Users/mira/dev/acme" }] })
         })
         await settle()
-        expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-2" }])
+        expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1", followResize: true }, { terminalId: "terminal-2", followResize: true }])
         expect(screen.getByText("zsh · acme")).toBeOnTheScreen()
       } finally {
         jest.useRealTimers()
@@ -915,7 +1031,7 @@ describe("App", () => {
       expect(socket.requests("terminal.list")).toHaveLength(2)
       await act(async () => { socket.answer("terminal.list", { terminals: [{ ...terminal, openedAt: "2026-10-06T14:20:00.000Z" }] }) })
       await settle()
-      expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1" }, { terminalId: "terminal-1" }])
+      expect(socket.requests("terminal.watch").map((frame) => frame.params)).toEqual([{ terminalId: "terminal-1", followResize: true }, { terminalId: "terminal-1", followResize: true }])
       await act(async () => { socket.answer("terminal.watch", { ...watchResult, openedAt: "2026-10-06T14:20:00.000Z", buffer: "$ \n", watchedAt: "2026-10-06T14:20:01.000Z" }) })
       await settle()
       expect(screen.getByText("Live")).toBeOnTheScreen()

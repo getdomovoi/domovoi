@@ -7,13 +7,14 @@ import {
   rpcResponseSchema,
   workspaceDeltaSchema,
   workspaceSnapshotSchema,
-  type FleetEntry,
+  type FleetSnapshot,
   type RpcMethod,
   type RpcParams,
   type RpcResult,
   type TerminalClosedNotification,
   type TerminalOutputNotification,
   type TerminalOwnershipNotification,
+  type TerminalResizedNotification,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -75,14 +76,39 @@ export class DaemonProtocolError extends Error {
 export type DaemonStatus = "connecting" | "open" | "closed"
 
 // What the daemon sends about a terminal this connection watches: its output,
-// how it ended, and who holds its claim (Phone v2 frame 04). A phone hears
-// none of it until it calls terminal.watch.
+// how it ended, who holds its claim (Phone v2 frame 04), and the holder's new
+// grid when the watch asked for it. A phone hears none of it until it calls
+// terminal.watch.
 export type TerminalNotification =
   | { method: "terminal.output", params: TerminalOutputNotification }
   | { method: "terminal.closed", params: TerminalClosedNotification }
   | { method: "terminal.ownership", params: TerminalOwnershipNotification }
+  | { method: "terminal.resized", params: TerminalResizedNotification }
 
-const terminalNotificationMethods = ["terminal.output", "terminal.closed", "terminal.ownership"] as const
+const terminalNotificationMethods = ["terminal.output", "terminal.closed", "terminal.ownership", "terminal.resized"] as const
+
+// How a daemon refuses parameters its schema does not know, such as
+// followResize sent to a daemon from before terminal.resized. Both the code
+// and the daemon's fixed sentence are matched, so another refusal that shares
+// the code is not mistaken for this one.
+const invalidParamsErrorCode = -32602
+const invalidParamsMessage = "Method parameters are invalid"
+
+export type TerminalWatchCall = (method: "terminal.watch", params: RpcParams<"terminal.watch">) => Promise<RpcResult<"terminal.watch">>
+
+// Watches a terminal and asks to hear the holder's resizes. A daemon from
+// before terminal.resized refuses the field, and the watch is asked for again
+// without it, unless no one wants it any more (stillWanted), since a watch
+// taken then would be no one's. The refused watch took nothing on the daemon.
+export async function watchTerminal(call: TerminalWatchCall, terminalId: string, stillWanted: () => boolean): Promise<RpcResult<"terminal.watch">> {
+  try {
+    return await call("terminal.watch", { terminalId, followResize: true })
+  } catch (cause) {
+    const olderDaemon = cause instanceof DaemonError && cause.code === invalidParamsErrorCode && cause.message === invalidParamsMessage
+    if (!olderDaemon || !stillWanted()) throw cause
+    return call("terminal.watch", { terminalId })
+  }
+}
 
 function isTerminalNotificationMethod(method: string): method is TerminalNotification["method"] {
   return (terminalNotificationMethods as readonly string[]).includes(method)
@@ -111,8 +137,9 @@ export class DaemonConnection {
       onHello?: (hello: RpcResult<"system.hello">) => void
       onDelta: (delta: Parameters<typeof applyWorkspaceDelta>[1]) => void
       // The daemon pushes the whole fleet whenever it changes, so a list on
-      // screen stops being a claim about when the tab was opened.
-      onFleet: (entries: FleetEntry[]) => void
+      // screen stops being a claim about when the tab was opened. The whole
+      // snapshot, so its daemonTime travels with its entries.
+      onFleet: (snapshot: FleetSnapshot) => void
       onTerminal?: (notification: TerminalNotification) => void
       onStatus: (status: DaemonStatus) => void
       // The cause rather than its sentence, because whether a refusal is worth
@@ -187,7 +214,7 @@ export class DaemonConnection {
       // way. Without it the Fleet tab shows what was true when it was opened.
       if (message.method === "fleet.changed") {
         const parsed = fleetSnapshotSchema.safeParse(message.params)
-        if (parsed.success) this.handlers.onFleet(parsed.data.entries)
+        if (parsed.success) this.handlers.onFleet(parsed.data)
         else this.handlers.onProtocolError("The daemon sent a fleet.changed notification this app could not read")
         return
       }

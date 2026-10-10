@@ -239,14 +239,14 @@
         "NEEDS YOU",
         "need you",
         "label=\"UNREACHABLE\"",
-        "<UnreachableMachines fleet={fleet} now={now} />",
+        "<UnreachableMachines fleet={fleet} now={fleetNow} />",
         "re:<Badge[^\\n]*need you"
       ],
       "presence": [
         "NEEDS YOU",
         "need you",
         "label=\"UNREACHABLE\"",
-        "<UnreachableMachines fleet={fleet} now={now} />"
+        "<UnreachableMachines fleet={fleet} now={fleetNow} />"
       ],
       "partial": {
         "since": "2026-10-02",
@@ -572,14 +572,14 @@
         "Everything is idle",
         "Start a session",
         "{idleSentence(snapshot.machine.name, fleet, ",
-        "<IdleFleet fleet={fleet} now={now}",
+        "<IdleFleet fleet={fleet} now={fleetNow}",
         "neither has work in flight"
       ],
       "presence": [
         "Everything is idle",
         "Start a session",
         "{idleSentence(snapshot.machine.name, fleet, ",
-        "<IdleFleet fleet={fleet} now={now}"
+        "<IdleFleet fleet={fleet} now={fleetNow}"
       ],
       "partial": {
         "since": "2026-10-02",
