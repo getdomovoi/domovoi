@@ -1706,16 +1706,11 @@
       "evidence": [
         "Take the shell",
         "Attach this output to the composer",
-        "Release the shell"
-      ],
-      "presence": [
-        "Terminal quick keys",
-        "Take the shell"
-      ],
-      "partial": {
-        "since": "2026-10-07",
-        "reason": "S3.10q (2026-10-07) draws the claim banner (You hold this shell, Claimed by <device label>, Nobody holds this shell) with Take the shell in place of the header's Take over; the watching state reads the stream through terminal.watch with Take the shell disabled and its reason beside it; Attach this output to the composer hands the rendered output to that session's composer as terminal-output.txt and shows only while that composer is open. Since 2026-10-08 the shell passes terminal.watch, terminal.unwatch and terminal.list to the pane and the thread opens its composer to the attach, so a watching desktop reads the shell and the attach reaches the draft. Still not as drawn: Release the shell and since <time> need protocol (no terminal.release, no claim time on the owner), and a watcher follows the holder's resize only at its next terminal.list read (every 5 seconds, or later when a read fails or the page throttles timers), until protocol task 39 adds a resize notice. The tab is an interactive daemon PTY the user creates, not the agent's read-only shell the design draws; Q340 A (2026-10-02) keeps the PTY with corrected tip and footer copy, and the tab's redraw needs a design source change with Claude Design (not made here, 2026-10-07)"
-      }
+        "Release the shell",
+        "re: since \\$\\{readingTime\\(holder\\.claimedAt\\)\\}",
+        "release: releaseTerminal",
+        "watch(terminalId, { followResize: true })"
+      ]
     },
     {
       "id": "dock.history",
@@ -2363,7 +2358,7 @@
     {
       "id": "dock.terminal",
       "since": "2026-10-02",
-      "note": "Q340 A: the tab stays an interactive PTY the user creates, not the agent's read-only shell the design draws; the design's footer note read-only, the agent owns this shell is not drawn because it is false here, and the redraw is with Claude Design. Since 2026-10-07 the footer says who can type instead: interactive, this device holds the shell; read-only until you take the shell; read-only, this device watches. The tip reads A shell on the machine, in the session's worktree. One device types at a time; the others can read. The banner's note for the holder reads Other devices can watch where the design says The phone can watch, because any paired device can."
+      "note": "Q340 A: the tab stays an interactive PTY the user creates, not the agent's read-only shell the design draws; the design's footer note read-only, the agent owns this shell is not drawn because it is false here, and the redraw is with Claude Design. Since 2026-10-07 the footer says who can type instead: interactive, this device holds the shell; read-only until you take the shell; read-only, this device watches. The tip reads A shell on the machine, in the session's worktree. One device types at a time; the others can read. The banner's note for the holder reads Other devices can watch where the design says The phone can watch, because any paired device can. Since 2026-10-09 (task 59) the holder's banner offers Release the shell (terminal.release), after which the banner reads Nobody holds this shell with Take the shell; Claimed by <holder> since <time> uses the daemon's claim time (the day is added for a claim before today, and an older daemon's line ends at the holder); a watching desktop follows the holder's grid from terminal.resized. Not as drawn: a desktop that opened the shell and no longer holds it is not a watcher, so it still takes the holder's grid from its terminal.list read every 5 seconds, and the holder's banner has no since, as drawn."
     },
     {
       "id": "handoff.conflict",

@@ -469,6 +469,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     transferSession,
     previewTransfer,
     releaseSession,
+    releaseTerminal,
     listTerminals,
     unwatchTerminal,
     watchTerminal,
@@ -482,6 +483,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     clientId: terminalClientId,
     create: createTerminal,
     claim: claimTerminal,
+    release: releaseTerminal,
     write: writeTerminal,
     resize: resizeTerminal,
     close: closeTerminal,
@@ -492,7 +494,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     unwatch: unwatchTerminal,
     // A pane that does not hold the shell rereads the holder and its grid.
     list: listTerminals,
-  }), [claimTerminal, closeTerminal, createTerminal, listTerminals, resizeTerminal, subscribeTerminal, terminalClientId, unwatchTerminal, watchTerminal, writeTerminal])
+  }), [claimTerminal, closeTerminal, createTerminal, listTerminals, releaseTerminal, resizeTerminal, subscribeTerminal, terminalClientId, unwatchTerminal, watchTerminal, writeTerminal])
   // Home remains connected while a remote workspace is in use. Its registry,
   // enrollment and client-route verifier never come from the selected target.
   useEffect(() => {
