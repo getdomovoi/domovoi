@@ -114,13 +114,21 @@ describe("replaceFile", () => {
     expect(fixture.pauses).toEqual([5, 3])
   })
 
-  it("waits on a real timer by default", async () => {
+  it("waits on a real timer by default and yields the event loop meanwhile", async () => {
     let refused = false
-    const started = performance.now()
+    let otherWorkRan = false
+    let otherWorkBeforeRetry: boolean | undefined
     await replaceFile("staging", "target", {
       platform: "win32",
-      rename: () => { if (!refused) { refused = true; throw refusal("EBUSY") } },
+      rename: () => {
+        if (!refused) {
+          refused = true
+          setImmediate(() => { otherWorkRan = true })
+          throw refusal("EBUSY")
+        }
+        otherWorkBeforeRetry = otherWorkRan
+      },
     })
-    expect(performance.now() - started).toBeGreaterThanOrEqual(4)
+    expect(otherWorkBeforeRetry).toBe(true)
   })
 })
