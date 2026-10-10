@@ -1,55 +1,153 @@
 import { randomUUID } from "node:crypto"
 import { spawnSync } from "node:child_process"
-import { userInfo } from "node:os"
+import { mkdtemp } from "node:fs/promises"
+import { tmpdir, userInfo } from "node:os"
+import { join } from "node:path"
 import { expect, it } from "vitest"
 
+import { OperationDeadline } from "../operation-deadline.js"
+import { removeScratchDirectory } from "../test-scratch.js"
 import { createServiceConfiguration } from "./configuration.js"
-import { servicePlan } from "./install.js"
-import { windowsSchtasksPath } from "./windows-task.js"
+import { stagedRuntimeCopy } from "./desktop-service.js"
+import { isDomovoiTaskAction, nodeServiceEffects, servicePlan, type ServiceCommand } from "./install.js"
+import { readWindowsTaskAction, removeWindowsTask, windowsSchtasksPath, windowsTaskRemovalPlan } from "./windows-task.js"
 
-// Microsoft's schtasks reference says a /tr value "must not exceed 262
-// characters"; schtasks itself refuses one over 261. This runs the real
-// schtasks with the installer's own /create arguments under a task name of
-// its own, so the limit servicePlan checks is the one Windows applies. Each
-// task it may have made is deleted afterwards, whatever the outcome.
-it.runIf(process.platform === "win32")("schtasks accepts the installer's 261 character command and refuses 262", () => {
-  // As in install.test.ts: with this home and runtime, a 168-character entry
-  // makes the command exactly 261. Nothing is written under this home.
+// Task 50: the installer registers its logon task through the Task Scheduler
+// COM API, the program and its arguments apart, instead of schtasks /create
+// /tr, which refuses a command over 261 characters (#771). These run the real
+// Task Scheduler under task names of their own, read each task back through
+// every reader Domovoi has (the typed action read, the ownership check, and
+// the desktop's schtasks /query /xml reading), and delete what they made,
+// whatever the outcome. Registering a logon task starts nothing.
+
+const effects = nodeServiceEffects()
+const decode = (command: ServiceCommand) => Buffer.from(command.args.at(-1)!, "base64").toString("utf16le")
+// The installer's own registration, with only the task name redirected.
+const renamed = (command: ServiceCommand, name: string): ServiceCommand => {
+  const script = decode(command)
+  const named = "$name = 'Domovoi daemon'"
+  if (!script.includes(named)) throw new Error("The registration does not name the Domovoi task")
+  return { command: command.command, args: [...command.args.slice(0, -1), Buffer.from(script.replace(named, `$name = '${name}'`), "utf16le").toString("base64")] }
+}
+const register = async (command: ServiceCommand, name: string, deadline: OperationDeadline) => {
+  const named = renamed(command, name)
+  await effects.run(named.command, named.args, deadline)
+}
+// Stdin is closed so a password prompt fails at once instead of waiting.
+const schtasks = (args: string[]) => spawnSync(windowsSchtasksPath(), args, { input: "", encoding: "utf8", timeout: 30_000, windowsHide: true })
+// schtasks may emit UTF-16 through its redirected output.
+const queryXml = (name: string) => {
+  const queried = schtasks(["/query", "/tn", name, "/xml"])
+  expect(queried.status, `${queried.stdout}${queried.stderr}`).toBe(0)
+  return queried.stdout.replaceAll("\0", "")
+}
+const xmlAction = (xml: string) => ({
+  command: /<Command>([^<]*)<\/Command>/u.exec(xml)?.[1],
+  arguments: /<Arguments>([^<]*)<\/Arguments>/u.exec(xml)?.[1],
+})
+const plan = (home: string, execPath: string, runtime: string) => servicePlan({
+  platform: "win32", home, user: userInfo().username, execPath, runtime,
+  configuration: createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home }),
+})
+
+it.runIf(process.platform === "win32")("registers the action an older Domovoi's schtasks /create /tr registered", async () => {
   const home = "C:\\Users\\dl"
   const runtime = "C:\\Program Files\\nodejs\\node.exe"
-  const entry = (length: number) => `C:\\${"a".repeat(length - 17)}\\dist\\index.js`
-  const plan = servicePlan({
-    platform: "win32", home, user: userInfo().username, execPath: entry(168), runtime,
-    configuration: createServiceConfiguration({}, { platform: "win32", homeDirectory: home, workingDirectory: home }),
-  })
-  const create = plan.commands.find(({ args }) => args[0] === "/create")!
-  const fits = create.args[create.args.indexOf("/tr") + 1]!
-  expect(fits).toHaveLength(261)
-  const over = fits.replace(entry(168), entry(169))
-  expect(over).toHaveLength(262)
-
-  const names: string[] = []
-  // Stdin is closed so a password prompt fails at once instead of waiting.
-  const schtasks = (args: string[]) => spawnSync(windowsSchtasksPath(), args, { input: "", encoding: "utf8", timeout: 30_000, windowsHide: true })
-  const register = (command: string) => {
-    const name = `Domovoi-command-length-test-${randomUUID()}`
-    names.push(name)
-    // The installer's arguments with this test's name and command, and no /f,
-    // so nothing already registered is replaced.
-    const args = create.args.filter((arg) => arg !== "/f")
-      .map((arg, index, all) => all[index - 1] === "/tn" ? name : all[index - 1] === "/tr" ? command : arg)
-    return { name, result: schtasks(args) }
-  }
+  const entry = "C:\\Program Files\\nodejs\\node_modules\\@getdomovoi\\cli\\node_modules\\@getdomovoi\\daemon\\dist\\index.js"
+  const configurationPath = `${home}\\.domovoi\\service.json`
+  const command = `"${runtime}" "${entry}" --service-supervise "${configurationPath}"`
+  const legacy = `Domovoi-legacy-shape-test-${randomUUID()}`
+  const current = `Domovoi-com-shape-test-${randomUUID()}`
+  const deadline = OperationDeadline.start(120_000)
   try {
-    const accepted = register(fits)
-    expect(accepted.result.status, `${accepted.result.stdout}${accepted.result.stderr}`).toBe(0)
-    expect(schtasks(["/query", "/tn", accepted.name]).status).toBe(0)
-
-    const refused = register(over)
-    expect(refused.result.status).not.toBe(0)
-    expect(`${refused.result.stdout}${refused.result.stderr}`).toMatch(/\/TR.*261/i)
-    expect(schtasks(["/query", "/tn", refused.name]).status).not.toBe(0)
+    // What an older Domovoi ran, with this test's name and no /f.
+    const created = schtasks(["/create", "/tn", legacy, "/tr", command, "/sc", "onlogon", "/ru", userInfo().username, "/rl", "LIMITED"])
+    expect(created.status, `${created.stdout}${created.stderr}`).toBe(0)
+    await register(plan(home, entry, runtime).commands[0]!, current, deadline)
+    const legacyAction = await readWindowsTaskAction(legacy, effects, deadline)
+    const currentAction = await readWindowsTaskAction(current, effects, deadline)
+    expect(currentAction).not.toBe("missing")
+    expect(legacyAction).not.toBe("missing")
+    const shape = (action: typeof currentAction) => action === "missing" ? action : { path: action.path, arguments: action.arguments }
+    expect(shape(currentAction)).toEqual(shape(legacyAction))
+    expect(isDomovoiTaskAction(currentAction as Exclude<typeof currentAction, "missing">, configurationPath, { executable: runtime, entry })).toBe(true)
+    const legacyXml = queryXml(legacy), currentXml = queryXml(current)
+    expect(xmlAction(currentXml)).toEqual(xmlAction(legacyXml))
+    // Run only while the user is logged on, with limited rights, as /ru with
+    // no password and /rl LIMITED registered.
+    for (const xml of [legacyXml, currentXml]) {
+      expect(xml).toMatch(/<LogonType>InteractiveToken<\/LogonType>/u)
+      expect(xml).toMatch(/<RunLevel>LeastPrivilege<\/RunLevel>/u)
+    }
+    console.log(`[task shape] schtasks principal and triggers:\n${/<Triggers>[\s\S]*?<\/Principals>/u.exec(legacyXml)?.[0] ?? legacyXml}`)
+    console.log(`[task shape] COM principal and triggers:\n${/<Triggers>[\s\S]*?<\/Principals>/u.exec(currentXml)?.[0] ?? currentXml}`)
   } finally {
-    for (const name of names) schtasks(["/delete", "/tn", name, "/f"])
+    deadline.clear()
+    for (const name of [legacy, current]) schtasks(["/delete", "/tn", name, "/f"])
   }
-})
+}, 150_000)
+
+it.runIf(process.platform === "win32")("registers, reads back and removes a task command well over 261 characters", async () => {
+  const base = await mkdtemp(join(tmpdir(), "domovoi-long-"))
+  // A home and profile deep enough that the command is far over 261, with
+  // the runtime copy's layout the desktop reader recognises. Nothing is
+  // written under them; registering a logon task starts nothing.
+  const home = join(base, "h".repeat(60))
+  const profile = join(home, "p".repeat(60))
+  const copy = join(profile, "runtime", "0.9.2", "0123456789ab")
+  const runtime = join(copy, "node", "node.exe")
+  const entry = join(copy, "daemon", "dist", "index.js")
+  const configurationPath = join(home, ".domovoi", "service.json")
+  const name = `Domovoi-long-command-test-${randomUUID()}`
+  const deadline = OperationDeadline.start(120_000)
+  let removed = false
+  try {
+    const registration = plan(home, entry, runtime).commands[0]!
+    const command = `"${runtime}" "${entry}" --service-supervise "${configurationPath}"`
+    expect(command.length).toBeGreaterThan(400)
+    await register(registration, name, deadline)
+    const action = await readWindowsTaskAction(name, effects, deadline)
+    expect(action).toMatchObject({ path: `"${runtime}"`, arguments: `"${entry}" --service-supervise "${configurationPath}"`, enabled: true })
+    expect(isDomovoiTaskAction(action as Exclude<typeof action, "missing">, configurationPath, { executable: runtime, entry })).toBe(true)
+    const xml = queryXml(name)
+    expect(xmlAction(xml)).toEqual({ command: `"${runtime}"`, arguments: `"${entry}" --service-supervise "${configurationPath}"` })
+    expect(stagedRuntimeCopy("win32", xml, profile, configurationPath)).toEqual({ version: "0.9.2", copy })
+    for (const setting of ["<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>", "<DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>", "<StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>"]) {
+      expect(xml).toContain(setting)
+    }
+    expect(await removeWindowsTask(windowsTaskRemovalPlan(name), effects, deadline, true)).toBe("removed")
+    removed = true
+    expect(await readWindowsTaskAction(name, effects, deadline)).toBe("missing")
+  } finally {
+    deadline.clear()
+    if (!removed) schtasks(["/delete", "/tn", name, "/f"])
+    await removeScratchDirectory(base)
+  }
+}, 150_000)
+
+// Task Scheduler's schema gives an Exec Command at most 260 characters
+// (pathType). The installer refuses a longer program, quotes included; this
+// shows the longest it registers is accepted, and records what Windows does
+// one character over, which the installer never sends.
+it.runIf(process.platform === "win32")("registers a task program of 260 characters with its quotes", async () => {
+  const home = "C:\\Users\\dl"
+  const runtime = `C:\\${"n".repeat(246)}\\node.exe`
+  const entry = "C:\\Program Files\\Domovoi\\dist\\index.js"
+  const accepted = `Domovoi-program-length-test-${randomUUID()}`
+  const over = `Domovoi-program-length-test-${randomUUID()}`
+  const deadline = OperationDeadline.start(120_000)
+  try {
+    const registration = plan(home, entry, runtime).commands[0]!
+    await register(registration, accepted, deadline)
+    const action = await readWindowsTaskAction(accepted, effects, deadline)
+    expect(action).not.toBe("missing")
+    expect((action as Exclude<typeof action, "missing">).path).toHaveLength(260)
+    const longer = decode(registration).replace(`'"${runtime}"'`, `'"${runtime.replace("\\node.exe", "n\\node.exe")}"'`)
+    const probe = { command: registration.command, args: [...registration.args.slice(0, -1), Buffer.from(longer.replace("$name = 'Domovoi daemon'", `$name = '${over}'`), "utf16le").toString("base64")] }
+    const outcome = await effects.run(probe.command, probe.args, deadline).then(() => "accepted", (error: unknown) => `refused: ${String(error)}`)
+    console.log(`[task program length] a 261 character Command with its quotes was ${outcome}`)
+  } finally {
+    deadline.clear()
+    for (const name of [accepted, over]) schtasks(["/delete", "/tn", name, "/f"])
+  }
+}, 150_000)

@@ -705,7 +705,49 @@ describe("updateDaemonService with a Windows logon task", () => {
     expect(vi.mocked(effects.run).mock.calls.filter(([, args]) => args[0] === "/create" || args[0] === "/run").map(([command]) => command))
       .toEqual(Array(4).fill("C:\\Windows\\System32\\schtasks.exe"))
   })
+
+  // Task 50: a Node version manager keeps Node and its global packages in
+  // deep folders, so the task command exceeds the 261 characters schtasks
+  // /create /tr accepts (#771). The update registers it through the Task
+  // Scheduler COM API, the program and its arguments apart, and so does the
+  // restore that puts such a command back.
+  const fnm = "C:\\Users\\dl\\AppData\\Roaming\\fnm\\node-versions\\v22.12.0\\installation"
+  const fnmRuntime = { nodePath: `${fnm}\\node.exe`, daemonEntryPath: `${fnm}\\node_modules\\@getdomovoi\\cli\\node_modules\\@getdomovoi\\daemon\\dist\\index.js` }
+  const fnmArguments = `"${fnmRuntime.daemonEntryPath}" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"`
+
+  it("moves the task to a runtime whose command is over 261 characters", async () => {
+    const effects = fake("win32", "C:\\Users\\dl")
+    expect(await updateDaemonService({ runtime: fnmRuntime }, effects)).toMatchObject({ kind: "task", name: "Domovoi daemon" })
+    expect(registeredActions(effects)).toEqual([{ path: `"${fnmRuntime.nodePath}"`, arguments: fnmArguments }])
+    expect(`"${fnmRuntime.nodePath}" ${fnmArguments}`.length).toBeGreaterThan(261)
+    expect(vi.mocked(effects.run).mock.calls.flatMap(([, args]) => args)).not.toContain("/create")
+    expect(effects.order.at(-1)).toBe("schtasks /run /tn Domovoi daemon")
+  })
+
+  it("puts back a previous command over 261 characters when the new task will not run", async () => {
+    const home = "C:\\Users\\dl"
+    const effects = fake("win32", home, {}, { ...saved("win32", home), serviceRuntime: { executable: fnmRuntime.nodePath, entry: fnmRuntime.daemonEntryPath } })
+    effects.task.definition = effects.task.runningDefinition = `"${fnmRuntime.nodePath}" ${fnmArguments}`
+    const run = effects.run
+    let runs = 0
+    effects.run = vi.fn(async (command: string, args: string[], deadline) => {
+      if (args[0] === "/run" && ++runs === 1) throw new Error("ERROR: Access is denied.")
+      await run(command, args, deadline)
+    })
+    await expect(updateDaemonService({ runtime: windowsRuntime }, effects)).rejects.toThrow(restored)
+    expect(registeredActions(effects).at(-1)).toEqual({ path: `"${fnmRuntime.nodePath}"`, arguments: fnmArguments })
+    expect(effects.order.at(-1)).toBe("schtasks /run /tn Domovoi daemon")
+  })
 })
+
+// The program and arguments each Windows registration in these runs gave Task
+// Scheduler, read from the PowerShell literals it set on the new action.
+function registeredActions(effects: Fake): { path: string | undefined; arguments: string | undefined }[] {
+  return vi.mocked(effects.run).mock.calls.map(([, args]) => script(args)).filter((body) => body.includes("$definition.Actions.Create(0)")).map((body) => {
+    const value = (property: string) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(body)?.[1]?.replaceAll("''", "'")
+    return { path: value("Path"), arguments: value("Arguments") }
+  })
+}
 
 describe("updateDaemonService with a WSL guest service (ruled B)", () => {
   const configurationPath = "/home/dl/.domovoi/service.json"

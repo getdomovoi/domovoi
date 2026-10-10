@@ -59,6 +59,18 @@ const windowsScript = {
   configuration: windows.configuration,
 }
 
+// The PowerShell a Windows Task Scheduler step runs, decoded.
+function windowsScriptOf(entry: { args: string[] }): string {
+  return Buffer.from(entry.args.at(-1)!, "base64").toString("utf16le")
+}
+// The program and arguments a Windows plan's registration gives Task
+// Scheduler, read from the PowerShell literals it sets on the action.
+function registeredWindowsAction(plan: { commands: { args: string[] }[] }): { path: string | undefined; arguments: string | undefined } {
+  const script = windowsScriptOf(plan.commands[0]!)
+  const value = (property: string) => new RegExp(`^\\$action\\.${property} = '((?:[^']|'')*)'$`, "mu").exec(script)?.[1]?.replaceAll("''", "'")
+  return { path: value("Path"), arguments: value("Arguments") }
+}
+
 function effects(overrides: Partial<ServiceEffects> = {}): ServiceEffects {
   return {
     claimServiceOperation: vi.fn(() => ({ release: vi.fn() })),
@@ -104,48 +116,103 @@ describe("servicePlan", () => {
   // The Windows plan names PowerShell under SystemRoot for its settings step.
   beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
 
-  // Review F3: a bare schtasks is looked up in the working directory first on
-  // Windows, so a repository could supply its own. Every schtasks call names
-  // the one under SystemRoot, as PowerShell and taskkill already do.
-  it("runs schtasks from the Windows directory, never by a searched name", () => {
+  // Review F3: a bare schtasks or PowerShell is looked up in the working
+  // directory first on Windows, so a repository could supply its own. Both
+  // are named by their path under SystemRoot.
+  it("runs PowerShell and schtasks from the Windows directory, never by a searched name", () => {
     vi.stubEnv("SystemRoot", "D:\\Windows")
     const plan = servicePlan(windowsScript)
-    expect(plan.commands.filter(({ args }) => args[0] === "/create" || args[0] === "/run").map(({ command }) => command))
-      .toEqual(["D:\\Windows\\System32\\schtasks.exe", "D:\\Windows\\System32\\schtasks.exe"])
+    expect(plan.commands.map(({ command }) => command))
+      .toEqual(["D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "D:\\Windows\\System32\\schtasks.exe"])
     for (const root of ["", "Windows", "\\\\host\\Windows"]) {
       vi.stubEnv("SystemRoot", root)
       expect(() => servicePlan(windowsScript)).toThrow("SystemRoot must name the absolute local Windows directory")
     }
   })
 
-  // schtasks /create refuses a /tr value over 261 characters with "Value for
-  // '/TR' option cannot be more than 261 character(s)", one fewer than its
-  // documentation's 262. With this runtime and configuration, an entry of
-  // 168 characters makes the command exactly 261.
+  // #771 and task 50: schtasks /create refuses a /tr value over 261
+  // characters, which a Node version manager's paths exceed. The task is
+  // registered through the Task Scheduler COM API instead, which takes the
+  // program and its arguments as separate fields, as the WSL task does.
   const entryOfLength = (length: number) => `C:\\${"a".repeat(length - 17)}\\dist\\index.js`
+  const configurationPath = "C:\\Users\\dl\\.domovoi\\service.json"
 
-  it("registers a Windows task command of 261 characters, the most schtasks accepts", () => {
-    const plan = servicePlan({ ...windowsScript, execPath: entryOfLength(168) })
-    const create = plan.commands.find(({ args }) => args[0] === "/create")!
-    const command = create.args[create.args.indexOf("/tr") + 1]!
-    expect(command).toBe(`"C:\\Program Files\\nodejs\\node.exe" "${entryOfLength(168)}" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"`)
-    expect(command).toHaveLength(261)
+  it("registers a Windows task command well over 261 characters, its program and arguments apart", () => {
+    const entry = entryOfLength(600)
+    const plan = servicePlan({ ...windowsScript, execPath: entry })
+    const registered = registeredWindowsAction(plan)
+    expect(registered).toEqual({
+      // Quoted, as schtasks /create /tr stored the program, so every reader
+      // of an older Domovoi's task reads this one the same way.
+      path: "\"C:\\Program Files\\nodejs\\node.exe\"",
+      arguments: `"${entry}" --service-supervise "${configurationPath}"`,
+    })
+    expect(`${registered.path} ${registered.arguments}`.length).toBeGreaterThan(261)
+    expect(plan.commands.flatMap(({ args }) => args)).not.toContain("/create")
+    expect(plan.commands.flatMap(({ args }) => args)).not.toContain("/tr")
   })
 
-  it("refuses a 262 character Windows command before any files or manager calls, naming its longest part", async () => {
+  // Task Scheduler's schema gives the action's program (Exec Command) the
+  // pathType, at most 260 characters:
+  // https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-pathtype-simpletype
+  // The stored program carries its quotes, so 258 characters of path fit.
+  const runtimeOfLength = (length: number) => `C:\\${"n".repeat(length - 12)}\\node.exe`
+
+  it("registers a Windows task program of 260 characters with its quotes", () => {
+    const plan = servicePlan({ ...windowsScript, runtime: runtimeOfLength(258) })
+    expect(registeredWindowsAction(plan).path).toHaveLength(260)
+  })
+
+  it("refuses a Windows task program over 260 characters with its quotes before any files or manager calls", async () => {
+    const runtime = runtimeOfLength(259)
     const dependencies = effects()
-    await expect(installService({ ...windowsScript, execPath: entryOfLength(169) }, dependencies)).rejects.toThrow(
-      `The Windows task command is 262 characters, and schtasks accepts at most 261. Its longest part is the daemon entry ${entryOfLength(169)} (169 characters). Install Node and Domovoi at shorter absolute paths before installing the service. No service files were changed.`,
+    await expect(installService({ ...windowsScript, runtime }, dependencies)).rejects.toThrow(
+      `The Windows task program is 261 characters with its quotes, and Task Scheduler accepts at most 260. It is the Node runtime ${runtime}. Install Node at a shorter absolute path before installing the service. No service files were changed.`,
     )
     expect(dependencies.write).not.toHaveBeenCalled()
     expect(dependencies.run).not.toHaveBeenCalled()
+    expect(dependencies.capture).not.toHaveBeenCalled()
   })
 
-  it("names the Node runtime when it is the longest part of an overlong Windows command", () => {
-    const runtime = `C:\\${"n".repeat(200)}\\node.exe`
-    expect(() => servicePlan({ ...windowsScript, runtime })).toThrow(
-      `The Windows task command is 311 characters, and schtasks accepts at most 261. Its longest part is the Node runtime ${runtime} (212 characters).`,
+  it("names the daemon program when a Windows task with no runtime has an overlong program", () => {
+    const program = `C:\\${"d".repeat(245)}\\domovoid.exe`
+    expect(() => servicePlan({ ...windows, execPath: program })).toThrow(
+      `The Windows task program is 263 characters with its quotes, and Task Scheduler accepts at most 260. It is the daemon program ${program}. Install Domovoi at a shorter absolute path before installing the service. No service files were changed.`,
     )
+  })
+
+  // The registration reaches Task Scheduler as PowerShell's -EncodedCommand,
+  // itself a Windows command line, which CreateProcess caps at 32,767
+  // characters with its terminating null:
+  // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw
+  // The longest command that fits is registered; one character more is refused.
+  it("refuses a Windows task command whose registration would not fit a Windows command line, naming its longest part", async () => {
+    const fits = (length: number) => {
+      try { servicePlan({ ...windowsScript, execPath: entryOfLength(length) }); return true } catch { return false }
+    }
+    let low = 600, high = 40_000
+    expect(fits(low)).toBe(true)
+    expect(fits(high)).toBe(false)
+    while (high - low > 1) {
+      const middle = Math.floor((low + high) / 2)
+      if (fits(middle)) low = middle
+      else high = middle
+    }
+    const longest = servicePlan({ ...windowsScript, execPath: entryOfLength(low) })
+    const commandLine = (entry: { command: string; args: string[] }) => [entry.command, ...entry.args].join(" ")
+    expect(commandLine(longest.commands[0]!).length).toBeLessThanOrEqual(32_766)
+    const entry = entryOfLength(high)
+    const length = `"${windowsScript.runtime}" "${entry}" --service-supervise "${configurationPath}"`.length
+    const dependencies = effects()
+    const refusal = installService({ ...windowsScript, execPath: entry }, dependencies)
+    await expect(refusal).rejects.toThrow(new RegExp(
+      `^The Windows task command is ${length} characters, too long to register: the PowerShell command that carries it to Task Scheduler would be (\\d+) characters, and a Windows command line holds at most 32,766\\. `
+      + `Its longest part is the daemon entry C:\\\\a+\\\\dist\\\\index\\.js \\(${high} characters\\)\\. Install Node and Domovoi at shorter absolute paths before installing the service\\. No service files were changed\\.$`,
+    ))
+    const registration = Number(/would be (\d+) characters/.exec(String(await refusal.catch((error: unknown) => error)))![1])
+    expect(registration).toBeGreaterThan(32_766)
+    expect(dependencies.write).not.toHaveBeenCalled()
+    expect(dependencies.run).not.toHaveBeenCalled()
   })
 
   it("puts a systemd unit in the asking user's own configuration", () => {
@@ -173,46 +240,56 @@ describe("servicePlan", () => {
     })
   })
 
+  // What schtasks /create /sc onlogon /ru dl /rl LIMITED /f registered: a
+  // logon task that runs as the asking user with limited rights, only while
+  // that user is logged on, replacing a task of the same name.
   it("registers a Windows logon task for the asking user rather than a machine service", () => {
     const plan = servicePlan(windows)
     expect(plan.kind).toBe("task")
-    expect(plan.commands[0]).toMatchObject({
-      command: "C:\\Windows\\System32\\schtasks.exe",
-      args: expect.arrayContaining(["/create", "/ru", "dl", "/rl", "LIMITED", "/sc", "onlogon"]),
-    })
-    expect(plan.commands[0]?.args).not.toContain("HIGHEST")
+    const script = windowsScriptOf(plan.commands[0]!)
+    expect(script).toContain("$name = 'Domovoi daemon'")
+    expect(script).toContain("$definition.Principal.UserId = 'dl'")
+    // TASK_LOGON_INTERACTIVE_TOKEN (3) and TASK_RUNLEVEL_LUA (0), never highest.
+    expect(script).toContain("$definition.Principal.LogonType = 3")
+    expect(script).toContain("$definition.Principal.RunLevel = 0")
+    // TASK_TRIGGER_LOGON (9), for this user's logon.
+    expect(script).toContain("$trigger = $definition.Triggers.Create(9)")
+    expect(script).toContain("$trigger.UserId = 'dl'")
+    // TASK_CREATE_OR_UPDATE (6), as /f replaced a task of the same name.
+    expect(script).toContain("$folder.RegisterTaskDefinition($name, $definition, 6, 'dl', $null, 3, $null)")
+    expect(plan.commands[1]).toEqual({ command: "C:\\Windows\\System32\\schtasks.exe", args: ["/run", "/tn", "Domovoi daemon"] })
   })
 
   it("launches a script through Node rather than letting Windows pick an interpreter", () => {
-    const plan = servicePlan(windowsScript)
-    const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
-    expect(target).toBe('"C:\\Program Files\\nodejs\\node.exe" "C:\\Program Files\\Domovoi\\dist\\index.js" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"')
+    expect(registeredWindowsAction(servicePlan(windowsScript))).toEqual({
+      path: "\"C:\\Program Files\\nodejs\\node.exe\"",
+      arguments: `"C:\\Program Files\\Domovoi\\dist\\index.js" --service-supervise "${configurationPath}"`,
+    })
   })
 
-  // The daemon runs for the whole logon session. schtasks /create
-  // keeps Task Scheduler's defaults, a 72 hour execution limit and stops on
-  // battery, so a step right after it sets what the WSL task sets
-  // (wsl-task.ts), before the task is run.
-  it("lifts the execution limit and battery stops before running the task", () => {
+  // The daemon runs for the whole logon session. Task Scheduler's defaults
+  // are a 72 hour execution limit and stops on battery, so the registration
+  // sets what the WSL task sets (wsl-task.ts) in the same definition, before
+  // the task is registered or run.
+  it("lifts the execution limit and battery stops in the definition it registers", () => {
     const plan = servicePlan(windowsScript)
     expect(plan.commands.map(({ command, args }) => command.endsWith("\\schtasks.exe") ? args[0] : command)).toEqual([
-      "/create", "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "/run",
+      "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "/run",
     ])
-    const settings = plan.commands[1]!
-    expect(settings.args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
-    const script = Buffer.from(settings.args.at(-1)!, "base64").toString("utf16le")
-    expect(script).toContain("$name = 'Domovoi daemon'")
+    expect(plan.commands[0]!.args.slice(0, -1)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"])
+    const script = windowsScriptOf(plan.commands[0]!)
+    const registers = script.indexOf("$folder.RegisterTaskDefinition(")
     for (const line of ["$definition.Settings.ExecutionTimeLimit = 'PT0S'", "$definition.Settings.DisallowStartIfOnBatteries = $false", "$definition.Settings.StopIfGoingOnBatteries = $false"]) {
-      expect(script).toContain(line)
+      expect(script.indexOf(line)).toBeGreaterThan(-1)
+      expect(script.indexOf(line)).toBeLessThan(registers)
     }
-    // TASK_UPDATE (4), under the task's own principal and logon type.
-    expect(script).toContain("$folder.RegisterTaskDefinition($name, $definition, 4, $definition.Principal.UserId, $null, [int]$definition.Principal.LogonType, $null)")
   })
 
   it("passes a real executable straight through", () => {
-    const plan = servicePlan(windows)
-    const target = plan.commands[0]?.args[plan.commands[0].args.indexOf("/tr") + 1]
-    expect(target).toBe('"C:\\Program Files\\Domovoi\\domovoid.exe" --service-supervise "C:\\Users\\dl\\.domovoi\\service.json"')
+    expect(registeredWindowsAction(servicePlan(windows))).toEqual({
+      path: "\"C:\\Program Files\\Domovoi\\domovoid.exe\"",
+      arguments: `--service-supervise "${configurationPath}"`,
+    })
   })
 
   it("refuses a script with no runtime to run it", () => {
