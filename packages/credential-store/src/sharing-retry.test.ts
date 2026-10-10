@@ -70,6 +70,17 @@ describe("replaceFileSync", () => {
     expect(fixture.renames()).toBe(2)
   })
 
+  it("starts no rename once the caller's deadline has passed", async () => {
+    const expired = new Error("deadline expired")
+    const deadline = { remainingMs: () => 0, throwIfExpired: () => { throw expired } }
+    const sync = effects("win32", [])
+    expect(() => replaceFileSync("staging", "target", sync.sync, { deadline })).toThrow(expired)
+    expect(sync.renames()).toBe(0)
+    const later = effects("win32", [])
+    await expect(replaceFile("staging", "target", later.async, { deadline })).rejects.toThrow(expired)
+    expect(later.renames()).toBe(0)
+  })
+
   it("uses the host's rename, pause and clock by default", () => {
     // A missing staging file fails at once on every platform: ENOENT is not sharing.
     expect(() => replaceFileSync("/nonexistent/domovoi-staging", "/nonexistent/domovoi-target")).toThrow(/ENOENT/)

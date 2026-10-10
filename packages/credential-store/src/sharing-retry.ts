@@ -8,6 +8,11 @@ import { setTimeout as delay } from "node:timers/promises"
 // waiting 5 ms and doubling to 250 ms. Elsewhere these codes are not sharing
 // and fail at once, as does any other error on Windows. Only the rename is
 // retried; the caller has already written and closed the staging file.
+//
+// The five seconds bound the waiting: the last wait is cut to end at the
+// budget, one more rename follows it, and a refusal then gives up. A caller
+// with a hard limit passes its deadline, which is checked before every
+// rename and cuts every wait.
 export const windowsSharingBudgetMs = 5_000
 const sharingRefusals = new Set(["EPERM", "EACCES", "EBUSY"])
 const firstPauseMs = 5
@@ -76,9 +81,9 @@ export function replaceFileSync(staging: string, path: string, replacement: Part
   }
   const next = sharingRetry(path, effects, options)
   for (;;) {
+    options.deadline?.throwIfExpired()
     try { effects.rename(staging, path); return } catch (error) {
       effects.pause(next(error))
-      options.deadline?.throwIfExpired()
     }
   }
 }
@@ -95,9 +100,9 @@ export async function replaceFile(staging: string, path: string,
   }
   const next = sharingRetry(path, effects, options)
   for (;;) {
+    options.deadline?.throwIfExpired()
     try { await effects.rename(staging, path); return } catch (error) {
       await effects.pause(next(error))
-      options.deadline?.throwIfExpired()
     }
   }
 }
