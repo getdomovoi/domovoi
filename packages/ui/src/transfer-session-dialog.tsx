@@ -147,7 +147,7 @@ function TargetList({
         return (
           <label
             key={machine.id}
-            className={`flex items-center gap-3 rounded-lg border bg-card px-3 py-2.5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring ${chosen ? "border-primary" : ""} ${off ? "cursor-default opacity-50" : "cursor-pointer hover:bg-accent"}`}
+            className={`flex items-center gap-3 rounded-lg border bg-card px-3 py-2.5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring ${chosen ? "border-primary" : ""} ${off ? "opacity-50" : ""} ${off || chosen ? "cursor-default" : "cursor-pointer hover:bg-accent"}`}
           >
             <input
               type="radio"
@@ -399,7 +399,7 @@ export function TransferSessionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[620px]" {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[620px]" {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})}>
         <DialogHeader>
           <DialogTitle>Move this session to another machine</DialogTitle>
           <DialogDescription>
