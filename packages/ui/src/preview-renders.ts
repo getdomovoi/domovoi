@@ -62,13 +62,18 @@ export function renderedPreviewsForActiveSession(snapshot: WorkspaceSnapshot): R
     const members = [...groups.get(row.key.slice("group:".length))!].sort((left, right) =>
       (left.variant?.order ?? 0) - (right.variant?.order ?? 0) || left.id.localeCompare(right.id))
     const first = members[0]!
+    const groupId = first.variant!.groupId
+    // A variant's title names one variant (the watcher titles a file by its
+    // name), so the row is named for the group: the last part of its id,
+    // which the watcher sets to the variants' directory. The meta names the
+    // directory that holds the group.
     return {
       ...row,
       artifactId: first.id,
       artifactIds: members.map((artifact) => artifact.id),
-      label: first.title,
+      label: groupId.split("/").findLast((part) => part.length > 0) ?? groupId,
       meta: joinMeta(
-        previewDirectory(first.path),
+        previewDirectory(previewDirectory(first.path)),
         members.length === 1 ? "1 variant" : `${members.length} variants`,
       ),
     }

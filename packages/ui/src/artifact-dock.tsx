@@ -795,7 +795,7 @@ export function ArtifactDock({
                     url={previewUrl}
                     expiresAt={grant.access?.expiresAt}
                     documentKey={previewDocumentKey}
-                    className="min-h-0 w-full justify-self-center border bg-background"
+                    className="h-full min-h-96 w-full justify-self-center border bg-background"
                     style={{ maxWidth: previewMaxWidth }}
                     title={artifact.title}
                     onLoad={() => {
@@ -808,7 +808,7 @@ export function ArtifactDock({
                     key={artifact.id}
                     url={comparisonStageUrls.get(artifact.id)}
                     documentKey={`${artifact.id}:${artifact.revision}`}
-                    className="min-h-0 w-full justify-self-center border bg-background"
+                    className="h-full min-h-96 w-full justify-self-center border bg-background"
                     style={{ maxWidth: previewMaxWidth }}
                     title={`${artifact.title} comparison`}
                   />

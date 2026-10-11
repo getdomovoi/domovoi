@@ -35,21 +35,31 @@ describe("renderedPreviewsForActiveSession", () => {
     expect(rows[0]).toMatchObject({ label: "runbook.html", meta: ".domovoi/previews · revision 3" })
   })
 
-  it("draws one row per variant group, opened on the group's first variant", () => {
+  it("draws one row per variant group, named for the group and opened on its first variant", () => {
+    // The watcher's group id is the variants' directory and each title is a
+    // file name, so a variant's title would name one variant, not the group.
     const rows = renderedPreviewsForActiveSession(snapshotWith([
-      preview("replay-b", { title: "Replay B", path: "design-studio/replay/b.html", variant: { groupId: "replay", id: "b", label: "Variant B", order: 2 } }),
+      preview("replay-b", { title: "variant-b.html", path: "design-studio/replay/variant-b.html", variant: { groupId: "design-studio/replay", id: "b", label: "Variant B", order: 2 } }),
       preview("runbook"),
-      preview("replay-a", { title: "Replay A", path: "design-studio/replay/a.html", variant: { groupId: "replay", id: "a", label: "Variant A", order: 1 } }),
+      preview("replay-a", { title: "variant-a.html", path: "design-studio/replay/variant-a.html", variant: { groupId: "design-studio/replay", id: "a", label: "Variant A", order: 1 } }),
     ]))
 
     expect(rows).toHaveLength(2)
     expect(rows[0]).toMatchObject({
       artifactId: "replay-a",
       artifactIds: ["replay-a", "replay-b"],
-      label: "Replay A",
-      meta: "design-studio/replay · 2 variants",
+      label: "replay",
+      meta: "design-studio · 2 variants",
     })
     expect(rows[1]?.artifactId).toBe("runbook")
+  })
+
+  it("names a group whose id is not a path by the id itself", () => {
+    const rows = renderedPreviewsForActiveSession(snapshotWith([
+      preview("only", { path: "only.html", variant: { groupId: "hero options", id: "a", label: "Variant A", order: 0 } }),
+    ]))
+
+    expect(rows[0]).toMatchObject({ label: "hero options", meta: "1 variant" })
   })
 
   it("leaves out what the preview frame cannot open", () => {

@@ -45,6 +45,10 @@ export function PreviewFullscreen({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton={false}
+        // Radix sees esc first, on the document's capture phase. Stopping it
+        // there keeps it from the floating sheet's own esc listener, so esc
+        // returns to the dock instead of closing the sheet too.
+        onEscapeKeyDown={(event) => event.stopPropagation()}
         className="top-0 left-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-background p-0 ring-0 sm:max-w-none"
       >
         <div className="flex flex-none flex-wrap items-center gap-[11px] border-b px-4 py-3">

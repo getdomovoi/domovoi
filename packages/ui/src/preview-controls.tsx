@@ -139,7 +139,9 @@ export function PreviewOverflowMenu({
           <MoreHorizontalIcon />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64">
+      {/* esc closes the menu only, not the floating sheet around it (see
+          PreviewFullscreen). */}
+      <DropdownMenuContent align="end" className="w-64" onEscapeKeyDown={(event) => event.stopPropagation()}>
         <DropdownMenuItem disabled={!connected || pending !== undefined} aria-label="Open sanitized print view" onSelect={onPrint}>
           <PrinterIcon />{pending === "print" ? "Preparing" : "Print view"}
         </DropdownMenuItem>

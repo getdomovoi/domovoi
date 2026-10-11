@@ -118,7 +118,7 @@ it("opens a preview rendered earlier in the session from the list", async () => 
   const rows = within(list).getAllByRole("button")
   expect(rows.map((row) => row.textContent)).toEqual([
     "Duplicate-delivery runbook.domovoi/previews · revision 2",
-    "Replay table Adesign-studio/replay · 2 variants",
+    "replaydesign-studio · 2 variants",
   ])
   expect(rows[1]?.getAttribute("aria-current")).toBe("true")
 
@@ -158,6 +158,18 @@ it("draws the design's toolbar and keeps the shipped extras behind one overflow 
   expect(within(menu).getByRole("menuitemcheckbox", { name: "Variant thumbnails" })).toBeTruthy()
   expect(within(menu).getByText("Safe copies remove scripts, forms, and external assets.")).toBeTruthy()
   expect(within(menu).getByText("Live · reloads when the agent renders a new revision")).toBeTruthy()
+
+  // A floating sheet closes on an Escape that reaches the document; closing
+  // the menu must not take the sheet with it.
+  const sheetEscape = vi.fn()
+  document.addEventListener("keydown", sheetEscape)
+  try {
+    await user.keyboard("{Escape}")
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull())
+    expect(sheetEscape).not.toHaveBeenCalled()
+  } finally {
+    document.removeEventListener("keydown", sheetEscape)
+  }
 })
 
 it("renews the grant before it lapses without reloading the page on screen", async () => {
@@ -247,6 +259,15 @@ it("annotates in fullscreen, with the draft posted from the comments column", as
   }))
   await waitFor(() => expect(within(column).queryByRole("textbox", { name: "Comment" })).toBeNull())
 
-  await user.keyboard("{Escape}")
-  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  // esc leaves fullscreen for the dock; it does not also close the sheet.
+  const sheetEscape = vi.fn()
+  document.addEventListener("keydown", sheetEscape)
+  try {
+    await user.keyboard("{Escape}")
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    expect(sheetEscape).not.toHaveBeenCalled()
+    expect(frameTitled("Replay table B")).toBeTruthy()
+  } finally {
+    document.removeEventListener("keydown", sheetEscape)
+  }
 })
