@@ -10,9 +10,11 @@ answers with the new error code `approvalCheckpointErrorCode` (-32023) and an
 `approvalCheckpointRefusalSchema` as the error's data: `lock-held` with the lock path Git reported,
 `submodule-changes`, `repository-config`, `repository-config-unreadable`, `git-unavailable`,
 `timed-out`, `git-failed` or `unknown`. A lock path is sent only when Git printed its English lock
-message, the path lies in the worktree's own Git directories, the redactor leaves it unchanged, and
-it is absolute, ends in `.lock` and holds no control characters; anything else is a plain Git
-failure. A Git that cannot start (the spawn's ENOENT on macOS and Linux) is `git-unavailable`.
+message, the lock file is there when the daemon looks (read with a 2 second bound), it lies in the
+worktree's own Git directory or common directory, the redactor leaves it unchanged, and it is
+absolute, ends in `.lock` and holds no control characters; anything else is a plain Git failure. A
+filter can print the same sentence, so the sentence alone names nothing. A Git that cannot start
+(the spawn's ENOENT on macOS and Linux, a `GitNotFoundError` on Windows) is `git-unavailable`.
 The error message keeps the daemon's sentence for older clients; it was `internalError` or
 `invalidParams` before. The desktop and web approval card and the phone's decision line draw
 "Could not take a checkpoint: <cause>. Nothing ran." from the data, with the lock path in the

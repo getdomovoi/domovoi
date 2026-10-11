@@ -7,6 +7,8 @@ import { promisify } from "node:util"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { approvalCheckpointRefusal } from "./approval-checkpoint-refusal.js"
+import { GitNotFoundError } from "./git-command.js"
+import { RepositoryGitConfigUnreadableError } from "./repository-git-filters.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { GitWorkspaceService } from "./workspace.js"
 
@@ -96,6 +98,55 @@ describe("approvalCheckpointRefusal", () => {
     const answer = await approvalCheckpointRefusal(error, { timedOut: false, worktree: path })
     expect(answer.data).toEqual({ kind: "approval-checkpoint-refused", cause: "git-failed" })
     expect(answer.message).not.toContain("ghp_")
+  })
+
+  // Git's sentence can come from a filter's stderr too. The lock must be
+  // there when the daemon looks, or the refusal says only that Git failed.
+  it("calls a lock that is not there a Git failure, even inside the Git directory", async () => {
+    const { path } = await repository()
+    const absent = join(await realpath(join(path, ".git")), "index.lock")
+    const stderr = `fatal: Unable to create '${absent}': File exists.\n`
+    const error = Object.assign(new Error(stderr), { code: 128, stderr })
+    expect((await approvalCheckpointRefusal(error, { timedOut: false, worktree: path })).data)
+      .toEqual({ kind: "approval-checkpoint-refused", cause: "git-failed" })
+  })
+
+  // A .git file that names no Git directory places the lock nowhere, not in
+  // the worktree itself.
+  it("calls a lock a Git failure when the worktree's .git names no directory", async () => {
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-checkpoint-marker-")))
+    scratchDirectories.push(scratch)
+    await writeFile(join(scratch, ".git"), "not a gitdir line\n")
+    const lock = join(scratch, "index.lock")
+    await writeFile(lock, "")
+    const stderr = `fatal: Unable to create '${lock}': File exists.\n`
+    const error = Object.assign(new Error(stderr), { code: 128, stderr })
+    expect((await approvalCheckpointRefusal(error, { timedOut: false, worktree: scratch })).data)
+      .toEqual({ kind: "approval-checkpoint-refused", cause: "git-failed" })
+  })
+
+  // A .git replaced by a FIFO must not hold the refusal open.
+  it.skipIf(process.platform === "win32")("answers at once when the worktree's .git is a FIFO", async () => {
+    const scratch = await realpath(await mkdtemp(join(tmpdir(), "domovoi-checkpoint-fifo-")))
+    scratchDirectories.push(scratch)
+    await execute("mkfifo", [join(scratch, ".git")])
+    const lock = join(scratch, "index.lock")
+    await writeFile(lock, "")
+    const stderr = `fatal: Unable to create '${lock}': File exists.\n`
+    const error = Object.assign(new Error(stderr), { code: 128, stderr })
+    expect((await approvalCheckpointRefusal(error, { timedOut: false, worktree: scratch })).data)
+      .toEqual({ kind: "approval-checkpoint-refused", cause: "git-failed" })
+  }, 5_000)
+
+  // On Windows a missing git.exe is a GitNotFoundError, which the config
+  // read can wrap the way it wraps the POSIX spawn error.
+  it("says Git is missing when a config read wraps GitNotFoundError", async () => {
+    const missing = new GitNotFoundError("win32")
+    const error = new RepositoryGitConfigUnreadableError("git-failed", { cause: missing })
+    expect(await approvalCheckpointRefusal(error, { timedOut: false, worktree: "/nowhere" })).toEqual({
+      message: `Domovoi could not take a checkpoint, so the command did not run; decide again. ${missing.message}`,
+      data: { kind: "approval-checkpoint-refused", cause: "git-unavailable" },
+    })
   })
 
   it("says Git is missing when the workspace cannot start it", async () => {

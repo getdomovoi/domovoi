@@ -1,5 +1,5 @@
 import { once } from "node:events"
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -202,8 +202,8 @@ describe("a checkpoint before an approved write", () => {
 // from the cause, never from the daemon's sentence.
 describe("a typed checkpoint refusal", () => {
   const gitFailure = (stderr: string) => Object.assign(new Error(`Command failed: git update-ref\n${stderr}`), { code: 128, stderr })
-  // A lock counts only inside the worktree's own Git directories, so the
-  // session's worktree here is a directory with a .git in it.
+  // A lock counts only when it is there, inside the worktree's own Git
+  // directories, so the session's worktree here has a .git holding it.
   let worktree = ""
   let heldLock = ""
   let lockStderr = ""
@@ -211,6 +211,8 @@ describe("a typed checkpoint refusal", () => {
     worktree = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-lock-")))
     await mkdir(join(worktree, ".git", "refs", "domovoi", "checkpoints"), { recursive: true })
     heldLock = join(worktree, ".git", "refs", "domovoi", "checkpoints", "cccc.lock")
+    // The daemon names a lock only while it is there.
+    await writeFile(heldLock, "")
     lockStderr = `fatal: cannot lock ref 'refs/domovoi/checkpoints/cccc': Unable to create '${heldLock}': File exists.\n\n`
       + "Another git process seems to be running in this repository, e.g.\nan editor opened by 'git commit'."
   })
