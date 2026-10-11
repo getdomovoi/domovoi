@@ -43,10 +43,12 @@ export function AuthorizeClientDialog({ machine, kind, onAuthorize, onClose }: {
         })
       }}>
         {/* No command prints a client credential today. `domovoid pair` prints
-            a one-time pairing code, which this field does not take. */}
+            a one-time pairing code, which this field does not take. Its
+            --label is optional and only a suggested name (#767), so the line
+            names the command as it runs, without a placeholder. */}
         <p className="text-sm text-muted-foreground">
           Paste a client credential for a {kind} client on {machine.label}. It comes from a device.pair request made with that daemon's own credential.{" "}
-          <code className="break-words font-machine">{`domovoid pair --client ${kind} --label <device label>`}</code> prints a one-time pairing code, which this field does not take.
+          <code className="break-words font-machine">{`domovoid pair --client ${kind}`}</code> prints a one-time pairing code, which this field does not take.
         </p>
         <FieldGroup>
           <Field data-invalid={Boolean(error)} data-disabled={pending}>

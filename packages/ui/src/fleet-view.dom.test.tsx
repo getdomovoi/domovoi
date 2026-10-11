@@ -58,7 +58,10 @@ it("shows client authorization next to disabled remote controls and names its au
   // take, so the dialog does not send the person to it for a credential.
   expect(dialog.textContent).not.toContain("Run this on studio")
   expect(dialog.textContent).toContain("Paste a client credential for a desktop client on studio. It comes from a device.pair request made with that daemon's own credential.")
-  expect(dialog.textContent).toContain("domovoid pair --client desktop --label <device label> prints a one-time pairing code, which this field does not take.")
+  // Since #767 --label is optional and only a suggested name, so the command
+  // is named as it runs, without a required-looking placeholder.
+  expect(dialog.textContent).toContain("domovoid pair --client desktop prints a one-time pairing code, which this field does not take.")
+  expect(dialog.textContent).not.toContain("--label")
   expect(dialog.textContent).toContain("session sends, approvals and terminals")
   expect(dialog.textContent).toContain("Devices list")
   expect(within(dialog).getByLabelText("Client credential").getAttribute("type")).toBe("password")

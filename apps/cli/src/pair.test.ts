@@ -95,6 +95,12 @@ describe("readPairingCode", () => {
     expect(() => readPairingCode("")).toThrow(PairingError)
     expect(() => readPairingCode("domovoi-pair:1:!!!")).toThrow(PairingError)
   })
+
+  // Since #767 domovoid pair takes --label as an optional suggested name, so
+  // the refusal names the daemon command as it runs, as the pairing card does.
+  it("names the daemon's pair command without a required-looking label", () => {
+    expect(() => readPairingCode(token)).toThrow("That is not a pairing code. Paste the line 'domovoid pair --client cli' printed, or the code alone.")
+  })
 })
 
 describe("deviceLabelProblem", () => {
