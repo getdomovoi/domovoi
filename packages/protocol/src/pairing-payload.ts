@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { pairingCodeSchema } from "./devices.js"
+import { deviceRenameLabelSchema, pairingCodeSchema } from "./devices.js"
 import { pairingUrlSchema } from "./pairing-url.js"
 import { utf16MaxLength } from "./validation.js"
 
@@ -18,8 +18,9 @@ export const pairingPayloadPrefix = "domovoi-pair:1:"
 // The longest text a valid payload encodes. The field bounds count UTF-16
 // units; JSON escapes a control unit as six bytes and UTF-8 spends up to three
 // on a unit, so the worst case is every unit of a 512-unit address and a
-// 128-unit label a control character: about 5,160 characters after base64url
-// and the prefix (measured, see the test). The paste field runs the decoder on
+// 128-unit label a control character, with a 128-unit suggested name (which
+// refuses control characters) at three bytes a unit: about 5,700 characters
+// after base64url and the prefix (measured, see the test). The paste field runs the decoder on
 // every keystroke, so the bound is checked on the text before any base64 or
 // JSON work touches it, and the encoder refuses to emit past it so the two
 // sides agree on what a pairing code can be.
@@ -32,6 +33,13 @@ export const pairingPayloadSchema = z.object({
   url: pairingUrlSchema,
   code: pairingCodeSchema,
   label: z.string().trim().min(1).check(utf16MaxLength(128)).optional(),
+  // The name `domovoid pair --label` kept with the code. The device prefills
+  // its own name field with it and may change it: the daemon names the device
+  // by what the device sends when it spends the code, never by this field. It
+  // is text the operator typed, not a secret, and anyone who sees the code
+  // sees it. Present only when a label was given, so an unlabelled code
+  // encodes as it did before this field.
+  suggestedName: deviceRenameLabelSchema.optional(),
 }).strict()
 
 export type PairingPayload = z.infer<typeof pairingPayloadSchema>
