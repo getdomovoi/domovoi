@@ -554,6 +554,23 @@ describe("createProductionDaemon", () => {
       expect(describeWebApp(handle.webApp)).toBe("domovoid web app not served: it was not read within 0.1 seconds at /srv/web")
     })
 
+    // Codex review round 2 (Minor): the same stall against a real daemon, which
+    // listens, answers its health check and serves the state page.
+    it("listens with the state page when the bundle read stalls", async () => {
+      const handle = await createProductionDaemonWithDependencies({ environment: { DOMOVOI_WEB_DIR: "/srv/web" }, homeDirectory: await temporaryHome() }, {
+        ...productionDaemonDependencies, createMachineCredentials: credentials,
+        createProviderProbe: () => ({ inspect: async () => [] }),
+        createDaemon: (options) => new DomovoiDaemon({ ...options, port: 0 }),
+        loadWebApp: () => new Promise(() => {}), webAppLoadTimeoutMs: 100,
+      })
+      running.push(handle)
+      const { port } = await handle.start()
+      expect((await fetch(`http://127.0.0.1:${port}/healthz`)).status).toBe(200)
+      const page = await fetch(`http://127.0.0.1:${port}/`)
+      expect(page.status).toBe(503)
+      expect(await page.text()).toContain("The web app installed here failed its checks")
+    })
+
     it("serves the state page rather than stop when loading throws", async () => {
       const errorSink = vi.fn()
       const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
