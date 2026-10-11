@@ -91,7 +91,7 @@ export type DaemonServiceOptions = {
 // under the service-operation lease.
 export type DaemonServiceStagedRuntime = {
   runtime: DaemonServiceRuntime
-  publish: () => Promise<void>
+  publish: (deadline?: OperationDeadline) => Promise<void>
 }
 
 // linger: Linux only, what the install or removal did to lingering
@@ -177,8 +177,8 @@ export async function installDaemonService(
     ...(options.releaseInAppDaemon === undefined ? {} : { handoff: options.releaseInAppDaemon }),
     ...(options.environment === undefined ? {} : { callerProfile: callerProfile(options.environment, dependencies.home, dependencies.platform) }),
     ...(options.staged === undefined ? {} : {
-      beforeChanges: async () => {
-        await options.staged!.publish()
+      beforeChanges: async (deadline) => {
+        await options.staged!.publish(deadline)
         await checkRuntime(options.runtime, dependencies)
       },
     }),
@@ -285,8 +285,8 @@ export async function updateDaemonService(
     const publish = async (deadline: OperationDeadline, first = firstChange) => {
       if (options.staged === undefined) return
       const check = () => checkRuntime(options.runtime, dependencies, "update")
-      if (first) return publishFirst(deadline, () => tracked.effects.publishStaged(), check, copy)
-      await tracked.effects.publishStaged()
+      if (first) return publishFirst(deadline, () => tracked.effects.publishStaged(deadline), check, copy)
+      await tracked.effects.publishStaged(deadline)
       await check()
     }
     if (dependencies.platform === "linux" && saved.wsl) {
