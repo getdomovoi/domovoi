@@ -6,7 +6,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import type { TerminalNotification } from "./lib/daemon"
-import { drawnLines, readableCut } from "./terminal-line-model"
+import { drawnText, nextLineStart, readableCut, type DrawnText } from "./terminal-line-model"
 
 // Phone v2 frame 04: a phone reads the claimant's shell and never types,
 // resizes or claims it. What the phone holds for one watched terminal is the
@@ -205,8 +205,9 @@ function bounded(record: TerminalRecord): TerminalRecord {
 
 // Where the drawn text starts when it began partway through a line: past the
 // rest of a window title it began inside, then past the rest of that line
-// when a line break is near. Without one the line is drawn as it stands
-// rather than dropping a long run of output.
+// when the terminal draws a line break near. Without one the line is drawn
+// as it stands rather than dropping a long run of output. A line break
+// inside a control string's payload is not one to start after.
 function drawnStart(record: TerminalRecord): number {
   if (!record.startsMidLine) return 0
   let start = 0
@@ -216,8 +217,23 @@ function drawnStart(record: TerminalRecord): number {
   // title that began before the text did.
   // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
   if (titleEnd && !/[\u001b\n]/.test(record.text.slice(0, titleEnd.index))) start = titleEnd.index + titleEnd[0].length
-  const lineBreak = record.text.indexOf("\n", start)
-  return lineBreak !== -1 && lineBreak - start < lineBreakReach ? lineBreak + 1 : start
+  return nextLineStart(record.text, start, lineBreakReach) ?? start
+}
+
+// Each change to a record is drawn by more than one view, the thread's block
+// and the open terminal, so the last few texts read are kept.
+const recentlyDrawn = new Map<string, DrawnText>()
+
+function drawn(text: string): DrawnText {
+  const kept = recentlyDrawn.get(text)
+  if (kept) return kept
+  const read = drawnText(text)
+  recentlyDrawn.set(text, read)
+  for (const oldest of recentlyDrawn.keys()) {
+    if (recentlyDrawn.size <= 4) break
+    recentlyDrawn.delete(oldest)
+  }
+  return read
 }
 
 // What a terminal draws, read as lines of cells (terminal-line-model.ts):
@@ -226,9 +242,8 @@ function drawnStart(record: TerminalRecord): number {
 // a combining mark as none; an erase erases. The line still being written is
 // kept; the empty line after a final newline is not.
 export function terminalLines(text: string): string[] {
-  const lines = drawnLines(text)
-  if (lines.at(-1) === "") lines.pop()
-  return lines
+  const { lines } = drawn(text)
+  return lines.at(-1) === "" ? lines.slice(0, -1) : [...lines]
 }
 
 export function terminalLineCount(record: TerminalRecord): number {
@@ -250,7 +265,7 @@ export function terminalRows(record: TerminalRecord, connected: boolean): Termin
   const lines = terminalLines(text)
   // Live output that began inside the line not drawn has nothing above it.
   const liveAt = record.liveAt !== undefined ? record.liveAt - start : undefined
-  const markAt = record.liveFrom && liveAt !== undefined && liveAt > 0 ? wholeLines(text.slice(0, liveAt)) : undefined
+  const markAt = record.liveFrom && liveAt !== undefined && liveAt > 0 ? wholeLines(text, liveAt) : undefined
   const liveMark: TerminalRow | undefined = record.liveFrom
     ? { kind: "mark", key: "live-from", text: `Recent output above. Live from ${clock(record.liveFrom)}.` }
     : undefined
@@ -287,11 +302,13 @@ function endingSignal(summary: TerminalSummary): number | undefined {
   return summary.signal !== undefined && summary.signal !== 0 ? summary.signal : undefined
 }
 
-// The lines of a text that are finished: one per line break in what it
-// draws, whatever an erase or a sequence cut in half left after the last. A
-// line break inside a control string's payload draws nothing.
-function wholeLines(text: string): number {
-  return drawnLines(text).length - 1
+// The lines finished before a point in a text: one per line break the
+// terminal drew before it, whatever an erase or a sequence cut in half left
+// after the last. A line break inside a control string's payload draws
+// nothing. The reader reads in order, so reading the whole text says what
+// reading up to the point would.
+function wholeLines(text: string, before: number): number {
+  return drawn(text).lineStarts.filter((start) => start <= before).length
 }
 
 // Failed is a shell that exited with a code other than zero. A shell ended by

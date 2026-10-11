@@ -223,6 +223,23 @@ describe("terminalLines and cursor movement within a line", () => {
     expect(terminalLines("abc\r\u001b[998@\n")).toEqual([`${" ".repeat(998)}ab`])
     const deleted = terminalLines(`${"x".repeat(40_000)}\r${"\u001b[P".repeat(8_000)}`)
     expect(deleted).toEqual([`${" ".repeat(1_000)}${"x".repeat(39_000)}`])
+    // Blanks pushed along a line are nothing to move.
+    expect(terminalLines(`x\r${"\u001b[@".repeat(21_844)}`)).toEqual([])
+  })
+
+  // An erase to the cursor erases the whole line before it, however long.
+  it("erases a line longer than the widest grid to the cursor", () => {
+    expect(terminalLines(`${"a".repeat(1_000)}b\u001b[1K\n`)).toEqual([""])
+    expect(terminalLines(`${"a".repeat(1_000)}bcd\u001b[2D\u001b[1K\n`)).toEqual([`${" ".repeat(1_002)}d`])
+    // An erase after one already made erases what was written since.
+    expect(terminalLines("abcd\u001b[1Kxy\r\u001b[4C\u001b[1K\n")).toEqual(["     y"])
+  })
+
+  // Lines are read once per text and handed out as copies.
+  it("hands out lines a caller can change", () => {
+    const first = terminalLines("a\nb\n")
+    first.push("x")
+    expect(terminalLines("a\nb\n")).toEqual(["a", "b"])
   })
 
   // A private marker after a parameter makes the sequence malformed.
@@ -492,6 +509,27 @@ describe("terminalRows", () => {
     expect(terminalLines(record.text)).toEqual([])
     record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: "\u001b\\done\n" } }, at)
     expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["done"])
+  })
+
+  // An escape still waiting for its second character when the cut passes
+  // the reach is waiting for it after the cut too.
+  it("keeps an escape cut past the reach waiting for its second character", () => {
+    let record = watchFrom(watched({ buffer: `\u001b${"\u0000".repeat(maximumTerminalReplayCharacters - 1)}` }))
+    for (const data of ["\u0000".repeat(4_097), "]0;PAYLOAD\u0007done\n"]) {
+      record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data } }, at)
+    }
+    expect(record.text.length).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["done"])
+  })
+
+  // The first line of a record the daemon cut is skipped to a line break
+  // the terminal draws, not one inside a payload.
+  it("does not skip to a line break inside a payload when the record starts mid-line", () => {
+    const head = "lead\u001bPq\nPAYLOAD"
+    const full = watchFrom(watched({ buffer: `${head}${"#".repeat(maximumTerminalReplayCharacters - head.length)}`, earlierOutputDropped: true }))
+    expect(terminalRows(full, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["lead"])
+    const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "#" } }, at)
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["ead"])
   })
 
   // A line break inside a control string's payload is not a line, so the

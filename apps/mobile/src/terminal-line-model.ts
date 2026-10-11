@@ -16,7 +16,7 @@ import { cellWidth } from "./terminal-cell-width"
 // string terminator. Their payloads draw nothing, and a sequence still
 // arriving at the end of the text draws nothing either.
 
-// A cell never written, or erased.
+// A cell erased. A cell never written is a hole in the array, read the same.
 const blank = ""
 // The right half of a wide character, drawn by the character on its left.
 const rightHalf = "\u0000"
@@ -30,9 +30,19 @@ const widestGrid = 1_000
 // Tab stops every eight columns, as a terminal sets them by default.
 const tabWidth = 8
 
+// The cost of each sequence is bounded: a move or a write touches at most a
+// row of cells, an insert or a delete at most the written cells of a row, and
+// an erase to the cursor only cells not already known blank.
 class Line {
-  cells: string[] = []
+  cells: (string | undefined)[] = []
   column = 0
+  // Every cell below this one is blank.
+  blankBelow = 0
+
+  isBlank(at: number): boolean {
+    const cell = this.cells[at]
+    return cell === undefined || cell === blank
+  }
 
   print(char: string): void {
     const width = cellWidth(char.codePointAt(0) ?? 0)
@@ -41,14 +51,14 @@ class Line {
       // the start of a line or after a blank, it has nothing to sit on.
       let at = this.column - 1
       if (this.cells[at] === rightHalf) at -= 1
-      if (at >= 0 && (this.cells[at] ?? blank) !== blank) this.cells[at] += char
+      if (at >= 0 && !this.isBlank(at)) this.cells[at] += char
       return
     }
     this.clear(this.column)
     if (width === 2) this.clear(this.column + 1)
-    while (this.cells.length < this.column) this.cells.push(blank)
     this.cells[this.column] = char
     if (width === 2) this.cells[this.column + 1] = rightHalf
+    this.blankBelow = Math.min(this.blankBelow, this.column)
     this.column += width
   }
 
@@ -58,6 +68,11 @@ class Line {
     if (this.cells[at] === rightHalf) this.cells[at - 1] = blank
     else if (this.cells[at + 1] === rightHalf) this.cells[at + 1] = blank
     this.cells[at] = blank
+  }
+
+  // Blanks at the end are nothing, so what the next sequence moves is short.
+  trim(): void {
+    while (this.cells.length > 0 && this.isBlank(this.cells.length - 1)) this.cells.length -= 1
   }
 
   // Text can run past the widest grid, as the phone does not wrap it into
@@ -70,22 +85,25 @@ class Line {
     this.moveTo((Math.floor(this.column / tabWidth) + 1) * tabWidth)
   }
 
-  // Where the cursor's row of the widest grid starts and ends.
-  rowStart(): number {
-    return Math.floor(this.column / widestGrid) * widestGrid
+  // Where the cursor's row of the widest grid ends.
+  rowEnd(): number {
+    return (Math.floor(this.column / widestGrid) + 1) * widestGrid
   }
 
-  // Erase in line: 0 from the cursor to the end, 1 from the start of the
-  // cursor's row through the cursor, 2 all of it.
+  // Erase in line: 0 from the cursor to the end, 1 from the start through
+  // the cursor, 2 all of it.
   erase(mode: number): void {
     if (mode === 0) {
       this.clear(this.column)
       this.cells.length = Math.min(this.cells.length, this.column)
     } else if (mode === 1) {
       const through = Math.min(this.column, this.cells.length - 1)
-      for (let at = this.rowStart(); at <= through; at += 1) this.clear(at)
+      for (let at = this.blankBelow; at <= through; at += 1) this.clear(at)
+      this.blankBelow = Math.max(this.blankBelow, through + 1)
+      this.trim()
     } else if (mode === 2) {
       this.cells = []
+      this.blankBelow = 0
     }
   }
 
@@ -93,21 +111,24 @@ class Line {
   eraseCharacters(count: number): void {
     const end = Math.min(this.column + count, this.cells.length)
     for (let at = this.column; at < end; at += 1) this.clear(at)
+    this.trim()
   }
 
   // Delete characters: the cells right of them in the cursor's row move
   // left, and blanks enter at the row's end. A wide character with one half
   // deleted loses the other half too.
   deleteCharacters(count: number): void {
-    const rowEnd = Math.min(this.cells.length, this.rowStart() + widestGrid)
-    const deleted = Math.min(count, rowEnd - this.column)
+    const end = Math.min(this.cells.length, this.rowEnd())
+    const deleted = Math.min(count, end - this.column)
     if (deleted <= 0) return
     if (this.cells[this.column] === rightHalf) this.cells[this.column - 1] = blank
     if (this.cells[this.column + deleted] === rightHalf) this.cells[this.column + deleted] = blank
     // A wide character across the row's end cannot move as one.
-    if (this.cells[rowEnd] === rightHalf) this.clear(rowEnd)
-    for (let at = this.column; at < rowEnd - deleted; at += 1) this.cells[at] = this.cells[at + deleted] ?? blank
-    for (let at = rowEnd - deleted; at < rowEnd; at += 1) this.cells[at] = blank
+    if (this.cells[end] === rightHalf) this.clear(end)
+    for (let at = this.column; at < end - deleted; at += 1) this.cells[at] = this.cells[at + deleted]
+    for (let at = end - deleted; at < end; at += 1) this.cells[at] = blank
+    this.blankBelow = Math.min(this.blankBelow, this.column)
+    this.trim()
   }
 
   // Insert characters: blanks at the cursor push the rest of the cursor's
@@ -115,7 +136,7 @@ class Line {
   // the halves of a wide character clear it.
   insertCharacters(count: number): void {
     if (this.column >= this.cells.length) return
-    const rowEnd = this.rowStart() + widestGrid
+    const rowEnd = this.rowEnd()
     const inserted = Math.min(count, rowEnd - this.column)
     if (this.cells[this.column] === rightHalf) this.clear(this.column)
     // A wide character pushed half past the row's end is lost whole, and so
@@ -123,18 +144,19 @@ class Line {
     if (this.cells[rowEnd - inserted] === rightHalf) this.clear(rowEnd - inserted)
     if (this.cells[rowEnd] === rightHalf) this.clear(rowEnd)
     const end = Math.min(rowEnd, this.cells.length + inserted)
-    for (let at = end - 1; at >= this.column + inserted; at -= 1) this.cells[at] = this.cells[at - inserted] ?? blank
+    for (let at = end - 1; at >= this.column + inserted; at -= 1) this.cells[at] = this.cells[at - inserted]
     for (let at = this.column; at < this.column + inserted; at += 1) this.cells[at] = blank
+    this.trim()
   }
 
   // Blanks are spaces between text and nothing after it.
   drawn(): string {
     let end = this.cells.length
-    while (end > 0 && this.cells[end - 1] === blank) end -= 1
+    while (end > 0 && this.isBlank(end - 1)) end -= 1
     let text = ""
     for (let at = 0; at < end; at += 1) {
-      const cell = this.cells[at] ?? blank
-      text += cell === blank ? " " : cell === rightHalf ? "" : cell
+      const cell = this.cells[at]
+      text += cell === undefined || cell === blank ? " " : cell === rightHalf ? "" : cell
     }
     return text
   }
@@ -232,10 +254,15 @@ class Reader {
   }
 }
 
-// Every line the text draws, the last one included even when it is empty:
-// a text ending in a line break draws an empty line after it.
-export function drawnLines(text: string): string[] {
+// What a text draws: every line, the last one included even when it is
+// empty, as a text ending in a line break draws an empty line after it; and
+// where each line after the first starts in the text, just past the line
+// break the terminal drew. A line break inside a payload is not one.
+export type DrawnText = { lines: string[], lineStarts: number[] }
+
+export function drawnText(text: string): DrawnText {
   const lines: string[] = []
+  const lineStarts: number[] = []
   let line = new Line()
   const reader = new Reader()
   let index = 0
@@ -246,6 +273,7 @@ export function drawnLines(text: string): string[] {
     else if (action === "execute") {
       if (char === "\n") {
         lines.push(line.drawn())
+        lineStarts.push(index)
         line = new Line()
       } else if (char === "\r") line.moveTo(0)
       else if (char === "\b") line.moveTo(line.column - 1)
@@ -255,7 +283,7 @@ export function drawnLines(text: string): string[] {
     }
   }
   lines.push(line.drawn())
-  return lines
+  return { lines, lineStarts }
 }
 
 function dispatch(line: Line, final: string, parameters: string): void {
@@ -277,15 +305,29 @@ function dispatch(line: Line, final: string, parameters: string): void {
   }
 }
 
+// Where the next line starts after the first line break the terminal draws
+// within reach of from, reading the text from there as plain text.
+export function nextLineStart(text: string, from: number, reach: number): number | undefined {
+  const reader = new Reader()
+  let index = from
+  for (const char of text.slice(from, from + reach)) {
+    const action = reader.step(char, char.codePointAt(0) ?? 0, index)
+    index += char.length
+    if (char === "\n" && action === "execute" && reader.state === "ground") return index
+  }
+  return undefined
+}
+
 // Where to cut the front of a text so that what is kept reads as the
 // terminal read it. The cut goes after the first line break the terminal
 // drew within lineBreakReach past the wanted cut; else at the first place
 // past it that is plain text, after any sequence it lands in. A sequence
 // still arriving there is kept whole from its start when that start is
 // within unfinishedReach; past that, the cut stays near the wanted one and
-// prefix opens the same kind of sequence again, so the rest of its payload
-// still draws nothing. What is kept is prefix then text from at, never
-// longer than text from cut.
+// prefix puts the reader back in the state it was in, so the rest of the
+// sequence still draws nothing. A control sequence whose start is cut is
+// dropped at its end, its parameters being lost. What is kept is prefix then
+// text from at, never longer than text from cut.
 export function readableCut(
   text: string,
   cut: number,
@@ -307,10 +349,21 @@ export function readableCut(
   }
   if (plainAt !== undefined) return { at: plainAt, prefix: "" }
   if (cut - reader.start <= unfinishedReach) return { at: reader.start, prefix: "" }
-  const prefix = reader.state === "osc" ? "\u001b]" : reader.state === "controlString" ? "\u001bP" : reader.state === "csi" ? "\u001b[!" : "\u001b "
+  const prefix = reopening[reader.state]
   let at = cut + prefix.length
   // The two halves of a character outside the basic plane stay together.
   const code = text.charCodeAt(at)
   if (code >= 0xdc00 && code <= 0xdfff) at += 1
   return { at, prefix }
+}
+
+// What puts a fresh reader in each state partway through a sequence. "!" is
+// an intermediate, which leaves a control sequence to be dropped at its end.
+const reopening: Record<State, string> = {
+  ground: "",
+  escape: "\u001b",
+  escapeIntermediate: "\u001b ",
+  csi: "\u001b[!",
+  osc: "\u001b]",
+  controlString: "\u001bP",
 }
