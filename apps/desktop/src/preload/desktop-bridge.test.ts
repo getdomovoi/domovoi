@@ -72,7 +72,11 @@ describe("createDesktopWindowBridge", () => {
     target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", daemonRunning: true, lingerWarning: 5 }))
     await expect(bridge.daemonService?.install()).rejects.toThrow("invalid service outcome")
     // The length bound and the other optional fields are refused the same way.
-    for (const field of [{ lingerWarning: "x".repeat(4_097) }, { daemonAttached: "yes" }, { profileRecovery: "guessed" }]) {
+    // D28: a removal's lingering note reaches the renderer the same way.
+    const lingerNote = "Turned off lingering for dana, which Domovoi turned on at install."
+    target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", profileRecovery: "not-needed", daemonRunning: true, daemonAttached: false, lingerNote }))
+    await expect(bridge.daemonService?.remove()).resolves.toEqual({ ok: true, kind: "file", target: "/u", profileRecovery: "not-needed", daemonRunning: true, daemonAttached: false, lingerNote })
+    for (const field of [{ lingerWarning: "x".repeat(4_097) }, { lingerNote: 5 }, { lingerNote: "x".repeat(4_097) }, { daemonAttached: "yes" }, { profileRecovery: "guessed" }]) {
       target.invoke.mockImplementationOnce(async () => ({ ok: true, kind: "file", target: "/u", daemonRunning: true, ...field }))
       await expect(bridge.daemonService?.install()).rejects.toThrow("invalid service outcome")
     }

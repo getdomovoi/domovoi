@@ -82,7 +82,9 @@ type ServicePhase =
   | { kind: "removing" }
   // lingerWarning: the daemon's own text, shown as it is (ruling Q307).
   | { kind: "installed"; target: string; lingerWarning?: string | undefined }
-  | { kind: "removed"; daemonRunning: boolean; attached: boolean; recovery?: string | undefined }
+  // lingerNote, lingerWarning: the daemon's own line on what a Linux removal
+  // did to lingering (D28), shown as it is.
+  | { kind: "removed"; daemonRunning: boolean; attached: boolean; recovery?: string | undefined; lingerNote?: string | undefined; lingerWarning?: string | undefined }
   | { kind: "waits"; refusal: string }
   | { kind: "unchecked"; message: string }
   | { kind: "not-attached"; message: string }
@@ -226,7 +228,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
     setPhase({ kind: action === "install" ? "installing" : "removing" })
     try {
       const outcome = await (action === "install" ? live.install() : live.remove())
-      if (outcome.ok) setPhase(action === "install" ? { kind: "installed", target: outcome.target, lingerWarning: outcome.lingerWarning } : { kind: "removed", daemonRunning: outcome.daemonRunning, attached: outcome.daemonAttached === true, recovery: removalRecovery(outcome) })
+      if (outcome.ok) setPhase(action === "install" ? { kind: "installed", target: outcome.target, lingerWarning: outcome.lingerWarning } : { kind: "removed", daemonRunning: outcome.daemonRunning, attached: outcome.daemonAttached === true, recovery: removalRecovery(outcome), lingerNote: outcome.lingerNote, lingerWarning: outcome.lingerWarning })
       else if (outcome.reason === "refused") setPhase({ kind: "waits", refusal: outcome.message })
       else if (outcome.reason === "check-failed") setPhase({ kind: "unchecked", message: outcome.message })
       else if (outcome.reason === "installed-not-attached") setPhase({ kind: "not-attached", message: outcome.message })
@@ -341,8 +343,10 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           ) : phase.daemonRunning && !phase.attached ? <span>Removed. Quitting Domovoi now stops the daemon and every session on it.</span> : null}
           {phase.daemonRunning && phase.attached ? <span>{`${phase.recovery ? "" : "Removed. "}This app is connected to a daemon it did not start. Quitting this app leaves it running.`}</span> : null}
           {phase.daemonRunning ? null : <span>{`${phase.recovery ? "" : "Removed. "}The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.`}</span>}
+          {phase.lingerNote ? <span>{phase.lingerNote}</span> : null}
         </div>
       ) : null}
+      {phase.kind === "removed" && phase.lingerWarning ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">{phase.lingerWarning}</p> : null}
       {phase.kind === "waits" ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">{`The switch waits: ${phase.refusal} Nothing is interrupted.`}</p> : null}
       {phase.kind === "unchecked" ? (
         <div className="flex flex-col gap-1.5 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">
