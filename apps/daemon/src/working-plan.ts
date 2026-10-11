@@ -193,13 +193,15 @@ function replacedProviderSteps(
 // is canonical: Claude's tasks carry no position, only ids in creation order,
 // so a step the person inserted would otherwise come back last.
 //
-// Each task is matched to a step, in this order: the step it was linked to at
-// the last change; the first unmatched step with the same text, in plan
-// order; the step with the task's text before Claude reworded it, which is
-// renamed in place. A task that matches nothing is appended when it is new or
-// Claude changed it, so no change Claude reports is dropped. An unchanged
-// task with no step is one the plan took out, and stays out. A deleted task
-// removes its step. Steps Claude has not reported stay where they are.
+// First each task Claude had before the change is linked to its step: the
+// daemon's link from the last change, else the first unlinked step with the
+// task's text, in plan order, pairing same-text tasks in creation order. Then
+// each task after the change takes its linked step, renamed in place if
+// Claude reworded it, else the first unclaimed step with its text. A task
+// that matches nothing is appended, so no task Claude reports is dropped,
+// with one exception: an unchanged task whose linked step the person removed
+// stays out until Claude changes it. A deleted task removes its linked step.
+// Steps Claude has not reported stay where they are.
 function mergeProviderTaskChange(
   canonical: WorkingPlanStep[],
   change: NonNullable<ProviderWorkingPlanUpdate["taskChange"]>,
@@ -238,40 +240,51 @@ function mergeProviderTaskChange(
     step.status = progressStatus(step, task.status)
   }
 
-  for (const task of current) {
-    const linked = stepsById.get(links.get(task.id) ?? "")
-    if (!linked || claimedSteps.has(linked.id)) continue
+  // The daemon's links live in memory. Without one, as after a restart, a
+  // task links to a step by text before any change is applied, so a deleted
+  // task and a surviving one with the same text keep their own steps.
+  const priorLinks = new Map<string, string>()
+  const linkedSteps = new Set<string>()
+  for (const [taskId, stepId] of links) {
+    if (!previous.has(taskId) || linkedSteps.has(stepId)) continue
+    priorLinks.set(taskId, stepId)
+    linkedSteps.add(stepId)
+  }
+  for (const [taskId, prior] of previous) {
+    if (priorLinks.has(taskId)) continue
+    const step = steps.find((candidate) => !linkedSteps.has(candidate.id) && candidate.text === prior.text)
+    if (!step) continue
+    priorLinks.set(taskId, step.id)
+    linkedSteps.add(step.id)
+  }
+
+  const reworded = (task: { id: string, text: string }) => {
     const prior = previous.get(task.id)
-    const reworded = prior !== undefined && prior.text !== task.text
-    // A task Claude did not reword keeps the person's text for its step.
-    if (linked.text === task.text || !reworded) claim(task, linked)
-    // Claude took the text of another step: that step shows the task, and
-    // this one stays as a step Claude has not reported.
-    else if (!unclaimed(task.text, linked)) claim(task, linked, true)
+    return prior !== undefined && prior.text !== task.text
+  }
+  // Tasks Claude did not reword claim their steps first, keeping the
+  // person's text, so a reworded task never takes a step another task holds.
+  for (const rewordedPass of [false, true]) {
+    for (const task of current) {
+      if (reworded(task) !== rewordedPass) continue
+      const linked = stepsById.get(priorLinks.get(task.id) ?? "")
+      if (!linked || claimedSteps.has(linked.id)) continue
+      if (!rewordedPass || linked.text === task.text) claim(task, linked)
+      // Claude took the text of another step: that step shows the task, and
+      // this one stays as a step Claude has not reported.
+      else if (!unclaimed(task.text, linked)) claim(task, linked, true)
+    }
   }
   for (const task of current) {
     if (taskLinks.has(task.id)) continue
     const step = unclaimed(task.text)
     if (step) claim(task, step)
   }
-  for (const task of current) {
-    if (taskLinks.has(task.id)) continue
-    const prior = previous.get(task.id)
-    const step = prior && prior.text !== task.text ? unclaimed(prior.text) : undefined
-    if (step) claim(task, step, true)
-  }
 
   // A deleted task removes the step that showed it.
   const removed = new Set<string>()
-  for (const [taskId, prior] of previous) {
-    if (currentIds.has(taskId)) continue
-    const linkedId = links.get(taskId)
-    const step = linkedId === undefined
-      ? steps.find((candidate) => !claimedSteps.has(candidate.id)
-        && !removed.has(candidate.id)
-        && candidate.text === prior.text)
-      : stepsById.get(linkedId)
-    if (step && !claimedSteps.has(step.id)) removed.add(step.id)
+  for (const [taskId, stepId] of priorLinks) {
+    if (!currentIds.has(taskId) && stepsById.has(stepId) && !claimedSteps.has(stepId)) removed.add(stepId)
   }
   const kept = steps.filter((step) => !removed.has(step.id))
   total = kept.reduce((sum, step) => sum + step.text.length, 0)
@@ -279,10 +292,18 @@ function mergeProviderTaskChange(
   for (const task of current) {
     if (taskLinks.has(task.id)) continue
     const prior = previous.get(task.id)
-    // The daemon already heard this task as it is, and the plan has no step
-    // for it: the person, or a proposal, took the step out. It comes back
-    // when Claude changes the task.
-    if (prior?.text === task.text && prior.status === task.status) continue
+    const linkedId = priorLinks.get(task.id)
+    // The daemon showed this task in a step the plan no longer has: the
+    // person removed it. It comes back when Claude changes the task.
+    if (
+      linkedId !== undefined
+      && !stepsById.has(linkedId)
+      && prior?.text === task.text
+      && prior.status === task.status
+    ) {
+      taskLinks.set(task.id, linkedId)
+      continue
+    }
     const text = fit(task.text, 0)
     // The protocol bounds a plan's steps and text. Steps already in the plan
     // are never cut for a new one.

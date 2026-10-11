@@ -438,12 +438,8 @@ describe("provider task changes", () => {
     }
   })
 
-  // The links live in the daemon's memory. After a restart the adapter's
-  // previous tasks, read from Claude's storage, still say what the daemon heard.
-  it.each([
-    ["with the daemon's task links", new Map([["1", "step-1"], ["2", "step-2"], ["3", "step-verify-removed"]])],
-    ["after a daemon restart, with no links", undefined],
-  ])("keeps a step the person removed out of the plan until Claude changes its task, %s", (_name, removedLinks) => {
+  it("keeps a step the person removed out of the plan until Claude changes its task", () => {
+    const removedLinks = new Map([["1", "step-1"], ["2", "step-2"], ["3", "step-verify-removed"]])
     const current = plan({
       steps: [
         { id: "step-1", text: "Inspect", status: "in-progress" },
@@ -466,6 +462,49 @@ describe("provider task changes", () => {
       "step-2:Implement:pending",
       "step-verify-again:Verify:in-progress",
     ])
+  })
+
+  // The links live in the daemon's memory. After a restart nothing records
+  // that the person removed the step, and tasks read from Claude's storage
+  // need not have reached this plan (a shared list, a Plan mode checklist),
+  // so an unmatched task is shown rather than dropped.
+  it("shows a task whose step the person removed when a restart lost the link", () => {
+    const current = plan({
+      steps: [
+        { id: "step-1", text: "Inspect", status: "in-progress" },
+        { id: "step-2", text: "Implement", status: "pending" },
+      ],
+    })
+    const before = [task("1", "Inspect", "in-progress"), task("2", "Implement"), task("3", "Verify")]
+    const progressed = [task("1", "Inspect", "completed"), task("2", "Implement"), task("3", "Verify")]
+    const result = taskUpdate(current, before, progressed, undefined, ids("step-verify-shown"))
+    expect(shape(result)).toEqual([
+      "step-1:Inspect:completed",
+      "step-2:Implement:pending",
+      "step-verify-shown:Verify:pending",
+    ])
+  })
+
+  it("shows every task of a list read from Claude's storage that the plan never had", () => {
+    const listed = [task("1", "Inspect"), task("2", "Write the docs")]
+    const first = taskUpdate(undefined, listed, listed, undefined, ids("step-inspect", "step-docs"))
+    expect(shape(first)).toEqual(["step-inspect:Inspect:pending", "step-docs:Write the docs:pending"])
+    const started = [task("1", "Inspect", "in-progress"), task("2", "Write the docs")]
+    const second = taskUpdate(first.plan, listed, started)
+    expect(shape(second)).toEqual(["step-inspect:Inspect:in-progress", "step-docs:Write the docs:pending"])
+  })
+
+  it("removes a deleted task's own step when another task has the same text, after a restart", () => {
+    const current = plan({
+      steps: [
+        { id: "step-a", text: "Run tests", status: "completed" },
+        { id: "step-b", text: "Fix", status: "pending" },
+        { id: "step-c", text: "Run tests", status: "pending" },
+      ],
+    })
+    const before = [task("1", "Run tests", "completed"), task("2", "Fix"), task("3", "Run tests")]
+    const result = taskUpdate(current, before, [task("2", "Fix"), task("3", "Run tests")])
+    expect(shape(result)).toEqual(["step-b:Fix:pending", "step-c:Run tests:pending"])
   })
 
   // Claude can adopt the person's order by giving an existing task the
