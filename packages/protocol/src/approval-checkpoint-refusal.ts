@@ -1,0 +1,59 @@
+import { z } from "zod"
+
+import { utf16MaxLength } from "./validation.js"
+
+// J34: a person's allow takes a checkpoint first, and when the daemon cannot
+// take one the command does not run and the gate stays. approval.resolve then
+// answers with this code, the daemon's sentence as the message, and an
+// approvalCheckpointRefusalSchema as the data, so a client can say why
+// without reading the sentence.
+export const approvalCheckpointErrorCode = -32023 as const
+
+// What the daemon can tell apart when the checkpoint fails, and nothing finer:
+// - lock-held: Git said a lock file it needed already exists. The daemon
+//   cannot tell a running Git's lock from one a stopped Git left.
+// - submodule-changes: a submodule has local changes a checkpoint, which
+//   records a submodule by its commit, cannot hold.
+// - repository-config: the repository's own Git config asks for something
+//   Domovoi will not run here (an untrusted filter, a submodule's own filter,
+//   a partial clone's promisor). The message names the setting.
+// - git-unavailable: Git is missing, or too old to run in isolation.
+// - timed-out: the checkpoint did not finish before the daemon's deadline.
+// - git-failed: a Git command failed for any other reason.
+// - unknown: something else failed, and the daemon cannot say what.
+export const approvalCheckpointRefusalCauses = [
+  "lock-held",
+  "submodule-changes",
+  "repository-config",
+  "git-unavailable",
+  "timed-out",
+  "git-failed",
+  "unknown",
+] as const
+
+export const maximumApprovalCheckpointLockPathLength = 4_096
+
+const controlCharacter = /[\u0000-\u001f\u007f]/u
+const absolutePath = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/u
+
+// The lock as Git reported it: an absolute path ending in .lock, on the
+// machine that ran the command, on one line.
+const lockPathSchema = z.string().min(1).check(utf16MaxLength(maximumApprovalCheckpointLockPathLength))
+  .refine((path) => absolutePath.test(path), { message: "A lock path is absolute" })
+  .refine((path) => path.endsWith(".lock"), { message: "A lock path names a .lock file" })
+  .refine((path) => !controlCharacter.test(path), { message: "A lock path holds no control characters" })
+
+export const approvalCheckpointRefusalSchema = z.union([
+  z.object({
+    kind: z.literal("approval-checkpoint-refused"),
+    cause: z.literal("lock-held"),
+    lockPath: lockPathSchema,
+  }).strict(),
+  z.object({
+    kind: z.literal("approval-checkpoint-refused"),
+    cause: z.enum(approvalCheckpointRefusalCauses).exclude(["lock-held"]),
+  }).strict(),
+])
+
+export type ApprovalCheckpointRefusalCause = typeof approvalCheckpointRefusalCauses[number]
+export type ApprovalCheckpointRefusal = z.infer<typeof approvalCheckpointRefusalSchema>
