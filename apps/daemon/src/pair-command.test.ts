@@ -111,7 +111,9 @@ describe("runPairCommand", () => {
   })
 
   it("refuses a label flag without a label, and any other flag", async () => {
-    for (const args of [["pair", "--client", "phone", "--label"], ["pair", "--client", "phone", "--name", "iPhone"], ["pair", "--client", "phone", "--label", "   "]]) {
+    // A lone surrogate (a Windows command line can carry one) is refused too:
+    // the payload would not encode it, after the code was already issued.
+    for (const args of [["pair", "--client", "phone", "--label"], ["pair", "--client", "phone", "--name", "iPhone"], ["pair", "--client", "phone", "--label", "   "], ["pair", "--client", "phone", "--label", "a\ud800"]]) {
       const io = recorder()
       const issue = vi.fn(async () => issued)
       expect(await runPairCommand(args, { ...io, issue }), args.join(" ")).toBe(1)

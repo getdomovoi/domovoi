@@ -19,14 +19,25 @@ export const pairingPayloadPrefix = "domovoi-pair:1:"
 // units; JSON escapes a control unit as six bytes and UTF-8 spends up to three
 // on a unit, so the worst case is every unit of a 512-unit address and a
 // 128-unit label a control character, with a 128-unit suggested name (which
-// refuses control characters) at three bytes a unit: about 5,700 characters
-// after base64url and the prefix (measured, see the test). The paste field runs the decoder on
-// every keystroke, so the bound is checked on the text before any base64 or
-// JSON work touches it, and the encoder refuses to emit past it so the two
-// sides agree on what a pairing code can be.
+// refuses control characters and lone surrogates) at three bytes a unit:
+// about 5,700 characters after base64url and the prefix (measured, see the
+// test). The paste field runs the decoder on every keystroke, so the bound is
+// checked on the text before any base64 or JSON work touches it, and the
+// encoder refuses to emit past it so the two sides agree on what a pairing
+// code can be.
 export const maximumPairingPayloadLength = 6144
 
 export { pairingUrlSchema } from "./pairing-url.js"
+
+// Well-formed UTF-16: every surrogate in a pair. JSON escapes a lone one as six
+// bytes, which the envelope bound above does not budget for the suggested name.
+// No u flag, so the classes match code units and a lone surrogate is visible.
+const wellFormedUtf16 = /^(?:[^\uD800-\uDFFF]|[\uD800-\uDBFF][\uDC00-\uDFFF])*$/
+
+// A device label, as a rename takes one, that is also well-formed. `domovoid
+// pair` checks --label against it before asking for a code, so the payload it
+// prints never fails to encode.
+export const pairingSuggestedNameSchema = deviceRenameLabelSchema.refine((value) => wellFormedUtf16.test(value), "A suggested name must be well-formed text")
 
 export const pairingPayloadSchema = z.object({
   v: z.literal(1),
@@ -39,7 +50,7 @@ export const pairingPayloadSchema = z.object({
   // is text the operator typed, not a secret, and anyone who sees the code
   // sees it. Present only when a label was given, so an unlabelled code
   // encodes as it did before this field.
-  suggestedName: deviceRenameLabelSchema.optional(),
+  suggestedName: pairingSuggestedNameSchema.optional(),
 }).strict()
 
 export type PairingPayload = z.infer<typeof pairingPayloadSchema>

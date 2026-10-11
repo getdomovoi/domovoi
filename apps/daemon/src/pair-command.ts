@@ -1,4 +1,4 @@
-import { clientKindSchema, deviceRenameLabelSchema, encodePairingPayload, pairingAddressSchema, phoneAndTabletPromise, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
+import { clientKindSchema, encodePairingPayload, pairingAddressSchema, pairingSuggestedNameSchema, phoneAndTabletPromise, type ClientKind, type DeviceIssueCodeResult } from "@getdomovoi/protocol"
 
 import { CliDeadlineError } from "./cli-rpc.js"
 import { pairingCodeTtlMs } from "./pairing-codes.js"
@@ -21,7 +21,9 @@ export async function runPairCommand(
   if (args[0] !== "pair") return 1
   if (args[1] === "--client" && (args.length === 3 || (args.length === 5 && args[3] === "--label"))) {
     const client = clientKindSchema.safeParse(args[2])
-    const label = args.length === 5 ? deviceRenameLabelSchema.safeParse(args[4]) : undefined
+    // Held to what the payload carries, not only to what device.issueCode
+    // takes, so a label refused there is refused before a code is issued.
+    const label = args.length === 5 ? pairingSuggestedNameSchema.safeParse(args[4]) : undefined
     if (!client.success || (label !== undefined && !label.success)) { dependencies.stderr(usage); return 1 }
     let issued: DeviceIssueCodeResult
     try {

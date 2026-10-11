@@ -30,6 +30,11 @@ describe("pairing payload", () => {
     expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "   " }).success).toBe(false)
     expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "a\u0007b" }).success).toBe(false)
     expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: 7 }).success).toBe(false)
+    // A lone surrogate is not text a person typed, and JSON escapes it as six
+    // bytes, past what the envelope budgets for this field. A pair is fine.
+    expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "\ud800".repeat(128) }).success).toBe(false)
+    expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "a\udc00b" }).success).toBe(false)
+    expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "😀".repeat(64) }).success).toBe(true)
   })
 
   it("names what is wrong with text that is not a pairing code", () => {
