@@ -27,16 +27,12 @@ function snapshotWith(): WorkspaceSnapshot {
   const snapshot = structuredClone(demoWorkspace)
   const base = snapshot.sessions[0]!
   snapshot.sessions = [
-    { ...base, id: "s1", title: "Migrate billing webhooks", activeTurnId: "turn-1", state: "active", updatedAt: ago(minute) },
+    // The daemon's ledger says s1's turn in flight started twelve minutes ago.
+    { ...base, id: "s1", title: "Migrate billing webhooks", activeTurnId: "turn-1", activeTurnStartedAt: ago(12 * minute), state: "active", updatedAt: ago(minute) },
     { ...base, id: "s2", title: "Port the CLI auth flow", state: "failed", updatedAt: ago(60 * minute) },
     { ...base, id: "s3", title: "Document the replay table", state: "idle", updatedAt: ago(2 * 24 * 60 * minute) },
   ]
-  // The ledger's record of s1's turn in flight: an earlier finished turn and
-  // the pending one, started twelve minutes ago.
-  snapshot.turns = [
-    { id: "a".repeat(64), sessionId: "s1", ordinal: 1, startedAt: ago(40 * minute), completedAt: ago(30 * minute), status: "completed" },
-    { id: "b".repeat(64), sessionId: "s1", ordinal: 2, startedAt: ago(12 * minute), status: "pending" },
-  ]
+  snapshot.turns = []
   delete (snapshot.sessions[1] as { activeTurnId?: string }).activeTurnId
   delete (snapshot.sessions[2] as { activeTurnId?: string }).activeTurnId
   snapshot.activeSessionId = "s1"
@@ -82,12 +78,12 @@ it("says why each session is where it is, in words, and for how long", async () 
   expect(row("Port the CLI auth flow").textContent).toContain(`${machine} · failed 1h ago`)
 })
 
-// The ledger only times turns the snapshot's thread links. A running session
-// whose turn it did not send says running and nothing it cannot back.
+// The daemon leaves the start out when its ledger has no record of the turn.
+// The row then says running and nothing it cannot back.
 it("names a running session without a duration when no start was sent", async () => {
   const user = userEvent.setup()
   const snapshot = snapshotWith()
-  snapshot.turns = []
+  delete snapshot.sessions[0]!.activeTurnStartedAt
   function Untimed() {
     const [open, setOpen] = useState(false)
     return <SessionsDrawer snapshot={snapshot} open={open} onOpenChange={setOpen} onActivate={vi.fn()} />

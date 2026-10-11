@@ -113,17 +113,15 @@ function elapsed(since: string, now: number): string {
 }
 
 // A row's meta after the machine name. Running counts from the start of the
-// session's turn in flight, which the snapshot carries only for turns its
-// thread links (Q401); without one it says running and no more. Failed and
-// idle count from the session's last change.
-function rowMeta(entry: GroupedSession, session: SessionSummary | undefined, turns: WorkspaceSnapshot["turns"], now: number): string {
-  if (entry.note === "running") {
-    const inFlight = (turns ?? [])
-      .filter((turn) => turn.sessionId === entry.id && turn.status === "pending")
-      .sort((left, right) => right.ordinal - left.ordinal)[0]
-    return inFlight ? `running ${elapsed(inFlight.startedAt, now)}` : "running"
-  }
+// turn in flight, which the daemon reads from its ledger for each reply
+// (activeTurnStartedAt); without one it says running and no more. Failed and
+// idle count from the session's last change. These are the daemon's
+// timestamps aged on this client's clock.
+function rowMeta(entry: GroupedSession, session: SessionSummary | undefined, now: number): string {
   if (!session) return entry.note
+  if (entry.note === "running") {
+    return session.activeTurnStartedAt ? `running ${elapsed(session.activeTurnStartedAt, now)}` : "running"
+  }
   if (entry.note === "failed") return `failed ${elapsed(session.updatedAt, now)} ago`
   if (entry.note === "idle") return `idle ${elapsed(session.updatedAt, now)}`
   return entry.note
@@ -225,7 +223,7 @@ export function SessionsDrawerColumn({
                           it is hidden so a screen reader hears it once. */}
                       <span className="flex min-w-0 flex-1 flex-col items-start">
                         <span className="line-clamp-2 text-[12px] leading-[1.38] text-strong">{entry.title}</span>
-                        <span data-session-meta="" className="mt-[3px] font-machine text-[10.5px] text-faint">{`${machine} · ${rowMeta(entry, sessionsById.get(entry.id), snapshot.turns, now)}`}</span>
+                        <span data-session-meta="" className="mt-[3px] font-machine text-[10.5px] text-faint">{`${machine} · ${rowMeta(entry, sessionsById.get(entry.id), now)}`}</span>
                       </span>
                       <span aria-hidden className={cn("order-first mt-[5px] flex", entry.meaning === "idle" && "opacity-80")}>
                         <StatusDot meaning={entry.meaning} label={entry.note} size="inline" labelHidden />
