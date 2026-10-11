@@ -119,7 +119,9 @@ const maximumGitPointerBytes = 4_096
 // a filter's stderr, so the sentence alone is not enough. Anything that
 // cannot be read, or takes too long, places the lock nowhere. The deadline
 // cannot cancel a filesystem call that stalls, so while one lookup is still
-// out no second one starts, and the refusal says only that Git failed.
+// out no second one starts, and the refusal says only that Git failed. A
+// lookup that never settles keeps every lock path unnamed, in every
+// repository, until the daemon restarts; the refusal stays true meanwhile.
 let lookupInFlight: Promise<boolean> | undefined
 
 async function lockStandsInGit(worktree: string, lockPath: string): Promise<boolean> {
