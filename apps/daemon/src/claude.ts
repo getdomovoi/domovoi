@@ -22,6 +22,7 @@ import {
   type AgentRepositoryTrust,
   type AgentVisualContext,
   type AgentWorkingPlanStep,
+  type AgentWorkingPlanTask,
 } from "./agents.js"
 import {
   claudeRepositoryLoad,
@@ -181,6 +182,12 @@ type Session = {
   runtime: Runtime
   tools: Map<string, { type: "command"; command: string } | { type: "file"; path: string } | ClaudeTaskTool>
   tasks: Map<string, ClaudeTask>
+  // The tasks as the daemon last heard them: the last plan-updated event for
+  // this thread, also from before a reopen, or else the list read from
+  // Claude's storage when the session opened.
+  reportedTasks: Map<string, ClaudeTask>
+  // Which Claude task list the session uses: the shared list, else its own.
+  taskList: string
   sharedTaskDirectory?: string
   // Tool calls the PreToolUse hook sent to an approval, by tool use id, with
   // the reason the approval card should give.
@@ -243,6 +250,17 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   readonly #processOptions: ClaudeProcessOptions
   readonly #readRepositoryConfig: RepositoryProviderConfigReader | undefined
   #sessions = new Map<string, Session>()
+  // Both keyed by thread and task list, "<thread id>/<list id>": the person
+  // can name another shared list between turns, and its ids mean other tasks.
+  // Each thread's tasks as last reported to the daemon. A reopen rereads the
+  // list from Claude's storage, which can already hold changes another
+  // session made to a shared list, so the next change is measured from here.
+  #reportedTasks = new Map<string, Map<string, ClaudeTask>>()
+  // Each thread's recent task deletions, with how many more changes repeat
+  // each. The daemon drops a provider event it cannot take, as during an
+  // emergency stop, so the next changes repeat them. A step already removed
+  // makes the repeat a no-op.
+  #deletedTasks = new Map<string, Map<string, number>>()
   // Stopped queries whose Claude process has not exited yet. A retried stop,
   // a reopen and a shutdown wait on these instead of finding nothing to stop.
   #stopping = new Set<OwnedQuery>()
@@ -575,7 +593,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     this.#refuseWhenClosing()
     const preflight = this.#preflight
     const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }
-    const { instructions, repository, tasks, taskStorage } = await this.#prepared((async () => {
+    const { instructions, repository, taskRead, taskStorage } = await this.#prepared((async () => {
       if (preflight) await preflight()
       const instructions = await projectInstructions(cwd, "claude")
       // The worktree's verdict, read just before Claude starts: only a
@@ -587,9 +605,16 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         instructions,
         repository: verdict.state === "trusted" ? { digest: verdict.configDigest, ...claudeRepositoryLoad(verdict.documents) } : undefined,
         taskStorage,
-        tasks: resume || taskStorage.shared ? (await readClaudeTasks(taskStorage.directory))?.tasks : undefined,
+        taskRead: resume || taskStorage.shared ? await readClaudeTasks(taskStorage.directory) : undefined,
       }
     })())
+    const tasks = taskRead?.tasks
+    // The next change is measured from the tasks last reported only when the
+    // list read now is whole. A task missing from a partial or failed read
+    // would otherwise read as deleted and lose its step.
+    const reported = taskRead?.complete === false || (resume && !taskRead)
+      ? undefined
+      : this.#reportedTasks.get(`${threadId}/${taskStorage.listId}`)
     const settings = repository && Object.keys(repository.settings).length > 0 ? repository.settings : undefined
     this.#refuseWhenClosing()
     const input = new PushStream<ClaudeUserMessage>()
@@ -631,6 +656,8 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       runtime,
       tools: new Map(),
       tasks: tasks ?? new Map(),
+      taskList: taskStorage.listId,
+      reportedTasks: new Map(reported ?? tasks),
       ...(taskStorage.shared ? { sharedTaskDirectory: taskStorage.directory } : {}),
       screenedReads: new Map(),
       turnMessageIds: new Set(),
@@ -1008,15 +1035,39 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         }
         // Plan mode keeps the checklist, but the final reply supplies its proposal.
         if (changed && session.runtime.permissionMode !== "plan") {
+          const current = claudePlanTasks(session.tasks)
+          const historyKey = `${session.threadId}/${session.taskList}`
+          // Each deletion is sent with this change and the next ones, a fixed
+          // number of times, so the list stays bounded whatever the churn.
+          // Only that many dropped events in a row can lose one, which
+          // leaves its step visible.
+          const deleted = this.#deletedTasks.get(historyKey) ?? new Map<string, number>()
+          for (const id of session.reportedTasks.keys()) {
+            if (!session.tasks.has(id)) deleted.set(id, taskDeletionRepeats)
+          }
+          for (const id of session.tasks.keys()) deleted.delete(id)
+          const deletedIds = [...deleted.keys()]
+          for (const [id, remaining] of deleted) {
+            if (remaining <= 1) deleted.delete(id)
+            else deleted.set(id, remaining - 1)
+          }
+          this.#deletedTasks.set(historyKey, deleted)
           this.#emit({
             type: "plan-updated",
             threadId: session.threadId,
             turnId,
-            steps: [...session.tasks.values()].map(({ subject, status }) => ({
-              text: subject,
-              status: status === "in_progress" ? "in-progress" : status,
-            })),
+            steps: current.map(({ text, status }) => ({ text, status })),
+            // Claude's tasks have no order field, so the daemon keeps the
+            // working plan's order and applies this change to it.
+            taskChange: {
+              list: session.taskList,
+              previous: claudePlanTasks(session.reportedTasks),
+              current,
+              deleted: deletedIds,
+            },
           })
+          session.reportedTasks = new Map(session.tasks)
+          this.#reportedTasks.set(historyKey, session.reportedTasks)
         }
         continue
       }
@@ -1156,6 +1207,8 @@ function baseOptions(): ClaudeQueryOptions {
 }
 
 const maximumInterruptedMessageIds = 64
+// How many task changes in a row carry a deletion, the first included.
+const taskDeletionRepeats = 16
 
 function resultMessageIds(message: ClaudeSdkMessage): string[] | undefined {
   const ids = Array.isArray(message.user_message_uuids)
@@ -1284,7 +1337,10 @@ function isClaudeTaskStatus(value: unknown): value is ClaudeTask["status"] {
   return value === "pending" || value === "in_progress" || value === "completed"
 }
 
-async function claudeTaskStorage(threadId: string, env: NodeJS.ProcessEnv): Promise<{ directory: string; shared: boolean }> {
+async function claudeTaskStorage(
+  threadId: string,
+  env: NodeJS.ProcessEnv,
+): Promise<{ directory: string; listId: string; shared: boolean }> {
   const configDirectory = env.CLAUDE_CONFIG_DIR || join(homedir(), ".claude")
   let sharedId = env.CLAUDE_CODE_TASK_LIST_ID
   try {
@@ -1299,7 +1355,7 @@ async function claudeTaskStorage(threadId: string, env: NodeJS.ProcessEnv): Prom
   // <config dir>/tasks/<list id>/<task id>.json, and takes an empty
   // CLAUDE_CODE_TASK_LIST_ID as unset. Read only, on resume or for a shared list.
   const listId = (sharedId || threadId).replace(/[^a-zA-Z0-9_-]/g, "-")
-  return { directory: join(configDirectory, "tasks", listId), shared: Boolean(sharedId) }
+  return { directory: join(configDirectory, "tasks", listId), listId, shared: Boolean(sharedId) }
 }
 
 async function readClaudeTasks(directory: string): Promise<{ tasks: Map<string, ClaudeTask>; complete: boolean } | undefined> {
@@ -1386,6 +1442,14 @@ function updateClaudeTasks(tasks: Map<string, ClaudeTask>, tool: ClaudeTaskTool,
   tasks.clear()
   for (const [id, task] of listed) tasks.set(id, task)
   return true
+}
+
+function claudePlanTasks(tasks: ReadonlyMap<string, ClaudeTask>): AgentWorkingPlanTask[] {
+  return [...tasks].map(([id, { subject, status }]) => ({
+    id,
+    text: subject,
+    status: status === "in_progress" ? "in-progress" : status,
+  }))
 }
 
 function claudeTodoSteps(value: unknown): AgentWorkingPlanStep[] | undefined {

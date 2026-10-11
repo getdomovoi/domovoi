@@ -345,6 +345,7 @@ import {
   updateWorkingPlanFromProvider,
   workingPlanNeedsProviderDelivery,
   WorkingPlanMutationError,
+  type ProviderTaskLink,
 } from "./working-plan.js"
 import { redactDeviceLabel } from "./workspace-redaction.js"
 
@@ -1755,6 +1756,17 @@ export class DomovoiDaemon {
   #pendingWorkspaceDeltas: WorkspaceDelta[] = []
   #activeAssistantItems = new ActiveAssistantItemCache()
   #providerPlanTurns = new Set<string>()
+  // For each session, which working plan step shows each Claude task. Held in
+  // memory only: after a restart, tasks match steps by text again.
+  // Kept per Claude task list, whose ids mean other tasks in another list. A
+  // Plan mode proposal leaves an empty set for any list: the tasks from
+  // before it show none of its steps.
+  #providerTaskLinks = new Map<string, {
+    provider: string
+    threadId: string
+    list?: string
+    links: Map<string, ProviderTaskLink>
+  }>()
   #planModeTurns = new Set<string>()
   // Only successful Domovoi dispatches establish origin. This is not restored
   // from sessions or guessed from the most recent sender (including steering).
@@ -11120,14 +11132,33 @@ export class DomovoiDaemon {
       const current = currentIndex === -1
         ? undefined
         : this.#snapshot.workingPlans[currentIndex]
+      const priorLinks = this.#providerTaskLinks.get(session.id)
       const mutation = updateWorkingPlanFromProvider(current, {
         sessionId: session.id,
         provider,
         model: session.runtime.model,
         providerThreadId: threadId,
         steps: event.steps,
+        ...(event.taskChange ? {
+          taskChange: event.taskChange,
+          ...(priorLinks?.provider === provider
+            && priorLinks.threadId === threadId
+            && (priorLinks.list === undefined || priorLinks.list === event.taskChange.list)
+            ? { taskLinks: priorLinks.links }
+            : {}),
+        } : {}),
         updatedAt: createdAt,
       })
+      if (mutation.taskLinks && event.taskChange) {
+        this.#providerTaskLinks.set(session.id, {
+          provider,
+          threadId,
+          list: event.taskChange.list,
+          links: mutation.taskLinks,
+        })
+      } else {
+        this.#providerTaskLinks.delete(session.id)
+      }
       if (currentIndex === -1) this.#snapshot.workingPlans.push(mutation.plan)
       else this.#snapshot.workingPlans[currentIndex] = mutation.plan
       if (mutation.structureChanged) {
@@ -11651,6 +11682,10 @@ export class DomovoiDaemon {
               steps,
               updatedAt: createdAt,
             })
+            // The proposal replaced the steps the task links pointed at. An
+            // empty set, not none, so tasks from before it, even a deletion
+            // made in Plan mode, are not matched to its steps by text.
+            this.#providerTaskLinks.set(session.id, { provider, threadId, links: new Map() })
             if (currentIndex === -1) this.#snapshot.workingPlans.push(mutation.plan)
             else this.#snapshot.workingPlans[currentIndex] = mutation.plan
           }
