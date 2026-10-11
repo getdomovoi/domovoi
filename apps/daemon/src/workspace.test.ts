@@ -2462,16 +2462,60 @@ describe("GitWorkspaceService session refs", () => {
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
 
-  it("pushes without the repository's own ssh command", async () => {
+  it("pushes with the person's own ssh command, not the repository's", async () => {
+    const { scratch, service, workspace } = await sessionWithRemote("domovoi-ref-ssh-person-")
+    const repositoryPath = join(scratch, "project")
+    const markerPath = join(scratch, "transport-ran").replaceAll("\\", "/")
+    const personMarker = join(scratch, "person-ssh-ran").replaceAll("\\", "/")
+    const personSsh = join(scratch, "person-ssh.sh").replaceAll("\\", "/")
+    await writeFile(join(workspace.path, "evil.sh"), `echo ran >> "${markerPath}"\nexit 1\n`)
+    await writeFile(personSsh, `echo ran >> "${personMarker}"\nexit 1\n`)
+    const home = join(scratch, "home")
+    await mkdir(home)
+    await writeFile(join(home, ".gitconfig"), `[core]\n\tsshCommand = sh "${personSsh}"\n`)
+    await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", "ssh://git@127.0.0.1/remote.git"])
+    await execute("git", ["-C", repositoryPath, "config", "core.sshCommand", "sh ./evil.sh"])
+    await service.checkpoint(workspace.path, "with the script")
+    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = join(home, ".config")
+    try {
+      await expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow()
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+
+    await expect(readFile(personMarker, "utf8")).resolves.toContain("ran")
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
+  // With no ssh command of the person's own, Git starts plain ssh. The first
+  // ssh.exe a Windows runner starts took 0.7 to 0.8 s on an idle runner, more
+  // under the suite's load, and once this test ran past its 30 s timeout (CI
+  // run 37740051526). The fallback is the same code on every platform, so it
+  // runs on macOS and Linux; the case above covers the refusal on Windows.
+  it.skipIf(process.platform === "win32")("pushes with plain ssh when the person sets none, not the repository's command", async () => {
     const { scratch, service, workspace } = await sessionWithRemote("domovoi-ref-ssh-")
     const repositoryPath = join(scratch, "project")
     const markerPath = join(scratch, "transport-ran").replaceAll("\\", "/")
     await writeFile(join(workspace.path, "evil.sh"), `echo ran >> "${markerPath}"\nexit 1\n`)
-    await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", "ssh://git@example.invalid/remote.git"])
-    await execute("git", ["-C", repositoryPath, "config", "core.sshCommand", "sh ./evil.sh"])
-    await service.checkpoint(workspace.path, "with the script")
+    // A loopback port that closes each connection, so ssh fails on its first
+    // read without a name lookup.
+    const closing = createNetServer((socket) => socket.destroy())
+    await new Promise<void>((listening) => closing.listen(0, "127.0.0.1", listening))
+    try {
+      const { port } = closing.address() as AddressInfo
+      await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", `ssh://git@127.0.0.1:${port}/remote.git`])
+      await execute("git", ["-C", repositoryPath, "config", "core.sshCommand", "sh ./evil.sh"])
+      await service.checkpoint(workspace.path, "with the script")
 
-    await expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow()
+      await expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow()
+    } finally {
+      await new Promise<void>((closed) => closing.close(() => closed()))
+    }
 
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
