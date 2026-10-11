@@ -268,6 +268,8 @@ describe("terminalLines and cursor movement within a line", () => {
     expect(drawnSize(inserts)).toBeLessThanOrEqual(inserts.length * 2 + 65_536)
     // Once spent, a move past what was written stops at its end.
     expect(drawnText(`${"\u001b[1000Cx\n".repeat(66)}\u001b[5Cy\n`).lines.at(-2)).toBe("y")
+    // An insert cut short at the old end takes a wide character it splits.
+    expect(drawnText(`${"\u001b[1000Cx\n".repeat(66)}界\r\u001b[@\u001b[3GX\n`).lines.at(-2)).toBe("  X")
   })
 
   // An erase to the cursor erases the whole line before it, however long.
@@ -568,8 +570,13 @@ describe("terminalRows", () => {
   // #808: a line break inside a control sequence still starts a line, and
   // the text after it is read once the sequence ends.
   it("skips the first line to a line break made inside a control sequence", () => {
-    const record = watchFrom(watched({ buffer: "partial\u001b[31\nmred\nnext\n", earlierOutputDropped: true }))
-    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["red", "next"])
+    const lines = (buffer: string) => terminalRows(watchFrom(watched({ buffer, earlierOutputDropped: true })), true)
+      .filter((row) => row.kind === "line").map((row) => row.text)
+    expect(lines("partial\u001b[31\nmred\nnext\n")).toEqual(["red", "next"])
+    // A character that ends a sequence by being text is drawn.
+    expect(lines("partial\u001b[\nétext\n")).toEqual(["étext"])
+    // Only the first line break has to be near; the sequence can run on.
+    expect(lines(`partial\u001b[\n${"1".repeat(300)}\nmnext\n`)).toEqual(["next"])
     const head = `${"x".repeat(100)}abc\u001b[31\nmred`
     const full = watchFrom(watched({ buffer: `${head}${"z".repeat(maximumTerminalReplayCharacters - head.length)}` }))
     const cut = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "y".repeat(101) } }, at)
@@ -719,6 +726,11 @@ describe("withNotification", () => {
     const drawn = output(split, "done\n")
     expect(drawn.received).toBe(1)
     expect(drawn.pieces).toBe(1)
+    // A malformed sequence ended in a later piece is still dropped, and a
+    // colour alone draws nothing.
+    const malformed = output(output(watchFrom(watched()), "\u001b[1 2"), "m")
+    expect(malformed.pieces).toBe(0)
+    expect(output(watchFrom(watched()), "\u001b[31m").pieces).toBe(0)
   })
 
   it("moves the claimant line when the claim moves", () => {

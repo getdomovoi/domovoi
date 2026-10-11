@@ -117,9 +117,10 @@ class Line {
     this.set(at, blank)
   }
 
-  // Nothing from this column on.
+  // Nothing from this column on. A wide character the cut splits goes whole.
   truncate(at: number): void {
     if (at >= this.length) return
+    if (this.get(at) === rightHalf) this.set(at - 1, blank)
     const index = Math.floor(at / widestGrid)
     this.rows.length = index + 1
     const row = this.rows[index]
@@ -422,42 +423,55 @@ export function nextLineStart(text: string, from: number, reach: number): number
     const code = text.codePointAt(index) ?? 0
     const char = text.slice(index, index + (code > 0xffff ? 2 : 1))
     const action = reader.step(char, code, index)
-    const lineBreak = index
+    const start = index
     index += char.length
-    if (code === 0x0a && action === "execute") {
-      if (lineBreak - from >= reach) return undefined
+    if (code === 0x0a && action === "execute" && !broken) {
+      if (start - from >= reach) return undefined
       broken = true
     }
-    if (broken && reader.state === "ground") return index
+    // A character that ends a sequence by being text is drawn, so the line
+    // starts with it.
+    if (broken && reader.state === "ground") return action === "print" ? start : index
     if (!broken && index - from >= reach) return undefined
   }
   return undefined
 }
 
-// How the reader stands between two pieces of output.
-export type ReaderState = State
+// How the reader stands between two pieces of output. A control sequence
+// already malformed, or with an intermediate, stays dropped at its end.
+export type ReaderState = State | "csiDropped"
+
+// The control sequences that change a line, as dispatch acts on them.
+const lineFinals = new Set(["K", "C", "a", "D", "G", "`", "X", "P", "@"])
 
 // What one piece of output draws, read on from where the last one left the
 // reader: the line breaks the terminal draws in it, whether it draws or moves
-// anything at all, and where it leaves the reader. A piece wholly inside a
-// payload draws nothing.
+// anything on a line, and where it leaves the reader. A piece wholly inside a
+// payload, or only a colour, draws nothing.
 export function readPiece(state: ReaderState, data: string): { state: ReaderState, lineBreaks: number, draws: boolean } {
   const reader = new Reader()
-  if (state === "csi") reader.introduced(0x5b)
-  reader.state = state
+  if (state === "csi" || state === "csiDropped") {
+    reader.introduced(0x5b)
+    reader.malformed = state === "csiDropped"
+    reader.state = "csi"
+  } else {
+    reader.state = state
+  }
   let lineBreaks = 0
   let draws = false
   let index = 0
   for (const char of data) {
     const action = reader.step(char, char.codePointAt(0) ?? 0, index)
     index += char.length
-    if (action === "print" || action === "dispatch") draws = true
+    if (action === "print") draws = true
+    else if (action === "dispatch" && lineFinals.has(char) && !/^[<=>?]/.test(reader.parameters)) draws = true
     else if (action === "execute" && (char === "\n" || char === "\r" || char === "\b" || char === "\t")) {
       draws = true
       if (char === "\n") lineBreaks += 1
     }
   }
-  return { state: reader.state, lineBreaks, draws }
+  const dropped = reader.state === "csi" && (reader.malformed || reader.intermediates !== "")
+  return { state: dropped ? "csiDropped" : reader.state, lineBreaks, draws }
 }
 
 // Where to cut the front of a text so that what is kept reads as the
@@ -488,10 +502,11 @@ export function readableCut(
   let broken = false
   for (const char of text) {
     const action = reader.step(char, char.codePointAt(0) ?? 0, index)
-    const lineBreak = index
+    const start = index
     index += char.length
-    if (char === "\n" && action === "execute" && lineBreak >= cut - 1 && index - cut <= lineBreakReach) broken = true
-    if (broken && reader.state === "ground") return { at: index, prefix: "" }
+    if (char === "\n" && action === "execute" && start >= cut - 1 && index - cut <= lineBreakReach) broken = true
+    // A character that ends a sequence by being text is kept.
+    if (broken && reader.state === "ground") return { at: action === "print" ? start : index, prefix: "" }
     if (index >= cut && index - cut <= longestReopening) statesPastCut[index - cut] = reader.state
     if (plainAt === undefined && index >= cut && reader.state === "ground") plainAt = index
     if (plainAt !== undefined && !broken && index - cut > lineBreakReach) break
