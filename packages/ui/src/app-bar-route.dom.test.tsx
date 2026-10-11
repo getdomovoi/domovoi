@@ -8,7 +8,9 @@ import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
   completeHandshake,
   installFakeWebSocket,
+  pendingRequest,
   respond,
+  sentRequests,
   workspaceSnapshot,
   type FakeWebSocketHarness,
 } from "./test-support/fake-websocket"
@@ -116,6 +118,83 @@ it("names an SSH forward to an attached machine as ssh, not loopback", async () 
   await user.click(await screen.findByRole("button", { name: "Terminal on Studio" }))
   await settle()
   expect(chip().textContent).toMatch(/Studiossh$/u)
+}, 15_000)
+
+// A route resolution abandoned by a return home can land after the machine
+// was attached again over another route. The word is the live socket's, also
+// when both routes share one endpoint URL.
+it.each([
+  ["another endpoint", { kind: "lan", endpoint: "wss://studio.example:47831/rpc", authenticated: true } as const, "direct"],
+  ["the same endpoint", { kind: "local", endpoint: "ws://127.0.0.1:52011/rpc", authenticated: true } as const, "loopback"],
+])("keeps the live route's word when an abandoned route answers late, over %s", async (_case, tls, word) => {
+  const user = userEvent.setup()
+  const settle = () => act(async () => { for (let i = 0; i < 16; i += 1) await Promise.resolve() })
+  const machineId = `machine-${"b".repeat(32)}`
+  const deviceId = `device-${"c".repeat(32)}`
+  const observedAt = "2026-09-06T00:00:00.000Z"
+  const ssh = { kind: "ssh", endpoint: "ws://127.0.0.1:52011/rpc", authenticated: true, configured: true } as const
+  const target = { ...workspaceSnapshot(), machine: { ...workspaceSnapshot().machine, id: machineId, name: "Studio" } }
+  if (target.project) target.project = { ...target.project, machineId }
+  const machine: FleetMachine = {
+    id: machineId, label: "Studio", platform: "linux", arch: "x64", version: "0.0.1", protocolVersion,
+    connection: "direct", health: "healthy", self: false, capabilities: ["sessions", "terminals", "skills"],
+    heartbeat: { state: "online", lastSeenAt: observedAt },
+    verifiedRoute: { endpoint: tls.endpoint, lastAuthenticatedAt: observedAt },
+    transports: [tls, ssh],
+  }
+  const answer = (socket: ReturnType<typeof harness.socket>, id: ReturnType<typeof pendingRequest>["id"], result: unknown) => {
+    socket.answered.add(id)
+    socket.receive({ jsonrpc: "2.0", id, result })
+  }
+  render(<WorkspaceShell />)
+  const home = harness.socket(0)
+  await act(async () => { completeHandshake(home) })
+  await settle()
+  await act(async () => { respond(home, "fleet.list", { entries: [{ kind: "machine", machine }] }) })
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+  await user.click(await screen.findByRole("button", { name: "Authorize this client for Studio" }))
+  const dialog = screen.getByRole("dialog")
+  await user.click(within(dialog).getByLabelText("Client credential"))
+  await user.paste("x".repeat(43))
+  await user.click(within(dialog).getByRole("button", { name: "Verify client access" }))
+  await settle()
+  await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport: tls }) })
+  await settle()
+  const proof = harness.socket(1)
+  await act(async () => { completeHandshake(proof, target) })
+  await settle()
+  await act(async () => { respond(proof, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
+  await settle()
+  const openStudio = /^Open its (\d+ )?sessions? on Studio$/u
+
+  await user.click(screen.getByRole("button", { name: openStudio }))
+  await settle()
+  const abandoned = pendingRequest(home, "fleet.clientRoute")
+  await user.click(screen.getByRole("button", { name: "Return to home daemon" }))
+  await settle()
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+  await user.click(await screen.findByRole("button", { name: openStudio }))
+  await settle()
+  const current = sentRequests(home, "fleet.clientRoute").filter((request) => !home.answered.has(request.id) && request.id !== abandoned.id).at(-1)
+  expect(current).toBeTruthy()
+  await act(async () => { answer(home, current!.id, { outcome: "ready", machineId, transport: tls }) })
+  await settle()
+  let last = 0
+  while ((() => { try { harness.socket(last + 1); return true } catch { return false } })()) last += 1
+  const remote = harness.socket(last)
+  await act(async () => { completeHandshake(remote, target) })
+  await settle()
+  await act(async () => { respond(remote, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
+  await settle()
+  const chip = () => screen.getByRole("button", { name: "Machines: Studio" })
+  expect(chip().textContent?.endsWith(`Studio${word}`)).toBe(true)
+
+  await act(async () => { answer(home, abandoned.id, { outcome: "ready", machineId, transport: ssh }) })
+  await settle()
+  expect(chip().textContent).not.toMatch(/ssh$/u)
+  expect(chip().textContent?.endsWith(`Studio${word}`)).toBe(true)
 }, 15_000)
 
 // Q362 A: the theme is a preference of this client that never reaches the
