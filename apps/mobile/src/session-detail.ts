@@ -40,6 +40,11 @@ export type ThreadEntry =
     // Who decided as the receipt names them: the paired device's label, the
     // client and the device's shortened id, or the client alone.
     decidedBy: string
+    // Phone v2 frame 03 splits that into two rows: Decided on is the paired
+    // device's label, or the client alone, and Credential is the paired device
+    // the daemon verified on the deciding connection, by its shortened id.
+    decidedOn: string
+    credential: string | undefined
     // The client id a hello declared, which legacy receipts carry. No paired
     // credential vouches for it, so it is shown as declared, never as a
     // credential (packages/ui/src/session-history.ts names it the same way).
@@ -171,6 +176,8 @@ function entryFor(item: ThreadItem): ThreadEntry {
         decidedBy: item.device
           ? `${item.device.label} · ${item.client} · ${clientReference(item.device.id)}`
           : item.client,
+        decidedOn: item.device?.label ?? item.client,
+        credential: item.device ? clientReference(item.device.id) : undefined,
         declaredClient: item.clientId ? clientReference(item.clientId) : undefined,
         checkpoint: item.checkpoint === "unavailable" ? "no checkpoint" : shortReference(item.checkpoint),
         checkpointTaken: allowed && item.checkpoint !== "unavailable",

@@ -55,9 +55,13 @@ function Receipt({ entry, onWatch }: {
   // A deny is not a success, so it does not wear the success colours.
   const denied = entry.recorded === "deny" || entry.recorded === "deny-explain"
   const dim = denied ? "text-muted-foreground" : "text-ok-dim"
+  // Frame 03 names the decision in words (allow once), not as the wire value.
+  // The credential row appears only when the daemon verified a paired device
+  // on the deciding connection; a declared client id is never a credential.
   const record: Array<[string, string]> = [
-    ["Decision", entry.recorded],
-    ["Decided on", entry.decidedBy],
+    ["Decision", entry.recorded.replaceAll("-", " ")],
+    ["Decided on", entry.decidedOn],
+    ...(entry.credential ? [["Credential", entry.credential] as [string, string]] : []),
     ...(entry.declaredClient ? [["Declared client", entry.declaredClient] as [string, string]] : []),
     ["Checkpoint", entry.checkpoint],
   ]
@@ -77,6 +81,12 @@ function Receipt({ entry, onWatch }: {
             {entry.ranFor
               ? <>was taken first, then it ran in <Text className="font-mono text-[12px]">{entry.ranFor}</Text>.</>
               : "was taken first."}
+          </Text>
+        ) : entry.ranFor ? (
+          // An allow that could take no checkpoint still ran, and how long it
+          // ran is its own fact, not part of the checkpoint sentence.
+          <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>
+            It ran in <Text className="font-mono text-[12px]">{entry.ranFor}</Text>.
           </Text>
         ) : null}
         <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>{entry.operation}</Text>

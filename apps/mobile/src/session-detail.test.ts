@@ -211,6 +211,8 @@ describe("threadEntries receipt", () => {
       explanation: undefined,
       client: "phone",
       decidedBy: "phone",
+      decidedOn: "phone",
+      credential: undefined,
       declaredClient: "device fcbd…cdf8",
       checkpoint: "8f3c1de",
       checkpointTaken: true,
@@ -246,6 +248,38 @@ describe("threadEntries receipt", () => {
       decidedBy: "dana · phone · device fcbd…cdf8",
       declaredClient: undefined,
     })
+  })
+
+  // Phone v2 frame 03 lists the record in two rows: Decided on is the device's
+  // label, and Credential is the paired device the daemon verified, by its
+  // shortened id. A receipt with no device has no credential to name.
+  it("splits the paired device into the label it decided on and its credential", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "pnpm -w prisma migrate deploy",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "phone",
+      device: { id: "device-fcbd4c3f99c7294586f0c5ca22f9cdf8", label: "dana" },
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }, {
+      id: "t-receipt-2",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "deny",
+      operation: "rm -rf build",
+      checkpoint: "main",
+      client: "desktop",
+      createdAt: "2026-08-25T21:53:00.000Z",
+    }]
+
+    const { entries } = threadEntries(snapshot, "session-billing")
+
+    expect(entries[0]).toMatchObject({ decidedOn: "dana", credential: "device fcbd…cdf8" })
+    expect(entries[1]).toMatchObject({ decidedOn: "desktop", credential: undefined })
   })
 
   // A receipt written before the device field names the client alone as the
