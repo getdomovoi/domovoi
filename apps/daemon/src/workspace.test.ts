@@ -2533,8 +2533,12 @@ describe("GitWorkspaceService session refs", () => {
     const markerPath = join(scratch, "transport-ran").replaceAll("\\", "/")
     await writeFile(join(workspace.path, "evil.sh"), `echo ran >> "${markerPath}"\nexit 1\n`)
     // A loopback port that closes each connection, so ssh fails on its first
-    // read without a name lookup.
-    const closing = createNetServer((socket) => socket.destroy())
+    // read without a name lookup. A connection shows plain ssh did run.
+    let connections = 0
+    const closing = createNetServer((socket) => {
+      connections += 1
+      socket.destroy()
+    })
     await new Promise<void>((listening) => closing.listen(0, "127.0.0.1", listening))
     try {
       const { port } = closing.address() as AddressInfo
@@ -2547,6 +2551,7 @@ describe("GitWorkspaceService session refs", () => {
       await new Promise<void>((closed) => closing.close(() => closed()))
     }
 
+    expect(connections).toBeGreaterThan(0)
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
 
