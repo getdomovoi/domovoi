@@ -11,6 +11,7 @@ import { promisify } from "node:util"
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 
 import { windowsTreeKill } from "./claude-process.js"
+import { gitEnvironment } from "./git-environment.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { projectRootRead } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant } from "./repository-trust-store.js"
@@ -2491,6 +2492,22 @@ describe("GitWorkspaceService session refs", () => {
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
 
+  // Runs work with HOME and XDG_CONFIG_HOME at a home of the test's own, so
+  // the person's global Git config is the one written there.
+  async function withHome<T>(home: string, work: () => Promise<T>): Promise<T> {
+    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = join(home, ".config")
+    try {
+      return await work()
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  }
+
   it("pushes with the person's own ssh command, not the repository's", async () => {
     const { scratch, service, workspace } = await sessionWithRemote("domovoi-ref-ssh-person-")
     const repositoryPath = join(scratch, "project")
@@ -2506,17 +2523,8 @@ describe("GitWorkspaceService session refs", () => {
     await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", "ssh://git@127.0.0.1/remote.git"])
     await execute("git", ["-C", repositoryPath, "config", "core.sshCommand", "sh ./evil.sh"])
     await service.checkpoint(workspace.path, "with the script")
-    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
-    process.env.HOME = home
-    process.env.XDG_CONFIG_HOME = join(home, ".config")
-    try {
-      await expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow()
-    } finally {
-      for (const [name, value] of Object.entries(previous)) {
-        if (value === undefined) delete process.env[name]
-        else process.env[name] = value
-      }
-    }
+
+    await withHome(home, () => expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow())
 
     await expect(readFile(personMarker, "utf8")).resolves.toContain("ran")
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
@@ -2527,11 +2535,18 @@ describe("GitWorkspaceService session refs", () => {
   // under the suite's load, and once this test ran past its 30 s timeout (CI
   // run 37740051526). The fallback is the same code on every platform, so it
   // runs on macOS and Linux; the case above covers the refusal on Windows.
-  it.skipIf(process.platform === "win32")("pushes with plain ssh when the person sets none, not the repository's command", async () => {
+  it.skipIf(process.platform === "win32")("pushes with plain ssh when the person sets none, not the repository's command", async ({ skip }) => {
     const { scratch, service, workspace } = await sessionWithRemote("domovoi-ref-ssh-")
     const repositoryPath = join(scratch, "project")
     const markerPath = join(scratch, "transport-ran").replaceAll("\\", "/")
     await writeFile(join(workspace.path, "evil.sh"), `echo ran >> "${markerPath}"\nexit 1\n`)
+    // An empty home of the test's own. A system config that sets an ssh
+    // command is the person's too, and the push rightly uses it instead.
+    const home = join(scratch, "home")
+    await mkdir(home)
+    const personCommand = await withHome(home, () => execute("git", ["config", "--get-all", "core.sshCommand"], { cwd: home, env: gitEnvironment() })
+      .then(({ stdout }) => stdout.trim(), () => ""))
+    if (personCommand !== "") skip("This machine's Git config sets core.sshCommand, so the push never falls back to plain ssh")
     // A loopback port that closes each connection, so ssh fails on its first
     // read without a name lookup. A connection shows plain ssh did run.
     let connections = 0
@@ -2546,7 +2561,7 @@ describe("GitWorkspaceService session refs", () => {
       await execute("git", ["-C", repositoryPath, "config", "core.sshCommand", "sh ./evil.sh"])
       await service.checkpoint(workspace.path, "with the script")
 
-      await expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow()
+      await withHome(home, () => expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow())
     } finally {
       await new Promise<void>((closed) => closing.close(() => closed()))
     }
