@@ -1,6 +1,6 @@
 import { z } from "zod"
 
-import { utf16MaxLength } from "./validation.js"
+import { utf16MaxLength, wireRule } from "./validation.js"
 
 // J34: a person's allow takes a checkpoint first, and when the daemon cannot
 // take one the command does not run and the gate stays. approval.resolve then
@@ -38,10 +38,21 @@ const absolutePath = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/u
 
 // The lock as Git reported it: an absolute path ending in .lock, on the
 // machine that ran the command, on one line.
-const lockPathSchema = z.string().min(1).check(utf16MaxLength(maximumApprovalCheckpointLockPathLength))
-  .refine((path) => absolutePath.test(path), { message: "A lock path is absolute" })
-  .refine((path) => path.endsWith(".lock"), { message: "A lock path names a .lock file" })
-  .refine((path) => !controlCharacter.test(path), { message: "A lock path holds no control characters" })
+// Each refine declares what it captures, so the wire record sees it.
+const lockSuffix = ".lock"
+const boundedLockPath = z.string().min(1).check(utf16MaxLength(maximumApprovalCheckpointLockPathLength))
+const absoluteLockPath = wireRule(
+  boundedLockPath.refine((path) => absolutePath.test(path), { message: "A lock path is absolute" }),
+  { rule: "lock-path-absolute", pattern: absolutePath.source },
+)
+const lockFilePath = wireRule(
+  absoluteLockPath.refine((path) => path.endsWith(lockSuffix), { message: "A lock path names a .lock file" }),
+  { rule: "lock-path-suffix", suffix: lockSuffix },
+)
+const lockPathSchema = wireRule(
+  lockFilePath.refine((path) => !controlCharacter.test(path), { message: "A lock path holds no control characters" }),
+  { rule: "lock-path-one-line", pattern: controlCharacter.source },
+)
 
 export const approvalCheckpointRefusalSchema = z.union([
   z.object({
