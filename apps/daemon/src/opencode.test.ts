@@ -4335,6 +4335,15 @@ describe("an approval answered outside Domovoi, through the daemon", () => {
     await mkdir(join(worktree, "src"))
     await writeFile(join(worktree, "src", "invoice.ts"), "export const total = 42\n")
     const { client, factory, server, stream } = harness()
+    // The adapter restarts the server after the stop: the old server's event
+    // stream ends, and the next server publishes on a stream of its own.
+    let live = stream
+    client.event.subscribe.mockImplementation(async () => ({ stream: live }))
+    server.stop.mockImplementation(async () => {
+      live.close()
+      live = new EventStream()
+      return true
+    })
     let next = 0
     const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++next}`)
     const snapshot = structuredClone(demoWorkspace)
@@ -4419,7 +4428,14 @@ describe("an approval answered outside Domovoi, through the daemon", () => {
       expect((await rpc("session.send", { sessionId: session.id, prompt: "Go on", client: "desktop" })).error).toBeUndefined()
       await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
       expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({ query: { directory: worktree } }))
+      expect(live).not.toBe(stream)
+      const prompt = (client.session.promptAsync.mock.lastCall as unknown as [{ body: { messageID: string } }])[0].body.messageID
+      await waitForDaemon(async () => expect((await current()).activeTurnId).toBe(prompt))
+      // The new server answers the turn, and the turn ends normally.
+      finishRun(live, "open-session", prompt)
+      await waitForDaemon(async () => expect((await current()).activeTurnId).toBeUndefined())
       const resumed = await current()
+      expect(resumed.state).not.toBe("failed")
       expect(resumed.workspacePath).toBe(worktree)
       expect(resumed).not.toHaveProperty("providerFailure")
       expect(await files()).toEqual(before)
