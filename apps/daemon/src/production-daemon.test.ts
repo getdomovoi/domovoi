@@ -9,9 +9,12 @@ import { fleetEnrollResultSchema, fleetSnapshotSchema, protocolVersion } from "@
 import { WebSocket } from "ws"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
+import { defaultWebDirectory } from "./config.js"
+import type { WebAppBundleLoad } from "./web-app-bundle.js"
 import {
   createProductionDaemon,
   createProductionDaemonWithDependencies,
+  describeWebApp,
   productionDaemonDependencies,
   type ProductionDaemonDependencies,
   type ProductionDaemonHandle,
@@ -470,6 +473,80 @@ describe("createProductionDaemon", () => {
     expect(createDaemon.mock.calls[0]![0]).not.toHaveProperty("tls")
     expect(handle.secureTransport).toBe(false)
     expect(await handle.start()).toEqual({ host: "127.0.0.1", port: 49_200, url: "ws://127.0.0.1:49200/rpc" })
+  })
+
+  // S3.2 plan sections 1.2 to 1.4: the web app bundle is loaded once, before
+  // the listener exists, from DOMOVOI_WEB_DIR or the user's data folder, and
+  // the server serves what was loaded.
+  describe("the web app bundle", () => {
+    const credentials = () => asyncTestCredentials(new MachineCredentialStore({ get: () => undefined, set: () => {}, delete: () => {} }))
+    const loaded: WebAppBundleLoad = Object.freeze({ state: "loaded", root: "/srv/web", version: "0.0.1", protocolVersion, files: new Map() })
+
+    it("loads it from DOMOVOI_WEB_DIR, outside the profile, and hands it to the server", async () => {
+      const homeDirectory = await temporaryHome()
+      const loadWebApp = vi.fn(async () => loaded)
+      const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+      const handle = await createProductionDaemonWithDependencies({ environment: { DOMOVOI_WEB_DIR: "/srv/web" }, homeDirectory }, {
+        ...productionDaemonDependencies, loadWebApp, createMachineCredentials: credentials, createDaemon,
+      })
+      running.push(handle)
+      expect(loadWebApp).toHaveBeenCalledWith({ root: "/srv/web", profileDirectory: join(homeDirectory, ".domovoi") })
+      expect(createDaemon).toHaveBeenCalledWith(expect.objectContaining({ webApp: loaded }))
+      expect(handle.webApp).toEqual({ state: "loaded", directory: "/srv/web", version: "0.0.1", protocolVersion })
+      expect(describeWebApp(handle.webApp)).toBe(`domovoid web app served from /srv/web (web 0.0.1, protocol ${protocolVersion})`)
+    })
+
+    it("looks in the user's data folder when DOMOVOI_WEB_DIR is unset", async () => {
+      const homeDirectory = await temporaryHome()
+      const loadWebApp = vi.fn(async ({ root }: { root: string }) => ({ state: "absent", root, reason: "root-missing" }) as const)
+      const handle = await createProductionDaemonWithDependencies({ environment: {}, homeDirectory }, {
+        ...productionDaemonDependencies, loadWebApp, createMachineCredentials: credentials,
+        createDaemon: (options) => fakeRuntime(options),
+      })
+      running.push(handle)
+      // environment {} names no data folder, so the process's own applies.
+      const directory = defaultWebDirectory(process.platform, homeDirectory, process.env)
+      expect(loadWebApp).toHaveBeenCalledWith({ root: directory, profileDirectory: join(homeDirectory, ".domovoi") })
+      expect(describeWebApp(handle.webApp)).toBe(`domovoid web app not served: none is installed at ${directory}`)
+    })
+
+    it("logs a refused bundle with the check and the file, and starts anyway", async () => {
+      const errorSink = vi.fn()
+      const loadWebApp = vi.fn(async () => ({ state: "invalid", root: "/srv/web", reason: "digest-mismatch", path: "assets/index-B0V_-a_P.js" }) as const)
+      const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+      const handle = await createProductionDaemonWithDependencies({ environment: { DOMOVOI_WEB_DIR: "/srv/web" }, homeDirectory: await temporaryHome(), errorSink }, {
+        ...productionDaemonDependencies, loadWebApp, createMachineCredentials: credentials, createDaemon,
+      })
+      running.push(handle)
+      expect(errorSink).toHaveBeenCalledWith({ context: "Domovoi did not serve the web app", detail: "digest-mismatch: assets/index-B0V_-a_P.js in /srv/web" })
+      expect(describeWebApp(handle.webApp)).toBe("domovoid web app not served: it failed its checks (digest-mismatch: assets/index-B0V_-a_P.js) at /srv/web")
+      expect(createDaemon).toHaveBeenCalledTimes(1)
+    })
+
+    it("logs a bundle built for another protocol", async () => {
+      const errorSink = vi.fn()
+      const loadWebApp = vi.fn(async () => ({
+        state: "incompatible", root: "/srv/web", reason: "protocol-incompatible", bundleProtocolVersion: "0.7.2", daemonProtocolVersion: protocolVersion,
+      }) as const)
+      const handle = await createProductionDaemonWithDependencies({ environment: { DOMOVOI_WEB_DIR: "/srv/web" }, homeDirectory: await temporaryHome(), errorSink }, {
+        ...productionDaemonDependencies, loadWebApp, createMachineCredentials: credentials, createDaemon: (options) => fakeRuntime(options),
+      })
+      running.push(handle)
+      expect(errorSink).toHaveBeenCalledWith({ context: "Domovoi did not serve the web app", detail: `the bundle is for protocol 0.7.2 and this daemon speaks ${protocolVersion}, in /srv/web` })
+      expect(describeWebApp(handle.webApp)).toBe(`domovoid web app not served: it is for protocol 0.7.2 and this daemon speaks ${protocolVersion} at /srv/web`)
+    })
+
+    it("serves the state page rather than stop when loading throws", async () => {
+      const errorSink = vi.fn()
+      const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+      const handle = await createProductionDaemonWithDependencies({ environment: { DOMOVOI_WEB_DIR: "/srv/web" }, homeDirectory: await temporaryHome(), errorSink }, {
+        ...productionDaemonDependencies, createMachineCredentials: credentials, createDaemon,
+        loadWebApp: async () => { throw new Error("EIO: i/o error") },
+      })
+      running.push(handle)
+      expect(createDaemon.mock.calls[0]![0].webApp).toEqual({ state: "invalid", root: "/srv/web", reason: "root-unreadable" })
+      expect(errorSink).toHaveBeenCalledWith({ context: "Domovoi did not serve the web app", detail: "root-unreadable in /srv/web" })
+    })
   })
 
   async function refusedWith(environment: Record<string, string>, readTailnetTls: ProductionDaemonDependencies["readTailnetTls"] = productionDaemonDependencies.readTailnetTls, tailnetTlsTimeoutMs?: number) {

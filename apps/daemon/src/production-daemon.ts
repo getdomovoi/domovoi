@@ -6,7 +6,8 @@ import { protocolVersion } from "@getdomovoi/protocol"
 
 import type { MachineWslFacts, RelayIdentityPin } from "@getdomovoi/protocol"
 
-import { parseDaemonEnvironment, type DaemonEnvironment } from "./config.js"
+import { defaultWebDirectory, parseDaemonEnvironment, type DaemonEnvironment } from "./config.js"
+import { loadWebAppBundle, type WebAppBundleLoad, type WebAppBundleOptions } from "./web-app-bundle.js"
 import { loadOrCreateDaemonToken } from "./credentials.js"
 import { RotatingDaemonLog } from "./daemon-logs.js"
 import { loadOrCreateMachineIdentity, type MachineIdentity } from "./machine-identity.js"
@@ -57,12 +58,21 @@ export type ProductionDaemonEndpoint = {
   url: string
 }
 
+// What became of the web app bundle at startup (S3.2 plan section 1.4), for
+// the owner's startup output. directory is the configured or default folder.
+export type ProductionWebAppStatus =
+  | { state: "loaded"; directory: string; version: string; protocolVersion: string }
+  | { state: "absent"; directory: string }
+  | { state: "invalid"; directory: string; reason: string; path?: string }
+  | { state: "incompatible"; directory: string; bundleProtocolVersion: string; daemonProtocolVersion: string }
+
 export type ProductionDaemonHandle = {
   readonly host: string
   readonly requestedPort: number
   readonly authToken: string
   readonly secureTransport: boolean
   readonly credential: ProductionDaemonCredential
+  readonly webApp: ProductionWebAppStatus
   readonly relayIdentity?: RelayIdentityPin
   start(): Promise<ProductionDaemonEndpoint>
   stop(): Promise<void>
@@ -91,6 +101,7 @@ export type ProductionDaemonDependencies = {
   readTailnetTls(paths: TlsMaterialPaths): Promise<TlsMaterial>
   // The tailnet certificate's own bound; tests shorten it.
   tailnetTlsTimeoutMs?: number
+  loadWebApp(options: WebAppBundleOptions): Promise<WebAppBundleLoad>
   loadRelayChannel: typeof loadOrProvisionRelayChannel
   resolveToolPath: typeof resolveToolPath
   createProviderProbe(toolPath: string | undefined): ProviderProbe
@@ -105,6 +116,7 @@ export const productionDaemonDependencies = {
   loadOrCreateIdentity: loadOrCreateMachineIdentity,
   loadTls: loadTlsMaterial,
   readTailnetTls: readTailnetTlsMaterial,
+  loadWebApp: loadWebAppBundle,
   loadRelayChannel: loadOrProvisionRelayChannel,
   resolveToolPath,
   createProviderProbe: (toolPath) => new CliProviderProbe(runProviderCommand, { path: toolPath }),
@@ -115,6 +127,30 @@ export const productionDaemonDependencies = {
 
 function urlHost(host: string): string {
   return host.includes(":") && !host.startsWith("[") ? `[${host}]` : host
+}
+
+function webAppStatus(directory: string, load: WebAppBundleLoad): ProductionWebAppStatus {
+  switch (load.state) {
+    case "loaded": return { state: "loaded", directory, version: load.version, protocolVersion: load.protocolVersion }
+    case "absent": return { state: "absent", directory }
+    case "invalid": return { state: "invalid", directory, reason: load.reason, ...(load.path === undefined ? {} : { path: load.path }) }
+    case "incompatible": return { state: "incompatible", directory, bundleProtocolVersion: load.bundleProtocolVersion, daemonProtocolVersion: load.daemonProtocolVersion }
+  }
+}
+
+function invalidDetail(status: Extract<ProductionWebAppStatus, { state: "invalid" }>): string {
+  return status.path === undefined ? status.reason : `${status.reason}: ${status.path}`
+}
+
+// The startup line beside "domovoid listening on" (S3.2 plan section 1.4).
+// It names the directory: only the machine's owner reads this output.
+export function describeWebApp(status: ProductionWebAppStatus): string {
+  switch (status.state) {
+    case "loaded": return `domovoid web app served from ${status.directory} (web ${status.version}, protocol ${status.protocolVersion})`
+    case "absent": return `domovoid web app not served: none is installed at ${status.directory}`
+    case "invalid": return `domovoid web app not served: it failed its checks (${invalidDetail(status)}) at ${status.directory}`
+    case "incompatible": return `domovoid web app not served: it is for protocol ${status.bundleProtocolVersion} and this daemon speaks ${status.daemonProtocolVersion} at ${status.directory}`
+  }
 }
 
 export async function createProductionDaemonWithDependencies(
@@ -153,6 +189,16 @@ export async function createProductionDaemonWithDependencies(
       address: config.tailnetListener.address,
       tls: await beforeDeadline(loadTailnetTls(dependencies.readTailnetTls, config.tailnetListener.tls, dependencies.tailnetTlsTimeoutMs), deadline),
     } : undefined
+    // S3.2 plan section 1.3: the web app is loaded once, before any listener
+    // exists, and never read from disk again. A bundle that fails a check
+    // leaves the daemon serving the state page, never failing to start.
+    // A service's settings carry only DOMOVOI_ variables, so XDG_DATA_HOME and
+    // LOCALAPPDATA come from the process the supervisor started when the
+    // settings do not name them.
+    const webDirectory = config.webDirectory ?? defaultWebDirectory(process.platform, homeDirectory, { ...process.env, ...settings })
+    const webApp = await beforeDeadline(dependencies.loadWebApp({ root: webDirectory, profileDirectory: profileDirectory(profile) })
+      .catch((): WebAppBundleLoad => Object.freeze({ state: "invalid", root: webDirectory, reason: "root-unreadable" })), deadline)
+    const webAppState = webAppStatus(webDirectory, webApp)
     deadline.throwIfExpired()
     lease ??= claimProfile(profile)
     const ownedLease = lease
@@ -170,6 +216,12 @@ export async function createProductionDaemonWithDependencies(
       }
       if (options.errorSink) options.errorSink(entry)
       else console.error(entry.context, entry.detail)
+    }
+    // The daemon log is the owner's, so it names the folder and the file.
+    if (webAppState.state === "invalid") {
+      errorSink({ context: "Domovoi did not serve the web app", detail: `${invalidDetail(webAppState)} in ${webDirectory}` })
+    } else if (webAppState.state === "incompatible") {
+      errorSink({ context: "Domovoi did not serve the web app", detail: `the bundle is for protocol ${webAppState.bundleProtocolVersion} and this daemon speaks ${webAppState.daemonProtocolVersion}, in ${webDirectory}` })
     }
     const [authToken, machineIdentity] = await beforeDeadline(Promise.all([
       config.authToken
@@ -216,6 +268,7 @@ export async function createProductionDaemonWithDependencies(
       port: config.port,
       ...(config.allowedOrigins ? { allowedOrigins: config.allowedOrigins } : {}),
       ...(config.webAppUrl ? { webAppUrl: config.webAppUrl } : {}),
+      webApp,
       authToken,
       ...(relay ? { relayStaticKey: relay.privateKey,
         relayRecovery: { identity: relay.identity, ...(relay.successor ? { successor: relay.successor } : {}) },
@@ -256,7 +309,7 @@ export async function createProductionDaemonWithDependencies(
     }
     return {
       host: daemon.host, requestedPort: daemon.requestedPort, authToken: daemon.authToken,
-      secureTransport, credential,
+      secureTransport, credential, webApp: webAppState,
       ...(relay ? { relayIdentity: structuredClone(relay.identity) } : {}),
       start: () => {
         if (stopping) return Promise.reject(new Error("Daemon cannot restart after shutdown"))
