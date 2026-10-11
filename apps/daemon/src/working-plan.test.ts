@@ -607,6 +607,40 @@ describe("provider task changes", () => {
     expect(second.plan.steps.map(({ id }) => id)).toEqual(edited.steps.map(({ id }) => id))
   })
 
+  it("keeps a task whose step the person removed off another step with its text", () => {
+    const current = plan({
+      steps: [
+        { id: "step-a", text: "Run tests", status: "pending" },
+        { id: "step-inserted", text: "Run tests", status: "pending" },
+      ],
+    })
+    const heard = new Map<string, ProviderTaskLink>([
+      ["1", { stepId: "step-a", text: "Run tests", status: "pending" }],
+      ["2", { stepId: "step-removed", text: "Run tests", status: "pending" }],
+    ])
+    const both = [task("1", "Run tests"), task("2", "Run tests")]
+    const first = taskUpdate(current, both, both, heard)
+    expect(stepIds(first).get("2")).toBe("step-removed")
+    const deleted = taskUpdate(first.plan, both, [task("1", "Run tests")], first.taskLinks)
+    expect(shape(deleted)).toEqual(["step-a:Run tests:pending", "step-inserted:Run tests:pending"])
+  })
+
+  // A Plan mode proposal replaces the steps, and the daemon then holds an
+  // empty set of links rather than none. A task deleted during Plan mode
+  // must not take a proposal step that happens to share its text with it.
+  it("matches no task from before a proposal to its steps by text for a deletion", () => {
+    const proposal = plan({
+      steps: [
+        { id: "step-inspect", text: "Inspect", status: "pending" },
+        { id: "step-verify", text: "Verify", status: "pending" },
+      ],
+    })
+    const before = [task("1", "Inspect"), task("2", "Verify")]
+    const afterPlan = [task("1", "Inspect", "in-progress")]
+    const result = taskUpdate(proposal, before, afterPlan, new Map())
+    expect(shape(result)).toEqual(["step-inspect:Inspect:in-progress", "step-verify:Verify:pending"])
+  })
+
   // The links live in the daemon's memory. After a restart nothing records
   // that the person removed the step, and tasks read from Claude's storage
   // need not have reached this plan (a shared list, a Plan mode checklist),

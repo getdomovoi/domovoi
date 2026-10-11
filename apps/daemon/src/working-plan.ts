@@ -131,7 +131,7 @@ export function updateWorkingPlanFromProvider(
     ? mergeProviderTaskChange(
       current?.steps ?? [],
       update.taskChange,
-      update.taskLinks ?? new Map(),
+      update.taskLinks,
       createId,
     )
     : undefined
@@ -212,7 +212,7 @@ function replacedProviderSteps(
 function mergeProviderTaskChange(
   canonical: WorkingPlanStep[],
   change: NonNullable<ProviderWorkingPlanUpdate["taskChange"]>,
-  links: ReadonlyMap<string, ProviderTaskLink>,
+  heardLinks: ReadonlyMap<string, ProviderTaskLink> | undefined,
   createId: WorkingPlanIdFactory,
 ): { steps: WorkingPlanStep[], taskLinks: Map<string, ProviderTaskLink> } {
   const normalize = (tasks: ProviderWorkingPlanTask[]) => tasks.flatMap((task) => {
@@ -238,9 +238,12 @@ function mergeProviderTaskChange(
     step.status = progressStatus(step, task.status)
   }
 
-  // The daemon's links live in memory. Without one, as after a restart, a
-  // task links to a step by text before any change is applied, so a deleted
-  // task and a surviving one with the same text keep their own steps.
+  // The daemon's links live in memory. When it holds none, as after a
+  // restart, a task links to a step by text before any change is applied, so
+  // a deleted task and a surviving one with the same text keep their own
+  // steps. An empty set of links is not that: a Plan mode proposal replaced
+  // the steps, and the tasks from before it link to none of them.
+  const links = heardLinks ?? new Map<string, ProviderTaskLink>()
   const priorLinks = new Map<string, string>()
   const linkedSteps = new Set<string>()
   for (const [taskId, { stepId }] of links) {
@@ -248,8 +251,7 @@ function mergeProviderTaskChange(
     priorLinks.set(taskId, stepId)
     linkedSteps.add(stepId)
   }
-  for (const [taskId, prior] of previous) {
-    if (priorLinks.has(taskId)) continue
+  for (const [taskId, prior] of heardLinks ? [] : previous) {
     const step = steps.find((candidate) => !linkedSteps.has(candidate.id) && candidate.text === prior.text)
     if (!step) continue
     priorLinks.set(taskId, step.id)
@@ -292,8 +294,19 @@ function mergeProviderTaskChange(
       if (!target || heldByAnother(target, task.id)) claim(task, linked, true)
     }
   }
+  // The daemon showed this task in a step the plan no longer has: the person
+  // removed it. It stays out, even where another step has its text, until it
+  // differs from how the daemon last heard it. The adapter's previous list
+  // cannot say that: a reopened session rereads it from Claude's storage.
+  const hidden = (task: { id: string, text: string, status: WorkingPlanStepStatus }) => {
+    const link = links.get(task.id)
+    return link !== undefined
+      && !stepsById.has(link.stepId)
+      && link.text === task.text
+      && link.status === task.status
+  }
   for (const task of current) {
-    if (taskLinks.has(task.id)) continue
+    if (taskLinks.has(task.id) || hidden(task)) continue
     const step = unclaimed(task.text)
     if (step) claim(task, step)
   }
@@ -322,16 +335,7 @@ function mergeProviderTaskChange(
   for (const task of current) {
     if (taskLinks.has(task.id)) continue
     const link = links.get(task.id)
-    // The daemon showed this task in a step the plan no longer has: the
-    // person removed it. It comes back once the task differs from how the
-    // daemon last heard it. The adapter's previous list cannot say that: a
-    // reopened session rereads it from Claude's storage.
-    if (
-      link !== undefined
-      && !stepsById.has(link.stepId)
-      && link.text === task.text
-      && link.status === task.status
-    ) {
+    if (link && hidden(task)) {
       taskLinks.set(task.id, link)
       continue
     }

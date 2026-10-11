@@ -963,7 +963,7 @@ describe("working plan RPC", () => {
       threadId: "thread-task-order",
       turnId,
       steps: current.map(({ text, status }) => ({ text, status })),
-      taskChange: { previous, current, deleted: [] },
+      taskChange: { list: "thread-task-order", previous, current, deleted: [] },
     })
     const storedPlan = (saved: typeof snapshot) => saved.workingPlans.find(
       (plan) => plan.sessionId === session.id,
@@ -1050,6 +1050,28 @@ describe("working plan RPC", () => {
     )?.content).toBe(
       "# Working plan\n\n1. Inspect\n2. Implement the parser\n3. Write the docs\n4. Verify\n",
     )
+
+    // The person names another shared list between turns. Its task 2 is
+    // another task, not the step the thread's own task 2 showed.
+    emit!({
+      type: "plan-updated",
+      threadId: "thread-task-order",
+      turnId: "turn-task-2",
+      steps: [{ text: "Write the release notes", status: "in-progress" }],
+      taskChange: {
+        list: "team-list",
+        previous: [task("2", "Write the release notes")],
+        current: [task("2", "Write the release notes", "in-progress")],
+        deleted: [],
+      },
+    })
+    await waitForDaemon(() => expect(storedPlan(context.durable()).steps.map(({ text }) => text)).toEqual([
+      "Inspect",
+      "Implement the parser",
+      "Write the docs",
+      "Verify",
+      "Write the release notes",
+    ]))
     context.socket.close()
   })
 

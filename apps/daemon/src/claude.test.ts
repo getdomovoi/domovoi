@@ -108,6 +108,8 @@ function taskPlanEvent(
   previous: TaskRow[],
   current: TaskRow[],
   deleted: string[] = [],
+  // The thread's own list unless a shared one is named.
+  list = threadId,
 ) {
   const tasks = (rows: TaskRow[]) => rows.map(([id, text, status]) => ({ id, text, status }))
   return {
@@ -115,7 +117,7 @@ function taskPlanEvent(
     threadId,
     turnId,
     steps: current.map(([, text, status]) => ({ text, status })),
-    taskChange: { previous: tasks(previous), current: tasks(current), deleted },
+    taskChange: { list, previous: tasks(previous), current: tasks(current), deleted },
   }
 }
 
@@ -1402,6 +1404,8 @@ describe("ClaudeAgentSdkAdapter", () => {
         turnId,
         [["1", "Inspect", "pending"]],
         [["1", "Inspect", "in-progress"]],
+        [],
+        "team-list",
       )))
       await adapter.close()
     } finally {
@@ -1502,6 +1506,8 @@ describe("ClaudeAgentSdkAdapter", () => {
         turnId,
         [["1", "Inspect", "pending"]],
         [["1", "Inspect", "in-progress"], ["2", "Write the docs", "pending"]],
+        [],
+        "team-list",
       )))
       await adapter.close()
     } finally {
@@ -1548,6 +1554,8 @@ describe("ClaudeAgentSdkAdapter", () => {
         turnId,
         [["1", "Inspect", "pending"], ["2", "Write the docs", "pending"]],
         [["1", "Inspect", "in-progress"], ["2", "Write the docs", "pending"]],
+        [],
+        "team-list",
       )))
     } finally {
       await adapter.close()
@@ -1597,6 +1605,8 @@ describe("ClaudeAgentSdkAdapter", () => {
         turnId,
         [["1", "Inspect", "pending"], ["2", "Write the docs", "pending"]],
         [["1", "Inspect", "in-progress"], ["2", "Write the docs", "pending"]],
+        [],
+        "team-list",
       )))
     } finally {
       await adapter.close()
@@ -1644,6 +1654,8 @@ describe("ClaudeAgentSdkAdapter", () => {
         turnId,
         [["1", "Inspect", "pending"]],
         [["1", "Inspect", "completed"]],
+        [],
+        "team",
       )))
       await adapter.close()
     } finally {
@@ -1697,6 +1709,83 @@ describe("ClaudeAgentSdkAdapter", () => {
       )))
       await adapter.close()
     } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  // The person can name another shared list between turns. Its ids mean other
+  // tasks, so the reopened session's first change is measured from that list.
+  it("measures a change on a newly named task list from that list, not the last one", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "domovoi-claude-tasks-"))
+    scratchDirectories.push(configDir)
+    const task = async (list: string, subject: string, status: string) => {
+      await mkdir(join(configDir, "tasks", list), { recursive: true })
+      await writeFile(
+        join(configDir, "tasks", list, "1.json"),
+        JSON.stringify({ id: "1", subject, description: `${subject}.`, status, blocks: [], blockedBy: [] }),
+      )
+    }
+    const nameList = (list: string) => writeFile(
+      join(configDir, "settings.json"),
+      JSON.stringify({ env: { CLAUDE_CODE_TASK_LIST_ID: list } }),
+    )
+    await task("team-a", "Old task", "pending")
+    await task("team-b", "New task", "pending")
+    await nameList("team-a")
+    vi.stubEnv("CLAUDE_CONFIG_DIR", configDir)
+    vi.stubEnv("CLAUDE_CODE_TASK_LIST_ID", "")
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "55555555-5555-4555-8555-555555555555",
+      "66666666-6666-4666-8666-666666666666",
+      "77777777-7777-4777-8777-777777777777",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const update = (query: FakeQuery, threadId: string, from: string, to: string) => {
+      query.emit({
+        type: "assistant",
+        session_id: threadId,
+        message: { content: [{ type: "tool_use", id: `toolu_${to}`, name: "TaskUpdate", input: { taskId: "1", status: to } }] },
+      })
+      query.emit({
+        type: "user",
+        session_id: threadId,
+        message: { content: [{ type: "tool_result", tool_use_id: `toolu_${to}`, content: "Updated task #1 status" }] },
+        tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from, to } },
+      })
+    }
+    try {
+      const event = vi.fn()
+      adapter.onEvent(event)
+      const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go on", runtime: runtime("build") })
+      await task("team-a", "Old task", "completed")
+      update(calls[0]!.query, threadId, "pending", "completed")
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(
+        threadId,
+        turnId,
+        [["1", "Old task", "pending"]],
+        [["1", "Old task", "completed"]],
+        [],
+        "team-a",
+      )))
+
+      calls[0]!.query.close()
+      await new Promise((resolve) => { setTimeout(resolve, 0) })
+      await nameList("team-b")
+      const nextTurnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Continue", runtime: runtime("build") })
+      await task("team-b", "New task", "in_progress")
+      update(calls[1]!.query, threadId, "pending", "in_progress")
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(
+        threadId,
+        nextTurnId,
+        [["1", "New task", "pending"]],
+        [["1", "New task", "in-progress"]],
+        [],
+        "team-b",
+      )))
+    } finally {
+      await adapter.close()
       vi.unstubAllEnvs()
     }
   })
@@ -1802,7 +1891,7 @@ describe("ClaudeAgentSdkAdapter", () => {
         ["1", "Inspect", "pending"],
         ["2", "Implement", "pending"],
         ["3", "Verify", "pending"],
-      ], reported)))
+      ], reported, [], "team-list")))
 
       // The connection drops. Another session renames task 2 and deletes task 3.
       calls[0]!.query.close()
@@ -1831,7 +1920,7 @@ describe("ClaudeAgentSdkAdapter", () => {
       await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(threadId, reopenedTurnId, reported, [
         ["1", "Inspect", "in-progress"],
         ["2", "Implement the parser", "pending"],
-      ], ["3"])))
+      ], ["3"], "team-list")))
     } finally {
       await adapter.close()
       vi.unstubAllEnvs()
