@@ -101,9 +101,14 @@ describe("installDaemonService", () => {
           },
         }),
       })
+      // Real runtime paths use the host's path syntax. Match the installer
+      // platform and report no existing registration with that manager's mock.
       const effects = dependencies({
-        home, exists: vi.fn(async () => false),
-        capture: vi.fn(async () => ({ code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' })),
+        platform: process.platform, home, exists: vi.fn(async () => false),
+        capture: process.platform === "win32" ? noTask()
+          : process.platform === "darwin"
+            ? vi.fn(async () => ({ code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }))
+            : vi.fn(async () => ({ code: 0, stdout: "" })),
       })
       await expect(installDaemonService({ runtime: prepared.runtime, staged: { runtime: prepared.staged, publish: prepared.publish } }, effects))
         .rejects.toBeInstanceOf(OperationDeadlineExceededError)
