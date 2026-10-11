@@ -47,6 +47,7 @@ describe("the machine chip's route word", () => {
     ["web", "ws://127.0.0.1:47831/rpc", "loopback"],
     ["web", "wss://studio.example.ts.net:47831/rpc", "tailnet"],
     ["web", "wss://192.168.1.20:47831/rpc", "direct"],
+    ["web", "ws://192.168.1.20:47831/rpc", "plaintext"],
     ["desktop", "ws://127.0.0.1:47831/rpc", "loopback"],
   ] as const)("a %s client at %s reads %s", async (clientKind, rpcUrl, word) => {
     await openShell(clientKind, rpcUrl)

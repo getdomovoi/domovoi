@@ -41,6 +41,9 @@ describe("browserLimits", () => {
     const lan = row(browserLimits(environment(), "wss://192.168.1.20:47831/rpc", true), "Terminal").why
     expect(lan).toMatch(/on the route,/)
     expect(lan).not.toMatch(/tailnet/)
+    const plaintext = row(browserLimits(environment(), "ws://100.101.102.103:47831/rpc", true), "Terminal").why
+    expect(plaintext).toMatch(/on the route,/)
+    expect(plaintext).not.toMatch(/tailnet/)
   })
 
   it("reports notifications as this browser actually has them", () => {

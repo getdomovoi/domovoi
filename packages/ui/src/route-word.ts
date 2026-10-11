@@ -9,11 +9,14 @@ import { isTransportLoopbackHost } from "@getdomovoi/protocol"
 //   an address in 100.64.0.0/10, or one in fd7a:115c:a1e0::/48. A custom
 //   MagicDNS domain or a LAN address cannot be told apart from any other
 //   host by its name, so it is not called the tailnet.
-// - direct: any other host. The daemon only listens off loopback behind TLS,
-//   so this is a direct TLS connection to that host; the word claims neither
-//   that it is this machine nor that it is the tailnet.
+// - plaintext: a non-loopback endpoint without TLS (ws: or http:). The daemon
+//   refuses such a listener, so a client should never hold one; if it does,
+//   the word says so before anything else, rather than direct or tailnet,
+//   both of which read as a protected route.
+// - direct: any other host, over TLS; the word claims neither that it is this
+//   machine nor that it is the tailnet.
 // - unknown: an endpoint that does not parse.
-export type EndpointRoute = "loopback" | "tailnet" | "direct" | "unknown"
+export type EndpointRoute = "loopback" | "tailnet" | "direct" | "plaintext" | "unknown"
 
 function isLoopbackHost(hostname: string): boolean {
   return isTransportLoopbackHost(hostname) || /^127(?:\.\d{1,3}){3}$/u.test(hostname)
@@ -35,13 +38,15 @@ function isTailnetHost(hostname: string): boolean {
 }
 
 export function routeOfEndpoint(endpoint: string): EndpointRoute {
-  let hostname: string
+  let url: URL
   try {
-    hostname = new URL(endpoint).hostname
+    url = new URL(endpoint)
   } catch {
     return "unknown"
   }
+  const { hostname, protocol } = url
   if (isLoopbackHost(hostname)) return "loopback"
+  if (protocol === "ws:" || protocol === "http:") return "plaintext"
   if (isTailnetHost(hostname)) return "tailnet"
   return "direct"
 }

@@ -83,7 +83,7 @@
         "import { routeOfEndpoint } from \"@/route-word\""
       ],
       "notes": [
-        "2026-10-11 (SL-1, W4): the chip reads loopback or tailnet from the endpoint the tab dialed, by the one rule the limits page also uses (packages/ui/src/route-word.ts): tailnet only for a ts.net name or a Tailscale address, direct for any other TLS host such as a custom MagicDNS name or a LAN address, never local. The cloud relay · latency state is the relay (M2) and is not drawn. Pinned in packages/ui/src/route-word.test.ts, app-bar-route.dom.test.tsx and apps/web/src/browser-limits.test.ts."
+        "2026-10-11 (SL-1, W4): the chip reads loopback or tailnet from the endpoint the tab dialed, by the one rule the limits page also uses (packages/ui/src/route-word.ts): tailnet only for a ts.net name or a Tailscale address, direct for any other TLS host such as a custom MagicDNS name or a LAN address, plaintext for a non-loopback endpoint without TLS (the daemon refuses one), never local. The cloud relay · latency state is the relay (M2) and is not drawn. Pinned in packages/ui/src/route-word.test.ts, app-bar-route.dom.test.tsx and apps/web/src/browser-limits.test.ts."
       ]
     },
     {

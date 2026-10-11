@@ -39,6 +39,18 @@ describe("routeOfEndpoint", () => {
     expect(routeOfEndpoint(url)).toBe("direct")
   })
 
+  // The daemon refuses a plaintext listener off loopback, so a client should
+  // never hold one. If it does, the word says so rather than calling it direct
+  // or the tailnet, both of which read as a protected route.
+  it.each([
+    "ws://192.168.1.20:47831/rpc",
+    "ws://studio.example.ts.net:47831/rpc",
+    "ws://100.101.102.103:47831/rpc",
+    "http://studio.corp.example:47831/rpc",
+  ])("reads %s as plaintext", (url) => {
+    expect(routeOfEndpoint(url)).toBe("plaintext")
+  })
+
   it("does not guess a route it cannot read", () => {
     expect(routeOfEndpoint("not a url")).toBe("unknown")
   })
