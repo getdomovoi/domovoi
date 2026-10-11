@@ -454,7 +454,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "ruling Q356 A: Tell the agent sends the refusal's one remedy to the agent as a steer, from the refusal itself, and the structured alternatives come later. Frame 05 draws WHAT YOU CAN DO as several alternatives, each with a green or amber dot; the policy-refusal item carries a single remedy string with no list, tones or per-alternative steer, so the phone draws one paragraph. The evidence names the field a protocol change would add"
+        "reason": "ruling Q356 A: Tell the agent sends the refusal's one remedy to the agent as a steer, from the refusal itself, and the structured alternatives come later. Frame 05 draws WHAT YOU CAN DO as several alternatives, each with a green or amber dot; the policy-refusal item carries a single remedy string with no list, tones or per-alternative steer, so the phone draws one paragraph. The evidence names the field a protocol change would add. Rechecked 2026-10-10 (T22): the daemon has no second remedy and no tones to send. The only policy refusal is Ask mode's, with one remedy, so the alternatives stay a follow-up until a rule source has more than one"
       }
     },
     {
@@ -850,6 +850,11 @@
       "id": "gate.screen",
       "since": "2026-10-06",
       "note": "approved difference, Q17 A (autopilot standing ruling 2026-10-06): frame 02 draws none of the approval facts #740 (7d3c60e3) put on the wire; the phone draws them as fact rows, each only when the daemon sent it. Turn from after Mode: you, on this phone when the origin's client id is this phone's paired device id from device.current, another phone only when both ids are known and differ, else the origin's kind only. Plan after it: step n of N from approvalPlanStep, the Desktop v2 and CLI wording. Outside project after Directory, in the warning tone when outside, naming its basis: by the path it names, or by where it runs, and an inside working directory adds not by what it reaches. Absent facts draw nothing. A real device check of the rows is owed to fetzy"
+    },
+    {
+      "id": "gate.screen",
+      "since": "2026-10-10",
+      "note": "frame 02 draws no refused decision. When the daemon refuses an allow because it could not take a checkpoint, the decision problem line under the gate names the cause from the refusal's data (T22, approvalCheckpointRefusalSchema), in the Desktop v2 card's words: Could not take a checkpoint: <cause>. Nothing ran. The gate is still waiting. A held lock is named by the path Git reported; for a repository config or a missing Git the daemon's own sentence follows, since it names the setting or what to install. Data the phone cannot read falls back to quoting the daemon. A real device check is owed to fetzy"
     },
     {
       "id": "sessions.list",
