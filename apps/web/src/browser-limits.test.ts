@@ -32,6 +32,17 @@ describe("browserLimits", () => {
     expect(row(browserLimits(environment(), "wss://mac.ts.net:47831/rpc", true), "Terminal").why).toMatch(/tailnet/)
   })
 
+  // One rule with the app bar's route chip (route-word.ts): IPv6 loopback is
+  // loopback, and a TLS host that is not provably on the tailnet is not
+  // called the tailnet.
+  it("reads the route with the same rule as the route chip", () => {
+    expect(row(browserLimits(environment(), "ws://[::1]:47831/rpc", true), "Terminal").why).toMatch(/on loopback,/)
+    expect(row(browserLimits(environment(), "wss://100.101.102.103:47831/rpc", true), "Terminal").why).toMatch(/on the tailnet,/)
+    const lan = row(browserLimits(environment(), "wss://192.168.1.20:47831/rpc", true), "Terminal").why
+    expect(lan).toMatch(/on the route,/)
+    expect(lan).not.toMatch(/tailnet/)
+  })
+
   it("reports notifications as this browser actually has them", () => {
     const none = browserLimits(environment(), "ws://127.0.0.1:47831/rpc", true)
     expect(row(none, "Notifications")).toMatchObject({ state: "refused", tone: "refused", why: browserRefusalMessage["notifications-unsupported"] })
