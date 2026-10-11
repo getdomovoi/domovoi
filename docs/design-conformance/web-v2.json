@@ -79,7 +79,7 @@
           "absent": "attached ? \"remote\" : \"local\"",
           "in": "packages/ui/src/workspace-shell.tsx"
         },
-        "machineTransport={connected ? machineRoute(endpointUrl",
+        "machineTransport={!connected ? \"unreachable\" : !attached ? machineRoute(endpointUrl)",
         "import { routeOfEndpoint } from \"@/route-word\""
       ],
       "notes": [

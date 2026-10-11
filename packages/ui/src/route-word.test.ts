@@ -8,6 +8,11 @@ describe("routeOfEndpoint", () => {
     "ws://localhost:47831/rpc",
     "ws://[::1]:47831/rpc",
     "ws://127.0.0.2:47831/rpc",
+    "ws://localhost.:47831/rpc",
+    "ws://LOCALHOST:47831/rpc",
+    "ws://[::ffff:127.0.0.1]:47831/rpc",
+    "wss://[::ffff:127.0.0.1]:47831/rpc",
+    "http://127.0.0.1:47831/",
   ])("reads %s as loopback", (url) => {
     expect(routeOfEndpoint(url)).toBe("loopback")
   })
@@ -51,22 +56,36 @@ describe("routeOfEndpoint", () => {
     expect(routeOfEndpoint(url)).toBe("plaintext")
   })
 
-  it("does not guess a route it cannot read", () => {
-    expect(routeOfEndpoint("not a url")).toBe("unknown")
+  // Only ws, wss, http and https say anything about TLS. Any other scheme
+  // proves nothing, so it never earns a protected word.
+  it.each([
+    "not a url",
+    "ftp://studio.example.ts.net/rpc",
+    "file:///tmp/rpc",
+    "ftp://localhost/rpc",
+  ])("does not guess a route it cannot read: %s", (url) => {
+    expect(routeOfEndpoint(url)).toBe("unknown")
   })
 })
 
 describe("machineRoute", () => {
   it("names the route of the endpoint this client dialed", () => {
     expect(machineRoute("ws://127.0.0.1:47831/rpc")).toBe("loopback")
+    expect(machineRoute("ws://127.0.0.1:47831/rpc", "local")).toBe("loopback")
     expect(machineRoute("wss://studio.example.ts.net:47831/rpc", "tailnet")).toBe("tailnet")
+  })
+
+  // tailnet and lan are the operator's classification of a candidate, not
+  // proof of the network: the endpoint still has to show it.
+  it("does not take a candidate's kind as proof of the tailnet", () => {
+    expect(machineRoute("wss://studio.corp.example:47831/rpc", "tailnet")).toBe("direct")
     expect(machineRoute("wss://192.168.1.20:47831/rpc", "lan")).toBe("direct")
   })
 
   // A forwarded port is a loopback socket to another machine: the hop is
-  // loopback, the route is the SSH tunnel behind it.
-  it("names an SSH forward rather than calling another machine loopback", () => {
+  // loopback, the route is the SSH tunnel or the WSL guest behind it.
+  it("names an SSH forward and a WSL guest rather than calling them loopback", () => {
     expect(machineRoute("ws://127.0.0.1:52011/rpc", "ssh")).toBe("ssh")
-    expect(machineRoute("ws://127.0.0.1:52011/rpc", "wsl")).toBe("loopback")
+    expect(machineRoute("ws://127.0.0.1:52012/rpc", "wsl")).toBe("wsl")
   })
 })

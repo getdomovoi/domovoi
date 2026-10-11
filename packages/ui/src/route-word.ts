@@ -1,10 +1,11 @@
-import { isTransportLoopbackHost } from "@getdomovoi/protocol"
+import { isTransportLoopbackHost, type TransportCandidate } from "@getdomovoi/protocol"
 
 // How this client reaches the daemon, read from the endpoint it dialed. The
 // app bar's machine chip (web and desktop) and the browser limits page both
 // say it, so the rule lives in one place.
 //
-// - loopback: a loopback address or localhost.
+// - loopback: a loopback address (127.0.0.0/8, ::1, or either written as an
+//   IPv4-mapped IPv6 address) or localhost.
 // - tailnet: only what is provably Tailscale's: a MagicDNS name under ts.net,
 //   an address in 100.64.0.0/10, or one in fd7a:115c:a1e0::/48. A custom
 //   MagicDNS domain or a LAN address cannot be told apart from any other
@@ -13,17 +14,22 @@ import { isTransportLoopbackHost } from "@getdomovoi/protocol"
 //   refuses such a listener, so a client should never hold one; if it does,
 //   the word says so before anything else, rather than direct or tailnet,
 //   both of which read as a protected route.
-// - direct: any other host, over TLS; the word claims neither that it is this
-//   machine nor that it is the tailnet.
-// - unknown: an endpoint that does not parse.
+// - direct: any other host, over TLS (wss: or https:); the word claims
+//   neither that it is this machine nor that it is the tailnet.
+// - unknown: an endpoint that does not parse, or a scheme that says nothing
+//   about TLS.
 export type EndpointRoute = "loopback" | "tailnet" | "direct" | "plaintext" | "unknown"
 
-function isLoopbackHost(hostname: string): boolean {
-  return isTransportLoopbackHost(hostname) || /^127(?:\.\d{1,3}){3}$/u.test(hostname)
+const tls = new Set(["wss:", "https:"])
+const plain = new Set(["ws:", "http:"])
+
+function isLoopbackHost(name: string): boolean {
+  if (isTransportLoopbackHost(name) || /^127(?:\.\d{1,3}){3}$/u.test(name)) return true
+  // The URL parser writes ::ffff:127.x.y.z as [::ffff:7fxx:xxxx].
+  return /^\[::ffff:7f[\da-f]{2}:[\da-f]{1,4}\]$/u.test(name)
 }
 
-function isTailnetHost(hostname: string): boolean {
-  const name = hostname.endsWith(".") ? hostname.slice(0, -1) : hostname
+function isTailnetHost(name: string): boolean {
   // At least one label before ts.net: the bare suffix is nobody's machine.
   if (/^[^.]+(?:\.[^.]+)*\.ts\.net$/u.test(name)) return true
   const ipv4 = /^100\.(\d{1,3})\.\d{1,3}\.\d{1,3}$/u.exec(name)
@@ -44,17 +50,21 @@ export function routeOfEndpoint(endpoint: string): EndpointRoute {
   } catch {
     return "unknown"
   }
-  const { hostname, protocol } = url
-  if (isLoopbackHost(hostname)) return "loopback"
-  if (protocol === "ws:" || protocol === "http:") return "plaintext"
-  if (isTailnetHost(hostname)) return "tailnet"
+  if (!tls.has(url.protocol) && !plain.has(url.protocol)) return "unknown"
+  // A fully qualified name ends in a dot and means the same host.
+  const name = url.hostname.endsWith(".") ? url.hostname.slice(0, -1) : url.hostname
+  if (isLoopbackHost(name)) return "loopback"
+  if (plain.has(url.protocol)) return "plaintext"
+  if (isTailnetHost(name)) return "tailnet"
   return "direct"
 }
 
-// The chip's word for a connected machine. `connection` is the fleet's record
-// of how an attached machine is reached; a loopback endpoint to another machine
-// is a forwarded port, so an SSH route is named as one rather than as loopback.
-export function machineRoute(endpoint: string, connection?: string): EndpointRoute | "ssh" {
-  const route = routeOfEndpoint(endpoint)
-  return route === "loopback" && connection === "ssh" ? "ssh" : route
+// The chip's word for a connected machine. `dialed` is the transport kind the
+// route to an attached machine was resolved to, recorded when it connected. An
+// SSH forward and a WSL guest are loopback sockets to another daemon, so they
+// are named for what they are. Every other kind is read from the endpoint, so
+// a candidate the operator classified as tailnet or LAN still has to prove it.
+export function machineRoute(endpoint: string, dialed?: TransportCandidate["kind"]): EndpointRoute | "ssh" | "wsl" {
+  if (dialed === "ssh" || dialed === "wsl") return dialed
+  return routeOfEndpoint(endpoint)
 }

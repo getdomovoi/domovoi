@@ -1,6 +1,6 @@
-import { act, cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { demoWorkspace, protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { WorkspaceShell } from "./workspace-shell"
@@ -8,6 +8,7 @@ import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
   completeHandshake,
   installFakeWebSocket,
+  respond,
   workspaceSnapshot,
   type FakeWebSocketHarness,
 } from "./test-support/fake-websocket"
@@ -56,6 +57,58 @@ describe("the machine chip's route word", () => {
     expect(machineChip().textContent?.endsWith(`${demoWorkspace.machine.name}${word}`)).toBe(true)
   })
 })
+
+// An attached machine names the route this client was given. The fleet entry
+// keeps connection "direct" once a route was verified, even when the route
+// that answers now is an SSH forward, so the chip must not read the entry.
+it("names an SSH forward to an attached machine as ssh, not loopback", async () => {
+  const user = userEvent.setup()
+  const settle = () => act(async () => { for (let i = 0; i < 16; i += 1) await Promise.resolve() })
+  const machineId = `machine-${"b".repeat(32)}`
+  const deviceId = `device-${"c".repeat(32)}`
+  const observedAt = "2026-09-06T00:00:00.000Z"
+  const transport = { kind: "ssh", endpoint: "ws://127.0.0.1:52011/rpc", authenticated: true, configured: true } as const
+  const target = { ...workspaceSnapshot(), machine: { ...workspaceSnapshot().machine, id: machineId, name: "Studio" } }
+  if (target.project) target.project = { ...target.project, machineId }
+  const machine: FleetMachine = {
+    id: machineId, label: "Studio", platform: "linux", arch: "x64", version: "0.0.1", protocolVersion,
+    connection: "direct", health: "healthy", self: false, capabilities: ["sessions", "terminals", "skills"],
+    heartbeat: { state: "online", lastSeenAt: observedAt },
+    verifiedRoute: { endpoint: "wss://studio.example:47831/rpc", lastAuthenticatedAt: observedAt },
+    transports: [transport],
+  }
+  render(<WorkspaceShell />)
+  const home = harness.socket(0)
+  await act(async () => { completeHandshake(home) })
+  await settle()
+  await act(async () => { respond(home, "fleet.list", { entries: [{ kind: "machine", machine }] }) })
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+  await user.click(await screen.findByRole("button", { name: "Authorize this client for Studio" }))
+  const dialog = screen.getByRole("dialog")
+  await user.click(within(dialog).getByLabelText("Client credential"))
+  await user.paste("x".repeat(43))
+  await user.click(within(dialog).getByRole("button", { name: "Verify client access" }))
+  await settle()
+  await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
+  await settle()
+  const proof = harness.socket(1)
+  await act(async () => { completeHandshake(proof, target) })
+  await settle()
+  await act(async () => { respond(proof, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
+  await settle()
+  await user.click(screen.getByRole("button", { name: /^Open its (\d+ )?sessions? on Studio$/u }))
+  await settle()
+  await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
+  await settle()
+  const remote = harness.socket(2)
+  await act(async () => { completeHandshake(remote, target) })
+  await settle()
+  await act(async () => { respond(remote, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
+  await settle()
+  const chip = screen.getByRole("button", { name: "Machines: Studio" })
+  expect(chip.textContent).toMatch(/Studiossh$/u)
+}, 15_000)
 
 // Q362 A: the theme is a preference of this client that never reaches the
 // daemon, so a watching client keeps it.
