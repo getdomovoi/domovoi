@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
-import { threadFollowState, type ClientAccess, type PermissionMode, type QueuedSessionSend } from "@getdomovoi/protocol"
+import { threadFollowState, type ApprovalDecision, type ClientAccess, type PermissionMode, type QueuedSessionSend } from "@getdomovoi/protocol"
 
 import type { ConnectionNotice } from "../connection-notice"
 
@@ -45,6 +45,15 @@ const textTone: Record<PlanRow["tone"], string> = {
   queued: "text-muted-foreground",
 }
 
+// Frame 03's RECORDED AS names the decision in words (allow once), not as
+// the wire value.
+const recordedWords: Record<ApprovalDecision, string> = {
+  "allow-once": "allow once",
+  "always-project": "always project",
+  deny: "deny",
+  "deny-explain": "deny explain",
+}
+
 // Memoized, with a stable onWatch from the screen: a keystroke or a streamed
 // batch re-renders the screen, and a row that has not changed is not drawn or
 // parsed again.
@@ -55,11 +64,10 @@ function Receipt({ entry, onWatch }: {
   // A deny is not a success, so it does not wear the success colours.
   const denied = entry.recorded === "deny" || entry.recorded === "deny-explain"
   const dim = denied ? "text-muted-foreground" : "text-ok-dim"
-  // Frame 03 names the decision in words (allow once), not as the wire value.
   // The credential row appears only when the daemon verified a paired device
   // on the deciding connection; a declared client id is never a credential.
   const record: Array<[string, string]> = [
-    ["Decision", entry.recorded.replaceAll("-", " ")],
+    ["Decision", recordedWords[entry.recorded]],
     ["Decided on", entry.decidedOn],
     ...(entry.credential ? [["Credential", entry.credential] as [string, string]] : []),
     ...(entry.declaredClient ? [["Declared client", entry.declaredClient] as [string, string]] : []),
