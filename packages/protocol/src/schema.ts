@@ -345,6 +345,11 @@ export const sessionSummarySchema = z.object({
   workspacePath: z.string().min(1).optional(),
   providerThreadId: z.string().min(1).optional(),
   activeTurnId: z.string().min(1).optional(),
+  // When the active turn started, from the daemon's usage ledger (the start
+  // "Worked for N" and the header clock read, ruling Q401), on the daemon's
+  // clock. Derived for each reply and never stored. Absent when the ledger has
+  // no record of the turn; only ever beside the turn it belongs to.
+  activeTurnStartedAt: offsetDateTimeSchema.optional(),
   providerFailure: providerFailureSchema.optional(),
   baseCommit: z.string().min(1).optional(),
   // The branch the session's worktree is on, kept after archive; and, filled
@@ -364,6 +369,9 @@ export const sessionSummarySchema = z.object({
   sourceRecovery: sessionSourceRecoverySchema.optional(),
   ownershipConflict: sessionOwnershipConflictSchema.optional(),
 }).superRefine((session, context) => {
+  if (session.activeTurnStartedAt !== undefined && session.activeTurnId === undefined) {
+    context.addIssue({ code: "custom", path: ["activeTurnStartedAt"], message: "A turn start requires the active turn it belongs to" })
+  }
   const archiveState = session.state === "archiving" || session.state === "archived"
   if (!archiveState && (
     session.archiveRequestedAt || session.archiveCheckpoint || session.archivedAt
