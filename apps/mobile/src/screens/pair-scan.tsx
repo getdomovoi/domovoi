@@ -183,7 +183,12 @@ export function PairScanScreen({
   const [read, setRead] = useState<PairScanResult>()
   const [pasted, setPasted] = useState("")
   const { palette } = useTheme()
-  const [name, setName] = useState(deviceName)
+  // What the person typed, once they type. Until then the field offers a name
+  // this device already has, else the name `domovoid pair --label` put in the
+  // code. Either way the phone sends what the field holds, and the machine
+  // names the device by that (Q37 B), so the suggestion is never a choice made
+  // for the person.
+  const [typed, setTyped] = useState<string>()
   const [pairing, setPairing] = useState(false)
   const [refusal, setRefusal] = useState("")
   const [paired, setPaired] = useState<Paired>()
@@ -199,6 +204,7 @@ export function PairScanScreen({
   const cameraRefused = permission !== null && !permission.granted && !permission.canAskAgain
   const cameraReady = permission?.granted === true
   const found = read?.ok ? read.payload : undefined
+  const name = typed ?? (deviceName || found?.suggestedName || "")
 
   if (paired) {
     return (
@@ -245,7 +251,7 @@ export function PairScanScreen({
             <TextInput
               accessibilityLabel={device === "tablet" ? "Tablet name" : "Phone name"}
               value={name}
-              onChangeText={setName}
+              onChangeText={setTyped}
               autoCorrect={false}
               placeholder={device === "tablet" ? "iPad" : "iPhone"}
               placeholderTextColor={palette.faint}
