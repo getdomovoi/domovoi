@@ -2,7 +2,7 @@ import { execFile, spawnSync, type ChildProcess } from "node:child_process"
 import { createServer } from "node:http"
 import { createServer as createNetServer, type AddressInfo, type Socket } from "node:net"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
+import { copyFile, link, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
@@ -1004,9 +1004,14 @@ describe("GitWorkspaceService", () => {
     const service = new GitWorkspaceService(join(scratch, "worktrees"))
     const workspace = await service.createSessionWorkspace(repositoryPath, "session-hooks")
     const markerPath = join(scratch, "hook-ran").replaceAll("\\", "/")
-    await mkdir(join(workspace.path, ".githooks"))
+    const hooks = join(workspace.path, ".githooks")
+    await mkdir(hooks)
+    // One script under every hook name, as hard links, records the name Git
+    // ran it by. macOS checks each new executable file the first time it runs,
+    // one file at a time for the whole machine; a script per hook made
+    // the control commit below wait seconds behind other tests' new files.
+    await writeFile(join(hooks, "pre-commit"), `#!/bin/sh\necho "$(basename "$0")" >> "${markerPath}"\n`, { mode: 0o755 })
     for (const hook of [
-      "pre-commit",
       "prepare-commit-msg",
       "commit-msg",
       "post-commit",
@@ -1014,11 +1019,7 @@ describe("GitWorkspaceService", () => {
       "post-index-change",
       "reference-transaction",
     ]) {
-      await writeFile(
-        join(workspace.path, ".githooks", hook),
-        `#!/bin/sh\necho ${hook} >> "${markerPath}"\n`,
-        { mode: 0o755 },
-      )
+      await link(join(hooks, "pre-commit"), join(hooks, hook))
     }
     await execute("git", [
       "-C", workspace.path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
