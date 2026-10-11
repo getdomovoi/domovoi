@@ -33,7 +33,7 @@ export const approvalCheckpointRefusalCauses = [
 
 export const maximumApprovalCheckpointLockPathLength = 4_096
 
-const controlCharacter = /[\u0000-\u001f\u007f]/u
+const controlCharacter = /[\p{Cc}\p{Zl}\p{Zp}]/u
 const absolutePath = /^(?:\/|[A-Za-z]:[\\/]|\\\\)/u
 
 // The lock as Git reported it: an absolute path ending in .lock, on the
