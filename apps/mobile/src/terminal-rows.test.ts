@@ -29,6 +29,7 @@ import {
   type TerminalWatch,
 } from "./terminal-rows"
 import { cellWidth } from "./terminal-cell-width"
+import { drawnText } from "./terminal-line-model"
 
 // Phone v2 frame 04: what the phone reads from terminal.list and
 // terminal.watch, and how it words it. Fixtures go through the protocol's
@@ -225,6 +226,34 @@ describe("terminalLines and cursor movement within a line", () => {
     expect(deleted).toEqual([`${" ".repeat(1_000)}${"x".repeat(39_000)}`])
     // Blanks pushed along a line are nothing to move.
     expect(terminalLines(`x\r${"\u001b[@".repeat(21_844)}`)).toEqual([])
+    // An insert in a long line's first row leaves the next row where it was.
+    expect(terminalLines(`${"x".repeat(1_500)}\r\u001b[2@\n`)).toEqual([`  ${"x".repeat(1_498)}`])
+    // A wide character across the row's end cannot move as one, so it goes.
+    expect(terminalLines(`${"a".repeat(999)}界\r\u001b[@\n`)).toEqual([` ${"a".repeat(999)}`])
+  })
+
+  // A record made of character edits costs about what a record of plain
+  // output costs to read. Timed against plain text on the same machine, best
+  // of five, so a loaded runner slows both sides alike. Measured with Node 26
+  // on an Apple Silicon Mac, as multiples of the plain read: inserts and
+  // deletes moved cell by cell took 14 to 23 times, erases 26 times; in rows
+  // with the array's own splice and fill, at most 4.1 and 1.4 times. The
+  // bound of 10 sits between the two.
+  it("reads a record of inserts, deletes and erases about as fast as plain output", () => {
+    const best = (text: string) => {
+      let fastest = Infinity
+      for (let run = 0; run < 5; run += 1) {
+        const started = performance.now()
+        drawnText(text)
+        fastest = Math.min(fastest, performance.now() - started)
+      }
+      return fastest
+    }
+    const plain = best("\u001b[32m ✓\u001b[0m src/webhooks/handler.spec.ts (14 tests) 412ms\r\n".repeat(900))
+    const insertsAndDeletes = best(`${"x".repeat(999)}\r${"\u001b[@\u001b[P".repeat(10_756)}`)
+    const erases = best(`\u001b[998Cx\r${"\u001b[997X".repeat(10_900)}`)
+    expect(insertsAndDeletes / plain).toBeLessThan(10)
+    expect(erases / plain).toBeLessThan(10)
   })
 
   // An erase to the cursor erases the whole line before it, however long.
@@ -530,6 +559,18 @@ describe("terminalRows", () => {
     expect(terminalRows(full, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["lead"])
     const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "#" } }, at)
     expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["ead"])
+  })
+
+  // The cut resumes in the state the reader was in where it resumes, not in
+  // the state at the end of the text: here an escape, which the "[" after
+  // the cut turns into a control sequence that draws nothing.
+  it("resumes a cut sequence in the state at the cut, not at the end", () => {
+    let record = watchFrom(watched({ buffer: `\u001b${"\u0000".repeat(maximumTerminalReplayCharacters - 1)}` }))
+    record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: `${"\u0000".repeat(4_093)}[123` } }, at)
+    expect(record.text.length).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
+    expect(terminalRows(record, true).filter((row) => row.kind === "line")).toEqual([])
+    record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: "mdone\n" } }, at)
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["done"])
   })
 
   // A line break inside a control string's payload is not a line, so the

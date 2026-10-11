@@ -16,7 +16,7 @@ import { cellWidth } from "./terminal-cell-width"
 // string terminator. Their payloads draw nothing, and a sequence still
 // arriving at the end of the text draws nothing either.
 
-// A cell erased. A cell never written is a hole in the array, read the same.
+// A cell erased. A cell never written is a hole in its row, read the same.
 const blank = ""
 // The right half of a wide character, drawn by the character on its left.
 const rightHalf = "\u0000"
@@ -30,18 +30,49 @@ const widestGrid = 1_000
 // Tab stops every eight columns, as a terminal sets them by default.
 const tabWidth = 8
 
-// The cost of each sequence is bounded: a move or a write touches at most a
-// row of cells, an insert or a delete at most the written cells of a row, and
-// an erase to the cursor only cells not already known blank.
+type Cell = string | undefined
+
+function isBlankCell(cell: Cell): boolean {
+  return cell === undefined || cell === blank
+}
+
+// A line of cells, kept in rows of the widest grid. Every row but the last is
+// full, so a column's row and place follow from it, and an insert or a delete
+// moves cells within one row with the array's own splice, which the phone's
+// JavaScript engine runs far faster than a loop over cells. So each sequence
+// costs at most a row of cells, and an erase to the cursor touches only cells
+// not already known blank.
 class Line {
-  cells: (string | undefined)[] = []
+  rows: Cell[][] = [[]]
   column = 0
   // Every cell below this one is blank.
   blankBelow = 0
 
+  get length(): number {
+    const last = this.rows.length - 1
+    return last * widestGrid + (this.rows[last]?.length ?? 0)
+  }
+
+  get(at: number): Cell {
+    if (at < 0) return undefined
+    return this.rows[Math.floor(at / widestGrid)]?.[at % widestGrid]
+  }
+
+  set(at: number, cell: string): void {
+    const index = Math.floor(at / widestGrid)
+    while (this.rows.length <= index) {
+      // A row is full before the next one starts; what was never written in
+      // it is a hole.
+      const last = this.rows[this.rows.length - 1]
+      if (last) last.length = widestGrid
+      this.rows.push([])
+    }
+    const row = this.rows[index]
+    if (row) row[at % widestGrid] = cell
+  }
+
   isBlank(at: number): boolean {
-    const cell = this.cells[at]
-    return cell === undefined || cell === blank
+    return isBlankCell(this.get(at))
   }
 
   print(char: string): void {
@@ -50,29 +81,45 @@ class Line {
       // A mark sits on the character before the cursor. With none there, at
       // the start of a line or after a blank, it has nothing to sit on.
       let at = this.column - 1
-      if (this.cells[at] === rightHalf) at -= 1
-      if (at >= 0 && !this.isBlank(at)) this.cells[at] += char
+      if (this.get(at) === rightHalf) at -= 1
+      const cell = this.get(at)
+      if (at >= 0 && cell !== undefined && cell !== blank) this.set(at, cell + char)
       return
     }
     this.clear(this.column)
     if (width === 2) this.clear(this.column + 1)
-    this.cells[this.column] = char
-    if (width === 2) this.cells[this.column + 1] = rightHalf
+    this.set(this.column, char)
+    if (width === 2) this.set(this.column + 1, rightHalf)
     this.blankBelow = Math.min(this.blankBelow, this.column)
     this.column += width
   }
 
   // Blank one cell. Either half of a wide character takes the whole of it.
   clear(at: number): void {
-    if (at >= this.cells.length) return
-    if (this.cells[at] === rightHalf) this.cells[at - 1] = blank
-    else if (this.cells[at + 1] === rightHalf) this.cells[at + 1] = blank
-    this.cells[at] = blank
+    if (at >= this.length) return
+    if (this.get(at) === rightHalf) this.set(at - 1, blank)
+    else if (this.get(at + 1) === rightHalf) this.set(at + 1, blank)
+    this.set(at, blank)
+  }
+
+  // Nothing from this column on.
+  truncate(at: number): void {
+    if (at >= this.length) return
+    const index = Math.floor(at / widestGrid)
+    this.rows.length = index + 1
+    const row = this.rows[index]
+    if (row) row.length = at % widestGrid
   }
 
   // Blanks at the end are nothing, so what the next sequence moves is short.
   trim(): void {
-    while (this.cells.length > 0 && this.isBlank(this.cells.length - 1)) this.cells.length -= 1
+    for (;;) {
+      const last = this.rows[this.rows.length - 1]
+      if (!last) return
+      while (last.length > 0 && isBlankCell(last[last.length - 1])) last.length -= 1
+      if (last.length > 0 || this.rows.length === 1) return
+      this.rows.pop()
+    }
   }
 
   // Text can run past the widest grid, as the phone does not wrap it into
@@ -95,38 +142,61 @@ class Line {
   erase(mode: number): void {
     if (mode === 0) {
       this.clear(this.column)
-      this.cells.length = Math.min(this.cells.length, this.column)
+      this.truncate(this.column)
     } else if (mode === 1) {
-      const through = Math.min(this.column, this.cells.length - 1)
-      for (let at = this.blankBelow; at <= through; at += 1) this.clear(at)
+      const through = Math.min(this.column, this.length - 1)
+      if (through >= this.blankBelow) this.blank(this.blankBelow, through + 1)
       this.blankBelow = Math.max(this.blankBelow, through + 1)
       this.trim()
     } else if (mode === 2) {
-      this.cells = []
+      this.rows = [[]]
       this.blankBelow = 0
     }
   }
 
-  // Erase characters: blank count cells from the cursor, which stays.
+  // Blank the cells from start up to end, within the line. A wide character
+  // with a half in the range goes whole. Each row's own fill does its run.
+  blank(start: number, end: number): void {
+    this.clear(start)
+    this.clear(end - 1)
+    for (let index = Math.floor(start / widestGrid); index * widestGrid < end; index += 1) {
+      const rowStart = index * widestGrid
+      this.rows[index]?.fill(blank, Math.max(start - rowStart, 0), Math.min(end - rowStart, widestGrid))
+    }
+  }
+
+  // Erase characters: blank count cells from the cursor, which stays. Cells
+  // known blank are not blanked again.
   eraseCharacters(count: number): void {
-    const end = Math.min(this.column + count, this.cells.length)
-    for (let at = this.column; at < end; at += 1) this.clear(at)
+    const end = Math.min(this.column + count, this.length)
+    const start = this.column <= this.blankBelow ? this.blankBelow : this.column
+    if (end <= start) return
+    this.blank(start, end)
+    if (this.column <= this.blankBelow) this.blankBelow = end
     this.trim()
+  }
+
+  // The cursor's row, and whether it is the line's last.
+  cursorRow(): { row: Cell[] | undefined, last: boolean } {
+    const index = Math.floor(this.column / widestGrid)
+    return { row: this.rows[index], last: index === this.rows.length - 1 }
   }
 
   // Delete characters: the cells right of them in the cursor's row move
   // left, and blanks enter at the row's end. A wide character with one half
   // deleted loses the other half too.
   deleteCharacters(count: number): void {
-    const end = Math.min(this.cells.length, this.rowEnd())
-    const deleted = Math.min(count, end - this.column)
+    const rowEnd = this.rowEnd()
+    const deleted = Math.min(count, Math.min(this.length, rowEnd) - this.column)
     if (deleted <= 0) return
-    if (this.cells[this.column] === rightHalf) this.cells[this.column - 1] = blank
-    if (this.cells[this.column + deleted] === rightHalf) this.cells[this.column + deleted] = blank
+    if (this.get(this.column) === rightHalf) this.set(this.column - 1, blank)
+    if (this.get(this.column + deleted) === rightHalf) this.set(this.column + deleted, blank)
     // A wide character across the row's end cannot move as one.
-    if (this.cells[end] === rightHalf) this.clear(end)
-    for (let at = this.column; at < end - deleted; at += 1) this.cells[at] = this.cells[at + deleted]
-    for (let at = end - deleted; at < end; at += 1) this.cells[at] = blank
+    if (this.get(rowEnd) === rightHalf) this.clear(rowEnd)
+    const { row, last } = this.cursorRow()
+    row?.splice(this.column % widestGrid, deleted)
+    // A row before the last stays full: holes, which are blanks, enter at its end.
+    if (row && !last) row.length = widestGrid
     this.blankBelow = Math.min(this.blankBelow, this.column)
     this.trim()
   }
@@ -135,28 +205,31 @@ class Line {
   // row right, and what passes the row's end is lost. Blanks put between
   // the halves of a wide character clear it.
   insertCharacters(count: number): void {
-    if (this.column >= this.cells.length) return
+    if (this.column >= this.length) return
     const rowEnd = this.rowEnd()
     const inserted = Math.min(count, rowEnd - this.column)
-    if (this.cells[this.column] === rightHalf) this.clear(this.column)
+    if (this.get(this.column) === rightHalf) this.clear(this.column)
     // A wide character pushed half past the row's end is lost whole, and so
     // is one the row's end already cut.
-    if (this.cells[rowEnd - inserted] === rightHalf) this.clear(rowEnd - inserted)
-    if (this.cells[rowEnd] === rightHalf) this.clear(rowEnd)
-    const end = Math.min(rowEnd, this.cells.length + inserted)
-    for (let at = end - 1; at >= this.column + inserted; at -= 1) this.cells[at] = this.cells[at - inserted]
-    for (let at = this.column; at < this.column + inserted; at += 1) this.cells[at] = blank
+    if (this.get(rowEnd - inserted) === rightHalf) this.clear(rowEnd - inserted)
+    if (this.get(rowEnd) === rightHalf) this.clear(rowEnd)
+    const { row } = this.cursorRow()
+    if (!row) return
+    if (inserted === 1) row.splice(this.column % widestGrid, 0, blank)
+    else row.splice(this.column % widestGrid, 0, ...Array<string>(inserted).fill(blank))
+    if (row.length > widestGrid) row.length = widestGrid
     this.trim()
   }
 
   // Blanks are spaces between text and nothing after it.
   drawn(): string {
-    let end = this.cells.length
-    while (end > 0 && this.isBlank(end - 1)) end -= 1
+    this.trim()
     let text = ""
-    for (let at = 0; at < end; at += 1) {
-      const cell = this.cells[at]
-      text += cell === undefined || cell === blank ? " " : cell === rightHalf ? "" : cell
+    for (const row of this.rows) {
+      for (let at = 0; at < row.length; at += 1) {
+        const cell = row[at]
+        text += cell === undefined || cell === blank ? " " : cell === rightHalf ? "" : cell
+      }
     }
     return text
   }
@@ -324,8 +397,8 @@ export function nextLineStart(text: string, from: number, reach: number): number
 // past it that is plain text, after any sequence it lands in. A sequence
 // still arriving there is kept whole from its start when that start is
 // within unfinishedReach; past that, the cut stays near the wanted one and
-// prefix puts the reader back in the state it was in, so the rest of the
-// sequence still draws nothing. A control sequence whose start is cut is
+// prefix puts a fresh reader in the state the reader was in at the place
+// it resumes, so the rest of the sequence still draws nothing. A control sequence whose start is cut is
 // dropped at its end, its parameters being lost. What is kept is prefix then
 // text from at, never longer than text from cut.
 export function readableCut(
@@ -336,6 +409,10 @@ export function readableCut(
 ): { at: number, prefix: string } {
   const reader = new Reader()
   let plainAt = cut <= 0 ? 0 : undefined
+  // The reader's state at each place a few units past the cut, where a cut
+  // inside a sequence still arriving resumes. Places are between whole
+  // characters, so the halves of one outside the basic plane stay together.
+  const statesPastCut: (State | undefined)[] = []
   let index = 0
   for (const char of text) {
     const action = reader.step(char, char.codePointAt(0) ?? 0, index)
@@ -344,17 +421,20 @@ export function readableCut(
     if (char === "\n" && action === "execute" && reader.state === "ground" && lineBreak >= cut - 1 && index - cut <= lineBreakReach) {
       return { at: index, prefix: "" }
     }
+    if (index >= cut && index - cut <= longestReopening) statesPastCut[index - cut] = reader.state
     if (plainAt === undefined && index >= cut && reader.state === "ground") plainAt = index
     if (plainAt !== undefined && index - cut > lineBreakReach) break
   }
   if (plainAt !== undefined) return { at: plainAt, prefix: "" }
   if (cut - reader.start <= unfinishedReach) return { at: reader.start, prefix: "" }
-  const prefix = reopening[reader.state]
-  let at = cut + prefix.length
-  // The two halves of a character outside the basic plane stay together.
-  const code = text.charCodeAt(at)
-  if (code >= 0xdc00 && code <= 0xdfff) at += 1
-  return { at, prefix }
+  // The first place past the cut far enough along to fit what reopens the
+  // state there.
+  for (const [offset, state] of statesPastCut.entries()) {
+    if (state === undefined) continue
+    const prefix = reopening[state]
+    if (offset >= prefix.length) return { at: cut + offset, prefix }
+  }
+  return { at: text.length, prefix: reopening[reader.state] }
 }
 
 // What puts a fresh reader in each state partway through a sequence. "!" is
@@ -367,3 +447,7 @@ const reopening: Record<State, string> = {
   osc: "\u001b]",
   controlString: "\u001bP",
 }
+
+// The longest reopening, and one more unit for a character outside the
+// basic plane that a place would otherwise split.
+const longestReopening = Math.max(...Object.values(reopening).map((prefix) => prefix.length)) + 1
