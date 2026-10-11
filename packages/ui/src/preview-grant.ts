@@ -86,6 +86,12 @@ export function usePreviewGrant({
   const access = current.access
   const failures = current.renewalFailures
 
+  // A new document, channel or connection drops what was held: a grant from
+  // before a disconnect may be signed with a secret the daemon no longer has.
+  useEffect(() => {
+    setState((previous) => previous.key === key ? previous : { key, error: "", renewalError: "", renewalFailures: 0 })
+  }, [key])
+
   useEffect(() => {
     // The state may still hold the previous document's; start from empty then.
     const base = (previous: GrantState): GrantState =>

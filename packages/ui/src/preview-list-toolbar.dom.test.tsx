@@ -66,26 +66,31 @@ function renderDock(
   captureAnnotation?: Parameters<typeof ArtifactDock>[0]["captureAnnotation"],
   { defaultTab = "preview", buildBasisId }: { defaultTab?: "changes" | "preview", buildBasisId?: string } = {},
 ) {
-  render(
+  const terminalControls = { claim: vi.fn(), release: vi.fn(), write: vi.fn(), resize: vi.fn() } as never
+  const handlers = {
+    onCollapse: vi.fn(),
+    onReplyToAnnotation: vi.fn(),
+    onSetAnnotationStatus: vi.fn(),
+    onLoadSessionHistory: vi.fn(),
+    onLoadSessionEvidence: () => new Promise<never>(() => {}),
+    onRevertSessionFile: vi.fn(),
+  }
+  const dock = (connected: boolean) => (
     <ArtifactDock
       {...(captureAnnotation ? { captureAnnotation } : {})}
       {...(buildBasisId ? { buildBasisId } : {})}
+      {...handlers}
       snapshot={dockSnapshot}
-      onCollapse={vi.fn()}
       defaultTab={defaultTab}
       rpcUrl="ws://127.0.0.1:47831/rpc"
       authorizeArtifact={authorizeArtifact}
-      connected
-      terminalControls={{ claim: vi.fn(), release: vi.fn(), write: vi.fn(), resize: vi.fn() } as never}
-      onReplyToAnnotation={vi.fn()}
-      onSetAnnotationStatus={vi.fn()}
+      connected={connected}
+      terminalControls={terminalControls}
       onCreateAnnotation={onCreateAnnotation}
-      onLoadSessionHistory={vi.fn()}
-      onLoadSessionEvidence={() => new Promise(() => {})}
-      onRevertSessionFile={vi.fn()}
-    />,
+    />
   )
-  return { onCreateAnnotation }
+  const { rerender } = render(dock(true))
+  return { onCreateAnnotation, setConnected: (connected: boolean) => rerender(dock(connected)) }
 }
 
 function frameTitled(title: string): HTMLIFrameElement {
@@ -294,6 +299,19 @@ it("names the build basis from another render instead of a variant of the one on
   expect(screen.getByText("Build basis · Variant A in replay")).toBeTruthy()
   expect(screen.queryByText("Chosen build basis")).toBeNull()
   expect(screen.getByRole("button", { name: "Use Variant A as build basis" })).toBeTruthy()
+})
+
+it("asks for a fresh grant after a disconnect instead of reusing the one from before", async () => {
+  // A restarted daemon signs with a new secret, so a grant from before the
+  // disconnect would load nothing.
+  const authorize = grantingAuthorize()
+  const { setConnected } = renderDock(authorize)
+  await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"))
+
+  setConnected(false)
+  await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toBe("about:blank"))
+  setConnected(true)
+  await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-2"))
 })
 
 it("signs no grants while the preview is hidden and loads a fresh one when it shows again", async () => {
