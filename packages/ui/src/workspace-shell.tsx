@@ -378,13 +378,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (home.fleet) accessSession.retain(fleetMachines(home.fleet.entries))
   }, [home.fleet, accessSession])
   const access = attached ? accessSession.access(attached.machineId) : undefined
-  // The transport kind the attached machine's route resolved to, recorded per
-  // attach and again on every reconnect, so the chip names the route dialed.
-  const [dialedRoute, setDialedRoute] = useState<{ attachment: { machineId: string }; kind: FleetEndpoint["routeKind"] } | null>(null)
+  // The transport kind the attached machine's route resolved to, recorded on
+  // every dial, so the chip names the route dialed. Choosing the attached
+  // machine again keeps its connection, so the record is kept by machine.
+  const [dialedRoute, setDialedRoute] = useState<{ machineId: string; kind: FleetEndpoint["routeKind"] } | null>(null)
   const remote = useWorkspace(rpcUrl, clientKind, undefined, undefined,
     access ? { state: "client", admission: access,
       resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline })
-        .then((endpoint) => { if (attached) setDialedRoute({ attachment: attached, kind: endpoint.routeKind }); return endpoint }),
+        .then((endpoint) => { setDialedRoute({ machineId: access.machineId, kind: endpoint.routeKind }); return endpoint }),
     } : { state: "disabled" }, relayPinStorage)
   const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, tailnetStatus, revokeDevice, rotateDevice, renameDevice } = home
   // The snapshots this shell already holds are readings of their own
@@ -1642,7 +1643,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     <SurfaceCodeReload.Provider value={reloadForNewCode}>
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" }))} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={!connected ? "unreachable" : !attached ? machineRoute(endpointUrl) : dialedRoute?.attachment === attached ? machineRoute(endpointUrl, dialedRoute.kind) : undefined} theme={resolvedTheme} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" }))} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={!connected ? "unreachable" : !attached ? machineRoute(endpointUrl) : dialedRoute?.machineId === attached.machineId ? machineRoute(endpointUrl, dialedRoute.kind) : undefined} theme={resolvedTheme} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}

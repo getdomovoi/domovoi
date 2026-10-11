@@ -106,8 +106,16 @@ it("names an SSH forward to an attached machine as ssh, not loopback", async () 
   await settle()
   await act(async () => { respond(remote, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
   await settle()
-  const chip = screen.getByRole("button", { name: "Machines: Studio" })
-  expect(chip.textContent).toMatch(/Studiossh$/u)
+  const chip = () => screen.getByRole("button", { name: "Machines: Studio" })
+  expect(chip().textContent).toMatch(/Studiossh$/u)
+
+  // Choosing the attached machine again keeps its connection, so the word
+  // stays with it.
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+  await user.click(await screen.findByRole("button", { name: "Terminal on Studio" }))
+  await settle()
+  expect(chip().textContent).toMatch(/Studiossh$/u)
 }, 15_000)
 
 // Q362 A: the theme is a preference of this client that never reaches the

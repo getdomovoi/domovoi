@@ -168,7 +168,7 @@
       ],
       "notes": [
         "2026-10-01 (S3.10 slice 1): offline now turns the chip itself to danger border and background (machineChipStyle), not only its dot.",
-        "2026-10-11 (SL-1, D1): the chip names the route of the endpoint the client dialed (packages/ui/src/route-word.ts): loopback, tailnet (a ts.net name or a Tailscale address only), direct for any other TLS host, plaintext for a non-loopback endpoint without TLS (the daemon refuses one), and ssh or wsl for an attached machine reached through a forwarded loopback port. For an attached machine the word follows the transport kind its route resolved to on this attach (fleet-access.ts), not the fleet entry's stored connection, and no word is drawn before that route has connected. A desktop on its own daemon reads loopback, not local. The domovoi cloud state is the relay (M2) and is not drawn. Pinned in packages/ui/src/route-word.test.ts and app-bar-route.dom.test.tsx."
+        "2026-10-11 (SL-1, D1): the chip names the route of the endpoint the client dialed (packages/ui/src/route-word.ts): loopback, tailnet (a ts.net name or a Tailscale address only), direct for any other TLS host, plaintext for a non-loopback endpoint without TLS (the daemon refuses one), and ssh or wsl for an attached machine reached through a forwarded loopback port. For an attached machine the word follows the transport kind its route resolved to when it was last dialed (fleet-access.ts), not the fleet entry's stored connection, and no word is drawn before that route has connected. A desktop on its own daemon reads loopback, not local. The domovoi cloud state is the relay (M2) and is not drawn. Pinned in packages/ui/src/route-word.test.ts and app-bar-route.dom.test.tsx."
       ]
     },
     {

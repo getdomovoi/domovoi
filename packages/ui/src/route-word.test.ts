@@ -25,6 +25,8 @@ describe("routeOfEndpoint", () => {
     "wss://100.127.255.254:47831/rpc",
     "wss://[fd7a:115c:a1e0::1]:47831/rpc",
     "wss://[fd7a:115c:a1e0:ab12:4843:cd96:6258:b240]:47831/rpc",
+    "wss://[::ffff:100.64.0.0]:47831/rpc",
+    "wss://[::ffff:100.127.255.255]:47831/rpc",
   ])("reads %s as the tailnet", (url) => {
     expect(routeOfEndpoint(url)).toBe("tailnet")
   })
@@ -40,6 +42,9 @@ describe("routeOfEndpoint", () => {
     "wss://ts.net.evil.example:47831/rpc",
     "wss://evilts.net:47831/rpc",
     "wss://ts.net:47831/rpc",
+    "wss://[::ffff:100.63.255.255]:47831/rpc",
+    "wss://[::ffff:100.128.0.0]:47831/rpc",
+    "wss://[::ffff:10.0.0.1]:47831/rpc",
   ])("reads %s as a direct route", (url) => {
     expect(routeOfEndpoint(url)).toBe("direct")
   })

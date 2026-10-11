@@ -23,10 +23,18 @@ export type EndpointRoute = "loopback" | "tailnet" | "direct" | "plaintext" | "u
 const tls = new Set(["wss:", "https:"])
 const plain = new Set(["ws:", "http:"])
 
+// The URL parser writes an IPv4-mapped IPv6 address as [::ffff:hhhh:hhhh];
+// read it as the IPv4 address it carries, so one rule covers both spellings.
+function unmapped(name: string): string {
+  const mapped = /^\[::ffff:([\da-f]{1,4}):([\da-f]{1,4})\]$/u.exec(name)
+  if (!mapped) return name
+  const high = Number.parseInt(mapped[1]!, 16)
+  const low = Number.parseInt(mapped[2]!, 16)
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join(".")
+}
+
 function isLoopbackHost(name: string): boolean {
-  if (isTransportLoopbackHost(name) || /^127(?:\.\d{1,3}){3}$/u.test(name)) return true
-  // The URL parser writes ::ffff:127.x.y.z as [::ffff:7fxx:xxxx].
-  return /^\[::ffff:7f[\da-f]{2}:[\da-f]{1,4}\]$/u.test(name)
+  return isTransportLoopbackHost(name) || /^127(?:\.\d{1,3}){3}$/u.test(name)
 }
 
 function isTailnetHost(name: string): boolean {
@@ -52,7 +60,7 @@ export function routeOfEndpoint(endpoint: string): EndpointRoute {
   }
   if (!tls.has(url.protocol) && !plain.has(url.protocol)) return "unknown"
   // A fully qualified name ends in a dot and means the same host.
-  const name = url.hostname.endsWith(".") ? url.hostname.slice(0, -1) : url.hostname
+  const name = unmapped(url.hostname.endsWith(".") ? url.hostname.slice(0, -1) : url.hostname)
   if (isLoopbackHost(name)) return "loopback"
   if (plain.has(url.protocol)) return "plaintext"
   if (isTailnetHost(name)) return "tailnet"
