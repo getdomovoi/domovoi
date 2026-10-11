@@ -9090,7 +9090,7 @@ export class DomovoiDaemon {
           } catch (error) {
             this.#reportError("Domovoi could not take a checkpoint before an approved command", error)
             // Typed, so a client draws the cause without reading the sentence.
-            const refusal = approvalCheckpointRefusal(error, { timedOut: error instanceof OperationTimeoutError })
+            const refusal = await approvalCheckpointRefusal(error, { timedOut: error instanceof OperationTimeoutError, worktree })
             this.#error(socket, request.id, approvalCheckpointErrorCode, refusal.message, refusal.data)
             return
           }

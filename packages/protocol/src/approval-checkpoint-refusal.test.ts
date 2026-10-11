@@ -40,7 +40,8 @@ describe("approval checkpoint refusal", () => {
 
   it("lists every cause the daemon can tell apart", () => {
     expect(approvalCheckpointRefusalCauses).toEqual([
-      "lock-held", "submodule-changes", "repository-config", "git-unavailable", "timed-out", "git-failed", "unknown",
+      "lock-held", "submodule-changes", "repository-config", "repository-config-unreadable", "git-unavailable", "timed-out", "git-failed",
+      "unknown",
     ])
   })
 

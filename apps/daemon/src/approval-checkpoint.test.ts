@@ -1,6 +1,9 @@
 import { once } from "node:events"
+import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 import {
   approvalCheckpointErrorCode, approvalCheckpointRefusalSchema, demoWorkspace, protocolVersion, workspaceSnapshotSchema, type WorkspaceSnapshot,
@@ -30,12 +33,12 @@ afterEach(async () => {
 
 const checkpointCommit = "c".repeat(40)
 
-function pendingApproval(worktree = true): WorkspaceSnapshot {
+function pendingApproval(worktree: boolean | string = true): WorkspaceSnapshot {
   const snapshot = structuredClone(demoWorkspace)
   const session = snapshot.sessions.find((candidate) => candidate.id === "session-billing")!
   session.runtime = { ...session.runtime, provider: "codex", model: "gpt-5.6-sol" }
   session.state = "idle"
-  if (worktree) session.workspacePath = "/worktrees/session-billing"
+  if (worktree) session.workspacePath = typeof worktree === "string" ? worktree : "/worktrees/session-billing"
   else delete session.workspacePath
   session.providerThreadId = "thread-billing"
   delete session.activeTurnId
@@ -46,7 +49,7 @@ function pendingApproval(worktree = true): WorkspaceSnapshot {
 }
 
 async function start(options: {
-  worktree?: boolean
+  worktree?: boolean | string
   checkpoint?: (worktree: string, label: string, signal?: AbortSignal) => Promise<{ commit: string, changedFiles: string[] }>
   agentTimeoutMs?: number
 } = {}) {
@@ -199,12 +202,24 @@ describe("a checkpoint before an approved write", () => {
 // from the cause, never from the daemon's sentence.
 describe("a typed checkpoint refusal", () => {
   const gitFailure = (stderr: string) => Object.assign(new Error(`Command failed: git update-ref\n${stderr}`), { code: 128, stderr })
-  const heldLock = "/repo/.git/refs/domovoi/checkpoints/cccc.lock"
-  const lockStderr = `fatal: cannot lock ref 'refs/domovoi/checkpoints/cccc': Unable to create '${heldLock}': File exists.\n\n`
-    + "Another git process seems to be running in this repository, e.g.\nan editor opened by 'git commit'."
+  // A lock counts only inside the worktree's own Git directories, so the
+  // session's worktree here is a directory with a .git in it.
+  let worktree = ""
+  let heldLock = ""
+  let lockStderr = ""
+  beforeAll(async () => {
+    worktree = await realpath(await mkdtemp(join(tmpdir(), "domovoi-approval-lock-")))
+    await mkdir(join(worktree, ".git", "refs", "domovoi", "checkpoints"), { recursive: true })
+    heldLock = join(worktree, ".git", "refs", "domovoi", "checkpoints", "cccc.lock")
+    lockStderr = `fatal: cannot lock ref 'refs/domovoi/checkpoints/cccc': Unable to create '${heldLock}': File exists.\n\n`
+      + "Another git process seems to be running in this repository, e.g.\nan editor opened by 'git commit'."
+  })
+  afterAll(async () => {
+    if (worktree) await rm(worktree, { recursive: true, force: true })
+  })
 
   async function refusedWith(error: unknown) {
-    const { provider, rpc, snapshot, approvalId } = await start({ checkpoint: async () => { throw error } })
+    const { provider, rpc, snapshot, approvalId } = await start({ worktree, checkpoint: async () => { throw error } })
     const refused = await rpc("approval.resolve", allow(approvalId))
     expect(provider.resolveApproval).not.toHaveBeenCalled()
     expect((await snapshot()).approvals.map(({ id }) => id)).toEqual([approvalId])
@@ -216,7 +231,7 @@ describe("a typed checkpoint refusal", () => {
   it("names a lock Git found held, by the path Git reported", async () => {
     expect(await refusedWith(gitFailure(lockStderr))).toEqual({
       code: approvalCheckpointErrorCode,
-      message: `Domovoi could not take a checkpoint: ${heldLock} is held by another git process, so the command did not run; decide again`,
+      message: `Domovoi could not take a checkpoint: ${heldLock} is held by another git process, or was left by one that stopped, so the command did not run; decide again`,
       data: { kind: "approval-checkpoint-refused", cause: "lock-held", lockPath: heldLock },
     })
   })
@@ -242,15 +257,19 @@ describe("a typed checkpoint refusal", () => {
     })
   })
 
-  it("names the repository's config when it refused, in its own words", async () => {
+  it("names the repository's config, or says Git could not read it", async () => {
     const config = new RepositoryConfigRefusedError("The repository sets the filter \"lfs\" in its own Git config. Nothing ran.")
     expect(await refusedWith(config)).toEqual({
       code: approvalCheckpointErrorCode,
       message: "Domovoi could not take a checkpoint, so the command did not run; decide again. The repository sets the filter \"lfs\" in its own Git config. Nothing ran.",
       data: { kind: "approval-checkpoint-refused", cause: "repository-config" },
     })
-    expect((await refusedWith(new RepositoryGitConfigUnreadableError("git-failed"))).data)
-      .toEqual({ kind: "approval-checkpoint-refused", cause: "repository-config" })
+    const unreadable = new RepositoryGitConfigUnreadableError("git-failed")
+    expect(await refusedWith(unreadable)).toEqual({
+      code: approvalCheckpointErrorCode,
+      message: `Domovoi could not take a checkpoint, so the command did not run; decide again. ${unreadable.message}`,
+      data: { kind: "approval-checkpoint-refused", cause: "repository-config-unreadable" },
+    })
   })
 
   it("says Git is missing or too old", async () => {

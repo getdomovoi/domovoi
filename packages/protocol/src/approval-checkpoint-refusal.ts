@@ -10,14 +10,18 @@ import { utf16MaxLength, wireRule } from "./validation.js"
 export const approvalCheckpointErrorCode = -32023 as const
 
 // What the daemon can tell apart when the checkpoint fails, and nothing finer:
-// - lock-held: Git said a lock file it needed already exists. The daemon
-//   cannot tell a running Git's lock from one a stopped Git left.
+// - lock-held: Git said a lock file it needed already exists, and the lock
+//   lies in the worktree's own Git directories. The daemon cannot tell a
+//   running Git's lock from one a stopped Git left.
 // - submodule-changes: a submodule has local changes a checkpoint, which
 //   records a submodule by its commit, cannot hold.
 // - repository-config: the repository's own Git config asks for something
 //   Domovoi will not run here (an untrusted filter, a submodule's own filter,
 //   a partial clone's promisor). The message names the setting.
-// - git-unavailable: Git is missing, or too old to run in isolation.
+// - repository-config-unreadable: Git could not read the repository's config,
+//   so what it sets is unknown.
+// - git-unavailable: Git is missing, or its version is too old or could not
+//   be read.
 // - timed-out: the checkpoint did not finish before the daemon's deadline.
 // - git-failed: a Git command failed for any other reason.
 // - unknown: something else failed, and the daemon cannot say what.
@@ -25,6 +29,7 @@ export const approvalCheckpointRefusalCauses = [
   "lock-held",
   "submodule-changes",
   "repository-config",
+  "repository-config-unreadable",
   "git-unavailable",
   "timed-out",
   "git-failed",
