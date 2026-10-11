@@ -12,12 +12,12 @@ import { readLocalProfileFile } from "./local-owner-record.js"
 import { assertProfileLeaseHeld, type ProfileLease } from "./profile-lease.js"
 import { builtSourceCommit } from "./source-commit.js"
 import {
-  persistTrustedUpdateMetadata, readTrustedUpdateMetadata, stageVerifiedUpdate,
+  persistTrustedUpdateMetadata, persistTrustedUpdateDocuments, readTrustedUpdateMetadata, stageVerifiedUpdate,
   type BootstrapInstall, type TrustedUpdateMetadata, type VerifiedUpdateTarget,
 } from "./update-state.js"
 import {
   compareVersions, fetchUpdateMetadata, maximumUpdateMetadataBytes, selectUpdateTarget,
-  UpdateVerificationError, verifyUpdateChain,
+  UpdateVerificationError,
 } from "./update-verification.js"
 
 const updateUrlSchema = z.url().max(2048).refine((value) => {
@@ -68,6 +68,7 @@ function verificationRefusal(error: unknown): Refusal {
   if (error instanceof UpdateVerificationError) {
     const messages = {
       expired: "Signed update metadata has expired.",
+      policy: "Verified update metadata could not be persisted.",
       signature: "Update metadata signature verification failed.",
       replay: "Update metadata conflicts with previously trusted metadata.",
       "target-mismatch": "Signed metadata does not bind the served update metadata.",
@@ -164,19 +165,25 @@ export class DaemonUpdates {
       if (!policy) return this.#fail(failure)
       const trusted = await readTrustedUpdateMetadata(options.homeDirectory)
       failure = { reason: "network", message: "Update metadata could not be fetched within its limits." }
-      const values = await fetchUpdateMetadata(policy.metadataBaseUrl, options.fetcher)
+      if (!trusted.documents && trusted.rootVersion !== 0) {
+        return this.#fail({ reason: "policy", message: "Legacy update trust requires a securely reinstalled TUF policy." })
+      }
+      const values = await fetchUpdateMetadata({
+        baseUrl: policy.metadataBaseUrl, trustedRoot: policy.trustedRoot,
+        ...(trusted.documents ? { trusted: trusted.documents } : {}),
+        ...(options.fetcher ? { fetcher: options.fetcher } : {}),
+        persist: (documents) => persistTrustedUpdateDocuments(options.homeDirectory, options.lease, documents),
+      })
       let next: TrustedUpdateMetadata
       let target: VerifiedUpdateTarget | undefined
       try {
-        const root = verifyUpdateChain({
-          root: values["root.json"], timestamp: values["timestamp.json"],
-          snapshot: values["snapshot.json"], targets: values["targets.json"], raw: values.raw,
-        }, policy.trustedRoot)
+        const root = updateRootMetadataSchema.parse(values["root.json"])
         const timestamp = updateTimestampMetadataSchema.parse(values["timestamp.json"])
         const snapshot = updateSnapshotMetadataSchema.parse(values["snapshot.json"])
         const targets = updateTargetsMetadataSchema.parse(values["targets.json"])
         const digest = (name: string) => createHash("sha256").update(values.raw[name]!).digest("hex")
         next = {
+          ...(await readTrustedUpdateMetadata(options.homeDirectory)),
           format: 1, rootVersion: root.signed.version, rootDigest: digest("root.json"),
           timestampVersion: timestamp.signed.version, timestampDigest: digest("timestamp.json"),
           snapshotVersion: snapshot.signed.version, snapshotDigest: digest("snapshot.json"),
@@ -218,7 +225,7 @@ export class DaemonUpdates {
         }
       return this.status()
     } catch (error) {
-      return this.#fail(error instanceof UpdateRefusal ? error.refusal : failure)
+      return this.#fail(error instanceof UpdateRefusal || error instanceof UpdateVerificationError ? verificationRefusal(error) : failure)
     }
   }
 }
