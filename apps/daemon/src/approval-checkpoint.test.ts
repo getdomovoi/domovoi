@@ -2,13 +2,18 @@ import { once } from "node:events"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
-import { demoWorkspace, protocolVersion, workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import {
+  approvalCheckpointErrorCode, approvalCheckpointRefusalSchema, demoWorkspace, protocolVersion, workspaceSnapshotSchema, type WorkspaceSnapshot,
+} from "@getdomovoi/protocol"
 
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { waitForDaemon } from "./test-wait-for.js"
-import { SubmoduleChangesRefusedError } from "./workspace.js"
+import { GitNotFoundError } from "./git-command.js"
+import { GitTooOldForIsolationError } from "./isolated-checkout.js"
+import { RepositoryGitConfigUnreadableError } from "./repository-git-filters.js"
+import { RepositoryConfigRefusedError, SubmoduleChangesRefusedError } from "./workspace.js"
 import type { WorkspaceService } from "./workspace.js"
 
 // J34, ruled 2026-09-23: when a person allows a gated command, the daemon
@@ -40,7 +45,11 @@ function pendingApproval(worktree = true): WorkspaceSnapshot {
   return workspaceSnapshotSchema.parse(snapshot)
 }
 
-async function start(options: { worktree?: boolean, checkpoint?: () => Promise<{ commit: string, changedFiles: string[] }> } = {}) {
+async function start(options: {
+  worktree?: boolean
+  checkpoint?: (worktree: string, label: string, signal?: AbortSignal) => Promise<{ commit: string, changedFiles: string[] }>
+  agentTimeoutMs?: number
+} = {}) {
   let emit: (event: AgentEvent) => void = () => {}
   const provider = {
     connect: vi.fn(async () => {}), listModels: vi.fn(async () => []),
@@ -58,6 +67,7 @@ async function start(options: { worktree?: boolean, checkpoint?: () => Promise<{
   const daemon = new DomovoiDaemon({
     port: 0, store: new SqliteWorkspaceStore(":memory:", pendingApproval(options.worktree ?? true)),
     agents: { codex: provider }, workspaceService, errorSink: vi.fn(),
+    ...(options.agentTimeoutMs === undefined ? {} : { agentTimeoutMs: options.agentTimeoutMs }),
   })
   daemons.push(daemon)
   const { port } = await daemon.start()
@@ -70,7 +80,7 @@ async function start(options: { worktree?: boolean, checkpoint?: () => Promise<{
     if (message.id !== undefined) responses.get(message.id)?.(message as Record<string, unknown>)
   })
   let nextId = 0
-  const rpc = (method: string, params: Record<string, unknown>) => new Promise<{ result?: unknown, error?: { code: number, message: string } }>((resolve) => {
+  const rpc = (method: string, params: Record<string, unknown>) => new Promise<{ result?: unknown, error?: { code: number, message: string, data?: unknown } }>((resolve) => {
     const id = ++nextId
     responses.set(id, resolve as (message: Record<string, unknown>) => void)
     socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
@@ -111,7 +121,11 @@ describe("a checkpoint before an approved write", () => {
   it("keeps the gate when the checkpoint cannot be taken, and the command does not run", async () => {
     const { provider, rpc, snapshot, approvalId } = await start({ checkpoint: async () => { throw new Error("index.lock exists") } })
     const refused = await rpc("approval.resolve", allow(approvalId))
-    expect(refused.error?.message).toBe("Domovoi could not take a checkpoint, so the command did not run; decide again")
+    expect(refused.error).toEqual({
+      code: approvalCheckpointErrorCode,
+      message: "Domovoi could not take a checkpoint, so the command did not run; decide again",
+      data: { kind: "approval-checkpoint-refused", cause: "unknown" },
+    })
     expect(provider.resolveApproval).not.toHaveBeenCalled()
     const state = await snapshot()
     expect(state.approvals.map(({ id }) => id)).toEqual([approvalId])
@@ -171,7 +185,97 @@ describe("a checkpoint before an approved write", () => {
   it("says a submodule's local changes are why, and keeps the gate", async () => {
     const { provider, rpc, snapshot, approvalId } = await start({ checkpoint: async () => { throw new SubmoduleChangesRefusedError() } })
     const refused = await rpc("approval.resolve", allow(approvalId))
-    expect(refused.error?.message).toBe("Domovoi could not take a checkpoint: a submodule has local changes a checkpoint cannot hold, so the command did not run")
+    expect(refused.error).toEqual({
+      code: approvalCheckpointErrorCode,
+      message: "Domovoi could not take a checkpoint: a submodule has local changes a checkpoint cannot hold, so the command did not run",
+      data: { kind: "approval-checkpoint-refused", cause: "submodule-changes" },
+    })
+    expect(provider.resolveApproval).not.toHaveBeenCalled()
+    expect((await snapshot()).approvals.map(({ id }) => id)).toEqual([approvalId])
+  })
+})
+
+// The refusal names its cause as data (S3.10h, #743): the card draws its line
+// from the cause, never from the daemon's sentence.
+describe("a typed checkpoint refusal", () => {
+  const gitFailure = (stderr: string) => Object.assign(new Error(`Command failed: git update-ref\n${stderr}`), { code: 128, stderr })
+  const heldLock = "/repo/.git/refs/domovoi/checkpoints/cccc.lock"
+  const lockStderr = `fatal: cannot lock ref 'refs/domovoi/checkpoints/cccc': Unable to create '${heldLock}': File exists.\n\n`
+    + "Another git process seems to be running in this repository, e.g.\nan editor opened by 'git commit'."
+
+  async function refusedWith(error: unknown) {
+    const { provider, rpc, snapshot, approvalId } = await start({ checkpoint: async () => { throw error } })
+    const refused = await rpc("approval.resolve", allow(approvalId))
+    expect(provider.resolveApproval).not.toHaveBeenCalled()
+    expect((await snapshot()).approvals.map(({ id }) => id)).toEqual([approvalId])
+    expect(refused.error?.code).toBe(approvalCheckpointErrorCode)
+    expect(approvalCheckpointRefusalSchema.safeParse(refused.error?.data).success).toBe(true)
+    return refused.error!
+  }
+
+  it("names a lock Git found held, by the path Git reported", async () => {
+    expect(await refusedWith(gitFailure(lockStderr))).toEqual({
+      code: approvalCheckpointErrorCode,
+      message: `Domovoi could not take a checkpoint: ${heldLock} is held by another git process, so the command did not run; decide again`,
+      data: { kind: "approval-checkpoint-refused", cause: "lock-held", lockPath: heldLock },
+    })
+  })
+
+  it("finds the lock in a Git failure the workspace wrapped", async () => {
+    const wrapped = new Error("Domovoi could not stage the checkpoint", { cause: gitFailure(lockStderr) })
+    expect((await refusedWith(wrapped)).data).toEqual({ kind: "approval-checkpoint-refused", cause: "lock-held", lockPath: heldLock })
+  })
+
+  it("calls a lock path it cannot vouch for a Git failure", async () => {
+    const relative = gitFailure("fatal: Unable to create '.git/index.lock': File exists.")
+    const multiline = gitFailure("fatal: Unable to create '/repo/.git/\u0007index.lock': File exists.")
+    for (const error of [relative, multiline]) {
+      expect((await refusedWith(error)).data).toEqual({ kind: "approval-checkpoint-refused", cause: "git-failed" })
+    }
+  })
+
+  it("says a Git command failed for any other Git error", async () => {
+    expect(await refusedWith(gitFailure("fatal: unable to read tree 0123"))).toEqual({
+      code: approvalCheckpointErrorCode,
+      message: "Domovoi could not take a checkpoint because a Git command failed, so the command did not run; decide again",
+      data: { kind: "approval-checkpoint-refused", cause: "git-failed" },
+    })
+  })
+
+  it("names the repository's config when it refused, in its own words", async () => {
+    const config = new RepositoryConfigRefusedError("The repository sets the filter \"lfs\" in its own Git config. Nothing ran.")
+    expect(await refusedWith(config)).toEqual({
+      code: approvalCheckpointErrorCode,
+      message: "Domovoi could not take a checkpoint, so the command did not run; decide again. The repository sets the filter \"lfs\" in its own Git config. Nothing ran.",
+      data: { kind: "approval-checkpoint-refused", cause: "repository-config" },
+    })
+    expect((await refusedWith(new RepositoryGitConfigUnreadableError("git-failed"))).data)
+      .toEqual({ kind: "approval-checkpoint-refused", cause: "repository-config" })
+  })
+
+  it("says Git is missing or too old", async () => {
+    for (const error of [new GitNotFoundError("darwin"), new GitTooOldForIsolationError("2.20.0")]) {
+      expect(await refusedWith(error)).toEqual({
+        code: approvalCheckpointErrorCode,
+        message: `Domovoi could not take a checkpoint, so the command did not run; decide again. ${error.message}`,
+        data: { kind: "approval-checkpoint-refused", cause: "git-unavailable" },
+      })
+    }
+  })
+
+  it("says the checkpoint ran out of time", async () => {
+    const { provider, rpc, snapshot, approvalId } = await start({
+      agentTimeoutMs: 1_000,
+      checkpoint: (_worktree, _label, signal) => new Promise((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(signal.reason as Error), { once: true })
+      }),
+    })
+    const refused = await rpc("approval.resolve", allow(approvalId))
+    expect(refused.error).toEqual({
+      code: approvalCheckpointErrorCode,
+      message: "Domovoi could not take a checkpoint in time, so the command did not run; decide again",
+      data: { kind: "approval-checkpoint-refused", cause: "timed-out" },
+    })
     expect(provider.resolveApproval).not.toHaveBeenCalled()
     expect((await snapshot()).approvals.map(({ id }) => id)).toEqual([approvalId])
   })
