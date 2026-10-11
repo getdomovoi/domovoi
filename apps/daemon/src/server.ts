@@ -80,6 +80,7 @@ import {
   type SessionHistoryPage,
   workspaceSnapshotSchema,
   type SessionHistoryEntry,
+  type SessionSummary,
   type SessionTurn,
   type SnapshotTurn,
   type SessionTransferReconciliationReason,
@@ -1123,6 +1124,23 @@ function clientTurns(thread: WorkspaceSnapshot["thread"], loadTurns: ClientTurnL
   return turns
 }
 
+// Task 30 (ruling Q390): when each running turn started, from the same
+// ledger record as the snapshot's turns, so the palette's search on another
+// machine can say how long a session has been running. The ledger keys a turn
+// by provider, thread and provider turn id; a record that is missing, belongs
+// to another session or has already ended leaves the start out. Derived for
+// each reply and never stored, so no path that clears activeTurnId can leave a
+// stale start behind.
+export function withActiveTurnStarts(sessions: readonly SessionSummary[], loadTurns: ClientTurnLoader): SessionSummary[] {
+  return sessions.map((session) => {
+    const { activeTurnStartedAt: _stored, ...summary } = session
+    if (!summary.activeTurnId || !summary.providerThreadId) return summary
+    const key = usageIdentity({ provider: summary.runtime.provider, threadId: summary.providerThreadId, turnId: summary.activeTurnId })
+    const turn = loadTurns(summary.id, [key]).find((candidate) => candidate.id === key && candidate.sessionId === summary.id)
+    return turn?.status === "pending" ? { ...summary, activeTurnStartedAt: turn.startedAt } : summary
+  })
+}
+
 export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot, loadTurns?: ClientTurnLoader): WorkspaceSnapshot {
   const projects = snapshot.project ? [snapshot.project] : []
   // The store refuses state with several projects (ruling Q257), so nothing
@@ -1142,6 +1160,7 @@ export function workspaceSnapshotForClient(snapshot: WorkspaceSnapshot, loadTurn
   const turns = loadTurns ? clientTurns(thread, loadTurns) : []
   return {
     ...state,
+    sessions: loadTurns ? withActiveTurnStarts(state.sessions, loadTurns) : state.sessions,
     projects,
     projectCap: activeProjectCap,
     thread,
@@ -3946,8 +3965,17 @@ export class DomovoiDaemon {
   // again only after a snapshot whose every session read cleanly: one session
   // failing while another reads is still the same failure.
   #clientSnapshot(): WorkspaceSnapshot {
+    const reader = this.#ledgerTurnReader()
+    const snapshot = workspaceSnapshotForClient(this.#snapshot, reader.load)
+    if (!reader.failed()) this.#turnTimesUnreadable = false
+    return snapshot
+  }
+
+  // Reads turn records for one reply. A ledger that cannot be read answers no
+  // turns, and the failure is reported once until a snapshot reads cleanly.
+  #ledgerTurnReader(): { load: ClientTurnLoader, failed: () => boolean } {
     let failed = false
-    const snapshot = workspaceSnapshotForClient(this.#snapshot, (sessionId, turnIds) => {
+    const load: ClientTurnLoader = (sessionId, turnIds) => {
       let turns: readonly SessionTurn[] = []
       try {
         turns = this.#usageLedger.turns?.(sessionId, turnIds) ?? []
@@ -3959,9 +3987,8 @@ export class DomovoiDaemon {
         }
       }
       return turns
-    })
-    if (!failed) this.#turnTimesUnreadable = false
-    return snapshot
+    }
+    return { load, failed: () => failed }
   }
 
   #turnLink(sessionId: string, provider: string, threadId: string, turnId: string | undefined): { turnId?: string } {
@@ -8619,10 +8646,19 @@ export class DomovoiDaemon {
       if (method === "session.search") {
         const params = paramsResult.data as RpcParams<"session.search">
         const { matches, truncated } = searchSessions(this.#snapshot, params.query, params.limit)
+        const started = withActiveTurnStarts(matches.map((match) => match.session), this.#ledgerTurnReader().load)
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",
           id: request.id,
-          result: rpcMethods[method].result.parse({ query: params.query, matches, truncated }),
+          // daemonTime lets the asking client age these timestamps on this
+          // machine's clock (the fleet snapshot's pattern). It is safe
+          // unconditionally in 0.8: unreleased, and admission excludes 0.7.
+          result: rpcMethods[method].result.parse({
+            query: params.query,
+            matches: matches.map((match, index) => ({ ...match, session: started[index]! })),
+            truncated,
+            daemonTime: new Date(Date.now()).toISOString(),
+          }),
         })
         return
       }
