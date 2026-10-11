@@ -98,6 +98,27 @@ const runtime = (permissionMode: Runtime["permissionMode"], auto = false): Runti
   auto,
 })
 
+type TaskRow = [id: string, text: string, status: "pending" | "in-progress" | "completed"]
+
+// The plan-updated event for a change to Claude's tasks: the steps as Claude
+// lists them, and the tasks before and after the change.
+function taskPlanEvent(
+  threadId: string,
+  turnId: string,
+  previous: TaskRow[],
+  current: TaskRow[],
+  deleted: string[] = [],
+) {
+  const tasks = (rows: TaskRow[]) => rows.map(([id, text, status]) => ({ id, text, status }))
+  return {
+    type: "plan-updated",
+    threadId,
+    turnId,
+    steps: current.map(([, text, status]) => ({ text, status })),
+    taskChange: { previous: tasks(previous), current: tasks(current), deleted },
+  }
+}
+
 function factoryHarness(prepare?: (query: FakeQuery) => void) {
   const calls: Array<{
     input: AsyncIterable<ClaudeUserMessage>
@@ -1123,36 +1144,69 @@ describe("ClaudeAgentSdkAdapter", () => {
     }
 
     create("toolu_create_1", "Write a.txt", "1")
-    await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
-      type: "plan-updated",
-      threadId,
-      turnId,
-      steps: [{ text: "Write a.txt", status: "pending" }],
-    }))
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith(
+      taskPlanEvent(threadId, turnId, [], [["1", "Write a.txt", "pending"]]),
+    ))
     create("toolu_create_2", "Write b.txt", "2")
     create("toolu_create_3", "List the directory", "3")
     update("toolu_update_1", "1", "pending", "in_progress")
-    await waitForDaemon(() => expect(event).toHaveBeenLastCalledWith({
-      type: "plan-updated",
-      threadId,
-      turnId,
-      steps: [
-        { text: "Write a.txt", status: "in-progress" },
-        { text: "Write b.txt", status: "pending" },
-        { text: "List the directory", status: "pending" },
-      ],
-    }))
     update("toolu_update_2", "1", "in_progress", "completed")
     update("toolu_update_3", "3", "pending", "deleted")
-    await waitForDaemon(() => expect(event).toHaveBeenLastCalledWith({
-      type: "plan-updated",
-      threadId,
-      turnId,
-      steps: [
-        { text: "Write a.txt", status: "completed" },
-        { text: "Write b.txt", status: "pending" },
-      ],
-    }))
+    update("toolu_update_4", "2", "pending", "in_progress")
+    const plans = () => event.mock.calls
+      .map(([emitted]) => emitted as AgentEvent)
+      .filter((emitted) => emitted.type === "plan-updated")
+    await waitForDaemon(() => expect(plans()).toHaveLength(7))
+    // Each event names the tasks as the previous event left them, and every
+    // task deleted so far, in case the daemon dropped the event that said so.
+    expect(plans()).toEqual([
+      taskPlanEvent(threadId, turnId, [], [["1", "Write a.txt", "pending"]]),
+      taskPlanEvent(threadId, turnId, [["1", "Write a.txt", "pending"]], [
+        ["1", "Write a.txt", "pending"],
+        ["2", "Write b.txt", "pending"],
+      ]),
+      taskPlanEvent(threadId, turnId, [
+        ["1", "Write a.txt", "pending"],
+        ["2", "Write b.txt", "pending"],
+      ], [
+        ["1", "Write a.txt", "pending"],
+        ["2", "Write b.txt", "pending"],
+        ["3", "List the directory", "pending"],
+      ]),
+      taskPlanEvent(threadId, turnId, [
+        ["1", "Write a.txt", "pending"],
+        ["2", "Write b.txt", "pending"],
+        ["3", "List the directory", "pending"],
+      ], [
+        ["1", "Write a.txt", "in-progress"],
+        ["2", "Write b.txt", "pending"],
+        ["3", "List the directory", "pending"],
+      ]),
+      taskPlanEvent(threadId, turnId, [
+        ["1", "Write a.txt", "in-progress"],
+        ["2", "Write b.txt", "pending"],
+        ["3", "List the directory", "pending"],
+      ], [
+        ["1", "Write a.txt", "completed"],
+        ["2", "Write b.txt", "pending"],
+        ["3", "List the directory", "pending"],
+      ]),
+      taskPlanEvent(threadId, turnId, [
+        ["1", "Write a.txt", "completed"],
+        ["2", "Write b.txt", "pending"],
+        ["3", "List the directory", "pending"],
+      ], [
+        ["1", "Write a.txt", "completed"],
+        ["2", "Write b.txt", "pending"],
+      ], ["3"]),
+      taskPlanEvent(threadId, turnId, [
+        ["1", "Write a.txt", "completed"],
+        ["2", "Write b.txt", "pending"],
+      ], [
+        ["1", "Write a.txt", "completed"],
+        ["2", "Write b.txt", "in-progress"],
+      ], ["3"]),
+    ])
     await adapter.close()
   })
 
@@ -1243,15 +1297,10 @@ describe("ClaudeAgentSdkAdapter", () => {
         ],
       },
     })
-    await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
-      type: "plan-updated",
-      threadId,
-      turnId,
-      steps: [
-        { text: "Inspect", status: "completed" },
-        { text: "Implement", status: "in-progress" },
-      ],
-    }))
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(threadId, turnId, [], [
+      ["1", "Inspect", "completed"],
+      ["2", "Implement", "in-progress"],
+    ])))
     await adapter.close()
   })
 
@@ -1297,16 +1346,16 @@ describe("ClaudeAgentSdkAdapter", () => {
         message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #2 status" }] },
         tool_use_result: { success: true, taskId: "2", updatedFields: ["status"], statusChange: { from: "pending", to: "completed" } },
       })
-      await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
-        type: "plan-updated",
-        threadId,
-        turnId,
-        steps: [
-          { text: "Inspect", status: "completed" },
-          { text: "Implement", status: "completed" },
-          { text: "Verify", status: "pending" },
-        ],
-      }))
+      // The list read at the resume is what the daemon already holds.
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(threadId, turnId, [
+        ["1", "Inspect", "completed"],
+        ["2", "Implement", "pending"],
+        ["10", "Verify", "pending"],
+      ], [
+        ["1", "Inspect", "completed"],
+        ["2", "Implement", "completed"],
+        ["10", "Verify", "pending"],
+      ])))
       await adapter.close()
     } finally {
       vi.unstubAllEnvs()
@@ -1348,12 +1397,12 @@ describe("ClaudeAgentSdkAdapter", () => {
         message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
         tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "in_progress" } },
       })
-      await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
-        type: "plan-updated",
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(
         threadId,
         turnId,
-        steps: [{ text: "Inspect", status: "in-progress" }],
-      }))
+        [["1", "Inspect", "pending"]],
+        [["1", "Inspect", "in-progress"]],
+      )))
       await adapter.close()
     } finally {
       vi.unstubAllEnvs()
@@ -1398,12 +1447,12 @@ describe("ClaudeAgentSdkAdapter", () => {
       message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
       tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "completed" } },
     })
-    await waitForDaemon(() => expect(event).toHaveBeenLastCalledWith({
-      type: "plan-updated",
+    await waitForDaemon(() => expect(event).toHaveBeenLastCalledWith(taskPlanEvent(
       threadId,
       turnId,
-      steps: [{ text: "Inspect", status: "completed" }],
-    }))
+      [["1", "Inspect", "pending"]],
+      [["1", "Inspect", "completed"]],
+    )))
     await adapter.close()
   })
 
@@ -1448,15 +1497,12 @@ describe("ClaudeAgentSdkAdapter", () => {
         message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
         tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "in_progress" } },
       })
-      await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
-        type: "plan-updated",
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(
         threadId,
         turnId,
-        steps: [
-          { text: "Inspect", status: "in-progress" },
-          { text: "Write the docs", status: "pending" },
-        ],
-      }))
+        [["1", "Inspect", "pending"]],
+        [["1", "Inspect", "in-progress"], ["2", "Write the docs", "pending"]],
+      )))
       await adapter.close()
     } finally {
       vi.unstubAllEnvs()
@@ -1497,15 +1543,12 @@ describe("ClaudeAgentSdkAdapter", () => {
         message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
         tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "in_progress" } },
       })
-      await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
-        type: "plan-updated",
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(
         threadId,
         turnId,
-        steps: [
-          { text: "Inspect", status: "in-progress" },
-          { text: "Write the docs", status: "pending" },
-        ],
-      }))
+        [["1", "Inspect", "pending"], ["2", "Write the docs", "pending"]],
+        [["1", "Inspect", "in-progress"], ["2", "Write the docs", "pending"]],
+      )))
     } finally {
       await adapter.close()
       vi.unstubAllEnvs()
@@ -1549,15 +1592,12 @@ describe("ClaudeAgentSdkAdapter", () => {
         message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
         tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "in_progress" } },
       })
-      await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
-        type: "plan-updated",
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(
         threadId,
         turnId,
-        steps: [
-          { text: "Inspect", status: "in-progress" },
-          { text: "Write the docs", status: "pending" },
-        ],
-      }))
+        [["1", "Inspect", "pending"], ["2", "Write the docs", "pending"]],
+        [["1", "Inspect", "in-progress"], ["2", "Write the docs", "pending"]],
+      )))
     } finally {
       await adapter.close()
       vi.unstubAllEnvs()
@@ -1599,12 +1639,12 @@ describe("ClaudeAgentSdkAdapter", () => {
         message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
         tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "completed" } },
       })
-      await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
-        type: "plan-updated",
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(
         threadId,
         turnId,
-        steps: [{ text: "Inspect", status: "completed" }],
-      }))
+        [["1", "Inspect", "pending"]],
+        [["1", "Inspect", "completed"]],
+      )))
       await adapter.close()
     } finally {
       vi.unstubAllEnvs()
@@ -1649,12 +1689,12 @@ describe("ClaudeAgentSdkAdapter", () => {
         message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
         tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "completed" } },
       })
-      await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
-        type: "plan-updated",
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(
         threadId,
         turnId,
-        steps: [{ text: "Own task", status: "completed" }],
-      }))
+        [["1", "Own task", "pending"]],
+        [["1", "Own task", "completed"]],
+      )))
       await adapter.close()
     } finally {
       vi.unstubAllEnvs()
@@ -1706,13 +1746,96 @@ describe("ClaudeAgentSdkAdapter", () => {
       message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
       tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "in_progress" } },
     })
-    await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
-      type: "plan-updated",
+    // The checklist was never reported, so the whole list arrives as new.
+    await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(
       threadId,
-      turnId: buildTurnId,
-      steps: [{ text: "Inspect", status: "in-progress" }],
-    }))
+      buildTurnId,
+      [],
+      [["1", "Inspect", "in-progress"]],
+    )))
     await adapter.close()
+  })
+
+  // A reopened session rereads its tasks from Claude's storage. With a shared
+  // list, another session can rename or delete a task while this one is
+  // closed, so the change is measured from the tasks last reported.
+  it("reports what changed while a session was closed against the tasks it last reported", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "domovoi-claude-tasks-"))
+    scratchDirectories.push(configDir)
+    const list = join(configDir, "tasks", "team-list")
+    await mkdir(list, { recursive: true })
+    const task = (id: string, subject: string, status: string) => writeFile(
+      join(list, `${id}.json`),
+      JSON.stringify({ id, subject, description: `${subject}.`, status, blocks: [], blockedBy: [] }),
+    )
+    await task("1", "Inspect", "pending")
+    await task("2", "Implement", "pending")
+    await task("3", "Verify", "pending")
+    vi.stubEnv("CLAUDE_CONFIG_DIR", configDir)
+    vi.stubEnv("CLAUDE_CODE_TASK_LIST_ID", "team-list")
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "55555555-5555-4555-8555-555555555555",
+      "66666666-6666-4666-8666-666666666666",
+      "77777777-7777-4777-8777-777777777777",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    try {
+      const event = vi.fn()
+      adapter.onEvent(event)
+      const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go on", runtime: runtime("build") })
+      await task("1", "Inspect", "in_progress")
+      calls[0]!.query.emit({
+        type: "assistant",
+        session_id: threadId,
+        message: { content: [{ type: "tool_use", id: "toolu_u", name: "TaskUpdate", input: { taskId: "1", status: "in_progress" } }] },
+      })
+      calls[0]!.query.emit({
+        type: "user",
+        session_id: threadId,
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
+        tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "in_progress" } },
+      })
+      const reported: TaskRow[] = [["1", "Inspect", "in-progress"], ["2", "Implement", "pending"], ["3", "Verify", "pending"]]
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(threadId, turnId, [
+        ["1", "Inspect", "pending"],
+        ["2", "Implement", "pending"],
+        ["3", "Verify", "pending"],
+      ], reported)))
+
+      // The connection drops. Another session renames task 2 and deletes task 3.
+      calls[0]!.query.close()
+      await new Promise((resolve) => { setTimeout(resolve, 0) })
+      await task("2", "Implement the parser", "pending")
+      await rm(join(list, "3.json"))
+
+      const reopenedTurnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Continue", runtime: runtime("build") })
+      expect(calls).toHaveLength(2)
+      calls[1]!.query.emit({
+        type: "assistant",
+        session_id: threadId,
+        message: { content: [{ type: "tool_use", id: "toolu_l", name: "TaskList", input: {} }] },
+      })
+      calls[1]!.query.emit({
+        type: "user",
+        session_id: threadId,
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_l", content: "#1 [in_progress] Inspect\n#2 [pending] Implement the parser" }] },
+        tool_use_result: {
+          tasks: [
+            { id: "1", subject: "Inspect", status: "in_progress", blockedBy: [] },
+            { id: "2", subject: "Implement the parser", status: "pending", blockedBy: [] },
+          ],
+        },
+      })
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(threadId, reopenedTurnId, reported, [
+        ["1", "Inspect", "in-progress"],
+        ["2", "Implement the parser", "pending"],
+      ], ["3"])))
+    } finally {
+      await adapter.close()
+      vi.unstubAllEnvs()
+    }
   })
 })
 
