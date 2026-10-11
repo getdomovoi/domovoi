@@ -196,9 +196,9 @@ function replacedProviderSteps(
 // Each task is matched to a step, in this order: the step it was linked to at
 // the last change; the first unmatched step with the same text, in plan
 // order; the step with the task's text before Claude reworded it, which is
-// renamed in place. A task that matches nothing is appended, so no reported
-// task is dropped. The one exception is a task whose linked step the person
-// removed: it stays out while Claude leaves it unchanged. A deleted task
+// renamed in place. A task that matches nothing is appended when it is new or
+// Claude changed it, so no change Claude reports is dropped. An unchanged
+// task with no step is one the plan took out, and stays out. A deleted task
 // removes its step. Steps Claude has not reported stay where they are.
 function mergeProviderTaskChange(
   canonical: WorkingPlanStep[],
@@ -220,10 +220,21 @@ function mergeProviderTaskChange(
   const unclaimed = (text: string, except?: WorkingPlanStep) => steps.find(
     (step) => step !== except && !claimedSteps.has(step.id) && step.text === text,
   )
+  // The plan's aggregate text bound. A rename or a new step takes only the
+  // room left, so no step already in the plan is cut to make room.
+  let total = steps.reduce((sum, step) => sum + step.text.length, 0)
+  const fit = (text: string, replacing: number) => boundedWorkingPlanText(text, Math.min(
+    maximumWorkingPlanStepTextLength,
+    maximumWorkingPlanTextLength - total + replacing,
+  ))
   const claim = (task: { id: string, text: string, status: WorkingPlanStepStatus }, step: WorkingPlanStep, rename = false) => {
     taskLinks.set(task.id, step.id)
     claimedSteps.add(step.id)
-    if (rename) step.text = task.text
+    const text = rename ? fit(task.text, step.text.length) : undefined
+    if (text) {
+      total += text.length - step.text.length
+      step.text = text
+    }
     step.status = progressStatus(step, task.status)
   }
 
@@ -232,9 +243,10 @@ function mergeProviderTaskChange(
     if (!linked || claimedSteps.has(linked.id)) continue
     const prior = previous.get(task.id)
     const reworded = prior !== undefined && prior.text !== task.text
-    // An unchanged task keeps the person's text for its step.
+    // A task Claude did not reword keeps the person's text for its step.
     if (linked.text === task.text || !reworded) claim(task, linked)
-    // Claude took another step's text: that step shows the task, this one goes.
+    // Claude took the text of another step: that step shows the task, and
+    // this one stays as a step Claude has not reported.
     else if (!unclaimed(task.text, linked)) claim(task, linked, true)
   }
   for (const task of current) {
@@ -248,50 +260,37 @@ function mergeProviderTaskChange(
     const step = prior && prior.text !== task.text ? unclaimed(prior.text) : undefined
     if (step) claim(task, step, true)
   }
+
+  // A deleted task removes the step that showed it.
+  const removed = new Set<string>()
+  for (const [taskId, prior] of previous) {
+    if (currentIds.has(taskId)) continue
+    const linkedId = links.get(taskId)
+    const step = linkedId === undefined
+      ? steps.find((candidate) => !claimedSteps.has(candidate.id)
+        && !removed.has(candidate.id)
+        && candidate.text === prior.text)
+      : stepsById.get(linkedId)
+    if (step && !claimedSteps.has(step.id)) removed.add(step.id)
+  }
+  const kept = steps.filter((step) => !removed.has(step.id))
+  total = kept.reduce((sum, step) => sum + step.text.length, 0)
+
   for (const task of current) {
     if (taskLinks.has(task.id)) continue
-    const linkedId = links.get(task.id)
     const prior = previous.get(task.id)
-    if (
-      linkedId !== undefined
-      && !stepsById.has(linkedId)
-      && prior?.text === task.text
-      && prior.status === task.status
-    ) {
-      taskLinks.set(task.id, linkedId)
-      continue
-    }
-    const step: WorkingPlanStep = { id: createId("step"), text: task.text, status: task.status }
-    steps.push(step)
-    claim(task, step)
-  }
-
-  const removed = new Set<string>()
-  for (const [taskId, stepId] of links) {
-    if (claimedSteps.has(stepId) || !stepsById.has(stepId)) continue
-    const deleted = previous.has(taskId) && !currentIds.has(taskId)
-    if (deleted || (currentIds.has(taskId) && taskLinks.get(taskId) !== stepId)) removed.add(stepId)
-  }
-  for (const [taskId, prior] of previous) {
-    if (currentIds.has(taskId) || links.has(taskId)) continue
-    const step = steps.find((candidate) => !claimedSteps.has(candidate.id)
-      && !removed.has(candidate.id)
-      && candidate.text === prior.text)
-    if (step) removed.add(step.id)
-  }
-
-  const kept: WorkingPlanStep[] = []
-  let remaining = maximumWorkingPlanTextLength
-  for (const step of steps) {
-    if (removed.has(step.id)) continue
-    if (kept.length === maximumWorkingPlanSteps || step.text.length > remaining) break
+    // The daemon already heard this task as it is, and the plan has no step
+    // for it: the person, or a proposal, took the step out. It comes back
+    // when Claude changes the task.
+    if (prior?.text === task.text && prior.status === task.status) continue
+    const text = fit(task.text, 0)
+    // The protocol bounds a plan's steps and text. Steps already in the plan
+    // are never cut for a new one.
+    if (!text || kept.length >= maximumWorkingPlanSteps) continue
+    const step: WorkingPlanStep = { id: createId("step"), text, status: task.status }
     kept.push(step)
-    remaining -= step.text.length
-  }
-  const keptIds = new Set(kept.map(({ id }) => id))
-  // Links of steps cut by the plan's bounds go; links kept out on purpose stay.
-  for (const [taskId, stepId] of taskLinks) {
-    if (claimedSteps.has(stepId) && !keptIds.has(stepId)) taskLinks.delete(taskId)
+    total += text.length
+    claim(task, step)
   }
   return { steps: kept, taskLinks }
 }

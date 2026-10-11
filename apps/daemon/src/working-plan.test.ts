@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest"
 
 import {
+  maximumWorkingPlanSteps,
   maximumWorkingPlanStepTextLength,
+  maximumWorkingPlanTextLength,
   workingPlanSchema,
   type Annotation,
   type Artifact,
@@ -436,7 +438,12 @@ describe("provider task changes", () => {
     }
   })
 
-  it("keeps a step the person removed out of the plan until Claude changes its task", () => {
+  // The links live in the daemon's memory. After a restart the adapter's
+  // previous tasks, read from Claude's storage, still say what the daemon heard.
+  it.each([
+    ["with the daemon's task links", new Map([["1", "step-1"], ["2", "step-2"], ["3", "step-verify-removed"]])],
+    ["after a daemon restart, with no links", undefined],
+  ])("keeps a step the person removed out of the plan until Claude changes its task, %s", (_name, removedLinks) => {
     const current = plan({
       steps: [
         { id: "step-1", text: "Inspect", status: "in-progress" },
@@ -444,7 +451,6 @@ describe("provider task changes", () => {
       ],
     })
     const before = [task("1", "Inspect", "in-progress"), task("2", "Implement"), task("3", "Verify")]
-    const removedLinks = new Map([["1", "step-1"], ["2", "step-2"], ["3", "step-verify-removed"]])
     const progressed = [task("1", "Inspect", "completed"), task("2", "Implement"), task("3", "Verify")]
     const first = taskUpdate(current, before, progressed, removedLinks)
     expect(shape(first)).toEqual(["step-1:Inspect:completed", "step-2:Implement:pending"])
@@ -460,6 +466,80 @@ describe("provider task changes", () => {
       "step-2:Implement:pending",
       "step-verify-again:Verify:in-progress",
     ])
+  })
+
+  // Claude can adopt the person's order by giving an existing task the
+  // inserted step's text, then creating the step it displaced.
+  it.each([
+    ["with the daemon's task links", links],
+    ["after a daemon restart, with no links", undefined],
+  ])("keeps a step whose task Claude gives to an inserted step, %s", (_name, taskLinks) => {
+    const reused = [
+      task("1", "Inspect", "completed"),
+      task("2", "Implement the parser", "in-progress"),
+      task("3", "Write the docs"),
+    ]
+    const first = taskUpdate(edited(), claudeBefore, reused, taskLinks)
+    expect(shape(first)).toEqual([
+      "step-inspect:Inspect:completed",
+      "step-implement:Implement the parser:in-progress",
+      "step-docs:Write the docs:pending",
+      "step-verify:Verify:pending",
+    ])
+    const recreated = [...reused, task("4", "Verify")]
+    const second = taskUpdate(first.plan, reused, recreated, first.taskLinks)
+    expect(shape(second)).toEqual(shape(first))
+    expect(second.taskLinks?.get("4")).toBe("step-verify")
+  })
+
+  it("never cuts a step already in the plan to fit the aggregate text bound", () => {
+    // Eighteen steps, two characters short of the bound.
+    const long = "x".repeat(maximumWorkingPlanStepTextLength)
+    const filler = Array.from({ length: 15 }, (_, index) => ({
+      id: `step-filler-${index}`,
+      text: `${index.toString(16)}${long.slice(1)}`,
+      status: "completed" as const,
+    }))
+    const fillerLength = filler.reduce((sum, step) => sum + step.text.length, 0)
+    const rest = maximumWorkingPlanTextLength - fillerLength - 2
+    const current = plan({
+      steps: [
+        ...filler,
+        { id: "step-implement", text: "y".repeat(rest - "Docs".length - "Ok".length), status: "pending" },
+        { id: "step-docs", text: "Docs", status: "pending" },
+        { id: "step-verify", text: "Ok", status: "pending" },
+      ],
+    })
+    expect(workingPlanSchema.safeParse(current).success).toBe(true)
+    const before = [task("1", current.steps[15]!.text)]
+    const result = taskUpdate(
+      current,
+      before,
+      [task("1", `${current.steps[15]!.text} and more`, "in-progress"), task("2", "A new task")],
+      undefined,
+      ids("step-new"),
+    )
+    expect(result.plan.steps.map(({ id }) => id)).toEqual([
+      ...filler.map(({ id }) => id),
+      "step-implement",
+      "step-docs",
+      "step-verify",
+    ])
+    expect(result.plan.steps[15]!.status).toBe("in-progress")
+    expect(workingPlanSchema.safeParse(result.plan).success).toBe(true)
+  })
+
+  it("adds no step past the step bound and keeps every step it has", () => {
+    const steps = Array.from({ length: maximumWorkingPlanSteps }, (_, index) => ({
+      id: `step-${index}`,
+      text: `Step ${index}`,
+      status: "pending" as const,
+    }))
+    const current = plan({ steps })
+    const result = taskUpdate(current, [], [task("1", "Step 3", "completed"), task("2", "One more")])
+    expect(result.plan.steps.map(({ id }) => id)).toEqual(steps.map(({ id }) => id))
+    expect(result.plan.steps[3]!.status).toBe("completed")
+    expect(result.taskLinks?.has("2")).toBe(false)
   })
 
   it("builds a first plan in Claude's creation order", () => {
