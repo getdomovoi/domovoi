@@ -1,7 +1,7 @@
 import { ArchiveIcon, ChevronRightIcon, EllipsisIcon, GitBranchIcon, GitForkIcon, MonitorIcon, PanelLeftIcon, PauseIcon, PlayIcon } from "lucide-react"
 import { useId, useState } from "react"
 
-import type { WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { ClientKind, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import {
   DropdownMenu,
@@ -13,6 +13,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./comp
 import { StatusDot } from "./status-dot"
 import { groupSessions, type SessionGroupId } from "./session-groups"
 import { cn } from "./lib/utils"
+import { dockSideBySideMinimumWidth } from "./dock-auto-collapse"
 import { titlebarTipClassName } from "./titlebar-tip"
 
 // v2 takes the sessions list out of the permanent sidebar and puts it behind a
@@ -30,6 +31,16 @@ import { titlebarTipClassName } from "./titlebar-tip"
 // it.
 
 export type SessionRowAction = "stop" | "resume" | "fork" | "move" | "archive"
+
+// The Web v2 frame draws the sessions column always open; Q384 A opens it by
+// default on the web at wide widths. Wide means room for the column beside a
+// thread and dock that still sit side by side. The desktop keeps it behind its
+// button, as Desktop v2 draws it.
+export const webSessionsColumnMinimumWidth = dockSideBySideMinimumWidth + 268
+
+export function sessionsColumnOpensByDefault(clientKind: ClientKind, viewportWidth: number): boolean {
+  return clientKind === "web" && viewportWidth >= webSessionsColumnMinimumWidth
+}
 
 export function SessionsDrawerTrigger({
   snapshot,

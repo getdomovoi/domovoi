@@ -48,7 +48,8 @@ import { fleetMachines } from "./fleet-entries.js"
 import { machineAttachment } from "./machine-selection.js"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { DaemonRpcError, ProjectSwitchConfirmationError, clientVersion } from "./client"
-import { SessionsDrawerColumn, SessionsDrawerTrigger, type SessionRowAction } from "./sessions-drawer"
+import { SessionsDrawerColumn, SessionsDrawerTrigger, sessionsColumnOpensByDefault, type SessionRowAction } from "./sessions-drawer"
+import { machineRoute } from "./route-word"
 import { useWorkspace } from "./use-workspace"
 import type { RelayPinStorage } from "./relay-pin"
 import { FleetAccessSession, fleetAgents, machineReading, useReadOnVisit, type HeldReading } from "./fleet-access-session"
@@ -524,7 +525,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }
 
   const shellRef = useRef<HTMLDivElement>(null)
-  const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [sessionsOpen, setSessionsOpen] = useState(() => sessionsColumnOpensByDefault(clientKind, window.innerWidth))
   const dockCollapseButtonRef = useRef<HTMLButtonElement>(null)
   const dockUnpinButtonRef = useRef<HTMLButtonElement>(null)
   const sheetPinButtonRef = useRef<HTMLButtonElement>(null)
@@ -1637,7 +1638,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     <SurfaceCodeReload.Provider value={reloadForNewCode}>
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => { if (!watching) setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" })) }} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={connected ? attached ? "remote" : "local" : "unreachable"} theme={resolvedTheme} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" }))} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={connected ? machineRoute(endpointUrl, attached ? fleetMachines(fleet?.entries ?? []).find((machine) => machine.id === attached.machineId)?.connection : undefined) : "unreachable"} theme={resolvedTheme} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}
