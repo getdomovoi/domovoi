@@ -8,7 +8,7 @@ import {
 } from "@opencode-ai/sdk"
 import type { ApprovalDecision, ProviderFailure, ProviderModel, Runtime } from "@getdomovoi/protocol"
 
-import { ApprovalRequestNotPendingError, type AgentAdapter, type AgentEvent } from "./agents.js"
+import { ApprovalRequestNotPendingError, type AgentAdapter, type AgentEvent, type AgentWorkingPlanStep } from "./agents.js"
 import { approvalAnsweredElsewhereFailure as approvalAnsweredElsewhere } from "./provider-failures.js"
 import { normalizeProviderUsage } from "./usage.js"
 import { createAuthenticatedEmbeddedRuntime, embeddedServerCommand, type EmbeddedServer } from "./embedded-server.js"
@@ -1800,6 +1800,19 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       }
       return
     }
+    // The todowrite tool's list, the thread's working plan. A subagent's
+    // todos are its own list, not the thread's plan. Before the server shows
+    // the turn's own prompt, a list is an earlier run's, such as one the turn
+    // before interrupted (#trackTurnMessage, as for a session error). In Plan
+    // mode the todos track the agent's research and its final reply is the
+    // proposal, which the daemon reads only when no plan arrived during the
+    // turn, as with Claude's TodoWrite.
+    if (event.type === "todo.updated") {
+      if (subagent || !session.activeTurn?.seen || session.runtime.permissionMode === "plan") return
+      const steps = openCodeTodoSteps(properties.todos)
+      if (steps) this.#emit({ type: "plan-updated", threadId: session.threadId, turnId, steps })
+      return
+    }
     if (event.type === "message.part.updated") {
       if (typeof part?.messageID !== "string") return
       // A tool call in a message the adapter did not see is still checked,
@@ -2762,6 +2775,25 @@ function settlesWithin<T>(promise: Promise<T>, timeoutMs: number, message: strin
 
 function replyKey(sessionId: string, requestId: string): string {
   return `${sessionId}\u0000${requestId}`
+}
+
+// A todo.updated event carries the session's whole ordered list (the SDK's
+// EventTodoUpdated, the same Array<Todo> GET /session/{id}/todo returns), so
+// it replaces the plan, as Codex's update_plan does. The working plan has no
+// cancelled state: a cancelled todo is work the agent dropped, and it leaves
+// the plan. A list with any other unknown status or shape is not read.
+function openCodeTodoSteps(value: unknown): AgentWorkingPlanStep[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const steps: AgentWorkingPlanStep[] = []
+  for (const candidate of value) {
+    const todo = asRecord(candidate)
+    if (!todo || typeof todo.content !== "string") return undefined
+    if (todo.status === "cancelled") continue
+    const status = todo.status === "in_progress" ? "in-progress" : todo.status
+    if (status !== "pending" && status !== "in-progress" && status !== "completed") return undefined
+    steps.push({ text: todo.content, status })
+  }
+  return steps
 }
 
 function eventSessionId(properties: Record<string, unknown>): string | undefined {
