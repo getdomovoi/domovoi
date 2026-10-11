@@ -6,7 +6,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import type { TerminalNotification } from "./lib/daemon"
-import { drawnLines } from "./terminal-line-model"
+import { drawnLines, readableCut } from "./terminal-line-model"
 
 // Phone v2 frame 04: a phone reads the claimant's shell and never types,
 // resizes or claims it. What the phone holds for one watched terminal is the
@@ -177,59 +177,30 @@ export function withNotification(record: TerminalRecord, notification: TerminalN
 // shown is whole. Output with no break that near is cut at the bound itself.
 const lineBreakReach = 256
 
-// The phone holds no more than the daemon keeps for a terminal. The oldest
-// text goes first.
-function bounded(record: TerminalRecord): TerminalRecord {
-  const excess = record.text.length - maximumTerminalReplayCharacters
-  if (excess <= 0) return record
-  const lineBreak = record.text.indexOf("\n", excess - 1)
-  const atLineBreak = lineBreak !== -1 && lineBreak + 1 - excess <= lineBreakReach
-  let cut = atLineBreak ? lineBreak + 1 : sequenceSafe(record.text, excess)
-  // A cut between the two halves of a character outside the basic plane
-  // takes the whole character.
-  if (isLowSurrogate(record.text.charCodeAt(cut))) cut += 1
-  return {
-    ...record,
-    text: record.text.slice(cut),
-    // Once the start of live output is cut away, nothing above it is left.
-    liveAt: record.liveAt !== undefined && record.liveAt > cut ? record.liveAt - cut : undefined,
-    phoneDropped: true,
-    // The phone's cut cannot see a sequence whose introducer the daemon cut,
-    // so the uncertain start stays hidden until the cut passes it.
-    startsMidLine: record.startsMidLine && cut < drawnStart(record),
-  }
-}
-
-// Escape sequences that draw nothing, each anchored at its introducer: a
-// window title, a control string (DCS, SOS, PM, APC) to its terminator, a
-// control sequence, and the short escapes. The short form leaves out "[",
-// "]", "P", "X", "^" and "_", which open the longer ones.
-// eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-const sequenceAtStart = /^(?:\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[PX^_][^\u001b]*\u001b\\|\u001b\[[0-?]*[ -/]*[@-~]|\u001b(?:[ -/]+[0-~]|[0-OQ-WYZ\\`-~]))/
-// A sequence still arriving: an introducer whose end has not come yet, so it
-// runs to the end of the text. A title or a control string can end in ESC
-// with its backslash still to come.
-// eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-const sequenceUnfinished = /^\u001b(?:\][^\u0007\u001b]*\u001b?|[PX^_][^\u001b]*\u001b?|\[[0-?]*[ -/]*|[ -/]*)?$/
 // The longest unfinished sequence kept whole across a cut, so the phone holds
 // at most this much past its bound. Longer, and the bound wins.
 const unfinishedSequenceReach = 4_096
 
-// A cut that would fall inside an escape sequence, however long, moves to
-// just after it, so what is kept never begins with a sequence's parameters,
-// such as "[31m", or a window title's text. One still arriving is kept whole
-// from its introducer, so it is read once its end comes.
-function sequenceSafe(text: string, cut: number): number {
-  const escape = text.lastIndexOf("\u001b", cut - 1)
-  if (escape === -1) return cut
-  const rest = text.slice(escape)
-  const sequence = sequenceAtStart.exec(rest)
-  if (sequence) return Math.max(cut, escape + sequence[0].length)
-  return sequenceUnfinished.test(rest) && cut - escape <= unfinishedSequenceReach ? escape : cut
-}
-
-function isLowSurrogate(code: number): boolean {
-  return code >= 0xdc00 && code <= 0xdfff
+// The phone holds no more than the daemon keeps for a terminal. The oldest
+// text goes first. The cut is read as the terminal reads the text
+// (readableCut), so what is kept never begins with a sequence's parameters,
+// such as "[31m", or a window title's or a control string's payload, and
+// never splits a character outside the basic plane.
+function bounded(record: TerminalRecord): TerminalRecord {
+  const excess = record.text.length - maximumTerminalReplayCharacters
+  if (excess <= 0) return record
+  const { at, prefix } = readableCut(record.text, excess, lineBreakReach, unfinishedSequenceReach)
+  return {
+    ...record,
+    text: prefix + record.text.slice(at),
+    // Once the start of live output is cut away, nothing above it is left.
+    liveAt: record.liveAt !== undefined && record.liveAt > at ? record.liveAt - at + prefix.length : undefined,
+    phoneDropped: true,
+    // The phone's cut cannot see a sequence whose introducer the daemon cut,
+    // so the uncertain start stays hidden until the cut passes it. A cut
+    // that opens its sequence again starts where the terminal would read.
+    startsMidLine: record.startsMidLine && prefix === "" && at < drawnStart(record),
+  }
 }
 
 // Where the drawn text starts when it began partway through a line: past the

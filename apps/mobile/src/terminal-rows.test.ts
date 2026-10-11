@@ -213,6 +213,23 @@ describe("terminalLines and cursor movement within a line", () => {
     expect(terminalLines("a界b\r\u001b[C\u001b[@\n")).toEqual(["a 界b"])
   })
 
+  // Inserting and deleting act on the cursor's row of the widest grid, so a
+  // record of them cannot grow a line past it or move a long line's whole
+  // tail each time.
+  it("bounds what inserting and deleting characters cost", () => {
+    const inserted = terminalLines(`x\r${"\u001b[1000@".repeat(9_362)}y`)
+    expect(inserted).toEqual(["y"])
+    // What passes the row's end is lost, as at a terminal's right margin.
+    expect(terminalLines("abc\r\u001b[998@\n")).toEqual([`${" ".repeat(998)}ab`])
+    const deleted = terminalLines(`${"x".repeat(40_000)}\r${"\u001b[P".repeat(8_000)}`)
+    expect(deleted).toEqual([`${" ".repeat(1_000)}${"x".repeat(39_000)}`])
+  })
+
+  // A private marker after a parameter makes the sequence malformed.
+  it("drops a malformed sequence", () => {
+    expect(terminalLines("abc\r\u001b[2?KX\n")).toEqual(["Xbc"])
+  })
+
   // The phone draws lines, not a screen. Moving to another row is dropped,
   // and what follows is drawn where the cursor was on this line.
   it("drops movement to another row", () => {
@@ -251,6 +268,8 @@ describe("terminalLines and control strings", () => {
     expect(terminalLines("a\u009d0;title\u0007b\n")).toEqual(["ab"])
     expect(terminalLines("a\u001b[31\u0018b\n")).toEqual(["ab"])
     expect(terminalLines("a\u001bPpay\u001ab\n")).toEqual(["ab"])
+    // An 8-bit control inside a string ends it and begins its own sequence.
+    expect(terminalLines("a\u001bPqdata\u009b2CX\n")).toEqual(["a  X"])
     // Mode changes, such as hiding the cursor, move nothing.
     expect(terminalLines("a\u001b[?25lb\u001b[?2004h\n")).toEqual(["ab"])
   })
@@ -451,6 +470,28 @@ describe("terminalRows", () => {
     const full = watchFrom(watched({ buffer: `${graphics}${"x".repeat(maximumTerminalReplayCharacters - graphics.length)}` }))
     const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "y".repeat(80) } }, at)
     expect(terminalLines(record.text)[0]?.startsWith("x")).toBe(true)
+  })
+
+  // A line break inside a payload is not a line to cut after, and an 8-bit
+  // introducer opens a string as ESC and its letter do.
+  it("cuts at the bound past a control string with a line break or an 8-bit introducer", () => {
+    for (const [head, data] of [["\u001bPqaaa\nPAYLOAD\u001b\\", "y"], ["\u0090qPAYLOAD\u009c", "yy"]] as const) {
+      const full = watchFrom(watched({ buffer: `${head}${"x".repeat(maximumTerminalReplayCharacters - head.length)}` }))
+      const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data } }, at)
+      expect(record.text.length).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
+      expect(terminalLines(record.text).join("\n")).not.toContain("PAYLOAD")
+    }
+  })
+
+  // A control string longer than the reach for keeping one whole is cut at
+  // the bound, and the rest of its payload still draws nothing.
+  it("keeps drawing nothing of a control string cut past the reach for keeping it whole", () => {
+    let record = watchFrom(watched({ buffer: `\u001bPq${"#".repeat(maximumTerminalReplayCharacters - 3)}` }))
+    record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: "#".repeat(4_097) } }, at)
+    expect(record.text.length).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
+    expect(terminalLines(record.text)).toEqual([])
+    record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: "\u001b\\done\n" } }, at)
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["done"])
   })
 
   // A line break inside a control string's payload is not a line, so the
