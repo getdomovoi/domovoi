@@ -1,7 +1,7 @@
 import { ArchiveIcon, ChevronRightIcon, EllipsisIcon, GitBranchIcon, GitForkIcon, MonitorIcon, PanelLeftIcon, PauseIcon, PlayIcon } from "lucide-react"
-import { useId, useState } from "react"
+import { useId, useState, useSyncExternalStore } from "react"
 
-import type { ClientKind, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import type { ClientKind, SessionSummary, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import {
   DropdownMenu,
@@ -11,7 +11,7 @@ import {
 } from "./components/ui/dropdown-menu"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { StatusDot } from "./status-dot"
-import { groupSessions, type SessionGroupId } from "./session-groups"
+import { groupSessions, type GroupedSession, type SessionGroupId } from "./session-groups"
 import { cn } from "./lib/utils"
 import { dockSideBySideMinimumWidth } from "./dock-auto-collapse"
 import { titlebarTipClassName } from "./titlebar-tip"
@@ -87,6 +87,48 @@ export function SessionsDrawerTrigger({
   )
 }
 
+// The drawer's clock: the time rounded down to a tick, read whenever the
+// column renders and advanced every tick while it is open. Rounding keeps the
+// value stable between ticks, as useSyncExternalStore requires.
+const clockTickMs = 15_000
+const readClock = () => Math.floor(Date.now() / clockTickMs) * clockTickMs
+const noClock = () => () => {}
+const tickingClock = (changed: () => void) => {
+  const timer = setInterval(changed, clockTickMs)
+  return () => clearInterval(timer)
+}
+
+function useDrawerClock(open: boolean): number {
+  return useSyncExternalStore(open ? tickingClock : noClock, readClock, readClock)
+}
+
+// How long, in the design's units: running 12m, failed 1h ago, idle 2d. A
+// reading ahead of this client's clock counts as now.
+function elapsed(since: string, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - Date.parse(since)) / 60_000)
+  if (minutes < 1) return "<1m"
+  if (minutes < 60) return `${minutes}m`
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)}h`
+  return `${Math.floor(minutes / (24 * 60))}d`
+}
+
+// A row's meta after the machine name. Running counts from the start of the
+// session's turn in flight, which the snapshot carries only for turns its
+// thread links (Q401); without one it says running and no more. Failed and
+// idle count from the session's last change.
+function rowMeta(entry: GroupedSession, session: SessionSummary | undefined, turns: WorkspaceSnapshot["turns"], now: number): string {
+  if (entry.note === "running") {
+    const inFlight = (turns ?? [])
+      .filter((turn) => turn.sessionId === entry.id && turn.status === "pending")
+      .sort((left, right) => right.ordinal - left.ordinal)[0]
+    return inFlight ? `running ${elapsed(inFlight.startedAt, now)}` : "running"
+  }
+  if (!session) return entry.note
+  if (entry.note === "failed") return `failed ${elapsed(session.updatedAt, now)} ago`
+  if (entry.note === "idle") return `idle ${elapsed(session.updatedAt, now)}`
+  return entry.note
+}
+
 export function SessionsDrawerColumn({
   snapshot,
   open,
@@ -114,9 +156,11 @@ export function SessionsDrawerColumn({
 }) {
   const [collapsed, setCollapsed] = useState<ReadonlySet<SessionGroupId>>(new Set())
   const archivedNoteId = useId()
+  const now = useDrawerClock(open)
   if (!open) return null
   const groups = groupSessions(snapshot)
   const machine = snapshot.machine.name
+  const sessionsById = new Map(snapshot.sessions.map((session) => [session.id, session]))
   const toggle = (id: SessionGroupId) => setCollapsed((current) => {
     const next = new Set(current)
     if (next.has(id)) next.delete(id)
@@ -164,20 +208,27 @@ export function SessionsDrawerColumn({
                   <div
                     key={entry.id}
                     className={cn(
-                      "group flex items-start gap-2 rounded-md px-2 py-1.5 hover:bg-accent/60",
+                      "group flex items-start gap-[9px] rounded-md px-[9px] py-2 hover:bg-accent/60",
                       current && "bg-accent",
-                      entry.meaning === "idle" && "opacity-70",
+                      entry.meaning === "idle" && "opacity-55",
                     )}
                   >
                     <button
                       type="button"
                       aria-current={current ? "true" : undefined}
                       onClick={() => onActivate(entry.id)}
-                      className="flex min-w-0 flex-1 flex-col items-start gap-0.5 text-left"
+                      className="flex min-w-0 flex-1 items-start gap-[9px] text-left"
                     >
-                      <span className="line-clamp-2 text-[12px] leading-[1.38] text-strong">{entry.title}</span>
-                      <span className="flex w-full items-center gap-2">
-                        <StatusDot meaning={entry.meaning} label={`${machine} · ${entry.note}`} size="inline" />
+                      {/* The title comes first in the button's name, so the dot
+                          column follows it in the DOM and is drawn first. The
+                          visible meta is the dot's label; the dot's own copy of
+                          it is hidden so a screen reader hears it once. */}
+                      <span className="flex min-w-0 flex-1 flex-col items-start">
+                        <span className="line-clamp-2 text-[12px] leading-[1.38] text-strong">{entry.title}</span>
+                        <span data-session-meta="" className="mt-[3px] font-machine text-[10.5px] text-faint">{`${machine} · ${rowMeta(entry, sessionsById.get(entry.id), snapshot.turns, now)}`}</span>
+                      </span>
+                      <span aria-hidden className={cn("order-first mt-[5px] flex", entry.meaning === "idle" && "opacity-80")}>
+                        <StatusDot meaning={entry.meaning} label={entry.note} size="inline" labelHidden />
                       </span>
                     </button>
                     {onAction ? (

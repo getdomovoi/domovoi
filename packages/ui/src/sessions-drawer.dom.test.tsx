@@ -1,20 +1,41 @@
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useState } from "react"
-import { afterEach, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { ComposedSessionsDrawer as SessionsDrawer } from "./test-support/sessions-drawer"
 
 afterEach(cleanup)
 
+const now = Date.parse("2026-10-11T12:00:00.000Z")
+const ago = (ms: number) => new Date(now - ms).toISOString()
+const minute = 60_000
+const machine = demoWorkspace.machine.name
+
+beforeEach(() => {
+  // Only Date: the user-event timers stay real.
+  vi.useFakeTimers({ toFake: ["Date"] })
+  vi.setSystemTime(now)
+})
+
+afterEach(() => {
+  vi.useRealTimers()
+})
+
 function snapshotWith(): WorkspaceSnapshot {
   const snapshot = structuredClone(demoWorkspace)
   const base = snapshot.sessions[0]!
   snapshot.sessions = [
-    { ...base, id: "s1", title: "Migrate billing webhooks", activeTurnId: "turn-1", state: "active" },
-    { ...base, id: "s2", title: "Port the CLI auth flow", state: "failed" },
-    { ...base, id: "s3", title: "Document the replay table", state: "idle" },
+    { ...base, id: "s1", title: "Migrate billing webhooks", activeTurnId: "turn-1", state: "active", updatedAt: ago(minute) },
+    { ...base, id: "s2", title: "Port the CLI auth flow", state: "failed", updatedAt: ago(60 * minute) },
+    { ...base, id: "s3", title: "Document the replay table", state: "idle", updatedAt: ago(2 * 24 * 60 * minute) },
+  ]
+  // The ledger's record of s1's turn in flight: an earlier finished turn and
+  // the pending one, started twelve minutes ago.
+  snapshot.turns = [
+    { id: "a".repeat(64), sessionId: "s1", ordinal: 1, startedAt: ago(40 * minute), completedAt: ago(30 * minute), status: "completed" },
+    { id: "b".repeat(64), sessionId: "s1", ordinal: 2, startedAt: ago(12 * minute), status: "pending" },
   ]
   delete (snapshot.sessions[1] as { activeTurnId?: string }).activeTurnId
   delete (snapshot.sessions[2] as { activeTurnId?: string }).activeTurnId
@@ -45,13 +66,56 @@ it("groups by what each session wants from you", async () => {
   expect(screen.getByRole("region", { name: "QUIET" })).toBeTruthy()
 })
 
-it("says why each session is where it is, in words", async () => {
+// The row's name is its title and then its meta: the machine, the state and
+// how long it has held (Desktop v2 drawer.row, Q364 A).
+const row = (title: string) => screen.getByRole("button", { name: new RegExp(`^${title}`) })
+const meta = (title: string) => row(title).querySelector("[data-session-meta]")?.textContent
+
+it("says why each session is where it is, in words, and for how long", async () => {
   const user = userEvent.setup()
   render(<Harness onActivate={vi.fn()} />)
   await user.click(screen.getByRole("button", { name: /Sessions/ }))
-  expect(screen.getByText(/· running$/)).toBeTruthy()
-  expect(screen.getByText(/· failed$/)).toBeTruthy()
-  expect(screen.getByText(/· idle$/)).toBeTruthy()
+  expect(meta("Migrate billing webhooks")).toBe(`${machine} · running 12m`)
+  expect(meta("Port the CLI auth flow")).toBe(`${machine} · failed 1h ago`)
+  expect(meta("Document the replay table")).toBe(`${machine} · idle 2d`)
+  expect(row("Port the CLI auth flow").getAttribute("aria-label")).toBeNull()
+  expect(row("Port the CLI auth flow").textContent).toContain(`${machine} · failed 1h ago`)
+})
+
+// The ledger only times turns the snapshot's thread links. A running session
+// whose turn it did not send says running and nothing it cannot back.
+it("names a running session without a duration when no start was sent", async () => {
+  const user = userEvent.setup()
+  const snapshot = snapshotWith()
+  snapshot.turns = []
+  function Untimed() {
+    const [open, setOpen] = useState(false)
+    return <SessionsDrawer snapshot={snapshot} open={open} onOpenChange={setOpen} onActivate={vi.fn()} />
+  }
+  render(<Untimed />)
+  await user.click(screen.getByRole("button", { name: /Sessions/ }))
+  expect(meta("Migrate billing webhooks")).toBe(`${machine} · running`)
+})
+
+// The column is a long-lived view: its times move while it is open.
+it("keeps the times current while the column is open", () => {
+  vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] })
+  vi.setSystemTime(now)
+  const snapshot = snapshotWith()
+  snapshot.sessions[2]!.updatedAt = ago(20_000)
+  render(<SessionsDrawer snapshot={snapshot} open onOpenChange={vi.fn()} onActivate={vi.fn()} />)
+  expect(meta("Document the replay table")).toBe(`${machine} · idle <1m`)
+  act(() => { vi.advanceTimersByTime(3 * 60 * minute) })
+  expect(meta("Document the replay table")).toBe(`${machine} · idle 3h`)
+  expect(meta("Migrate billing webhooks")).toBe(`${machine} · running 3h`)
+})
+
+it("dims quiet rows the way the design does", async () => {
+  const user = userEvent.setup()
+  render(<Harness onActivate={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: /Sessions/ }))
+  expect(row("Document the replay table").parentElement?.className).toContain("opacity-55")
+  expect(row("Migrate billing webhooks").parentElement?.className).not.toContain("opacity-55")
 })
 
 // v2's drawer is a column beside the thread, not a popover: picking a session
@@ -70,7 +134,7 @@ it("names the machine beside each session's state", async () => {
   const user = userEvent.setup()
   render(<Harness onActivate={vi.fn()} />)
   await user.click(screen.getByRole("button", { name: /Sessions/ }))
-  expect(screen.getByText(`${demoWorkspace.machine.name} · running`)).toBeTruthy()
+  expect(meta("Migrate billing webhooks")?.startsWith(`${machine} · `)).toBe(true)
 })
 
 it("folds a group away and back, keeping its count on the header", async () => {
@@ -213,7 +277,7 @@ it("gives an archived row a menu that says what archive did", async () => {
     return <SessionsDrawer snapshot={snapshot} open={open} onOpenChange={setOpen} onActivate={vi.fn()} onAction={vi.fn()} />
   }
   render(<WithArchived />)
-  expect(screen.getByText(/· archived$/)).toBeTruthy()
+  expect(meta(archived.title)).toBe(`${machine} · archived`)
   await user.click(screen.getByRole("button", { name: `Actions for ${archived.title}` }))
   const later = screen.getByRole("menuitem", { name: /Start a new session from this branch/ })
   expect(later.getAttribute("aria-disabled")).toBe("true")
