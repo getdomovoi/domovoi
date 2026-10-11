@@ -256,10 +256,11 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   // list from Claude's storage, which can already hold changes another
   // session made to a shared list, so the next change is measured from here.
   #reportedTasks = new Map<string, Map<string, ClaudeTask>>()
-  // Each thread's task ids seen deleted. The daemon drops a provider event it
-  // cannot take, as during an emergency stop, so every later change repeats
-  // them. A step already removed makes the repeat a no-op.
-  #deletedTasks = new Map<string, Set<string>>()
+  // Each thread's recent task deletions, with how many more changes repeat
+  // each. The daemon drops a provider event it cannot take, as during an
+  // emergency stop, so the next changes repeat them. A step already removed
+  // makes the repeat a no-op.
+  #deletedTasks = new Map<string, Map<string, number>>()
   // Stopped queries whose Claude process has not exited yet. A retried stop,
   // a reopen and a shutdown wait on these instead of finding nothing to stop.
   #stopping = new Set<OwnedQuery>()
@@ -592,7 +593,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     this.#refuseWhenClosing()
     const preflight = this.#preflight
     const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CODE_ENABLE_TODO_TOOLS: "1" }
-    const { instructions, repository, tasks, taskStorage } = await this.#prepared((async () => {
+    const { instructions, repository, taskRead, taskStorage } = await this.#prepared((async () => {
       if (preflight) await preflight()
       const instructions = await projectInstructions(cwd, "claude")
       // The worktree's verdict, read just before Claude starts: only a
@@ -604,9 +605,16 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         instructions,
         repository: verdict.state === "trusted" ? { digest: verdict.configDigest, ...claudeRepositoryLoad(verdict.documents) } : undefined,
         taskStorage,
-        tasks: resume || taskStorage.shared ? (await readClaudeTasks(taskStorage.directory))?.tasks : undefined,
+        taskRead: resume || taskStorage.shared ? await readClaudeTasks(taskStorage.directory) : undefined,
       }
     })())
+    const tasks = taskRead?.tasks
+    // The next change is measured from the tasks last reported only when the
+    // list read now is whole. A task missing from a partial or failed read
+    // would otherwise read as deleted and lose its step.
+    const reported = taskRead?.complete === false || (resume && !taskRead)
+      ? undefined
+      : this.#reportedTasks.get(`${threadId}/${taskStorage.listId}`)
     const settings = repository && Object.keys(repository.settings).length > 0 ? repository.settings : undefined
     this.#refuseWhenClosing()
     const input = new PushStream<ClaudeUserMessage>()
@@ -649,7 +657,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       tools: new Map(),
       tasks: tasks ?? new Map(),
       taskList: taskStorage.listId,
-      reportedTasks: new Map(this.#reportedTasks.get(`${threadId}/${taskStorage.listId}`) ?? tasks),
+      reportedTasks: new Map(reported ?? tasks),
       ...(taskStorage.shared ? { sharedTaskDirectory: taskStorage.directory } : {}),
       screenedReads: new Map(),
       turnMessageIds: new Set(),
@@ -1029,20 +1037,19 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         if (changed && session.runtime.permissionMode !== "plan") {
           const current = claudePlanTasks(session.tasks)
           const historyKey = `${session.threadId}/${session.taskList}`
-          const deleted = this.#deletedTasks.get(historyKey) ?? new Set<string>()
+          // Each deletion is sent with this change and the next ones, a fixed
+          // number of times, so the list stays bounded whatever the churn.
+          // Only that many dropped events in a row can lose one, which
+          // leaves its step visible.
+          const deleted = this.#deletedTasks.get(historyKey) ?? new Map<string, number>()
           for (const id of session.reportedTasks.keys()) {
-            if (session.tasks.has(id)) continue
-            deleted.delete(id)
-            deleted.add(id)
+            if (!session.tasks.has(id)) deleted.set(id, taskDeletionRepeats)
           }
           for (const id of session.tasks.keys()) deleted.delete(id)
-          // Only the latest deletions repeat, so the list stays bounded. The
-          // first change the daemon takes after a dropped one carries its
-          // deletion. Only more deletions than this while events are dropped
-          // can lose one, which leaves its step visible.
-          for (const id of deleted) {
-            if (deleted.size <= maximumRepeatedTaskDeletions) break
-            deleted.delete(id)
+          const deletedIds = [...deleted.keys()]
+          for (const [id, remaining] of deleted) {
+            if (remaining <= 1) deleted.delete(id)
+            else deleted.set(id, remaining - 1)
           }
           this.#deletedTasks.set(historyKey, deleted)
           this.#emit({
@@ -1056,7 +1063,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
               list: session.taskList,
               previous: claudePlanTasks(session.reportedTasks),
               current,
-              deleted: [...deleted],
+              deleted: deletedIds,
             },
           })
           session.reportedTasks = new Map(session.tasks)
@@ -1200,7 +1207,8 @@ function baseOptions(): ClaudeQueryOptions {
 }
 
 const maximumInterruptedMessageIds = 64
-const maximumRepeatedTaskDeletions = 64
+// How many task changes in a row carry a deletion, the first included.
+const taskDeletionRepeats = 16
 
 function resultMessageIds(message: ClaudeSdkMessage): string[] | undefined {
   const ids = Array.isArray(message.user_message_uuids)
