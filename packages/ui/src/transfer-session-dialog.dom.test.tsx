@@ -1,5 +1,6 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { useState } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { sessionTransferContractVersion } from "@getdomovoi/protocol"
@@ -167,6 +168,64 @@ it("moves the choice to another reachable machine", async () => {
   await user.click(screen.getByRole("radio", { name: "garage" }))
 
   expect(onTargetChange).toHaveBeenCalledWith(spare.id)
+})
+
+it("does not offer the move to a newly picked machine on the previous machine's preview", async () => {
+  const onPreview = vi.fn(async (params: { targetMachineId: string }) => ({
+    allowed: true as const,
+    contractVersion: sessionTransferContractVersion,
+    sessionId: session.id,
+    sourceMachineId: source.id,
+    targetMachineId: params.targetMachineId,
+    intentDigest: `sha256:${(params.targetMachineId === target.id ? "a" : "e").repeat(64)}`,
+    project: {
+      sourceProjectId: "project-ledger",
+      targetProjectId: "project-ledger-target",
+      lineageCommit: "b".repeat(40),
+      sourceHeadCommit: "c".repeat(40),
+    },
+    coverage: { included: [{ kind: "thread" as const }], excluded: [], warnings: [] },
+  }))
+  const onTransfer = vi.fn(() => Promise.resolve(succeeded))
+  function Opener() {
+    const [chosen, setChosen] = useState(target)
+    return (
+      <TransferSessionDialog
+        open
+        onOpenChange={() => {}}
+        session={session}
+        source={source}
+        target={chosen}
+        onPreview={onPreview as never}
+        onTransfer={onTransfer as never}
+        onTransferred={() => {}}
+        onOutcome={() => {}}
+        targetChoice={{
+          machines: [source, target, spare],
+          onTargetChange: (id) => setChosen([target, spare].find((machine) => machine.id === id)!),
+        }}
+      />
+    )
+  }
+  const user = userEvent.setup()
+  render(<Opener />)
+  await user.click(screen.getByRole("radio", { name: /remote ref/i }))
+  await user.type(screen.getByLabelText("Remote name"), "origin")
+  const move = screen.getByRole("button", { name: "Move session" })
+  await waitFor(() => expect(move).toHaveProperty("disabled", false))
+
+  // The remote preview waits out its debounce, so the old one is still held
+  // when the new machine is chosen.
+  await user.click(screen.getByRole("radio", { name: "garage" }))
+
+  expect(move).toHaveProperty("disabled", true)
+  expect(screen.queryByRole("group", { name: "Travels with the session" })).toBeNull()
+  await waitFor(() => expect(move).toHaveProperty("disabled", false))
+  await user.click(move)
+  expect(onTransfer).toHaveBeenCalledWith(expect.objectContaining({
+    targetMachineId: spare.id,
+    intentDigest: `sha256:${"e".repeat(64)}`,
+  }))
 })
 
 it("asks for a reachable machine when the chosen one cannot accept the session", () => {

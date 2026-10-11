@@ -228,11 +228,18 @@ export function TransferSessionDialog({
   const [remote, setRemote] = useState("")
   const [pending, setPending] = useState(false)
   const [problem, setProblem] = useState<{ title: string; detail: string; from: "preview" | "move" } | undefined>(undefined)
-  const [preview, setPreview] = useState<SessionTransferPreview | undefined>(undefined)
+  const [answered, setAnswered] = useState<{ key: string; preview: SessionTransferPreview } | undefined>(undefined)
   const [previewing, setPreviewing] = useState(false)
   const [previewAttempt, setPreviewAttempt] = useState(0)
   const [incomplete, setIncomplete] = useState<IncompleteTransfer | undefined>(undefined)
   const [recovering, setRecovering] = useState(false)
+
+  // A preview answers one question: this session, to this machine, this way.
+  // Any change to those asks a new one, and until it lands the old answer is
+  // not this move's, even while a typed remote waits out its debounce. Keyed
+  // here rather than cleared in an effect, so no render offers the move on it.
+  const previewKey = JSON.stringify([session.id, target.id, method, method === "remote-ref" ? remote.trim() : null])
+  const preview = answered?.key === previewKey ? answered.preview : undefined
 
   // The daemon decides what this move would carry and whether it may happen at
   // all. Asking it is not a nicety: session.transfer refuses anything without
@@ -244,13 +251,13 @@ export function TransferSessionDialog({
     // the repository and calls the target. Typing a remote name would run one
     // per keystroke, so the request waits for the typing to stop.
     if (method === "remote-ref" && !remote.trim()) {
-      setPreview(undefined)
+      setAnswered(undefined)
       setPreviewing(false)
       return
     }
     const run = () => {
       setPreviewing(true)
-      setPreview(undefined)
+      setAnswered(undefined)
       void onPreview({
         sessionId: session.id,
         targetMachineId: target.id,
@@ -259,7 +266,7 @@ export function TransferSessionDialog({
       }).then(
         (next) => {
           if (!active) return
-          setPreview(next)
+          setAnswered({ key: previewKey, preview: next })
           // A preview that failed and then succeeded has nothing left to report,
           // so its error goes. A refused move stays: the operator asked for it
           // and the answer is what they are waiting to read.
@@ -286,7 +293,7 @@ export function TransferSessionDialog({
       active = false
       clearTimeout(timer)
     }
-  }, [method, onPreview, open, previewAttempt, remote, session.id, source.label, target.id])
+  }, [method, onPreview, open, previewAttempt, previewKey, remote, session.id, source.label, target.id])
 
   // What the move carries is the daemon's answer, so it is read off the preview
   // rather than described here. Before the preview lands there is nothing
@@ -299,7 +306,7 @@ export function TransferSessionDialog({
       setMethod("git-bundle")
       setRemote("")
       setProblem(undefined)
-      setPreview(undefined)
+      setAnswered(undefined)
       setIncomplete(undefined)
       setRecovering(false)
     }
