@@ -16,7 +16,8 @@ Preview grants last 60 seconds. While the preview is on screen the client now as
 five seconds before the current one ends, without reloading the page shown, and a frame that
 mounts later loads a fresh grant. Before, opening fullscreen or coming back to the Preview tab more
 than a minute after the page loaded showed an expired-grant refusal instead of the page. A hidden
-preview asks for no grants.
+preview asks for no grants. A failed renewal is retried after 1 second, doubling to one try every
+30 seconds, and a frame with nothing loaded and only a lapsed grant shows the renewal error.
 
 Fullscreen is a full surface with the widths, Exit fullscreen with esc, the variant chips and a
 comments column. Adding a comment works in fullscreen: the element is picked in the fullscreen
