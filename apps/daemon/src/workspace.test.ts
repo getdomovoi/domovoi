@@ -3896,6 +3896,12 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect((await run("-C", targetClone, "branch", "--list", "domovoi/*")).stdout.trim()).toBe("")
   })
 
+  // The two tests below start the fake git-lfs, a Node process, about twenty
+  // times and about 120 Git processes each: 1.5 to 1.7 s on an idle macOS
+  // runner (diagnostic run 38177732109), and up to 5 s within the full suite
+  // there, where four CI runs hit the 5 s timeout. Twice the worst seen.
+  const lfsOperationsTimeout = 10_000
+
   // The operations on a session worktree that already exists run every Git
   // command that can start a program through an isolated Git directory too
   // (ruling Q223 extended in P8 PR B): no repository config key starts
@@ -3926,7 +3932,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await ran()).toBe(false)
     expect(await readFile(join(workspace.path, "object.bin"), "utf8")).toBe("changed\n")
     expect(await readFile(join(repositoryPath, "object.bin"), "utf8")).toBe("object\n")
-  })
+  }, lfsOperationsTimeout)
 
   it.skipIf(!fakeLfsRuns)("runs no program the target repository's credential helper names when a bundle applies to a session it holds", async () => {
     const { scratch, repositoryPath, payload, git, ran, withLfs } = await lfsRepository("domovoi-ops-lfs-transfer-")
@@ -3953,7 +3959,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await readFile(join(updated.path, "object.bin"), "utf8")).toBe("second\n")
     expect((await run("-C", updated.path, "status", "--porcelain")).stdout).toBe("")
     expect(await ran()).toBe(false)
-  })
+  }, lfsOperationsTimeout)
 
   // The exact lines `git lfs install` writes are not a repository filter
   // (ruling Q207 A) for these operations either, as for a new session.
