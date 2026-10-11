@@ -730,6 +730,9 @@ describe("withNotification", () => {
     // colour alone draws nothing.
     const malformed = output(output(watchFrom(watched()), "\u001b[1 2"), "m")
     expect(malformed.pieces).toBe(0)
+    // A private sequence split after its marker moves nothing either.
+    expect(output(output(watchFrom(watched()), "\u001b[?"), "2C").pieces).toBe(0)
+    expect(output(output(watchFrom(watched()), "\u001b["), "2C").pieces).toBe(1)
     expect(output(watchFrom(watched()), "\u001b[31m").pieces).toBe(0)
   })
 

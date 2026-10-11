@@ -438,8 +438,9 @@ export function nextLineStart(text: string, from: number, reach: number): number
 }
 
 // How the reader stands between two pieces of output. A control sequence
-// already malformed, or with an intermediate, stays dropped at its end.
-export type ReaderState = State | "csiDropped"
+// already malformed, or with an intermediate, stays dropped at its end, and
+// a private one stays private.
+export type ReaderState = State | "csiDropped" | "csiPrivate"
 
 // The control sequences that change a line, as dispatch acts on them.
 const lineFinals = new Set(["K", "C", "a", "D", "G", "`", "X", "P", "@"])
@@ -450,9 +451,10 @@ const lineFinals = new Set(["K", "C", "a", "D", "G", "`", "X", "P", "@"])
 // payload, or only a colour, draws nothing.
 export function readPiece(state: ReaderState, data: string): { state: ReaderState, lineBreaks: number, draws: boolean } {
   const reader = new Reader()
-  if (state === "csi" || state === "csiDropped") {
+  if (state === "csi" || state === "csiDropped" || state === "csiPrivate") {
     reader.introduced(0x5b)
     reader.malformed = state === "csiDropped"
+    if (state === "csiPrivate") reader.parameters = "?"
     reader.state = "csi"
   } else {
     reader.state = state
@@ -470,8 +472,11 @@ export function readPiece(state: ReaderState, data: string): { state: ReaderStat
       if (char === "\n") lineBreaks += 1
     }
   }
-  const dropped = reader.state === "csi" && (reader.malformed || reader.intermediates !== "")
-  return { state: dropped ? "csiDropped" : reader.state, lineBreaks, draws }
+  if (reader.state !== "csi") return { state: reader.state, lineBreaks, draws }
+  const csi: ReaderState = reader.malformed || reader.intermediates !== ""
+    ? "csiDropped"
+    : /^[<=>?]/.test(reader.parameters) ? "csiPrivate" : "csi"
+  return { state: csi, lineBreaks, draws }
 }
 
 // Where to cut the front of a text so that what is kept reads as the
