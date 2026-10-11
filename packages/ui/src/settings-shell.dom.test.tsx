@@ -71,6 +71,63 @@ it("routes fleet and skills to the surfaces that own them", async () => {
   expect(props.onOpenSkills).toHaveBeenCalledTimes(1)
 })
 
+// The Desktop V2 frame's Elsewhere: Permissions and rules and Checkpoints open
+// the sheet's Rules and Checkpoints tabs, in the frame's order.
+it("links Permissions and rules and Checkpoints to the sheet tabs that own them", async () => {
+  const onOpenPermissions = vi.fn()
+  const onOpenCheckpoints = vi.fn()
+  render(<SettingsShell {...shellProps()} onOpenPermissions={onOpenPermissions} onOpenCheckpoints={onOpenCheckpoints} />)
+
+  const elsewhere = within(screen.getByRole("region", { name: "Elsewhere" }))
+  const links = elsewhere.getAllByRole("button").map((button) => button.querySelector("span > span")?.textContent)
+  expect(links).toEqual(["Machines and daemons", "Permissions and rules", "Skills", "Checkpoints", "Audit log"])
+  expect(elsewhere.getByText("What you have already allowed, and what a rule can never cover.")).toBeTruthy()
+  expect(elsewhere.getByText("Take one yourself, or reset a session's worktree to one. The thread keeps its turns.")).toBeTruthy()
+
+  await userEvent.click(elsewhere.getByRole("button", { name: /Permissions and rules/u }))
+  await userEvent.click(elsewhere.getByRole("button", { name: /Checkpoints/u }))
+  expect(onOpenPermissions).toHaveBeenCalledOnce()
+  expect(onOpenCheckpoints).toHaveBeenCalledOnce()
+})
+
+it("draws no sheet link the shell cannot open", () => {
+  render(<SettingsShell {...shellProps()} />)
+
+  const elsewhere = within(screen.getByRole("region", { name: "Elsewhere" }))
+  expect(elsewhere.queryByRole("button", { name: /Permissions and rules/u })).toBeNull()
+  expect(elsewhere.queryByRole("button", { name: /Checkpoints/u })).toBeNull()
+})
+
+// Q362 A: theme, Appearance and Notifications stay on this client and never
+// reach the daemon, so a watching window keeps them live. Everything that
+// reaches the daemon stays locked.
+it("keeps this client's own preferences live while the window watches", async () => {
+  const props = { ...shellProps(), onWindowDecorationChange: vi.fn(), onExternalEditorChange: vi.fn() }
+  render(
+    <SettingsShell
+      {...props}
+      readOnly
+      externalEditor="system"
+      windowDecoration="domovoi"
+      activeWindowDecoration="domovoi"
+    />,
+  )
+
+  await userEvent.click(screen.getByRole("switch", { name: "Failures" }))
+  expect(props.onNotificationsChange).toHaveBeenCalledWith({ completion: true, failure: false, approvalNeeded: true })
+
+  await userEvent.click(within(screen.getByRole("radiogroup", { name: "Theme" })).getByRole("radio", { name: /Dark/u }))
+  expect(props.onThemeChange).toHaveBeenCalledWith("dark")
+
+  const decoration = within(screen.getByRole("radiogroup", { name: "Window decoration" })).getAllByRole("radio")
+  await userEvent.click(decoration[1]!)
+  expect(props.onWindowDecorationChange).toHaveBeenCalledWith("system")
+
+  // Not named by Q362: the external editor stays locked while watching.
+  await userEvent.click(screen.getByRole("radio", { name: "VS Code" }))
+  expect(props.onExternalEditorChange).not.toHaveBeenCalled()
+})
+
 const activeRule: Extract<ApprovalRule, { status: "active" }> = {
   id: "rule-1",
   useCount: 0,

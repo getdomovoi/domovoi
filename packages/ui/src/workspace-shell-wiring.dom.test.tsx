@@ -1,7 +1,8 @@
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react"
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import type { DesktopWindowBridge } from "./desktop-platform"
 import { terminalIdForSession } from "./terminal-id"
 import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
@@ -136,5 +137,86 @@ describe("the Terminal tab on a watching desktop", () => {
       terminalId: terminalIdForSession(snapshot.activeSessionId!),
     })
     expect(sentRequests(socket, "terminal.create")).toEqual([])
+  })
+})
+
+// The Desktop V2 frame links Permissions and rules and Checkpoints from
+// Settings' Elsewhere to the sheet tabs that own them, one click away.
+describe("Settings' links to the sheet", () => {
+  it("opens Rules from Permissions and rules", async () => {
+    await openWorkspace(workspaceSnapshot())
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /^Permissions and rules/u }))
+    await settle()
+
+    expect(selectedTab()).toBe("Rules")
+  })
+
+  it("opens Checkpoints from Checkpoints", async () => {
+    await openWorkspace(workspaceSnapshot())
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /^Checkpoints/u }))
+    await settle()
+
+    expect(selectedTab()).toBe("Checkpoints")
+  })
+})
+
+// Q362 A: theme, Appearance and Notifications stay on this client, so a
+// watching window changes them, and nothing about them reaches the daemon.
+describe("this client's own preferences on a watching window", () => {
+  it("saves a theme and a notification change locally and sends nothing", async () => {
+    const socket = await openWorkspace(workspaceSnapshot({ clientAccess: "watching" } as Partial<Hello>), { clientKind: "desktop" })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    const before = sentRequests(socket).length
+
+    await user.click(within(await screen.findByRole("radiogroup", { name: "Theme" })).getByRole("radio", { name: /Light/u }))
+    await user.click(screen.getByRole("switch", { name: "Completions" }))
+    await settle()
+
+    const saved = JSON.parse(localStorage.getItem(workspaceUiStorageKey) ?? "{}") as { theme?: string; notifications?: Record<string, boolean> }
+    expect(saved.theme).toBe("light")
+    expect(saved.notifications).toEqual({ completion: false, failure: true, approvalNeeded: true })
+    expect(screen.getByRole("switch", { name: "Completions" }).getAttribute("aria-checked")).toBe("false")
+    expect(sentRequests(socket).slice(before)).toEqual([])
+  })
+})
+
+describe("window decoration on a watching desktop", () => {
+  it("hands the change to the desktop, which saves it in its own file", async () => {
+    const setWindowDecoration = vi.fn(async () => true)
+    const windowBridge: DesktopWindowBridge = {
+      platform: "linux",
+      getRpcEndpoint: async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "t" }),
+      captureAnnotation: async () => { throw new Error("not in this test") },
+      notify: async () => true,
+      onNotificationActivate: () => () => {},
+      openDirectory: async () => ({ status: "cancelled" as const }),
+      readClipboardText: async () => "",
+      writeClipboardText: async () => true,
+      openExternal: async () => true,
+      onDeepLink: () => () => {},
+      getWindowDecoration: async () => "domovoi",
+      setWindowDecoration,
+      minimize: () => {},
+      maximize: () => {},
+      close: () => {},
+    }
+    const socket = await openWorkspace(workspaceSnapshot({ clientAccess: "watching" } as Partial<Hello>), { clientKind: "desktop", windowBridge })
+    const user = userEvent.setup()
+    const skip = screen.queryByRole("button", { name: "Skip for now" })
+    if (skip) { await user.click(skip); await settle() }
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    const before = sentRequests(socket).length
+
+    const options = within(await screen.findByRole("radiogroup", { name: "Window decoration" })).getAllByRole("radio")
+    await user.click(options[1]!)
+    await settle()
+
+    expect(setWindowDecoration).toHaveBeenCalledWith("system")
+    expect(sentRequests(socket).slice(before)).toEqual([])
   })
 })
