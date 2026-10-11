@@ -369,6 +369,9 @@ export function ArtifactDock({
   const [bridgeReadyKey, setBridgeReadyKey] = useState<string>()
   const readyFrames = useRef<{ dock?: string | undefined, fullscreen?: string | undefined }>({})
   const readyLoads = useRef(0)
+  // Counts picks; a capture that lands after a newer pick, a document change
+  // or the dock's unmount is dropped.
+  const selectionRequest = useRef(0)
   const pendingAnchorResolutionBatch = useRef<PreviewBridgeResolveAnchorsMessage | undefined>(undefined)
   const queuedAnchorResolutionBatches = useRef<PreviewBridgeResolveAnchorsMessage[]>([])
   const [uncontrolledTab, setUncontrolledTab] = useState<string>(defaultTab)
@@ -537,7 +540,6 @@ export function ArtifactDock({
   }, [annotations, bridgeChannel, postNextAnchorResolutionBatch, preview])
 
   useEffect(() => {
-    let active = true
     const receiveSelection = async (event: MessageEvent<unknown>) => {
       const sender = event.source === null
         ? undefined
@@ -576,6 +578,11 @@ export function ArtifactDock({
       if (readOnly || !pickerActive) return
       const nextSelection = previewSelectionFor(event.data, bridgeChannel, preview.id)
       if (!nextSelection) return
+      // Turning the picker off renders the dock again and replaces this
+      // listener, so the capture below must not be dropped for that. What
+      // drops it is a later pick, another document, or the dock going away.
+      selectionRequest.current += 1
+      const request = selectionRequest.current
       postPickerState(false)
       setPickerActive(false)
       let visualContextUpload: RpcParams<"annotation.create">["visualContextUpload"]
@@ -590,20 +597,23 @@ export function ArtifactDock({
           preview.revision,
         )
       }
-      if (!active) return
+      if (request !== selectionRequest.current) return
       setSelectionVisualContext(visualContextUpload)
       setSelection(nextSelection)
       setComment("")
       setAnnotationError("")
     }
     window.addEventListener("message", receiveSelection)
-    return () => {
-      active = false
-      window.removeEventListener("message", receiveSelection)
-    }
+    return () => window.removeEventListener("message", receiveSelection)
   }, [activeFrame, annotations, readOnly, bridgeChannel, bridgeFrame, captureAnnotation, pickerActive, postNextAnchorResolutionBatch, postPickerState, preview, previewKey])
 
   useEffect(() => {
+    const requests = selectionRequest
+    return () => { requests.current += 1 }
+  }, [])
+
+  useEffect(() => {
+    selectionRequest.current += 1
     setPickerActive(false)
     setSelection(null)
     setSelectionVisualContext(undefined)

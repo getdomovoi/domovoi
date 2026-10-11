@@ -63,9 +63,11 @@ function renderDock(
   authorizeArtifact: ReturnType<typeof grantingAuthorize>,
   onCreateAnnotation = vi.fn(async () => {}),
   dockSnapshot: WorkspaceSnapshot = snapshot,
+  captureAnnotation?: Parameters<typeof ArtifactDock>[0]["captureAnnotation"],
 ) {
   render(
     <ArtifactDock
+      {...(captureAnnotation ? { captureAnnotation } : {})}
       snapshot={dockSnapshot}
       onCollapse={vi.fn()}
       defaultTab="preview"
@@ -308,5 +310,55 @@ it("annotates in fullscreen, with the draft posted from the comments column", as
     expect(frameTitled("Replay table B")).toBeTruthy()
   } finally {
     document.removeEventListener("keydown", sheetEscape)
+  }
+})
+
+it("opens the draft once the desktop's visual capture of the picked element lands, in fullscreen and in the dock", async () => {
+  const user = userEvent.setup()
+  const authorize = grantingAuthorize()
+  // The capture resolves on a later task, after the picker has been turned
+  // off and the dock has rendered again, as the desktop's capture does.
+  const capture = vi.fn((rect: { x: number, y: number, width: number, height: number }) =>
+    new Promise<{ mimeType: "image/png", width: number, height: number, data: string }>((resolve) => {
+      setTimeout(() => resolve({ mimeType: "image/png", width: rect.width, height: rect.height, data: "iVBORw0KGgo=" }), 20)
+    }))
+  const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    x: 0, y: 0, top: 0, left: 0, width: 800, height: 600, right: 800, bottom: 600, toJSON: () => ({}),
+  } as DOMRect)
+  try {
+    const { onCreateAnnotation } = renderDock(authorize, undefined, snapshot, capture)
+    await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("/artifacts/replay-b?"))
+    const channel = authorize.mock.calls.find(([input]) => input.bridgeChannel)?.[0].bridgeChannel
+    const selection = {
+      type: "domovoi.preview.selection",
+      channel,
+      artifactId: "replay-b",
+      anchor: { cssSelector: "main > table", bbox: { x: 10, y: 10, width: 120, height: 40 } },
+      label: "Replay table",
+    }
+
+    await user.click(screen.getByRole("button", { name: "Open fullscreen preview" }))
+    const column = within(screen.getByRole("dialog")).getByRole("complementary", { name: "Comments on Variant B" })
+    const full = standInWindow(frameTitled("Replay table B fullscreen"))
+    await user.click(within(column).getByRole("button", { name: "Add a comment" }))
+    window.dispatchEvent(new MessageEvent("message", { origin: "null", source: full.frameWindow, data: selection }))
+    const draft = await within(column).findByRole("textbox", { name: "Comment" })
+    expect(capture).toHaveBeenCalledTimes(1)
+    await user.type(draft, "Too tight")
+    await user.click(within(column).getByRole("button", { name: "Post" }))
+    expect(onCreateAnnotation).toHaveBeenLastCalledWith(expect.objectContaining({
+      body: "Too tight",
+      visualContextUpload: expect.objectContaining({ mimeType: "image/png", artifactRevision: 3 }),
+    }))
+    await user.click(screen.getByRole("button", { name: "Exit fullscreen" }))
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+
+    const dock = standInWindow(frameTitled("Replay table B"))
+    await user.click(screen.getByRole("button", { name: "Add a comment" }))
+    window.dispatchEvent(new MessageEvent("message", { origin: "null", source: dock.frameWindow, data: selection }))
+    expect(await screen.findByRole("dialog", { name: "Annotate preview" })).toBeTruthy()
+    expect(capture).toHaveBeenCalledTimes(2)
+  } finally {
+    bounds.mockRestore()
   }
 })
