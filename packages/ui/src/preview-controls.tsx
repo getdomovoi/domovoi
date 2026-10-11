@@ -183,7 +183,9 @@ export function PreviewVariantChips({
       value={selectedArtifactId ?? ""}
       onValueChange={(next) => { if (next) onSelect(next) }}
       aria-label="Design variants"
-      className="rounded-full bg-accent p-[3px]"
+      // A group may hold up to 24 variants (performance-budgets.json); the
+      // row scrolls rather than clip the later chips in a narrow dock.
+      className="max-w-full overflow-x-auto rounded-full bg-accent p-[3px]"
     >
       {variants.map((artifact) => (
         <ToggleGroupItem key={artifact.id} value={artifact.id} className="min-h-11 rounded-full px-3 text-[11.5px] data-[state=on]:bg-background">
