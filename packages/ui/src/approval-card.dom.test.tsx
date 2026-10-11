@@ -67,7 +67,7 @@ it("draws the design's line for a checkpoint refused over a held lock", async ()
 
   const card = screen.getByText(snapshot.approvals[0]!.command).closest("[role=alert]") as HTMLElement
   const refusal = within(card).getByRole("alert")
-  expect(refusal.textContent).toBe(`Could not take a checkpoint: ${heldLock} is held by another git process. Nothing ran. Decide again.`)
+  expect(refusal.textContent).toBe(`Could not take a checkpoint: ${heldLock} is held by another git process, or was left by one that stopped. Nothing ran. Decide again.`)
   expect(within(refusal).getByText(heldLock).className).toContain("font-machine")
 })
 
@@ -111,7 +111,9 @@ it.each([
 it.each([
   ["repository-config", "Could not take a checkpoint: this repository's own Git config asks for something Domovoi does not run. Nothing ran. Decide again.",
     "Domovoi could not take a checkpoint, so the command did not run; decide again. The repository sets the filter \"lfs\" in its own Git config. Nothing ran."],
-  ["git-unavailable", "Could not take a checkpoint: Git is missing on this machine, or too old. Nothing ran. Decide again.",
+  ["repository-config-unreadable", "Could not take a checkpoint: Git could not read this repository's config. Nothing ran. Decide again.",
+    "Domovoi could not take a checkpoint, so the command did not run; decide again. Git could not read the repository's Git config."],
+  ["git-unavailable", "Could not take a checkpoint: this machine's Git is missing, or not a version Domovoi can use. Nothing ran. Decide again.",
     "Domovoi could not take a checkpoint, so the command did not run; decide again. Domovoi found no git in an absolute PATH entry."],
 ] as const)("keeps the daemon's detail under the line for cause %s", (cause, line, message) => {
   const approval = structuredClone(demoWorkspace).approvals[0]!

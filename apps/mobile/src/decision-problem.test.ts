@@ -54,7 +54,7 @@ describe("decisionProblem", () => {
     it("names a held lock by its path", () => {
       const lockPath = "/Users/dana/acme-api/.git/refs/domovoi/checkpoints/cccc.lock"
       expect(decisionProblem(refused({ kind, cause: "lock-held", lockPath })))
-        .toBe(`The daemon refused: Could not take a checkpoint: ${lockPath} is held by another git process. Nothing ran. The gate is still waiting.`)
+        .toBe(`The daemon refused: Could not take a checkpoint: ${lockPath} is held by another git process, or was left by one that stopped. Nothing ran. The gate is still waiting.`)
     })
 
     it.each([
@@ -69,7 +69,9 @@ describe("decisionProblem", () => {
     it.each([
       ["repository-config", "Could not take a checkpoint: this repository's own Git config asks for something Domovoi does not run. Nothing ran.",
         `${generic}. The repository sets the filter "lfs" in its own Git config. Nothing ran.`],
-      ["git-unavailable", "Could not take a checkpoint: Git is missing on this machine, or too old. Nothing ran.",
+      ["repository-config-unreadable", "Could not take a checkpoint: Git could not read this repository's config. Nothing ran.",
+        `${generic}. Git could not read the repository's Git config.`],
+      ["git-unavailable", "Could not take a checkpoint: this machine's Git is missing, or not a version Domovoi can use. Nothing ran.",
         `${generic}. Domovoi found no git in an absolute PATH entry.`],
     ])("keeps the daemon's detail for the cause %s", (cause, line, message) => {
       expect(decisionProblem(refused({ kind, cause }, message)))

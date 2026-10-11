@@ -854,7 +854,7 @@
     {
       "id": "gate.screen",
       "since": "2026-10-10",
-      "note": "frame 02 draws no refused decision. When the daemon refuses an allow because it could not take a checkpoint, the decision problem line under the gate names the cause from the refusal's data (T22, approvalCheckpointRefusalSchema), in the Desktop v2 card's words: Could not take a checkpoint: <cause>. Nothing ran. The gate is still waiting. A held lock is named by the path Git reported; for a repository config or a missing Git the daemon's own sentence follows, since it names the setting or what to install. Data the phone cannot read falls back to quoting the daemon. A real device check is owed to fetzy"
+      "note": "frame 02 draws no refused decision. When the daemon refuses an allow because it could not take a checkpoint, the decision problem line under the gate names the cause from the refusal's data (T22, approvalCheckpointRefusalSchema), in the Desktop v2 card's words: Could not take a checkpoint: <cause>. Nothing ran. The gate is still waiting. A held lock is named by the path Git reported, as held by another git process or left by one that stopped; for a repository config, an unreadable config or a missing Git the daemon's own sentence follows, since it names the setting, what Git stopped on, or what to install. Data the phone cannot read falls back to quoting the daemon. A real device check is owed to fetzy"
     },
     {
       "id": "sessions.list",

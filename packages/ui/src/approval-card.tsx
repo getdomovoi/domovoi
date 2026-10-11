@@ -294,13 +294,15 @@ export type ApprovalDecisionRefusal = {
 function checkpointCause(refusal: ApprovalCheckpointRefusal): ReactNode {
   switch (refusal.cause) {
     case "lock-held":
-      return <><span className="font-machine text-[11.5px]">{refusal.lockPath}</span> is held by another git process</>
+      return <><span className="font-machine text-[11.5px]">{refusal.lockPath}</span> is held by another git process, or was left by one that stopped</>
     case "submodule-changes":
       return "a submodule has local changes a checkpoint cannot hold"
     case "repository-config":
       return "this repository's own Git config asks for something Domovoi does not run"
+    case "repository-config-unreadable":
+      return "Git could not read this repository's config"
     case "git-unavailable":
-      return "Git is missing on this machine, or too old"
+      return "this machine's Git is missing, or not a version Domovoi can use"
     case "timed-out":
       return "it did not finish in time"
     case "git-failed":
@@ -310,13 +312,18 @@ function checkpointCause(refusal: ApprovalCheckpointRefusal): ReactNode {
   }
 }
 
+const checkpointCausesWithDetail: ReadonlySet<ApprovalCheckpointRefusal["cause"]> = new Set([
+  "repository-config", "repository-config-unreadable", "git-unavailable",
+])
+
 function DecisionRefusal({ refusal }: { refusal: ApprovalDecisionRefusal }) {
   const checkpoint = approvalCheckpointRefusalSchema.safeParse(refusal.data)
   if (!checkpoint.success) return <span>{refusal.message}</span>
   const cause = checkpointCause(checkpoint.data)
-  // Which setting refused, or what to install, is the daemon's own detail,
-  // and the person needs it to act; the other causes say all there is.
-  const detail = checkpoint.data.cause === "repository-config" || checkpoint.data.cause === "git-unavailable"
+  // Which setting refused, what Git stopped on, or what to install, is the
+  // daemon's own detail, and the person needs it to act; the other causes
+  // say all there is.
+  const detail = checkpointCausesWithDetail.has(checkpoint.data.cause)
   const line = <>Could not take a checkpoint{cause === undefined ? "" : <>: {cause}</>}. Nothing ran. Decide again.</>
   if (!detail) return <span>{line}</span>
   return (

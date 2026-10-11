@@ -31,25 +31,31 @@ export function decisionProblem(cause: unknown): string {
 
 // A checkpoint the daemon could not take before an allow, from the cause it
 // sent as data (S3.10h, #743), in the desktop card's words. Which setting
-// refused, or what to install, is the daemon's own detail, so for those two
-// causes its sentence follows.
+// refused, what Git stopped on, or what to install, is the daemon's own
+// detail, so for those causes its sentence follows.
+const checkpointCausesWithDetail: ReadonlySet<ApprovalCheckpointRefusal["cause"]> = new Set([
+  "repository-config", "repository-config-unreadable", "git-unavailable",
+])
+
 function checkpointLine(refusal: ApprovalCheckpointRefusal, message: string): string {
   const cause = checkpointCause(refusal)
   const line = `Could not take a checkpoint${cause === undefined ? "" : `: ${cause}`}. Nothing ran.`
-  if (refusal.cause !== "repository-config" && refusal.cause !== "git-unavailable") return line
+  if (!checkpointCausesWithDetail.has(refusal.cause)) return line
   return `${line} ${trimStop(message.trim())}.`
 }
 
 function checkpointCause(refusal: ApprovalCheckpointRefusal): string | undefined {
   switch (refusal.cause) {
     case "lock-held":
-      return `${refusal.lockPath} is held by another git process`
+      return `${refusal.lockPath} is held by another git process, or was left by one that stopped`
     case "submodule-changes":
       return "a submodule has local changes a checkpoint cannot hold"
     case "repository-config":
       return "this repository's own Git config asks for something Domovoi does not run"
+    case "repository-config-unreadable":
+      return "Git could not read this repository's config"
     case "git-unavailable":
-      return "Git is missing on this machine, or too old"
+      return "this machine's Git is missing, or not a version Domovoi can use"
     case "timed-out":
       return "it did not finish in time"
     case "git-failed":
