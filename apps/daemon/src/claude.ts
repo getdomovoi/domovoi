@@ -252,6 +252,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   // list from Claude's storage, which can already hold changes another
   // session made to a shared list, so the next change is measured from here.
   #reportedTasks = new Map<string, Map<string, ClaudeTask>>()
+  // Each thread's task ids seen deleted. The daemon drops a provider event it
+  // cannot take, as during an emergency stop, so every later change repeats
+  // them. A step already removed makes the repeat a no-op.
+  #deletedTasks = new Map<string, Set<string>>()
   // Stopped queries whose Claude process has not exited yet. A retried stop,
   // a reopen and a shutdown wait on these instead of finding nothing to stop.
   #stopping = new Set<OwnedQuery>()
@@ -1019,6 +1023,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         // Plan mode keeps the checklist, but the final reply supplies its proposal.
         if (changed && session.runtime.permissionMode !== "plan") {
           const current = claudePlanTasks(session.tasks)
+          const deleted = this.#deletedTasks.get(session.threadId) ?? new Set<string>()
+          for (const id of session.reportedTasks.keys()) if (!session.tasks.has(id)) deleted.add(id)
+          for (const id of session.tasks.keys()) deleted.delete(id)
+          this.#deletedTasks.set(session.threadId, deleted)
           this.#emit({
             type: "plan-updated",
             threadId: session.threadId,
@@ -1026,7 +1034,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
             steps: current.map(({ text, status }) => ({ text, status })),
             // Claude's tasks have no order field, so the daemon keeps the
             // working plan's order and applies this change to it.
-            taskChange: { previous: claudePlanTasks(session.reportedTasks), current },
+            taskChange: { previous: claudePlanTasks(session.reportedTasks), current, deleted: [...deleted] },
           })
           session.reportedTasks = new Map(session.tasks)
           this.#reportedTasks.set(session.threadId, session.reportedTasks)

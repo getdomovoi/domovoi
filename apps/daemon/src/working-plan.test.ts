@@ -533,6 +533,79 @@ describe("provider task changes", () => {
     }
   })
 
+  it("renames a task's own step when it takes the text of a task deleted in the same change", () => {
+    const current = plan({
+      steps: [
+        { id: "step-a", text: "Write the parser", status: "pending" },
+        { id: "step-b", text: "Write the docs", status: "pending" },
+      ],
+    })
+    const before = [task("1", "Write the parser"), task("2", "Write the docs")]
+    for (const taskLinks of [undefined, new Map([["1", "step-a"], ["2", "step-b"]])]) {
+      const result = taskUpdate(current, before, [task("1", "Write the docs")], taskLinks)
+      expect(shape(result)).toEqual(["step-a:Write the docs:pending"])
+    }
+  })
+
+  // The daemon drops a provider event it cannot take, as during an emergency
+  // stop, while the adapter has already moved on. The adapter repeats every
+  // deletion it has seen, so a later change still removes the step.
+  it("removes the step of a task whose deletion arrived in a dropped event", () => {
+    const current = plan({
+      steps: [
+        { id: "step-1", text: "Inspect", status: "completed" },
+        { id: "step-2", text: "Implement", status: "pending" },
+        { id: "step-3", text: "Verify", status: "pending" },
+      ],
+    })
+    const heard = new Map<string, ProviderTaskLink>([
+      ["1", { stepId: "step-1", text: "Inspect", status: "completed" }],
+      ["2", { stepId: "step-2", text: "Implement", status: "pending" }],
+      ["3", { stepId: "step-3", text: "Verify", status: "pending" }],
+    ])
+    const afterDrop = [task("1", "Inspect", "completed"), task("2", "Implement")]
+    const result = updateWorkingPlanFromProvider(current, {
+      sessionId: "session-a",
+      provider: "claude-code",
+      model: "claude-opus-5",
+      providerThreadId: "thread-a",
+      steps: afterDrop.map(({ text, status }) => ({ text, status })),
+      taskChange: {
+        previous: afterDrop,
+        current: [task("1", "Inspect", "completed"), task("2", "Implement", "in-progress")],
+        deleted: ["3"],
+      },
+      taskLinks: heard,
+      updatedAt: nextAt,
+    }, () => { throw new Error("no step may be added") })
+    expect(shape(result)).toEqual(["step-1:Inspect:completed", "step-2:Implement:in-progress"])
+  })
+
+  it("tries a rename the text bound cut short again once there is room", () => {
+    const long = "x".repeat(maximumWorkingPlanStepTextLength)
+    const filler = Array.from({ length: 15 }, (_, index) => ({
+      id: `step-filler-${index}`,
+      text: `${index.toString(16)}${long.slice(1)}`,
+      status: "completed" as const,
+    }))
+    const fillerLength = filler.reduce((sum, step) => sum + step.text.length, 0)
+    const pad = "y".repeat(maximumWorkingPlanTextLength - fillerLength - "Implement".length - 2)
+    const current = plan({
+      steps: [
+        ...filler,
+        { id: "step-pad", text: pad, status: "pending" },
+        { id: "step-implement", text: "Implement", status: "pending" },
+      ],
+    })
+    const renamed = "Implement the parser and the docs"
+    const first = taskUpdate(current, [task("1", "Implement")], [task("1", renamed)])
+    expect(first.plan.steps.at(-1)!.text).not.toBe(renamed)
+    // The person shortens the long step, which frees room.
+    const edited = { ...first.plan, steps: first.plan.steps.map((step) => step.id === "step-pad" ? { ...step, text: "Pad" } : step) }
+    const second = taskUpdate(edited, [task("1", renamed)], [task("1", renamed, "in-progress")], first.taskLinks)
+    expect(second.plan.steps.at(-1)).toMatchObject({ id: "step-implement", text: renamed, status: "in-progress" })
+  })
+
   // The links live in the daemon's memory. After a restart nothing records
   // that the person removed the step, and tasks read from Claude's storage
   // need not have reached this plan (a shared list, a Plan mode checklist),

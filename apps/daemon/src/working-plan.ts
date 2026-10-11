@@ -47,6 +47,8 @@ export type ProviderWorkingPlanUpdate = {
   taskChange?: {
     previous: ProviderWorkingPlanTask[]
     current: ProviderWorkingPlanTask[]
+    // Every task id the adapter has seen deleted on this thread.
+    deleted?: string[]
   }
   // Which step showed each provider task at the last task change, held in
   // memory by the daemon. Without it, tasks match steps by text.
@@ -228,11 +230,11 @@ function mergeProviderTaskChange(
     (step) => step !== except && !claimedSteps.has(step.id) && step.text === text,
   )
   // Renames wait until deleted tasks have freed their room.
-  const renames: Array<{ step: WorkingPlanStep, text: string }> = []
+  const renames: Array<{ taskId: string, step: WorkingPlanStep, text: string }> = []
   const claim = (task: { id: string, text: string, status: WorkingPlanStepStatus }, step: WorkingPlanStep, rename = false) => {
     taskLinks.set(task.id, { stepId: step.id, text: task.text, status: task.status })
     claimedSteps.add(step.id)
-    if (rename) renames.push({ step, text: task.text })
+    if (rename) renames.push({ taskId: task.id, step, text: task.text })
     step.status = progressStatus(step, task.status)
   }
 
@@ -253,15 +255,24 @@ function mergeProviderTaskChange(
     priorLinks.set(taskId, step.id)
     linkedSteps.add(step.id)
   }
+  // A deletion whose report the daemon dropped, as during an emergency stop,
+  // reaches it in a later change's list of deleted tasks.
+  for (const taskId of change.deleted ?? []) {
+    const link = links.get(taskId)
+    if (!link || priorLinks.has(taskId) || currentIds.has(taskId) || linkedSteps.has(link.stepId)) continue
+    priorLinks.set(taskId, link.stepId)
+    linkedSteps.add(link.stepId)
+  }
 
   // Whether Claude reworded a task since the daemon last heard it.
   const reworded = (task: { id: string, text: string }) => {
     const heard = links.get(task.id)?.text ?? previous.get(task.id)?.text
     return heard !== undefined && heard !== task.text
   }
-  // Whether another task still in Claude's list shows this step.
+  // Whether another task Claude had shows this step. A step whose task this
+  // change deletes goes with it, so it is no target for a reworded task.
   const heldByAnother = (step: WorkingPlanStep, taskId: string) => [...priorLinks].some(
-    ([otherId, stepId]) => stepId === step.id && otherId !== taskId && currentIds.has(otherId),
+    ([otherId, stepId]) => stepId === step.id && otherId !== taskId,
   )
   // Tasks Claude did not reword claim their steps first, keeping the
   // person's text, so a reworded task never takes a step another task holds.
@@ -301,11 +312,16 @@ function mergeProviderTaskChange(
     maximumWorkingPlanStepTextLength,
     maximumWorkingPlanTextLength - total + replacing,
   ))
-  for (const { step, text } of renames) {
+  for (const { taskId, step, text } of renames) {
     const fitted = fit(text, step.text.length)
-    if (!fitted) continue
-    total += fitted.length - step.text.length
-    step.text = fitted
+    if (fitted) {
+      total += fitted.length - step.text.length
+      step.text = fitted
+    }
+    // A rename cut short by the bound is tried again at the next change: the
+    // link holds the text shown, so the task still reads as reworded.
+    const link = taskLinks.get(taskId)
+    if (link && step.text !== text) taskLinks.set(taskId, { ...link, text: step.text })
   }
 
   for (const task of current) {

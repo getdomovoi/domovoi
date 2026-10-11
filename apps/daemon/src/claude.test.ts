@@ -102,14 +102,20 @@ type TaskRow = [id: string, text: string, status: "pending" | "in-progress" | "c
 
 // The plan-updated event for a change to Claude's tasks: the steps as Claude
 // lists them, and the tasks before and after the change.
-function taskPlanEvent(threadId: string, turnId: string, previous: TaskRow[], current: TaskRow[]) {
+function taskPlanEvent(
+  threadId: string,
+  turnId: string,
+  previous: TaskRow[],
+  current: TaskRow[],
+  deleted: string[] = [],
+) {
   const tasks = (rows: TaskRow[]) => rows.map(([id, text, status]) => ({ id, text, status }))
   return {
     type: "plan-updated",
     threadId,
     turnId,
     steps: current.map(([, text, status]) => ({ text, status })),
-    taskChange: { previous: tasks(previous), current: tasks(current) },
+    taskChange: { previous: tasks(previous), current: tasks(current), deleted },
   }
 }
 
@@ -1146,11 +1152,13 @@ describe("ClaudeAgentSdkAdapter", () => {
     update("toolu_update_1", "1", "pending", "in_progress")
     update("toolu_update_2", "1", "in_progress", "completed")
     update("toolu_update_3", "3", "pending", "deleted")
+    update("toolu_update_4", "2", "pending", "in_progress")
     const plans = () => event.mock.calls
       .map(([emitted]) => emitted as AgentEvent)
       .filter((emitted) => emitted.type === "plan-updated")
-    await waitForDaemon(() => expect(plans()).toHaveLength(6))
-    // Each event names the tasks as the previous event left them.
+    await waitForDaemon(() => expect(plans()).toHaveLength(7))
+    // Each event names the tasks as the previous event left them, and every
+    // task deleted so far, in case the daemon dropped the event that said so.
     expect(plans()).toEqual([
       taskPlanEvent(threadId, turnId, [], [["1", "Write a.txt", "pending"]]),
       taskPlanEvent(threadId, turnId, [["1", "Write a.txt", "pending"]], [
@@ -1190,7 +1198,14 @@ describe("ClaudeAgentSdkAdapter", () => {
       ], [
         ["1", "Write a.txt", "completed"],
         ["2", "Write b.txt", "pending"],
-      ]),
+      ], ["3"]),
+      taskPlanEvent(threadId, turnId, [
+        ["1", "Write a.txt", "completed"],
+        ["2", "Write b.txt", "pending"],
+      ], [
+        ["1", "Write a.txt", "completed"],
+        ["2", "Write b.txt", "in-progress"],
+      ], ["3"]),
     ])
     await adapter.close()
   })
@@ -1816,7 +1831,7 @@ describe("ClaudeAgentSdkAdapter", () => {
       await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(threadId, reopenedTurnId, reported, [
         ["1", "Inspect", "in-progress"],
         ["2", "Implement the parser", "pending"],
-      ])))
+      ], ["3"])))
     } finally {
       await adapter.close()
       vi.unstubAllEnvs()

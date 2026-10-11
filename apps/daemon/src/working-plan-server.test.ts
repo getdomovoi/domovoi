@@ -963,7 +963,7 @@ describe("working plan RPC", () => {
       threadId: "thread-task-order",
       turnId,
       steps: current.map(({ text, status }) => ({ text, status })),
-      taskChange: { previous, current },
+      taskChange: { previous, current, deleted: [] },
     })
     const storedPlan = (saved: typeof snapshot) => saved.workingPlans.find(
       (plan) => plan.sessionId === session.id,
