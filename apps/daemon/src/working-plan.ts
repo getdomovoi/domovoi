@@ -30,6 +30,11 @@ export type ProviderWorkingPlanStep = {
 
 export type ProviderWorkingPlanTask = ProviderWorkingPlanStep & { id: string }
 
+// The step that showed a provider task, and the task as the daemon heard it
+// then. The adapter's previous list can be reread from Claude's storage, so
+// only this says whether a task changed since the daemon last saw it.
+export type ProviderTaskLink = { stepId: string, text: string, status: WorkingPlanStepStatus }
+
 export type ProviderWorkingPlanUpdate = {
   sessionId: string
   provider: string
@@ -45,7 +50,7 @@ export type ProviderWorkingPlanUpdate = {
   }
   // Which step showed each provider task at the last task change, held in
   // memory by the daemon. Without it, tasks match steps by text.
-  taskLinks?: ReadonlyMap<string, string>
+  taskLinks?: ReadonlyMap<string, ProviderTaskLink>
   updatedAt: string
 }
 
@@ -54,7 +59,7 @@ export type WorkingPlanUpdateResult = {
   changed: boolean
   structureChanged: boolean
   // Set for a task change: the step that now shows each provider task.
-  taskLinks?: Map<string, string>
+  taskLinks?: Map<string, ProviderTaskLink>
 }
 
 export type WorkingPlanProviderTarget = {
@@ -205,9 +210,9 @@ function replacedProviderSteps(
 function mergeProviderTaskChange(
   canonical: WorkingPlanStep[],
   change: NonNullable<ProviderWorkingPlanUpdate["taskChange"]>,
-  links: ReadonlyMap<string, string>,
+  links: ReadonlyMap<string, ProviderTaskLink>,
   createId: WorkingPlanIdFactory,
-): { steps: WorkingPlanStep[], taskLinks: Map<string, string> } {
+): { steps: WorkingPlanStep[], taskLinks: Map<string, ProviderTaskLink> } {
   const normalize = (tasks: ProviderWorkingPlanTask[]) => tasks.flatMap((task) => {
     const text = boundedWorkingPlanText(task.text, maximumWorkingPlanStepTextLength)
     return text ? [{ id: task.id, text, status: task.status }] : []
@@ -218,7 +223,7 @@ function mergeProviderTaskChange(
   const steps: WorkingPlanStep[] = canonical.map((step) => ({ ...step }))
   const stepsById = new Map(steps.map((step) => [step.id, step]))
   const claimedSteps = new Set<string>()
-  const taskLinks = new Map<string, string>()
+  const taskLinks = new Map<string, ProviderTaskLink>()
   const unclaimed = (text: string, except?: WorkingPlanStep) => steps.find(
     (step) => step !== except && !claimedSteps.has(step.id) && step.text === text,
   )
@@ -230,7 +235,7 @@ function mergeProviderTaskChange(
     maximumWorkingPlanTextLength - total + replacing,
   ))
   const claim = (task: { id: string, text: string, status: WorkingPlanStepStatus }, step: WorkingPlanStep, rename = false) => {
-    taskLinks.set(task.id, step.id)
+    taskLinks.set(task.id, { stepId: step.id, text: task.text, status: task.status })
     claimedSteps.add(step.id)
     const text = rename ? fit(task.text, step.text.length) : undefined
     if (text) {
@@ -245,7 +250,7 @@ function mergeProviderTaskChange(
   // task and a surviving one with the same text keep their own steps.
   const priorLinks = new Map<string, string>()
   const linkedSteps = new Set<string>()
-  for (const [taskId, stepId] of links) {
+  for (const [taskId, { stepId }] of links) {
     if (!previous.has(taskId) || linkedSteps.has(stepId)) continue
     priorLinks.set(taskId, stepId)
     linkedSteps.add(stepId)
@@ -291,17 +296,18 @@ function mergeProviderTaskChange(
 
   for (const task of current) {
     if (taskLinks.has(task.id)) continue
-    const prior = previous.get(task.id)
-    const linkedId = priorLinks.get(task.id)
+    const link = links.get(task.id)
     // The daemon showed this task in a step the plan no longer has: the
-    // person removed it. It comes back when Claude changes the task.
+    // person removed it. It comes back once the task differs from how the
+    // daemon last heard it. The adapter's previous list cannot say that: a
+    // reopened session rereads it from Claude's storage.
     if (
-      linkedId !== undefined
-      && !stepsById.has(linkedId)
-      && prior?.text === task.text
-      && prior.status === task.status
+      link !== undefined
+      && !stepsById.has(link.stepId)
+      && link.text === task.text
+      && link.status === task.status
     ) {
-      taskLinks.set(task.id, linkedId)
+      taskLinks.set(task.id, link)
       continue
     }
     const text = fit(task.text, 0)

@@ -24,6 +24,7 @@ import {
   syncWorkingPlanArtifact,
   updateWorkingPlanFromProvider,
   workingPlanNeedsProviderDelivery,
+  type ProviderTaskLink,
 } from "./working-plan.js"
 
 const firstAt = "2026-09-03T20:00:00.000Z"
@@ -200,11 +201,20 @@ describe("provider task changes", () => {
     current: WorkingPlan | undefined,
     previous: Task[],
     next: Task[],
-    taskLinks?: ReadonlyMap<string, string>,
+    // A step id stands for a link made when the daemon heard the task as it
+    // is in `previous`.
+    taskLinks?: ReadonlyMap<string, string | ProviderTaskLink>,
     createId: (kind: "edit" | "receipt" | "step") => string = () => {
       throw new Error("no step may be added")
     },
   ) {
+    const heard = new Map(previous.map((candidate) => [candidate.id, candidate]))
+    const links = taskLinks && new Map([...taskLinks].map(([taskId, link]): [string, ProviderTaskLink] => [
+      taskId,
+      typeof link === "string"
+        ? { stepId: link, text: heard.get(taskId)!.text, status: heard.get(taskId)!.status }
+        : link,
+    ]))
     return updateWorkingPlanFromProvider(current, {
       sessionId: "session-a",
       provider: "claude-code",
@@ -212,13 +222,16 @@ describe("provider task changes", () => {
       providerThreadId: "thread-a",
       steps: next.map(({ text, status }) => ({ text, status })),
       taskChange: { previous, current: next },
-      ...(taskLinks ? { taskLinks } : {}),
+      ...(links ? { taskLinks: links } : {}),
       updatedAt: nextAt,
     }, createId)
   }
 
   const shape = (result: { plan: WorkingPlan }) => result.plan.steps.map(
     ({ id, text, status }) => `${id}:${text}:${status}`,
+  )
+  const stepIds = (result: { taskLinks?: ReadonlyMap<string, ProviderTaskLink> }) => new Map(
+    [...result.taskLinks ?? []].map(([taskId, { stepId }]) => [taskId, stepId]),
   )
 
   // The person inserted "Write the docs" between Claude's second and third
@@ -292,7 +305,7 @@ describe("provider task changes", () => {
       "step-verify:Verify:pending",
     ])
     expect(third.plan.structureRevision).toBe(2)
-    expect(third.taskLinks).toEqual(new Map([
+    expect(stepIds(third)).toEqual(new Map([
       ["1", "step-inspect"],
       ["2", "step-implement"],
       ["3", "step-verify"],
@@ -399,7 +412,7 @@ describe("provider task changes", () => {
       "step-3:Verify:pending",
       "step-lint:Run the linter:pending",
     ])
-    expect(result.taskLinks?.get("3")).toBe("step-lint")
+    expect(stepIds(result).get("3")).toBe("step-lint")
   })
 
   it("pairs steps that share a subject with tasks in plan order", () => {
@@ -461,6 +474,31 @@ describe("provider task changes", () => {
       "step-1:Inspect:completed",
       "step-2:Implement:pending",
       "step-verify-again:Verify:in-progress",
+    ])
+  })
+
+  // A reopened Claude session rereads its previous tasks from Claude's
+  // storage. With a shared list another session can start the task while
+  // this one is closed, so previous and current agree and only the daemon's
+  // link says the task changed.
+  it("shows a removed step's task that changed while the session was closed", () => {
+    const current = plan({
+      steps: [
+        { id: "step-1", text: "Inspect", status: "completed" },
+        { id: "step-2", text: "Implement", status: "pending" },
+      ],
+    })
+    const heardBeforeClose = new Map<string, ProviderTaskLink>([
+      ["1", { stepId: "step-1", text: "Inspect", status: "completed" }],
+      ["2", { stepId: "step-2", text: "Implement", status: "pending" }],
+      ["3", { stepId: "step-verify-removed", text: "Verify", status: "pending" }],
+    ])
+    const reread = [task("1", "Inspect", "completed"), task("2", "Implement"), task("3", "Verify", "in-progress")]
+    const result = taskUpdate(current, reread, reread, heardBeforeClose, ids("step-verify-shown"))
+    expect(shape(result)).toEqual([
+      "step-1:Inspect:completed",
+      "step-2:Implement:pending",
+      "step-verify-shown:Verify:in-progress",
     ])
   })
 
@@ -528,7 +566,7 @@ describe("provider task changes", () => {
     const recreated = [...reused, task("4", "Verify")]
     const second = taskUpdate(first.plan, reused, recreated, first.taskLinks)
     expect(shape(second)).toEqual(shape(first))
-    expect(second.taskLinks?.get("4")).toBe("step-verify")
+    expect(stepIds(second).get("4")).toBe("step-verify")
   })
 
   it("never cuts a step already in the plan to fit the aggregate text bound", () => {

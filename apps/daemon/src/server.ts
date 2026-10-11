@@ -345,6 +345,7 @@ import {
   updateWorkingPlanFromProvider,
   workingPlanNeedsProviderDelivery,
   WorkingPlanMutationError,
+  type ProviderTaskLink,
 } from "./working-plan.js"
 import { redactDeviceLabel } from "./workspace-redaction.js"
 
@@ -1757,7 +1758,7 @@ export class DomovoiDaemon {
   #providerPlanTurns = new Set<string>()
   // For each session, which working plan step shows each Claude task. Held in
   // memory only: after a restart, tasks match steps by text again.
-  #providerTaskLinks = new Map<string, { provider: string, threadId: string, links: Map<string, string> }>()
+  #providerTaskLinks = new Map<string, { provider: string, threadId: string, links: Map<string, ProviderTaskLink> }>()
   #planModeTurns = new Set<string>()
   // Only successful Domovoi dispatches establish origin. This is not restored
   // from sessions or guessed from the most recent sender (including steering).
