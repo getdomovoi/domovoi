@@ -44,7 +44,11 @@ function Source({ icon, label, note, onPress }: { icon: IconName, label: string,
 // stated, not tappable, with the machine that would refuse it and the code.
 function LockedSource({ icon, label, machine }: { icon: IconName, label: string, machine: string }) {
   return (
-    <View className="flex-row items-center gap-3 px-3 py-3" accessible accessibilityLabel={`${label}: locked for this model`}>
+    <View
+      className="flex-row items-center gap-3 px-3 py-3"
+      accessible
+      accessibilityLabel={`${label}: locked for this model, refused by ${machine} · ${modelImageInputRefusalCode}`}
+    >
       <Icon name={icon} tone="faint" size={18} />
       <View className="flex-1">
         <Text className="text-[13px] text-muted-foreground">{label}</Text>

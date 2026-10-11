@@ -76,6 +76,34 @@ describe("useModelImages", () => {
     expect(hook.result.current).toEqual({ model: "claude-sonnet-4.6", imageInput: true })
   })
 
+  // Codex review r1: an answer belongs to the connection and the provider it
+  // was asked on. After a reconnect, or back on a provider asked before, the
+  // old answer may no longer hold, so nothing is known until the new one lands
+  // and nothing locks meanwhile.
+  it("forgets an answer across a reconnect until the daemon answers again", async () => {
+    const { call, answers } = daemon()
+    const hook = await draw(call, { status: "open", runtime: kilo })
+    await act(async () => answers[0]!.resolve([model("kilo", "qwen3-coder-72b", false)]))
+    expect(hook.result.current?.imageInput).toBe(false)
+
+    await hook.rerender({ status: "connecting", runtime: kilo })
+    expect(hook.result.current?.imageInput).toBeUndefined()
+    await hook.rerender({ status: "open", runtime: kilo })
+    expect(hook.result.current?.imageInput).toBeUndefined()
+    await act(async () => answers[1]!.resolve([model("kilo", "qwen3-coder-72b", true)]))
+    expect(hook.result.current?.imageInput).toBe(true)
+  })
+
+  it("does not reuse an earlier provider's answer while asking it again", async () => {
+    const { call, answers } = daemon()
+    const hook = await draw(call, { status: "open", runtime: kilo })
+    await act(async () => answers[0]!.resolve([model("kilo", "qwen3-coder-72b", false)]))
+    await hook.rerender({ status: "open", runtime: claude })
+    await hook.rerender({ status: "open", runtime: kilo })
+
+    expect(hook.result.current).toEqual({ model: "qwen3-coder-72b", imageInput: undefined })
+  })
+
   // A session on the same provider with another model reads the list it has.
   it("reads another model of the same provider from the answer it holds", async () => {
     const { call, answers } = daemon()

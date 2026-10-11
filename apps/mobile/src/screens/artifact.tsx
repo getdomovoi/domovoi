@@ -273,10 +273,12 @@ export function ArtifactScreen({
             {/* Ruling Q342 A: a desktop's marked variant is a bookmark for
                 whoever is viewing until it travels with a message. Once a
                 message has carried one, its delivery record names it, and the
-                phone says which one the agent was told, as frame 17 does. */}
+                phone says which one the agent was told, as frame 17 does.
+                Frame 17's "a choice is a commitment" is not drawn: no client
+                sends a marked variant yet (Codex review r1). */}
             {basis ? <>
               <Text variant="note" className="text-center text-strong">{`${basis.label} is the one the agent was told to build on.`}</Text>
-              <Text variant="note" className="text-center">Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment.</Text>
+              <Text variant="note" className="text-center">A variant marked at a desktop stays a bookmark for whoever is viewing; only a message that sends one changes what the agent was told.</Text>
             </> : (
               <Text variant="note" className="text-center">Marking a variant to build on happens at a desktop, and only as a bookmark for whoever is viewing; the agent is not told which one. To tell the agent, send a comment.</Text>
             )}

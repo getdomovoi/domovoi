@@ -62,6 +62,8 @@ describe("AttachSheet", () => {
     expect(screen.getAllByText("refused by mac-mini-m4 · attach.image.model_no_input")).toHaveLength(2)
     expect(screen.queryByRole("button", { name: /Photo or screenshot/ })).toBeNull()
     expect(screen.queryByRole("button", { name: /Take a photo/ })).toBeNull()
+    // A screen reader hears the same facts the row shows.
+    expect(screen.getByLabelText("Take a photo: locked for this model, refused by mac-mini-m4 · attach.image.model_no_input")).toBeOnTheScreen()
     await fireEvent.press(screen.getByText("Take a photo"))
     expect(props.onTakePhoto).not.toHaveBeenCalled()
     expect(props.onPickLibrary).not.toHaveBeenCalled()

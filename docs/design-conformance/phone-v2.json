@@ -720,7 +720,7 @@
         "The render stays on",
         "only as a bookmark for whoever is viewing; the agent is not told which one.",
         "is the one the agent was told to build on.",
-        "A comment is a note; a choice is a commitment.",
+        "only a message that sends one changes what the agent was told.",
         "testID=\"build-basis-check\"",
         "is the one the agent builds on"
       ],
@@ -731,7 +731,7 @@
       ],
       "partial": {
         "since": "2026-10-11",
-        "reason": "SL-6 (P4, 2026-10-11) checked the inference: the wire carries the build basis (sessionSendReviewSchema.buildBasis, a894fcb7) and the daemon tells the agent (annotation-context.ts: Build on that preview.) and records it on the message's delivery record (providerPromptDelivery.annotations.buildBasis). No client sends one yet: previewBuildBasis in packages/ui/src/workspace-persistence.ts is still per-client state and no session.send names it. The phone now reads the latest recorded basis (recordedBuildBasis in session-detail.ts); when it is a variant of the open render, the phone says <label> is the one the agent was told to build on., checks that tab, and draws frame 17's Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment. With none recorded, which is every session today, it keeps the bookmark sentence of ruling Q342 A. Still different: the line says was told to build on rather than frame 17's builds on, because the record proves the agent was told, not what it did; the variant switch, its note and Comment sit at the top of the screen rather than in the floating card at the foot"
+        "reason": "SL-6 (P4, 2026-10-11) checked the inference: the wire carries the build basis (sessionSendReviewSchema.buildBasis, a894fcb7) and the daemon tells the agent (annotation-context.ts: Build on that preview.) and records it on the message's delivery record (providerPromptDelivery.annotations.buildBasis). No client sends one yet: previewBuildBasis in packages/ui/src/workspace-persistence.ts is still per-client state and no session.send names it. The phone now reads the latest recorded basis (recordedBuildBasis in session-detail.ts); when it is a variant of the open render, the phone says <label> is the one the agent was told to build on., checks that tab, and says A variant marked at a desktop stays a bookmark for whoever is viewing; only a message that sends one changes what the agent was told. With none recorded, which is every session today, it keeps the bookmark sentence of ruling Q342 A. Still different: the line says was told to build on rather than frame 17's builds on, because the record proves the agent was told, not what it did; frame 17's Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment. is not drawn, because a desktop's marked variant is still a bookmark that no client sends; the variant switch, its note and Comment sit at the top of the screen rather than in the floating card at the foot"
       }
     },
     {

@@ -8,7 +8,8 @@ import type { DaemonCall, DaemonStatus } from "./daemon"
 // Phone v2 frames 13, 13b and 14b: whether the open session's model takes
 // image input, as its harness reports it through runtime.models. The phone
 // asks once per provider on an open connection, and again after a reconnect,
-// because a daemon update can change what a harness reports.
+// because a daemon update can change what a harness reports. An answer is
+// dropped when its connection or provider ends.
 //
 // Undefined when no session is open. While the answer is outstanding, or when
 // the daemon did not answer, image input is not known, which never locks
@@ -35,7 +36,13 @@ export function useModelImages(
       setHeld(undefined)
       console.warn("Models not read:", cause instanceof Error ? cause.message : String(cause))
     })
-    return () => { live = false }
+    return () => {
+      live = false
+      // An answer holds for the connection and provider it was asked on. A
+      // reconnect or another provider asks again, and until that answer lands
+      // nothing is known, which locks nothing (Codex review r1).
+      setHeld(undefined)
+    }
   }, [call, client, provider, status])
 
   if (!runtime) return undefined

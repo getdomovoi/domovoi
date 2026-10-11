@@ -205,7 +205,10 @@ describe("ArtifactScreen preview", () => {
     })
 
     expect(screen.getByText("B is the one the agent was told to build on.")).toBeOnTheScreen()
-    expect(screen.getByText("Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment.")).toBeOnTheScreen()
+    // Codex review r1: a desktop's marked variant is still a bookmark, so the
+    // phone does not say marking one decides what the agent builds on.
+    expect(screen.getByText("A variant marked at a desktop stays a bookmark for whoever is viewing; only a message that sends one changes what the agent was told.")).toBeOnTheScreen()
+    expect(screen.queryByText(/a choice is a commitment/)).toBeNull()
     expect(screen.queryByText(/only as a bookmark/)).toBeNull()
     expect(within(screen.getByRole("button", { name: "Variant B, the build basis" })).getByTestId("build-basis-check", { includeHiddenElements: true })).toBeOnTheScreen()
     expect(screen.getByRole("button", { name: "Variant A" })).toBeOnTheScreen()
