@@ -68,7 +68,7 @@ it("keeps the viewed preview distinct from the build basis", async () => {
   renderDock()
 
   expect(screen.getByText("Build basis · Variant B")).toBeTruthy()
-  await user.click(screen.getByRole("button", { name: /Variant A/ }))
+  await user.click(screen.getByRole("radio", { name: "Variant A" }))
   expect(screen.getByText("Viewing · Variant A")).toBeTruthy()
   expect(screen.getByText("Build basis · Variant B")).toBeTruthy()
   await user.click(screen.getByRole("button", { name: "Use Variant A as build basis" }))
@@ -101,7 +101,9 @@ it("sandboxes every preview frame, comparison stages and fullscreen included", a
       expiresAt: Date.now() + 60_000,
       signature: `signature-${input.artifactId}`,
     }) as ArtifactAccess)
-    await user.click(screen.getByRole("button", { name: "Compare" }))
+    // Q380 A: Compare sits behind the toolbar's one overflow control.
+    await user.click(screen.getByRole("button", { name: "More preview actions" }))
+    await user.click(await screen.findByRole("menuitemcheckbox", { name: "Compare" }))
     await waitFor(() => expect(document.querySelectorAll("iframe")).toHaveLength(2))
     await waitFor(() => {
       for (const frame of document.querySelectorAll("iframe")) expect(frame.getAttribute("src")).toMatch(/^http:\/\/127\.0\.0\.1:47831\/artifacts\//)

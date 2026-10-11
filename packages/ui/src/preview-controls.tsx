@@ -1,0 +1,231 @@
+import { useEffect, useState } from "react"
+import { DownloadIcon, LockIcon, MessageSquarePlusIcon, MoreHorizontalIcon, PrinterIcon } from "lucide-react"
+import type { Artifact, ArtifactAccess } from "@getdomovoi/protocol"
+
+import { Button } from "./components/ui/button"
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "./components/ui/dropdown-menu"
+import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
+import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip"
+import { Chip } from "./chip"
+import { cn } from "./lib/utils"
+import { previewGrantLabel, previewGrantMsLeft } from "./preview-grant"
+import type { RenderedPreview } from "./preview-renders"
+
+export const PreviewCopy = {
+  renderedHeading: "RENDERED THIS SESSION",
+  renderedLabel: "Rendered this session",
+  addComment: "Add a comment",
+  pickElement: "Click an element",
+  pickHint: "Click an element in the preview to comment on it.",
+  grantNote: "The daemon signs this grant for this document only. While the preview is on screen, a new one is requested before it expires. A page already loaded keeps running without one.",
+  safeCopies: "Safe copies remove scripts, forms, and external assets.",
+  live: "Live · reloads when the agent renders a new revision",
+} as const
+
+// The design's sm, md and lg. lg is the default and fills the stage.
+export const previewWidths = [
+  { id: "sm", label: "sm", pixels: 390, name: "390 pixel preview" },
+  { id: "md", label: "md", pixels: 834, name: "834 pixel preview" },
+  { id: "lg", label: "lg", pixels: undefined, name: "Full width preview" },
+] as const
+
+export type PreviewWidth = (typeof previewWidths)[number]["id"]
+
+export function previewWidthPixels(width: PreviewWidth): number | undefined {
+  return previewWidths.find((candidate) => candidate.id === width)?.pixels
+}
+
+export function previewWidthMeta(width: PreviewWidth): string {
+  const pixels = previewWidthPixels(width)
+  return pixels === undefined ? "full width" : `${pixels}px`
+}
+
+export function PreviewWidthToggle({ value, onChange }: { value: PreviewWidth, onChange: (width: PreviewWidth) => void }) {
+  return (
+    <ToggleGroup
+      type="single"
+      value={value}
+      onValueChange={(next) => {
+        const width = previewWidths.find((candidate) => candidate.id === next)
+        if (width) onChange(width.id)
+      }}
+      aria-label="Preview device width"
+    >
+      {previewWidths.map((width) => (
+        <ToggleGroupItem key={width.id} value={width.id} className="min-h-11 min-w-11 rounded-full font-machine text-mono-xs" aria-label={width.name}>
+          {width.label}
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
+  )
+}
+
+// Q379 A: authorization stays automatic, and the chip draws the grant's time
+// left from expiresAt. It ticks on its own so the dock does not re-render
+// every second.
+export function PreviewGrantChip({ access, renewalError }: { access: ArtifactAccess | undefined, renewalError: string }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!access) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), 1_000)
+    return () => clearInterval(timer)
+  }, [access])
+  if (!access) return null
+  const msLeft = previewGrantMsLeft(access, now)
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span tabIndex={0} className="inline-flex rounded-full">
+          <Chip size="badge" tone={msLeft > 0 ? "ok" : "warning"} className="min-h-7 px-[10px]">
+            <LockIcon aria-hidden="true" className="size-3" />
+            {previewGrantLabel(msLeft)}
+          </Chip>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent side="bottom" className="max-w-[260px]">
+        {renewalError ? `${PreviewCopy.grantNote} The last renewal failed: ${renewalError}` : PreviewCopy.grantNote}
+      </TooltipContent>
+    </Tooltip>
+  )
+}
+
+export function PreviewAnnotateButton({ active, onToggle, iconOnly = false }: { active: boolean, onToggle: () => void, iconOnly?: boolean }) {
+  return (
+    <Button
+      variant="outline"
+      size={iconOnly ? "icon-sm" : "xs"}
+      className={cn("min-h-11 rounded-full", iconOnly && "min-w-11", active && "border-primary text-primary")}
+      aria-pressed={active}
+      aria-label={iconOnly ? PreviewCopy.addComment : undefined}
+      onClick={onToggle}
+    >
+      <MessageSquarePlusIcon data-icon={iconOnly ? undefined : "inline-start"} />
+      {iconOnly ? null : active ? PreviewCopy.pickElement : PreviewCopy.addComment}
+    </Button>
+  )
+}
+
+// Q380 A: Print view, Download safe copy, Compare, the filmstrip, the Live
+// note and the safe-copies line are shipped features the design does not
+// draw. They stay, behind this one control.
+export function PreviewOverflowMenu({
+  connected,
+  pending,
+  onPrint,
+  onDownload,
+  compare,
+  thumbnails,
+}: {
+  connected: boolean
+  pending: "print" | "download" | undefined
+  onPrint: () => void
+  onDownload: () => void
+  compare?: { checked: boolean, disabled: boolean, onCheckedChange: (checked: boolean) => void } | undefined
+  thumbnails?: { checked: boolean, onCheckedChange: (checked: boolean) => void } | undefined
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button variant="ghost" size="icon-sm" className="min-h-11 min-w-11 rounded-full text-muted-foreground" aria-label="More preview actions">
+          <MoreHorizontalIcon />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuItem disabled={!connected || pending !== undefined} aria-label="Open sanitized print view" onSelect={onPrint}>
+          <PrinterIcon />{pending === "print" ? "Preparing" : "Print view"}
+        </DropdownMenuItem>
+        <DropdownMenuItem disabled={!connected || pending !== undefined} aria-label="Download sanitized offline HTML copy" onSelect={onDownload}>
+          <DownloadIcon />{pending === "download" ? "Preparing" : "Download safe copy"}
+        </DropdownMenuItem>
+        <DropdownMenuLabel className="text-micro font-normal text-muted-foreground">{PreviewCopy.safeCopies}</DropdownMenuLabel>
+        {compare || thumbnails ? <DropdownMenuSeparator /> : null}
+        {compare ? (
+          <DropdownMenuCheckboxItem checked={compare.checked} disabled={compare.disabled} onCheckedChange={compare.onCheckedChange}>
+            Compare
+          </DropdownMenuCheckboxItem>
+        ) : null}
+        {thumbnails ? (
+          <DropdownMenuCheckboxItem checked={thumbnails.checked} onCheckedChange={thumbnails.onCheckedChange}>
+            Variant thumbnails
+          </DropdownMenuCheckboxItem>
+        ) : null}
+        <DropdownMenuSeparator />
+        <DropdownMenuLabel className="text-micro font-normal text-muted-foreground">{PreviewCopy.live}</DropdownMenuLabel>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+// The design's segmented variant chips at the foot of the preview.
+export function PreviewVariantChips({
+  variants,
+  selectedArtifactId,
+  onSelect,
+}: {
+  variants: readonly Pick<Artifact, "id" | "title" | "variant">[]
+  selectedArtifactId: string | undefined
+  onSelect: (artifactId: string) => void
+}) {
+  return (
+    <ToggleGroup
+      type="single"
+      value={selectedArtifactId ?? ""}
+      onValueChange={(next) => { if (next) onSelect(next) }}
+      aria-label="Design variants"
+      className="rounded-full bg-accent p-[3px]"
+    >
+      {variants.map((artifact) => (
+        <ToggleGroupItem key={artifact.id} value={artifact.id} className="min-h-11 rounded-full px-3 text-[11.5px] data-[state=on]:bg-background">
+          {artifact.variant?.label ?? artifact.title}
+        </ToggleGroupItem>
+      ))}
+    </ToggleGroup>
+  )
+}
+
+// RENDERED THIS SESSION (D20). Without it a preview outside the newest variant
+// group could not be opened at all.
+export function PreviewRenderedList({
+  renders,
+  selectedArtifactId,
+  onPick,
+  className,
+}: {
+  renders: readonly RenderedPreview[]
+  selectedArtifactId: string | undefined
+  onPick: (artifactId: string) => void
+  className?: string | undefined
+}) {
+  return (
+    <nav aria-label={PreviewCopy.renderedLabel} className={cn("flex flex-col gap-[3px] bg-sidebar px-2 py-[9px]", className)}>
+      <div className="px-2.5 pt-[5px] pb-[7px] text-eyebrow tracking-[.13em] text-faint">{PreviewCopy.renderedHeading}</div>
+      {renders.map((render) => {
+        const selected = selectedArtifactId !== undefined && render.artifactIds.includes(selectedArtifactId)
+        return (
+          <button
+            key={render.key}
+            type="button"
+            aria-current={selected ? "true" : undefined}
+            className={cn(
+              "flex min-h-11 w-full flex-col items-start gap-[3px] rounded-[calc(var(--radius)-3px)] px-[11px] py-[9px] text-left hover:bg-accent",
+              selected && "bg-accent",
+            )}
+            onClick={() => onPick(render.artifactId)}
+          >
+            <span className={cn("w-full truncate text-[12px]", selected ? "text-foreground" : "text-strong")}>{render.label}</span>
+            <span className="w-full truncate font-machine text-mono-xs text-faint">{render.meta}</span>
+          </button>
+        )
+      })}
+    </nav>
+  )
+}
