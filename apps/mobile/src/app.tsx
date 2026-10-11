@@ -69,7 +69,7 @@ import {
   withNotification,
   type TerminalWatch,
 } from "./terminal-rows"
-import { promptProblem, sendReadinessOverSocket, sessionDetail } from "./session-detail"
+import { promptProblem, recordedBuildBasis, sendReadinessOverSocket, sessionDetail } from "./session-detail"
 import { queuedCancelParams, sendDelivery } from "./session-delivery"
 import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
@@ -946,6 +946,7 @@ export function App() {
             comments={openArtifactComments}
             render={previewRender}
             variants={openVariants}
+            builtOn={snapshot ? recordedBuildBasis(snapshot, openArtifact.sessionId) : undefined}
             machine={snapshot?.machine.name ?? "the machine"}
             onBack={() => setOpenArtifactId(undefined)}
             onRetryRender={() => setRenderAttempt((attempt) => attempt + 1)}

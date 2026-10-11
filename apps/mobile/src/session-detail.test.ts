@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest"
 import {
   isPausable,
   promptProblem,
+  recordedBuildBasis,
   sendReadiness,
   sendReadinessOverSocket,
   sessionDetail,
@@ -138,6 +139,45 @@ describe("threadEntries", () => {
 // Ruling Q357 A: only the latest receipt in the open turn is drawn in full.
 // Receipts carry no turn id today, so a receipt belongs to the open turn when
 // the session holds one and no message of yours has started another since.
+// Frame 17: the build basis a message sent is on that message's delivery
+// record. The latest one the session's messages carry is what the agent was
+// last told to build on.
+describe("recordedBuildBasis", () => {
+  const delivery = (artifactId?: string) => ({
+    version: 1 as const,
+    budget: { unit: "utf16-code-units" as const, limit: 262_144, used: 9_000 },
+    handoff: { status: "not-required" as const },
+    workingPlan: { status: "not-required" as const },
+    annotations: {
+      availableCount: 0, deliveredIds: [], omitted: { budget: 0, limit: 0 },
+      ...(artifactId ? { buildBasis: { artifactId } } : {}),
+    },
+    skills: { selection: "project-default" as const, delivered: [], omitted: { budget: [], limit: [], unavailable: [], reviewChanged: [], policy: [] } },
+  })
+  const user = (id: string, sessionId: string, artifactId?: string) => ({
+    id, sessionId, kind: "user" as const, body: "Build it", createdAt: "2026-09-30T14:00:00.000Z",
+    providerPromptDelivery: delivery(artifactId),
+  })
+
+  it("is the latest basis a message of the session sent", () => {
+    const snapshot = workspace()
+    snapshot.thread = [
+      user("one", "session-billing", "artifact-a"),
+      user("two", "session-billing", "artifact-b"),
+      user("three", "session-billing"),
+      user("elsewhere", "session-audit", "artifact-c"),
+    ]
+    expect(recordedBuildBasis(snapshot, "session-billing")).toBe("artifact-b")
+    expect(recordedBuildBasis(snapshot, "session-audit")).toBe("artifact-c")
+  })
+
+  it("is undefined when no message sent one", () => {
+    const snapshot = workspace()
+    snapshot.thread = [user("one", "session-billing")]
+    expect(recordedBuildBasis(snapshot, "session-billing")).toBeUndefined()
+  })
+})
+
 describe("current receipt", () => {
   function receipt(id: string, createdAt: string) {
     return {

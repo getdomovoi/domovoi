@@ -222,6 +222,22 @@ export function threadEntries(
   return { entries, omitted: mine.length - bounded.length }
 }
 
+// Phone v2 frame 17: the preview a message told the agent to build on. A
+// message that sends a build basis carries it on its delivery record, which
+// the daemon writes once the agent was told (annotation-context.ts), so the
+// latest one the session's messages carry is what the agent was last told.
+// Undefined when no message sent one: a desktop's marked variant is client
+// state and does not travel on its own (ruling Q342 A).
+export function recordedBuildBasis(snapshot: WorkspaceSnapshot, sessionId: string): string | undefined {
+  for (let index = snapshot.thread.length - 1; index >= 0; index -= 1) {
+    const item = snapshot.thread[index]
+    if (item?.sessionId !== sessionId || item.kind !== "user") continue
+    const basis = item.providerPromptDelivery?.annotations.buildBasis
+    if (basis) return basis.artifactId
+  }
+  return undefined
+}
+
 // Ruling Q357 A draws only the latest receipt of the open turn in full. A
 // receipt belongs to the open turn when the session holds one and no message
 // of yours has started another since.
