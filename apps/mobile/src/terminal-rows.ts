@@ -6,6 +6,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import type { TerminalNotification } from "./lib/daemon"
+import { drawnLines } from "./terminal-line-model"
 
 // Phone v2 frame 04: a phone reads the claimant's shell and never types,
 // resizes or claims it. What the phone holds for one watched terminal is the
@@ -199,15 +200,17 @@ function bounded(record: TerminalRecord): TerminalRecord {
   }
 }
 
-// Escape sequences that draw nothing, each anchored at its introducer. The
-// two-character form leaves out "[" and "]", which open the longer ones.
+// Escape sequences that draw nothing, each anchored at its introducer: a
+// window title, a control string (DCS, SOS, PM, APC) to its terminator, a
+// control sequence, and the short escapes. The short form leaves out "[",
+// "]", "P", "X", "^" and "_", which open the longer ones.
 // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-const sequenceAtStart = /^(?:\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[@-Z\\^_])/
+const sequenceAtStart = /^(?:\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b[PX^_][^\u001b]*\u001b\\|\u001b\[[0-?]*[ -/]*[@-~]|\u001b(?:[ -/]+[0-~]|[0-OQ-WYZ\\`-~]))/
 // A sequence still arriving: an introducer whose end has not come yet, so it
-// runs to the end of the text. A title can end in ESC with its backslash
-// still to come.
+// runs to the end of the text. A title or a control string can end in ESC
+// with its backslash still to come.
 // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-const sequenceUnfinished = /^\u001b(?:\][^\u0007\u001b]*\u001b?|\[[0-?]*[ -/]*)?$/
+const sequenceUnfinished = /^\u001b(?:\][^\u0007\u001b]*\u001b?|[PX^_][^\u001b]*\u001b?|\[[0-?]*[ -/]*|[ -/]*)?$/
 // The longest unfinished sequence kept whole across a cut, so the phone holds
 // at most this much past its bound. Longer, and the bound wins.
 const unfinishedSequenceReach = 4_096
@@ -246,85 +249,15 @@ function drawnStart(record: TerminalRecord): number {
   return lineBreak !== -1 && lineBreak - start < lineBreakReach ? lineBreak + 1 : start
 }
 
-// What a terminal draws, read as lines. Colour and cursor-movement sequences
-// are dropped; a carriage return overwrites the line from its start as a
-// progress bar does; a backspace moves the cursor back; an erase-in-line
-// erases. The line still
-// being written is kept; the empty line after a final newline is not.
+// What a terminal draws, read as lines of cells (terminal-line-model.ts):
+// colour is dropped; a carriage return, a backspace, a tab and a cursor move
+// along the line move the cursor, counting a wide character as two cells and
+// a combining mark as none; an erase erases. The line still being written is
+// kept; the empty line after a final newline is not.
 export function terminalLines(text: string): string[] {
-  const lines = plainText(text).split("\n").map(drawnLine)
+  const lines = drawnLines(text)
   if (lines.at(-1) === "") lines.pop()
   return lines
-}
-
-// Erase-in-line survives the stripping as one control character each, which
-// drawnLine acts on. The characters are cleared from the text first; they
-// draw nothing on a terminal either.
-const eraseToEnd = "\u0001"
-const eraseToStart = "\u0002"
-const eraseLine = "\u0003"
-
-// The text with escape sequences dropped and line breaks made plain.
-function plainText(text: string): string {
-  return text
-    // A sequence still arriving at the end draws nothing until it ends: output
-    // comes in pieces, and a piece can stop partway through one.
-    .replace(sequenceStillArriving, "")
-    // Operating system commands, such as a window title.
-    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
-    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-    .replace(/[\u0001-\u0003]/g, "")
-    // Erase in line: to its end, to its start, all of it.
-    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-    .replace(/\u001b\[([012]?)K/g, (_sequence, mode: string) => mode === "1" ? eraseToStart : mode === "2" ? eraseLine : eraseToEnd)
-    // Other control sequences: colour, cursor movement.
-    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
-    // Any other two-character escape. "[" and "]" open the longer ones, so a
-    // malformed one is not mistaken for this and its parameters kept.
-    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-    .replace(/\u001b[@-Z\\^_]/g, "")
-    .replace(/\r\n/g, "\n")
-}
-
-// An introducer at the end of the text whose sequence has not ended.
-// eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-const sequenceStillArriving = /\u001b(?:\][^\u0007\u001b]*\u001b?|\[[0-?]*[ -/]*)?$/
-
-// Tab stops every eight columns, as a terminal sets them by default.
-const tabWidth = 8
-
-// One cell per character, so a character outside the basic plane, two UTF-16
-// units, is overwritten and erased as one.
-function drawnLine(raw: string): string {
-  let cells: string[] = []
-  let column = 0
-  let erased = false
-  for (const char of raw) {
-    if (char === "\r") column = 0
-    else if (char === "\b") column = Math.max(0, column - 1)
-    else if (char === eraseToEnd) cells = cells.slice(0, column)
-    else if (char === eraseToStart || char === eraseLine) {
-      const through = char === eraseLine ? cells.length : Math.min(cells.length, column + 1)
-      cells = cells.map((cell, at) => at < through ? " " : cell)
-      erased = true
-    } else if (char === "\t") {
-      // A tab moves to the next stop and writes over nothing it passes.
-      column = (Math.floor(column / tabWidth) + 1) * tabWidth
-      while (cells.length < column) cells.push(" ")
-    } else if (char >= " " && char !== "\u007f") {
-      // A cursor past the end, after an erase to the end, leaves blanks.
-      while (cells.length < column) cells.push(" ")
-      cells[column] = char
-      column += 1
-    }
-  }
-  // A backspace moves the cursor and erases nothing: only what is written
-  // over it, or an erase sequence, changes a cell.
-  const drawn = cells.join("")
-  // Blanks an erase left at the end of a line are not text.
-  return erased ? drawn.replace(/ +$/, "") : drawn
 }
 
 export function terminalLineCount(record: TerminalRecord): number {
@@ -384,9 +317,10 @@ function endingSignal(summary: TerminalSummary): number | undefined {
 }
 
 // The lines of a text that are finished: one per line break in what it
-// draws, whatever an erase or a sequence cut in half left after the last.
+// draws, whatever an erase or a sequence cut in half left after the last. A
+// line break inside a control string's payload draws nothing.
 function wholeLines(text: string): number {
-  return plainText(text).split("\n").length - 1
+  return drawnLines(text).length - 1
 }
 
 // Failed is a shell that exited with a code other than zero. A shell ended by
