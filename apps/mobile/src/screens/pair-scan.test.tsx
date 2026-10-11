@@ -93,6 +93,58 @@ describe("pairing by camera", () => {
     expect(screen.getByText("Paired as a phone, because the code was issued for one.")).toBeOnTheScreen()
   }, cold)
 
+  // `domovoid pair --label` puts a suggested name in the payload. The field
+  // offers it, and the phone sends whatever the field holds when it pairs:
+  // the device's own name is the one the machine keeps (Q37 B).
+  it("offers the suggested name in the name field and sends what the person leaves there", async () => {
+    const redeem = jest.fn(async (_payload: PairingPayload, _label: string) => credential)
+    const named = encodePairingPayload({ ...payload, suggestedName: "Dana's phone" })
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(named)} onPaired={jest.fn()} onCancel={jest.fn()} redeem={redeem} onDone={jest.fn()} device="phone" />,
+    )
+    const field = screen.getByLabelText("Phone name")
+    expect(field.props.value).toBe("Dana's phone")
+    expect(field.props.editable).toBe(true)
+    await fireEvent.changeText(field, "Kitchen phone")
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(redeem).toHaveBeenCalledTimes(1))
+    expect(redeem.mock.calls[0]?.[1]).toBe("Kitchen phone")
+  }, cold)
+
+  it("sends the suggested name when the person leaves it, and an empty field when the person clears it", async () => {
+    const named = encodePairingPayload({ ...payload, suggestedName: "Dana's phone" })
+    const kept = jest.fn(async (_payload: PairingPayload, _label: string) => credential)
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(named)} onPaired={jest.fn()} onCancel={jest.fn()} redeem={kept} onDone={jest.fn()} device="phone" />,
+    )
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(kept).toHaveBeenCalledTimes(1))
+    expect(kept.mock.calls[0]?.[1]).toBe("Dana's phone")
+
+    // A cleared field stays cleared: the suggestion does not come back.
+    const cleared = jest.fn(async (_payload: PairingPayload, _label: string) => credential)
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(named)} onPaired={jest.fn()} onCancel={jest.fn()} redeem={cleared} onDone={jest.fn()} device="phone" />,
+    )
+    await fireEvent.changeText(screen.getByLabelText("Phone name"), "")
+    expect(screen.getByLabelText("Phone name").props.value).toBe("")
+    await fireEvent.press(screen.getByRole("button", { name: "Pair with this machine" }))
+    await waitFor(() => expect(cleared).toHaveBeenCalledTimes(1))
+    expect(cleared.mock.calls[0]?.[1]).toBe("")
+  }, cold)
+
+  it("keeps a name this device already has over the suggestion, and the field empty without either", async () => {
+    const named = encodePairingPayload({ ...payload, suggestedName: "Dana's phone" })
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(named)} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="Studio iPhone" onDone={jest.fn()} device="phone" />,
+    )
+    expect(screen.getByLabelText("Phone name").props.value).toBe("Studio iPhone")
+    await render(
+      <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} onDone={jest.fn()} device="phone" />,
+    )
+    expect(screen.getByLabelText("Phone name").props.value).toBe("")
+  }, cold)
+
   it("says nothing about the kind when it is the device's", async () => {
     await render(
       <PairScanScreen permission={granted} requestPermission={jest.fn(async () => granted)} Scanner={scannerWith(encodePairingPayload(payload))} onPaired={jest.fn()} onCancel={jest.fn()} redeem={async () => credential} deviceName="iPhone" onDone={jest.fn()} device="phone" />,

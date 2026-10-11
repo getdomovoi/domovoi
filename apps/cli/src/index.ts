@@ -8,7 +8,7 @@ import { DaemonCommandUnavailableError, loadDaemonCommand } from "./daemon-comma
 import { diagnose, renderDoctor } from "./doctor.js"
 import { exitCode, renderExitCodes } from "./exit-codes.js"
 import { readLogs, renderLogs } from "./logs.js"
-import { deviceLabelProblem, pairWithDaemon, PairingError, readPairingCode, redeemPairingCode, renderPaired } from "./pair.js"
+import { choosePairingLabel, deviceLabelProblem, pairWithDaemon, PairingError, readPairingCode, redeemPairingCode, renderPaired } from "./pair.js"
 import { readPlainLine, readSecretLine } from "./secret-input.js"
 import { installSkill, previewSkill, renderInstalled, renderPreview, SkillInstallError } from "./skill-install.js"
 import { connectToDaemon, DaemonUnreachableError, defaultEndpoint } from "./rpc.js"
@@ -40,8 +40,9 @@ Pairing: on the machine that runs the daemon, run 'domovoid pair --client cli'. 
 one-time pairing code. Paste the line under "Cannot scan it?" (or the code alone) into
 'domovoi pair'. The code is read from stdin so it never lands in shell history or the process
 table. It works once and expires, like a phone's. --label names this device in the
-daemon's Devices list; the default is this machine's hostname. The pasted line carries the
-daemon's address; --daemon overrides it.
+daemon's Devices list. Without it, the name the code suggests is used (the daemon's pair
+command keeps one when given --label), else this machine's hostname. The pasted line carries
+the daemon's address; --daemon overrides it.
 Credentials live in the OS keychain. Where there is none (a headless host, WSL, a container),
 pass --credential-file to keep them in a file you own; the CLI never writes one on its own.
 Default daemon: ${defaultEndpoint}
@@ -130,15 +131,14 @@ async function main(argv: string[]): Promise<number> {
   })
 
   if (command === "pair") {
-    // The hostname default is bounded like --label, and before the code is
-    // read, so a bad label never costs a pairing admission.
-    const label = options.label ?? hostname().trim()
-    if (options.label === undefined) {
-      const problem = deviceLabelProblem(label, "hostname")
-      if (problem !== undefined) throw new UsageError(problem)
-    }
     const credentials = await store()
     const entered = readPairingCode(await readSecretLine("Paste the pairing code: "))
+    // Without --label the code's suggested name is the default, then the
+    // hostname. The label is settled before the code is sent, so a hostname
+    // that does not fit one never costs a pairing admission.
+    const chosen = choosePairingLabel({ given: options.label, suggested: entered.suggestedName, hostname: hostname() })
+    if ("problem" in chosen) throw new UsageError(chosen.problem)
+    const { label } = chosen
     // The payload names the address the daemon issued the code for, the same
     // way a scanned code tells a phone where to dial. An explicit --daemon
     // wins, for a route the daemon cannot know about, such as a forwarded port.

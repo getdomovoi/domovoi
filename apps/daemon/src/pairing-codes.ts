@@ -60,7 +60,9 @@ type OpenPairing = {
   // it is shown and cannot be talked up when it is spent.
   targetClient?: ClientKind
   clientAccess?: ClientAccess
-  // Suggested name retained for a follow-up pairing payload; nothing reads it yet.
+  // The suggested name the code was shown with. The device learns it from the
+  // pairing payload `domovoid pair` prints, not from here, and the daemon
+  // never names the device by it (Q37 B); nothing reads this copy.
   label?: string
 }
 

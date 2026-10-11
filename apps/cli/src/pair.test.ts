@@ -5,7 +5,7 @@ import { createPrivateKey, createPublicKey } from "node:crypto"
 
 import { encodePairingPayload, protocolVersion } from "@getdomovoi/protocol"
 
-import { deviceLabelProblem, pairWithDaemon, PairingError, readPairingCode, redeemPairingCode, renderPaired } from "./pair.js"
+import { choosePairingLabel, deviceLabelProblem, pairWithDaemon, PairingError, readPairingCode, redeemPairingCode, renderPaired } from "./pair.js"
 import { DaemonRefusedError, DaemonUnreachableError } from "./rpc.js"
 
 const token = "t".repeat(43)
@@ -85,6 +85,11 @@ describe("readPairingCode", () => {
     expect(readPairingCode(`Cannot scan it? Paste this on the device:\n${payload}\n`)).toEqual({ code, url: "ws://127.0.0.1:47831/rpc" })
   })
 
+  it("reads the name the code suggests for this device, when it carries one", () => {
+    const named = encodePairingPayload({ v: 1, url: "ws://127.0.0.1:47831/rpc", code, suggestedName: "build box" })
+    expect(readPairingCode(`${named}\n`)).toEqual({ code, url: "ws://127.0.0.1:47831/rpc", suggestedName: "build box" })
+  })
+
   it("reads a bare code, or the line domovoid pair prints it on", () => {
     expect(readPairingCode(`${code}\n`)).toEqual({ code })
     expect(readPairingCode(`Pairing code: ${code}`)).toEqual({ code })
@@ -100,6 +105,27 @@ describe("readPairingCode", () => {
   // the refusal names the daemon command as it runs, as the pairing card does.
   it("names the daemon's pair command without a required-looking label", () => {
     expect(() => readPairingCode(token)).toThrow("That is not a pairing code. Paste the line 'domovoid pair --client cli' printed, or the code alone.")
+  })
+})
+
+// The device names itself (Q37 B): --label wins, then the name the code
+// suggests, then this machine's hostname.
+describe("choosePairingLabel", () => {
+  it("takes --label over the suggested name and the hostname", () => {
+    expect(choosePairingLabel({ given: "my shell", suggested: "build box", hostname: "dana-mbp" })).toEqual({ label: "my shell" })
+  })
+
+  it("defaults to the suggested name without --label", () => {
+    expect(choosePairingLabel({ given: undefined, suggested: "build box", hostname: "dana-mbp" })).toEqual({ label: "build box" })
+    // A hostname that does not fit a label does not matter when the code names the device.
+    expect(choosePairingLabel({ given: undefined, suggested: "build box", hostname: "" })).toEqual({ label: "build box" })
+  })
+
+  it("falls back to the hostname, bounded like --label", () => {
+    expect(choosePairingLabel({ given: undefined, suggested: undefined, hostname: " dana-mbp " })).toEqual({ label: "dana-mbp" })
+    expect(choosePairingLabel({ given: undefined, suggested: undefined, hostname: "a".repeat(129) })).toEqual({
+      problem: "This machine's hostname does not fit a device label (1 to 128 characters), so pass --label <device label>",
+    })
   })
 })
 

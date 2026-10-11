@@ -44,6 +44,19 @@ export function deviceLabelProblem(label: string, source: "--label" | "hostname"
   return label.trim().length === 0 ? "--label needs a name the daemon can show" : `--label takes at most ${maximumPairedDeviceLabelLength} characters`
 }
 
+// The name this device pairs under. The device names itself (Q37 B): its own
+// --label wins, then the name the code suggests (what `domovoid pair --label`
+// kept), then this machine's hostname. The daemon names the device by what
+// this sends, so the suggestion is only a default. The suggested name was
+// validated with the payload; the hostname is bounded like --label.
+export function choosePairingLabel(input: { given: string | undefined; suggested: string | undefined; hostname: string }): { label: string } | { problem: string } {
+  if (input.given !== undefined) return { label: input.given }
+  if (input.suggested !== undefined) return { label: input.suggested }
+  const label = input.hostname.trim()
+  const problem = deviceLabelProblem(label, "hostname")
+  return problem === undefined ? { label } : { problem }
+}
+
 // The daemon side of pairing is `domovoid pair --client cli`, run where the
 // daemon runs; its --label is optional and only a suggested name, since this
 // half's own --label names the device. It prints a one-time code, bare on a
@@ -54,13 +67,13 @@ export function deviceLabelProblem(label: string, source: "--label" | "hostname"
 // credential the daemon minted with an authenticated hello, then keeps it.
 // The code is read from stdin, never argv, so it stays out of shell history
 // and the process table.
-export function readPairingCode(input: string): { code: string; url?: string } {
+export function readPairingCode(input: string): { code: string; url?: string; suggestedName?: string } {
   const trimmed = input.trim()
   const payload = new RegExp(`${pairingPayloadPrefix}\\S+`).exec(trimmed)?.[0]
   if (payload !== undefined) {
     try {
       const decoded = decodePairingPayload(payload)
-      return { code: decoded.code, url: decoded.url }
+      return { code: decoded.code, url: decoded.url, ...(decoded.suggestedName === undefined ? {} : { suggestedName: decoded.suggestedName }) }
     } catch (error) {
       throw new PairingError(error instanceof Error ? error.message : copy.notACode)
     }

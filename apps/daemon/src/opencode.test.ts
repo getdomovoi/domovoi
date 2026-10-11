@@ -996,6 +996,136 @@ describe("an interrupted turn's end that arrives late", () => {
   })
 })
 
+// The todowrite tool's list as OpenCode 1.18.32 and Kilo 7.7.9 publish it: a
+// todo.updated event with the session's whole ordered list (EventTodoUpdated,
+// the same Array<Todo> GET /session/{id}/todo returns).
+describe.each([
+  ["OpenCode", OpenCodeSdkAdapter],
+  ["Kilo", KiloSdkAdapter],
+] as const)("%s todos as the working plan", (_name, Adapter) => {
+  const plans = (events: AgentEvent[]) => events.filter((event) => event.type === "plan-updated")
+  const todo = (content: string, status: string) => ({ id: content, content, status, priority: "medium" })
+
+  async function started() {
+    const { factory, stream } = harness()
+    let id = 0
+    const adapter = new Adapter(factory, () => `turn-${++id}`)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    // Sends a turn and shows its prompt, as the server records it before the
+    // run that writes todos begins.
+    const prompt = async (text = "One", mode: Runtime["permissionMode"] = "build") => {
+      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: text, runtime: runtime(mode) })
+      stream.emit({ type: "message.updated", properties: { info: { id: turnId, sessionID: threadId, role: "user" } } })
+      return turnId
+    }
+    return { adapter, events, prompt, stream, threadId }
+  }
+
+  it("reports each whole todo list as the turn's plan, in order", async () => {
+    const { adapter, events, prompt, stream, threadId } = await started()
+    const turnId = await prompt()
+
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Read", "completed"), todo("Write", "in_progress"), todo("Test", "pending")] } })
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Read", "completed"), todo("Write", "completed")] } })
+
+    await waitForDaemon(() => expect(plans(events)).toEqual([
+      { type: "plan-updated", threadId, turnId, steps: [
+        { text: "Read", status: "completed" },
+        { text: "Write", status: "in-progress" },
+        { text: "Test", status: "pending" },
+      ] },
+      { type: "plan-updated", threadId, turnId, steps: [
+        { text: "Read", status: "completed" },
+        { text: "Write", status: "completed" },
+      ] },
+    ]))
+    await adapter.close()
+  })
+
+  // The working plan has no cancelled state. A cancelled todo is work the
+  // agent dropped, so it leaves the plan rather than holding back the rest.
+  it("leaves a cancelled todo out of the plan", async () => {
+    const { adapter, events, prompt, stream, threadId } = await started()
+    const turnId = await prompt()
+
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Read", "completed"), todo("Refactor", "cancelled"), todo("Test", "pending")] } })
+
+    await waitForDaemon(() => expect(plans(events)).toEqual([
+      { type: "plan-updated", threadId, turnId, steps: [
+        { text: "Read", status: "completed" },
+        { text: "Test", status: "pending" },
+      ] },
+    ]))
+    await adapter.close()
+  })
+
+  it("reports no plan for a list it cannot read", async () => {
+    const { adapter, events, prompt, stream, threadId } = await started()
+    await prompt()
+
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Read", "blocked")] } })
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [{ status: "pending" }] } })
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: "Read" } })
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Last", "pending")] } })
+
+    await waitForDaemon(() => expect(plans(events)).toHaveLength(1))
+    expect(plans(events)[0]).toMatchObject({ steps: [{ text: "Last", status: "pending" }] })
+    await adapter.close()
+  })
+
+  // A subagent's todos are its own list, not the thread's plan, and a list
+  // published outside any turn belongs to no turn the daemon is running.
+  it("reports no plan for a subagent's todos or for todos outside a turn", async () => {
+    const { adapter, events, prompt, stream, threadId } = await started()
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Early", "pending")] } })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const turnId = await prompt()
+    stream.emit({ type: "session.created", properties: { sessionID: "ses_child", info: { id: "ses_child", parentID: threadId, directory: "/worktree" } } })
+    stream.emit({ type: "todo.updated", properties: { sessionID: "ses_child", todos: [todo("Child", "pending")] } })
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Parent", "pending")] } })
+
+    await waitForDaemon(() => expect(plans(events)).toHaveLength(1))
+    expect(plans(events)[0]).toEqual({ type: "plan-updated", threadId, turnId, steps: [{ text: "Parent", status: "pending" }] })
+    await adapter.close()
+  })
+
+  // In Plan mode the agent's todos track its research, and its final reply
+  // is the proposal (the daemon reads that reply only when no plan arrived
+  // during the turn), as with Claude's TodoWrite.
+  it("reports no plan for a Plan mode turn's todos", async () => {
+    const { adapter, events, prompt, stream, threadId } = await started()
+    const planned = await prompt("Plan it", "plan")
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Inspect the repository", "completed")] } })
+    finishRun(stream, threadId, planned)
+    await waitForDaemon(() => expect(events.some((event) => event.type === "turn-completed")).toBe(true))
+    const built = await prompt("Build it")
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Write", "in_progress")] } })
+
+    await waitForDaemon(() => expect(plans(events)).toHaveLength(1))
+    expect(plans(events)[0]).toEqual({ type: "plan-updated", threadId, turnId: built, steps: [{ text: "Write", status: "in-progress" }] })
+    await adapter.close()
+  })
+
+  // An interrupted run can publish its todos after the next turn was sent.
+  // Until the server shows the new turn's prompt they are the earlier run's,
+  // as an error is (security review round 8 of #687, ruling Q287).
+  it("does not give an interrupted run's late todos to the turn sent after it", async () => {
+    const { adapter, events, prompt, stream, threadId } = await started()
+    const first = await prompt()
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Interrupted", "in_progress")] } })
+    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Second", "pending")] } })
+
+    await waitForDaemon(() => expect(plans(events)).toHaveLength(1))
+    expect(plans(events)[0]).toEqual({ type: "plan-updated", threadId, turnId: second, steps: [{ text: "Second", status: "pending" }] })
+    await adapter.close()
+  })
+})
+
 describe("message ids", () => {
   it.each([
     ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],

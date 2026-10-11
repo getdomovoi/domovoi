@@ -132,9 +132,13 @@ describe("domovoid CLI connection identity", () => {
     expect(result.stdout).toContain("which only this machine can reach")
     expect(payload.url).toBe(`ws://${daemon.address!.host}:${daemon.address!.port}/rpc`)
 
-    const redeemed = await redeem(payload.url, payload.code, "Operator desktop")
+    // The label rides in the payload as a suggestion; the device names itself
+    // with what it sends when it spends the code (Q37 B).
+    expect(payload.suggestedName).toBe("Operator desktop")
+    const redeemed = await redeem(payload.url, payload.code, "Studio desktop")
     const token = (redeemed.result as { token: string }).token
     const deviceId = (redeemed.result as { device: { id: string } }).device.id
+    expect((redeemed.result as { device: { label: string } }).device.label).toBe("Studio desktop")
 
     const client = new DomovoiClient(payload.url, "desktop", {
       budgets: { connectMs: 5_000, requestMs: 5_000 }, authToken: token,
