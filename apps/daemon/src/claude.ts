@@ -1030,8 +1030,20 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
           const current = claudePlanTasks(session.tasks)
           const historyKey = `${session.threadId}/${session.taskList}`
           const deleted = this.#deletedTasks.get(historyKey) ?? new Set<string>()
-          for (const id of session.reportedTasks.keys()) if (!session.tasks.has(id)) deleted.add(id)
+          for (const id of session.reportedTasks.keys()) {
+            if (session.tasks.has(id)) continue
+            deleted.delete(id)
+            deleted.add(id)
+          }
           for (const id of session.tasks.keys()) deleted.delete(id)
+          // Only the latest deletions repeat, so the list stays bounded. The
+          // first change the daemon takes after a dropped one carries its
+          // deletion. Only more deletions than this while events are dropped
+          // can lose one, which leaves its step visible.
+          for (const id of deleted) {
+            if (deleted.size <= maximumRepeatedTaskDeletions) break
+            deleted.delete(id)
+          }
           this.#deletedTasks.set(historyKey, deleted)
           this.#emit({
             type: "plan-updated",
@@ -1188,6 +1200,7 @@ function baseOptions(): ClaudeQueryOptions {
 }
 
 const maximumInterruptedMessageIds = 64
+const maximumRepeatedTaskDeletions = 64
 
 function resultMessageIds(message: ClaudeSdkMessage): string[] | undefined {
   const ids = Array.isArray(message.user_message_uuids)

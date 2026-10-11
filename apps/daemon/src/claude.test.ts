@@ -1212,6 +1212,51 @@ describe("ClaudeAgentSdkAdapter", () => {
     await adapter.close()
   })
 
+  it("repeats only the latest task deletions", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "55555555-5555-4555-8555-555555555555",
+      "66666666-6666-4666-8666-666666666666",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const event = vi.fn()
+    adapter.onEvent(event)
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Churn", runtime: runtime("build") })
+    const query = calls[0]!.query
+    for (let id = 1; id <= 70; id += 1) {
+      const taskId = String(id)
+      query.emit({
+        type: "assistant",
+        session_id: threadId,
+        message: { content: [{ type: "tool_use", id: `toolu_c${taskId}`, name: "TaskCreate", input: { subject: `Task ${taskId}`, description: "." } }] },
+      })
+      query.emit({
+        type: "user",
+        session_id: threadId,
+        message: { content: [{ type: "tool_result", tool_use_id: `toolu_c${taskId}`, content: "created" }] },
+        tool_use_result: { task: { id: taskId, subject: `Task ${taskId}` } },
+      })
+      query.emit({
+        type: "assistant",
+        session_id: threadId,
+        message: { content: [{ type: "tool_use", id: `toolu_d${taskId}`, name: "TaskUpdate", input: { taskId, status: "deleted" } }] },
+      })
+      query.emit({
+        type: "user",
+        session_id: threadId,
+        message: { content: [{ type: "tool_result", tool_use_id: `toolu_d${taskId}`, content: "deleted" }] },
+        tool_use_result: { success: true, taskId, updatedFields: ["status"], statusChange: { from: "pending", to: "deleted" } },
+      })
+    }
+    const plans = () => event.mock.calls
+      .map(([emitted]) => emitted as AgentEvent)
+      .flatMap((emitted) => emitted.type === "plan-updated" && emitted.taskChange ? [emitted.taskChange] : [])
+    await waitForDaemon(() => expect(plans()).toHaveLength(140))
+    expect(plans().at(-1)!.deleted).toEqual(Array.from({ length: 64 }, (_, index) => String(index + 7)))
+    await adapter.close()
+  })
+
   it("ignores a TaskUpdate that Claude reports as failed", async () => {
     const { calls, factory } = factoryHarness()
     const ids: ClaudeMessageId[] = [
