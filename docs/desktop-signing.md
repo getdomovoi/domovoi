@@ -71,8 +71,7 @@ steps ([Open a Mac app from an unknown developer](https://support.apple.com/guid
    the app to the Bin.
 2. Choose Apple menu, System Settings, then Privacy & Security in the sidebar.
 3. Go to Security and choose "Open", then choose "Open Anyway". Apple says the button is there
-   for about an hour after the refused open. The guide is written for the current macOS; an
-   earlier release can lay this out differently, so record the buttons yours showed.
+   for about an hour after the refused open. Record the buttons your Mac showed.
 4. Enter your login password, then choose OK.
 
 macOS then keeps the app as an exception, and it opens like any other app from then on.
