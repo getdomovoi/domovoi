@@ -104,8 +104,9 @@ retargeted request returns 404.
 Every listener the daemon opens, loopback and the tailnet listener alike, serves the built web app
 (`apps/web`) at `/`, beside `/healthz`, `/artifacts/` and `/rpc` on the same port. The bundle is a
 separate artifact: the daemon reads it from `DOMOVOI_WEB_DIR`, or the default folder in the table
-above, once at startup, and serves it from memory. Replacing it takes a daemon restart. The
-startup output says what happened:
+above, once at startup, and serves it from memory. Replacing it takes a daemon restart. A bundle
+not read within 10 seconds is not served, and the daemon starts without it. The startup output
+says what happened:
 
 ```text
 domovoid web app served from <folder> (web <version>, protocol <x.y.z>)

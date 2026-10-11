@@ -536,6 +536,24 @@ describe("createProductionDaemon", () => {
       expect(describeWebApp(handle.webApp)).toBe(`domovoid web app not served: it is for protocol 0.7.2 and this daemon speaks ${protocolVersion} at /srv/web`)
     })
 
+    // Codex review round 1 (Major): a stalled read must not spend the shared
+    // startup deadline and keep every listener from starting.
+    it("gives the bundle its own short bound and starts without it", async () => {
+      const errorSink = vi.fn()
+      const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))
+      const started = Date.now()
+      const handle = await createProductionDaemonWithDependencies({ environment: { DOMOVOI_WEB_DIR: "/srv/web" }, homeDirectory: await temporaryHome(), errorSink }, {
+        ...productionDaemonDependencies, createMachineCredentials: credentials, createDaemon,
+        loadWebApp: () => new Promise(() => {}), webAppLoadTimeoutMs: 100,
+      })
+      running.push(handle)
+      expect(Date.now() - started).toBeLessThan(5_000)
+      expect(createDaemon.mock.calls[0]![0].webApp).toMatchObject({ state: "invalid", root: "/srv/web" })
+      expect(handle.webApp).toEqual({ state: "timed-out", directory: "/srv/web", seconds: 0.1 })
+      expect(errorSink).toHaveBeenCalledWith({ context: "Domovoi did not serve the web app", detail: "the bundle was not read within 0.1 seconds, in /srv/web" })
+      expect(describeWebApp(handle.webApp)).toBe("domovoid web app not served: it was not read within 0.1 seconds at /srv/web")
+    })
+
     it("serves the state page rather than stop when loading throws", async () => {
       const errorSink = vi.fn()
       const createDaemon = vi.fn((options: DaemonServerOptions) => fakeRuntime(options))

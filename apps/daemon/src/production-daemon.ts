@@ -65,6 +65,13 @@ export type ProductionWebAppStatus =
   | { state: "absent"; directory: string }
   | { state: "invalid"; directory: string; reason: string; path?: string }
   | { state: "incompatible"; directory: string; bundleProtocolVersion: string; daemonProtocolVersion: string }
+  | { state: "timed-out"; directory: string; seconds: number }
+
+// Codex review round 1 (Major): the bundle has its own bound inside the
+// startup deadline, as the tailnet certificate does, so a stalled read (a
+// hung network mount, say) costs the web app only, never the listeners. The
+// read itself cannot be cancelled and finishes or fails unseen.
+export const defaultWebAppLoadTimeoutMs = 10_000
 
 export type ProductionDaemonHandle = {
   readonly host: string
@@ -102,6 +109,8 @@ export type ProductionDaemonDependencies = {
   // The tailnet certificate's own bound; tests shorten it.
   tailnetTlsTimeoutMs?: number
   loadWebApp(options: WebAppBundleOptions): Promise<WebAppBundleLoad>
+  // The bundle's own bound; tests shorten it.
+  webAppLoadTimeoutMs?: number
   loadRelayChannel: typeof loadOrProvisionRelayChannel
   resolveToolPath: typeof resolveToolPath
   createProviderProbe(toolPath: string | undefined): ProviderProbe
@@ -150,6 +159,27 @@ export function describeWebApp(status: ProductionWebAppStatus): string {
     case "absent": return `domovoid web app not served: none is installed at ${status.directory}`
     case "invalid": return `domovoid web app not served: it failed its checks (${invalidDetail(status)}) at ${status.directory}`
     case "incompatible": return `domovoid web app not served: it is for protocol ${status.bundleProtocolVersion} and this daemon speaks ${status.daemonProtocolVersion} at ${status.directory}`
+    case "timed-out": return `domovoid web app not served: it was not read within ${status.seconds} seconds at ${status.directory}`
+  }
+}
+
+// Loads the bundle within its own bound. A loader that throws or does not
+// settle in time leaves the daemon serving the state page.
+async function loadWebAppWithin(
+  load: ProductionDaemonDependencies["loadWebApp"],
+  options: WebAppBundleOptions,
+  timeoutMs: number,
+): Promise<{ load: WebAppBundleLoad; timedOut: boolean }> {
+  const refused = (): WebAppBundleLoad => Object.freeze({ state: "invalid", root: options.root, reason: "root-unreadable" })
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<{ load: WebAppBundleLoad; timedOut: boolean }>((settle) => {
+    timer = setTimeout(() => settle({ load: refused(), timedOut: true }), timeoutMs)
+    timer.unref?.()
+  })
+  try {
+    return await Promise.race([load(options).then((loaded) => ({ load: loaded, timedOut: false }), () => ({ load: refused(), timedOut: false })), late])
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -196,9 +226,12 @@ export async function createProductionDaemonWithDependencies(
     // LOCALAPPDATA come from the process the supervisor started when the
     // settings do not name them.
     const webDirectory = config.webDirectory ?? defaultWebDirectory(process.platform, homeDirectory, { ...process.env, ...settings })
-    const webApp = await beforeDeadline(dependencies.loadWebApp({ root: webDirectory, profileDirectory: profileDirectory(profile) })
-      .catch((): WebAppBundleLoad => Object.freeze({ state: "invalid", root: webDirectory, reason: "root-unreadable" })), deadline)
-    const webAppState = webAppStatus(webDirectory, webApp)
+    const webAppTimeoutMs = dependencies.webAppLoadTimeoutMs ?? defaultWebAppLoadTimeoutMs
+    const { load: webApp, timedOut } = await beforeDeadline(loadWebAppWithin(dependencies.loadWebApp,
+      { root: webDirectory, profileDirectory: profileDirectory(profile) }, webAppTimeoutMs), deadline)
+    const webAppState: ProductionWebAppStatus = timedOut
+      ? { state: "timed-out", directory: webDirectory, seconds: webAppTimeoutMs / 1_000 }
+      : webAppStatus(webDirectory, webApp)
     deadline.throwIfExpired()
     lease ??= claimProfile(profile)
     const ownedLease = lease
@@ -222,6 +255,8 @@ export async function createProductionDaemonWithDependencies(
       errorSink({ context: "Domovoi did not serve the web app", detail: `${invalidDetail(webAppState)} in ${webDirectory}` })
     } else if (webAppState.state === "incompatible") {
       errorSink({ context: "Domovoi did not serve the web app", detail: `the bundle is for protocol ${webAppState.bundleProtocolVersion} and this daemon speaks ${webAppState.daemonProtocolVersion}, in ${webDirectory}` })
+    } else if (webAppState.state === "timed-out") {
+      errorSink({ context: "Domovoi did not serve the web app", detail: `the bundle was not read within ${webAppState.seconds} seconds, in ${webDirectory}` })
     }
     const [authToken, machineIdentity] = await beforeDeadline(Promise.all([
       config.authToken
