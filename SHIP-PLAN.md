@@ -202,6 +202,26 @@ Parallel with Phase 0. Touches nothing the gates decide.
       and starts at boot is owed. The Windows supervisor was built (f216b53e) and reverted the
       same day (6a00108f) under ruling Q300 A until a job object contains the daemon's tree.
       Actual Windows logon acceptance is still open.
+      **State on 2026-10-11:** the code for both policies is on `main`; the box stays open for
+      the hardware runs. Windows supervision landed with the job object Q300 A asked for: the
+      logon task runs a supervisor that holds each daemon attempt in a `Global\` job (#736,
+      32312580). Fixes since, each from a CI failure or a review: supervisor and owner record
+      writes retry while a reader holds the file (#755, bf903282; #782, 4683f9f3), and the same
+      bounded retry moved into `@getdomovoi/credential-store` for every replace (#785,
+      352b479b); the job marker test publishes atomically (#762, 46811f42); the helper loads no
+      PowerShell modules (#766, b7154cff); the first helper query at logon retries a cold start
+      (#768, c575c2bb); the task command length check matched `schtasks` (#771, a7bea4ca) until
+      registration moved to the Task Scheduler COM API, which removes that limit (#787,
+      b28f372b); task values reach PowerShell as data, so smart quotes cannot end a string
+      (#791, 65dc83be). macOS removal waits for the stopped daemon to release the profile lease
+      (#761, f3d5e32d). A packaged service smoke installs, reads back and removes the service
+      from the unpacked app on CI (#742, 40f3ef40). The launchd, systemd and Windows native
+      service tests run on CI only, or with `DOMOVOI_NATIVE_SERVICE_TESTS=1` (#788, d6f82078;
+      #790, 5adafd26). Owed, and only the maintainer's hardware can supply them (ruling Q4,
+      2026-10-06): a real Windows sign-out and sign-in and a reboot with the logon task and the
+      WSL task installed, and a Linux logout and reboot with linger on, each answering with
+      nothing started by hand. The step list is "Real-hardware acceptance checklist,
+      2026-10-06" in `docs/service-lifecycle-assessment.md`.
 - [x] **S1.2 [CX]** Version negotiation. A v0.9 client against a v1.2 daemon refuses
       clearly rather than half-working. The hello refuses with
       `protocolVersionMismatchErrorCode` (56c6dce3, `server.ts`); exact version parsing and
@@ -243,7 +263,7 @@ Parallel with Phase 0. Touches nothing the gates decide.
       the maintainer says so.
 - [x] **S1.5 [CX]** Log rotation, and the count-based audit retention (10k activity, 1k
       pre-auth) proven across restart. Landed as #374 (c8eb1a93).
-- [ ] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, logs. `domovoid
+- [x] **S1.6 [CX + CC]** CLI to parity: install, status, pair, doctor, logs. `domovoid
       service install` and `domovoid service status` are the daemon's
       (`apps/daemon/src/index.ts`). The user-facing `domovoi` binary is `apps/cli`: `pair` and
       `status` (95711761), `doctor` (83f1406d), `logs` (d81ef5c9), and `skill install <path>`,
@@ -257,6 +277,20 @@ Parallel with Phase 0. Touches nothing the gates decide.
       is closed: `domovoi pair` reads the code `domovoid pair --client cli --label <label>`
       prints and redeems it with `device.redeemCode` (e958ca93, Q337 A). The bare
       `domovoid pair` code is a machine claim, which `domovoi pair` cannot redeem.
+      **Ticked 2026-10-11:** every command this box names is on `domovoi`. Ruling Q3 B
+      (2026-10-06) put the service commands in the CLI: `@getdomovoi/daemon` exports its
+      daemon command module (#757, d6c71313), and `domovoi daemon install|status|remove`
+      calls it, so one installer registers the daemon's own entry, never the CLI's (#765,
+      2bc9f3af; `docs/cli-parity-decision.md`). Pairing since then: the desktop card prints a
+      `domovoid pair` line that runs as printed (#753, eeaf11e8); `--label` is optional and
+      kept as a suggested name, and `domovoid pair --client web` prints the bare word code
+      (#767, 640ac4e7); the card and the CLI drop the required-label placeholder (#792,
+      409dd493); the pairing payload carries the label, so the phone prefills its name and
+      `domovoi pair` uses it by default, while the name the device sends still wins (#796,
+      1d797596). The `--label <label>` form quoted above is the 2026-10-03 record. Outside this
+      box and still undecided: whether the other human `domovoid` commands (`secret`, `skill
+      keygen|sign|trust`, `wsl list`, `fleet-keychain`, `open`, `profile recover`) move to
+      `domovoi`. `domovoid service install|status|remove` stays as the daemon's own entry.
 - [x] **S1.7 [CX]** The accounting and turn-record work lands here — it is daemon bookkeeping and it
       unblocks UI in Phase 3. Usage accounting (4359bcf9) and turn records (e7364720,
       84d90d50, 1991666a); the detail is under "From the work split" below.
@@ -1329,7 +1363,19 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
       built, 18 partial, 0 missing, 4 blocked; phone 20 built, 5 blocked; web 6 built, 5
       blocked; tablet 7 built, 1 blocked. **Re-measured 2026-10-06 at 862f1b3a**, after the
       inventories were re-derived (2026-09-30) and partials reclassified more strictly
-      (2026-10-02): desktop 38 built, 49 partial, 4 missing, 10 blocked. The rest of this entry is the 2026-09-18 state it
+      (2026-10-02): desktop 38 built, 49 partial, 4 missing, 10 blocked. **Re-measured
+      2026-10-11 at 1d797596:** desktop 53 built, 35 partial, 3 missing, 10 blocked, so the
+      box stays open. Merged since 2026-10-06, each slice flipping its own entries: effort
+      levels each model reports (#738, e3c97ffe), with OpenCode and Kilo reporting `unset`
+      (#744, 219de14b) and a model with no default effort carried on the wire (#751,
+      f1e9f2b5); the providers copy without an account or relay claim (#741, 324e800a); the
+      gate card, receipt and refusal (#743, c9838486); the palette (#745, 33538e01); the dock
+      plan document (#746, 017307b5); audit rows and facts (#749, e942f5a3); the terminal
+      claim banner, watch and attach (#756, 6e139539); approval origin, outside-project and
+      plan step (#758, 7fac7211); the fleet machine card (#772, 31a91fde); the shell and
+      thread wiring those slices held back (#774, ba26dd48); the History tip and newest-first
+      order (#775, bfaeeae2; #778, 9af8fc46); Cmd+N for New session (#776, 39a9d254); Release
+      the shell and resize follow (#784, b91a4bb0). The rest of this entry is the 2026-09-18 state it
       replaced, kept as history. **Unstarted as of 2026-09-18.** The v2 conversion
       is not landed on any surface, and this plan read as though it were, because the designs
       were converted into itemised change lists and only the items were built; the chrome was
@@ -1388,6 +1434,16 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
         already trusts, as a separate artifact beside the daemon rather than compiled in, so a
         web regression is not a daemon release. Ask 4 in the same file, after Phase 1's own
         items. Steps 1 and 5 are relay states and wait on Phase 2.
+        **State on 2026-10-11:** slices 1 to 3 of `docs/plans/s3-2-web-over-tailnet.md` are on
+        `main`. The daemon loads and checks a web bundle (#699, cb3fa3d6). The web build
+        writes the bundle manifest, takes its RPC URL from the page location, and offers code
+        pairing only off loopback (#731, 9e465bad). A request handler serves a loaded bundle
+        with its CSP, cache classes and state page (#734, 071ae190). Nothing wires them into
+        the daemon yet, so no daemon serves the web app. Slice 4 (wire it in: `DOMOVOI_WEB_DIR`,
+        the listener authorities, exact TLS origins, the preview sandbox test) is in progress
+        and has no pull request on 2026-10-11. Slice 5 (`/artifacts/` under the listener's
+        names), slice 6 (the release tarball, its `SHA256SUMS` line, install documents) and
+        slice 7 (the real-browser run, then the maintainer's tailnet check) follow it.
 - [ ] **S3.3 [CC]** Mobile: 19 designed frames against nine existing screens. In order:
       pairing by camera first, which is in the not-built list and is the thing standing
       between a phone and a daemon; then the gate path end to end on a real device.
@@ -1411,6 +1467,17 @@ the hosted relay waits for Phase 2. Starts when the protocol is stable.
         in the same file. Three affordances the phone credential refuses left the design
         instead (b6116b7e, #465): revert, take the shell, build on a variant. A phone
         answers what a machine proposed.
+        **State on 2026-10-11:** the phone reads a session's terminals as frame 04 draws
+        them, read-only, with the claimant line and Follow output (#739, 60204d41), and its
+        columns by rows label follows a resize (#786, dc7980af); `watching.screen` in
+        `docs/design-conformance/phone-v2.json` reads built. Not seen on a device. Kept open
+        for the rest of frame 04: frame 04e, a gate after a failed command, is blocked because
+        an approval carries no reference to the command or terminal it follows. Frame 04f is
+        the tablet's, outside M1. Also merged in this run: the phone gate shows where the
+        request came from, whether it reaches outside the project, and its plan step (#773,
+        fef9009b); machine ages on the phone use the daemon's clock (#786, dc7980af); the
+        phone prefills its name from the pairing code's suggested name (#796, 1d797596).
+        Phone inventory at 1d797596: 19 built, 5 partial, 2 missing, 7 blocked.
   - [ ] Frames 20 to 23, the lock screen and the Live Activity, are drawn, not built, and
         blocked on `S3.4`: frame 20 (Allow once, Deny, Open on a lock-screen notification)
         needs APNs to wake a backgrounded app, which needs a server holding a push identity
@@ -2122,6 +2189,16 @@ push` left M1 (Q284 A). Open M1 items: `S1.1`'s logon acceptance and the two pol
 move of install and status to `domovoi` and its pairing gap, `S3.2`'s web app over the tailnet,
 and `S3.10`. Most trust gate pull requests of the audit fix program have merged; the git-filter
 acknowledgement, the OpenCode and Kilo checks, and the outside-answer handling are in review.
+
+On 2026-10-11 `S1.6` closed: `domovoi daemon install|status|remove` and the pairing fixes are
+on `main` (see its entry). Open M1 items, read from this file on 2026-10-11: `S1.1`'s
+real-hardware runs, a Windows sign-out, sign-in and reboot and a Linux logout and reboot, which
+only the maintainer can do (ruling Q4); `S3.2`'s web app over the tailnet, slices 4 to 7, with
+slice 4 in progress; `S3.10`'s remaining desktop entries, 35 partial, 3 missing and 10 blocked
+at 1d797596; and frame 04e under `S3.3`, blocked on an approval that names the command it
+follows. The M1 definition of done also waits on its person-only bullets, walked with
+[the M1 acceptance walk](docs/m1-acceptance-walk.md) on the packaged build, including the
+install and recovery documents on Linux, macOS and Windows.
 
 **Neither** adds a carrier by adding a branch. The transport list is the only place a new
 route goes.
