@@ -126,7 +126,7 @@ export function Composer({
                 accessibilityLabel={`Remove ${imageCount}`}
                 onPress={onRemoveAttachments}
                 disabled={sending}
-                className="min-h-[36px] items-center justify-center self-start rounded-full border border-warn-border px-3.5 active:opacity-70"
+                className="min-h-tap items-center justify-center self-start rounded-full border border-warn-border px-3.5 active:opacity-70"
               >
                 <Text className="font-sans-medium text-[12px] text-warn-fg">{`Remove ${imageCount}`}</Text>
               </Pressable>
