@@ -1956,3 +1956,21 @@ describe("session branch and unmerged files", () => {
     expect(sessionSummarySchema.safeParse({ ...session, unmergedFiles: 1.5 }).success).toBe(false)
   })
 })
+
+describe("active turn start", () => {
+  it("carries when the running turn started, only beside the turn it belongs to", () => {
+    const session = { ...demoWorkspace.sessions[1]!, activeTurnId: "turn-1" }
+    expect(sessionSummarySchema.parse({ ...session, activeTurnStartedAt: "2026-10-10T09:00:00.000Z" }))
+      .toMatchObject({ activeTurnId: "turn-1", activeTurnStartedAt: "2026-10-10T09:00:00.000Z" })
+    // The usage ledger records turn starts with an offset.
+    expect(sessionSummarySchema.parse({ ...session, activeTurnStartedAt: "2026-10-10T11:00:00.000+02:00" }))
+      .toMatchObject({ activeTurnStartedAt: "2026-10-10T11:00:00.000+02:00" })
+    expect(sessionSummarySchema.parse(session)).not.toHaveProperty("activeTurnStartedAt")
+    expect(sessionSummarySchema.safeParse({ ...session, activeTurnStartedAt: "not-a-time" }).success).toBe(false)
+    expect(sessionSummarySchema.safeParse({ ...session, activeTurnStartedAt: "2026-10-10T09:00:00" }).success).toBe(false)
+    const { activeTurnId: _turn, ...idle } = session
+    const orphan = sessionSummarySchema.safeParse({ ...idle, activeTurnStartedAt: "2026-10-10T09:00:00.000Z" })
+    expect(orphan.success).toBe(false)
+    if (!orphan.success) expect(orphan.error.issues).toEqual([expect.objectContaining({ path: ["activeTurnStartedAt"] })])
+  })
+})
