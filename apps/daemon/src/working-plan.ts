@@ -230,11 +230,11 @@ function mergeProviderTaskChange(
     (step) => step !== except && !claimedSteps.has(step.id) && step.text === text,
   )
   // Renames wait until deleted tasks have freed their room.
-  const renames: Array<{ taskId: string, step: WorkingPlanStep, text: string }> = []
+  const renames: Array<{ step: WorkingPlanStep, text: string }> = []
   const claim = (task: { id: string, text: string, status: WorkingPlanStepStatus }, step: WorkingPlanStep, rename = false) => {
     taskLinks.set(task.id, { stepId: step.id, text: task.text, status: task.status })
     claimedSteps.add(step.id)
-    if (rename) renames.push({ taskId: task.id, step, text: task.text })
+    if (rename) renames.push({ step, text: task.text })
     step.status = progressStatus(step, task.status)
   }
 
@@ -312,16 +312,11 @@ function mergeProviderTaskChange(
     maximumWorkingPlanStepTextLength,
     maximumWorkingPlanTextLength - total + replacing,
   ))
-  for (const { taskId, step, text } of renames) {
+  for (const { step, text } of renames) {
     const fitted = fit(text, step.text.length)
-    if (fitted) {
-      total += fitted.length - step.text.length
-      step.text = fitted
-    }
-    // A rename cut short by the bound is tried again at the next change: the
-    // link holds the text shown, so the task still reads as reworded.
-    const link = taskLinks.get(taskId)
-    if (link && step.text !== text) taskLinks.set(taskId, { ...link, text: step.text })
+    if (!fitted) continue
+    total += fitted.length - step.text.length
+    step.text = fitted
   }
 
   for (const task of current) {

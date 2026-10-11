@@ -581,7 +581,8 @@ describe("provider task changes", () => {
     expect(shape(result)).toEqual(["step-1:Inspect:completed", "step-2:Implement:in-progress"])
   })
 
-  it("tries a rename the text bound cut short again once there is room", () => {
+  // The link keeps the task as Claude reported it, not the shortened text.
+  it("keeps a removed step out after the text bound cut its rename short", () => {
     const long = "x".repeat(maximumWorkingPlanStepTextLength)
     const filler = Array.from({ length: 15 }, (_, index) => ({
       id: `step-filler-${index}`,
@@ -599,11 +600,11 @@ describe("provider task changes", () => {
     })
     const renamed = "Implement the parser and the docs"
     const first = taskUpdate(current, [task("1", "Implement")], [task("1", renamed)])
-    expect(first.plan.steps.at(-1)!.text).not.toBe(renamed)
-    // The person shortens the long step, which frees room.
-    const edited = { ...first.plan, steps: first.plan.steps.map((step) => step.id === "step-pad" ? { ...step, text: "Pad" } : step) }
-    const second = taskUpdate(edited, [task("1", renamed)], [task("1", renamed, "in-progress")], first.taskLinks)
-    expect(second.plan.steps.at(-1)).toMatchObject({ id: "step-implement", text: renamed, status: "in-progress" })
+    expect(first.plan.steps.at(-1)).toMatchObject({ id: "step-implement", text: expect.stringMatching(/…$/) })
+    // The person removes the step. Claude reports the task unchanged.
+    const edited = { ...first.plan, steps: first.plan.steps.filter((step) => step.id !== "step-implement") }
+    const second = taskUpdate(edited, [task("1", renamed)], [task("1", renamed)], first.taskLinks)
+    expect(second.plan.steps.map(({ id }) => id)).toEqual(edited.steps.map(({ id }) => id))
   })
 
   // The links live in the daemon's memory. After a restart nothing records
