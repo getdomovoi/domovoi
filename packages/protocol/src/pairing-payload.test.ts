@@ -18,6 +18,25 @@ describe("pairing payload", () => {
     expect(decodePairingPayload(text)).toEqual(payload)
   })
 
+  // The name `domovoid pair --label` keeps with the code rides along so the
+  // device can prefill its own name field. It is a suggestion the device may
+  // change, held to the bound a device label has on the wire.
+  it("carries a suggested device name, bounded like a device label", () => {
+    const named = { ...payload, suggestedName: "Dana's phone" }
+    expect(decodePairingPayload(encodePairingPayload(named))).toEqual(named)
+    expect(decodePairingPayload(encodePairingPayload(payload))).not.toHaveProperty("suggestedName")
+    expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "界".repeat(128) }).success).toBe(true)
+    expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "界".repeat(129) }).success).toBe(false)
+    expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "   " }).success).toBe(false)
+    expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "a\u0007b" }).success).toBe(false)
+    expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: 7 }).success).toBe(false)
+    // A lone surrogate is not text a person typed, and JSON escapes it as six
+    // bytes, past what the envelope budgets for this field. A pair is fine.
+    expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "\ud800".repeat(128) }).success).toBe(false)
+    expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "a\udc00b" }).success).toBe(false)
+    expect(pairingPayloadSchema.safeParse({ ...payload, suggestedName: "😀".repeat(64) }).success).toBe(true)
+  })
+
   it("names what is wrong with text that is not a pairing code", () => {
     expect(() => decodePairingPayload("https://example.com")).toThrow(/not a Domovoi pairing code/)
     expect(() => decodePairingPayload(`${pairingPayloadPrefix}not-base64!!`)).toThrow(/could not be read/)
@@ -36,9 +55,11 @@ describe("pairing payload", () => {
     // which JSON escapes to six bytes; the URL parser drops them from the
     // parsed address but the raw string is what the JSON carries.
     const control = String.fromCharCode(1)
-    const worst = { ...payload, url: `wss://h/${control.repeat(500)}`, label: control.repeat(128) }
+    // The suggested name refuses control characters, so its worst case is
+    // three UTF-8 bytes a unit, as CJK spends.
+    const worst = { ...payload, url: `wss://h/${control.repeat(500)}`, label: control.repeat(128), suggestedName: "界".repeat(128) }
     const longest = encodePairingPayload(worst)
-    expect(longest.length).toBeGreaterThan(5000)
+    expect(longest.length).toBeGreaterThan(5600)
     expect(longest.length).toBeLessThan(maximumPairingPayloadLength)
     expect(decodePairingPayload(longest)).toEqual(worst)
     const cjk = { ...payload, url: `wss://example.test/${"界".repeat(490)}`, label: "界".repeat(128) }

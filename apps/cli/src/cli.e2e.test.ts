@@ -70,7 +70,7 @@ afterAll(async () => {
 // What `domovoid pair --client cli` does on the daemon
 // host: device.issueCode with the daemon's own token, then the payload it
 // prints under "Cannot scan it? Paste this on the device:".
-async function issueCliCode(targetClient: "cli" | "phone" = "cli"): Promise<{ payload: string; code: string }> {
+async function issueCliCode(targetClient: "cli" | "phone" = "cli", suggestedName?: string): Promise<{ payload: string; code: string }> {
   const socket = new WebSocket(url, { headers: { authorization: `Bearer ${rootToken}` } })
   await once(socket, "open")
   type Issued = { code: string; pairingAddress: { url: string; label?: string } | { problem: string } }
@@ -81,14 +81,18 @@ async function issueCliCode(targetClient: "cli" | "phone" = "cli"): Promise<{ pa
     })
     socket.once("error", reject)
     socket.send(JSON.stringify({ jsonrpc: "2.0", id: 1, method: "system.hello", params: { client: "cli", clientVersion: "test", protocolVersion } }))
-    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "device.issueCode", params: { targetClient } }))
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id: 2, method: "device.issueCode", params: { targetClient, ...(suggestedName === undefined ? {} : { label: suggestedName }) } }))
   })
   socket.terminate()
   if (!reply.result) throw new Error(reply.error?.message ?? "no code")
   const address = reply.result.pairingAddress
   if ("problem" in address) throw new Error(address.problem)
   const code = reply.result.code
-  return { code, payload: encodePairingPayload({ v: 1, url: address.url, code, ...(address.label === undefined ? {} : { label: address.label }) }) }
+  return { code, payload: encodePairingPayload({
+    v: 1, url: address.url, code,
+    ...(address.label === undefined ? {} : { label: address.label }),
+    ...(suggestedName === undefined ? {} : { suggestedName }),
+  }) }
 }
 
 function runCli(args: string[], stdinText?: string): Promise<{ code: number; stdout: string; stderr: string }> {
@@ -112,9 +116,12 @@ const pairedCredentialFile = () => join(home!, "cli-credentials.json")
 describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
   it("pairs from a pasted pairing code, stores the credential in the named file, and reads status back", async () => {
     const credentialFile = pairedCredentialFile()
-    const issued = await issueCliCode()
-    // No --daemon: the payload names the address, as it does for a phone.
-    const paired = await runCli(["pair", "--credential-file", credentialFile, "--label", "e2e cli"], `Cannot scan it? Paste this on the device:\n${issued.payload}\n`)
+    // `domovoid pair --client cli --label "e2e cli"`: the label rides in the
+    // payload as a suggested name.
+    const issued = await issueCliCode("cli", "e2e cli")
+    // No --daemon: the payload names the address, as it does for a phone. No
+    // --label: the suggested name is the default, ahead of the hostname.
+    const paired = await runCli(["pair", "--credential-file", credentialFile], `Cannot scan it? Paste this on the device:\n${issued.payload}\n`)
     expect(paired.stderr).toMatch(/not in an OS keychain/)
     expect(paired).toMatchObject({ code: 0 })
     expect(paired.stdout).toMatch(/^Paired with machine-[0-9a-f]{32} at ws:\/\/\S+\/rpc as e2e cli \(cli\), device device-[0-9a-f]{32}\. Credential stored in the file\.$/m)

@@ -36,6 +36,7 @@ describe("runPairCommand", () => {
     expect(drawn).not.toBeNull()
     expect(decodePairingPayload(drawn![1]!)).toEqual({
       v: 1, url: "wss://djs-macbook-pro-1.raptor-pompano.ts.net:47831/rpc", code: issued.code, label: "djs-macbook-pro-1",
+      suggestedName: "iPhone",
     })
     // The pasteable text is the same pairing the symbol carries.
     expect(out).toContain(`Paste this on the device:\n${drawn![0]!.replace(/^<qr>|<\/qr>\n?$/g, "")}`)
@@ -92,6 +93,9 @@ describe("runPairCommand", () => {
     // The device's own name is the one used (Q37 B), so the line stays as it was.
     expect(io.out.join("")).toContain("The device appears in this daemon's Devices list once it pairs. Revoke it there when it is no longer needed.\n")
     expect(io.out.join("")).not.toContain("Kitchen iPad")
+    // The payload carries it, trimmed, for the device to offer as its name.
+    const drawn = /<qr>(.*)<\/qr>/.exec(io.out.join(""))
+    expect(decodePairingPayload(drawn![1]!).suggestedName).toBe("Kitchen iPad")
   })
 
   it("shows a client code without a label", async () => {
@@ -100,11 +104,16 @@ describe("runPairCommand", () => {
     expect(await runPairCommand(["pair", "--client", "phone"], { ...io, issue })).toBe(0)
     expect(issue.mock.calls).toEqual([["phone"]])
     expect(io.out.join("")).toContain("<qr>")
+    // No label, no suggested name: the payload is the one an older app reads.
+    const drawn = /<qr>(.*)<\/qr>/.exec(io.out.join(""))
+    expect(decodePairingPayload(drawn![1]!)).not.toHaveProperty("suggestedName")
     expect(io.out.join("")).toContain("It works once, and only for a phone.")
   })
 
   it("refuses a label flag without a label, and any other flag", async () => {
-    for (const args of [["pair", "--client", "phone", "--label"], ["pair", "--client", "phone", "--name", "iPhone"], ["pair", "--client", "phone", "--label", "   "]]) {
+    // A lone surrogate (a Windows command line can carry one) is refused too:
+    // the payload would not encode it, after the code was already issued.
+    for (const args of [["pair", "--client", "phone", "--label"], ["pair", "--client", "phone", "--name", "iPhone"], ["pair", "--client", "phone", "--label", "   "], ["pair", "--client", "phone", "--label", "a\ud800"]]) {
       const io = recorder()
       const issue = vi.fn(async () => issued)
       expect(await runPairCommand(args, { ...io, issue }), args.join(" ")).toBe(1)
