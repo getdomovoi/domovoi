@@ -1803,9 +1803,12 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // The todowrite tool's list, the thread's working plan. A subagent's
     // todos are its own list, not the thread's plan. Before the server shows
     // the turn's own prompt, a list is an earlier run's, such as one the turn
-    // before interrupted (#trackTurnMessage, as for a session error).
+    // before interrupted (#trackTurnMessage, as for a session error). In Plan
+    // mode the todos track the agent's research and its final reply is the
+    // proposal, which the daemon reads only when no plan arrived during the
+    // turn, as with Claude's TodoWrite.
     if (event.type === "todo.updated") {
-      if (subagent || !session.activeTurn?.seen) return
+      if (subagent || !session.activeTurn?.seen || session.runtime.permissionMode === "plan") return
       const steps = openCodeTodoSteps(properties.todos)
       if (steps) this.#emit({ type: "plan-updated", threadId: session.threadId, turnId, steps })
       return

@@ -1015,8 +1015,8 @@ describe.each([
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
     // Sends a turn and shows its prompt, as the server records it before the
     // run that writes todos begins.
-    const prompt = async (text = "One") => {
-      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: text, runtime: runtime("build") })
+    const prompt = async (text = "One", mode: Runtime["permissionMode"] = "build") => {
+      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: text, runtime: runtime(mode) })
       stream.emit({ type: "message.updated", properties: { info: { id: turnId, sessionID: threadId, role: "user" } } })
       return turnId
     }
@@ -1088,6 +1088,23 @@ describe.each([
 
     await waitForDaemon(() => expect(plans(events)).toHaveLength(1))
     expect(plans(events)[0]).toEqual({ type: "plan-updated", threadId, turnId, steps: [{ text: "Parent", status: "pending" }] })
+    await adapter.close()
+  })
+
+  // In Plan mode the agent's todos track its research, and its final reply
+  // is the proposal (the daemon reads that reply only when no plan arrived
+  // during the turn), as with Claude's TodoWrite.
+  it("reports no plan for a Plan mode turn's todos", async () => {
+    const { adapter, events, prompt, stream, threadId } = await started()
+    const planned = await prompt("Plan it", "plan")
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Inspect the repository", "completed")] } })
+    finishRun(stream, threadId, planned)
+    await waitForDaemon(() => expect(events.some((event) => event.type === "turn-completed")).toBe(true))
+    const built = await prompt("Build it")
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Write", "in_progress")] } })
+
+    await waitForDaemon(() => expect(plans(events)).toHaveLength(1))
+    expect(plans(events)[0]).toEqual({ type: "plan-updated", threadId, turnId: built, steps: [{ text: "Write", status: "in-progress" }] })
     await adapter.close()
   })
 
