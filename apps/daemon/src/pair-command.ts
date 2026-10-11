@@ -75,6 +75,10 @@ export async function runPairCommand(
         url: address.url,
         code: issued.code,
         ...(address.label === undefined ? {} : { label: address.label }),
+        // The device offers it as its own name and sends whatever is left in
+        // that field; the daemon names the device by what it sends (Q37 B).
+        // Without --label the payload is the one an older app reads.
+        ...(label === undefined ? {} : { suggestedName: label.data }),
       })
       dependencies.stdout("Pairing code (scan it from the device):\n\n")
       dependencies.stdout(dependencies.renderCode(payload))
