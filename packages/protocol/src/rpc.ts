@@ -4,7 +4,7 @@ import { imageUploadSchema, maximumSessionAttachments, sessionAttachmentSchema }
 import { protocolVersionSchema } from "./protocol-version.js"
 import { relayRecoveryParamsSchema, relayRecoveryResultSchema } from "./relay-recovery.js"
 import { serviceHandoffFenceParamsSchema, serviceHandoffFenceResultSchema } from "./service-handoff.js"
-import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
+import { dateTimeSchema, offsetDateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
 import { approvalRuleRevokeParamsSchema, permissionHardGatesParamsSchema, permissionHardGatesResultSchema } from "./rules.js"
@@ -517,6 +517,9 @@ export const sessionSearchResultSchema = z.object({
   matches: z.array(sessionSearchMatchSchema).max(maximumSessionSearchResults),
   // More sessions matched than the limit allowed; the list is not every match.
   truncated: z.boolean(),
+  // The answering daemon's clock when it replied, as on fleet snapshots: a
+  // client ages the matches' timestamps by this reply's offset, per machine.
+  daemonTime: offsetDateTimeSchema.optional(),
 }).strict()
 
 export const sessionHistoryPageSchema = z.object({

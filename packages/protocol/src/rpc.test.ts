@@ -1595,6 +1595,14 @@ describe("session search", () => {
     expect(sessionSearchResultSchema.parse(result)).toEqual(result)
     expect(sessionSearchResultSchema.safeParse({ ...result, matches: [{ session, matchedIn: "body" }] }).success).toBe(false)
     expect(sessionSearchResultSchema.safeParse({ query: "webhooks", matches: [] }).success).toBe(false)
+    // The answering daemon's clock at reply time, so a client can age the
+    // match's timestamps on that machine's clock (the fleet's daemonTime).
+    expect(sessionSearchResultSchema.parse({ ...result, daemonTime: "2026-10-10T09:00:00.000Z" }))
+      .toEqual({ ...result, daemonTime: "2026-10-10T09:00:00.000Z" })
+    expect(sessionSearchResultSchema.parse({ ...result, daemonTime: "2026-10-10T11:00:00.000+02:00" }).daemonTime)
+      .toBe("2026-10-10T11:00:00.000+02:00")
+    expect(sessionSearchResultSchema.safeParse({ ...result, daemonTime: "not-a-time" }).success).toBe(false)
+    expect(sessionSearchResultSchema.safeParse({ ...result, daemonTime: "2026-10-10T09:00:00" }).success).toBe(false)
     expect(rpcMethodAuthorizations["session.search"]).toBe("observe")
     expect(rpcMethodMutations["session.search"]).toBe("read-only")
     // The palette fans out from a desktop or web client; the phone list is unchanged.

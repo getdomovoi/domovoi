@@ -2040,10 +2040,13 @@
         "<Dot meaning={answerMeaning[answer.state]} />",
         "{answer.state === \"asking\" ? <Sweep /> : null}",
         "switching to {machine.label}",
-        "export function remoteSessionMeta("
+        "export function remoteSessionMeta(",
+        "meta: started ? `running ${runFor(started, now)}` : \"running\"",
+        "remoteSessionMeta(match.session, now + answer.clockOffsetMs)"
       ],
       "notes": [
-        "2026-10-06 (S3.10 slice o): built as drawn in the grouped layout (paletteSessions A): the notice is the design's (a dot and one sentence on the card's ground, Search only what answered, then Add it back once the machine is left out), each machine header has its answer dot and the asking sweep, a picked row shows switching to <machine> until the window has arrived there and asked for the session (activation then runs as a drawer click does, with its own errors in the shell), and row meta is the session's state and age. Ruled differences are in humanRead palette.other-machines, 2026-10-06."
+        "2026-10-06 (S3.10 slice o): built as drawn in the grouped layout (paletteSessions A): the notice is the design's (a dot and one sentence on the card's ground, Search only what answered, then Add it back once the machine is left out), each machine header has its answer dot and the asking sweep, a picked row shows switching to <machine> until the window has arrived there and asked for the session (activation then runs as a drawer click does, with its own errors in the shell), and row meta is the session's state and age. Ruled differences are in humanRead palette.other-machines, 2026-10-06.",
+        "2026-10-10 (task 30, ruling Q390): a running row draws the design's running 41m. Protocol 0.8.0 carries the active turn's start on the session summary (activeTurnStartedAt, from the daemon's usage ledger, the start the thread's header clock reads) and the answering daemon's clock on each session.search reply (daemonTime, the fleet's #781 pattern). The palette ages a machine's rows by the offset of that machine's own reply, so a skewed clock on one machine cannot shift another's rows; a reply without daemonTime falls back to this window's clock. The duration reads under 1m, then minutes, hours and minutes, days and hours. A session marked active with no turn, or a turn the ledger has no start for, still reads running alone. Ages and durations are read when the palette renders and do not tick while it stays open."
       ]
     },
     {
@@ -2343,7 +2346,7 @@
     {
       "id": "palette.other-machines",
       "since": "2026-10-06",
-      "note": "Ruled and chosen differences. A running session's meta is running with no duration (Q390 A: no turn start on the wire until protocol 0.8.0); a session stopped at a gate reads waiting even with its turn in flight, and every row but running reads its state and age from updatedAt (failed 1h ago). A switch the target refuses (authentication or protocol) closes the palette so the shell's banner shows why. A machine with no match says no matches, not no matches in N sessions: session.search returns no count. The asking dot is the status atom's blue because the atom has no primary meaning; the sweep and the word asking carry it. A machine left out stays out for later queries until Add it back, which asks it again for the current query; both notice actions are disabled while a picked row switches the window, when nothing can be asked. The States design's second sentence (This is not the same as having no results) is not drawn in the palette, as Desktop V2 draws it. Merged layout B (machine chips, Matches join this list as each machine answers) is not built."
+      "note": "Ruled and chosen differences. A running session's meta is running and how long its turn has run, read on the answering machine's clock (task 30, 2026-10-10; before that Q390 A drew running alone); with no turn start on the wire it is running alone; a session stopped at a gate reads waiting even with its turn in flight, and every row but running reads its state and age from updatedAt (failed 1h ago). A switch the target refuses (authentication or protocol) closes the palette so the shell's banner shows why. A machine with no match says no matches, not no matches in N sessions: session.search returns no count. The asking dot is the status atom's blue because the atom has no primary meaning; the sweep and the word asking carry it. A machine left out stays out for later queries until Add it back, which asks it again for the current query; both notice actions are disabled while a picked row switches the window, when nothing can be asked. The States design's second sentence (This is not the same as having no results) is not drawn in the palette, as Desktop V2 draws it. Merged layout B (machine chips, Matches join this list as each machine answers) is not built."
     },
     {
       "id": "dock.preview",
