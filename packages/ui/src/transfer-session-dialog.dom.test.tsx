@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react"
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -62,7 +62,9 @@ function renderDialog(overrides: {
   onTransferred?: (machineId: string) => void
   onOutcome?: (result: SessionTransferResult) => void
   coverage?: unknown
+  machines?: readonly FleetMachine[]
 } = {}) {
+  const onTargetChange = vi.fn<(machineId: string) => void>()
   const onTransfer = vi.fn(overrides.onTransfer ?? (() => Promise.resolve(succeeded)))
   const onTransferred = vi.fn(overrides.onTransferred ?? (() => {}))
   const onOutcome = vi.fn(overrides.onOutcome ?? (() => {}))
@@ -108,9 +110,100 @@ function renderDialog(overrides: {
       onTransfer={onTransfer as never}
       onTransferred={onTransferred}
       onOutcome={onOutcome}
+      {...(overrides.machines ? { targetChoice: { machines: overrides.machines, onTargetChange } } : {})}
     />,
   )
-  return { user, onPreview, onTransfer, onTransferred, onOutcome }
+  return { user, onPreview, onTransfer, onTransferred, onOutcome, onTargetChange }
+}
+
+const offline: FleetMachine = {
+  ...target,
+  id: `machine-${"c".repeat(32)}`,
+  label: "attic",
+  connection: "lan",
+  heartbeat: { state: "offline", lastSeenAt: "2026-08-31T11:00:00.000Z" },
+  health: "unreachable",
+}
+
+const spare: FleetMachine = {
+  ...target,
+  id: `machine-${"d".repeat(32)}`,
+  label: "garage",
+  connection: "lan",
+}
+
+it("lists every machine as a target with what it can accept", () => {
+  renderDialog({ machines: [source, target, offline] })
+
+  const list = screen.getByRole("radiogroup", { name: "TARGET" })
+  expect(within(list).getAllByRole("radio")).toHaveLength(3)
+
+  const here = within(list).getByRole("radio", { name: "workshop" })
+  expect(here).toHaveProperty("disabled", true)
+  expect(here).toHaveProperty("checked", false)
+  expect(describedBy(here)).toBe("this machine, the session is already here")
+
+  const chosen = within(list).getByRole("radio", { name: "studio" })
+  expect(chosen).toHaveProperty("disabled", false)
+  expect(chosen).toHaveProperty("checked", true)
+  expect(describedBy(chosen)).toBe("reachable over tailnet")
+
+  const away = within(list).getByRole("radio", { name: "attic" })
+  expect(away).toHaveProperty("disabled", true)
+  expect(describedBy(away)).toBe("daemon unreachable, cannot accept a session now")
+})
+
+it("blames this side's keychain, not the target's daemon, when the keychain cannot be read", () => {
+  renderDialog({ machines: [source, target, { ...spare, health: "credential-store-unavailable" }] })
+
+  const row = screen.getByRole("radio", { name: "garage" })
+  expect(row).toHaveProperty("disabled", true)
+  expect(describedBy(row)).toBe("the keychain here could not be read, cannot reach it now")
+})
+
+it("moves the choice to another reachable machine", async () => {
+  const { user, onTargetChange } = renderDialog({ machines: [source, target, spare] })
+
+  await user.click(screen.getByRole("radio", { name: "garage" }))
+
+  expect(onTargetChange).toHaveBeenCalledWith(spare.id)
+})
+
+it("asks for a reachable machine when the chosen one cannot accept the session", () => {
+  renderDialog({ machines: [source, offline, spare], target: offline })
+
+  const move = screen.getByRole("button", { name: "Move session" })
+  expect(move.textContent).toBe("Pick a reachable machine")
+  expect(move).toHaveProperty("disabled", true)
+})
+
+it("draws the chosen machine alone when no machine list is given", () => {
+  renderDialog()
+
+  expect(screen.queryByRole("radiogroup", { name: "TARGET" })).toBeNull()
+  expect(screen.getByRole("region", { name: "TARGET" }).textContent).toContain("studio")
+  expect(screen.getByRole("button", { name: "Move session" }).textContent).toBe("Move to studio")
+})
+
+it("counts the checks in words the design uses", () => {
+  renderDialog()
+
+  expect(screen.getByText("2 pass")).toBeTruthy()
+  expect(screen.queryByText(/warnings?$/u)).toBeNull()
+})
+
+it("counts a refused check as blocking, in the singular", () => {
+  renderDialog({ target: { ...target, health: "upgrade-required" } })
+
+  expect(screen.getByText("1 pass · 1 blocking")).toBeTruthy()
+})
+
+function describedBy(element: HTMLElement): string {
+  return (element.getAttribute("aria-describedby") ?? "")
+    .split(" ")
+    .map((id) => document.getElementById(id)?.textContent ?? "")
+    .join(" ")
+    .trim()
 }
 
 it("matches the v2 transfer preflight contract", async () => {
