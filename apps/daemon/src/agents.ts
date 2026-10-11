@@ -28,11 +28,22 @@ export type AgentWorkingPlanStep = {
   status: WorkingPlanStepStatus
 }
 
+export type AgentWorkingPlanTask = AgentWorkingPlanStep & { id: string }
+
 export type AgentEvent =
   | { type: "provider-disconnected"; reason: string }
   | { type: "text-delta"; threadId?: string; turnId?: string; itemId?: string; delta: string }
   | { type: "plan-delta"; threadId?: string; turnId?: string; delta: string }
-  | { type: "plan-updated"; threadId: string; turnId?: string; steps: AgentWorkingPlanStep[] }
+  | {
+      type: "plan-updated"
+      threadId: string
+      turnId?: string
+      steps: AgentWorkingPlanStep[]
+      // Set by a plan tool that changes one unordered task at a time (Claude's
+      // tasks): the tasks before and after this change. The daemon applies the
+      // change to the working plan's own order instead of replacing it.
+      taskChange?: { previous: AgentWorkingPlanTask[]; current: AgentWorkingPlanTask[] }
+    }
   | { type: "command-output"; threadId?: string; turnId?: string; itemId?: string; delta: string }
   | { type: "diff-updated"; threadId?: string; turnId?: string; diff: string }
   | {

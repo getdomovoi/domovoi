@@ -8,6 +8,7 @@ import {
   type PlanEditParams,
   type WorkingPlan,
   type WorkingPlanClientAttribution,
+  type WorkingPlanStepStatus,
 } from "@getdomovoi/protocol"
 
 import {
@@ -179,6 +180,302 @@ describe("provider working-plan updates", () => {
       "duplicate-new-b",
     ])
     expect(result.structureChanged).toBe(true)
+  })
+})
+
+// Claude's task tools change one task at a time and carry no order: ids count
+// up in creation order. The working plan keeps its own order and takes
+// Claude's changes onto it.
+describe("provider task changes", () => {
+  type Task = { id: string, text: string, status: WorkingPlanStepStatus }
+  const task = (id: string, text: string, status: WorkingPlanStepStatus = "pending"): Task => ({
+    id,
+    text,
+    status,
+  })
+
+  function taskUpdate(
+    current: WorkingPlan | undefined,
+    previous: Task[],
+    next: Task[],
+    taskLinks?: ReadonlyMap<string, string>,
+    createId: (kind: "edit" | "receipt" | "step") => string = () => {
+      throw new Error("no step may be added")
+    },
+  ) {
+    return updateWorkingPlanFromProvider(current, {
+      sessionId: "session-a",
+      provider: "claude-code",
+      model: "claude-opus-5",
+      providerThreadId: "thread-a",
+      steps: next.map(({ text, status }) => ({ text, status })),
+      taskChange: { previous, current: next },
+      ...(taskLinks ? { taskLinks } : {}),
+      updatedAt: nextAt,
+    }, createId)
+  }
+
+  const shape = (result: { plan: WorkingPlan }) => result.plan.steps.map(
+    ({ id, text, status }) => `${id}:${text}:${status}`,
+  )
+
+  // The person inserted "Write the docs" between Claude's second and third
+  // tasks and renamed the second. Claude adopts the delivered edit with a
+  // rename, a create and status changes, in either order.
+  const edited = () => plan({
+    revision: 6,
+    structureRevision: 2,
+    steps: [
+      { id: "step-inspect", text: "Inspect", status: "completed" },
+      { id: "step-implement", text: "Implement the parser", status: "pending" },
+      { id: "step-docs", text: "Write the docs", status: "pending" },
+      { id: "step-verify", text: "Verify", status: "pending" },
+    ],
+    providerSync: {
+      provider: "claude-code",
+      model: "claude-opus-5",
+      providerThreadId: "thread-a",
+      structureRevision: 2,
+      deliveredAt: firstAt,
+    },
+  })
+  const claudeBefore = [
+    task("1", "Inspect", "completed"),
+    task("2", "Implement"),
+    task("3", "Verify"),
+  ]
+  const links = new Map([
+    ["1", "step-inspect"],
+    ["2", "step-implement"],
+    ["3", "step-verify"],
+  ])
+
+  // Measured 2026-10-07 with Claude Code 2.1.292: one TaskUpdate renamed task 2
+  // and started it, then TaskCreate added the inserted step.
+  it.each([
+    ["with the daemon's task links", links],
+    ["after a daemon restart, with no links", undefined],
+  ])("keeps an inserted step in place at every update, %s", (_name, taskLinks) => {
+    const renamedTasks = [
+      task("1", "Inspect", "completed"),
+      task("2", "Implement the parser", "in-progress"),
+      task("3", "Verify"),
+    ]
+    const first = taskUpdate(edited(), claudeBefore, renamedTasks, taskLinks)
+    expect(shape(first)).toEqual([
+      "step-inspect:Inspect:completed",
+      "step-implement:Implement the parser:in-progress",
+      "step-docs:Write the docs:pending",
+      "step-verify:Verify:pending",
+    ])
+    expect(first.structureChanged).toBe(false)
+    expect(first.plan.structureRevision).toBe(2)
+
+    const created = [...renamedTasks, task("4", "Write the docs")]
+    const second = taskUpdate(first.plan, renamedTasks, created, first.taskLinks)
+    expect(shape(second)).toEqual(shape(first))
+    expect(second.structureChanged).toBe(false)
+
+    const progressed = [
+      task("1", "Inspect", "completed"),
+      task("2", "Implement the parser", "completed"),
+      task("3", "Verify"),
+      task("4", "Write the docs", "in-progress"),
+    ]
+    const third = taskUpdate(second.plan, created, progressed, second.taskLinks)
+    expect(shape(third)).toEqual([
+      "step-inspect:Inspect:completed",
+      "step-implement:Implement the parser:completed",
+      "step-docs:Write the docs:in-progress",
+      "step-verify:Verify:pending",
+    ])
+    expect(third.plan.structureRevision).toBe(2)
+    expect(third.taskLinks).toEqual(new Map([
+      ["1", "step-inspect"],
+      ["2", "step-implement"],
+      ["3", "step-verify"],
+      ["4", "step-docs"],
+    ]))
+  })
+
+  it("keeps an inserted step in place when Claude creates it before the rename", () => {
+    const created = [...claudeBefore, task("4", "Write the docs")]
+    const first = taskUpdate(edited(), claudeBefore, created, links)
+    expect(shape(first)).toEqual([
+      "step-inspect:Inspect:completed",
+      "step-implement:Implement the parser:pending",
+      "step-docs:Write the docs:pending",
+      "step-verify:Verify:pending",
+    ])
+    expect(first.structureChanged).toBe(false)
+
+    // A status change on the task the person renamed lands on the renamed step.
+    const started = created.map((candidate) => candidate.id === "2"
+      ? { ...candidate, status: "in-progress" as const }
+      : candidate)
+    const second = taskUpdate(first.plan, created, started, first.taskLinks)
+    expect(shape(second)).toEqual([
+      "step-inspect:Inspect:completed",
+      "step-implement:Implement the parser:in-progress",
+      "step-docs:Write the docs:pending",
+      "step-verify:Verify:pending",
+    ])
+
+    const renamed = started.map((candidate) => candidate.id === "2"
+      ? { ...candidate, text: "Implement the parser" }
+      : candidate)
+    const third = taskUpdate(second.plan, started, renamed, second.taskLinks)
+    expect(shape(third)).toEqual(shape(second))
+    expect(third.changed).toBe(false)
+  })
+
+  it("renames a step in place when Claude rewords its task", () => {
+    const current = plan({
+      steps: [
+        { id: "step-1", text: "Inspect", status: "completed" },
+        { id: "step-2", text: "Implement", status: "pending" },
+        { id: "step-3", text: "Verify", status: "pending" },
+      ],
+    })
+    const before = [task("1", "Inspect", "completed"), task("2", "Implement"), task("3", "Verify")]
+    const after = [task("1", "Inspect", "completed"), task("2", "Implement the fix"), task("3", "Verify")]
+    for (const taskLinks of [undefined, new Map([["1", "step-1"], ["2", "step-2"], ["3", "step-3"]])]) {
+      const result = taskUpdate(current, before, after, taskLinks)
+      expect(shape(result)).toEqual([
+        "step-1:Inspect:completed",
+        "step-2:Implement the fix:pending",
+        "step-3:Verify:pending",
+      ])
+      expect(result.structureChanged).toBe(true)
+    }
+  })
+
+  it("appends a reworded task that matches no step instead of dropping it", () => {
+    // The person renamed Implement to Build it. Claude, with no link to the
+    // step, rewords its own task to a third text.
+    const current = plan({
+      steps: [
+        { id: "step-1", text: "Inspect", status: "completed" },
+        { id: "step-2", text: "Build it", status: "pending" },
+        { id: "step-3", text: "Verify", status: "pending" },
+      ],
+    })
+    const result = taskUpdate(
+      current,
+      [task("1", "Inspect", "completed"), task("2", "Implement"), task("3", "Verify")],
+      [task("1", "Inspect", "completed"), task("2", "Implement the fix", "in-progress"), task("3", "Verify")],
+      undefined,
+      ids("step-new"),
+    )
+    expect(shape(result)).toEqual([
+      "step-1:Inspect:completed",
+      "step-2:Build it:pending",
+      "step-3:Verify:pending",
+      "step-new:Implement the fix:in-progress",
+    ])
+  })
+
+  it("appends a task the plan never had after the steps it has", () => {
+    const current = plan({
+      steps: [
+        { id: "step-1", text: "Inspect", status: "completed" },
+        { id: "step-docs", text: "Write the docs", status: "pending" },
+        { id: "step-3", text: "Verify", status: "pending" },
+      ],
+    })
+    const before = [task("1", "Inspect", "completed"), task("2", "Verify")]
+    const result = taskUpdate(
+      current,
+      before,
+      [...before, task("3", "Run the linter")],
+      new Map([["1", "step-1"], ["2", "step-3"]]),
+      ids("step-lint"),
+    )
+    expect(shape(result)).toEqual([
+      "step-1:Inspect:completed",
+      "step-docs:Write the docs:pending",
+      "step-3:Verify:pending",
+      "step-lint:Run the linter:pending",
+    ])
+    expect(result.taskLinks?.get("3")).toBe("step-lint")
+  })
+
+  it("pairs steps that share a subject with tasks in plan order", () => {
+    const current = plan({
+      steps: [
+        { id: "step-a", text: "Run tests", status: "pending" },
+        { id: "step-b", text: "Fix", status: "pending" },
+        { id: "step-c", text: "Run tests", status: "pending" },
+      ],
+    })
+    const before = [task("1", "Run tests"), task("2", "Fix"), task("3", "Run tests")]
+    const after = [task("1", "Run tests", "completed"), task("2", "Fix"), task("3", "Run tests"), task("4", "Run tests")]
+    for (const taskLinks of [undefined, new Map([["1", "step-a"], ["2", "step-b"], ["3", "step-c"]])]) {
+      const result = taskUpdate(current, before, after, taskLinks, ids("step-d"))
+      expect(shape(result)).toEqual([
+        "step-a:Run tests:completed",
+        "step-b:Fix:pending",
+        "step-c:Run tests:pending",
+        "step-d:Run tests:pending",
+      ])
+    }
+  })
+
+  it("removes the step of a task Claude deletes", () => {
+    const current = plan({
+      steps: [
+        { id: "step-1", text: "Inspect", status: "completed" },
+        { id: "step-2", text: "Implement", status: "pending" },
+        { id: "step-3", text: "Verify", status: "pending" },
+      ],
+    })
+    const before = [task("1", "Inspect", "completed"), task("2", "Implement"), task("3", "Verify")]
+    for (const taskLinks of [undefined, new Map([["1", "step-1"], ["2", "step-2"], ["3", "step-3"]])]) {
+      const result = taskUpdate(current, before, [before[0]!, before[2]!], taskLinks)
+      expect(shape(result)).toEqual(["step-1:Inspect:completed", "step-3:Verify:pending"])
+    }
+  })
+
+  it("keeps a step the person removed out of the plan until Claude changes its task", () => {
+    const current = plan({
+      steps: [
+        { id: "step-1", text: "Inspect", status: "in-progress" },
+        { id: "step-2", text: "Implement", status: "pending" },
+      ],
+    })
+    const before = [task("1", "Inspect", "in-progress"), task("2", "Implement"), task("3", "Verify")]
+    const removedLinks = new Map([["1", "step-1"], ["2", "step-2"], ["3", "step-verify-removed"]])
+    const progressed = [task("1", "Inspect", "completed"), task("2", "Implement"), task("3", "Verify")]
+    const first = taskUpdate(current, before, progressed, removedLinks)
+    expect(shape(first)).toEqual(["step-1:Inspect:completed", "step-2:Implement:pending"])
+
+    const deleted = taskUpdate(first.plan, progressed, progressed.slice(0, 2), first.taskLinks)
+    expect(shape(deleted)).toEqual(shape(first))
+
+    // Claude works on it anyway: its progress is shown, not dropped.
+    const started = [task("1", "Inspect", "completed"), task("2", "Implement"), task("3", "Verify", "in-progress")]
+    const resumed = taskUpdate(first.plan, progressed, started, first.taskLinks, ids("step-verify-again"))
+    expect(shape(resumed)).toEqual([
+      "step-1:Inspect:completed",
+      "step-2:Implement:pending",
+      "step-verify-again:Verify:in-progress",
+    ])
+  })
+
+  it("builds a first plan in Claude's creation order", () => {
+    const result = taskUpdate(
+      undefined,
+      [],
+      [task("1", "Inspect"), task("2", "Run TOKEN=task-plan-secret")],
+      undefined,
+      ids("step-1", "step-2"),
+    )
+    expect(shape(result)).toEqual([
+      "step-1:Inspect:pending",
+      "step-2:Run TOKEN=[REDACTED]:pending",
+    ])
+    expect(result.plan.structureRevision).toBe(1)
+    expect(JSON.stringify(result.plan)).not.toContain("task-plan-secret")
   })
 })
 

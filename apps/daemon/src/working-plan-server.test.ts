@@ -901,6 +901,158 @@ describe("working plan RPC", () => {
     context.socket.close()
   })
 
+  // Claude's task tools carry no order: ids count up in creation order. A step
+  // the person inserts keeps its place in every plan the daemon stores while
+  // Claude adopts the edit, whatever order Claude sends the changes in.
+  it("keeps a step the person inserted in place while Claude's tasks adopt it", async () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    session.state = "idle"
+    session.workspacePath = "/worktrees/task-order"
+    session.providerThreadId = "thread-task-order"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.workingPlans = [{
+      sessionId: session.id,
+      revision: 2,
+      structureRevision: 1,
+      steps: [
+        { id: "step-inspect", text: "Inspect", status: "completed" },
+        { id: "step-implement", text: "Implement", status: "pending" },
+        { id: "step-verify", text: "Verify", status: "pending" },
+      ],
+      providerSync: {
+        provider: "claude-code",
+        model: "sonnet-4.6",
+        providerThreadId: "thread-task-order",
+        structureRevision: 1,
+        deliveredAt: "2026-09-03T19:00:00.000Z",
+      },
+      createdAt: "2026-09-03T19:00:00.000Z",
+      updatedAt: "2026-09-03T19:00:00.000Z",
+    }]
+    snapshot.artifacts = snapshot.artifacts.filter((artifact) => artifact.sessionId !== session.id)
+    snapshot.annotations = snapshot.annotations.filter(
+      (annotation) => annotation.sessionId !== session.id,
+    )
+    let emit: ((event: AgentEvent) => void) | undefined
+    const startTurn = vi.fn(async (_input: Parameters<AgentAdapter["startTurn"]>[0]) => "turn-task-2")
+    startTurn.mockResolvedValueOnce("turn-task-1")
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async () => []),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      startTurn,
+      steerTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn((listener: (event: AgentEvent) => void) => {
+        emit = listener
+        return () => { emit = undefined }
+      }),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const context = await startedDaemon(snapshot, { "claude-code": agent })
+    type Task = { id: string, text: string, status: "pending" | "in-progress" | "completed" }
+    const task = (id: string, text: string, status: Task["status"] = "pending"): Task => ({ id, text, status })
+    // As the Claude adapter reports a task change.
+    const change = (turnId: string, previous: Task[], current: Task[]) => emit!({
+      type: "plan-updated",
+      threadId: "thread-task-order",
+      turnId,
+      steps: current.map(({ text, status }) => ({ text, status })),
+      taskChange: { previous, current },
+    })
+    const storedPlan = (saved: typeof snapshot) => saved.workingPlans.find(
+      (plan) => plan.sessionId === session.id,
+    )!
+
+    expect(await context.rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Go on",
+      client: "desktop",
+    })).not.toHaveProperty("error")
+    const listed = [task("1", "Inspect", "completed"), task("2", "Implement"), task("3", "Verify")]
+    const started = [task("1", "Inspect", "completed"), task("2", "Implement", "in-progress"), task("3", "Verify")]
+    change("turn-task-1", listed, started)
+    await waitForDaemon(() => expect(storedPlan(context.durable()).steps[1]).toMatchObject({
+      id: "step-implement",
+      status: "in-progress",
+    }))
+
+    const queued = await context.rpc("plan.edit", {
+      sessionId: session.id,
+      basedOnStructureRevision: 1,
+      baseSteps: [
+        { id: "step-inspect", text: "Inspect" },
+        { id: "step-implement", text: "Implement" },
+        { id: "step-verify", text: "Verify" },
+      ],
+      draftSteps: [
+        { id: "step-inspect", text: "Inspect" },
+        { id: "step-implement", text: "Implement the parser" },
+        { text: "Write the docs" },
+        { id: "step-verify", text: "Verify" },
+      ],
+      client: "desktop",
+    })
+    expect(queued.result.receipt.disposition).toBe("queued")
+    emit!({
+      type: "turn-completed",
+      params: {
+        threadId: "thread-task-order",
+        turnId: "turn-task-1",
+        turn: { id: "turn-task-1", status: "completed" },
+      },
+    })
+    await waitForDaemon(() => expect(context.durable().sessions[0]!.state).toBe("idle"))
+
+    const savesBeforeEdit = context.save.mock.calls.length
+    expect(await context.rpc("session.send", {
+      sessionId: session.id,
+      prompt: "Continue",
+      client: "desktop",
+    })).not.toHaveProperty("error")
+    expect(startTurn.mock.calls[1]![0].prompt).toContain('"text":"Write the docs"')
+    // Claude creates the inserted step before it renames task 2.
+    const created = [...started, task("4", "Write the docs")]
+    change("turn-task-2", started, created)
+    const renamed = created.map((candidate) => candidate.id === "2"
+      ? { ...candidate, text: "Implement the parser" }
+      : candidate)
+    change("turn-task-2", created, renamed)
+    const progressed = [
+      task("1", "Inspect", "completed"),
+      task("2", "Implement the parser", "completed"),
+      task("3", "Verify"),
+      task("4", "Write the docs", "in-progress"),
+    ]
+    change("turn-task-2", renamed, progressed)
+    await waitForDaemon(() => expect(storedPlan(context.durable()).steps.map(({ status }) => status))
+      .toEqual(["completed", "completed", "in-progress", "pending"]))
+
+    const stored = context.save.mock.calls.slice(savesBeforeEdit)
+      .map(([saved]) => storedPlan(saved).steps.map(({ id, text }) => `${id}:${text}`))
+    const docsId = storedPlan(context.durable()).steps[2]!.id
+    expect(stored.length).toBeGreaterThan(0)
+    for (const steps of stored) {
+      expect(steps).toEqual([
+        "step-inspect:Inspect",
+        "step-implement:Implement the parser",
+        `${docsId}:Write the docs`,
+        "step-verify:Verify",
+      ])
+    }
+    expect(context.durable().artifacts.find(
+      (artifact) => artifact.id === `plan-${session.id}`,
+    )?.content).toBe(
+      "# Working plan\n\n1. Inspect\n2. Implement the parser\n3. Write the docs\n4. Verify\n",
+    )
+    context.socket.close()
+  })
+
   // The artifact watcher names a plan file in the worktree
   // plan-<sessionId>-<hash>. Restructuring the working plan must not read it
   // as a turn-scoped working plan and fold it, and its comments, away.

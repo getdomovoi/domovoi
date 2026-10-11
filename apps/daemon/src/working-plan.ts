@@ -28,12 +28,24 @@ export type ProviderWorkingPlanStep = {
   status: WorkingPlanStepStatus
 }
 
+export type ProviderWorkingPlanTask = ProviderWorkingPlanStep & { id: string }
+
 export type ProviderWorkingPlanUpdate = {
   sessionId: string
   provider: string
   model: string
   providerThreadId: string
   steps: ProviderWorkingPlanStep[]
+  // A plan tool that changes one unordered task at a time (Claude's task
+  // tools) reports its tasks before and after the change. The plan keeps its
+  // own order and takes the change, instead of being replaced by `steps`.
+  taskChange?: {
+    previous: ProviderWorkingPlanTask[]
+    current: ProviderWorkingPlanTask[]
+  }
+  // Which step showed each provider task at the last task change, held in
+  // memory by the daemon. Without it, tasks match steps by text.
+  taskLinks?: ReadonlyMap<string, string>
   updatedAt: string
 }
 
@@ -41,6 +53,8 @@ export type WorkingPlanUpdateResult = {
   plan: WorkingPlan
   changed: boolean
   structureChanged: boolean
+  // Set for a task change: the step that now shows each provider task.
+  taskLinks?: Map<string, string>
 }
 
 export type WorkingPlanProviderTarget = {
@@ -106,21 +120,16 @@ export function updateWorkingPlanFromProvider(
     throw new WorkingPlanMutationError("Provider plan update belongs to another session")
   }
 
-  const normalized = boundedProviderSteps(update.steps)
-  const previousByText = uniquelyIndexedByText(current?.steps ?? [])
-  const incomingCounts = textCounts(normalized)
-  const steps = normalized.map((step): WorkingPlanStep => {
-    const prior = incomingCounts.get(step.text) === 1 ? previousByText.get(step.text) : undefined
-    const blockedStatus = prior?.blocker && step.status === "completed"
-      ? prior.status
-      : step.status
-    return {
-      id: prior?.id ?? createId("step"),
-      text: step.text,
-      status: blockedStatus,
-      ...(prior?.blocker ? { blocker: prior.blocker } : {}),
-    }
-  })
+  const merged = update.taskChange
+    ? mergeProviderTaskChange(
+      current?.steps ?? [],
+      update.taskChange,
+      update.taskLinks ?? new Map(),
+      createId,
+    )
+    : undefined
+  const steps = merged?.steps ?? replacedProviderSteps(current?.steps ?? [], update.steps, createId)
+  const links = merged ? { taskLinks: merged.taskLinks } : {}
 
   if (!current) {
     const structureRevision = steps.length === 0 ? 0 : 1
@@ -133,7 +142,7 @@ export function updateWorkingPlanFromProvider(
       createdAt: update.updatedAt,
       updatedAt: update.updatedAt,
     })
-    return { plan, changed: true, structureChanged: true }
+    return { plan, changed: true, structureChanged: true, ...links }
   }
 
   const structureChanged = !sameStructure(current.steps, steps)
@@ -146,7 +155,7 @@ export function updateWorkingPlanFromProvider(
     : current.pendingEdit
   const pendingChanged = pendingEdit?.status !== current.pendingEdit?.status
   const changed = structureChanged || progressChanged || syncChanged || pendingChanged
-  if (!changed) return { plan: current, changed: false, structureChanged: false }
+  if (!changed) return { plan: current, changed: false, structureChanged: false, ...links }
 
   const plan = workingPlanSchema.parse({
     ...current,
@@ -157,7 +166,142 @@ export function updateWorkingPlanFromProvider(
     ...(pendingEdit ? { pendingEdit } : {}),
     updatedAt: update.updatedAt,
   })
-  return { plan, changed: true, structureChanged }
+  return { plan, changed: true, structureChanged, ...links }
+}
+
+// A full provider plan replaces the steps. Unique exact text keeps a step's id.
+function replacedProviderSteps(
+  current: WorkingPlanStep[],
+  providerSteps: ProviderWorkingPlanStep[],
+  createId: WorkingPlanIdFactory,
+): WorkingPlanStep[] {
+  const normalized = boundedProviderSteps(providerSteps)
+  const previousByText = uniquelyIndexedByText(current)
+  const incomingCounts = textCounts(normalized)
+  return normalized.map((step): WorkingPlanStep => {
+    const prior = incomingCounts.get(step.text) === 1 ? previousByText.get(step.text) : undefined
+    return {
+      id: prior?.id ?? createId("step"),
+      text: step.text,
+      status: progressStatus(prior, step.status),
+      ...(prior?.blocker ? { blocker: prior.blocker } : {}),
+    }
+  })
+}
+
+// Takes one change of an unordered task list onto the plan. The plan's order
+// is canonical: Claude's tasks carry no position, only ids in creation order,
+// so a step the person inserted would otherwise come back last.
+//
+// Each task is matched to a step, in this order: the step it was linked to at
+// the last change; the first unmatched step with the same text, in plan
+// order; the step with the task's text before Claude reworded it, which is
+// renamed in place. A task that matches nothing is appended, so no reported
+// task is dropped. The one exception is a task whose linked step the person
+// removed: it stays out while Claude leaves it unchanged. A deleted task
+// removes its step. Steps Claude has not reported stay where they are.
+function mergeProviderTaskChange(
+  canonical: WorkingPlanStep[],
+  change: NonNullable<ProviderWorkingPlanUpdate["taskChange"]>,
+  links: ReadonlyMap<string, string>,
+  createId: WorkingPlanIdFactory,
+): { steps: WorkingPlanStep[], taskLinks: Map<string, string> } {
+  const normalize = (tasks: ProviderWorkingPlanTask[]) => tasks.flatMap((task) => {
+    const text = boundedWorkingPlanText(task.text, maximumWorkingPlanStepTextLength)
+    return text ? [{ id: task.id, text, status: task.status }] : []
+  })
+  const previous = new Map(normalize(change.previous).map((task) => [task.id, task]))
+  const current = normalize(change.current)
+  const currentIds = new Set(current.map(({ id }) => id))
+  const steps: WorkingPlanStep[] = canonical.map((step) => ({ ...step }))
+  const stepsById = new Map(steps.map((step) => [step.id, step]))
+  const claimedSteps = new Set<string>()
+  const taskLinks = new Map<string, string>()
+  const unclaimed = (text: string, except?: WorkingPlanStep) => steps.find(
+    (step) => step !== except && !claimedSteps.has(step.id) && step.text === text,
+  )
+  const claim = (task: { id: string, text: string, status: WorkingPlanStepStatus }, step: WorkingPlanStep, rename = false) => {
+    taskLinks.set(task.id, step.id)
+    claimedSteps.add(step.id)
+    if (rename) step.text = task.text
+    step.status = progressStatus(step, task.status)
+  }
+
+  for (const task of current) {
+    const linked = stepsById.get(links.get(task.id) ?? "")
+    if (!linked || claimedSteps.has(linked.id)) continue
+    const prior = previous.get(task.id)
+    const reworded = prior !== undefined && prior.text !== task.text
+    // An unchanged task keeps the person's text for its step.
+    if (linked.text === task.text || !reworded) claim(task, linked)
+    // Claude took another step's text: that step shows the task, this one goes.
+    else if (!unclaimed(task.text, linked)) claim(task, linked, true)
+  }
+  for (const task of current) {
+    if (taskLinks.has(task.id)) continue
+    const step = unclaimed(task.text)
+    if (step) claim(task, step)
+  }
+  for (const task of current) {
+    if (taskLinks.has(task.id)) continue
+    const prior = previous.get(task.id)
+    const step = prior && prior.text !== task.text ? unclaimed(prior.text) : undefined
+    if (step) claim(task, step, true)
+  }
+  for (const task of current) {
+    if (taskLinks.has(task.id)) continue
+    const linkedId = links.get(task.id)
+    const prior = previous.get(task.id)
+    if (
+      linkedId !== undefined
+      && !stepsById.has(linkedId)
+      && prior?.text === task.text
+      && prior.status === task.status
+    ) {
+      taskLinks.set(task.id, linkedId)
+      continue
+    }
+    const step: WorkingPlanStep = { id: createId("step"), text: task.text, status: task.status }
+    steps.push(step)
+    claim(task, step)
+  }
+
+  const removed = new Set<string>()
+  for (const [taskId, stepId] of links) {
+    if (claimedSteps.has(stepId) || !stepsById.has(stepId)) continue
+    const deleted = previous.has(taskId) && !currentIds.has(taskId)
+    if (deleted || (currentIds.has(taskId) && taskLinks.get(taskId) !== stepId)) removed.add(stepId)
+  }
+  for (const [taskId, prior] of previous) {
+    if (currentIds.has(taskId) || links.has(taskId)) continue
+    const step = steps.find((candidate) => !claimedSteps.has(candidate.id)
+      && !removed.has(candidate.id)
+      && candidate.text === prior.text)
+    if (step) removed.add(step.id)
+  }
+
+  const kept: WorkingPlanStep[] = []
+  let remaining = maximumWorkingPlanTextLength
+  for (const step of steps) {
+    if (removed.has(step.id)) continue
+    if (kept.length === maximumWorkingPlanSteps || step.text.length > remaining) break
+    kept.push(step)
+    remaining -= step.text.length
+  }
+  const keptIds = new Set(kept.map(({ id }) => id))
+  // Links of steps cut by the plan's bounds go; links kept out on purpose stay.
+  for (const [taskId, stepId] of taskLinks) {
+    if (claimedSteps.has(stepId) && !keptIds.has(stepId)) taskLinks.delete(taskId)
+  }
+  return { steps: kept, taskLinks }
+}
+
+// A step waiting on an approval does not complete until the approval resolves.
+function progressStatus(
+  step: Pick<WorkingPlanStep, "status" | "blocker"> | undefined,
+  status: WorkingPlanStepStatus,
+): WorkingPlanStepStatus {
+  return step?.blocker && status === "completed" ? step.status : status
 }
 
 // Whether an artifact is the session's working plan or a turn-scoped working

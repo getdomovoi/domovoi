@@ -22,6 +22,7 @@ import {
   type AgentRepositoryTrust,
   type AgentVisualContext,
   type AgentWorkingPlanStep,
+  type AgentWorkingPlanTask,
 } from "./agents.js"
 import {
   claudeRepositoryLoad,
@@ -181,6 +182,9 @@ type Session = {
   runtime: Runtime
   tools: Map<string, { type: "command"; command: string } | { type: "file"; path: string } | ClaudeTaskTool>
   tasks: Map<string, ClaudeTask>
+  // The tasks as the daemon last heard them: the last plan-updated event, or
+  // the list read from Claude's storage when the session opened.
+  reportedTasks: Map<string, ClaudeTask>
   sharedTaskDirectory?: string
   // Tool calls the PreToolUse hook sent to an approval, by tool use id, with
   // the reason the approval card should give.
@@ -631,6 +635,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       runtime,
       tools: new Map(),
       tasks: tasks ?? new Map(),
+      reportedTasks: new Map(tasks),
       ...(taskStorage.shared ? { sharedTaskDirectory: taskStorage.directory } : {}),
       screenedReads: new Map(),
       turnMessageIds: new Set(),
@@ -1008,15 +1013,17 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         }
         // Plan mode keeps the checklist, but the final reply supplies its proposal.
         if (changed && session.runtime.permissionMode !== "plan") {
+          const current = claudePlanTasks(session.tasks)
           this.#emit({
             type: "plan-updated",
             threadId: session.threadId,
             turnId,
-            steps: [...session.tasks.values()].map(({ subject, status }) => ({
-              text: subject,
-              status: status === "in_progress" ? "in-progress" : status,
-            })),
+            steps: current.map(({ text, status }) => ({ text, status })),
+            // Claude's tasks have no order field, so the daemon keeps the
+            // working plan's order and applies this change to it.
+            taskChange: { previous: claudePlanTasks(session.reportedTasks), current },
           })
+          session.reportedTasks = new Map(session.tasks)
         }
         continue
       }
@@ -1386,6 +1393,14 @@ function updateClaudeTasks(tasks: Map<string, ClaudeTask>, tool: ClaudeTaskTool,
   tasks.clear()
   for (const [id, task] of listed) tasks.set(id, task)
   return true
+}
+
+function claudePlanTasks(tasks: ReadonlyMap<string, ClaudeTask>): AgentWorkingPlanTask[] {
+  return [...tasks].map(([id, { subject, status }]) => ({
+    id,
+    text: subject,
+    status: status === "in_progress" ? "in-progress" : status,
+  }))
 }
 
 function claudeTodoSteps(value: unknown): AgentWorkingPlanStep[] | undefined {
