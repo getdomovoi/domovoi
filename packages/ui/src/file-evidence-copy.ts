@@ -41,8 +41,11 @@ export function revertPrompt(path: string, target: FileRevertTarget | undefined)
         : "Domovoi did not observe a version of this file to go back to.",
     }
   }
+  // The daemon sets checkpointId only for a checkpoint taken at baseCommit. Its
+  // id reads checkpoint-<uuid>, which no surface shows: the checkpoint row and
+  // the approval receipt name a checkpoint by its commit's first 8 characters.
   const source = target.checkpointId
-    ? `checkpoint ${target.checkpointId}`
+    ? `checkpoint ${target.baseCommit.slice(0, 8)}`
     : `commit ${target.baseCommit.slice(0, 7)}`
   // A file absent from the base commit has no version to restore, so the honest
   // verb is remove. Saying "revert to the version in ..." would be a lie.
