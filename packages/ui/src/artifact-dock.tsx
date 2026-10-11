@@ -361,11 +361,14 @@ export function ArtifactDock({
     string,
     "selector" | "text-quote" | "bounding-box" | "unresolved"
   >>(() => new Map())
-  // Ready means "dock:<previewKey>" or "fullscreen:<previewKey>": the frame the
-  // bridge talks to is the fullscreen one while it is open and the dock's
-  // otherwise, and each says it is ready once per load.
+  // The bridge talks to the fullscreen frame while it is open and to the
+  // dock's otherwise. Each frame says it is ready once per load, and a ready
+  // key names the frame, the document and that load ("dock:<previewKey>:3"),
+  // so a frame that loads again (fullscreen reopened, the tab shown again)
+  // starts anchor resolution again instead of repeating a key already seen.
   const [bridgeReadyKey, setBridgeReadyKey] = useState<string>()
   const readyFrames = useRef<{ dock?: string | undefined, fullscreen?: string | undefined }>({})
+  const readyLoads = useRef(0)
   const pendingAnchorResolutionBatch = useRef<PreviewBridgeResolveAnchorsMessage | undefined>(undefined)
   const queuedAnchorResolutionBatches = useRef<PreviewBridgeResolveAnchorsMessage[]>([])
   const [uncontrolledTab, setUncontrolledTab] = useState<string>(defaultTab)
@@ -456,15 +459,17 @@ export function ArtifactDock({
   const changeFullscreen = useCallback((next: boolean) => {
     postPickerState(false)
     setPickerActive(false)
+    // The fullscreen frame mounts afresh on every open; until it says it is
+    // ready, an earlier open's readiness says nothing about it.
+    if (next) readyFrames.current.fullscreen = undefined
     setFullscreen(next)
   }, [postPickerState])
 
   useEffect(() => {
     pendingAnchorResolutionBatch.current = undefined
     queuedAnchorResolutionBatches.current = []
-    setBridgeReadyKey(previewKey !== undefined && readyFrames.current[bridgeFrame] === previewKey
-      ? `${bridgeFrame}:${previewKey}`
-      : undefined)
+    const ready = readyFrames.current[bridgeFrame]
+    setBridgeReadyKey(previewKey !== undefined && ready?.startsWith(`${bridgeFrame}:${previewKey}:`) ? ready : undefined)
   }, [bridgeFrame, previewKey])
 
   const capturePreviewThumbnail = async () => {
@@ -541,8 +546,10 @@ export function ArtifactDock({
           : event.source === fullscreenFrameRef.current?.contentWindow ? "fullscreen" : undefined
       if (!preview || !sender || event.origin !== "null") return
       if (previewReadyFor(event.data, bridgeChannel, preview.id)) {
-        readyFrames.current[sender] = previewKey
-        if (sender === bridgeFrame) setBridgeReadyKey(`${sender}:${previewKey}`)
+        readyLoads.current += 1
+        const readyKey = `${sender}:${previewKey}:${readyLoads.current}`
+        readyFrames.current[sender] = readyKey
+        if (sender === bridgeFrame) setBridgeReadyKey(readyKey)
         return
       }
       // Only the frame the bridge talks to answers anchors or picks elements.
@@ -609,7 +616,7 @@ export function ArtifactDock({
   }, [readOnly, preview?.id, preview?.revision])
 
   useEffect(() => {
-    if (previewKey !== undefined && bridgeReadyKey === `${bridgeFrame}:${previewKey}`) startAnchorResolutionRequests()
+    if (previewKey !== undefined && bridgeReadyKey?.startsWith(`${bridgeFrame}:${previewKey}:`)) startAnchorResolutionRequests()
   }, [annotations, bridgeFrame, bridgeReadyKey, previewKey, startAnchorResolutionRequests])
 
   const togglePicker = () => {

@@ -62,10 +62,11 @@ function grantingAuthorize(lifetimeSeconds = 60) {
 function renderDock(
   authorizeArtifact: ReturnType<typeof grantingAuthorize>,
   onCreateAnnotation = vi.fn(async () => {}),
+  dockSnapshot: WorkspaceSnapshot = snapshot,
 ) {
   render(
     <ArtifactDock
-      snapshot={snapshot}
+      snapshot={dockSnapshot}
       onCollapse={vi.fn()}
       defaultTab="preview"
       rpcUrl="ws://127.0.0.1:47831/rpc"
@@ -206,6 +207,44 @@ it("signs no grants while the preview is hidden and loads a fresh one when it sh
   await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).not.toContain("signature=grant-1"))
   expect(frameTitled("Replay table B").getAttribute("src")).toMatch(/signature=grant-\d+/u)
   expectSandboxed(frameTitled("Replay table B"))
+})
+
+// Page loading is off, so a frame has no window of its own; this one stands
+// in for the sandboxed page on the other end of the bridge.
+function standInWindow(frame: HTMLIFrameElement) {
+  const postMessage = vi.fn()
+  const frameWindow = { postMessage } as unknown as Window
+  Object.defineProperty(frame, "contentWindow", { configurable: true, get: () => frameWindow })
+  return { frameWindow, postMessage }
+}
+
+it("resolves comment anchors in a fullscreen frame each time fullscreen opens", async () => {
+  const user = userEvent.setup()
+  const authorize = grantingAuthorize()
+  const annotation = {
+    ...demoWorkspace.annotations[0]!,
+    id: "annotation-on-b",
+    sessionId,
+    artifactId: "replay-b",
+    anchor: { cssSelector: "main > table" },
+    thread: [],
+  }
+  renderDock(authorize, undefined, { ...snapshot, annotations: [annotation] })
+  await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("/artifacts/replay-b?"))
+  const channel = authorize.mock.calls.find(([input]) => input.bridgeChannel)?.[0].bridgeChannel
+  const ready = { type: "domovoi.preview.ready", channel, artifactId: "replay-b" }
+  const resolveRequests = (postMessage: ReturnType<typeof vi.fn>) => postMessage.mock.calls
+    .filter(([message]) => (message as { type?: string }).type === "domovoi.preview.resolve-anchors")
+
+  for (const round of [1, 2]) {
+    await user.click(screen.getByRole("button", { name: "Open fullscreen preview" }))
+    const { frameWindow, postMessage } = standInWindow(frameTitled("Replay table B fullscreen"))
+    window.dispatchEvent(new MessageEvent("message", { origin: "null", source: frameWindow, data: ready }))
+    await waitFor(() => expect(resolveRequests(postMessage), `round ${round}`).toHaveLength(1))
+    expect(resolveRequests(postMessage)[0]?.[0]).toMatchObject({ artifactId: "replay-b", annotations: [{ annotationId: "annotation-on-b" }] })
+    await user.click(screen.getByRole("button", { name: "Exit fullscreen" }))
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+  }
 })
 
 it("annotates in fullscreen, with the draft posted from the comments column", async () => {
