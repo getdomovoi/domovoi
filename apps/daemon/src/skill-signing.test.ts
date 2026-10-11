@@ -1,8 +1,8 @@
-import { chmod, mkdtemp, readFile, stat, writeFile } from "node:fs/promises"
+import { chmod, mkdtemp, readFile, rename, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { afterEach, describe, expect, it } from "vitest"
+import { afterEach, describe, expect, it, vi } from "vitest"
 
 import {
   addTrustedSkillKey,
@@ -17,6 +17,11 @@ import {
   verifySkillSignature,
 } from "./skill-signing.js"
 import { removeScratchDirectories } from "./test-scratch.js"
+
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>()
+  return { ...actual, rename: vi.fn(actual.rename) }
+})
 
 const scratchDirectories: string[] = []
 
@@ -59,6 +64,25 @@ describe("skill signatures", () => {
 })
 
 describe("trusted skill keys", () => {
+  it("adds a trusted key after two Windows sharing refusals", async () => {
+    const path = await scratchTrustPath()
+    const first = generateSkillSigningKey().publicKey
+    await addTrustedSkillKey(path, exportSkillPublicKey(first))
+    const key = generateSkillSigningKey().publicKey
+    const refusal = Object.assign(new Error("rename refused"), { code: "EPERM" })
+    vi.mocked(rename).mockClear().mockRejectedValueOnce(refusal).mockRejectedValueOnce(refusal)
+    const real = Object.getOwnPropertyDescriptor(process, "platform")!
+    Object.defineProperty(process, "platform", { ...real, value: "win32" })
+    try {
+      await expect(addTrustedSkillKey(path, exportSkillPublicKey(key))).resolves.toEqual({ keyId: skillKeyId(key), added: true })
+      expect(rename).toHaveBeenCalledTimes(3)
+      expect([...(await loadTrustedSkillKeys(path)).keys.keys()]).toEqual([skillKeyId(first), skillKeyId(key)])
+    } finally {
+      Object.defineProperty(process, "platform", real)
+      vi.mocked(rename).mockReset()
+    }
+  })
+
   it("treats an absent trust file as no trusted keys without creating it", async () => {
     const path = await scratchTrustPath()
 

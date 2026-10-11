@@ -6,7 +6,7 @@ import { homedir, tmpdir, userInfo } from "node:os"
 import { posix, win32 } from "node:path"
 import { promisify } from "node:util"
 
-import { publishFileDurably } from "@getdomovoi/credential-store"
+import { publishFileDurably, type ReplaceDeadline } from "@getdomovoi/credential-store"
 import { isLoginServiceRuntimeVersion } from "@getdomovoi/protocol"
 
 import type { DaemonServiceRuntime } from "./desktop-service.js"
@@ -127,7 +127,7 @@ export type RuntimeFileSystem = {
   makeDirectory(path: string): Promise<void>
   // Copies a tree, keeping each link as the link it is.
   copy(from: string, to: string): Promise<void>
-  rename(from: string, to: string): Promise<void>
+  rename(from: string, to: string, deadline?: ReplaceDeadline): Promise<void>
   // Device and inode of the entry itself, never through a link.
   identity(path: string): Promise<string>
   // A new directory only this user can use, named by the prefix plus a random
@@ -207,7 +207,7 @@ export function nodeRuntimeFileSystem(overrides: Partial<RuntimeFileSystem> = {}
     },
     copy: (from, to) => cp(from, to, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true }),
     // Each rename is followed by a flush of the directory that holds it.
-    rename: (from, to) => publishFileDurably(from, to),
+    rename: (from, to, deadline) => publishFileDurably(from, to, undefined, deadline === undefined ? {} : { deadline }),
     identity: async (path) => {
       const found = await lstat(path, { bigint: true })
       return `${found.dev}:${found.ino}`
@@ -464,7 +464,7 @@ export type PreparedDaemonRuntime = {
   // Where the published copy will be, and the shipped runtime it copies.
   runtime: DaemonServiceRuntime
   staged: DaemonServiceRuntime
-  publish: () => Promise<void>
+  publish: (deadline?: ReplaceDeadline) => Promise<void>
 }
 
 export type DaemonRuntimeStageInput = {
@@ -651,7 +651,7 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
     daemonEntryPath: pathApi.join(at, "daemon", "dist", "index.js"),
   })
   let published = false
-  const publish = async () => {
+  const publish = async (deadline?: ReplaceDeadline) => {
     if (published) throw new Error("This staged runtime was already published.")
     published = true
     // Review of the XDG state fallback (P3): mkdir follows a link in its
@@ -778,7 +778,7 @@ export async function prepareDaemonRuntime(input: DaemonRuntimeStageInput): Prom
     // closed with a native helper, as round 8 of #577 accepted the same race
     // for the staging directory.
     await versionUnchanged()
-    await fs.rename(staging, destination)
+    await fs.rename(staging, destination, deadline)
     // Round 8 (P2): the staging directory, empty now, is left where it is.
     // Node cannot remove a directory relative to one it holds open, so a
     // check that the path is still this directory cannot be bound to its

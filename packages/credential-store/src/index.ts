@@ -3,7 +3,7 @@ import { constants } from "node:fs"
 import { lstat, mkdir, open, rename, unlink, type FileHandle } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 
-import { replaceFile } from "./sharing-retry.js"
+import { replaceFile, type ReplaceDeadline } from "./sharing-retry.js"
 
 export {
   FileSharingError, replaceFile, replaceFileSync, windowsSharingBudgetMs,
@@ -118,8 +118,8 @@ async function syncDirectory(path: string): Promise<void> {
 //
 // On Windows the rename retries a sharing refusal for at most five seconds
 // (replaceFile): another process reading the old file blocks its replacement.
-export async function publishFileDurably(staging: string, path: string, renamed?: () => void): Promise<void> {
-  await replaceFile(staging, path, { rename })
+export async function publishFileDurably(staging: string, path: string, renamed?: () => void, options: { deadline?: ReplaceDeadline } = {}): Promise<void> {
+  await replaceFile(staging, path, { rename }, options)
   renamed?.()
   await syncDirectory(dirname(path))
 }

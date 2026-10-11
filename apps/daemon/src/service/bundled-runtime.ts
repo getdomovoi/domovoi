@@ -2,6 +2,7 @@ import { tmpdir } from "node:os"
 import { posix, win32 } from "node:path"
 
 import type { DaemonEnvironment } from "../config.js"
+import type { OperationDeadline } from "../operation-deadline.js"
 import type { FileLease } from "../file-lease.js"
 import { nodeDaemonServiceRuntimeReader, readDaemonServiceRuntimeCopy, type DaemonServiceRuntime, type DaemonServiceRuntimeCopy, type DaemonServiceRuntimeReader } from "./desktop-service.js"
 import { removeUnusedDaemonRuntimes, type DaemonRuntimeCleanupDependencies } from "./runtime-cleanup.js"
@@ -68,7 +69,7 @@ export type BundledServiceRuntime = {
   // holds open, so a check that the path is still that directory cannot be
   // bound to its removal, and a directory swapped in between would be removed
   // instead. It is only disk space.
-  publish: () => Promise<void>
+  publish: (deadline?: OperationDeadline) => Promise<void>
   // #635, as the app's Install does: run once the new service is installed.
   // Removes the copies under the profile that neither the service now nor the
   // one before this install runs (removeUnusedDaemonRuntimes, under its own
@@ -179,13 +180,13 @@ export async function bundledServiceRuntime(input: {
   return {
     runtime: prepared.runtime,
     copy: paths.dirname(paths.dirname(paths.dirname(prepared.runtime.daemonEntryPath))),
-    publish: async () => {
+    publish: async (deadline) => {
       try {
         previous = await readDaemonServiceRuntimeCopy(cleanup)
       } catch {
         previous = undefined
       }
-      await prepared.publish().catch((error: unknown) => { throw worded(error) })
+      await prepared.publish(deadline).catch((error: unknown) => { throw worded(error) })
       published = true
       for (const [part, path] of [["node", prepared.runtime.nodePath], ["daemon", prepared.runtime.daemonEntryPath]] as const) {
         const found = await fileSystem.entry(path)
