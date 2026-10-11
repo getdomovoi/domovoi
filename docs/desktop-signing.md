@@ -70,8 +70,9 @@ steps ([Open a Mac app from an unknown developer](https://support.apple.com/guid
 1. Open Domovoi from Applications once, so macOS refuses it. Dismiss the warning; do not move
    the app to the Bin.
 2. Choose Apple menu, System Settings, then Privacy & Security in the sidebar.
-3. Under Security, choose "Open Anyway". Apple says the button is there for about an hour after
-   the refused open.
+3. Go to Security and choose "Open", then choose "Open Anyway". Apple says the button is there
+   for about an hour after the refused open. The guide is written for the current macOS; an
+   earlier release can lay this out differently, so record the buttons yours showed.
 4. Enter your login password, then choose OK.
 
 macOS then keeps the app as an exception, and it opens like any other app from then on.
@@ -83,7 +84,7 @@ Record:
   attribute, or says it has none. A package built on the same Mac was not downloaded. Whether
   Gatekeeper refuses such a copy is not stated on Apple's pages above;
 - the refusal dialog's title, text and buttons, word for word;
-- what "Privacy & Security" showed above "Open Anyway";
+- what "Privacy & Security" showed under Security, and which buttons you chose;
 - whether the app, its daemon and the login service then started (section 1 of the walk).
 
 ### Windows
