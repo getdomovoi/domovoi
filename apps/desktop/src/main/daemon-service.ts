@@ -304,14 +304,14 @@ export class DesktopDaemonService {
   // #635: the staged publish, with the read of the copy the service runs
   // first. A read that fails leaves the previous copy unknown, and then no
   // cleanup runs; the publish itself goes ahead either way.
-  #publishNoting(prepared: PreparedDaemonRuntime, noted: NotedRuntimeCopy): () => Promise<void> {
-    return async () => {
+  #publishNoting(prepared: PreparedDaemonRuntime, noted: NotedRuntimeCopy): PreparedDaemonRuntime["publish"] {
+    return async (deadline) => {
       try {
         noted.previous = await this.deps.runtimeCopy()
       } catch {
         delete noted.previous
       }
-      await prepared.publish()
+      await prepared.publish(deadline)
       noted.published = true
     }
   }

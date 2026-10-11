@@ -71,17 +71,18 @@ it("names the commit in the confirmation when no checkpoint matches", async () =
   expect(screen.getByText(/commit 8f3c1de/)).toBeTruthy()
   // The dialog always mentions the recovery checkpoint it takes before writing.
   // What must not appear is a named checkpoint as the restore source.
-  expect(screen.queryByText(/checkpoint ckpt_/i)).toBeNull()
+  expect(screen.queryByText(/version in checkpoint/i)).toBeNull()
 })
 
 it("binds the confirmation to the commit it described", async () => {
   const user = userEvent.setup()
   const onRevertFile = pane(evidenceWith([
-    { path: "src/handler.ts", tests: { state: "unknown", reason: "file-access-not-recorded" }, revertTarget: { kind: "restore", baseCommit: commit, checkpointId: "ckpt_6b0e" } },
+    { path: "src/handler.ts", tests: { state: "unknown", reason: "file-access-not-recorded" }, revertTarget: { kind: "restore", baseCommit: commit, checkpointId: "checkpoint-0b1c6f52-3d7e-4a9b-8c21-5f0e9d4a7b63" } },
     { path: "src/replay.ts", tests: { state: "unknown", reason: "file-access-not-recorded" }, revertTarget: { kind: "remove", baseCommit: commit } },
   ]))
   await user.click(screen.getByRole("button", { name: "Restore src/handler.ts" }))
-  expect(screen.getByText(/checkpoint ckpt_6b0e/)).toBeTruthy()
+  // Named as the checkpoint row names it, by the commit's first 8 characters.
+  expect(screen.getByText(/version in checkpoint 8f3c1de4\?/)).toBeTruthy()
   await user.click(screen.getByRole("button", { name: "Restore this file" }))
   expect(onRevertFile).toHaveBeenCalledWith("src/handler.ts", commit)
 })

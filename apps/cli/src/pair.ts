@@ -19,7 +19,7 @@ export type RpcCall = (method: string, params: Record<string, unknown>) => Promi
 // the socket, so each is drawn through terminalSafe. The client kind is a
 // validated enum.
 const copy = {
-  notACode: "That is not a pairing code. Paste the line 'domovoid pair --client cli --label <device label>' printed, or the code alone.",
+  notACode: "That is not a pairing code. Paste the line 'domovoid pair --client cli' printed, or the code alone.",
   issuedForAnother: (client: string, label: string) => `This code was issued for a ${client}, so nothing was kept. ${revoke(label)}`,
   // Both run after the code was spent: the daemon lists the device under its
   // label with nobody holding its token, and it counts toward the device
@@ -44,8 +44,9 @@ export function deviceLabelProblem(label: string, source: "--label" | "hostname"
   return label.trim().length === 0 ? "--label needs a name the daemon can show" : `--label takes at most ${maximumPairedDeviceLabelLength} characters`
 }
 
-// The daemon side of pairing is `domovoid pair --client cli --label <device
-// label>`, run where the daemon runs. It prints a one-time code, bare on a
+// The daemon side of pairing is `domovoid pair --client cli`, run where the
+// daemon runs; its --label is optional and only a suggested name, since this
+// half's own --label names the device. It prints a one-time code, bare on a
 // daemon that cannot name its address and otherwise inside a payload that
 // also carries the address to dial (ruling Q337 A: the phone's path, so there
 // is one pairing flow). This half reads either, spends the code with

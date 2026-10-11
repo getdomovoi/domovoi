@@ -67,7 +67,7 @@ afterAll(async () => {
   for (const path of [home, control]) if (path !== undefined) await rm(path, { recursive: true, force: true })
 })
 
-// What `domovoid pair --client cli --label <device label>` does on the daemon
+// What `domovoid pair --client cli` does on the daemon
 // host: device.issueCode with the daemon's own token, then the payload it
 // prints under "Cannot scan it? Paste this on the device:".
 async function issueCliCode(targetClient: "cli" | "phone" = "cli"): Promise<{ payload: string; code: string }> {
@@ -136,10 +136,20 @@ describe("domovoi against a real daemon", { timeout: 30_000 }, () => {
     const unpaired = await runCli(["status", "--daemon", url, "--credential-file", credentialFile])
     expect(unpaired).toMatchObject({ code: 5 })
     expect(unpaired.stderr).toMatch(/^Not paired with ws:\/\//m)
+    // Since #767 domovoid pair takes --label as an optional suggested name, so
+    // the message names the daemon command as it runs.
+    expect(unpaired.stderr).toContain("Run 'domovoid pair --client cli' where the daemon runs, then paste its pairing code into 'domovoi pair --daemon ")
     const wrong = await runCli(["pair", "--daemon", url, "--credential-file", credentialFile], "hearth-quiet-ember-42\n")
     expect(wrong).toMatchObject({ code: 1 })
     expect(wrong.stderr).toMatch(/Pairing was refused/)
     expect(await runCli(["status", "--daemon", url, "--credential-file", credentialFile])).toMatchObject({ code: 5 })
+  })
+
+  it("names the daemon's pair command in help as it runs, with no label", async () => {
+    const help = await runCli(["--help"])
+    expect(help).toMatchObject({ code: 0 })
+    expect(help.stderr).toContain("the daemon, run 'domovoid pair --client cli'. It prints a")
+    expect(help.stderr).not.toContain("--client cli --label")
   })
 
   it("exits 3 when no daemon answers, before anything is sent", async () => {

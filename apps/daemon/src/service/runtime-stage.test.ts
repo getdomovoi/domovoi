@@ -13,6 +13,19 @@ const run = promisify(execFile)
 // the copy routine itself (Q408 A), unchanged.
 
 describe("daemon runtime layout", () => {
+  it("passes the rename deadline through durable publication before moving the file", async () => {
+    await withScratch(async ({ root }) => {
+      const from = join(root, "staged")
+      const to = join(root, "published")
+      await writeFile(from, "staged")
+      const error = new Error("runtime deadline expired")
+      const deadline = { remainingMs: () => 0, throwIfExpired: () => { throw error } }
+      await expect(nodeRuntimeFileSystem().rename(from, to, deadline)).rejects.toBe(error)
+      expect(await readFile(from, "utf8")).toBe("staged")
+      await expect(readFile(to)).rejects.toMatchObject({ code: "ENOENT" })
+    })
+  })
+
   it("names the shipped runtime under the app's resources and its copy under the profile", () => {
     expect(daemonRuntimeLayout("/Applications/Domovoi.app/Contents/Resources", "darwin")).toEqual({
       nodePath: "/Applications/Domovoi.app/Contents/Resources/daemon-runtime/node/bin/node",

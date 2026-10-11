@@ -1,4 +1,5 @@
 import { chmod, lstat, mkdtemp as createTempDirectory, open, readFile, readdir, rename, rm, symlink, unlink, writeFile } from "node:fs/promises"
+import { setTimeout as pause } from "node:timers/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 
@@ -13,6 +14,10 @@ vi.mock("node:fs/promises", async (original) => ({
   rename: vi.fn((...args: Parameters<typeof rename>) => actualRename(...args)),
   unlink: vi.fn((...args: Parameters<typeof unlink>) => actualUnlink(...args)),
 }))
+vi.mock("node:timers/promises", async (original) => {
+  const actual = await original<typeof import("node:timers/promises")>()
+  return { ...actual, setTimeout: vi.fn(actual.setTimeout) }
+})
 const { lstat: actualLstat, open: actualOpen, rename: actualRename, unlink: actualUnlink } = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")
 const keyring = (): Keyring => ({ available: vi.fn(async () => true), get: vi.fn(), set: vi.fn(), delete: vi.fn() })
 const options = (ring = keyring()) => ({ keyring: ring, warn: vi.fn(), fileWarning: (path: string) => `private file: ${path}`, unavailable: (cause?: Error) => `keychain refused: ${cause?.message ?? "absent"}` })
@@ -348,4 +353,33 @@ describe("publishFileDurably", () => {
     expect(renamed).toHaveBeenCalledOnce()
     expect(await readdir(root)).toEqual(["file"])
   })
+
+  it.each([0, 7])("stops Windows sharing retries at a deadline with %i ms remaining", async (budget) => {
+    let now = 0
+    const deadlineError = new Error("publish deadline expired")
+    const deadline = {
+      remainingMs: () => Math.max(0, budget - now),
+      throwIfExpired: () => { if (now >= budget) throw deadlineError },
+    }
+    const starts: number[] = []
+    vi.spyOn(performance, "now").mockImplementation(() => now)
+    vi.mocked(pause).mockImplementation(async (ms) => { now += ms ?? 0 })
+    vi.mocked(rename).mockImplementation(async () => {
+      starts.push(now)
+      throw Object.assign(new Error("rename refused"), { code: "EPERM" })
+    })
+    const renamed = vi.fn()
+    const real = Object.getOwnPropertyDescriptor(process, "platform")!
+    Object.defineProperty(process, "platform", { ...real, value: "win32" })
+    try {
+      await expect(publishFileDurably("staging", "destination", renamed, { deadline })).rejects.toBe(deadlineError)
+      expect(starts).toEqual(budget === 0 ? [] : [0, 5])
+      expect(now).toBe(budget)
+      expect(renamed).not.toHaveBeenCalled()
+    } finally {
+      Object.defineProperty(process, "platform", real)
+      vi.mocked(pause).mockReset()
+    }
+  })
+
 })

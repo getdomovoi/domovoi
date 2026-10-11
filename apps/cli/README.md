@@ -21,9 +21,9 @@ domovoi daemon install|status|remove
 ```
 
 - `pair` redeems a pairing code and stores the client credential the daemon mints for one
-  daemon. On the machine that runs the daemon, `domovoid pair --client cli --label <device label>`
-  prints a one-time code, the same way it does for a phone: a symbol to scan and, under "Cannot
-  scan it?", a `domovoi-pair:1:` line that carries the daemon's address. Paste that line, or the
+  daemon. On the machine that runs the daemon, `domovoid pair --client cli` prints a one-time
+  code, the same way it does for a phone: a symbol to scan and, under "Cannot scan it?", a
+  `domovoi-pair:1:` line that carries the daemon's address. Paste that line, or the
   bare code, into `domovoi pair`. It reads stdin, so the code does not land in shell history or
   the process table. The code is spent with `device.redeemCode` on a socket that holds no
   credential yet, the minted credential is proven with an authenticated hello, and only then is

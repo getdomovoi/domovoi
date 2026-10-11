@@ -26,9 +26,18 @@ describe("coverage", () => {
 })
 
 describe("revert", () => {
-  it("names a checkpoint when one exists for that exact commit", () => {
-    const prompt = revertPrompt("src/handler.ts", { kind: "restore", baseCommit: commit, checkpointId: "ckpt_6b0e" })
-    expect(prompt.available && prompt.confirmation).toContain("checkpoint ckpt_6b0e")
+  // The daemon's checkpoint ids read checkpoint-<uuid>, so printing one after
+  // the word doubled it. Every other surface names a checkpoint by its
+  // commit's first 8 characters, as the daemon labels the checkpoint row.
+  it("names a checkpoint the way its row does when one exists for that exact commit", () => {
+    const prompt = revertPrompt("src/handler.ts", { kind: "restore", baseCommit: commit, checkpointId: "checkpoint-0b1c6f52-3d7e-4a9b-8c21-5f0e9d4a7b63" })
+    expect(prompt.available && prompt.confirmation).toBe("Restore src/handler.ts to the version in checkpoint 8f3c1de4? Only this file changes. The worktree changes underneath the agent, which does not learn of it until its next read.")
+    expect(prompt.available && prompt.confirmation).not.toMatch(/checkpoint checkpoint|0b1c6f52/)
+  })
+
+  it("names the checkpoint the same way when the file goes away", () => {
+    const prompt = revertPrompt("src/replay.ts", { kind: "remove", baseCommit: commit, checkpointId: "checkpoint-0b1c6f52-3d7e-4a9b-8c21-5f0e9d4a7b63" })
+    expect(prompt.available && prompt.confirmation).toContain("It does not exist in checkpoint 8f3c1de4,")
   })
 
   it("names the commit when no checkpoint record matches", () => {
