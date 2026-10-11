@@ -1126,15 +1126,15 @@
         "is held by another git process. Nothing ran. Decide again."
       ],
       "evidence": [
-        "Could not take a checkpoint"
+        "Could not take a checkpoint",
+        "is held by another git process",
+        "approvalCheckpointRefusalSchema.safeParse(refusal.data)",
+        "export const approvalCheckpointErrorCode = -32023",
+        "data: cause.data, arrivedAt: latestApprovalsKey.current"
       ],
-      "presence": [
-        "refusal={cardShowsRefusal ? approvalRefusal?.message : undefined}"
-      ],
-      "partial": {
-        "since": "2026-10-06",
-        "reason": "since 5ee18251 (J34) the daemon takes a checkpoint before every human allow and, when it cannot, refuses the resolve with Domovoi could not take a checkpoint, so the command did not run; decide again. The gate card shows that refusal inside the card in the daemon's words (thread.tsx cardShowsRefusal), in the design's danger block with its dot (S3.10h). The drawn lead, Could not take a checkpoint: <lock path> is held by another git process. Nothing ran. Decide again., needs the daemon to answer with a typed refusal code and the cause instead of internalError (Codex follow-up); the client does not parse the daemon's sentence"
-      }
+      "notes": [
+        "Built 2026-10-10 (T22, S3.10h, #743, #758). approval.resolve answers a checkpoint it could not take with approvalCheckpointErrorCode (-32023) and an approvalCheckpointRefusalSchema as the error's data: its cause, one of lock-held (with the lock path Git reported), submodule-changes, repository-config, git-unavailable, timed-out, git-failed or unknown. Thread keeps the data beside the message and the card reads it by the schema (approval-card.tsx DecisionRefusal), drawing Could not take a checkpoint: <cause>. Nothing ran. Decide again. in the danger block; data it cannot read falls back to the daemon's words. Two differences from the drawing: the lock path is the absolute path Git printed, not the drawn .git/index.lock, and a checkpoint stages into a temporary index, so a held .git/index.lock alone does not stop it; the lock it meets is the checkpoint ref's or that temporary index's. For repository-config and git-unavailable the daemon's sentence follows the line, since it names the setting or what to install"
+      ]
     },
     {
       "id": "conversation.policy-refusal",
@@ -2268,7 +2268,7 @@
     {
       "id": "conversation.policy-refusal",
       "since": "2026-10-08",
-      "note": "Built against its evidence, not as drawn. Needs protocol and stays a Codex follow-up: the step n of N meta (a plan step's blocker names only an approval), the Target it saw row, and tone-coded alternatives (the wire carries one remedy string, so the list has one neutral row). The drawn Recorded as refusal, actor daemon row is not drawn: the audit records provider.policy-refused with a provider actor."
+      "note": "Built against its evidence, not as drawn. Needs protocol and stays a Codex follow-up: the step n of N meta (a plan step's blocker names only an approval), the Target it saw row, and tone-coded alternatives (the wire carries one remedy string, so the list has one neutral row). The drawn Recorded as refusal, actor daemon row is not drawn: the audit records provider.policy-refused with a provider actor. Rechecked 2026-10-10 (T22): the daemon still has neither. The only policy refusal is Ask mode's (permission-policy.ts permissionPolicyRefusalFor), which has one remedy and no second alternative to tone; a provider's policy-refused event carries the command and a reason sentence, and Claude's adapter folds the path it read outside the worktree into that sentence, so no target reaches the daemon as data. Both stay follow-ups: Target it saw needs the adapters to report the target as a field, and the alternatives need a rule source with more than one remedy."
     },
     {
       "id": "conversation.receipt",
