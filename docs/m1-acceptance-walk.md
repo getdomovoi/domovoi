@@ -18,8 +18,8 @@ It covers four of the definition's bullets, plus two runs the definition leans o
 Written on 2026-10-07 from `main` at `017307b5`. Every label below was read from the code at that
 commit, and checked again at `640ac4e7`, which changed the build line in section 1 and the pairing
 command in section 5. On 2026-10-11 it was checked again at `1d797596`: section 1 gained the
-unsigned-build notes, section 2 step 4 and section 5 steps 3 and 4 were rewritten, and the
-terminal commands for the login service were added to section 1. If a label on screen differs,
+unsigned-build notes and the terminal commands for the login service, section 2 step 4 and
+section 5 steps 3 and 4 were rewritten, and section 3 cites the tests #800 adds. If a label on screen differs,
 record what the screen says; the difference is a finding, not a reason to skip the row.
 
 ## Before you start
@@ -352,10 +352,16 @@ reads for Codex; if the repository is held back again, record it.
 
 The approval-answered-elsewhere failure is OpenCode only and cannot be provoked by hand: it needs
 a program holding the password Domovoi gives the OpenCode server it starts, so its row stays
-blocked. The nearest automated evidence is `apps/daemon/src/opencode.test.ts` ("ends a turn stopped
-twice with the approval answered elsewhere"): it simulates the outside answer arriving during a
-stop and checks that the turn ends failed. It does not assert the failure kind, show the desktop
-alert, or check the worktree.
+blocked. The nearest automated evidence is in `apps/daemon/src/opencode.test.ts`. "ends a turn
+stopped twice with the approval answered elsewhere" simulates the outside answer arriving during a
+stop and checks that the turn ends failed. #800 (test only, on merge) makes it assert the exact
+failure: kind `approval-answered-elsewhere`, action `review-changes`, not retryable. It also adds
+"fails the session with a failure to act on and leaves the worktree as the agent left it", which
+drives the OpenCode adapter on a stand-in server through the daemon. The session fails with that
+failure, and its worktree directory and files are unchanged. After
+`session.restartProviderThread`, the request behind the thread's "Try again", the next message
+runs in a new provider session on the same worktree and the turn ends normally. No test shows the
+desktop alert; that stays a person's check, and the stand-in is not a real OpenCode server.
 
 The stand-in proves Domovoi's handling of a provider's error answers. A real expired sign-in or a
 real usage limit can arrive with different text. When one happens in normal use, record the

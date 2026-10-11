@@ -50,7 +50,7 @@ Until those runs exist, the exact dialogs, and whether one appears at all for a 
 unverified.
 
 This page does not suggest turning Gatekeeper, SmartScreen or Smart App Control off, or removing
-a file's download mark. Each of those disables the check for more than this one app.
+a file's download mark. The walk records the path each vendor documents for opening one app.
 
 ### macOS
 
