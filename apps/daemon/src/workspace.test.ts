@@ -1794,8 +1794,11 @@ describe("GitWorkspaceService bundle restore", () => {
     return { promise, release }
   }
 
+  // Every root made, a failed one included, is removed after the block.
+  const sharedRoots: string[] = []
   async function makeSharedSource() {
     const root = await mkdtemp(join(tmpdir(), "domovoi-restore-source-"))
+    sharedRoots.push(root)
     const repositoryPath = join(root, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
     await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
@@ -1815,7 +1818,7 @@ describe("GitWorkspaceService bundle restore", () => {
     await writeFile(join(workspace.path, "README.md"), "moved\n")
     const checkpoint = await source.checkpoint(workspace.path, "before-transfer")
     const bundle = await source.bundleSession(workspace.path, join(root, "session.bundle"))
-    return { root, targetTemplate, checkpoint, bundle }
+    return { targetTemplate, checkpoint, bundle }
   }
 
   // The source repository, its checkpoint and its bundle are only read here,
@@ -1827,8 +1830,8 @@ describe("GitWorkspaceService bundle restore", () => {
   // (CI runs 37648689682 and 37655021737).
   let sharedSource: ReturnType<typeof makeSharedSource> | undefined
   afterAll(async () => {
-    const shared = await sharedSource?.catch(() => undefined)
-    if (shared !== undefined) await removeScratchDirectories([shared.root])
+    await sharedSource?.catch(() => undefined)
+    await removeScratchDirectories(sharedRoots)
   })
 
   async function sourceWithBundle(prefix: string) {
@@ -2498,7 +2501,8 @@ describe("GitWorkspaceService session refs", () => {
     await writeFile(personSsh, `echo ran >> "${personMarker}"\nexit 1\n`)
     const home = join(scratch, "home")
     await mkdir(home)
-    await writeFile(join(home, ".gitconfig"), `[core]\n\tsshCommand = sh "${personSsh}"\n`)
+    // Git writes the value, so the quotes around the path survive its parser.
+    await execute("git", ["config", "--file", join(home, ".gitconfig"), "core.sshCommand", `sh "${personSsh}"`])
     await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", "ssh://git@127.0.0.1/remote.git"])
     await execute("git", ["-C", repositoryPath, "config", "core.sshCommand", "sh ./evil.sh"])
     await service.checkpoint(workspace.path, "with the script")
