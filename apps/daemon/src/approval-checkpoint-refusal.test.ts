@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process"
-import { mkdir, mkdtemp, realpath, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, realpath, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -123,6 +123,21 @@ describe("approvalCheckpointRefusal", () => {
     const error = Object.assign(new Error(stderr), { code: 128, stderr })
     expect((await approvalCheckpointRefusal(error, { timedOut: false, worktree: scratch })).data)
       .toEqual({ kind: "approval-checkpoint-refused", cause: "git-failed" })
+  })
+
+  // A worktree's .git can be a symlink (a junction on Windows) to its Git
+  // directory; the lock in it is still Git's own.
+  it("names a held lock through a .git that links to the Git directory", async () => {
+    const { scratch, path } = await repository()
+    const linked = join(await realpath(scratch), "linked")
+    await mkdir(linked)
+    await symlink(join(path, ".git"), join(linked, ".git"), process.platform === "win32" ? "junction" : "dir")
+    await writeFile(join(path, ".git", "index.lock"), "")
+    const lockPath = join(linked, ".git", "index.lock")
+    const stderr = `fatal: Unable to create '${lockPath}': File exists.\n`
+    const error = Object.assign(new Error(stderr), { code: 128, stderr })
+    expect((await approvalCheckpointRefusal(error, { timedOut: false, worktree: linked })).data)
+      .toEqual({ kind: "approval-checkpoint-refused", cause: "lock-held", lockPath })
   })
 
   // A .git replaced by a FIFO must not hold the refusal open.

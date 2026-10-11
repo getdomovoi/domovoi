@@ -74,14 +74,17 @@ it("draws the design's line for a checkpoint refused over a held lock", async ()
 it("shows the daemon's words when the refusal's data is not a checkpoint refusal it can read", async () => {
   const user = userEvent.setup()
   const message = "Domovoi could not take a checkpoint, so the command did not run; decide again"
-  for (const data of [
-    undefined,
-    { kind: "approval-checkpoint-refused", cause: "lock-held" },
-    { kind: "approval-checkpoint-refused", cause: "invented" },
-    { kind: "session-review-refused", reason: "comment-unavailable" },
-  ]) {
+  for (const [code, data] of [
+    [approvalCheckpointErrorCode, undefined],
+    [approvalCheckpointErrorCode, { kind: "approval-checkpoint-refused", cause: "lock-held" }],
+    [approvalCheckpointErrorCode, { kind: "approval-checkpoint-refused", cause: "invented" }],
+    [approvalCheckpointErrorCode, { kind: "session-review-refused", reason: "comment-unavailable" }],
+    // Error data is not tied to a code on the wire: only the checkpoint
+    // refusal's own code makes the data a checkpoint refusal.
+    [-32603, { kind: "approval-checkpoint-refused", cause: "unknown" }],
+  ] as const) {
     const snapshot = structuredClone(demoWorkspace)
-    const { unmount } = render(refusalThread(vi.fn().mockRejectedValueOnce(new DaemonRpcError(approvalCheckpointErrorCode, message, data)))(snapshot))
+    const { unmount } = render(refusalThread(vi.fn().mockRejectedValueOnce(new DaemonRpcError(code, message, data)))(snapshot))
     await user.click(screen.getByRole("button", { name: "Allow once" }))
     const card = screen.getByText(snapshot.approvals[0]!.command).closest("[role=alert]") as HTMLElement
     expect(within(card).getByRole("alert").textContent, JSON.stringify(data)).toBe(message)
@@ -101,6 +104,7 @@ it.each([
   const approval = structuredClone(demoWorkspace).approvals[0]!
   render(<ApprovalCard approval={approval} onResolve={vi.fn()} surface="desktop" connected refusal={{
     message: "Domovoi could not take a checkpoint, so the command did not run; decide again",
+    code: approvalCheckpointErrorCode,
     data: { kind: "approval-checkpoint-refused", cause },
   }} />)
   expect(refusalIn().textContent).toBe(line)
@@ -117,7 +121,7 @@ it.each([
     "Domovoi could not take a checkpoint, so the command did not run; decide again. Domovoi found no git in an absolute PATH entry."],
 ] as const)("keeps the daemon's detail under the line for cause %s", (cause, line, message) => {
   const approval = structuredClone(demoWorkspace).approvals[0]!
-  render(<ApprovalCard approval={approval} onResolve={vi.fn()} surface="desktop" connected refusal={{ message, data: { kind: "approval-checkpoint-refused", cause } }} />)
+  render(<ApprovalCard approval={approval} onResolve={vi.fn()} surface="desktop" connected refusal={{ message, code: approvalCheckpointErrorCode, data: { kind: "approval-checkpoint-refused", cause } }} />)
   expect(within(refusalIn()).getByText(line)).toBeTruthy()
   expect(within(refusalIn()).getByText(message)).toBeTruthy()
 })

@@ -1,6 +1,7 @@
 import { useRef, useState, type MouseEvent, type ReactNode } from "react"
 import { CircleStopIcon } from "lucide-react"
 import {
+  approvalCheckpointErrorCode,
   approvalCheckpointRefusalSchema,
   approvalPlanStep,
   type ApprovalCheckpointRefusal,
@@ -284,6 +285,9 @@ const outline = "border-warn-border bg-transparent hover:bg-warn-deep dark:borde
 
 export type ApprovalDecisionRefusal = {
   message: string
+  // The JSON-RPC error code. Error data is not tied to a code on the wire, so
+  // the data reads as a checkpoint refusal only under that refusal's code.
+  code?: number | undefined
   // The error's data as the daemon sent it, read here by its schema.
   data?: unknown
 }
@@ -317,8 +321,8 @@ const checkpointCausesWithDetail: ReadonlySet<ApprovalCheckpointRefusal["cause"]
 ])
 
 function DecisionRefusal({ refusal }: { refusal: ApprovalDecisionRefusal }) {
-  const checkpoint = approvalCheckpointRefusalSchema.safeParse(refusal.data)
-  if (!checkpoint.success) return <span>{refusal.message}</span>
+  const checkpoint = refusal.code === approvalCheckpointErrorCode ? approvalCheckpointRefusalSchema.safeParse(refusal.data) : undefined
+  if (checkpoint?.success !== true) return <span>{refusal.message}</span>
   const cause = checkpointCause(checkpoint.data)
   // Which setting refused, what Git stopped on, or what to install, is the
   // daemon's own detail, and the person needs it to act; the other causes

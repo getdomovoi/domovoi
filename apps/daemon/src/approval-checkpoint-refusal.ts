@@ -1,5 +1,5 @@
 import { constants } from "node:fs"
-import { lstat, open, realpath } from "node:fs/promises"
+import { lstat, open, realpath, stat } from "node:fs/promises"
 import { dirname, isAbsolute, relative, resolve } from "node:path"
 
 import { approvalCheckpointRefusalSchema, type ApprovalCheckpointRefusal } from "@getdomovoi/protocol"
@@ -117,12 +117,22 @@ const maximumGitPointerBytes = 4_096
 // there now, as a file, in the worktree's own Git directory or the common
 // directory it shares with its repository. Git's sentence can also come from
 // a filter's stderr, so the sentence alone is not enough. Anything that
-// cannot be read, or takes too long, places the lock nowhere.
+// cannot be read, or takes too long, places the lock nowhere. The deadline
+// cannot cancel a filesystem call that stalls, so while one lookup is still
+// out no second one starts, and the refusal says only that Git failed.
+let lookupInFlight: Promise<boolean> | undefined
+
 async function lockStandsInGit(worktree: string, lockPath: string): Promise<boolean> {
+  if (lookupInFlight !== undefined) return false
+  const lookup = lockInGitDirectories(worktree, lockPath).catch(() => false)
+  lookupInFlight = lookup
+  void lookup.finally(() => {
+    if (lookupInFlight === lookup) lookupInFlight = undefined
+  })
   let timer: NodeJS.Timeout | undefined
   const deadline = new Promise<false>((resolveDeadline) => { timer = setTimeout(() => resolveDeadline(false), lockLookupMs) })
   try {
-    return await Promise.race([lockInGitDirectories(worktree, lockPath).catch(() => false), deadline])
+    return await Promise.race([lookup, deadline])
   } finally {
     clearTimeout(timer)
   }
@@ -131,7 +141,9 @@ async function lockStandsInGit(worktree: string, lockPath: string): Promise<bool
 async function lockInGitDirectories(worktree: string, lockPath: string): Promise<boolean> {
   if (!(await lstat(lockPath)).isFile()) return false
   const marker = resolve(worktree, ".git")
-  const markerStat = await lstat(marker)
+  // Followed: a .git that links to the Git directory (a symlink, or a
+  // junction on Windows) is that directory.
+  const markerStat = await stat(marker)
   let gitDirectory: string
   if (markerStat.isDirectory()) {
     gitDirectory = marker

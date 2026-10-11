@@ -659,9 +659,9 @@ export function Thread({
   const [sendError, setSendError] = useState("")
   // `arrivedAt` is the pending gates (ids and revisions) when the refusal
   // arrived. It is cleared by the first change to them that keeps the gate.
-  // `data` is the error's data as the daemon sent it; the card reads it by
-  // its schema, so a checkpoint refusal can name its cause.
-  const [approvalRefusal, setApprovalRefusal] = useState<{ approvalId: string, message: string, data?: unknown, arrivedAt?: string }>()
+  // `code` and `data` are the error as the daemon sent it; the card reads the
+  // data by its schema under its code, so a checkpoint refusal names its cause.
+  const [approvalRefusal, setApprovalRefusal] = useState<{ approvalId: string, message: string, code?: number, data?: unknown, arrivedAt?: string }>()
   const [resolvingApprovalId, setResolvingApprovalId] = useState<string | null>(null)
   const resolvingApproval = useRef<string | null>(null)
   // The gates pending in the latest snapshot, read when a refusal arrives to
@@ -677,7 +677,8 @@ export function Thread({
     if (!approvalRefusal || pendingApprovalsKey === approvalRefusal.arrivedAt) return
     if (pendingApprovalIds.current.has(approvalRefusal.approvalId)) {
       if (approvalRefusal.arrivedAt !== undefined) {
-        setApprovalRefusal({ approvalId: approvalRefusal.approvalId, message: approvalRefusal.message, data: approvalRefusal.data })
+        const { arrivedAt: _arrivedAt, ...settled } = approvalRefusal
+        setApprovalRefusal(settled)
       }
       return
     }
@@ -1164,7 +1165,7 @@ export function Thread({
       // with the composer's alerts.
       if (cause instanceof DaemonRpcError) {
         if (pendingApprovalIds.current.has(approval.id)) {
-          setApprovalRefusal({ approvalId: approval.id, message: cause.message, data: cause.data, arrivedAt: latestApprovalsKey.current })
+          setApprovalRefusal({ approvalId: approval.id, message: cause.message, code: cause.code, data: cause.data, arrivedAt: latestApprovalsKey.current })
         } else {
           setSendError(cause.message)
         }
@@ -1298,7 +1299,7 @@ export function Thread({
               <AlertDescription>{sessionTransferReceiptText(transferReceipt).detail}</AlertDescription>
             </Alert>
           ) : null}
-          {approval && !archiveReadOnly ? <ApprovalCard key={approval.id} deciding={resolvingApprovalId !== null} surface={surface} approval={approval} watching={watching} connected={connected} refusal={cardShowsRefusal && approvalRefusal ? { message: approvalRefusal.message, data: approvalRefusal.data } : undefined} connectionId={connectionId} plans={snapshot.workingPlans} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
+          {approval && !archiveReadOnly ? <ApprovalCard key={approval.id} deciding={resolvingApprovalId !== null} surface={surface} approval={approval} watching={watching} connected={connected} refusal={cardShowsRefusal && approvalRefusal ? { message: approvalRefusal.message, code: approvalRefusal.code, data: approvalRefusal.data } : undefined} connectionId={connectionId} plans={snapshot.workingPlans} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
         </div>
       </ScrollArea>
       {followPill ? (

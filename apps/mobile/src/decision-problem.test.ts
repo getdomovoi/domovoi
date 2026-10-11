@@ -83,5 +83,12 @@ describe("decisionProblem", () => {
         expect(decisionProblem(refused(data))).toBe(`The daemon refused: ${generic}. The gate is still waiting.`)
       }
     })
+
+    // Error data is not tied to a code on the wire: only the checkpoint
+    // refusal's own code makes the data a checkpoint refusal.
+    it("quotes the daemon when checkpoint data comes with another code", () => {
+      expect(decisionProblem(new DaemonError(generic, -32603, { kind, cause: "unknown" })))
+        .toBe(`The daemon refused: ${generic}. The gate is still waiting.`)
+    })
   })
 })

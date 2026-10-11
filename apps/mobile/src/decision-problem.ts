@@ -1,4 +1,4 @@
-import { approvalCheckpointRefusalSchema, type ApprovalCheckpointRefusal } from "@getdomovoi/protocol"
+import { approvalCheckpointErrorCode, approvalCheckpointRefusalSchema, type ApprovalCheckpointRefusal } from "@getdomovoi/protocol"
 
 import { DaemonError, DaemonNotSentError, DaemonUnconfirmedError } from "./lib/daemon"
 import { DaemonTimeoutError } from "./lib/request-timeout"
@@ -17,8 +17,9 @@ export function decisionProblem(cause: unknown): string {
     return `Not sent: ${lowerFirst(trimStop(cause.message))}. The gate is still waiting.`
   }
   if (cause instanceof DaemonError) {
-    const checkpoint = approvalCheckpointRefusalSchema.safeParse(cause.data)
-    if (checkpoint.success) return `The daemon refused: ${checkpointLine(checkpoint.data, cause.message)} The gate is still waiting.`
+    // Error data is not tied to a code on the wire, so both must say so.
+    const checkpoint = cause.code === approvalCheckpointErrorCode ? approvalCheckpointRefusalSchema.safeParse(cause.data) : undefined
+    if (checkpoint?.success === true) return `The daemon refused: ${checkpointLine(checkpoint.data, cause.message)} The gate is still waiting.`
     return daemonSaysStillWaiting.test(cause.message)
       ? `The daemon refused: ${cause.message.trim()}`
       : `The daemon refused: ${trimStop(cause.message)}. The gate is still waiting.`
