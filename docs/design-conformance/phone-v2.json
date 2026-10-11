@@ -884,7 +884,7 @@
     {
       "id": "watching.screen",
       "since": "2026-10-11",
-      "note": "task 23, Q45 A: the command the design draws in the thread block stays a known gap, and no field carries one. The daemon has no command to send: terminal.create takes none, the daemon spawns the machine's login shell ($SHELL, or COMSPEC on Windows) with no arguments, and the summary's shell is that process's name at spawn. Agent tool commands run inside the provider, never in a daemon terminal, so no thread item can name a terminal either, and B keeps its place after the artifact list. Desktop V2's Terminal tab draws no command apart from the stream, so the desktop dock is unchanged. This closes when agent commands run in daemon terminals"
+      "note": "task 23, Q45 A: the command the design draws in the thread block stays a known gap, and no field carries one. The daemon has no command to send: terminal.create takes none, the daemon spawns the shell its environment names ($SHELL, or COMSPEC on Windows, falling back to /bin/sh or powershell.exe) with no arguments, and the summary's shell is that process's name at spawn. Agent tool commands run inside the provider, never in a daemon terminal, so no thread item can name a terminal either, and B keeps its place after the artifact list. Desktop V2's Terminal tab draws no command apart from the stream, so the desktop dock is unchanged. This closes when agent commands run in daemon terminals"
     },
     {
       "id": "attach.sheet",
