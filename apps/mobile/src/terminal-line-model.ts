@@ -32,6 +32,16 @@ const tabWidth = 8
 
 type Cell = string | undefined
 
+// Blank cells that cursor moves and inserts may add past what was written,
+// across all the lines of one text: one record's worth. Without a bound, a
+// move of a thousand columns and one character, repeated, would draw a
+// thousand blanks for every few characters received. Once they are spent, a
+// move past what was written stops at its end and an insert pushes nothing
+// past it.
+const spareBlankCells = 65_536
+
+type SpareBlanks = { cells: number }
+
 function isBlankCell(cell: Cell): boolean {
   return cell === undefined || cell === blank
 }
@@ -47,6 +57,10 @@ class Line {
   column = 0
   // Every cell below this one is blank.
   blankBelow = 0
+  // The farthest the cursor has been on this line.
+  farthest = 0
+
+  constructor(readonly spare: SpareBlanks) {}
 
   get length(): number {
     const last = this.rows.length - 1
@@ -92,6 +106,7 @@ class Line {
     if (width === 2) this.set(this.column + 1, rightHalf)
     this.blankBelow = Math.min(this.blankBelow, this.column)
     this.column += width
+    this.farthest = Math.max(this.farthest, this.column)
   }
 
   // Blank one cell. Either half of a wide character takes the whole of it.
@@ -123,9 +138,18 @@ class Line {
   }
 
   // Text can run past the widest grid, as the phone does not wrap it into
-  // rows, so a move back from there is not pulled to the margin.
+  // rows, so a move back from there is not pulled to the margin. A move past
+  // what was written and anywhere the cursor has been spends spare blanks.
   moveTo(column: number): void {
-    this.column = Math.max(0, Math.min(column, Math.max(this.column, widestGrid - 1)))
+    let target = Math.max(0, Math.min(column, Math.max(this.column, widestGrid - 1)))
+    const reach = Math.max(this.length, this.farthest)
+    if (target > reach) {
+      const granted = Math.min(target - reach, this.spare.cells)
+      this.spare.cells -= granted
+      target = reach + granted
+    }
+    this.column = target
+    this.farthest = Math.max(this.farthest, target)
   }
 
   tab(): void {
@@ -215,9 +239,16 @@ class Line {
     if (this.get(rowEnd) === rightHalf) this.clear(rowEnd)
     const { row } = this.cursorRow()
     if (!row) return
+    const before = this.length
     if (inserted === 1) row.splice(this.column % widestGrid, 0, blank)
     else row.splice(this.column % widestGrid, 0, ...Array<string>(inserted).fill(blank))
     if (row.length > widestGrid) row.length = widestGrid
+    // A line made longer spends spare blanks; past them, what was pushed
+    // beyond the line's old end is lost.
+    const grown = this.length - before
+    const granted = Math.min(grown, this.spare.cells)
+    this.spare.cells -= granted
+    if (granted < grown) this.truncate(before + granted)
     this.trim()
   }
 
@@ -336,7 +367,8 @@ export type DrawnText = { lines: string[], lineStarts: number[] }
 export function drawnText(text: string): DrawnText {
   const lines: string[] = []
   const lineStarts: number[] = []
-  let line = new Line()
+  const spare: SpareBlanks = { cells: spareBlankCells }
+  let line = new Line(spare)
   const reader = new Reader()
   let index = 0
   for (const char of text) {
@@ -347,7 +379,7 @@ export function drawnText(text: string): DrawnText {
       if (char === "\n") {
         lines.push(line.drawn())
         lineStarts.push(index)
-        line = new Line()
+        line = new Line(spare)
       } else if (char === "\r") line.moveTo(0)
       else if (char === "\b") line.moveTo(line.column - 1)
       else if (char === "\t") line.tab()
@@ -379,28 +411,67 @@ function dispatch(line: Line, final: string, parameters: string): void {
 }
 
 // Where the next line starts after the first line break the terminal draws
-// within reach of from, reading the text from there as plain text.
+// within reach of from, reading the text from there as plain text. A line
+// break inside a control sequence starts a line too, and the text after it
+// is read from where the sequence ends.
 export function nextLineStart(text: string, from: number, reach: number): number | undefined {
   const reader = new Reader()
   let index = from
-  for (const char of text.slice(from, from + reach)) {
-    const action = reader.step(char, char.codePointAt(0) ?? 0, index)
+  let broken = false
+  while (index < text.length) {
+    const code = text.codePointAt(index) ?? 0
+    const char = text.slice(index, index + (code > 0xffff ? 2 : 1))
+    const action = reader.step(char, code, index)
+    const lineBreak = index
     index += char.length
-    if (char === "\n" && action === "execute" && reader.state === "ground") return index
+    if (code === 0x0a && action === "execute") {
+      if (lineBreak - from >= reach) return undefined
+      broken = true
+    }
+    if (broken && reader.state === "ground") return index
+    if (!broken && index - from >= reach) return undefined
   }
   return undefined
 }
 
+// How the reader stands between two pieces of output.
+export type ReaderState = State
+
+// What one piece of output draws, read on from where the last one left the
+// reader: the line breaks the terminal draws in it, whether it draws or moves
+// anything at all, and where it leaves the reader. A piece wholly inside a
+// payload draws nothing.
+export function readPiece(state: ReaderState, data: string): { state: ReaderState, lineBreaks: number, draws: boolean } {
+  const reader = new Reader()
+  if (state === "csi") reader.introduced(0x5b)
+  reader.state = state
+  let lineBreaks = 0
+  let draws = false
+  let index = 0
+  for (const char of data) {
+    const action = reader.step(char, char.codePointAt(0) ?? 0, index)
+    index += char.length
+    if (action === "print" || action === "dispatch") draws = true
+    else if (action === "execute" && (char === "\n" || char === "\r" || char === "\b" || char === "\t")) {
+      draws = true
+      if (char === "\n") lineBreaks += 1
+    }
+  }
+  return { state: reader.state, lineBreaks, draws }
+}
+
 // Where to cut the front of a text so that what is kept reads as the
 // terminal read it. The cut goes after the first line break the terminal
-// drew within lineBreakReach past the wanted cut; else at the first place
-// past it that is plain text, after any sequence it lands in. A sequence
-// still arriving there is kept whole from its start when that start is
-// within unfinishedReach; past that, the cut stays near the wanted one and
-// prefix puts a fresh reader in the state the reader was in at the place
-// it resumes, so the rest of the sequence still draws nothing. A control sequence whose start is cut is
-// dropped at its end, its parameters being lost. What is kept is prefix then
-// text from at, never longer than text from cut.
+// drew within lineBreakReach past the wanted cut, or, for a line break inside
+// a control sequence, where that sequence ends; else at the first place past
+// the wanted cut that is plain text, after any sequence it lands in. A
+// sequence still arriving there is kept whole from its start when that start
+// is within unfinishedReach; past that, the cut stays near the wanted one and
+// prefix puts a fresh reader in the state the reader was in at the place it
+// resumes, so the rest of the sequence still draws nothing. A control
+// sequence whose start is cut is dropped at its end, its parameters being
+// lost. What is kept is prefix then text from at, never longer than text
+// from cut.
 export function readableCut(
   text: string,
   cut: number,
@@ -414,16 +485,16 @@ export function readableCut(
   // characters, so the halves of one outside the basic plane stay together.
   const statesPastCut: (State | undefined)[] = []
   let index = 0
+  let broken = false
   for (const char of text) {
     const action = reader.step(char, char.codePointAt(0) ?? 0, index)
     const lineBreak = index
     index += char.length
-    if (char === "\n" && action === "execute" && reader.state === "ground" && lineBreak >= cut - 1 && index - cut <= lineBreakReach) {
-      return { at: index, prefix: "" }
-    }
+    if (char === "\n" && action === "execute" && lineBreak >= cut - 1 && index - cut <= lineBreakReach) broken = true
+    if (broken && reader.state === "ground") return { at: index, prefix: "" }
     if (index >= cut && index - cut <= longestReopening) statesPastCut[index - cut] = reader.state
     if (plainAt === undefined && index >= cut && reader.state === "ground") plainAt = index
-    if (plainAt !== undefined && index - cut > lineBreakReach) break
+    if (plainAt !== undefined && !broken && index - cut > lineBreakReach) break
   }
   if (plainAt !== undefined) return { at: plainAt, prefix: "" }
   if (cut - reader.start <= unfinishedReach) return { at: reader.start, prefix: "" }

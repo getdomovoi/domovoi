@@ -6,7 +6,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import type { TerminalNotification } from "./lib/daemon"
-import { drawnText, nextLineStart, readableCut, type DrawnText } from "./terminal-line-model"
+import { drawnText, nextLineStart, readableCut, readPiece, type DrawnText, type ReaderState } from "./terminal-line-model"
 
 // Phone v2 frame 04: a phone reads the claimant's shell and never types,
 // resizes or claims it. What the phone holds for one watched terminal is the
@@ -40,11 +40,16 @@ export type TerminalRecord = {
   // cut has passed that uncertain start, the text is drawn from its start.
   startsMidLine: boolean
   // Line breaks received live, counted as they arrive and never reduced by a
-  // cut, so what landed can be counted for the reader.
+  // cut, so what landed can be counted for the reader. Only line breaks the
+  // terminal draws count, not ones inside a payload.
   received: number
   // Pieces of output received live. A piece with no line break adds no line
-  // to count but can still wrap below the reader, so it is counted here.
+  // to count but can still wrap below the reader, so it is counted here. A
+  // piece that draws and moves nothing is not.
   pieces: number
+  // How the reader stands at the end of text, so the next piece is read on
+  // from there: a payload can start in one piece and end in the next.
+  readerState: ReaderState
   // The last time anything was heard for this terminal: the watch, then each
   // piece of output. The gap a dropped connection leaves starts here.
   lastHeardAt: string
@@ -78,6 +83,7 @@ export function watchFrom(result: TerminalWatchResult): TerminalRecord {
     startsMidLine: earlierOutputDropped,
     received: 0,
     pieces: 0,
+    readerState: readPiece("ground", buffer).state,
     lastHeardAt: watchedAt,
     confirmed: true,
   }
@@ -164,11 +170,13 @@ export function withNotification(record: TerminalRecord, notification: TerminalN
     }
   }
   const { data } = notification.params
+  const piece = readPiece(record.readerState, data)
   return bounded({
     ...record,
     text: record.text + data,
-    received: record.received + data.split("\n").length - 1,
-    pieces: record.pieces + 1,
+    received: record.received + piece.lineBreaks,
+    pieces: record.pieces + (piece.draws ? 1 : 0),
+    readerState: piece.state,
     lastHeardAt: now.toISOString(),
   })
 }

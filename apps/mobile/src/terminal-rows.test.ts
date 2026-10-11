@@ -256,6 +256,20 @@ describe("terminalLines and cursor movement within a line", () => {
     expect(erases / plain).toBeLessThan(10)
   })
 
+  // #808: cursor moves and inserts add blanks past what was written, a
+  // thousand for a few characters each time. Across one text they may add
+  // no more than one record's worth, so what is drawn stays near the size of
+  // what arrived.
+  it("bounds the blanks moves and inserts add across a text", () => {
+    const drawnSize = (text: string) => drawnText(text).lines.reduce((size, line) => size + line.length, 0)
+    const moves = "\u001b[1000Cx\n".repeat(7_281)
+    expect(drawnSize(moves)).toBeLessThanOrEqual(moves.length * 2 + 65_536)
+    const inserts = "x\r\u001b[999@\n".repeat(6_553)
+    expect(drawnSize(inserts)).toBeLessThanOrEqual(inserts.length * 2 + 65_536)
+    // Once spent, a move past what was written stops at its end.
+    expect(drawnText(`${"\u001b[1000Cx\n".repeat(66)}\u001b[5Cy\n`).lines.at(-2)).toBe("y")
+  })
+
   // An erase to the cursor erases the whole line before it, however long.
   it("erases a line longer than the widest grid to the cursor", () => {
     expect(terminalLines(`${"a".repeat(1_000)}b\u001b[1K\n`)).toEqual([""])
@@ -551,6 +565,17 @@ describe("terminalRows", () => {
     expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["done"])
   })
 
+  // #808: a line break inside a control sequence still starts a line, and
+  // the text after it is read once the sequence ends.
+  it("skips the first line to a line break made inside a control sequence", () => {
+    const record = watchFrom(watched({ buffer: "partial\u001b[31\nmred\nnext\n", earlierOutputDropped: true }))
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["red", "next"])
+    const head = `${"x".repeat(100)}abc\u001b[31\nmred`
+    const full = watchFrom(watched({ buffer: `${head}${"z".repeat(maximumTerminalReplayCharacters - head.length)}` }))
+    const cut = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "y".repeat(101) } }, at)
+    expect(terminalLines(cut.text)[0]?.startsWith("redz")).toBe(true)
+  })
+
   // The first line of a record the daemon cut is skipped to a line break
   // the terminal draws, not one inside a payload.
   it("does not skip to a line break inside a payload when the record starts mid-line", () => {
@@ -679,6 +704,23 @@ describe("terminalRows", () => {
 })
 
 describe("withNotification", () => {
+  // #808: a line break inside a payload is no line for the reader to catch
+  // up on, and a piece that draws nothing is no output below them.
+  it("counts only the line breaks and pieces the terminal draws", () => {
+    const output = (record: ReturnType<typeof watchFrom>, data: string) =>
+      withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data } }, at)
+    const payload = output(watchFrom(watched()), "\u001bPa\nb\u001b\\")
+    expect(payload.received).toBe(0)
+    expect(payload.pieces).toBe(0)
+    // A payload can start in one piece and end in the next.
+    const split = output(output(watchFrom(watched()), "\u001bPa"), "\nb\u001b\\")
+    expect(split.received).toBe(0)
+    expect(split.pieces).toBe(0)
+    const drawn = output(split, "done\n")
+    expect(drawn.received).toBe(1)
+    expect(drawn.pieces).toBe(1)
+  })
+
   it("moves the claimant line when the claim moves", () => {
     const record = withNotification(
       watchFrom(watched({ claimHeld: false })),
