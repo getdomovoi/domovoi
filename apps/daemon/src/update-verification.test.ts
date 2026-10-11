@@ -158,7 +158,7 @@ describe("daemon update verification", () => {
     const cancel = vi.fn()
     repo.fetcher.mockImplementationOnce(async () => new Response(new ReadableStream({ cancel })))
     const pending = expect(repo.check()).rejects.toMatchObject({ reason: "network" })
-    await vi.waitFor(() => expect(repo.fetcher).toHaveBeenCalled())
+    await vi.waitFor(() => expect(repo.fetcher).toHaveBeenCalled(), { timeout: 1_000 })
     await vi.advanceTimersByTimeAsync(updateInactivityTimeoutMs + 1)
     await pending
     expect(cancel).toHaveBeenCalledOnce()
@@ -173,7 +173,7 @@ describe("daemon update verification", () => {
       start(controller) { interval = setInterval(() => controller.enqueue(new Uint8Array([32])), 1_000) }, cancel,
     })))
     const pending = expect(repo.check()).rejects.toMatchObject({ reason: "network" })
-    await vi.waitFor(() => expect(repo.fetcher).toHaveBeenCalled())
+    await vi.waitFor(() => expect(repo.fetcher).toHaveBeenCalled(), { timeout: 1_000 })
     await vi.advanceTimersByTimeAsync(updateFetchTimeoutMs + 1)
     await pending
     expect(cancel).toHaveBeenCalledOnce()
