@@ -37,6 +37,7 @@ import { DaemonNotSentError, DaemonUnconfirmedError, watchTerminal } from "./lib
 import { DaemonTimeoutError } from "./lib/request-timeout"
 import { useDaemon } from "./lib/use-daemon"
 import { useDeviceIdentity } from "./lib/use-device-identity"
+import { useModelImages } from "./lib/use-model-images"
 import { connectedMachineActivity } from "./machine-activity"
 import { launchPhases } from "./launch-state"
 import * as ImagePicker from "expo-image-picker"
@@ -234,6 +235,8 @@ export function App() {
   // Compared with a gate's origin, so the approval screen can say this phone
   // started the turn.
   const deviceId = useDeviceIdentity(call, status, connectTo?.token)
+  // Frames 13b and 14b: whether the open session's model takes images.
+  const openModelImages = useModelImages(call, status, client, snapshot?.sessions.find((session) => session.id === openSessionId)?.runtime)
   const mutate = useCallback(
     <M extends RpcMethod>(method: M, params: RpcParams<M>) => mutationCall(clientAccess, call, method, params),
     [call, clientAccess],
@@ -1094,6 +1097,8 @@ export function App() {
             onPickLibrary={() => void pickImage("library")}
             onTakePhoto={() => void pickImage("camera")}
             onRemoveAttachment={(index) => setAttachments((current) => current.filter((_item, at) => at !== index))}
+            onRemoveAttachments={() => setAttachments([])}
+            modelImages={openModelImages}
             starting={starting}
             startProblem={startProblem}
             startRefusal={startRefusal}

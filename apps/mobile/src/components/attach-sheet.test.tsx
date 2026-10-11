@@ -40,6 +40,43 @@ describe("AttachSheet", () => {
     expect(props.onTakePhoto).toHaveBeenCalledTimes(1)
   })
 
+  // Frame 13: the model line says what the session's model takes, as its
+  // harness reports, and both image sources stay open.
+  it("names a model that takes images and keeps both sources open", async () => {
+    const props = await draw({ images: { model: "claude-sonnet-4.6", imageInput: true } })
+
+    expect(screen.getByText("claude-sonnet-4.6")).toBeOnTheScreen()
+    expect(screen.getByText("takes image input, as its harness reports")).toBeOnTheScreen()
+    expect(screen.queryByText("Locked for this model.")).toBeNull()
+    await fireEvent.press(screen.getByRole("button", { name: /Take a photo/ }))
+    expect(props.onTakePhoto).toHaveBeenCalledTimes(1)
+  })
+
+  // Frame 13b (guard A): a model whose harness reports no image input locks
+  // both image sources, with the refusal code and the machine that refuses.
+  it("locks both image sources for a model that takes no images", async () => {
+    const props = await draw({ images: { model: "qwen3-coder-72b", imageInput: false } })
+
+    expect(screen.getByText("takes no image input, as its harness reports")).toBeOnTheScreen()
+    expect(screen.getAllByText("Locked for this model.")).toHaveLength(2)
+    expect(screen.getAllByText("refused by mac-mini-m4 · attach.image.model_no_input")).toHaveLength(2)
+    expect(screen.queryByRole("button", { name: /Photo or screenshot/ })).toBeNull()
+    expect(screen.queryByRole("button", { name: /Take a photo/ })).toBeNull()
+    await fireEvent.press(screen.getByText("Take a photo"))
+    expect(props.onTakePhoto).not.toHaveBeenCalled()
+    expect(props.onPickLibrary).not.toHaveBeenCalled()
+  })
+
+  // Not knowing is not no: the sources stay open and the line says it is not
+  // known. The daemon still refuses a send the model cannot take.
+  it("keeps the sources open when the model's image input is not known", async () => {
+    await draw({ images: { model: "qwen3-coder-72b", imageInput: undefined } })
+
+    expect(screen.getByText("image input not known")).toBeOnTheScreen()
+    expect(screen.queryByText("Locked for this model.")).toBeNull()
+    expect(screen.getByRole("button", { name: /Photo or screenshot/ })).toBeOnTheScreen()
+  })
+
   it("shows a refusal where the person is looking", async () => {
     await draw({ problem: "IMG_0002.heic is not a PNG or JPEG. Only those two are sent." })
     expect(screen.getByText("IMG_0002.heic is not a PNG or JPEG. Only those two are sent.")).toBeOnTheScreen()

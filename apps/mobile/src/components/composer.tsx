@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Pressable, TextInput, View } from "react-native"
 
-import type { Attachment } from "../attachments"
+import type { Attachment, ModelImages } from "../attachments"
 import { cn } from "../lib/cn"
 import type { SendReadiness } from "../session-detail"
 import { useTheme } from "../theme/theme-provider"
@@ -25,6 +25,8 @@ export function Composer({
   onOpenPlan,
   onOpenAttach,
   onRemoveAttachment,
+  onRemoveAttachments,
+  images,
   onFocusChange,
   bottomInset,
   onFootprint,
@@ -44,6 +46,10 @@ export function Composer({
   onOpenPlan: () => void
   onOpenAttach: () => void
   onRemoveAttachment: (index: number) => void
+  // Frame 14b's Remove N images: drops every queued image at once.
+  onRemoveAttachments: () => void
+  // The session's model and what its harness reports about image input.
+  images?: ModelImages | undefined
   onFocusChange: (focused: boolean) => void
   bottomInset?: number | undefined
   onFootprint?: ((footprint: number) => void) | undefined
@@ -53,7 +59,12 @@ export function Composer({
   const blocked = !readiness.can
   const expanded = focused || attachments.length > 0 || Boolean(problem) || blocked
   const wordless = attachments.length > 0 && draft.trim().length === 0
-  const canSend = readiness.can && !sending && draft.trim().length > 0
+  // Frame 14b: queued images a model reported to take none lock send before
+  // it is pressed. Not knowing does not lock it; the line says so instead.
+  const imagesBlocked = attachments.length > 0 && images?.imageInput === false
+  const imagesUnknown = attachments.length > 0 && images !== undefined && images.imageInput === undefined
+  const imageCount = attachments.length === 1 ? "1 image" : `${attachments.length} images`
+  const canSend = readiness.can && !sending && draft.trim().length > 0 && !imagesBlocked
   const focus = (next: boolean) => {
     setFocused(next)
     onFocusChange(next)
@@ -103,6 +114,27 @@ export function Composer({
           ))}
           {attachmentSummary ? <Text variant="note">{attachmentSummary}</Text> : null}
           {wordless ? <Text variant="note" className="text-warning">Say what the image is for; a turn needs words.</Text> : null}
+          {imagesBlocked && images ? (
+            <View className="gap-2 rounded-lg border border-warn-border bg-warn-bg px-2.5 py-2">
+              <Text className="text-[11.5px] leading-[17px] text-warn-fg">
+                {`${imageCount} cannot go to `}
+                <Text className="font-mono text-[11px]">{images.model}</Text>
+                {attachments.length === 1 ? ". Remove it or pick another model." : ". Remove them or pick another model."}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${imageCount}`}
+                onPress={onRemoveAttachments}
+                disabled={sending}
+                className="min-h-[36px] items-center justify-center self-start rounded-full border border-warn-border px-3.5 active:opacity-70"
+              >
+                <Text className="font-sans-medium text-[12px] text-warn-fg">{`Remove ${imageCount}`}</Text>
+              </Pressable>
+            </View>
+          ) : null}
+          {imagesUnknown && images ? (
+            <Text variant="note">{`Domovoi does not know whether ${images.model} takes image input. If it does not, the machine refuses the send and nothing is sent.`}</Text>
+          ) : null}
         </View>
       ) : null}
 

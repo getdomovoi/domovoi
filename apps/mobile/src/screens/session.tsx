@@ -22,7 +22,7 @@ import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
 import type { ArtifactRow } from "../artifact-rows"
 import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
-import type { Attachment } from "../attachments"
+import type { Attachment, ModelImages } from "../attachments"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
 import type { PhoneRefusal } from "../session-refusal"
 import { watchedSummary, type TerminalWatch } from "../terminal-rows"
@@ -572,6 +572,8 @@ export function SessionScreen({
   onPickLibrary,
   onTakePhoto,
   onRemoveAttachment,
+  onRemoveAttachments,
+  modelImages,
   starting,
   startProblem,
   startRefusal,
@@ -623,6 +625,11 @@ export function SessionScreen({
   onPickLibrary: () => void
   onTakePhoto: () => void
   onRemoveAttachment: (index: number) => void
+  onRemoveAttachments: () => void
+  // Frames 13b and 14b: the session's model and whether its harness reports
+  // image input. A model reported to take none locks the image sources and
+  // the send of queued images; not knowing locks nothing.
+  modelImages?: ModelImages | undefined
   // Start another session like this one: same machine, repository, provider
   // and model, with words from the person and a mode, Plan by default.
   starting: boolean
@@ -871,12 +878,15 @@ export function SessionScreen({
         bottomInset={composerBottomInset}
         onOpenAttach={() => setAttachOpen(true)}
         onRemoveAttachment={onRemoveAttachment}
+        onRemoveAttachments={onRemoveAttachments}
+        images={modelImages}
         onFootprint={setComposerFootprint}
       /> : null}
       <AttachSheet
         open={attachOpen}
         machine={machine}
         problem={attachProblem}
+        images={modelImages}
         onPickLibrary={() => { setAttachOpen(false); onPickLibrary() }}
         onTakePhoto={() => { setAttachOpen(false); onTakePhoto() }}
         onClose={() => setAttachOpen(false)}

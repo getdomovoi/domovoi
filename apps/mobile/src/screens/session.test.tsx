@@ -53,6 +53,7 @@ async function draw(overrides: Partial<Parameters<typeof SessionScreen>[0]> = {}
     onPickLibrary: jest.fn<() => void>(),
     onTakePhoto: jest.fn<() => void>(),
     onRemoveAttachment: jest.fn<(index: number) => void>(),
+    onRemoveAttachments: jest.fn<() => void>(),
     starting: false,
     startProblem: "",
     onStartLike: jest.fn<(prompt: string, mode: "ask" | "plan" | "build") => void>(),
@@ -166,6 +167,32 @@ describe("SessionScreen pinned plan", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Save step" }))
 
     expect(props.onEditStep).toHaveBeenCalledWith(target.id, "Cover expiry in replay.spec.ts")
+  })
+})
+
+// Phone v2 frames 13b and 14b on the session screen: the model the session
+// uses reaches both the attach sheet and the composer.
+describe("SessionScreen images and the model", () => {
+  const photo = { name: "before.png", mimeType: "image/png" as const, width: 800, height: 600, data: "", bytes: 1_400_000 }
+
+  it("locks the image sources and the send for a model that takes no images", async () => {
+    const detail = sessionDetail(workspace(), "session-billing")
+    if (!detail) throw new Error("fixture needs the billing session")
+    const { props } = await draw({
+      detail: { ...detail, sending: { can: true, hint: undefined } },
+      draft: "Before",
+      attachments: [photo],
+      attachmentSummary: "x",
+      modelImages: { model: "qwen3-coder-72b", imageInput: false },
+    })
+
+    expect(screen.getByText("1 image cannot go to qwen3-coder-72b. Remove it or pick another model.")).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "Remove 1 image" }))
+    expect(props.onRemoveAttachments).toHaveBeenCalledTimes(1)
+
+    await fireEvent.press(screen.getByRole("button", { name: "Attach an image" }))
+    expect(screen.getByText("takes no image input, as its harness reports")).toBeOnTheScreen()
+    expect(screen.getAllByText("Locked for this model.")).toHaveLength(2)
   })
 })
 
