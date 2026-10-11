@@ -2197,8 +2197,11 @@ on `main` (see its entry). Open M1 items, read from this file on 2026-10-11: `S1
 real-hardware runs, a Windows sign-out, sign-in and reboot and a Linux logout and reboot, which
 only the maintainer can do (ruling Q4); `S3.2`'s web app over the tailnet, slices 4 to 7, with
 slice 4 in progress; `S3.10`'s remaining desktop entries, 35 partial, 3 missing and 10 blocked
-at 1d797596; and frame 04e under `S3.3`, blocked on an approval that names the command it
-follows. The M1 definition of done also waits on its person-only bullets, walked with
+at 1d797596; frame 04e under `S3.3`, blocked until an approval names the command it
+follows; and the Phase 3 client items that carry no dated state yet: `S3.7` accessibility,
+`S3.8` offline and reconnect, and the cross-cutting states half of `S3.6`, whose Cloud and Team
+surfaces wait on M2 and M4. The 2026-09-22 and 2026-10-01 lists above left these three out. The
+M1 definition of done also waits on its person-only bullets, walked with
 [the M1 acceptance walk](docs/m1-acceptance-walk.md) on the packaged build, including the
 install and recovery documents on Linux, macOS and Windows.
 
