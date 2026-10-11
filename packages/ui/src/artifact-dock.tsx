@@ -91,7 +91,7 @@ import {
 import { PreviewFrame } from "./preview-frame"
 import { PreviewDraftCard, PreviewFullscreen } from "./preview-fullscreen"
 import { usePreviewGrant } from "./preview-grant"
-import { renderedPreviewsForActiveSession } from "./preview-renders"
+import { previewRenderName, renderedPreviewsForActiveSession } from "./preview-renders"
 import { PlanSheet, planSheetArtifacts } from "./working-plan"
 import { RulesPanel } from "./rules-panel.js"
 import { checkpointBlockedReason } from "./checkpoint-actions.js"
@@ -294,7 +294,15 @@ export function ArtifactDock({
   )
   const renderedPreviews = useMemo(() => renderedPreviewsForActiveSession(snapshot), [snapshot])
   const preview = previewVariants.find((artifact) => artifact.id === selectedPreviewId) ?? previewVariants.at(-1)
-  const buildBasis = previewVariants.find((artifact) => artifact.id === resolvedBuildBasisId) ?? previewVariants.at(-1)
+  // The basis may sit in another render than the one on screen, now that the
+  // list opens any of them; it is named there, never swapped for a variant of
+  // the render on screen.
+  const buildBasis = snapshot.artifacts.find((artifact) =>
+    artifact.id === resolvedBuildBasisId
+    && artifact.sessionId === snapshot.activeSessionId
+    && artifact.type === "preview",
+  ) ?? previewVariants.at(-1)
+  const buildBasisElsewhere = buildBasis !== undefined && !previewVariants.some((artifact) => artifact.id === buildBasis.id)
   const annotations = useMemo(() => annotationsForActiveSession(snapshot), [snapshot])
   // Comments belong to the artifact they were left on. The preview shows the
   // selected variant's, another variant's show when it is selected, the plan
@@ -697,7 +705,7 @@ export function ArtifactDock({
     <div className="flex min-h-[46px] flex-none flex-wrap items-center gap-3 border-t px-[13px] py-2">
       <PreviewVariantChips variants={previewVariants} selectedArtifactId={preview.id} onSelect={setSelectedPreviewId} />
       <span className="font-machine text-[10.5px] text-muted-foreground">Viewing · {preview.variant?.label ?? preview.title}</span>
-      <span className="font-machine text-[10.5px] text-faint">Build basis · {buildBasis?.variant?.label ?? buildBasis?.title}</span>
+      <span className="font-machine text-[10.5px] text-faint">Build basis · {buildBasis?.variant?.label ?? buildBasis?.title}{buildBasis && buildBasisElsewhere ? ` in ${previewRenderName(buildBasis)}` : ""}</span>
       <span className="flex-1" />
       {preview.id === buildBasis?.id ? <Badge variant="success">Chosen build basis</Badge> : (
         <Button size="sm" onClick={() => {

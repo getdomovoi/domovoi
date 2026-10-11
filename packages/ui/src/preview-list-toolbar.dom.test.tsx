@@ -64,13 +64,15 @@ function renderDock(
   onCreateAnnotation = vi.fn(async () => {}),
   dockSnapshot: WorkspaceSnapshot = snapshot,
   captureAnnotation?: Parameters<typeof ArtifactDock>[0]["captureAnnotation"],
+  { defaultTab = "preview", buildBasisId }: { defaultTab?: "changes" | "preview", buildBasisId?: string } = {},
 ) {
   render(
     <ArtifactDock
       {...(captureAnnotation ? { captureAnnotation } : {})}
+      {...(buildBasisId ? { buildBasisId } : {})}
       snapshot={dockSnapshot}
       onCollapse={vi.fn()}
-      defaultTab="preview"
+      defaultTab={defaultTab}
       rpcUrl="ws://127.0.0.1:47831/rpc"
       authorizeArtifact={authorizeArtifact}
       connected
@@ -79,7 +81,7 @@ function renderDock(
       onSetAnnotationStatus={vi.fn()}
       onCreateAnnotation={onCreateAnnotation}
       onLoadSessionHistory={vi.fn()}
-      onLoadSessionEvidence={vi.fn()}
+      onLoadSessionEvidence={() => new Promise(() => {})}
       onRevertSessionFile={vi.fn()}
     />,
   )
@@ -226,6 +228,72 @@ it("says why a frame cannot load when the grant lapsed and renewing it keeps fai
   expect(within(surface).queryByTitle("Replay table B fullscreen")).toBeNull()
   // The page already on screen in the dock stays.
   expect(screen.getByTitle("Replay table B", { exact: true }).getAttribute("src")).toContain("signature=grant-1")
+})
+
+it("asks for no grant while the dock opens on another tab, and retries a first grant that failed", async () => {
+  const user = userEvent.setup()
+  const granting = grantingAuthorize()
+  let failed = false
+  const authorize = vi.fn(async (input: AuthorizeInput): Promise<ArtifactAccess> => {
+    if (input.bridgeChannel && !failed) {
+      failed = true
+      throw new Error("daemon busy")
+    }
+    return granting(input)
+  })
+  // The desktop opens the dock on Changes.
+  renderDock(authorize as unknown as ReturnType<typeof grantingAuthorize>, undefined, snapshot, undefined, { defaultTab: "changes" })
+  await new Promise((resolve) => setTimeout(resolve, 200))
+  expect(authorize.mock.calls.filter(([input]) => input.bridgeChannel)).toHaveLength(0)
+
+  await user.click(screen.getByRole("tab", { name: "Preview" }))
+  await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"), { timeout: 3_000 })
+  expect(failed).toBe(true)
+})
+
+it("asks again at once when a preview whose renewals were failing is shown again", async () => {
+  const user = userEvent.setup()
+  const granting = grantingAuthorize(6)
+  let daemonUp = true
+  const authorize = vi.fn(async (input: AuthorizeInput): Promise<ArtifactAccess> => {
+    if (input.bridgeChannel && granting.mock.calls.length > 0 && !daemonUp) throw new Error("daemon busy")
+    return granting(input)
+  })
+  renderDock(authorize as unknown as ReturnType<typeof grantingAuthorize>)
+  await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"))
+  daemonUp = false
+  const bridged = () => authorize.mock.calls.filter(([input]) => input.bridgeChannel).length
+  // Renewal at 1 s fails, the retry 1 s later fails: the next is 2 s out.
+  await waitFor(() => expect(bridged()).toBe(3), { timeout: 4_000 })
+
+  await user.click(screen.getByRole("tab", { name: "Rules" }))
+  daemonUp = true
+  await user.click(screen.getByRole("tab", { name: "Preview" }))
+  await waitFor(() => expect(bridged()).toBe(4), { timeout: 800 })
+  await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-2"))
+}, 10_000)
+
+it("names the build basis from another render instead of a variant of the one on screen", async () => {
+  const user = userEvent.setup()
+  const hero: Artifact[] = ["a", "b"].map((id, index) => ({
+    id: `hero-${id}`,
+    sessionId,
+    title: `Hero ${id.toUpperCase()}`,
+    type: "preview",
+    revision: 1,
+    mimeType: "text/html",
+    path: `design-studio/hero/variant-${id}.html`,
+    variant: { groupId: "design-studio/hero", id, label: `Variant ${id.toUpperCase()}`, order: index },
+  }))
+  renderDock(grantingAuthorize(), undefined, { ...snapshot, artifacts: [...artifacts, ...hero] }, undefined, { buildBasisId: "replay-a" })
+
+  await user.click(within(screen.getByRole("navigation", { name: "Rendered this session" })).getByRole("button", { name: /^replay/u }))
+  expect(screen.getByText("Build basis · Variant A")).toBeTruthy()
+
+  await user.click(within(screen.getByRole("navigation", { name: "Rendered this session" })).getByRole("button", { name: /^hero/u }))
+  expect(screen.getByText("Build basis · Variant A in replay")).toBeTruthy()
+  expect(screen.queryByText("Chosen build basis")).toBeNull()
+  expect(screen.getByRole("button", { name: "Use Variant A as build basis" })).toBeTruthy()
 })
 
 it("signs no grants while the preview is hidden and loads a fresh one when it shows again", async () => {

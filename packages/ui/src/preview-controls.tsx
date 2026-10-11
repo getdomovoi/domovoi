@@ -215,19 +215,20 @@ export function PreviewRenderedList({
       {renders.map((render) => {
         const selected = selectedArtifactId !== undefined && render.artifactIds.includes(selectedArtifactId)
         return (
-          <button
+          <Button
             key={render.key}
-            type="button"
+            variant="ghost"
             aria-current={selected ? "true" : undefined}
             className={cn(
-              "flex min-h-11 w-full flex-col items-start gap-[3px] rounded-[calc(var(--radius)-3px)] px-[11px] py-[9px] text-left hover:bg-accent",
+              "h-auto min-h-11 w-full flex-col items-start justify-start gap-[3px] rounded-[calc(var(--radius)-3px)] px-[11px] py-[9px] text-left font-normal hover:bg-accent",
               selected && "bg-accent",
             )}
-            onClick={() => onPick(render.artifactId)}
+            // Picking the render on screen keeps the variant being viewed.
+            onClick={() => { if (!selected) onPick(render.artifactId) }}
           >
             <span className={cn("w-full truncate text-[12px]", selected ? "text-foreground" : "text-strong")}>{render.label}</span>
             <span className="w-full truncate font-machine text-mono-xs text-faint">{render.meta}</span>
-          </button>
+          </Button>
         )
       })}
     </nav>

@@ -15,6 +15,16 @@ function previewDirectory(path: string | undefined): string | undefined {
   return slash > 0 ? normal.slice(0, slash) : undefined
 }
 
+// The name a render goes by in RENDERED THIS SESSION: a variant group's (the
+// last part of its id, which the watcher sets to the variants' directory), or
+// the render's own title. A variant's title names one variant (the watcher
+// titles a file by its name), not the group.
+export function previewRenderName(artifact: Pick<Artifact, "title" | "variant">): string {
+  if (!artifact.variant) return artifact.title
+  const { groupId } = artifact.variant
+  return groupId.split("/").findLast((part) => part.length > 0) ?? groupId
+}
+
 function joinMeta(...parts: (string | undefined)[]): string {
   return parts.filter((part) => part !== undefined).join(" · ")
 }
@@ -62,16 +72,12 @@ export function renderedPreviewsForActiveSession(snapshot: WorkspaceSnapshot): R
     const members = [...groups.get(row.key.slice("group:".length))!].sort((left, right) =>
       (left.variant?.order ?? 0) - (right.variant?.order ?? 0) || left.id.localeCompare(right.id))
     const first = members[0]!
-    const groupId = first.variant!.groupId
-    // A variant's title names one variant (the watcher titles a file by its
-    // name), so the row is named for the group: the last part of its id,
-    // which the watcher sets to the variants' directory. The meta names the
-    // directory that holds the group.
+    // The meta names the directory that holds the group.
     return {
       ...row,
       artifactId: first.id,
       artifactIds: members.map((artifact) => artifact.id),
-      label: groupId.split("/").findLast((part) => part.length > 0) ?? groupId,
+      label: previewRenderName(first),
       meta: joinMeta(
         previewDirectory(previewDirectory(first.path)),
         members.length === 1 ? "1 variant" : `${members.length} variants`,
