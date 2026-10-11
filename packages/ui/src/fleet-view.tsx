@@ -138,7 +138,6 @@ const migrationNote =
 // The handoff's Fleet idioms: eyebrow labels at 9px and .1em in --faint, values
 // under them in the machine face at 11.5px.
 const eyebrow = "text-eyebrow text-faint uppercase"
-const panelEyebrow = "text-[9.5px] tracking-[.1em] text-faint uppercase"
 const monoValue = "font-machine text-[11.5px]"
 
 // The handoff's secondary control: a bordered ghost, 7px 11px, 11px in
@@ -212,6 +211,16 @@ function kindWord(binding: DeviceCredentialBinding): string {
 // The word for the thing a person holds, in a sentence: "that phone", "that browser".
 function heldWord(binding: DeviceCredentialBinding): string {
   return binding.kind === "client" ? clientWord[binding.client].toLowerCase() : "device"
+}
+
+// Q378 A: a person's client is unpaired; a machine binding, and a legacy
+// credential that is bound to nothing, is revoked.
+function removalWord(binding: DeviceCredentialBinding): "Unpair" | "Revoke" {
+  return binding.kind === "client" ? "Unpair" : "Revoke"
+}
+
+function removedWord(binding: DeviceCredentialBinding): "unpaired" | "revoked" {
+  return binding.kind === "client" ? "unpaired" : "revoked"
 }
 
 // The one sentence an operator needs before the confirmation opens, not after.
@@ -609,11 +618,13 @@ function StatusChip({ tone, children }: { tone: "warning" | "destructive"; child
   )
 }
 
-const headCell = `border-b py-2 pr-3 text-left align-bottom font-normal ${eyebrow}`
+const headCell = `py-2 pr-3 text-left align-bottom font-normal ${eyebrow}`
 
+// The Desktop V2 frame draws the rows in one card with no column header row;
+// the column names stay for a screen reader.
 function DeviceTableHead() {
   return (
-    <thead>
+    <thead className="sr-only">
       <tr>
         <th scope="col" className={`${headCell} w-[14%]`}>Kind</th>
         <th scope="col" className={headCell}>Device</th>
@@ -628,32 +639,33 @@ function DeviceTableHead() {
 function LoadingRow({ wide }: { wide: boolean }) {
   return (
     <tr aria-hidden="true">
-      <td className="border-b py-2.5 pr-3 align-top">
+      <td className={`${rowCell} pr-3 pl-[15px] align-top`}>
         <span className="block h-3 w-16 rounded-sm bg-muted" />
         <span className="mt-1.5 block h-3 w-24 rounded-sm bg-muted/60" />
       </td>
-      <td className="border-b py-2.5 pr-3 align-top">
+      <td className={`${rowCell} pr-3 align-top`}>
         <span className={`block h-3 rounded-sm bg-muted ${wide ? "w-56" : "w-32"}`} />
       </td>
-      <td className="border-b py-2.5 pr-3 align-top">
+      <td className={`${rowCell} pr-3 align-top`}>
         <span className="block h-3 w-20 rounded-sm bg-muted/60" />
       </td>
-      <td className="border-b py-2.5 pr-3 align-top">
+      <td className={`${rowCell} pr-3 align-top`}>
         <span className="block h-3 w-20 rounded-sm bg-muted/60" />
       </td>
-      <td className="border-b py-2.5 align-top">
+      <td className={`${rowCell} pr-[15px] align-top`}>
         <span className="block h-8 w-40 rounded-sm bg-muted/60" />
       </td>
     </tr>
   )
 }
 
-const rowCell = "border-b py-2.5"
+// Rows of one card, each set off by a rule above it, 15px in from the card.
+const rowCell = "border-t py-2.5"
 
 function KindCell({ binding, dimmed }: { binding: DeviceCredentialBinding; dimmed: boolean }) {
   const Icon = kindIcon(binding)
   return (
-    <td className={`${rowCell} pr-3 align-top ${dimmed ? "opacity-55" : ""}`}>
+    <td className={`${rowCell} pr-3 pl-[15px] align-top ${dimmed ? "opacity-55" : ""}`}>
       <span className="flex items-center gap-1.5 leading-none">
         <Icon aria-hidden="true" className="size-4 text-muted-foreground" />
         <span className="text-[12px] font-medium text-foreground">{kindWord(binding)}</span>
@@ -785,7 +797,7 @@ function LabelCell({
       )}
       {revoked && !revokedByUpgrade ? (
         <span className="mt-2 block">
-          <StatusChip tone="destructive">Revoked</StatusChip>
+          <StatusChip tone="destructive">{device.binding.kind === "client" ? "Unpaired" : "Revoked"}</StatusChip>
         </span>
       ) : null}
       {revokedByUpgrade ? (
@@ -852,9 +864,9 @@ function DeviceRow({
         className={`${rowCell} pr-3 align-top ${monoValue} text-muted-foreground`}
         title={revoked ? device.revokedAt : device.lastSeenAt}
       >
-        {revoked ? `revoked ${when(device.revokedAt)}` : when(device.lastSeenAt)}
+        {revoked ? `${removedWord(device.binding)} ${when(device.revokedAt)}` : when(device.lastSeenAt)}
       </td>
-      <td className={`${rowCell} align-top`}>
+      <td className={`${rowCell} pr-[15px] align-top`}>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
@@ -870,36 +882,20 @@ function DeviceRow({
             Rotate
           </Button>
           <span className="flex-1" />
-          {revoked ? (
-            <Button
-              variant="ghost"
-              className={destructiveControl}
-              disabled
-              aria-label={`Revoke ${device.label}`}
-            >
-              Revoke
-            </Button>
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  className={destructiveControl}
-                  disabled={disabled}
-                  aria-label={`Revoke ${device.label}`}
-                  onClick={onRevoke}
-                >
-                  Revoke
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="left" className="max-w-[38ch] text-[11.5px] leading-relaxed">
-                {revokeConsequence(device.binding)}
-              </TooltipContent>
-            </Tooltip>
-          )}
+          <Button
+            variant="ghost"
+            className={destructiveControl}
+            disabled={disabled || revoked}
+            aria-label={`${removalWord(device.binding)} ${device.label}`}
+            {...(revoked ? {} : { onClick: onRevoke })}
+          >
+            {removalWord(device.binding)}
+          </Button>
         </div>
+        {/* The Desktop V2 frame draws the consequence as a standing line
+            under each row, read before the confirmation opens. */}
         {revoked ? null : (
-          <p className={`${coarseFallback} mt-2 max-w-[38ch] text-[11px] leading-relaxed text-muted-foreground`}>
+          <p className="mt-2 max-w-[38ch] text-[11px] leading-relaxed text-muted-foreground">
             {revokeConsequence(device.binding)}
           </p>
         )}
@@ -929,25 +925,24 @@ function CredentialPanel({ token }: { token: string }) {
   }
 
   return (
-    <div className="mt-3 rounded-xl border border-border bg-accent px-[15px] py-[14px]">
-      <div className={panelEyebrow}>New credential, shown once</div>
-      <div className="mt-2.5 flex flex-wrap items-center gap-3">
+    <div className="mt-2.5">
+      <div className="flex flex-wrap items-center gap-2.5">
         <span
-          className={`flex-1 font-machine text-[15px] tracking-[.1em] ${
-            revealed ? "break-all text-primary" : "text-faint"
+          className={`min-w-0 flex-1 rounded-sm bg-code px-3 py-2.5 font-machine text-[11.5px] text-info-foreground ${
+            revealed ? "break-all" : ""
           }`}
         >
           {revealed ? token : <span aria-hidden="true">{maskedRun}</span>}
           {revealed ? null : <span className="sr-only">Credential hidden</span>}
         </span>
         <div className="flex items-center gap-2">
-          <Button className={primaryControl} onClick={() => void copy()}>
+          <Button className={`${primaryControl} bg-info-foreground text-info-background hover:bg-info-foreground/90`} onClick={() => void copy()}>
             {copied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
             {copied ? "Copied" : "Copy once"}
           </Button>
           <Button
             variant="outline"
-            className={`${secondaryControl} px-[9px]`}
+            className={`${secondaryControl} border-info-border px-[9px] text-info-dim`}
             aria-pressed={revealed}
             aria-label={revealed ? "Hide the credential" : "Show the credential"}
             onClick={() => setRevealed(!revealed)}
@@ -956,7 +951,7 @@ function CredentialPanel({ token }: { token: string }) {
           </Button>
         </div>
       </div>
-      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+      <p className="mt-2 text-[11px] leading-relaxed text-info-dim">
         {copyFailed
           ? "This browser refused the clipboard. Reveal it and copy it by hand."
           : copied
@@ -969,18 +964,21 @@ function CredentialPanel({ token }: { token: string }) {
 
 // The receipt is one live region, so a rotation announces itself and a copy
 // confirmation is announced through the same region rather than a nested one.
+// The Desktop V2 frame draws it info-tinted under its row, led by what
+// Domovoi keeps (the daemon stores a sha256 digest of the credential).
 function RotationReceipt({ device, token, onDone }: { device: PairedDeviceSummary; token: string; onDone: () => void }) {
   return (
     <tr>
-      <td colSpan={5} className="border-b py-2.5">
-        <div role="status" className="rounded-xl border border-border bg-card px-[15px] py-[14px]">
-          <div className="text-[13.5px] font-medium">New credential for {device.label}</div>
-          <p className="mt-1.5 max-w-[72ch] text-[11.5px] leading-[1.6] text-muted-foreground">
+      <td colSpan={5} className="p-0">
+        <div role="status" className="border-t border-info-border bg-info-background px-[15px] py-3 text-info-foreground">
+          <div className="text-[12.5px] font-medium">New credential for {device.label}</div>
+          <p className="mt-1 max-w-[72ch] text-[12px] leading-[1.55]">Shown once. Domovoi keeps a digest, not the secret.</p>
+          <p className="mt-1 max-w-[72ch] text-[11.5px] leading-[1.55] text-info-dim">
             {rotationInstruction(device.binding)}
           </p>
           <CredentialPanel token={token} />
-          <div className="mt-3 flex justify-end">
-            <Button variant="outline" size="sm" onClick={onDone}>Done</Button>
+          <div className="mt-2.5 flex justify-end">
+            <Button variant="outline" size="sm" className="border-info-border bg-transparent text-info-dim" onClick={onDone}>Done</Button>
           </div>
         </div>
       </td>
@@ -1001,13 +999,14 @@ function RevokeConfirmation({
 }) {
   const binding = device?.binding
   const isMachine = binding?.kind === "machine"
+  const word = binding ? removalWord(binding) : "Revoke"
   return (
     <AlertDialog open={device !== null} onOpenChange={(next) => { if (!next) onClose() }}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <div className="flex w-full items-center gap-2.5">
             <AlertDialogTitle className="min-w-0 flex-1 break-words text-[13.5px]">
-              Revoke {device?.label}
+              {word} {device?.label}
             </AlertDialogTitle>
             {binding?.kind === "machine" ? (
               <Badge variant="machine" className="shrink-0" title={binding.machineId}>
@@ -1053,7 +1052,7 @@ function RevokeConfirmation({
               if (device) onConfirm(device)
             }}
           >
-            {isMachine ? "Revoke machine" : "Revoke device"}
+            {isMachine ? "Revoke machine" : `${word} device`}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -1429,14 +1428,19 @@ export function FleetView({
             ) : null}
           </section>
 
+          {/* The Desktop V2 frame: one card, its heading and note on the first
+              row, then a row per device. */}
           <section className="mt-7" aria-labelledby={pairedDevicesHeadingId}>
-            <h2 id={pairedDevicesHeadingId} className="m-0 text-[13.5px] font-medium">Devices paired with {devicesMachineLabel ?? "this machine"}</h2>
-            <p className="mt-1.5 max-w-[620px] text-[12.5px] leading-[1.6] text-muted-foreground">
-              Each daemon keeps its own list. Pair a new one from Settings.
-            </p>
+          <div className="overflow-hidden rounded-xl border bg-card">
+            <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 px-[15px] py-[11px]">
+              <h2 id={pairedDevicesHeadingId} className="m-0 text-[12.5px] font-medium">Devices paired with {devicesMachineLabel ?? "this machine"}</h2>
+              <p className="m-0 text-[11px] text-muted-foreground">
+                Each daemon keeps its own list. Pair a new one from Settings.
+              </p>
+            </div>
 
             {actionError ? (
-              <Alert variant="destructive" className="mt-4">
+              <Alert variant="destructive" className="mx-[15px] mb-3 w-auto">
                 <CircleStopIcon />
                 <AlertTitle>Device action failed</AlertTitle>
                 <AlertDescription>{actionError}</AlertDescription>
@@ -1444,7 +1448,7 @@ export function FleetView({
             ) : null}
 
             {devicesError ? (
-              <Alert variant="destructive" className="mt-4">
+              <Alert variant="destructive" className="mx-[15px] mb-3 w-auto">
                 <CircleStopIcon />
                 <AlertTitle>Could not read paired devices</AlertTitle>
                 <AlertDescription className="flex flex-wrap items-center gap-3">
@@ -1457,7 +1461,7 @@ export function FleetView({
             ) : null}
 
             {!connected ? (
-              <Alert variant="destructive" className="mt-4">
+              <Alert variant="destructive" className="mx-[15px] mb-3 w-auto">
                 <CircleStopIcon />
                 <AlertTitle>Paired devices unavailable</AlertTitle>
                 <AlertDescription>Paired devices are unavailable while this daemon is unreachable.</AlertDescription>
@@ -1465,7 +1469,7 @@ export function FleetView({
             ) : null}
 
             {devices && devices.length > 0 ? (
-              <table className="mt-4 w-full border-collapse">
+              <table className="w-full border-collapse">
                 <caption className="sr-only">Devices paired with this machine</caption>
                 <DeviceTableHead />
                 <tbody>
@@ -1493,7 +1497,7 @@ export function FleetView({
             ) : null}
 
             {devices && devices.length === 0 ? (
-              <Empty className="mt-4 min-h-40 border">
+              <Empty className="min-h-40 rounded-none border-t">
                 <EmptyHeader>
                   <EmptyMedia variant="icon"><ServerIcon /></EmptyMedia>
                   <EmptyTitle>No device is paired with this machine</EmptyTitle>
@@ -1507,7 +1511,7 @@ export function FleetView({
 
             {connected && !devices && !devicesError ? (
               <>
-                <table className="mt-4 w-full animate-pulse border-collapse">
+                <table className="w-full animate-pulse border-collapse">
                   <caption className="sr-only">Devices paired with this machine</caption>
                   <DeviceTableHead />
                   <tbody>
@@ -1516,11 +1520,12 @@ export function FleetView({
                     <LoadingRow wide={false} />
                   </tbody>
                 </table>
-                <p role="status" className="mt-3 font-machine text-[11.5px] text-faint">
+                <p role="status" className="m-0 border-t px-[15px] py-2.5 font-machine text-[11.5px] text-faint">
                   Loading paired devices
                 </p>
               </>
             ) : null}
+          </div>
           </section>
         </main>
       </ScrollArea>
