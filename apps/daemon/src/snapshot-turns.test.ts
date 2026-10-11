@@ -6,6 +6,7 @@ import {
   demoWorkspace,
   protocolVersion,
   sessionHistoryPageSchema,
+  sessionSearchResultSchema,
   workspaceSnapshotSchema,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
@@ -141,6 +142,45 @@ describe("the snapshot's turns", () => {
     })
     const client = workspaceSnapshotForClient(snapshot, (session) => [turn(session), turn(session)])
     expect(client.turns?.map((entry) => entry.id)).toEqual([turnId])
+    expect(workspaceSnapshotSchema.safeParse(client).success).toBe(true)
+  })
+})
+
+// Task 30 (ruling Q390): the session summary says when its running turn
+// started, from the same ledger record, so a search on another machine can say
+// how long it has run. Derived for each reply and never stored.
+describe("the active turn's start", () => {
+  it("rides on the session while the turn runs, in snapshots and search answers, and leaves with the turn", async () => {
+    const { rpc, snapshot, store, emit } = await start()
+    const sent = await rpc("session.send", { sessionId, prompt: "Begin the billing work", client: "tablet" })
+    expect(sent.error).toBeUndefined()
+    const dispatched = workspaceSnapshotSchema.parse(sent.result)
+    const message = dispatched.thread.findLast((item) => item.kind === "user" && item.sessionId === sessionId)!
+    const running = dispatched.sessions.find((session) => session.id === sessionId)!
+    expect(running).toMatchObject({ activeTurnId: "turn-1", activeTurnStartedAt: message.createdAt })
+    expect(dispatched.sessions.filter((session) => session.activeTurnStartedAt !== undefined)).toHaveLength(1)
+
+    const before = Date.now()
+    const searched = sessionSearchResultSchema.parse((await rpc("session.search", { query: "Webhook" })).result)
+    const after = Date.now()
+    expect(searched.matches.find((match) => match.session.id === sessionId)?.session.activeTurnStartedAt).toBe(message.createdAt)
+    expect(Date.parse(searched.daemonTime!)).toBeGreaterThanOrEqual(before)
+    expect(Date.parse(searched.daemonTime!)).toBeLessThanOrEqual(after)
+
+    expect(store.load().sessions.find((session) => session.id === sessionId)).not.toHaveProperty("activeTurnStartedAt")
+
+    emit({ type: "turn-completed", params: { threadId: "thread-billing", turn: { id: "turn-1", status: "completed" } } })
+    await waitForDaemon(async () => expect((await snapshot()).sessions.find((session) => session.id === sessionId)?.activeTurnId).toBeUndefined())
+    expect((await snapshot()).sessions.find((session) => session.id === sessionId)).not.toHaveProperty("activeTurnStartedAt")
+  })
+
+  it("is absent when the ledger holds no record of the running turn", () => {
+    const snapshot = workspace()
+    const session = snapshot.sessions.find((candidate) => candidate.id === sessionId)!
+    session.state = "active"
+    session.activeTurnId = "turn-unrecorded"
+    const client = workspaceSnapshotForClient(snapshot, () => [])
+    expect(client.sessions.find((candidate) => candidate.id === sessionId)).not.toHaveProperty("activeTurnStartedAt")
     expect(workspaceSnapshotSchema.safeParse(client).success).toBe(true)
   })
 })
