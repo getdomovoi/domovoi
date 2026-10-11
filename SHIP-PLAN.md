@@ -173,6 +173,8 @@ Cheap now, expensive later. **Nothing in Phase 2 starts without S0.2 and S0.6.**
       no artefact; audit firm conversation, the maintainer reported it as sent to firms on
       2026-09-14 in the design project's `github.md`, no artefact in this repository. When one
       exists, name it here (an enrolment id, an order reference, a dated quote).
+      Apple Developer Program enrolment: done and paid, reported by the maintainer on
+      2026-10-11; the team id is not yet recorded here.
 
 ## Phase 1 — the daemon becomes an installed service — M1
 
