@@ -64,7 +64,11 @@ export type PaletteSwitch = { machineId: string; sessionId: string }
 
 type MachineAnswer =
   | { state: "asking" }
-  | { state: "hits"; matches: SessionSearchMatch[]; truncated: boolean }
+  // clockOffsetMs: the answering daemon's clock less this window's when the
+  // reply arrived (its daemonTime, the fleet's pattern), or 0 when the reply
+  // carries none. It stays with this machine's answer and is never mixed with
+  // another machine's or the home daemon's.
+  | { state: "hits"; matches: SessionSearchMatch[]; truncated: boolean; clockOffsetMs: number }
   | { state: "none" }
   | { state: "silent" }
   | { state: "left" }
@@ -106,6 +110,17 @@ const answerText: Record<MachineAnswer["state"], string> = {
   left: "text-faint",
 }
 
+// How long a turn has run: the design's "running 41m". A start ahead of the
+// clock reading it (a clock set back) reads as just started.
+function runFor(startedAt: string, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - Date.parse(startedAt)) / 60_000)
+  if (minutes < 1) return "under 1m"
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ${minutes % 60}m`
+  return `${Math.floor(hours / 24)}d ${hours % 24}h`
+}
+
 function age(updatedAt: string, now: number): string {
   const minutes = Math.floor(Math.max(0, now - Date.parse(updatedAt)) / 60_000)
   if (minutes < 1) return "just now"
@@ -120,13 +135,18 @@ function age(updatedAt: string, now: number): string {
 // idle or done session. Every other state says itself even while a turn id
 // remains: a gate wait, a failure, a conflict, and archiving or a transfer,
 // which the daemon sets before it clears the turn. All but running say how long ago the session last
-// changed. Running has no duration: the wire carries no turn start until
-// protocol 0.8.0 (ruling Q390 A). The dot is sessionTone's colour for the
+// changed. Running says how long the turn has run when the daemon sent its
+// start (task 30, ruling Q390); a session marked active with no turn, or a
+// turn the daemon's ledger has no start for, reads running alone. `now` is on
+// the answering machine's clock. The dot is sessionTone's colour for the
 // state, as on this machine's rows in the same list, so a state reads the same
 // whichever machine returned it.
 export function remoteSessionMeta(session: SessionSummary, now: number): { meaning: StatusMeaning; meta: string } {
   const quiet = session.state === "idle" || session.state === "done"
-  if (session.state === "active" || (quiet && session.activeTurnId)) return { meaning: "online", meta: "running" }
+  if (session.state === "active" || (quiet && session.activeTurnId)) {
+    const started = session.activeTurnId ? session.activeTurnStartedAt : undefined
+    return { meaning: "online", meta: started ? `running ${runFor(started, now)}` : "running" }
+  }
   const note = session.state === "ownership-conflict" ? "ownership conflict"
     : session.state === "transferred" ? "moved to another machine"
       : session.state
@@ -202,7 +222,8 @@ function ask(
   machineSearch.search(machineId, query, controller.signal).then(
     (result) => {
       if (controller.signal.aborted) return
-      setAnswers((current) => ({ ...current, [machineId]: result.matches.length ? { state: "hits", matches: result.matches, truncated: result.truncated } : { state: "none" } }))
+      const clockOffsetMs = result.daemonTime === undefined ? 0 : Date.parse(result.daemonTime) - Date.now()
+      setAnswers((current) => ({ ...current, [machineId]: result.matches.length ? { state: "hits", matches: result.matches, truncated: result.truncated, clockOffsetMs } : { state: "none" } }))
     },
     () => {
       if (controller.signal.aborted) return
@@ -560,7 +581,7 @@ export function CommandPalette({
                       <span className={cn("shrink-0 text-[11px]", answerText[answer.state])}>{answerLabel(answer)}</span>
                     </div>
                     {answer.state === "hits" ? answer.matches.map((match) => {
-                      const row = remoteSessionMeta(match.session, now)
+                      const row = remoteSessionMeta(match.session, now + answer.clockOffsetMs)
                       const isPicked = picked?.machineId === machine.id && picked.sessionId === match.session.id
                       return (
                         <CommandItem
