@@ -284,6 +284,9 @@ import {
   type DaemonTailnetListenerOptions,
   type TailnetListenerState,
 } from "./tailnet-listener.js"
+import { listenerAuthorities, type ListenerAuthorities } from "./listener-authorities.js"
+import type { WebAppBundleLoad } from "./web-app-bundle.js"
+import { createWebAppHttpHandler } from "./web-app-http.js"
 import { wslSharePath } from "./wsl-open-target.js"
 import { PairingCodeError, PairingCodeService, PairingDeviceLimitError, pairingCodeTtlMs } from "./pairing-codes.js"
 import { PairingIssuerSlot } from "./pairing-issuer.js"
@@ -595,11 +598,18 @@ function skillInstallAuditDetail(values: Record<string, unknown>): string {
 // carry and fails before a header is read. Over plaintext nothing stops it, so
 // the same-host rule holds only on a socket that was encrypted, and a
 // plaintext listener keeps the allow-list alone.
+//
+// A web origin is scheme, host and port, and only an encrypted listener gets
+// here, so the origin must be https (S3.2 plan section 3.5, review F4): a
+// page at http://<name>:<port> has the same authority and is another origin.
+// The phone sends https, mapped from the wss URL it dials. The served web app
+// is admitted by its exact origin from listener-authorities.ts, not by this.
 function namesThisDaemon(origin: string, request: IncomingMessage): boolean {
   const host = request.headers.host
   if (!host || !isEncrypted(request.socket)) return false
   try {
-    return new URL(origin).host === host
+    const parsed = new URL(origin)
+    return parsed.protocol === "https:" && parsed.host === host
   } catch {
     return false
   }
@@ -1535,6 +1545,10 @@ export type DaemonServerOptions = {
   allowedOrigins?: string[]
   // The web app a pairing code can be opened in, when the owner set one.
   webAppUrl?: string
+  // S3.2: the web app bundle production loaded once at startup. Every
+  // listener serves it, or the state page at / when it was not loaded. Absent,
+  // the daemon serves no web app and / stays a 404.
+  webApp?: WebAppBundleLoad
   statePath?: string
   manageStateDirectoryPermissions?: boolean
   store?: WorkspaceStore
