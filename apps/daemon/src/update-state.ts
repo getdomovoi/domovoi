@@ -7,7 +7,7 @@ import { publishFileDurably } from "@getdomovoi/credential-store"
 
 import { assertProfileLeaseHeld, type ProfileLease } from "./profile-lease.js"
 import { install as shippedBootstrapInstall } from "./bootstrap-install.js"
-import { maximumUpdateMetadataBytes, type TrustedUpdateDocuments } from "./update-verification.js"
+import { maximumUpdateMetadataBytes, resetUpdateRoles, type TrustedUpdateDocuments } from "./update-verification.js"
 
 export type TrustedUpdateMetadata = {
   format: 1
@@ -101,15 +101,16 @@ export async function persistTrustedUpdateMetadata(
   assertProfileLeaseHeld(lease)
   if (next.format !== 1) throw new Error("Unsupported trusted update metadata format")
   const current = await readTrustedUpdateMetadata(homeDirectory)
+  const resetVersions = new Set(resetUpdateRoles(current.documents?.root, next.documents?.root).map((role) => `${role}Version`))
   for (const field of ["rootVersion", "timestampVersion", "snapshotVersion", "targetsVersion"] as const) {
-    if (next[field] < current[field]) throw new Error(`Trusted update metadata ${field} cannot roll back`)
+    if (!resetVersions.has(field) && next[field] < current[field]) throw new Error(`Trusted update metadata ${field} cannot roll back`)
   }
   const pairs: Array<[keyof TrustedUpdateMetadata, keyof TrustedUpdateMetadata]> = [
     ["rootVersion", "rootDigest"], ["timestampVersion", "timestampDigest"],
     ["snapshotVersion", "snapshotDigest"], ["targetsVersion", "targetsDigest"],
   ]
   for (const [version, digest] of pairs) {
-    if (next[version] === current[version] && next[digest] !== current[digest]) {
+    if (!resetVersions.has(version) && next[version] === current[version] && next[digest] !== current[digest]) {
       throw new Error(`Trusted update metadata ${String(version)} changed at an existing version`)
     }
   }
@@ -134,9 +135,16 @@ export async function persistTrustedUpdateDocuments(
 ): Promise<void> {
   const current = await readTrustedUpdateMetadata(homeDirectory)
   const next: TrustedUpdateMetadata = { ...current, documents }
+  const reset = new Set(resetUpdateRoles(current.documents?.root, documents.root))
   for (const role of ["root", "timestamp", "snapshot", "targets"] as const) {
     const text = documents[role]
-    if (text === undefined) continue
+    if (text === undefined) {
+      if (reset.has(role)) {
+        next[`${role}Version`] = 0
+        next[`${role}Digest`] = ""
+      }
+      continue
+    }
     const metadata = z.object({ signed: z.object({ version: z.number().int().positive().safe() }) }).parse(JSON.parse(text))
     next[`${role}Version`] = metadata.signed.version
     next[`${role}Digest`] = createHash("sha256").update(text).digest("hex")

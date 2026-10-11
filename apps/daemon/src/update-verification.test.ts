@@ -1,4 +1,7 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto"
+import { mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { updateRootMetadataSchema } from "@getdomovoi/protocol"
 import {
@@ -6,6 +9,11 @@ import {
   maximumUpdateMetadataBytes, updateInactivityTimeoutMs, updateFetchTimeoutMs, maximumUpdateRootRotations,
   type TrustedUpdateDocuments,
 } from "./update-verification.js"
+import { claimProfile, type ProfileLease } from "./profile-lease.js"
+import { persistTrustedUpdateDocuments, readTrustedUpdateMetadata } from "./update-state.js"
+
+const durableHomes: string[] = []
+const durableLeases: ProfileLease[] = []
 
 function keyMaterial(index: number) {
   const pair = generateKeyPairSync("ed25519")
@@ -51,8 +59,27 @@ function fixture() {
   return { offline, online, rootBody, root, makeRoot, roots, documents, publish, fetcher, persist, check, trusted: () => trusted }
 }
 
+async function useDurableTrust(repo: ReturnType<typeof fixture>) {
+  const home = await mkdtemp(join(tmpdir(), "domovoi-update-rotation-"))
+  durableHomes.push(home)
+  const lease = claimProfile(home)
+  durableLeases.push(lease)
+  const publishMemory = repo.persist.getMockImplementation()!
+  repo.persist.mockImplementation(async (next) => {
+    await persistTrustedUpdateDocuments(home, lease, next)
+    await publishMemory(next)
+  })
+  repo.check = async () => fetchUpdateMetadata({ baseUrl: "https://updates.example.test/", trustedRoot: repo.root,
+    trusted: (await readTrustedUpdateMetadata(home)).documents ?? {}, fetcher: repo.fetcher, persist: repo.persist })
+  return home
+}
+
 describe("daemon update verification", () => {
-  afterEach(() => vi.useRealTimers())
+  afterEach(async () => {
+    vi.useRealTimers()
+    for (const lease of durableLeases.splice(0)) lease.release()
+    await Promise.all(durableHomes.splice(0).map((home) => rm(home, { recursive: true, force: true })))
+  })
 
   it("accepts standard TUF hex signatures and a 2-of-3 offline root", async () => {
     const repo = fixture()
@@ -107,6 +134,65 @@ describe("daemon update verification", () => {
     await expect(repo.check()).resolves.toHaveProperty("targets.json")
   })
 
+  it.each([["timestamp"], ["snapshot"], ["timestamp", "snapshot", "targets"]] as const)("recovers from fast-forward metadata after rotating %s authority, including after restart", async (...rotated) => {
+    const repo = fixture()
+    const home = await useDurableTrust(repo)
+    repo.publish(Number.MAX_SAFE_INTEGER)
+    await repo.check()
+    const replacement = keyMaterial(7)
+    repo.roots["2.root.json"] = envelope({ ...repo.rootBody, version: 2,
+      keys: { ...repo.rootBody.keys, [replacement.keyid]: { keytype: "ed25519", scheme: "ed25519", keyval: { public: replacement.public } } },
+      roles: { ...repo.rootBody.roles, ...Object.fromEntries(rotated.map((role) => [role, { keyids: [replacement.keyid], threshold: 1 }])) },
+    }, repo.offline.slice(0, 2))
+    const validRotation = repo.roots["2.root.json"] as ReturnType<typeof envelope>
+    repo.roots["2.root.json"] = envelope(validRotation.signed, [repo.offline[0]!])
+    await expect(repo.check()).rejects.toMatchObject({ reason: "signature" })
+    expect(await readTrustedUpdateMetadata(home)).toMatchObject({ rootVersion: 1, timestampVersion: Number.MAX_SAFE_INTEGER })
+    repo.roots["2.root.json"] = validRotation
+    const original = repo.fetcher.getMockImplementation()!
+    repo.fetcher.mockImplementation(async (input) => String(input).endsWith("timestamp.json") ? new Response(null, { status: 503 }) : original(input))
+    await expect(repo.check()).rejects.toMatchObject({ reason: "network" })
+    expect(JSON.parse(repo.trusted().root!).signed.version).toBe(2)
+    expect(repo.trusted().timestamp).toBeUndefined()
+    expect(repo.trusted().snapshot).toBeUndefined()
+    expect(repo.trusted().targets).toBeUndefined()
+    expect(await readTrustedUpdateMetadata(home)).toMatchObject({ rootVersion: 2,
+      timestampVersion: 0, timestampDigest: "", snapshotVersion: 0, snapshotDigest: "", targetsVersion: 0, targetsDigest: "" })
+    repo.publish(1)
+    for (const role of ["targets", "snapshot", "timestamp"] as const) {
+      const value = repo.documents[`${role}.json`] as { signed: Record<string, unknown> }
+      if (role !== "targets") {
+        const child = role === "timestamp" ? "snapshot" : "targets"
+        const bytes = Buffer.from(JSON.stringify(repo.documents[`${child}.json`]))
+        value.signed.meta = { [`${child}.json`]: { version: 1, length: bytes.length, hashes: { sha256: createHash("sha256").update(bytes).digest("hex") } } }
+      }
+      repo.documents[`${role}.json`] = envelope(value.signed, [rotated.some((rotatedRole) => rotatedRole === role) ? replacement : repo.online])
+    }
+    repo.fetcher.mockImplementation(original)
+    await expect(repo.check()).resolves.toHaveProperty("targets.json")
+    expect(JSON.parse(repo.trusted().timestamp!).signed.version).toBe(1)
+    repo.publish(1, "2098-01-01T00:00:00Z", replacement)
+    await expect(repo.check()).rejects.toMatchObject({ reason: "replay" })
+  })
+
+  it("persists a recovery reset at the root-rotation limit and retries from it", async () => {
+    const repo = fixture()
+    const home = await useDurableTrust(repo)
+    repo.publish(Number.MAX_SAFE_INTEGER)
+    await repo.check()
+    const replacement = keyMaterial(8)
+    for (let version = 2; version <= maximumUpdateRootRotations; version++) repo.roots[`${version}.root.json`] = repo.makeRoot(version)
+    repo.roots[`${maximumUpdateRootRotations + 1}.root.json`] = envelope({ ...repo.rootBody, version: maximumUpdateRootRotations + 1,
+      keys: { ...repo.rootBody.keys, [replacement.keyid]: { keytype: "ed25519", scheme: "ed25519", keyval: { public: replacement.public } } },
+      roles: { ...repo.rootBody.roles, timestamp: { keyids: [repo.online.keyid, replacement.keyid], threshold: 1 } },
+    }, repo.offline.slice(0, 2))
+    repo.publish(1)
+    await expect(repo.check()).rejects.toMatchObject({ reason: "policy", message: expect.stringContaining("retry") })
+    expect(await readTrustedUpdateMetadata(home)).toMatchObject({ rootVersion: maximumUpdateRootRotations + 1, timestampVersion: 0, snapshotVersion: 0, targetsVersion: 0 })
+    await expect(repo.check()).resolves.toHaveProperty("targets.json")
+    expect(await readTrustedUpdateMetadata(home)).toMatchObject({ timestampVersion: 1, snapshotVersion: 1, targetsVersion: 1 })
+  })
+
   it("rejects expired final root and every expired online role", async () => {
     for (const role of ["root", "timestamp", "snapshot", "targets"] as const) {
       const repo = fixture()
@@ -121,8 +207,10 @@ describe("daemon update verification", () => {
 
   it("refuses replay and same-version changed timestamp bytes after restart", async () => {
     const repo = fixture()
+    await useDurableTrust(repo)
     repo.publish(2)
     await repo.check()
+    repo.roots["2.root.json"] = repo.makeRoot(2)
     repo.publish(1)
     await expect(repo.check()).rejects.toMatchObject({ reason: "replay" })
     repo.publish(2, "2098-01-01T00:00:00Z")

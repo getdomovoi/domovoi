@@ -34,6 +34,23 @@ export class UpdateVerificationError extends Error {
 /** The same OLPC canonicalization as the TUF verifier, also used by signing fixtures. */
 export function canonicalUpdateJson(value: unknown): string { return canonicalize(value) }
 
+/** Only call with roots already accepted by the TUF client. */
+export function resetUpdateRoles(previous: string | undefined, next: string | undefined): UpdateRoleName[] {
+  if (!previous || !next || previous === next) return []
+  const oldRoot = updateRootMetadataSchema.parse(JSON.parse(previous)).signed
+  const newRoot = updateRootMetadataSchema.parse(JSON.parse(next)).signed
+  if (newRoot.version <= oldRoot.version) return []
+  const authority = (root: typeof oldRoot, role: UpdateRoleName) => canonicalize({
+    threshold: root.roles[role].threshold,
+    keys: [...root.roles[role].keyids].sort().map((keyid) => [keyid, root.keys[keyid]]),
+  })
+  const changed = (role: UpdateRoleName) => authority(oldRoot, role) !== authority(newRoot, role)
+  // TUF 5.3.11: discard the compromised online epoch to recover from
+  // fast-forward attacks. Targets' extra local byte/version guard follows it.
+  if (changed("timestamp") || changed("snapshot")) return ["timestamp", "snapshot", "targets"]
+  return changed("targets") ? ["targets"] : []
+}
+
 function parseMetadata(role: UpdateRoleName, text: string) {
   try {
     if (Buffer.byteLength(text) > maximumUpdateMetadataBytes) throw new Error("Metadata exceeds limit")
@@ -163,9 +180,15 @@ export async function fetchUpdateMetadata(options: {
   documents.root ??= JSON.stringify(options.trustedRoot)
   const publishProgress = async () => {
     if (!initialized || persistenceFailed) return
+    const previousRoot = documents.root
     for (const role of roles) {
       try { documents[role] = await readFile(join(directory, `${role}.json`), "utf8") }
       catch (error) { if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error }
+    }
+    const reset = resetUpdateRoles(previousRoot, documents.root)
+    for (const role of reset) {
+      await rm(join(directory, `${role}.json`), { force: true })
+      delete documents[role]
     }
     const serialized = JSON.stringify(documents)
     if (serialized !== lastPublished) {
@@ -176,6 +199,7 @@ export async function fetchUpdateMetadata(options: {
       }
       lastPublished = serialized
     }
+    return reset.length > 0
   }
   try {
     for (const role of roles) {
@@ -190,7 +214,13 @@ export async function fetchUpdateMetadata(options: {
       downloadBytes: async (address, requestedLimit) => {
         try {
           // A previous request may have advanced trust before this next await.
-          await publishProgress()
+          const reset = await publishProgress()
+          // At the rotation cap, Updater may already have loaded the previous
+          // timestamp before this callback. Restart from the durable reset on
+          // the next check instead of retaining that in-memory version floor.
+          if (reset && address.endsWith("/timestamp.json")) {
+            throw new UpdateVerificationError("policy", "Update trust rotated at the refresh limit; retry the check")
+          }
           if (controller.signal.aborted) throw new UpdateVerificationError("network", "Update metadata fetch timed out")
           const url = new URL(address)
           if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname) || url.search || url.hash) {

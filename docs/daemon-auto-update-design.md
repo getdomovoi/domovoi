@@ -92,9 +92,19 @@ each subsequent fetch, and after refresh succeeds or fails, accepted role bytes
 are persisted with their versions and digests through the existing atomic,
 flushed profile write under the held lease. Verified trust survives a later
 metadata or staging failure. Pending activation authority is still withheld
-until staging and final persistence succeed. Metadata versions must continue
-increasing across online-key rotation; the local same-version/different-bytes
-refusal remains stricter than the library's timestamp-cache reuse policy.
+until staging and final persistence succeed. Versions and same-version bytes
+remain monotonic within each online trust epoch. When an accepted root changes
+timestamp or snapshot authority, the client atomically clears cached online
+metadata and its version/digest floors, as required for fast-forward attack
+recovery by [TUF section 5.3.11](https://theupdateframework.github.io/specification/v1.0.36/#update-root).
+A targets-only authority change clears the extra local targets floor; the TUF
+snapshot bindings still apply. Root refreshes with unchanged online authority
+retain every rollback floor. The local same-version/different-bytes refusal
+remains stricter than the library's timestamp-cache reuse policy.
+If authority rotates at the last allowed root in a refresh, the verified reset
+is persisted and that check reports an actionable retry refusal. The next check
+starts from the durable root and cleared cache; it cannot retain the library's
+already-loaded pre-rotation timestamp floor.
 
 Metadata uses standard TUF hexadecimal Ed25519 public keys and signatures.
 The earlier base64 encoding is not silently transcoded: changing signed root
