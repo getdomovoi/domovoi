@@ -3132,13 +3132,17 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     await writeFile(fake, [
       "import { execFileSync } from \"node:child_process\"",
       "import { writeFileSync } from \"node:fs\"",
-      "const config = (...args) => { try { return execFileSync(\"git\", [\"config\", ...args], { encoding: \"utf8\" }).trim() } catch { return \"\" } }",
-      `writeFileSync(${JSON.stringify(seen("storage"))}, config("--get", "lfs.storage"))`,
-      `writeFileSync(${JSON.stringify(seen("remote"))}, config("--get", "remote.origin.url"))`,
-      "for (const value of [",
-      "  ...[\"core.sshcommand\", \"core.askpass\", \"credential.helper\"].map((key) => config(\"--get\", key)),",
-      "  config(\"--get-urlmatch\", \"credential.helper\", \"https://lfs.example.test/repo\"),",
-      "]) if (value.includes(\"payload\")) execFileSync(\"sh\", [\"-c\", value])",
+      // One `git config --list` per run instead of a Git process per key: git
+      // starts this fake about twenty times in a test, and six reads a run
+      // added about eighty Git processes to each test. Every value of a key
+      // counts, not only the one `--get` would pick.
+      "const entries = (() => { try { return execFileSync(\"git\", [\"config\", \"--list\", \"-z\"], { encoding: \"utf8\" }).split(\"\\0\").filter(Boolean).map((entry) => { const at = entry.indexOf(\"\\n\"); return at === -1 ? [entry, \"\"] : [entry.slice(0, at), entry.slice(at + 1)] }) } catch { return [] } })()",
+      "const last = (key) => entries.filter(([name]) => name === key).at(-1)?.[1] ?? \"\"",
+      `writeFileSync(${JSON.stringify(seen("storage"))}, last("lfs.storage"))`,
+      `writeFileSync(${JSON.stringify(seen("remote"))}, last("remote.origin.url"))`,
+      "for (const [name, value] of entries) {",
+      "  if (/^(core\\.(sshcommand|askpass)|credential\\.(.+\\.)?helper)$/.test(name) && value.includes(\"payload\")) execFileSync(\"sh\", [\"-c\", value])",
+      "}",
       "if (process.argv[2] !== \"filter-process\") {",
       "  process.stdin.pipe(process.stdout)",
       "} else {",
@@ -3221,6 +3225,22 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
   // for git-lfs. The isolation these tests check is platform-independent code,
   // and macOS and Linux cover it (as ruling Q110 A did for the keeper tests).
   const fakeLfsRuns = process.platform !== "win32"
+
+  // The tests below pass when the fake runs nothing, so this control shows the
+  // fake does run the program each key names when that config is visible to it.
+  it.skipIf(!fakeLfsRuns).each([
+    ["core.sshCommand", "ssh"], ["core.askPass", "askpass"], ["credential.helper", "helper"],
+    ["credential.https://lfs.example.test.helper", "url-helper"],
+  ])("has the fake git-lfs run what the repository's %s names when it reads that config", async (key, label) => {
+    const { repositoryPath, payload, git, ran, withLfs } = await lfsRepository(`domovoi-lfs-control-${label}-`)
+    await git("config", key, `sh ${payload}`)
+
+    await withLfs(() => new Promise<void>((finished) => {
+      execFile("git-lfs", ["smudge", "--", "object.bin"], { cwd: repositoryPath }, () => finished()).stdin?.end()
+    }))
+
+    expect(await ran()).toBe(true)
+  })
 
   it.skipIf(!fakeLfsRuns).each([
     ["core.sshCommand", "ssh"], ["core.askPass", "askpass"], ["credential.helper", "helper"],
