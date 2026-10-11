@@ -36,10 +36,10 @@ a paged query, so there is no --follow; page with --before.
 skill install: previews (files, digests, signature, trust, target), then installs the previewed
 digest into the chosen scope; enabling is a separate decision on the daemon.
 
-Pairing: on the machine that runs the daemon, run 'domovoid pair --client cli --label <device
-label>'. It prints a one-time pairing code. Paste the line under "Cannot scan it?" (or the code
-alone) into 'domovoi pair'. The code is read from stdin so it never lands in shell history or
-the process table. It works once and expires, like a phone's. --label names this device in the
+Pairing: on the machine that runs the daemon, run 'domovoid pair --client cli'. It prints a
+one-time pairing code. Paste the line under "Cannot scan it?" (or the code alone) into
+'domovoi pair'. The code is read from stdin so it never lands in shell history or the process
+table. It works once and expires, like a phone's. --label names this device in the
 daemon's Devices list; the default is this machine's hostname. The pasted line carries the
 daemon's address; --daemon overrides it.
 Credentials live in the OS keychain. Where there is none (a headless host, WSL, a container),
@@ -166,7 +166,7 @@ async function main(argv: string[]): Promise<number> {
     const record = await credentials.load(options.daemon)
     if (!record) {
       const pairCommand = `domovoi pair --daemon ${options.daemon}${options.credentialFile === undefined ? "" : ` --credential-file ${options.credentialFile}`}`
-      throw new NotPairedError(`Not paired with ${options.daemon}. Run 'domovoid pair --client cli --label <device label>' where the daemon runs, then paste its pairing code into '${pairCommand}'.`)
+      throw new NotPairedError(`Not paired with ${options.daemon}. Run 'domovoid pair --client cli' where the daemon runs, then paste its pairing code into '${pairCommand}'.`)
     }
     return connectToDaemon({ endpoint: options.daemon, authToken: record.token })
   }
