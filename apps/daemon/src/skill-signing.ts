@@ -11,6 +11,7 @@ import {
 import { mkdir, open, readFile, rename, rm, stat } from "node:fs/promises"
 import { dirname, join } from "node:path"
 
+import { replaceFile } from "@getdomovoi/credential-store"
 import { skillDeclaredSignatureSchema } from "@getdomovoi/protocol"
 import { z } from "zod"
 
@@ -162,7 +163,7 @@ async function writeTrustFile(path: string, record: TrustedSkillKeysFile): Promi
     } finally {
       await handle.close()
     }
-    await rename(temporaryPath, path)
+    await replaceFile(temporaryPath, path, { rename })
   } finally {
     await rm(temporaryPath, { force: true })
   }
