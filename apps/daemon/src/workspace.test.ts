@@ -2,13 +2,13 @@ import { execFile, spawnSync, type ChildProcess } from "node:child_process"
 import { createServer } from "node:http"
 import { createServer as createNetServer, type AddressInfo, type Socket } from "node:net"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { copyFile, link, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
+import { copyFile, cp, link, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 
 import { windowsTreeKill } from "./claude-process.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
@@ -1794,10 +1794,9 @@ describe("GitWorkspaceService bundle restore", () => {
     return { promise, release }
   }
 
-  async function sourceWithBundle(prefix: string) {
-    const scratch = await mkdtemp(join(tmpdir(), prefix))
-    scratchDirectories.push(scratch)
-    const repositoryPath = join(scratch, "project")
+  async function makeSharedSource() {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-restore-source-"))
+    const repositoryPath = join(root, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
     await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
     await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
@@ -1809,13 +1808,40 @@ describe("GitWorkspaceService bundle restore", () => {
       "-c", "user.email=test@example.invalid",
       "commit", "-m", "initial",
     ])
-    const targetRepositoryPath = join(scratch, "target-project")
-    await execute("git", ["clone", "--quiet", repositoryPath, targetRepositoryPath])
-    const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
+    const targetTemplate = join(root, "target-project")
+    await execute("git", ["clone", "--quiet", repositoryPath, targetTemplate])
+    const source = new GitWorkspaceService(join(root, "source-worktrees"))
     const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
     await writeFile(join(workspace.path, "README.md"), "moved\n")
     const checkpoint = await source.checkpoint(workspace.path, "before-transfer")
-    const bundle = await source.bundleSession(workspace.path, join(scratch, "session.bundle"))
+    const bundle = await source.bundleSession(workspace.path, join(root, "session.bundle"))
+    return { root, targetTemplate, checkpoint, bundle }
+  }
+
+  // The source repository, its checkpoint and its bundle are only read here,
+  // so they are made once for this block. Each test gets its own copy of the
+  // target, cloned before the source took the session as before. Making the
+  // source was most of each test's Git work, about 1 s of 1.5 s on an idle
+  // Windows runner (diagnostic run 38177732109). When a runner stall slowed
+  // every Git process 5 to 15 times, these tests ran past their 30 s timeout
+  // (CI runs 37648689682 and 37655021737).
+  let sharedSource: ReturnType<typeof makeSharedSource> | undefined
+  afterAll(async () => {
+    const shared = await sharedSource?.catch(() => undefined)
+    if (shared !== undefined) await removeScratchDirectories([shared.root])
+  })
+
+  async function sourceWithBundle(prefix: string) {
+    // A failed setup is retried by the next test instead of failing them all.
+    sharedSource ??= makeSharedSource().catch((error: unknown) => {
+      sharedSource = undefined
+      throw error
+    })
+    const { targetTemplate, checkpoint, bundle } = await sharedSource
+    const scratch = await mkdtemp(join(tmpdir(), prefix))
+    scratchDirectories.push(scratch)
+    const targetRepositoryPath = join(scratch, "target-project")
+    await cp(targetTemplate, targetRepositoryPath, { recursive: true })
     return { scratch, targetRepositoryPath, checkpoint, bundle }
   }
 
