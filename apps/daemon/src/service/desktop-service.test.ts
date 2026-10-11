@@ -1,3 +1,9 @@
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { dirname, join } from "node:path"
+import { replaceFile } from "@getdomovoi/credential-store"
+import { OperationDeadline, OperationDeadlineExceededError } from "../operation-deadline.js"
+import { daemonRuntimeLayout, nodeRuntimeFileSystem, prepareDaemonRuntime } from "./runtime-stage.js"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { windowsTaskData } from "./windows-task-test-support.js"
@@ -56,6 +62,65 @@ beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows") })
 afterEach(() => { vi.unstubAllEnvs() })
 
 describe("installDaemonService", () => {
+  it("stops staged runtime sharing retries at the install operation deadline", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "domovoi-publish-deadline-")))
+    let now = 0
+    const start = OperationDeadline.start.bind(OperationDeadline)
+    const deadlineStart = vi.spyOn(OperationDeadline, "start").mockImplementation((budget) => start(budget, {
+      now: () => now, scheduler: { setTimeout: () => undefined, clearTimeout: () => {} },
+    }))
+    const starts: number[] = []
+    const waits: number[] = []
+    let renameSettled: Promise<void> | undefined
+    let received: OperationDeadline | undefined
+    try {
+      const resources = join(root, "Resources")
+      const shipped = daemonRuntimeLayout(resources, process.platform)
+      for (const path of [shipped.nodePath, shipped.daemonEntryPath]) {
+        await mkdir(dirname(path), { recursive: true })
+        await writeFile(path, "runtime")
+      }
+      const home = join(root, "home")
+      const staging = join(root, "staging")
+      await mkdir(home)
+      await mkdir(staging)
+      const fs = nodeRuntimeFileSystem()
+      const prepared = await prepareDaemonRuntime({
+        resourcesPath: resources, profileDirectory: join(home, ".domovoi"), version: "0.9.4",
+        platform: process.platform, stagingParent: staging,
+        fileSystem: nodeRuntimeFileSystem({
+          copy: async (from, to) => { await fs.copy(from, to); now = 29_993 },
+          rename: (from, to, deadline) => {
+            received = deadline as OperationDeadline | undefined
+            renameSettled = replaceFile(from, to, {
+              platform: "win32", now: () => now,
+              rename: async () => { starts.push(now); throw Object.assign(new Error("rename refused"), { code: "EPERM" }) },
+              pause: async (ms) => { waits.push(ms); now += ms },
+            }, deadline === undefined ? {} : { deadline })
+            return renameSettled
+          },
+        }),
+      })
+      const effects = dependencies({
+        home, exists: vi.fn(async () => false),
+        capture: vi.fn(async () => ({ code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' })),
+      })
+      await expect(installDaemonService({ runtime: prepared.runtime, staged: { runtime: prepared.staged, publish: prepared.publish } }, effects))
+        .rejects.toBeInstanceOf(OperationDeadlineExceededError)
+      // The outer deadline race alone is insufficient: the rename itself must stop.
+      await expect(renameSettled).rejects.toBeInstanceOf(OperationDeadlineExceededError)
+      expect(received).toBe(deadlineStart.mock.results[0]?.value)
+      expect(starts).toEqual([29_993, 29_998])
+      expect(waits).toEqual([5, 2])
+      expect(now).toBe(30_000)
+      expect(effects.write).not.toHaveBeenCalled()
+    } finally {
+      await renameSettled?.catch(() => {})
+      deadlineStart.mockRestore()
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it("installs a launch agent that runs the shipped Node on the shipped daemon", async () => {
     const effects = dependencies()
     const installed = await installDaemonService({ runtime }, effects)

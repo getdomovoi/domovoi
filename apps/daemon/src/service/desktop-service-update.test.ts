@@ -1783,6 +1783,7 @@ describe("updateDaemonService for the caller's profile", () => {
     // Round 5 (P1): published once every step that can refuse with nothing
     // changed has passed (which plist is loaded, the bootout, the profile
     // claim) and right before the new agent is written.
+    expect(publish).toHaveBeenCalledWith(expect.any(OperationDeadline))
     expect(effects.order.slice(0, 5)).toEqual(["launchctl print", "launchctl bootout gui/501/sh.domovoi.domovoid", "claim", "publish", `write ${agent}`])
 
     // A job loaded from another plist refuses in the checks: nothing published.
@@ -1803,6 +1804,7 @@ describe("updateDaemonService for the caller's profile", () => {
     const linuxPublish = vi.fn(async () => { unitWrite.order.push("publish") })
     const failed = updateDaemonService({ runtime, staged: { runtime: staged, publish: linuxPublish }, environment: {} }, unitWrite)
     await expect(failed).rejects.toMatchObject({ outcome: "swap-failed-restored" })
+    expect(linuxPublish).toHaveBeenCalledWith(expect.any(OperationDeadline))
     expect(unitWrite.order.slice(0, 2)).toEqual(["publish", `write ${unit}`])
 
     const refused = fake("darwin", "/Users/dl")

@@ -712,7 +712,7 @@ async function installWithDeadline(
   words: ServiceCommandWords,
   handoff: (() => Promise<void>) | undefined,
   callerProfile?: ProfileLocation,
-  beforeChanges?: () => Promise<void>,
+  beforeChanges?: (deadline?: OperationDeadline) => Promise<void>,
 ): Promise<InstalledService> {
   // Reinstalling is a new supervisor decision, not reuse of an old recovery
   // authorization. Assign the identity here, even if the caller supplied one.
@@ -837,7 +837,7 @@ async function installWithDeadline(
       // claim. The caller's staged runtime goes into place only now, under the
       // lease, before the first file is written (security review rounds 4 and 5
       // of #577).
-      if (beforeChanges !== undefined) await withinServiceDeadline(deadline, beforeChanges)
+      if (beforeChanges !== undefined) await withinServiceDeadline(deadline, () => beforeChanges(deadline))
       await withinServiceDeadline(deadline, () => effects.remove(localOwnerRemovalReceiptPath(profile), deadline))
       // Decided 2026-09-17 (SHIP-PLAN S1.1): a systemd user unit gets lingering,
       // turned on before service.json is written, so the one write records
@@ -933,7 +933,7 @@ async function withLinger(target: ServiceTarget, plan: ServicePlan, effects: Ins
 export function installService(
   target: ServiceTarget,
   effects: InstallEffects & Pick<ServiceEffects, "claimServiceOperation">,
-  options: { handoff?: () => Promise<void>; callerProfile?: ProfileLocation; beforeChanges?: () => Promise<void>; words?: ServiceCommandWords } = {},
+  options: { handoff?: () => Promise<void>; callerProfile?: ProfileLocation; beforeChanges?: (deadline?: OperationDeadline) => Promise<void>; words?: ServiceCommandWords } = {},
 ): Promise<InstalledService> {
   return serviceOperation(effects, (deadline) => installWithDeadline(target, effects, deadline, options.words ?? domovoidServiceWords, options.handoff, options.callerProfile, options.beforeChanges))
 }
@@ -1635,8 +1635,8 @@ export async function runServiceCommand(
       const guest = bundled === undefined
         ? dependencies
         : { ...dependencies, execPath: bundled.runtime.daemonEntryPath, runtime: bundled.runtime.nodePath }
-      const publish = bundled === undefined ? undefined : async () => {
-        await bundled.publish()
+      const publish = bundled === undefined ? undefined : async (deadline?: OperationDeadline) => {
+        await bundled.publish(deadline)
         dependencies.stdout(`Copied the daemon runtime out of the app to ${bundled.copy}, so the service does not run from inside the app.\n`)
       }
       return await serviceOperation(dependencies, (deadline) => runWslServiceCommand(verb, guest, deadline, publish))

@@ -1,3 +1,4 @@
+import type { ReplaceDeadline } from "@getdomovoi/credential-store"
 import { DaemonServiceRuntimeMissingError, DaemonServiceUpdateError, type AcquireLocalDaemonOptions, type DaemonServiceInstallResult, type LocalDaemonHandle } from "@getdomovoi/daemon"
 import { describe, expect, it, vi } from "vitest"
 
@@ -54,9 +55,10 @@ describe("DesktopDaemonService hands over an inert staged runtime", () => {
       expect(copy.publish, action).not.toHaveBeenCalled()
       // #635: the step handed over is the staged publish, with the read of
       // the copy the service runs before it.
-      const handed = (vi.mocked(deps[action]).mock.calls[0] as unknown as [{ staged: { publish: () => Promise<void> } }])[0].staged.publish
-      await handed()
-      expect(copy.publish, action).toHaveBeenCalledOnce()
+      const handed = (vi.mocked(deps[action]).mock.calls[0] as unknown as [{ staged: { publish: (deadline?: ReplaceDeadline) => Promise<void> } }])[0].staged.publish
+      const deadline = { remainingMs: () => 7, throwIfExpired: () => {} }
+      await handed(deadline)
+      expect(copy.publish, action).toHaveBeenCalledExactlyOnceWith(deadline)
       expect(deps.runtimeCopy, action).toHaveBeenCalledOnce()
     }
   })
