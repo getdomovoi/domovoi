@@ -502,6 +502,37 @@ describe("provider task changes", () => {
     ])
   })
 
+  it("renames a step whose task another session renamed while this one was closed", () => {
+    const current = plan({
+      steps: [
+        { id: "step-1", text: "Inspect", status: "completed" },
+        { id: "step-2", text: "Implement", status: "pending" },
+      ],
+    })
+    const heard = new Map<string, ProviderTaskLink>([
+      ["1", { stepId: "step-1", text: "Inspect", status: "completed" }],
+      ["2", { stepId: "step-2", text: "Implement", status: "pending" }],
+    ])
+    const reread = [task("1", "Inspect", "completed"), task("2", "Implement the parser")]
+    const result = taskUpdate(current, reread, reread, heard)
+    expect(shape(result)).toEqual(["step-1:Inspect:completed", "step-2:Implement the parser:pending"])
+  })
+
+  it("renames both steps when Claude moves one task's text to another and rewords that one", () => {
+    const current = plan({
+      steps: [
+        { id: "step-a", text: "Write the parser", status: "pending" },
+        { id: "step-b", text: "Write the docs", status: "pending" },
+      ],
+    })
+    const before = [task("1", "Write the parser"), task("2", "Write the docs")]
+    const after = [task("1", "Write the docs"), task("2", "Publish the docs")]
+    for (const taskLinks of [undefined, new Map([["1", "step-a"], ["2", "step-b"]])]) {
+      const result = taskUpdate(current, before, after, taskLinks)
+      expect(shape(result)).toEqual(["step-a:Write the docs:pending", "step-b:Publish the docs:pending"])
+    }
+  })
+
   // The links live in the daemon's memory. After a restart nothing records
   // that the person removed the step, and tasks read from Claude's storage
   // need not have reached this plan (a shared list, a Plan mode checklist),
@@ -604,6 +635,39 @@ describe("provider task changes", () => {
     ])
     expect(result.plan.steps[15]!.status).toBe("in-progress")
     expect(workingPlanSchema.safeParse(result.plan).success).toBe(true)
+  })
+
+  it("sizes a rename after the change's deletions free their room", () => {
+    const long = "x".repeat(maximumWorkingPlanStepTextLength)
+    const filler = Array.from({ length: 15 }, (_, index) => ({
+      id: `step-filler-${index}`,
+      text: `${index.toString(16)}${long.slice(1)}`,
+      status: "completed" as const,
+    }))
+    const fillerLength = filler.reduce((sum, step) => sum + step.text.length, 0)
+    // Two characters short of the bound, so the rename fits only once the
+    // deleted task's step is gone.
+    const pad = "y".repeat(maximumWorkingPlanTextLength - fillerLength - "Implement".length - 2)
+    const current = plan({
+      steps: [
+        ...filler,
+        { id: "step-pad", text: pad, status: "pending" },
+        { id: "step-implement", text: "Implement", status: "pending" },
+      ],
+    })
+    expect(workingPlanSchema.safeParse(current).success).toBe(true)
+    const renamed = "Implement the parser and the docs"
+    const result = taskUpdate(
+      current,
+      [task("1", filler[0]!.text, "completed"), task("2", "Implement")],
+      [task("2", renamed)],
+    )
+    expect(result.plan.steps.map(({ id }) => id)).toEqual([
+      ...filler.slice(1).map(({ id }) => id),
+      "step-pad",
+      "step-implement",
+    ])
+    expect(result.plan.steps.at(-1)!.text).toBe(renamed)
   })
 
   it("adds no step past the step bound and keeps every step it has", () => {

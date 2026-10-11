@@ -182,8 +182,9 @@ type Session = {
   runtime: Runtime
   tools: Map<string, { type: "command"; command: string } | { type: "file"; path: string } | ClaudeTaskTool>
   tasks: Map<string, ClaudeTask>
-  // The tasks as the daemon last heard them: the last plan-updated event, or
-  // the list read from Claude's storage when the session opened.
+  // The tasks as the daemon last heard them: the last plan-updated event for
+  // this thread, also from before a reopen, or else the list read from
+  // Claude's storage when the session opened.
   reportedTasks: Map<string, ClaudeTask>
   sharedTaskDirectory?: string
   // Tool calls the PreToolUse hook sent to an approval, by tool use id, with
@@ -247,6 +248,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   readonly #processOptions: ClaudeProcessOptions
   readonly #readRepositoryConfig: RepositoryProviderConfigReader | undefined
   #sessions = new Map<string, Session>()
+  // Each thread's tasks as last reported to the daemon. A reopen rereads the
+  // list from Claude's storage, which can already hold changes another
+  // session made to a shared list, so the next change is measured from here.
+  #reportedTasks = new Map<string, Map<string, ClaudeTask>>()
   // Stopped queries whose Claude process has not exited yet. A retried stop,
   // a reopen and a shutdown wait on these instead of finding nothing to stop.
   #stopping = new Set<OwnedQuery>()
@@ -635,7 +640,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       runtime,
       tools: new Map(),
       tasks: tasks ?? new Map(),
-      reportedTasks: new Map(tasks),
+      reportedTasks: new Map(this.#reportedTasks.get(threadId) ?? tasks),
       ...(taskStorage.shared ? { sharedTaskDirectory: taskStorage.directory } : {}),
       screenedReads: new Map(),
       turnMessageIds: new Set(),
@@ -1024,6 +1029,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
             taskChange: { previous: claudePlanTasks(session.reportedTasks), current },
           })
           session.reportedTasks = new Map(session.tasks)
+          this.#reportedTasks.set(session.threadId, session.reportedTasks)
         }
         continue
       }

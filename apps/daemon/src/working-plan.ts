@@ -227,21 +227,12 @@ function mergeProviderTaskChange(
   const unclaimed = (text: string, except?: WorkingPlanStep) => steps.find(
     (step) => step !== except && !claimedSteps.has(step.id) && step.text === text,
   )
-  // The plan's aggregate text bound. A rename or a new step takes only the
-  // room left, so no step already in the plan is cut to make room.
-  let total = steps.reduce((sum, step) => sum + step.text.length, 0)
-  const fit = (text: string, replacing: number) => boundedWorkingPlanText(text, Math.min(
-    maximumWorkingPlanStepTextLength,
-    maximumWorkingPlanTextLength - total + replacing,
-  ))
+  // Renames wait until deleted tasks have freed their room.
+  const renames: Array<{ step: WorkingPlanStep, text: string }> = []
   const claim = (task: { id: string, text: string, status: WorkingPlanStepStatus }, step: WorkingPlanStep, rename = false) => {
     taskLinks.set(task.id, { stepId: step.id, text: task.text, status: task.status })
     claimedSteps.add(step.id)
-    const text = rename ? fit(task.text, step.text.length) : undefined
-    if (text) {
-      total += text.length - step.text.length
-      step.text = text
-    }
+    if (rename) renames.push({ step, text: task.text })
     step.status = progressStatus(step, task.status)
   }
 
@@ -263,10 +254,15 @@ function mergeProviderTaskChange(
     linkedSteps.add(step.id)
   }
 
+  // Whether Claude reworded a task since the daemon last heard it.
   const reworded = (task: { id: string, text: string }) => {
-    const prior = previous.get(task.id)
-    return prior !== undefined && prior.text !== task.text
+    const heard = links.get(task.id)?.text ?? previous.get(task.id)?.text
+    return heard !== undefined && heard !== task.text
   }
+  // Whether another task still in Claude's list shows this step.
+  const heldByAnother = (step: WorkingPlanStep, taskId: string) => [...priorLinks].some(
+    ([otherId, stepId]) => stepId === step.id && otherId !== taskId && currentIds.has(otherId),
+  )
   // Tasks Claude did not reword claim their steps first, keeping the
   // person's text, so a reworded task never takes a step another task holds.
   for (const rewordedPass of [false, true]) {
@@ -274,10 +270,15 @@ function mergeProviderTaskChange(
       if (reworded(task) !== rewordedPass) continue
       const linked = stepsById.get(priorLinks.get(task.id) ?? "")
       if (!linked || claimedSteps.has(linked.id)) continue
-      if (!rewordedPass || linked.text === task.text) claim(task, linked)
-      // Claude took the text of another step: that step shows the task, and
-      // this one stays as a step Claude has not reported.
-      else if (!unclaimed(task.text, linked)) claim(task, linked, true)
+      if (!rewordedPass || linked.text === task.text) {
+        claim(task, linked)
+        continue
+      }
+      // Claude gave the task the text of a step no other task shows, such as
+      // one the person inserted: that step shows the task, and this one
+      // stays as a step Claude has not reported.
+      const target = unclaimed(task.text, linked)
+      if (!target || heldByAnother(target, task.id)) claim(task, linked, true)
     }
   }
   for (const task of current) {
@@ -292,7 +293,20 @@ function mergeProviderTaskChange(
     if (!currentIds.has(taskId) && stepsById.has(stepId) && !claimedSteps.has(stepId)) removed.add(stepId)
   }
   const kept = steps.filter((step) => !removed.has(step.id))
-  total = kept.reduce((sum, step) => sum + step.text.length, 0)
+
+  // The plan's aggregate text bound. A rename or a new step takes only the
+  // room left, so no step already in the plan is cut to make room.
+  let total = kept.reduce((sum, step) => sum + step.text.length, 0)
+  const fit = (text: string, replacing: number) => boundedWorkingPlanText(text, Math.min(
+    maximumWorkingPlanStepTextLength,
+    maximumWorkingPlanTextLength - total + replacing,
+  ))
+  for (const { step, text } of renames) {
+    const fitted = fit(text, step.text.length)
+    if (!fitted) continue
+    total += fitted.length - step.text.length
+    step.text = fitted
+  }
 
   for (const task of current) {
     if (taskLinks.has(task.id)) continue

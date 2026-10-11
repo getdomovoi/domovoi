@@ -1740,6 +1740,88 @@ describe("ClaudeAgentSdkAdapter", () => {
     )))
     await adapter.close()
   })
+
+  // A reopened session rereads its tasks from Claude's storage. With a shared
+  // list, another session can rename or delete a task while this one is
+  // closed, so the change is measured from the tasks last reported.
+  it("reports what changed while a session was closed against the tasks it last reported", async () => {
+    const configDir = await mkdtemp(join(tmpdir(), "domovoi-claude-tasks-"))
+    scratchDirectories.push(configDir)
+    const list = join(configDir, "tasks", "team-list")
+    await mkdir(list, { recursive: true })
+    const task = (id: string, subject: string, status: string) => writeFile(
+      join(list, `${id}.json`),
+      JSON.stringify({ id, subject, description: `${subject}.`, status, blocks: [], blockedBy: [] }),
+    )
+    await task("1", "Inspect", "pending")
+    await task("2", "Implement", "pending")
+    await task("3", "Verify", "pending")
+    vi.stubEnv("CLAUDE_CONFIG_DIR", configDir)
+    vi.stubEnv("CLAUDE_CODE_TASK_LIST_ID", "team-list")
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "55555555-5555-4555-8555-555555555555",
+      "66666666-6666-4666-8666-666666666666",
+      "77777777-7777-4777-8777-777777777777",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    try {
+      const event = vi.fn()
+      adapter.onEvent(event)
+      const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go on", runtime: runtime("build") })
+      await task("1", "Inspect", "in_progress")
+      calls[0]!.query.emit({
+        type: "assistant",
+        session_id: threadId,
+        message: { content: [{ type: "tool_use", id: "toolu_u", name: "TaskUpdate", input: { taskId: "1", status: "in_progress" } }] },
+      })
+      calls[0]!.query.emit({
+        type: "user",
+        session_id: threadId,
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_u", content: "Updated task #1 status" }] },
+        tool_use_result: { success: true, taskId: "1", updatedFields: ["status"], statusChange: { from: "pending", to: "in_progress" } },
+      })
+      const reported: TaskRow[] = [["1", "Inspect", "in-progress"], ["2", "Implement", "pending"], ["3", "Verify", "pending"]]
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(threadId, turnId, [
+        ["1", "Inspect", "pending"],
+        ["2", "Implement", "pending"],
+        ["3", "Verify", "pending"],
+      ], reported)))
+
+      // The connection drops. Another session renames task 2 and deletes task 3.
+      calls[0]!.query.close()
+      await new Promise((resolve) => { setTimeout(resolve, 0) })
+      await task("2", "Implement the parser", "pending")
+      await rm(join(list, "3.json"))
+
+      const reopenedTurnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Continue", runtime: runtime("build") })
+      expect(calls).toHaveLength(2)
+      calls[1]!.query.emit({
+        type: "assistant",
+        session_id: threadId,
+        message: { content: [{ type: "tool_use", id: "toolu_l", name: "TaskList", input: {} }] },
+      })
+      calls[1]!.query.emit({
+        type: "user",
+        session_id: threadId,
+        message: { content: [{ type: "tool_result", tool_use_id: "toolu_l", content: "#1 [in_progress] Inspect\n#2 [pending] Implement the parser" }] },
+        tool_use_result: {
+          tasks: [
+            { id: "1", subject: "Inspect", status: "in_progress", blockedBy: [] },
+            { id: "2", subject: "Implement the parser", status: "pending", blockedBy: [] },
+          ],
+        },
+      })
+      await waitForDaemon(() => expect(event).toHaveBeenCalledWith(taskPlanEvent(threadId, reopenedTurnId, reported, [
+        ["1", "Inspect", "in-progress"],
+        ["2", "Implement the parser", "pending"],
+      ])))
+    } finally {
+      await adapter.close()
+      vi.unstubAllEnvs()
+    }
+  })
 })
 
 describe("changing the mode on a live session", () => {
