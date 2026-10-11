@@ -36,11 +36,20 @@ type AuthorizePreview = (input: {
   parentOrigin: string
 }) => Promise<ArtifactAccess>
 
+// A failed renewal is retried after 1 s, then 2, 4, 8 and 16, and every 30 s
+// after that, for as long as the preview stays on screen.
+export const previewGrantRetryCapMs = 30_000
+
+export function previewGrantRetryDelay(failures: number): number {
+  return Math.min(previewGrantRetryCapMs, 1_000 * 2 ** Math.max(0, failures - 1))
+}
+
 type GrantState = {
   key: string
   access?: ArtifactAccess
   error: string
   renewalError: string
+  renewalFailures: number
 }
 
 function errorText(cause: unknown, fallback: string): string {
@@ -50,7 +59,8 @@ function errorText(cause: unknown, fallback: string): string {
 // One preview document's grant. It is requested when the document changes and
 // renewed ahead of expiry only while the preview is on screen (`active`), so a
 // hidden dock does not keep signing grants; when it shows again an expired
-// grant is renewed at once.
+// grant is renewed at once. A failed renewal is retried with backoff and its
+// message is kept in `renewalError` until a renewal succeeds.
 export function usePreviewGrant({
   sessionId,
   artifactId,
@@ -69,20 +79,23 @@ export function usePreviewGrant({
   authorize: AuthorizePreview
 }): { access: ArtifactAccess | undefined, error: string, renewalError: string } {
   const key = JSON.stringify([sessionId, artifactId, revision, bridgeChannel, enabled])
-  const [state, setState] = useState<GrantState>({ key, error: "", renewalError: "" })
-  const current = state.key === key ? state : { key, error: "", renewalError: "" }
+  const empty: GrantState = { key, error: "", renewalError: "", renewalFailures: 0 }
+  const [state, setState] = useState<GrantState>(empty)
+  const current = state.key === key ? state : empty
   const access = current.access
+  const renewalFailures = current.renewalFailures
 
   useEffect(() => {
     let live = true
-    setState({ key, error: "", renewalError: "" })
+    const reset: GrantState = { key, error: "", renewalError: "", renewalFailures: 0 }
+    setState(reset)
     if (!enabled || sessionId === undefined || artifactId === undefined || revision === undefined) {
       return () => { live = false }
     }
     void authorize({ sessionId, artifactId, revision, purpose: "preview", bridgeChannel, parentOrigin: window.location.origin }).then(
-      (granted) => { if (live) setState({ key, access: granted, error: "", renewalError: "" }) },
+      (granted) => { if (live) setState({ ...reset, access: granted }) },
       (cause: unknown) => {
-        if (live) setState({ key, error: errorText(cause, "Preview access could not be authorized"), renewalError: "" })
+        if (live) setState({ ...reset, error: errorText(cause, "Preview access could not be authorized") })
       },
     )
     return () => { live = false }
@@ -91,6 +104,9 @@ export function usePreviewGrant({
   useEffect(() => {
     if (!access || !active || !enabled) return
     let live = true
+    const delay = renewalFailures === 0
+      ? previewGrantRenewDelay(access.expiresAt, Date.now())
+      : previewGrantRetryDelay(renewalFailures)
     const timer = setTimeout(() => {
       void authorize({
         sessionId: access.sessionId,
@@ -101,20 +117,27 @@ export function usePreviewGrant({
         parentOrigin: window.location.origin,
       }).then(
         (granted) => {
-          if (live) setState((previous) => previous.key === key ? { ...previous, access: granted, renewalError: "" } : previous)
+          if (live) setState((previous) => previous.key === key
+            ? { ...previous, access: granted, renewalError: "", renewalFailures: 0 }
+            : previous)
         },
         (cause: unknown) => {
+          // Counting the failure re-runs this effect, which schedules the retry.
           if (live) setState((previous) => previous.key === key
-            ? { ...previous, renewalError: errorText(cause, "The preview grant could not be renewed") }
+            ? {
+                ...previous,
+                renewalError: errorText(cause, "The preview grant could not be renewed"),
+                renewalFailures: previous.renewalFailures + 1,
+              }
             : previous)
         },
       )
-    }, previewGrantRenewDelay(access.expiresAt, Date.now()))
+    }, delay)
     return () => {
       live = false
       clearTimeout(timer)
     }
-  }, [access, active, authorize, bridgeChannel, enabled, key])
+  }, [access, active, authorize, bridgeChannel, enabled, key, renewalFailures])
 
   return { access, error: current.error, renewalError: current.renewalError }
 }

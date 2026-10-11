@@ -191,6 +191,43 @@ it("renews the grant before it lapses without reloading the page on screen", asy
   expectSandboxed(fullscreen)
 })
 
+it("retries a failed renewal instead of leaving the preview without a grant", async () => {
+  const user = userEvent.setup()
+  const granting = grantingAuthorize(6)
+  let renewals = 0
+  const authorize = vi.fn(async (input: AuthorizeInput): Promise<ArtifactAccess> => {
+    if (input.bridgeChannel && granting.mock.calls.length > 0 && renewals++ === 0) throw new Error("daemon busy")
+    return granting(input)
+  })
+  renderDock(authorize as unknown as ReturnType<typeof grantingAuthorize>)
+  await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"))
+
+  // The renewal due after one second fails; the retry gets the next grant.
+  await waitFor(() => expect(renewals).toBeGreaterThan(1), { timeout: 4_000 })
+  await user.click(screen.getByRole("button", { name: "Open fullscreen preview" }))
+  await waitFor(() => expect(frameTitled("Replay table B fullscreen").getAttribute("src")).toMatch(/signature=grant-[2-9]/u), { timeout: 3_000 })
+})
+
+it("says why a frame cannot load when the grant lapsed and renewing it keeps failing", async () => {
+  const user = userEvent.setup()
+  const granting = grantingAuthorize(6)
+  const authorize = vi.fn(async (input: AuthorizeInput): Promise<ArtifactAccess> => {
+    if (input.bridgeChannel && granting.mock.calls.length > 0) throw new Error("Preview artifact does not exist")
+    return granting(input)
+  })
+  renderDock(authorize as unknown as ReturnType<typeof grantingAuthorize>)
+  await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"))
+  // Past the point where grant-1 is too close to its end to load.
+  await new Promise((resolve) => setTimeout(resolve, 1_300))
+
+  await user.click(screen.getByRole("button", { name: "Open fullscreen preview" }))
+  const surface = screen.getByRole("dialog")
+  expect(await within(surface).findByText("Preview artifact does not exist")).toBeTruthy()
+  expect(within(surface).queryByTitle("Replay table B fullscreen")).toBeNull()
+  // The page already on screen in the dock stays.
+  expect(screen.getByTitle("Replay table B", { exact: true }).getAttribute("src")).toContain("signature=grant-1")
+})
+
 it("signs no grants while the preview is hidden and loads a fresh one when it shows again", async () => {
   const user = userEvent.setup()
   const authorize = grantingAuthorize(6)

@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type Ref } from "react"
+import { useEffect, useState, type CSSProperties, type ReactNode, type Ref } from "react"
 
 import { previewGrantFresh } from "./preview-grant"
 
@@ -23,6 +23,7 @@ export function PreviewFrame({
   onLoad,
   className,
   style,
+  unavailable,
 }: {
   url: string | undefined
   expiresAt?: number | undefined
@@ -32,6 +33,7 @@ export function PreviewFrame({
   onLoad?: (() => void) | undefined
   className?: string | undefined
   style?: CSSProperties | undefined
+  unavailable?: ReactNode
 }) {
   const loadableUrl = expiresAt === undefined || previewGrantFresh({ expiresAt }) ? url : undefined
   const [latched, setLatched] = useState(() => loadableUrl === undefined ? undefined : { documentKey, url: loadableUrl })
@@ -42,6 +44,9 @@ export function PreviewFrame({
     if (url === undefined) setLatched(undefined)
     else if (current === undefined && loadableUrl !== undefined) setLatched({ documentKey, url: loadableUrl })
   }, [current, documentKey, loadableUrl, url])
+
+  // Nothing loaded yet and only a lapsed grant to load: say why, if told.
+  if (current === undefined && url !== undefined && loadableUrl === undefined && unavailable) return unavailable
 
   return (
     <iframe

@@ -396,6 +396,15 @@ export function ArtifactDock({
   })
   const previewUrl = grant.access ? artifactUrlFor(rpcUrl, grant.access) : undefined
   const previewError = grant.error
+  // Shown in place of a frame that has nothing loaded and only a lapsed grant
+  // to load, while renewing it keeps failing. A page already loaded stays.
+  const grantUnavailable = grant.renewalError ? (
+    <Alert variant="destructive" className="m-3 w-auto" aria-live="polite">
+      <CircleStopIcon />
+      <AlertTitle>Preview unavailable</AlertTitle>
+      <AlertDescription>{grant.renewalError}</AlertDescription>
+    </Alert>
+  ) : undefined
   const previewDocumentKey = `${previewKey ?? ""}:${bridgeChannel}`
   const bridgeFrame = fullscreen ? "fullscreen" : "dock"
   const activeFrame = useCallback(
@@ -811,6 +820,7 @@ export function ArtifactDock({
                     frameRef={previewFrameRef}
                     url={previewUrl}
                     expiresAt={grant.access?.expiresAt}
+                    unavailable={grantUnavailable}
                     documentKey={previewDocumentKey}
                     className="h-full min-h-96 w-full justify-self-center border bg-background"
                     style={{ maxWidth: previewMaxWidth }}
@@ -990,6 +1000,7 @@ export function ArtifactDock({
             frameRef={fullscreenFrameRef}
             url={previewUrl}
             expiresAt={grant.access?.expiresAt}
+                    unavailable={grantUnavailable}
             documentKey={previewDocumentKey}
             className="mx-auto min-h-[50dvh] w-full flex-1 rounded-xl border bg-background"
             style={{ maxWidth: previewMaxWidth }}
