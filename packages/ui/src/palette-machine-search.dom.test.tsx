@@ -199,8 +199,7 @@ it("marks each machine's answer with a dot, and sweeps while it asks", async () 
 })
 
 // The design's row meta is the session's state and its age ("failed 1h ago").
-// A running session shows no duration: the wire carries no turn start until
-// protocol 0.8.0 (ruling Q390 A).
+// A running session whose answer carries no turn start shows no duration.
 it("shows a remote session's state and age as its meta", async () => {
   const hourAgo = new Date(Date.now() - 61 * 60_000).toISOString()
   const search = vi.fn(async (machineId: string): Promise<SessionSearchResult> => machineId === machines[0]!.id
@@ -224,6 +223,39 @@ it("shows a remote session's state and age as its meta", async () => {
   expect(screen.getByRole("option", { name: /Billing live without a turn id/u }).querySelector("[data-palette-meta]")?.textContent).toBe("running")
   const gate = screen.getByRole("option", { name: /Apply the billing migration/u })
   expect(gate.querySelector("[data-palette-meta]")?.textContent).toBe("waiting 5m ago")
+})
+
+// Task 30 (ruling Q390): the design's "running 41m". The answering daemon
+// says when the turn started and what its clock read when it replied, so the
+// duration and the ages are read on that machine's clock: each reply's offset
+// stays with that machine's rows, and a reply without daemonTime falls back to
+// this window's clock.
+it("shows how long a running turn has run, on the clock of the machine that answered", async () => {
+  const skewMs = 2 * 60 * 60_000
+  const search = vi.fn(async (machineId: string): Promise<SessionSearchResult> => {
+    // hetzner-cx42's clock runs two hours ahead of this window's.
+    const daemonNow = Date.now() + skewMs
+    if (machineId === machines[0]!.id) return { query: "billing", truncated: false, daemonTime: new Date(daemonNow).toISOString(), matches: [
+      { session: { ...session("s-replay", "Replay failed billing events"), state: "active", activeTurnId: "turn-1", activeTurnStartedAt: new Date(daemonNow - 41 * 60_000 - 5_000).toISOString() }, matchedIn: "title" },
+      { session: { ...session("s-drain", "Find why the queue drains"), state: "failed", updatedAt: new Date(daemonNow - 61 * 60_000).toISOString() }, matchedIn: "title" },
+    ] }
+    // wsl-ubuntu-24 answers without its clock: this window's is used.
+    if (machineId === machines[1]!.id) return { query: "billing", truncated: false, matches: [
+      { session: { ...session("s-long", "Billing backfill"), state: "active", activeTurnId: "turn-2", activeTurnStartedAt: new Date(Date.now() - (65 * 60_000 + 5_000)).toISOString() }, matchedIn: "title" },
+      { session: { ...session("s-new", "Billing export"), state: "idle", activeTurnId: "turn-3", activeTurnStartedAt: new Date(Date.now() - 20_000).toISOString() }, matchedIn: "title" },
+      // A start ahead of the clock that reads it is not a negative duration.
+      { session: { ...session("s-ahead", "Billing ahead"), state: "active", activeTurnId: "turn-4", activeTurnStartedAt: new Date(Date.now() + 10 * 60_000).toISOString() }, matchedIn: "title" },
+    ] }
+    return none("billing")
+  })
+  const { user } = palette(search)
+  await user.type(screen.getByRole("combobox"), "billing")
+  const meta = async (name: RegExp) => (await screen.findByRole("option", { name })).querySelector("[data-palette-meta]")?.textContent
+  expect(await meta(/Replay failed billing events/u)).toBe("running 41m")
+  expect(await meta(/Find why the queue drains/u)).toBe("failed 1h ago")
+  expect(await meta(/Billing backfill/u)).toBe("running 1h 5m")
+  expect(await meta(/Billing export/u)).toBe("running under 1m")
+  expect(await meta(/Billing ahead/u)).toBe("running under 1m")
 })
 
 // Review 2026-10-06: Add it back during the debounce of a new query must not
