@@ -17,8 +17,10 @@ It covers four of the definition's bullets, plus two runs the definition leans o
 
 Written on 2026-10-07 from `main` at `017307b5`. Every label below was read from the code at that
 commit, and checked again at `640ac4e7`, which changed the build line in section 1 and the pairing
-command in section 5. If a label on screen differs, record what the screen says; the difference is
-a finding, not a reason to skip the row.
+command in section 5. On 2026-10-11 it was checked again at `1d797596`: section 1 gained the
+unsigned-build notes, section 2 step 4 and section 5 steps 3 and 4 were rewritten, and the
+terminal commands for the login service were added to section 1. If a label on screen differs,
+record what the screen says; the difference is a finding, not a reason to skip the row.
 
 ## Before you start
 
@@ -82,17 +84,22 @@ The artifacts land in `apps/desktop/dist/`, named `domovoi-desktop-<version>-<ar
 | Windows | NSIS installer `.exe`, per user, with a choice of directory |
 
 Without signing credentials, which is the M1 case, macOS builds are ad-hoc signed and not
-notarized, and Windows builds are unsigned ([desktop signing](desktop-signing.md)). No document in
-this repository yet tells a person how to open an app macOS has not notarized, or what Windows
-SmartScreen shows for an unsigned installer. Record what each OS showed and what you did.
+notarized, and Windows builds are unsigned ([desktop signing](desktop-signing.md)).
+[Opening an unsigned build](desktop-signing.md#opening-an-unsigned-build) says what Apple and
+Microsoft document for that case and how to get past each warning. It was written from their
+pages, not from a run. Record what each OS showed, word for word where you can, and what you did.
 
 ### Steps
 
 1. **Install the app.** **Changes the OS.**
-   - macOS: open the `.dmg` and drag Domovoi to Applications, then open it from Applications.
+   - macOS: open the `.dmg` and drag Domovoi to Applications, then open it from Applications. If
+     macOS refuses to open it, follow
+     [Opening an unsigned build, macOS](desktop-signing.md#macos).
    - Linux: either `chmod +x domovoi-desktop-<version>-<arch>.AppImage` and run it, or
      `sudo apt install ./domovoi-desktop-<version>-<arch>.deb` and run `domovoi-desktop`.
-   - Windows: run the installer `.exe`, then open Domovoi from the Start menu.
+   - Windows: run the installer `.exe`, then open Domovoi from the Start menu. If SmartScreen
+     or Smart App Control stops the installer, see
+     [Opening an unsigned build, Windows](desktop-signing.md#windows).
 2. **First launch.** **Changes the profile.** The app starts its own daemon. Setup opens by
    itself, headed "Domovoi" and "Setup". While the daemon runs inside the app, its first step is
    "Keep Domovoi running after you quit", with the line "This build is not signed and does not
@@ -118,6 +125,12 @@ SmartScreen shows for an unsigned installer. Record what each OS showed and what
      commands on Windows, from an AppImage, or from an app still running inside the disk image;
      there, use the entry point from
      [clean-machine setup, Step 2](clean-machine-setup.md#step-2-fix-the-commands-you-will-keep-using).
+   - The same login service can be installed, checked and removed from a terminal with
+     `domovoi daemon install`, `domovoi daemon status` and `domovoi daemon remove` (`S1.6`, #765,
+     merged 2026-10-07). They run the daemon package's own installer, the same code as
+     `domovoid service install|status|remove`. This walk uses the app's buttons; the terminal
+     route is walked in section 4, as
+     [clean-machine setup, Step 5](clean-machine-setup.md#step-5-install-supervision).
 4. **The service keeps running.** Quit the app (macOS: Domovoi, Quit Domovoi, or ⌘Q; Windows and
    Linux: the window's Close button). The manager check from step 3 still shows the daemon
    running. Open the app again: Settings shows "Running" and "Quitting this app leaves the daemon
@@ -145,8 +158,9 @@ SmartScreen shows for an unsigned installer. Record what each OS showed and what
    machine", "Remove", then "Remove the service" in the dialog "Remove the login service?". Expect
    "Removed. Quitting Domovoi now stops the daemon and every session on it." The manager check
    from step 3 no longer finds the job. On Linux, check lingering again: it is off only if this
-   install turned it on. Desktop does not show the lingering outcome of a removal yet. Removal
-   keeps the credential, machine identity, workspace database and worktrees.
+   install turned it on. Desktop does not show the lingering outcome of a removal yet;
+   `domovoi daemon remove` prints it. Removal keeps the credential, machine identity, workspace
+   database and worktrees.
 8. **Uninstall the app.** **Changes the OS.** Remove the service first, in step 7.
    - macOS: move Domovoi from Applications to the Bin.
    - Linux: `sudo apt remove domovoi-desktop`, or delete the AppImage.
@@ -199,11 +213,19 @@ need.
    next message you send. Send one, and check that the agent's reply addresses the comment.
    "Looks right, carry on" sends that sentence as the next message.
 
-   **Known gap.** Recorded in #746 (merged 2026-10-07): in a Domovoi session, Claude Code 2.1.292
-   reported no `TodoWrite` tool and Codex reported `update_plan` unavailable, so neither produced a
-   working plan during a turn. The Plan-mode fallback above is the path this step relies on. If
-   "Plan preview" still reads "No plan content yet" after a Plan turn ends, record a fail with the
-   provider, its CLI version, the mode, and what the thread showed instead.
+   **Working plans during a turn.** #746 (merged 2026-10-07) recorded that in a Domovoi session
+   Claude Code 2.1.292 reported no `TodoWrite` tool and Codex reported `update_plan` unavailable,
+   so neither produced a working plan during a turn. #759 (merged 2026-10-07) closes that in the
+   daemon: it starts Claude Code with `CLAUDE_CODE_ENABLE_TODO_TOOLS` set and builds the plan from
+   Claude's TaskCreate, TaskUpdate and TaskList calls, keeping TodoWrite for older Claude Code, and
+   it sets `tools.update_plan.enabled` on every Codex thread it starts or resumes. #795 (merged
+   2026-10-10) builds the plan from OpenCode's todowrite list. This is read from the code at
+   `1d797596`, not run on a packaged build. In Plan mode the Claude and OpenCode checklists are not
+   reported as the plan, so for them this step still relies on the final reply. A plan Codex sends
+   during a Plan turn, as its plan item or through `update_plan`, is the plan, and the reply is
+   then not used. If "Plan preview"
+   still reads "No plan content yet" after a Plan turn ends, record a fail with the provider, its
+   CLI version, the mode, and what the thread showed instead.
 5. **Approve and deny consequential work.** Ask the agent to run a shell command that writes a
    file, for example `touch walk-gate.txt`. What raises a gate depends on the provider:
    - Claude Code and OpenCode: "Build" with "Auto" off.
@@ -431,16 +453,24 @@ open on it, and the phone says so.
 3. **Pair.** **Changes the profile.** In Settings, "Phone and tablet", choose "Phone", then "Show a
    pairing code". From a terminal, `domovoid pair --client phone` prints the same kind of code, as
    a symbol to scan and a line to paste; issuing it ends any code still open, including the one
-   Settings shows. `--label "<name>"` is optional; the daemon keeps it with the code, but nothing
-   shows it yet, and the name typed on the phone is the one used. On the phone,
-   under "Pair this phone", choose "Scan a code" (or "Type it" and paste the line), name the
-   phone, and choose "Pair with this machine". Expect "Paired with <machine>", then "Open
+   Settings shows. `--label "<name>"` is optional. Since #796 the code carries it, in the symbol and
+   in the line, and the phone's "Name this phone" field starts with it; the field stays editable.
+   The daemon names the phone by what the field holds when you pair, not by the label. A code
+   from Settings carries no name. On the phone, under "Pair this phone", choose "Scan a code" (or
+   "Type it" and paste the line), check or type the phone's name, and choose "Pair with this
+   machine". If you gave `--label`, record whether the field started with it. Expect "Paired with <machine>", then "Open
    Sessions". The code lasts at most three minutes and works once; five wrong codes end it sooner.
-4. **Watch a terminal (design frame 04).** Not built on the phone at `640ac4e7`: the phone lists a
-   terminal with a note that it is watched on the desktop, and the pairing grant says "Terminal
-   output is not on a phone yet." Record this row as blocked, with "not built" in the notes, unless
-   the build under test includes a phone terminal view; then record pass or fail and what it
-   showed.
+4. **Watch a terminal (design frame 04).** Built on the phone by #739 (merged 2026-10-08). On the
+   desktop, open a terminal in a session and run a command that keeps printing. On the phone,
+   open that session: the thread shows the terminal's last lines with "Show all N lines" ("Open
+   the terminal" before anything is printed). Choose it. The full view names who holds the
+   terminal ("Claimed by <device>"), says "Live", "Failed", "Closed" or "Unconfirmed", and has a
+   "Follow output" switch. Scroll up while output arrives and "Jump to latest" appears. Its
+   footer reads "Read-only. Only the claimant can type or resize." The phone never types,
+   resizes or claims. The phone checks for new terminals every ten seconds, so one opened after
+   you opened the session can take that long to appear. The tablet's view beside the thread is
+   not built. At `1d797596` the pairing grant in step 3 still says "Terminal output is not on a
+   phone yet."; that line is stale, so record it as a finding, not as a reason to skip this row.
 5. **Answer a gate.** **Changes the profile**: each answer is an approval receipt. Start a turn
    on the desktop that raises a gate (section 2, step 5). On the phone, Sessions lists it under
    "NEEDS YOU"; open it to "Waiting on you" and choose "Allow once".

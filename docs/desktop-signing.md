@@ -36,6 +36,96 @@ The notarization ticket is stapled to the **application**, which is then put in 
 This does not claim a separate notarization ticket stapled to the DMG container. No Linux
 publisher signature or Windows SmartScreen reputation is created by this configuration.
 
+## Opening an unsigned build
+
+Without credentials the macOS app is ad-hoc signed, with no publisher identity, no hardened
+runtime and no notarization (`apps/desktop/scripts/signing-config.cjs`), and the Windows NSIS
+installer and the app it installs are unsigned. That is every M1 build. Both operating systems
+can warn before the first launch.
+
+This section was written on 2026-10-11 from Apple's and Microsoft's own pages, linked below, not
+from a run on either OS. Each "Record" line is something the maintainer must still capture on
+real hardware, in the [M1 acceptance walk](m1-acceptance-walk.md#1-packaged-desktop-and-its-service).
+Until those runs exist, the exact dialogs, and whether one appears at all for a given copy, are
+unverified.
+
+This page does not suggest turning Gatekeeper, SmartScreen or Smart App Control off, or removing
+a file's download mark. Each of those disables the check for more than this one app.
+
+### macOS
+
+Apple: "When a user downloads and opens an app, a plug-in, or an installer package from outside
+the App Store, Gatekeeper verifies that the software is from an identified developer, is
+notarized by Apple to be free of known malicious content, and hasn't been altered." It also asks
+for approval before downloaded software opens for the first time
+([Gatekeeper and runtime protection](https://support.apple.com/guide/security/gatekeeper-and-runtime-protection-sec5599b66df/web)).
+A Domovoi build passes none of the first two checks, so a downloaded copy is expected to be
+refused at first launch.
+
+From macOS Sequoia (15) on, Control-click and Open no longer gets past Gatekeeper; the person
+has to go to System Settings, Privacy & Security
+([Apple Developer news, 2024-08-06](https://developer.apple.com/news/?id=saqachfa)). Apple's
+steps ([Open a Mac app from an unknown developer](https://support.apple.com/guide/mac-help/open-a-mac-app-from-an-unknown-developer-mh40616/mac)):
+
+1. Open Domovoi from Applications once, so macOS refuses it. Dismiss the warning; do not move
+   the app to the Bin.
+2. Choose Apple menu, System Settings, then Privacy & Security in the sidebar.
+3. Under Security, choose "Open Anyway". Apple says the button is there for about an hour after
+   the refused open.
+4. Enter your login password, then choose OK.
+
+macOS then keeps the app as an exception, and it opens like any other app from then on.
+
+Record:
+
+- the macOS version and whether the Mac is Apple silicon or Intel;
+- whether the DMG had a download mark: `xattr -p com.apple.quarantine <file>.dmg` prints the
+  attribute, or says it has none. A package built on the same Mac was not downloaded. Whether
+  Gatekeeper refuses such a copy is not stated on Apple's pages above;
+- the refusal dialog's title, text and buttons, word for word;
+- what "Privacy & Security" showed above "Open Anyway";
+- whether the app, its daemon and the login service then started (section 1 of the walk).
+
+### Windows
+
+Microsoft: SmartScreen checks a downloaded app or installer "against a list of files that are
+well known and downloaded frequently. If the file isn't on that list, Microsoft Defender
+SmartScreen shows a warning, advising caution." Reputation also attaches to "the digital signature
+used to sign a file", and an item with no reputation "presents a warning to the user"
+([SmartScreen overview](https://learn.microsoft.com/en-us/windows/security/operating-system-security/virus-and-threat-protection/microsoft-defender-smartscreen/)).
+An unsigned installer has no signature to carry reputation, so a downloaded copy is expected to
+be warned about. The same page says SmartScreen "protects against malicious files from the
+internet". A downloaded file carries a `Zone.Identifier` stream with the value `3`
+([Unblock-File](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.utility/unblock-file));
+`Get-Item <file>.exe -Stream Zone.Identifier` shows whether the installer has one.
+
+Microsoft's own description of the warning is an archived 2013 post from Windows 8: the dialog
+has a "More Info" option and a "Run Anyway" button, and a file without a valid signature shows
+an unknown publisher
+([archived post](https://learn.microsoft.com/en-us/archive/blogs/smondal/windows-smartscreen-prevented-an-unrecognized-app-from-running-running-this-app-might-put-your-pc-at-risk)).
+No current Microsoft page found while writing this quotes the Windows 10 or 11 dialog. To go on,
+choose "More info", check that the file name is the installer you built or downloaded, then
+choose "Run anyway".
+
+Smart App Control, on Windows 11, is stricter: "If the app is unsigned, or the signature is
+invalid, Smart App Control will consider it untrusted and block it for your protection." and
+"There is currently no way to bypass Smart App Control protection for individual apps."
+([Smart App Control FAQ](https://support.microsoft.com/en-us/windows/smart-app-control-frequently-asked-questions-285ea03d-fa88-4d56-882e-6698afdb7003)).
+On a machine where it is on, an unsigned Domovoi installer may not run at all. Record that as
+blocked rather than turning Smart App Control off.
+
+The installer is per user (`perMachine: false` in `apps/desktop/electron-builder.yml`). That it
+then asks for no administrator approval is inference, not a run.
+
+Record:
+
+- the Windows edition and version, and whether Smart App Control was on;
+- whether the installer had a `Zone.Identifier` stream;
+- each dialog's title, text, the publisher it named and its buttons, word for word, for the
+  installer and for the first launch of the installed app;
+- whether a User Account Control prompt appeared;
+- whether the app, its daemon and the login service then started (section 1 of the walk).
+
 ## Maintainer setup, shared
 
 Do these steps deliberately. Neither credentials nor native account access exists in the
