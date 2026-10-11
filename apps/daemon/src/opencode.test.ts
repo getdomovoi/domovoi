@@ -1013,12 +1013,19 @@ describe.each([
     const events: AgentEvent[] = []
     adapter.onEvent((event) => events.push(event))
     const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
-    return { adapter, events, stream, threadId }
+    // Sends a turn and shows its prompt, as the server records it before the
+    // run that writes todos begins.
+    const prompt = async (text = "One") => {
+      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: text, runtime: runtime("build") })
+      stream.emit({ type: "message.updated", properties: { info: { id: turnId, sessionID: threadId, role: "user" } } })
+      return turnId
+    }
+    return { adapter, events, prompt, stream, threadId }
   }
 
   it("reports each whole todo list as the turn's plan, in order", async () => {
-    const { adapter, events, stream, threadId } = await started()
-    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const { adapter, events, prompt, stream, threadId } = await started()
+    const turnId = await prompt()
 
     stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Read", "completed"), todo("Write", "in_progress"), todo("Test", "pending")] } })
     stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Read", "completed"), todo("Write", "completed")] } })
@@ -1040,8 +1047,8 @@ describe.each([
   // The working plan has no cancelled state. A cancelled todo is work the
   // agent dropped, so it leaves the plan rather than holding back the rest.
   it("leaves a cancelled todo out of the plan", async () => {
-    const { adapter, events, stream, threadId } = await started()
-    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const { adapter, events, prompt, stream, threadId } = await started()
+    const turnId = await prompt()
 
     stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Read", "completed"), todo("Refactor", "cancelled"), todo("Test", "pending")] } })
 
@@ -1055,8 +1062,8 @@ describe.each([
   })
 
   it("reports no plan for a list it cannot read", async () => {
-    const { adapter, events, stream, threadId } = await started()
-    await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const { adapter, events, prompt, stream, threadId } = await started()
+    await prompt()
 
     stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Read", "blocked")] } })
     stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [{ status: "pending" }] } })
@@ -1071,16 +1078,33 @@ describe.each([
   // A subagent's todos are its own list, not the thread's plan, and a list
   // published outside any turn belongs to no turn the daemon is running.
   it("reports no plan for a subagent's todos or for todos outside a turn", async () => {
-    const { adapter, events, stream, threadId } = await started()
+    const { adapter, events, prompt, stream, threadId } = await started()
     stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Early", "pending")] } })
     await new Promise((resolve) => setTimeout(resolve, 20))
-    const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    const turnId = await prompt()
     stream.emit({ type: "session.created", properties: { sessionID: "ses_child", info: { id: "ses_child", parentID: threadId, directory: "/worktree" } } })
     stream.emit({ type: "todo.updated", properties: { sessionID: "ses_child", todos: [todo("Child", "pending")] } })
     stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Parent", "pending")] } })
 
     await waitForDaemon(() => expect(plans(events)).toHaveLength(1))
     expect(plans(events)[0]).toEqual({ type: "plan-updated", threadId, turnId, steps: [{ text: "Parent", status: "pending" }] })
+    await adapter.close()
+  })
+
+  // An interrupted run can publish its todos after the next turn was sent.
+  // Until the server shows the new turn's prompt they are the earlier run's,
+  // as an error is (security review round 8 of #687, ruling Q287).
+  it("does not give an interrupted run's late todos to the turn sent after it", async () => {
+    const { adapter, events, prompt, stream, threadId } = await started()
+    const first = await prompt()
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Interrupted", "in_progress")] } })
+    stream.emit({ type: "message.updated", properties: { info: { id: second, sessionID: threadId, role: "user" } } })
+    stream.emit({ type: "todo.updated", properties: { sessionID: threadId, todos: [todo("Second", "pending")] } })
+
+    await waitForDaemon(() => expect(plans(events)).toHaveLength(1))
+    expect(plans(events)[0]).toEqual({ type: "plan-updated", threadId, turnId: second, steps: [{ text: "Second", status: "pending" }] })
     await adapter.close()
   })
 })
