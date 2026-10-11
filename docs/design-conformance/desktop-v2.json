@@ -749,7 +749,7 @@
       ],
       "partial": {
         "since": "2026-10-11",
-        "reason": "three of the five drawn rows are built: the locked gate row, and the switchable completion and failure rows, which keep their own labels because their notifications carry neither a file count nor a suite result. Q55 A (2026-10-11) leaves A run failed or a machine went unreachable (fleet health), Changes are waiting for review, and Every tool call (tool events) after M1 under Q47 A: each needs a new notification kind in the tracker, the desktop main allow-list and the browser platform"
+        "reason": "one drawn row is built as drawn, the locked gate row. The panel also keeps two switchable rows of its own, Completions and Failures, which are not the frame's A session finished its plan row: those notifications carry neither a file count nor a suite result. Q55 A (2026-10-11) leaves A run failed or a machine went unreachable (fleet health), Changes are waiting for review, and Every tool call (tool events) after M1 under Q47 A: each needs a new notification kind in the tracker, the desktop main allow-list and the browser platform"
       }
     },
     {

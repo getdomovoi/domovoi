@@ -821,6 +821,18 @@ it("draws the paired devices as rows of one card under its heading", async () =>
   expect(card?.className.split(" ")).toEqual(expect.arrayContaining(["rounded-xl", "border", "bg-card"]))
   expect(within(card!).getByRole("heading", { name: "Devices paired with workshop" })).toBeTruthy()
   expect(screen.getByRole("columnheader", { name: "Kind" }).closest("thead")?.className).toContain("sr-only")
+  // With the header row hidden, each date says what it is, as the frame's
+  // meta line does.
+  expect(row.textContent).toMatch(/paired \d{2} Aug/u)
+  expect(row.textContent).toMatch(/last seen \d{2} Aug/u)
+})
+
+it("says a device that never connected was never seen", async () => {
+  const { lastSeenAt: _lastSeen, ...unseen } = device
+  renderFleet({ devices: [unseen] })
+
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+  expect(row.textContent).toContain("never seen")
 })
 
 it("masks a rotated credential and copies it without revealing it", async () => {

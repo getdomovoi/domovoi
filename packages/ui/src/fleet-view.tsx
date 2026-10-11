@@ -858,13 +858,17 @@ function DeviceRow({
         onUndo={onUndoRename}
       />
       <td className={`${rowCell} pr-3 align-top ${monoValue} text-muted-foreground`} title={device.pairedAt}>
-        {when(device.pairedAt)}
+        {/* The header row is for a screen reader only, so each date says
+            what it is, as the frame's meta line does. */}
+        {`paired ${when(device.pairedAt)}`}
       </td>
       <td
         className={`${rowCell} pr-3 align-top ${monoValue} text-muted-foreground`}
         title={revoked ? device.revokedAt : device.lastSeenAt}
       >
-        {revoked ? `${removedWord(device.binding)} ${when(device.revokedAt)}` : when(device.lastSeenAt)}
+        {revoked
+          ? `${removedWord(device.binding)} ${when(device.revokedAt)}`
+          : device.lastSeenAt === undefined ? "never seen" : `last seen ${when(device.lastSeenAt)}`}
       </td>
       <td className={`${rowCell} pr-[15px] align-top`}>
         <div className="flex items-center gap-2">
