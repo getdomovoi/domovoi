@@ -1588,17 +1588,14 @@
       ],
       "evidence": [
         "RENDERED THIS SESSION",
+        "renderedPreviewsForActiveSession",
         "authorized · ",
-        "Add a comment"
-      ],
-      "presence": [
-        "Preview device width",
-        "Comments on this preview"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "preview with widths and comments exists. The RENDERED THIS SESSION list is missing, and that is functional: previewVariantsForActiveSession anchors on the latest preview, so a preview rendered earlier in the session outside that variant group cannot be opened anywhere in the dock. The toolbar is not the design's: no authorize chip, widths 390, 768 and 1440 (default 768) where the design has sm, md and lg (default lg), Annotate where the design says Add a comment, and no hints under the frame. Q379 A (2026-10-02) keeps automatic authorization and draws the chip as authorized · <time> left from expiresAt, re-authorizing on expiry, so authorize to view is not drawn; Q380 A keeps Print view, Download safe copy, Compare, the filmstrip, the Live badge and the safe-copies line behind one overflow control"
-      }
+        "usePreviewGrant",
+        "Add a comment",
+        "Click an element",
+        "label: \"lg\"",
+        "More preview actions"
+      ]
     },
     {
       "id": "dock.running-apps",
@@ -1970,16 +1967,19 @@
       ],
       "presence": [
         "Exit fullscreen",
-        "setFullscreen(false)"
+        "<PreviewFullscreen",
+        "fullscreenFrameRef"
       ],
       "evidence": [
         "Exit fullscreen",
-        "setFullscreen(false)",
-        "Comments on variant"
+        "<PreviewFullscreen",
+        "<PreviewDraftCard",
+        "Build on this",
+        "Comments reach the agent only when you send them."
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "fullscreen is a dialog with the title, path · read-only · width line, the frame and an outline Exit fullscreen (the earlier evidence proved only the exit). The design draws a full surface with sm, md and lg widths, the esc hint, variant chips with state text and Build on this at the foot, and a 340px Comments on variant column with an annotate toggle, the explicit send and a draft with Post and Cancel. Annotating is impossible in fullscreen because the picker binds only to the dock frame. All client-only except the explicit send (Q348 A, protocol)"
+        "since": "2026-10-11",
+        "reason": "SL-3a (D23) built the full surface: title, path · read-only, sm md lg widths, Exit fullscreen with the esc hint, the page with its hint, the variant chips at the foot and a 340px Comments on <variant> column with the annotate toggle and an inline draft with Post and Cancel. Annotating works in fullscreen: the bridge talks to the fullscreen frame while it is open. What is left belongs to D22 (SL-3b) and is shared with the dock: the foot still offers Use X as build basis where the design says Build on this or Unpick with a state line, and the column has no explicit send to the agent (Q348 A)"
       }
     },
     {
@@ -2358,8 +2358,8 @@
     },
     {
       "id": "dock.preview",
-      "since": "2026-10-02",
-      "note": "Q379 A: the preview authorizes on open, so the drawn authorize to view click is not built; the chip shows authorized and the time left. Q380 A: Print view, Download safe copy, Compare, the filmstrip, the Live badge and the safe-copies line are shipped features the design does not draw; they stay behind one overflow control in the design's toolbar."
+      "since": "2026-10-11",
+      "note": "Q379 A: the preview authorizes on open, so the drawn authorize to view click is not built; the chip shows authorized and the time left. The daemon's grant lasts 60 seconds, not the drawn nine minutes, so the chip reads seconds; the client renews it five seconds before expiry while the preview is on screen, without reloading the page shown, and a frame mounted later loads the fresh grant. Q380 A: Print view, Download safe copy, Compare, the filmstrip (Variant thumbnails), the Live note and the safe-copies line are shipped features the design does not draw; they stay behind one overflow control (More preview actions) in the design's toolbar. RENDERED THIS SESSION rows (D20, 2026-10-11) keep the order the daemon first saw each render, one row per variant group; the wire carries no render time, so the meta names the directory and the revision or variant count where the design draws design-studio · 14:09. The list is a 216px column at a dock width of 48rem and up and stacks above the page below that, where a single render leaves it out. The hint under the frame is drawn in annotate mode only; the idle hint (Plus adds a comment, a number opens one) describes the comment pins of D22."
     },
     {
       "id": "dock.plan-doc",
