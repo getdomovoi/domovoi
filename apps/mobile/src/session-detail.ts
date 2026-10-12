@@ -40,6 +40,11 @@ export type ThreadEntry =
     // Who decided as the receipt names them: the paired device's label, the
     // client and the device's shortened id, or the client alone.
     decidedBy: string
+    // Phone v2 frame 03 splits that into two rows: Decided on is the paired
+    // device's label, or the client alone, and Credential is the paired device
+    // the daemon verified on the deciding connection, by its shortened id.
+    decidedOn: string
+    credential: string | undefined
     // The client id a hello declared, which legacy receipts carry. No paired
     // credential vouches for it, so it is shown as declared, never as a
     // credential (packages/ui/src/session-history.ts names it the same way).
@@ -171,6 +176,8 @@ function entryFor(item: ThreadItem): ThreadEntry {
         decidedBy: item.device
           ? `${item.device.label} · ${item.client} · ${clientReference(item.device.id)}`
           : item.client,
+        decidedOn: item.device?.label ?? item.client,
+        credential: item.device ? clientReference(item.device.id) : undefined,
         declaredClient: item.clientId ? clientReference(item.clientId) : undefined,
         checkpoint: item.checkpoint === "unavailable" ? "no checkpoint" : shortReference(item.checkpoint),
         checkpointTaken: allowed && item.checkpoint !== "unavailable",
@@ -213,6 +220,22 @@ export function threadEntries(
     if (entry?.kind === "receipt") entries[current] = { ...entry, current: true }
   }
   return { entries, omitted: mine.length - bounded.length }
+}
+
+// Phone v2 frame 17: the preview a message told the agent to build on. A
+// message that sends a build basis carries it on its delivery record, which
+// the daemon writes once the agent was told (annotation-context.ts), so the
+// latest one the session's messages carry is what the agent was last told.
+// Undefined when no message sent one: a desktop's marked variant is client
+// state and does not travel on its own (ruling Q342 A).
+export function recordedBuildBasis(snapshot: WorkspaceSnapshot, sessionId: string): string | undefined {
+  for (let index = snapshot.thread.length - 1; index >= 0; index -= 1) {
+    const item = snapshot.thread[index]
+    if (item?.sessionId !== sessionId || item.kind !== "user") continue
+    const basis = item.providerPromptDelivery?.annotations.buildBasis
+    if (basis) return basis.artifactId
+  }
+  return undefined
 }
 
 // Ruling Q357 A draws only the latest receipt of the open turn in full. A
