@@ -184,7 +184,7 @@ code and returns the credential; it is written to the keychain and never shown
 text into the field under the scanner. Every refusal from the daemon reads the same, so a spent,
 expired or wrong code all say to show a fresh one.
 
-Revoke the phone in the daemon's Devices list when it is done.
+Unpair the phone in the desktop app on the daemon's machine, under Machines, when it is done.
 
 #### By hand
 

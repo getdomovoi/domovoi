@@ -1,17 +1,23 @@
 import { cn } from "./lib/utils"
 
-// The status atom. Five meanings, three sizes, and never colour alone: a dot
+// The status atom. Five meanings (and one for a step in flight), three sizes, and never colour alone: a dot
 // without an adjacent label is unreadable to anyone who cannot separate amber
 // from green, so the label is a required prop rather than a convention.
 export type StatusMeaning = "online" | "waiting" | "offline" | "handoff" | "idle"
+// A step still in flight, which Desktop V2 draws in primary in a turn's step
+// list. It is kept out of StatusMeaning: sessions, machines and terminals
+// have no step in flight, and the tables that map their states stay
+// exhaustive over the five above.
+export type StepMeaning = StatusMeaning | "working"
 export type StatusDotSize = "inline" | "default" | "header"
 
-const fill: Record<StatusMeaning, string> = {
+const fill: Record<StepMeaning, string> = {
   online: "bg-success",
   waiting: "bg-warning",
   offline: "bg-destructive",
   handoff: "bg-info",
   idle: "bg-faint",
+  working: "bg-primary",
 }
 
 const diameter: Record<StatusDotSize, string> = {
@@ -27,7 +33,7 @@ export function StatusDot({
   labelHidden = false,
   className,
 }: {
-  meaning: StatusMeaning
+  meaning: StepMeaning
   label: string
   size?: StatusDotSize
   // A row that already carries its own prose beside the dot has no room for a

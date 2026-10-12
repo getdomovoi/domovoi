@@ -92,7 +92,7 @@ describe("runPairCommand", () => {
     expect(await runPairCommand(["pair", "--client", "tablet", "--label", "  Kitchen iPad "], { ...io, issue })).toBe(0)
     expect(issue).toHaveBeenCalledWith("tablet", "Kitchen iPad")
     // The device's own name is the one used (Q37 B), so the line stays as it was.
-    expect(io.out.join("")).toContain("The device appears in this daemon's Devices list once it pairs. Revoke it there when it is no longer needed.\n")
+    expect(io.out.join("")).toContain("Once it pairs, the device is listed in the desktop app on this machine, under Machines. Unpair it there when it is no longer needed.\n")
     expect(io.out.join("")).not.toContain("Kitchen iPad")
     // The payload carries it, trimmed, for the device to offer as its name.
     const drawn = /<qr>(.*)<\/qr>/.exec(io.out.join(""))
@@ -155,7 +155,10 @@ describe("runPairCommand", () => {
     expect(out).not.toContain("A paired web can:")
     expect(out).toContain("It works once, and only for a web browser.")
     expect(out).toContain("It lasts 3 minutes. Run this again for a fresh one, which stops the old code.")
-    expect(out).toContain("The device appears in this daemon's Devices list once it pairs.")
+    // Q378 A: a browser is a client, so the control that removes it is Unpair,
+    // in the one app that holds this daemon's own credential.
+    expect(out).toContain("Once it pairs, the device is listed in the desktop app on this machine, under Machines. Unpair it there when it is no longer needed.\n")
+    expect(out).not.toContain("Revoke")
   })
 
   it("names the web app address when the daemon's owner set one", async () => {

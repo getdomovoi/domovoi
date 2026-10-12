@@ -6,6 +6,7 @@ import {
   CheckIcon,
   CircleStopIcon,
   FolderOpenIcon,
+  ListIcon,
 } from "lucide-react"
 import type {
   ApprovalRequest,
@@ -29,6 +30,7 @@ import type {
   UsageWindow,
   TurnSkillSelection,
   ThreadItem,
+  WorkingPlan,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 import { maximumEffectiveClientThreadItems, selectableTurnSkills, threadFollowPillText, sessionTransferRefusalMessage, toolFileEntries, turnSkillSelectionFor } from "@getdomovoi/protocol"
@@ -61,7 +63,6 @@ import { fleetMachines, transferTargets } from "./fleet-entries.js"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { cn } from "./lib/utils"
-import { DomovoiMark } from "./domovoi-mark"
 import { ApprovalReceipt, receiptCheckpointTaken, type ReceiptDockTab } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
 import { effortName } from "./effort-scales.js"
@@ -70,6 +71,7 @@ import type { WorkingPlanEdit } from "./plan-step-editor.js"
 import { groupThreadActivity, type ThreadRow } from "./thread-activity-groups"
 import { ThreadFileChips } from "./thread-file-chips"
 import { TurnActivity } from "./turn-activity"
+import { activityTiming, headerClockText, latestSessionTurn, turnClock, type TurnTiming } from "./turn-clock"
 import { CheckpointRestore, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import {
   heldAfter,
@@ -299,6 +301,23 @@ function ArchivedSessionNotice({ session }: { session: SessionSummary }) {
 
 const threadClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
 
+// Desktop V2's conversation turns, as measured from the design. The markdown
+// view sets its own type on its root, so these reach it as [&>div].
+//
+// The user's message: a right-aligned card at most 74% of the column, 11px by
+// 15px of padding, 14px corners with a 4px one at the bottom right, on accent
+// with no border, at 13.5px/1.6. :first-child keeps the delivery note under
+// the text at its own size.
+const userTurn = "max-w-[74%] self-end rounded-[14px_14px_4px_14px] bg-accent px-[15px] py-[11px] [&>div:first-child]:text-[13.5px] [&>div:first-child]:leading-[1.6]"
+// The agent's prose: the column's full width with no avatar box, at
+// 13.5px/1.65, wrapped with text-wrap: pretty.
+const assistantProse = "min-w-0 [&>div]:text-[13.5px] [&>div]:leading-[1.65] [&>div]:text-pretty"
+// The working caret: 1.5px by 15px of primary, 3px after the last prose,
+// blinking as the composer's caret does. It sits after the markdown's last
+// block, so it follows the text however the reply is laid out. Under reduced
+// motion it holds still and stays.
+const workingCaret = "[&>div>:last-child]:after:ml-[3px] [&>div>:last-child]:after:inline-block [&>div>:last-child]:after:h-[15px] [&>div>:last-child]:after:w-[1.5px] [&>div>:last-child]:after:align-[-2px] [&>div>:last-child]:after:bg-primary [&>div>:last-child]:after:content-[''] motion-safe:[&>div>:last-child]:after:animate-[dv-composer-caret_1.1s_steps(1)_infinite]"
+
 // The rows the daemon writes when a pause ended a session's turn. A failed
 // interrupt writes "Pause failed for <client>." instead.
 function pauseRows(thread: readonly ThreadItem[], sessionId: string): Extract<ThreadItem, { kind: "system" }>[] {
@@ -332,30 +351,102 @@ function StoppedSessionNotice({ at, fromThisClient }: { at: Date, fromThisClient
 // lets it scroll away. The session title is already in the command palette pill
 // at the top of the window, so a fixed banner would say it twice and take the
 // height the thread wants.
+//
+// The clock on its right describes the session's latest turn (D4, ruling
+// Q401): started, then running, its duration, when it stopped, or stalled
+// when the daemon is lost (turn-clock.ts). With no turn timing it says when
+// the session started and nothing more. It ticks here, so a running turn
+// redraws this line each second and not the whole thread.
 function ThreadStartLine({
   project,
   branch,
   workspacePath,
   startedAt,
+  turn,
+  running,
+  connected,
+  lostAt,
 }: {
   project?: string | undefined
   branch?: string | undefined
   workspacePath?: string | undefined
   startedAt?: string | undefined
+  turn?: TurnTiming | undefined
+  running: boolean
+  connected: boolean
+  lostAt?: Date | undefined
 }) {
+  const [now, setNow] = useState(() => new Date())
+  const clock = turn ? turnClock({ turn, running, connected, lostAt, now }) : undefined
+  const ticking = clock?.kind === "running"
+  useEffect(() => {
+    if (!ticking) return
+    setNow(new Date())
+    const timer = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(timer)
+  }, [ticking])
   const worktree = workspacePath?.split(/[\\/]/u).filter(Boolean).at(-1)
   const parts = [project, branch, worktree].filter((part): part is string => Boolean(part))
-  if (parts.length === 0 && !startedAt) return null
+  const clockText = clock ? headerClockText(clock) : startedAt ? `started ${threadClock.format(new Date(startedAt))}` : undefined
+  if (parts.length === 0 && !clockText) return null
 
   return (
     <div className="flex items-center gap-2.5 text-faint">
       {parts.length > 0 ? <span className="font-machine text-[11px]">{parts.join(" · ")}</span> : null}
       <span aria-hidden className="h-px flex-1 bg-border" />
-      {startedAt ? (
-        <span className="font-machine text-[11px]">started {threadClock.format(new Date(startedAt))}</span>
+      {clockText ? <span className="font-machine text-[11px]">{clockText}</span> : null}
+    </div>
+  )
+}
+
+// D6: the plan the agent wrote, as a row under the prose (Desktop V2
+// conversation.plan-link). It is built from the session's working plan: its
+// step count and when it was made. updatedAt also moves when a step's status
+// changes, so it cannot say when the steps were revised; a plan whose steps
+// were rewritten (structureRevision past its first) says revised with no time.
+function PlanLinkRow({ plan, onOpenPlanPreview }: { plan: WorkingPlan, onOpenPlanPreview?: (() => void) | undefined }) {
+  const meta = `${threadClock.format(new Date(plan.createdAt))}${plan.structureRevision > 1 ? " · revised" : ""}`
+  return (
+    <div data-plan-link="" className="flex items-center gap-[9px] self-start rounded-lg border border-dashed border-border px-3 py-1.5 text-muted-foreground">
+      <ListIcon aria-hidden className="size-3.5 shrink-0" strokeWidth={1.5} />
+      <span className="text-[11.5px]">Wrote a {plan.steps.length} step plan</span>
+      <span className="font-machine text-[10.5px] text-faint">{meta}</span>
+      {onOpenPlanPreview ? (
+        <button type="button" onClick={onOpenPlanPreview} className="rounded-sm text-[11px] text-primary outline-none hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          Read it <span aria-hidden>→</span>
+        </button>
       ) : null}
     </div>
   )
+}
+
+// Where the plan row goes. The plan names no message or turn, so it sits
+// after the last thing said (the agent's prose or the person's message) at or
+// before the plan was made, and before the first row when nothing was.
+// Ruled Q65 (2026-10-12).
+function planAnchorId(rows: readonly ThreadRow[], plan: WorkingPlan | undefined): string | null | undefined {
+  if (!plan || plan.steps.length === 0) return undefined
+  const madeAt = Date.parse(plan.createdAt)
+  let anchor: string | null = null
+  for (const row of rows) {
+    if (row.kind !== "item" || (row.item.kind !== "assistant" && row.item.kind !== "user")) continue
+    if (Date.parse(row.item.createdAt) <= madeAt) anchor = row.item.id
+  }
+  return anchor
+}
+
+// The turn the header clock reads. While the session runs a turn, only that
+// turn will do: the start the session carries for its active turn, which the
+// daemon reads from the ledger beside that turn alone, else the ledger's
+// latest turn when it is still pending. A pending turn in the ledger is not
+// proof it is the one running now, so it comes second. With neither, a
+// finished turn's duration would describe a turn that is over, so the clock
+// has nothing to read.
+function headerTurn(session: SessionSummary, turns: WorkspaceSnapshot["turns"]): TurnTiming | undefined {
+  const latest = latestSessionTurn(turns, session.id)
+  if (!session.activeTurnId) return latest
+  if (session.activeTurnStartedAt) return { startedAt: session.activeTurnStartedAt, status: "pending" }
+  return latest?.status === "pending" ? latest : undefined
 }
 
 export function SessionReadOnlyNotice({
@@ -539,6 +630,11 @@ export function Thread({
   surface?: "desktop" | "web" | undefined
 }) {
   const watching = clientAccess === "watching"
+  // When this thread saw the daemon go, for the header's "stalled at". Set only
+  // on a change it saw: a thread that opens disconnected does not know when
+  // the daemon went, and says stalled with no time (turn-clock.ts).
+  const [link, setLink] = useState<{ connected: boolean, lostAt?: Date }>(() => ({ connected }))
+  if (link.connected !== connected) setLink(connected ? { connected } : { connected, lostAt: new Date() })
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
     ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
@@ -576,8 +672,13 @@ export function Thread({
   // A turn that has not called a tool yet still has to say it is alive. Once
   // the turn has an activity row at the end of the thread, that row is the one
   // working, and a second row beside it would say the same thing twice.
+  //
+  // Working is what this client can see. With the daemon lost the last
+  // snapshot still names a running turn, but nobody can see it work: the
+  // header says stalled, and no row, caret or sweep claims Working.
   const lastRow = threadRows.at(-1)
-  const workingRow = Boolean(active?.activeTurnId) && lastRow?.kind !== "activity"
+  const turnSeenWorking = Boolean(active?.activeTurnId) && connected
+  const workingRow = turnSeenWorking && lastRow?.kind !== "activity"
   // The session carries no start time of its own, so the first thing said in it
   // is the honest one. An empty thread has not started yet and says nothing.
   const threadStartedAt = renderedThread[0]?.createdAt
@@ -801,6 +902,21 @@ export function Thread({
       </main>
     )
   }
+
+  // "Worked for N" speaks for a whole turn, so only the turn's last activity
+  // row says it; an earlier row of the same turn keeps its count.
+  const turnsById = new Map((snapshot.turns ?? []).map((turn) => [turn.id, turn]))
+  const lastActivityOfTurn = new Map<string, string>()
+  for (const row of threadRows) if (row.kind === "activity" && row.turnId) lastActivityOfTurn.set(row.turnId, row.id)
+  // The prose the running turn is writing: the last thing said in the thread,
+  // when the agent said it after the latest message. It carries the caret.
+  const lastSaid = turnSeenWorking
+    ? threadRows.findLast((row) => row.kind === "item" && (row.item.kind === "user" || row.item.kind === "assistant"))
+    : undefined
+  const workingProse = lastSaid?.kind === "item" && lastSaid.item.kind === "assistant" ? lastSaid.item.id : undefined
+  const sessionPlan = snapshot.workingPlans.find((candidate) => candidate.sessionId === active.id)
+  const planAnchor = planAnchorId(threadRows, sessionPlan)
+  const planLink = sessionPlan && planAnchor !== undefined ? <PlanLinkRow plan={sessionPlan} onOpenPlanPreview={onOpenPlanPreview} /> : null
 
   const entries = fleet ?? [localFleetEntry(snapshot)]
   const latestReceiptId = renderedThread.filter((item) => item.kind === "receipt").at(-1)?.id
@@ -1199,6 +1315,10 @@ export function Thread({
               {...(snapshot.project ? { project: snapshot.project.name, branch: snapshot.project.branch } : {})}
               {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}
               {...(threadStartedAt ? { startedAt: threadStartedAt } : {})}
+              turn={headerTurn(active, snapshot.turns)}
+              running={Boolean(active.activeTurnId)}
+              connected={connected}
+              lostAt={link.lostAt}
             />
           )}
           {active.state === "archived" ? <ArchivedSessionNotice session={active} /> : null}
@@ -1224,12 +1344,16 @@ export function Thread({
               <AlertDescription>{providerFailureActionCopy(active.providerFailure)}</AlertDescription>
             </Alert>
           ) : null}
+          {planAnchor === null ? planLink : null}
           {threadRows.map((row) => {
             if (row.kind === "activity") {
               // Between two calls no single call is in flight, but the turn
               // still is. The row at the end of a running thread is the one
               // the turn is working in.
-              const rowRunning = Boolean(active.activeTurnId)
+              // A row whose own turn the ledger says has ended is not the
+              // running turn's, whatever its calls were last marked.
+              const rowTurnStatus = row.turnId === undefined ? undefined : turnsById.get(row.turnId)?.status
+              const rowRunning = Boolean(active.activeTurnId) && (rowTurnStatus === undefined || rowTurnStatus === "pending")
                 && (row === lastRow || row.items.some((call) => call.outcome === "running"))
               // A running turn's file list is still growing, so naming files
               // mid-flight would show a total that keeps changing under the
@@ -1237,9 +1361,19 @@ export function Thread({
               const touched = rowRunning
                 ? []
                 : toolFileEntries(row.items.flatMap((call) => call.files ?? []))
+              // The chips still wait while the daemon is lost; the row stops
+              // saying Working, because nobody can see it work.
+              const rowSeenWorking = rowRunning && connected
               return (
                 <Fragment key={row.id}>
-                  <TurnActivity items={row.items} running={rowRunning} />
+                  <TurnActivity
+                    items={row.items}
+                    running={rowSeenWorking}
+                    timing={activityTiming({
+                      running: rowSeenWorking,
+                      turn: row.turnId && lastActivityOfTurn.get(row.turnId) === row.id ? turnsById.get(row.turnId) : undefined,
+                    })}
+                  />
                   {touched.length > 0 ? <ThreadFileChips files={touched} onReview={onOpenSheet} /> : null}
                 </Fragment>
               )
@@ -1250,13 +1384,16 @@ export function Thread({
             }
             if (item.kind === "user") {
               return (
-                <div key={item.id} className="max-w-[82%] self-end rounded-xl border bg-card px-4 py-3">
-                  <MarkdownQuickView source={item.body} />
-                  <PromptDeliveryNote
-                    delivery={item.providerPromptDelivery}
-                    skillNames={skillNames ?? {}}
-                  />
-                </div>
+                <Fragment key={item.id}>
+                  <div data-testid="user-turn" className={userTurn}>
+                    <MarkdownQuickView source={item.body} />
+                    <PromptDeliveryNote
+                      delivery={item.providerPromptDelivery}
+                      skillNames={skillNames ?? {}}
+                    />
+                  </div>
+                  {item.id === planAnchor ? planLink : null}
+                </Fragment>
               )
             }
             if (item.kind === "system" && item.notice === "context-compaction") {
@@ -1286,7 +1423,18 @@ export function Thread({
               return <PolicyRefusalCard key={item.id} refusal={item} onSeeRules={onOpenDockTab ? () => onOpenDockTab("rules") : undefined} />
             }
             if (item.kind === "tool") return null
-            return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={stripPlanTags(item.body)} /></div>
+            return (
+              <Fragment key={item.id}>
+                <div
+                  data-assistant-prose=""
+                  {...(item.id === workingProse ? { "data-working": "" } : {})}
+                  className={cn(assistantProse, item.id === workingProse && workingCaret)}
+                >
+                  <MarkdownQuickView source={stripPlanTags(item.body)} />
+                </div>
+                {item.id === planAnchor ? planLink : null}
+              </Fragment>
+            )
           })}
           {workingRow ? <TurnActivity items={[]} running /> : null}
           {transferReceipt ? (

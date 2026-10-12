@@ -52,8 +52,8 @@ makes either request for this dialog, so Fleet authorization has no supported wa
 The tests make the requests directly.
 
 Either way this is a deliberate grant, not an automated machine claim. A code grants nothing until
-a device redeems it, and a lost reply costs the code. The target's Devices list shows and can
-revoke what was paired. Check that list before retrying an ambiguously completed grant. Do not
+a device redeems it, and a lost reply costs the code. The target's desktop app lists what was
+paired under Machines, and its Unpair control removes it. Check that list before retrying an ambiguously completed grant. Do not
 paste a machine secret or a daemon root token instead.
 
 ## Protocol and client boundaries
@@ -105,7 +105,8 @@ credential. Comparison carries metadata, not skill files, review authority, or e
 
 App-memory retention is the alpha scope, not durable storage: closing or reloading the app loses
 its local copy, but does not revoke the grant on the target. Removing local access closes its
-connections and explains that the operator still revokes the device in the target's Devices list.
+connections and explains that the operator still unpairs the device in the target's desktop app,
+under Machines.
 Changing the home daemon or forgetting the enrolled machine also drops that local access.
 Durable OS-keychain storage would need its own lifecycle decision.
 
