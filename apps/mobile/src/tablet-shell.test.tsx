@@ -1,9 +1,11 @@
 import { describe, expect, it, jest } from "@jest/globals"
 import { demoWorkspace, workspaceSnapshotSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { fireEvent, render, screen, within } from "@testing-library/react-native"
+import { ScrollView } from "react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
 import { TabletShell } from "./tablet-shell"
+import { colors } from "./theme/tokens.generated"
 
 const metrics: Metrics = {
   frame: { x: 0, y: 0, width: 1024, height: 768 },
@@ -14,7 +16,13 @@ async function draw(
   risk?: "normal" | "hard-gate",
   access: "full" | "watching" = "full",
   adjust?: (snapshot: WorkspaceSnapshot) => void,
-  extra: { notice?: { tone: "warning" | "destructive", headline: string, detail: string }, onPostReview?: (artifactId: string, body: string) => Promise<void> } = {},
+  extra: {
+    notice?: { tone: "warning" | "destructive", headline: string, detail: string }
+    onPostReview?: (artifactId: string, body: string) => Promise<void>
+    deciding?: boolean
+    decideProblem?: string
+    sendProblem?: string
+  } = {},
 ) {
   const snapshot = structuredClone(demoWorkspace)
   const approval = snapshot.approvals[0]
@@ -41,6 +49,9 @@ async function draw(
     onDenyExplain: jest.fn<(approvalId: string) => void>(),
     onPostReview: extra.onPostReview ?? jest.fn<(artifactId: string, body: string) => Promise<void>>(async () => {}),
     ...(extra.notice ? { notice: extra.notice } : {}),
+    deciding: extra.deciding ?? false,
+    decideProblem: extra.decideProblem === undefined ? undefined : { approvalId: approval.id, text: extra.decideProblem },
+    sendProblems: new Map(extra.sendProblem === undefined ? [] : [[approval.sessionId, extra.sendProblem]]),
   }
   await render(
     <SafeAreaProvider initialMetrics={metrics}>
@@ -123,6 +134,39 @@ describe("TabletShell", () => {
     expect(screen.getAllByText(approval.mode).length).toBeGreaterThan(0)
   })
 
+  // Q338 A: an answer the daemon refused is not silent. The gate is still
+  // waiting, so the card stays and says why.
+  it("shows why the daemon refused an answer on the gate card", async () => {
+    await draw("normal", "full", undefined, { decideProblem: "The daemon refused: The approval store is unavailable. The gate is still waiting." })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("The daemon refused: The approval store is unavailable. The gate is still waiting.")
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeOnTheScreen()
+  })
+
+  // While an answer is out, a second tap must not send a second one.
+  it("takes no second answer while one is out", async () => {
+    const { props } = await draw("normal", "full", undefined, { deciding: true })
+
+    for (const name of ["Allow once", "Always here", "Deny"]) {
+      const button = screen.getByRole("button", { name })
+      expect(button).toBeDisabled()
+      await fireEvent.press(button)
+    }
+    expect(props.onResolve).not.toHaveBeenCalled()
+    expect(props.onDenyExplain).not.toHaveBeenCalled()
+  })
+
+  // The command block sits on the design's deeper warning ground
+  // (--warn-bg-deep). A class naming no registered colour draws nothing.
+  it("draws the command on a registered colour", async () => {
+    const { approval } = await draw("hard-gate")
+    let block = screen.getByText(approval.command).parent
+    while (block && !/\bbg-/u.test(String(block.props.className ?? ""))) block = block.parent
+    const grounds = String(block?.props.className ?? "").match(/\bbg-[a-z-]+/gu) ?? []
+    expect(grounds).toHaveLength(1)
+    for (const ground of grounds) expect(Object.keys(colors.light)).toContain(ground.slice(3))
+  })
+
   it("offers no standing rule on a hard gate", async () => {
     await draw("hard-gate")
     expect(screen.queryByRole("button", { name: "Always here" })).toBeNull()
@@ -164,6 +208,86 @@ describe("TabletShell", () => {
     expect(props.onSend).toHaveBeenCalledWith(approval.sessionId)
   })
 
+  // Q338 A: a send the daemon refused, or one that never left, says so
+  // beside the composer rather than leaving the draft as though it went.
+  it("says why a send failed beside the composer", async () => {
+    await draw("normal", "full", undefined, { sendProblem: "The daemon connection is not open" })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("The daemon connection is not open")
+  })
+
+  // Q338 A: with no session the tablet, which has no tab bar, keeps its
+  // sessions pane, so New session and Machines stay within reach.
+  it("keeps New session and Machines when the machine has no session", async () => {
+    const { props } = await draw(undefined, "full", (snapshot) => {
+      snapshot.sessions = []
+      snapshot.approvals = []
+      snapshot.thread = []
+      snapshot.artifacts = []
+      snapshot.workingPlans = []
+      snapshot.queuedSends = []
+      snapshot.activeSessionId = null
+    })
+
+    expect(screen.getByTestId("tablet-sessions-pane")).toBeOnTheScreen()
+    expect(screen.getByText("Everything is idle")).toBeOnTheScreen()
+    expect(screen.getByText(/has no work in flight\. Empty here is a healthy state, not a failure\./u)).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "New session" }))
+    await fireEvent.press(screen.getByRole("button", { name: "Machines" }))
+    expect(props.onNewSession).toHaveBeenCalledTimes(1)
+    expect(props.onOpenMachines).toHaveBeenCalledTimes(1)
+  })
+
+  // Q338 A: the thread reads newest last and the gate sits at its end, so it
+  // opens at the latest turn rather than at the top.
+  it("opens the thread at the latest turn", async () => {
+    const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => {})
+    try {
+      await draw()
+      const thread = screen.getByTestId("tablet-thread")
+      await fireEvent(thread, "layout", { nativeEvent: { layout: { x: 0, y: 0, width: 700, height: 600 } } })
+      await fireEvent(thread, "contentSizeChange", 700, 1800)
+      expect(scrollToEnd).toHaveBeenCalledTimes(1)
+    } finally {
+      scrollToEnd.mockRestore()
+    }
+  })
+
+  // Q338 A: the design's "7 files" is the files the session changed, not the
+  // artifacts it made.
+  it("counts the files the session changed, not its artifacts", async () => {
+    await draw("normal", "full", (snapshot) => {
+      const session = snapshot.sessions.find((candidate) => candidate.id === snapshot.activeSessionId)!
+      session.changedFiles = 7
+      expect(snapshot.artifacts.filter((artifact) => artifact.sessionId === session.id).length).not.toBe(7)
+    })
+
+    expect(screen.getByRole("button", { name: "Open review sheet, 7 files" })).toHaveTextContent("7 files")
+    expect(screen.getByText(/· 7 files$/u)).toBeOnTheScreen()
+  })
+
+  it("names one changed file in the singular", async () => {
+    await draw("normal", "full", (snapshot) => {
+      snapshot.sessions.find((candidate) => candidate.id === snapshot.activeSessionId)!.changedFiles = 1
+    })
+
+    expect(screen.getByRole("button", { name: "Open review sheet, 1 file" })).toHaveTextContent("1 file")
+  })
+
+  // Q338 A: a comment posted from the tablet is anchored to the whole render
+  // (cssSelector body), so the sheet says that rather than promising an
+  // element the person never chose.
+  it("says a tablet review comment is about the whole render", async () => {
+    await draw()
+    await fireEvent.press(screen.getByRole("button", { name: /Open review sheet/ }))
+    await fireEvent.press(screen.getByRole("button", { name: "Review" }))
+
+    expect(screen.queryByText(/Tap a bubble/u)).toBeNull()
+    expect(screen.queryByText(/reference that element/u)).toBeNull()
+    expect(screen.getByText("A comment from this tablet is about the whole render, not one element.")).toBeOnTheScreen()
+    expect(screen.getByPlaceholderText("Say what is wrong with this render")).toBeOnTheScreen()
+  })
+
   it("opens the four-tab review sheet and posts an anchored review draft", async () => {
     const { props } = await draw()
     await fireEvent.press(screen.getByRole("button", { name: /Open review sheet/ }))
@@ -172,7 +296,7 @@ describe("TabletShell", () => {
     expect(screen.getByRole("button", { name: "Diff" })).toBeOnTheScreen()
     expect(screen.getByRole("button", { name: "Plan" })).toBeOnTheScreen()
     await fireEvent.press(screen.getByRole("button", { name: "Review" }))
-    const field = screen.getByPlaceholderText("Say what is wrong with this element")
+    const field = screen.getByPlaceholderText("Say what is wrong with this render")
     await fireEvent.changeText(field, "The retry window is too long")
     await fireEvent.press(screen.getByRole("button", { name: "Post" }))
 
@@ -277,6 +401,16 @@ describe("TabletShell", () => {
       expect(screen.getByText("operation unchecked")).toBeOnTheScreen()
       expect(screen.queryByText(/no checkpoint/)).toBeNull()
     })
+
+    // P2: an allow that could take no checkpoint still ran, and how long it
+    // ran is its own sentence, as on the phone.
+    it("keeps the run time of an allow that took no checkpoint", async () => {
+      await draw("normal", "full", (snapshot) => {
+        snapshot.thread.push({ ...receipt("unchecked", "allow-once", "unavailable", { ranForMs: 38_000 }), sessionId: snapshot.approvals[0]!.sessionId })
+      })
+      expect(screen.getByText("It ran in 38s.")).toBeOnTheScreen()
+      expect(screen.queryByText(/was taken first/u)).toBeNull()
+    })
   })
 
   it("shows the connection notice, so a tablet hears when the daemon sent something it could not read", async () => {
@@ -294,7 +428,7 @@ describe("TabletShell", () => {
     await fireEvent.press(screen.getByRole("button", { name: /Open review sheet/ }))
     await fireEvent.press(screen.getByRole("button", { name: "Review" }))
 
-    expect(screen.queryByPlaceholderText("Say what is wrong with this element")).toBeNull()
+    expect(screen.queryByPlaceholderText("Say what is wrong with this render")).toBeNull()
     expect(screen.queryByRole("button", { name: "Post" })).toBeNull()
     expect(screen.getByText("Watching only. A device paired with full access can post a review.")).toBeOnTheScreen()
   })
@@ -304,7 +438,7 @@ describe("TabletShell", () => {
     await draw("normal", "full", undefined, { onPostReview })
     await fireEvent.press(screen.getByRole("button", { name: /Open review sheet/ }))
     await fireEvent.press(screen.getByRole("button", { name: "Review" }))
-    await fireEvent.changeText(screen.getByPlaceholderText("Say what is wrong with this element"), "The retry window is too long")
+    await fireEvent.changeText(screen.getByPlaceholderText("Say what is wrong with this render"), "The retry window is too long")
     await fireEvent.press(screen.getByRole("button", { name: "Post" }))
 
     expect(await screen.findByText("Not posted: The daemon connection is not open")).toBeOnTheScreen()
