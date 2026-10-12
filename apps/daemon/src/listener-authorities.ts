@@ -39,16 +39,18 @@ export type ListenerAuthorities = {
   browserOrigins: ReadonlySet<string>
 }
 
-const wildcardHosts = new Set(["", "0.0.0.0", "::", "[::]"])
+// Compared after parsing: URL rewrites 0, 0x0 and 0:0:0:0:0:0:0:0 to these.
+const wildcardHostnames = new Set(["0.0.0.0", "[::]"])
 
 // A plain host name or IP literal only: URL alone would accept credentials,
-// a path or a port inside the value and quietly drop them.
+// a path or a port inside the value and quietly drop them. A wildcard address
+// is no name a client dials, however it is spelled.
 function canonicalUrl(scheme: ListenerFacts["scheme"], host: string, port: number): URL | undefined {
-  if (wildcardHosts.has(host)) return undefined
   const bracketed = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host
   if (!/^(?:[A-Za-z0-9.-]+|\[[A-Fa-f0-9:]+\])$/.test(bracketed)) return undefined
   try {
-    return new URL(`${scheme}://${bracketed}:${port}`)
+    const url = new URL(`${scheme}://${bracketed}:${port}`)
+    return wildcardHostnames.has(url.hostname) ? undefined : url
   } catch {
     return undefined
   }

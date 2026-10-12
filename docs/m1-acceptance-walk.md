@@ -158,7 +158,7 @@ pages, not from a run. Record what each OS showed, word for word where you can, 
    machine", "Remove", then "Remove the service" in the dialog "Remove the login service?". Expect
    "Removed. Quitting Domovoi now stops the daemon and every session on it." The manager check
    from step 3 no longer finds the job. On Linux, check lingering again: it is off only if this
-   install turned it on. Desktop does not show the lingering outcome of a removal yet;
+   install turned it on. Settings shows the daemon's own line on it under the removal result, as
    `domovoi daemon remove` prints it. Removal keeps the credential, machine identity, workspace
    database and worktrees.
 8. **Uninstall the app.** **Changes the OS.** Remove the service first, in step 7.

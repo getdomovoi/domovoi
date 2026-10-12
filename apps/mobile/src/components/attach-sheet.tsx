@@ -1,5 +1,8 @@
 import { Modal, Pressable, View } from "react-native"
 
+import { modelImageInputRefusalCode } from "@getdomovoi/protocol"
+
+import { modelImagesLine, type ModelImages } from "../attachments"
 import { cn } from "../lib/cn"
 import { Button } from "./ui/button"
 import { Icon, type IconName } from "./ui/icon"
@@ -37,16 +40,42 @@ function Source({ icon, label, note, onPress }: { icon: IconName, label: string,
   )
 }
 
-export function AttachSheet({ open, machine, problem, onPickLibrary, onTakePhoto, onClose }: {
+// Frame 13b (guard A): an image source the session's model cannot take. It is
+// stated, not tappable, with the machine that would refuse it and the code.
+function LockedSource({ icon, label, machine }: { icon: IconName, label: string, machine: string }) {
+  return (
+    <View
+      className="flex-row items-center gap-3 px-3 py-3"
+      accessible
+      accessibilityLabel={`${label}: locked for this model, refused by ${machine} · ${modelImageInputRefusalCode}`}
+    >
+      <Icon name={icon} tone="faint" size={18} />
+      <View className="flex-1">
+        <Text className="text-[13px] text-muted-foreground">{label}</Text>
+        <Text variant="note">Locked for this model.</Text>
+        <Text variant="machine" className="mt-0.5 text-faint">{`refused by ${machine} · ${modelImageInputRefusalCode}`}</Text>
+      </View>
+      <Icon name="ban" tone="faint" size={15} />
+    </View>
+  )
+}
+
+export function AttachSheet({ open, machine, problem, images, onPickLibrary, onTakePhoto, onClose }: {
   open: boolean
   machine: string
   // The last refusal, stated here where the person chose the image, and
   // cleared by the next pick.
   problem: string
+  // The session's model and what its harness reports about image input.
+  // Absent when the screen has no session runtime to name.
+  images?: ModelImages | undefined
   onPickLibrary: () => void
   onTakePhoto: () => void
   onClose: () => void
 }) {
+  // Only a model reported to take no images locks the sources. Not knowing
+  // leaves them open; the daemon still refuses a send the model cannot take.
+  const locked = images?.imageInput === false
   return (
     <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
       <Pressable className="flex-1 bg-desk/80" accessibilityLabel="Close" onPress={onClose} />
@@ -55,10 +84,21 @@ export function AttachSheet({ open, machine, problem, onPickLibrary, onTakePhoto
           <Text variant="nav" className="flex-1">What you can attach</Text>
           <Button title="Done" variant="ghost" onPress={onClose} className="px-2" />
         </View>
+        {images ? (
+          <View className="flex-row items-center gap-2 px-1">
+            <Text variant="machine" className="text-strong">{images.model}</Text>
+            <Text className="flex-1 text-[11.5px] text-muted-foreground">{modelImagesLine(images.imageInput)}</Text>
+          </View>
+        ) : null}
         {problem ? <Text className="text-[11.5px] text-destructive">{problem}</Text> : null}
         <View className="divide-y divide-border rounded-xl border border-border">
-          <Source icon="image" label="Photo or screenshot" note={`up to 1.5 MB and 2048 px, uploaded to ${machine} and not stored here`} onPress={onPickLibrary} />
-          <Source icon="camera" label="Take a photo" note="one shot, sent with the turn, same bound" onPress={onTakePhoto} />
+          {locked ? <>
+            <LockedSource icon="image" label="Photo or screenshot" machine={machine} />
+            <LockedSource icon="camera" label="Take a photo" machine={machine} />
+          </> : <>
+            <Source icon="image" label="Photo or screenshot" note={`up to 1.5 MB and 2048 px, uploaded to ${machine} and not stored here`} onPress={onPickLibrary} />
+            <Source icon="camera" label="Take a photo" note="one shot, sent with the turn, same bound" onPress={onTakePhoto} />
+          </>}
           {waiting.map((source) => <Source key={source.label} {...source} />)}
         </View>
       </View>

@@ -406,16 +406,16 @@ export class FleetEnrollmentService {
         // would keep dialing it after the operator removed that configuration.
         // Refresh peer facts/contact without claiming the old direct route
         // authenticated now, and never put a local forward in advertisements.
-        // A row that never stored a direct route stays an SSH observation.
+        // The stored connection names the route that answered: SSH stays SSH
+        // even while the older direct route is kept, with its own date, as
+        // the first route to try next time.
         ...(connection.routeSource === "wsl"
           ? { connection: "wsl", ...(entry.facts.verifiedRoute
             && !isLoopbackHost(new URL(entry.facts.verifiedRoute.endpoint).hostname)
             ? { verifiedRoute: entry.facts.verifiedRoute } : {}) }
           : connection.routeSource !== "ssh"
           ? { connection: "direct", verifiedRoute: { endpoint: connection.endpoint, lastAuthenticatedAt: new Date(receivedAt).toISOString() } }
-          : entry.facts.verifiedRoute
-            ? { connection: "direct", verifiedRoute: entry.facts.verifiedRoute }
-            : { connection: "ssh" }),
+          : { connection: "ssh", ...(entry.facts.verifiedRoute ? { verifiedRoute: entry.facts.verifiedRoute } : {}) }),
       }, entry.credentialDigest, receivedAt)
     } catch (error) {
       if (this.#heartbeats.get(id) === controller && !this.#stopped) {

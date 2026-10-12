@@ -71,6 +71,63 @@ it("routes fleet and skills to the surfaces that own them", async () => {
   expect(props.onOpenSkills).toHaveBeenCalledTimes(1)
 })
 
+// The Desktop V2 frame's Elsewhere: Permissions and rules and Checkpoints open
+// the sheet's Rules and Checkpoints tabs, in the frame's order.
+it("links Permissions and rules and Checkpoints to the sheet tabs that own them", async () => {
+  const onOpenPermissions = vi.fn()
+  const onOpenCheckpoints = vi.fn()
+  render(<SettingsShell {...shellProps()} onOpenPermissions={onOpenPermissions} onOpenCheckpoints={onOpenCheckpoints} />)
+
+  const elsewhere = within(screen.getByRole("region", { name: "Elsewhere" }))
+  const links = elsewhere.getAllByRole("button").map((button) => button.querySelector("span > span")?.textContent)
+  expect(links).toEqual(["Machines and daemons", "Permissions and rules", "Skills", "Checkpoints", "Audit log"])
+  expect(elsewhere.getByText("What you have already allowed, and what a rule can never cover.")).toBeTruthy()
+  expect(elsewhere.getByText("Take one yourself, or reset a session's worktree to one. The thread keeps its turns.")).toBeTruthy()
+
+  await userEvent.click(elsewhere.getByRole("button", { name: /Permissions and rules/u }))
+  await userEvent.click(elsewhere.getByRole("button", { name: /Checkpoints/u }))
+  expect(onOpenPermissions).toHaveBeenCalledOnce()
+  expect(onOpenCheckpoints).toHaveBeenCalledOnce()
+})
+
+it("draws no sheet link the shell cannot open", () => {
+  render(<SettingsShell {...shellProps()} />)
+
+  const elsewhere = within(screen.getByRole("region", { name: "Elsewhere" }))
+  expect(elsewhere.queryByRole("button", { name: /Permissions and rules/u })).toBeNull()
+  expect(elsewhere.queryByRole("button", { name: /Checkpoints/u })).toBeNull()
+})
+
+// Q362 A: theme, Appearance and Notifications stay on this client and never
+// reach the daemon, so a watching window keeps them live. Everything that
+// reaches the daemon stays locked.
+it("keeps this client's own preferences live while the window watches", async () => {
+  const props = { ...shellProps(), onWindowDecorationChange: vi.fn(), onExternalEditorChange: vi.fn() }
+  render(
+    <SettingsShell
+      {...props}
+      readOnly
+      externalEditor="system"
+      windowDecoration="domovoi"
+      activeWindowDecoration="domovoi"
+    />,
+  )
+
+  await userEvent.click(screen.getByRole("switch", { name: "Failures" }))
+  expect(props.onNotificationsChange).toHaveBeenCalledWith({ completion: true, failure: false, approvalNeeded: true })
+
+  await userEvent.click(within(screen.getByRole("radiogroup", { name: "Theme" })).getByRole("radio", { name: /Dark/u }))
+  expect(props.onThemeChange).toHaveBeenCalledWith("dark")
+
+  const decoration = within(screen.getByRole("radiogroup", { name: "Window decoration" })).getAllByRole("radio")
+  await userEvent.click(decoration[1]!)
+  expect(props.onWindowDecorationChange).toHaveBeenCalledWith("system")
+
+  // Not named by Q362: the external editor stays locked while watching.
+  await userEvent.click(screen.getByRole("radio", { name: "VS Code" }))
+  expect(props.onExternalEditorChange).not.toHaveBeenCalled()
+})
+
 const activeRule: Extract<ApprovalRule, { status: "active" }> = {
   id: "rule-1",
   useCount: 0,
@@ -492,6 +549,23 @@ it("removes the installed service and says the daemon is back inside this app", 
   await confirmRemove(user, section)
   expect(remove).toHaveBeenCalledOnce()
   expect(await within(section).findByText("Removed. Quitting Domovoi now stops the daemon and every session on it.")).toBeTruthy()
+})
+
+// D28: a Linux removal says what became of lingering, in the daemon's own
+// words: a note when it turned lingering off or left it on, a warning when it
+// could not turn it off.
+it.each([
+  ["a note", { lingerNote: "Turned off lingering for dana, which Domovoi turned on at install." }, "Turned off lingering for dana, which Domovoi turned on at install.", false],
+  ["a warning", { lingerWarning: "Could not turn off lingering for dana, which Domovoi turned on at install: Access denied. Lingering stays on, so dana's user services keep running after logout. Run loginctl disable-linger if nothing else needs it." }, "Could not turn off lingering for dana, which Domovoi turned on at install: Access denied. Lingering stays on, so dana's user services keep running after logout. Run loginctl disable-linger if nothing else needs it.", true],
+] as const)("says what a Linux removal did to lingering, as %s", async (_label, linger, line, warned) => {
+  const user = userEvent.setup()
+  const remove = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/home/dana/.config/systemd/user/domovoid.service", profileRecovery: "not-needed" as const, daemonRunning: true, ...linger }))
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "linux", service: { install: vi.fn(), remove } }} />)
+  const section = screen.getByRole("region", { name: "Daemon on this machine" })
+  await confirmRemove(user, section)
+  expect(await within(section).findByText("Removed. Quitting Domovoi now stops the daemon and every session on it.")).toBeTruthy()
+  const shown = within(section).getByText(line)
+  expect(shown.className.includes("text-warn-foreground")).toBe(warned)
 })
 
 // Q349 A: Remove opens the drawn confirmation first. Removal stops sessions on
