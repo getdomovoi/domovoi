@@ -82,7 +82,9 @@ type ServicePhase =
   | { kind: "removing" }
   // lingerWarning: the daemon's own text, shown as it is (ruling Q307).
   | { kind: "installed"; target: string; lingerWarning?: string | undefined }
-  | { kind: "removed"; daemonRunning: boolean; attached: boolean; recovery?: string | undefined }
+  // lingerNote, lingerWarning: the daemon's own line on what a Linux removal
+  // did to lingering (D28), shown as it is.
+  | { kind: "removed"; daemonRunning: boolean; attached: boolean; recovery?: string | undefined; lingerNote?: string | undefined; lingerWarning?: string | undefined }
   | { kind: "waits"; refusal: string }
   | { kind: "unchecked"; message: string }
   | { kind: "not-attached"; message: string }
@@ -226,7 +228,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
     setPhase({ kind: action === "install" ? "installing" : "removing" })
     try {
       const outcome = await (action === "install" ? live.install() : live.remove())
-      if (outcome.ok) setPhase(action === "install" ? { kind: "installed", target: outcome.target, lingerWarning: outcome.lingerWarning } : { kind: "removed", daemonRunning: outcome.daemonRunning, attached: outcome.daemonAttached === true, recovery: removalRecovery(outcome) })
+      if (outcome.ok) setPhase(action === "install" ? { kind: "installed", target: outcome.target, lingerWarning: outcome.lingerWarning } : { kind: "removed", daemonRunning: outcome.daemonRunning, attached: outcome.daemonAttached === true, recovery: removalRecovery(outcome), lingerNote: outcome.lingerNote, lingerWarning: outcome.lingerWarning })
       else if (outcome.reason === "refused") setPhase({ kind: "waits", refusal: outcome.message })
       else if (outcome.reason === "check-failed") setPhase({ kind: "unchecked", message: outcome.message })
       else if (outcome.reason === "installed-not-attached") setPhase({ kind: "not-attached", message: outcome.message })
@@ -341,8 +343,10 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           ) : phase.daemonRunning && !phase.attached ? <span>Removed. Quitting Domovoi now stops the daemon and every session on it.</span> : null}
           {phase.daemonRunning && phase.attached ? <span>{`${phase.recovery ? "" : "Removed. "}This app is connected to a daemon it did not start. Quitting this app leaves it running.`}</span> : null}
           {phase.daemonRunning ? null : <span>{`${phase.recovery ? "" : "Removed. "}The daemon did not start again inside this app, so no session is running. Quit and reopen Domovoi to start it.`}</span>}
+          {phase.lingerNote ? <span>{phase.lingerNote}</span> : null}
         </div>
       ) : null}
+      {phase.kind === "removed" && phase.lingerWarning ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">{phase.lingerWarning}</p> : null}
       {phase.kind === "waits" ? <p className="m-0 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">{`The switch waits: ${phase.refusal} Nothing is interrupted.`}</p> : null}
       {phase.kind === "unchecked" ? (
         <div className="flex flex-col gap-1.5 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground" role="status">
@@ -592,6 +596,10 @@ export type SettingsShellProps = {
   onOpenFleet: () => void
   onOpenSkills: () => void
   onOpenAudit: () => void
+  // The sheet's Rules and Checkpoints tabs, as the Desktop V2 frame links
+  // them from Elsewhere. Without a handler the link is not drawn.
+  onOpenPermissions?: (() => void) | undefined
+  onOpenCheckpoints?: (() => void) | undefined
   onResetFirstRun?: () => void
   theme: WorkspaceTheme
   readOnly?: boolean
@@ -624,6 +632,8 @@ export function SettingsShell({
   onOpenFleet,
   onOpenSkills,
   onOpenAudit,
+  onOpenPermissions,
+  onOpenCheckpoints,
   onResetFirstRun,
   onExternalEditorChange,
   onWindowDecorationChange,
@@ -644,6 +654,15 @@ export function SettingsShell({
     ? { decoration: windowDecoration, active: activeWindowDecoration, onChange: onWindowDecorationChange }
     : undefined
   const tailnet = useTailnetReach(pairing?.tailnet)
+  // The Desktop V2 frame's Elsewhere, in its order. Checkpoints says what a
+  // revert does here: the worktree only, the thread keeps its turns (Q341 A).
+  const elsewhereLinks = [
+    { label: "Machines and daemons", note: "Transports, agents installed, and what each one is running.", open: onOpenFleet },
+    ...(onOpenPermissions ? [{ label: "Permissions and rules", note: "What you have already allowed, and what a rule can never cover.", open: onOpenPermissions }] : []),
+    { label: "Skills", note: "Install sources, signing, and which skills a machine may run.", open: onOpenSkills },
+    ...(onOpenCheckpoints ? [{ label: "Checkpoints", note: "Take one yourself, or reset a session's worktree to one. The thread keeps its turns.", open: onOpenCheckpoints }] : []),
+    { label: "Audit log", note: "Who decided what, on which verified device, and what happened next.", open: onOpenAudit },
+  ]
 
   return (
     <ScrollArea className="min-h-0 min-w-0 flex-1">
@@ -666,15 +685,19 @@ export function SettingsShell({
           {about && !daemonSection ? <AboutBuildSection about={about} /> : null}
 
           {pairing ? <PairingSection pairing={pairing} readOnly={readOnly} onOpenFleet={onOpenFleet} tailnet={tailnet} /> : null}
+        </fieldset>
 
-          <section aria-label="Notifications">
-            <NotificationSettings
-              preferences={notifications}
-              onChange={onNotificationsChange}
-              {...(clientCapabilities ? { client: clientCapabilities } : {})}
-            />
-          </section>
+        {/* Q362 A: notifications stay on this client and never reach the
+            daemon, so a watching window keeps them live. */}
+        <section aria-label="Notifications">
+          <NotificationSettings
+            preferences={notifications}
+            onChange={onNotificationsChange}
+            {...(clientCapabilities ? { client: clientCapabilities } : {})}
+          />
+        </section>
 
+        <fieldset disabled={readOnly} className="contents">
           <section id="permissions-settings" aria-label="Permissions and rules">
             <PermissionRuleSettings rules={approvalRules} />
           </section>
@@ -692,24 +715,15 @@ export function SettingsShell({
             <p className="mt-1 text-[11.5px] text-muted-foreground">These live on their own screens.</p>
           </div>
           <div className="flex flex-col">
-            <Button variant="ghost" className="h-auto justify-start rounded-none px-[15px] py-3 text-left" onClick={onOpenFleet}>
-              <span className="flex flex-col items-start">
-                <span>Machines and daemons</span>
-                <span className="text-[11px] font-normal text-muted-foreground">Transports, agents installed, and what each one is running.</span>
-              </span>
-            </Button>
-            <Button variant="ghost" className="h-auto justify-start rounded-none border-t px-[15px] py-3 text-left" onClick={onOpenSkills}>
-              <span className="flex flex-col items-start">
-                <span>Skills</span>
-                <span className="text-[11px] font-normal text-muted-foreground">Install sources, signing, and which skills a machine may run.</span>
-              </span>
-            </Button>
-            <Button variant="ghost" className="h-auto justify-start rounded-none border-t px-[15px] py-3 text-left" onClick={onOpenAudit}>
-              <span className="flex flex-col items-start">
-                <span>Audit log</span>
-                <span className="text-[11px] font-normal text-muted-foreground">Who decided what, on which verified device, and what happened next.</span>
-              </span>
-            </Button>
+            {elsewhereLinks.map((link, index) => (
+              <Button key={link.label} variant="ghost" className={`h-auto justify-start gap-3 rounded-none px-[15px] py-3 text-left${index ? " border-t" : ""}`} onClick={link.open}>
+                <span className="flex min-w-0 flex-1 flex-col items-start">
+                  <span>{link.label}</span>
+                  <span className="text-[11px] font-normal whitespace-normal text-muted-foreground">{link.note}</span>
+                </span>
+                <ChevronRightIcon aria-hidden className="size-3.5 text-faint" />
+              </Button>
+            ))}
             {onResetFirstRun ? (
               <Button variant="ghost" className="h-auto justify-start rounded-none border-t px-[15px] py-3 text-left" onClick={onResetFirstRun}>
                 First-run setup
@@ -718,19 +732,19 @@ export function SettingsShell({
           </div>
         </section>
 
-        <fieldset disabled={readOnly} className="contents">
-          <section aria-label="Appearance">
-            <AppearanceSettings
-              theme={theme}
-              onThemeChange={onThemeChange}
-              {...(decorationCapability ? {
-                windowDecoration: decorationCapability.decoration,
-                activeWindowDecoration: decorationCapability.active,
-                onWindowDecorationChange: decorationCapability.onChange,
-              } : {})}
-            />
-          </section>
-        </fieldset>
+        {/* Q362 A: theme and window decoration stay on this client, so a
+            watching window keeps them live. */}
+        <section aria-label="Appearance">
+          <AppearanceSettings
+            theme={theme}
+            onThemeChange={onThemeChange}
+            {...(decorationCapability ? {
+              windowDecoration: decorationCapability.decoration,
+              activeWindowDecoration: decorationCapability.active,
+              onWindowDecorationChange: decorationCapability.onChange,
+            } : {})}
+          />
+        </section>
       </main>
     </ScrollArea>
   )
