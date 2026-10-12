@@ -161,7 +161,8 @@ Add exactly one of these so the daemon advertises a name rather than a bound add
 - `DOMOVOI_TAILNET_HOST` for a tailnet name or address. It takes a bare host, not a URL or port.
 
 Set `DOMOVOI_ALLOWED_ORIGINS` to a comma-separated list of browser origins if a browser client
-will connect. The daemon terminates TLS itself and refuses a plaintext non-loopback listener.
+served from somewhere else will connect. The web app the daemon serves itself needs no entry: each
+listener admits its own pages (see the daemon README, Web app). The daemon terminates TLS itself and refuses a plaintext non-loopback listener.
 Domovoi does not obtain certificates, configure DNS, or verify tailnet membership. A name is never
 treated as proof of transport protection.
 
