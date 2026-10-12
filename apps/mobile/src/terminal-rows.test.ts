@@ -28,6 +28,8 @@ import {
   withNotification,
   type TerminalWatch,
 } from "./terminal-rows"
+import { cellWidth } from "./terminal-cell-width"
+import { drawnText } from "./terminal-line-model"
 
 // Phone v2 frame 04: what the phone reads from terminal.list and
 // terminal.watch, and how it words it. Fixtures go through the protocol's
@@ -133,6 +135,210 @@ describe("terminalLines", () => {
   it("keeps a character outside the basic plane whole", () => {
     expect(terminalLines("🙂 done\n")).toEqual(["🙂 done"])
     expect(terminalLines("ab🙂\rX\n")).toEqual(["Xb🙂"])
+  })
+})
+
+// #739: a terminal draws a line as cells. A wide character, CJK or a wide
+// emoji, takes two; a combining mark takes none and sits on the cell before
+// it. Every overwrite, backspace, tab and erase counts in cells.
+describe("terminalLines as cells", () => {
+  it("counts a wide character as two cells", () => {
+    expect(terminalLines("界b\rXY\n")).toEqual(["XYb"])
+    expect(terminalLines("🙂b\rXY\n")).toEqual(["XYb"])
+    expect(terminalLines("abc\r界\n")).toEqual(["界c"])
+    expect(terminalLines("界\tb\n")).toEqual(["界      b"])
+  })
+
+  // Writing over either half of a wide character clears all of it, as an
+  // erase over either half does.
+  it("clears a wide character when half of it is written over or erased", () => {
+    expect(terminalLines("界\bX\n")).toEqual([" X"])
+    expect(terminalLines("a界\rXY\n")).toEqual(["XY"])
+    expect(terminalLines("界界\b\u001b[K\n")).toEqual(["界"])
+  })
+
+  it("counts a combining mark as no cell, kept on the character before it", () => {
+    // Each accented e below is "e" then U+0301, the combining acute accent.
+    expect(terminalLines(`e${String.fromCodePoint(0x301)}b\rXY\n`)).toEqual(["XY"])
+    // A mark at the start of a line has no character to sit on.
+    expect(terminalLines(`${String.fromCodePoint(0x301)}ab\rX\n`)).toEqual(["Xb"])
+    expect(terminalLines("é\n")).toEqual(["é"])
+    expect(terminalLines("ébc\rX\n")).toEqual(["Xbc"])
+    expect(terminalLines("aé\bX\n")).toEqual(["aX"])
+    expect(terminalLines("éb\rXY\n")).toEqual(["XY"])
+    // A zero-width joiner and a variation selector take no cell either.
+    expect(terminalLines("👍‍🙂\u{fe0f}b\rXYZW\n")).toEqual(["XYZWb"])
+  })
+
+  it("names the width of a character from the vendored Unicode table", () => {
+    expect(cellWidth("A".codePointAt(0)!)).toBe(1)
+    expect(cellWidth("界".codePointAt(0)!)).toBe(2)
+    expect(cellWidth("🙂".codePointAt(0)!)).toBe(2)
+    expect(cellWidth(0x301)).toBe(0)
+    expect(cellWidth(0x200d)).toBe(0)
+    // A soft hyphen is drawn, as terminals draw it.
+    expect(cellWidth(0xad)).toBe(1)
+    // A Hangul medial vowel joins the syllable before it.
+    expect(cellWidth(0x1160)).toBe(0)
+    // Unassigned code points in the CJK blocks default to wide.
+    expect(cellWidth(0x2fffd)).toBe(2)
+  })
+})
+
+// A terminal moves the cursor along a line with CSI sequences, and a
+// progress reporter often redraws with one instead of a carriage return.
+describe("terminalLines and cursor movement within a line", () => {
+  it("moves to a column, forward and back", () => {
+    expect(terminalLines("abc\u001b[2K\u001b[1GX\n")).toEqual(["X"])
+    expect(terminalLines("ab\u001b[5Gx\n")).toEqual(["ab  x"])
+    expect(terminalLines("abc\u001b[2`X\n")).toEqual(["aXc"])
+    expect(terminalLines("abcdef\u001b[3DX\n")).toEqual(["abcXef"])
+    expect(terminalLines("abc\u001b[DX\n")).toEqual(["abX"])
+    expect(terminalLines("a\u001b[3Cb\n")).toEqual(["a   b"])
+    expect(terminalLines("a\u001b[2ab\n")).toEqual(["a  b"])
+    expect(terminalLines("ab\u001b[9Dx\n")).toEqual(["xb"])
+  })
+
+  it("erases, deletes and inserts cells at the cursor", () => {
+    expect(terminalLines("abcdef\r\u001b[2X\n")).toEqual(["  cdef"])
+    expect(terminalLines("abcdef\r\u001b[2P\n")).toEqual(["cdef"])
+    expect(terminalLines("abc\r\u001b[2@\n")).toEqual(["  abc"])
+  })
+
+  // Half of a wide character erased, deleted or split takes the whole of it.
+  it("clears a wide character an erase, a delete or an insert splits", () => {
+    expect(terminalLines("界b\r\u001b[C\u001b[X\n")).toEqual(["  b"])
+    expect(terminalLines("a界b\r\u001b[C\u001b[P\n")).toEqual(["a b"])
+    expect(terminalLines("a界b\r\u001b[2C\u001b[P\n")).toEqual(["a b"])
+    expect(terminalLines("a界b\r\u001b[2C\u001b[@\n")).toEqual(["a   b"])
+    expect(terminalLines("a界b\r\u001b[C\u001b[@\n")).toEqual(["a 界b"])
+  })
+
+  // Inserting and deleting act on the cursor's row of the widest grid, so a
+  // record of them cannot grow a line past it or move a long line's whole
+  // tail each time.
+  it("bounds what inserting and deleting characters cost", () => {
+    const inserted = terminalLines(`x\r${"\u001b[1000@".repeat(9_362)}y`)
+    expect(inserted).toEqual(["y"])
+    // What passes the row's end is lost, as at a terminal's right margin.
+    expect(terminalLines("abc\r\u001b[998@\n")).toEqual([`${" ".repeat(998)}ab`])
+    const deleted = terminalLines(`${"x".repeat(40_000)}\r${"\u001b[P".repeat(8_000)}`)
+    expect(deleted).toEqual([`${" ".repeat(1_000)}${"x".repeat(39_000)}`])
+    // Blanks pushed along a line are nothing to move.
+    expect(terminalLines(`x\r${"\u001b[@".repeat(21_844)}`)).toEqual([])
+    // An insert in a long line's first row leaves the next row where it was.
+    expect(terminalLines(`${"x".repeat(1_500)}\r\u001b[2@\n`)).toEqual([`  ${"x".repeat(1_498)}`])
+    // A wide character across the row's end cannot move as one, so it goes.
+    expect(terminalLines(`${"a".repeat(999)}界\r\u001b[@\n`)).toEqual([` ${"a".repeat(999)}`])
+  })
+
+  // A record made of character edits costs about what a record of plain
+  // output costs to read. Timed against plain text on the same machine, best
+  // of five, so a loaded runner slows both sides alike. Measured with Node 26
+  // on an Apple Silicon Mac, as multiples of the plain read: inserts and
+  // deletes moved cell by cell took 14 to 23 times, erases 26 times; in rows
+  // with the array's own splice and fill, at most 4.1 and 1.4 times. The
+  // bound of 10 sits between the two.
+  it("reads a record of inserts, deletes and erases about as fast as plain output", () => {
+    const best = (text: string) => {
+      let fastest = Infinity
+      for (let run = 0; run < 5; run += 1) {
+        const started = performance.now()
+        drawnText(text)
+        fastest = Math.min(fastest, performance.now() - started)
+      }
+      return fastest
+    }
+    const plain = best("\u001b[32m ✓\u001b[0m src/webhooks/handler.spec.ts (14 tests) 412ms\r\n".repeat(900))
+    const insertsAndDeletes = best(`${"x".repeat(999)}\r${"\u001b[@\u001b[P".repeat(10_756)}`)
+    const erases = best(`\u001b[998Cx\r${"\u001b[997X".repeat(10_900)}`)
+    expect(insertsAndDeletes / plain).toBeLessThan(10)
+    expect(erases / plain).toBeLessThan(10)
+  })
+
+  // #808: cursor moves and inserts add blanks past what was written, a
+  // thousand for a few characters each time. Across one text they may add
+  // no more than one record's worth, so what is drawn stays near the size of
+  // what arrived.
+  it("bounds the blanks moves and inserts add across a text", () => {
+    const drawnSize = (text: string) => drawnText(text).lines.reduce((size, line) => size + line.length, 0)
+    const moves = "\u001b[1000Cx\n".repeat(7_281)
+    expect(drawnSize(moves)).toBeLessThanOrEqual(moves.length * 2 + 65_536)
+    const inserts = "x\r\u001b[999@\n".repeat(6_553)
+    expect(drawnSize(inserts)).toBeLessThanOrEqual(inserts.length * 2 + 65_536)
+    // Once spent, a move past what was written stops at its end.
+    expect(drawnText(`${"\u001b[1000Cx\n".repeat(66)}\u001b[5Cy\n`).lines.at(-2)).toBe("y")
+    // An insert cut short at the old end takes a wide character it splits.
+    expect(drawnText(`${"\u001b[1000Cx\n".repeat(66)}界\r\u001b[@\u001b[3GX\n`).lines.at(-2)).toBe("  X")
+  })
+
+  // An erase to the cursor erases the whole line before it, however long.
+  it("erases a line longer than the widest grid to the cursor", () => {
+    expect(terminalLines(`${"a".repeat(1_000)}b\u001b[1K\n`)).toEqual([""])
+    expect(terminalLines(`${"a".repeat(1_000)}bcd\u001b[2D\u001b[1K\n`)).toEqual([`${" ".repeat(1_002)}d`])
+    // An erase after one already made erases what was written since.
+    expect(terminalLines("abcd\u001b[1Kxy\r\u001b[4C\u001b[1K\n")).toEqual(["     y"])
+  })
+
+  // Lines are read once per text and handed out as copies.
+  it("hands out lines a caller can change", () => {
+    const first = terminalLines("a\nb\n")
+    first.push("x")
+    expect(terminalLines("a\nb\n")).toEqual(["a", "b"])
+  })
+
+  // A private marker after a parameter makes the sequence malformed.
+  it("drops a malformed sequence", () => {
+    expect(terminalLines("abc\r\u001b[2?KX\n")).toEqual(["Xbc"])
+  })
+
+  // The phone draws lines, not a screen. Moving to another row is dropped,
+  // and what follows is drawn where the cursor was on this line.
+  it("drops movement to another row", () => {
+    expect(terminalLines("\u001b[2J\u001b[1;1Hhello\n")).toEqual(["hello"])
+  })
+})
+
+// Strings a terminal reads and never draws: a Device Control String such as
+// sixel graphics, an application program command, a privacy message, a start
+// of string. Each runs to the string terminator, ESC then backslash.
+describe("terminalLines and control strings", () => {
+  it("draws nothing of a control string's payload", () => {
+    expect(terminalLines("before\u001bPq#0;2;0;0;0#0~~@@vv\u001b\\after\n")).toEqual(["beforeafter"])
+    expect(terminalLines("a\u001b_Gf=100;payload\u001b\\b\n")).toEqual(["ab"])
+    expect(terminalLines("a\u001b^private\u001b\\b\n")).toEqual(["ab"])
+    expect(terminalLines("a\u001bXstring\u001b\\b\n")).toEqual(["ab"])
+    // A bell ends a window title but not a device control string.
+    expect(terminalLines("a\u001bPpay\u0007load\u001b\\b\n")).toEqual(["ab"])
+  })
+
+  it("draws nothing of a control string still arriving", () => {
+    expect(terminalLines("a\u001bPpartial")).toEqual(["a"])
+    expect(terminalLines("a\u001bPpartial\u001b")).toEqual(["a"])
+  })
+
+  // A line break inside a payload is not a line on screen.
+  it("starts no line for a line break inside a payload", () => {
+    expect(terminalLines("a\u001bPx\ny\u001b\\b\n")).toEqual(["ab"])
+  })
+
+  // An 8-bit control is the escape it stands for, and CAN or SUB abandons a
+  // sequence partway.
+  it("reads 8-bit controls and drops an abandoned sequence", () => {
+    expect(terminalLines("abc\u009b2Dx\n")).toEqual(["axc"])
+    expect(terminalLines("a\u0090payload\u009cb\n")).toEqual(["ab"])
+    expect(terminalLines("a\u009d0;title\u0007b\n")).toEqual(["ab"])
+    expect(terminalLines("a\u001b[31\u0018b\n")).toEqual(["ab"])
+    expect(terminalLines("a\u001bPpay\u001ab\n")).toEqual(["ab"])
+    // An 8-bit control inside a string ends it and begins its own sequence.
+    expect(terminalLines("a\u001bPqdata\u009b2CX\n")).toEqual(["a  X"])
+    // Mode changes, such as hiding the cursor, move nothing.
+    expect(terminalLines("a\u001b[?25lb\u001b[?2004h\n")).toEqual(["ab"])
+  })
+
+  // A character set choice, as tput sgr0 sends, is three characters.
+  it("draws nothing of a character set choice", () => {
+    expect(terminalLines("\u001b(Bok\u001b(0\u001b[m\n")).toEqual(["ok"])
   })
 })
 
@@ -319,6 +525,93 @@ describe("terminalRows", () => {
     expect(terminalLines(record.text)[0]?.startsWith("x")).toBe(true)
   })
 
+  // A device control string, such as sixel graphics, can run far longer
+  // than a title, and a cut inside it would draw its payload as text.
+  it("cuts at the bound past a long device control string", () => {
+    const graphics = `\u001bPq${"#0~".repeat(400)}\u001b\\`
+    const full = watchFrom(watched({ buffer: `${graphics}${"x".repeat(maximumTerminalReplayCharacters - graphics.length)}` }))
+    const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "y".repeat(80) } }, at)
+    expect(terminalLines(record.text)[0]?.startsWith("x")).toBe(true)
+  })
+
+  // A line break inside a payload is not a line to cut after, and an 8-bit
+  // introducer opens a string as ESC and its letter do.
+  it("cuts at the bound past a control string with a line break or an 8-bit introducer", () => {
+    for (const [head, data] of [["\u001bPqaaa\nPAYLOAD\u001b\\", "y"], ["\u0090qPAYLOAD\u009c", "yy"]] as const) {
+      const full = watchFrom(watched({ buffer: `${head}${"x".repeat(maximumTerminalReplayCharacters - head.length)}` }))
+      const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data } }, at)
+      expect(record.text.length).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
+      expect(terminalLines(record.text).join("\n")).not.toContain("PAYLOAD")
+    }
+  })
+
+  // A control string longer than the reach for keeping one whole is cut at
+  // the bound, and the rest of its payload still draws nothing.
+  it("keeps drawing nothing of a control string cut past the reach for keeping it whole", () => {
+    let record = watchFrom(watched({ buffer: `\u001bPq${"#".repeat(maximumTerminalReplayCharacters - 3)}` }))
+    record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: "#".repeat(4_097) } }, at)
+    expect(record.text.length).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
+    expect(terminalLines(record.text)).toEqual([])
+    record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: "\u001b\\done\n" } }, at)
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["done"])
+  })
+
+  // An escape still waiting for its second character when the cut passes
+  // the reach is waiting for it after the cut too.
+  it("keeps an escape cut past the reach waiting for its second character", () => {
+    let record = watchFrom(watched({ buffer: `\u001b${"\u0000".repeat(maximumTerminalReplayCharacters - 1)}` }))
+    for (const data of ["\u0000".repeat(4_097), "]0;PAYLOAD\u0007done\n"]) {
+      record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data } }, at)
+    }
+    expect(record.text.length).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["done"])
+  })
+
+  // #808: a line break inside a control sequence still starts a line, and
+  // the text after it is read once the sequence ends.
+  it("skips the first line to a line break made inside a control sequence", () => {
+    const lines = (buffer: string) => terminalRows(watchFrom(watched({ buffer, earlierOutputDropped: true })), true)
+      .filter((row) => row.kind === "line").map((row) => row.text)
+    expect(lines("partial\u001b[31\nmred\nnext\n")).toEqual(["red", "next"])
+    // A character that ends a sequence by being text is drawn.
+    expect(lines("partial\u001b[\nétext\n")).toEqual(["étext"])
+    // Only the first line break has to be near; the sequence can run on.
+    expect(lines(`partial\u001b[\n${"1".repeat(300)}\nmnext\n`)).toEqual(["next"])
+    const head = `${"x".repeat(100)}abc\u001b[31\nmred`
+    const full = watchFrom(watched({ buffer: `${head}${"z".repeat(maximumTerminalReplayCharacters - head.length)}` }))
+    const cut = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "y".repeat(101) } }, at)
+    expect(terminalLines(cut.text)[0]?.startsWith("redz")).toBe(true)
+  })
+
+  // The first line of a record the daemon cut is skipped to a line break
+  // the terminal draws, not one inside a payload.
+  it("does not skip to a line break inside a payload when the record starts mid-line", () => {
+    const head = "lead\u001bPq\nPAYLOAD"
+    const full = watchFrom(watched({ buffer: `${head}${"#".repeat(maximumTerminalReplayCharacters - head.length)}`, earlierOutputDropped: true }))
+    expect(terminalRows(full, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["lead"])
+    const record = withNotification(full, { method: "terminal.output", params: { terminalId: "terminal-1", data: "#" } }, at)
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["ead"])
+  })
+
+  // The cut resumes in the state the reader was in where it resumes, not in
+  // the state at the end of the text: here an escape, which the "[" after
+  // the cut turns into a control sequence that draws nothing.
+  it("resumes a cut sequence in the state at the cut, not at the end", () => {
+    let record = watchFrom(watched({ buffer: `\u001b${"\u0000".repeat(maximumTerminalReplayCharacters - 1)}` }))
+    record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: `${"\u0000".repeat(4_093)}[123` } }, at)
+    expect(record.text.length).toBeLessThanOrEqual(maximumTerminalReplayCharacters)
+    expect(terminalRows(record, true).filter((row) => row.kind === "line")).toEqual([])
+    record = withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data: "mdone\n" } }, at)
+    expect(terminalRows(record, true).filter((row) => row.kind === "line").map((row) => row.text)).toEqual(["done"])
+  })
+
+  // A line break inside a control string's payload is not a line, so the
+  // live mark goes under the last line the record drew.
+  it("places the live mark by the lines drawn, not the line breaks inside a payload", () => {
+    const record = withNotification(watchFrom(watched({ buffer: "first\n\u001bPa\nb\u001b\\" })), { method: "terminal.output", params: { terminalId: "terminal-1", data: "next\n" } }, at)
+    expect(terminalRows(record, true).map((row) => row.kind === "mark" ? row.key : row.text)).toEqual(["first", "live-from", "next"])
+  })
+
   // A command still arriving at the cut is kept whole until it ends.
   it("keeps an unfinished operating system command whole across a cut", () => {
     let record = watchFrom(watched({ buffer: `\u001b]0;${"t".repeat(maximumTerminalReplayCharacters - 4)}` }))
@@ -418,6 +711,31 @@ describe("terminalRows", () => {
 })
 
 describe("withNotification", () => {
+  // #808: a line break inside a payload is no line for the reader to catch
+  // up on, and a piece that draws nothing is no output below them.
+  it("counts only the line breaks and pieces the terminal draws", () => {
+    const output = (record: ReturnType<typeof watchFrom>, data: string) =>
+      withNotification(record, { method: "terminal.output", params: { terminalId: "terminal-1", data } }, at)
+    const payload = output(watchFrom(watched()), "\u001bPa\nb\u001b\\")
+    expect(payload.received).toBe(0)
+    expect(payload.pieces).toBe(0)
+    // A payload can start in one piece and end in the next.
+    const split = output(output(watchFrom(watched()), "\u001bPa"), "\nb\u001b\\")
+    expect(split.received).toBe(0)
+    expect(split.pieces).toBe(0)
+    const drawn = output(split, "done\n")
+    expect(drawn.received).toBe(1)
+    expect(drawn.pieces).toBe(1)
+    // A malformed sequence ended in a later piece is still dropped, and a
+    // colour alone draws nothing.
+    const malformed = output(output(watchFrom(watched()), "\u001b[1 2"), "m")
+    expect(malformed.pieces).toBe(0)
+    // A private sequence split after its marker moves nothing either.
+    expect(output(output(watchFrom(watched()), "\u001b[?"), "2C").pieces).toBe(0)
+    expect(output(output(watchFrom(watched()), "\u001b["), "2C").pieces).toBe(1)
+    expect(output(watchFrom(watched()), "\u001b[31m").pieces).toBe(0)
+  })
+
   it("moves the claimant line when the claim moves", () => {
     const record = withNotification(
       watchFrom(watched({ claimHeld: false })),

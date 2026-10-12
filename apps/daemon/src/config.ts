@@ -38,6 +38,9 @@ export type DaemonEnvironmentConfig = {
   authToken?: string
   allowedOrigins?: string[]
   webAppUrl?: string
+  // DOMOVOI_WEB_DIR, only when set. defaultWebDirectory names the folder used
+  // otherwise, resolved where the daemon runs rather than saved with a service.
+  webDirectory?: string
   allowRemoteTransport: boolean
 }
 
@@ -89,6 +92,7 @@ export function parseDaemonEnvironment(
   const authToken = parseAuthToken(environment.DOMOVOI_AUTH_TOKEN)
   const allowedOrigins = parseAllowedOrigins(environment.DOMOVOI_ALLOWED_ORIGINS)
   const webAppUrl = parseWebAppUrl(environment.DOMOVOI_WEB_APP_URL)
+  const webDirectory = parseWebDirectory(environment.DOMOVOI_WEB_DIR)
   const tailnetListener = parseTailnetListener(environment, host, allowRemoteTransport)
   const tailnetHost = environment.DOMOVOI_TAILNET_HOST
   // The name is advertised for an encrypted listener off this machine: the
@@ -123,8 +127,34 @@ export function parseDaemonEnvironment(
     ...(authToken !== undefined ? { authToken } : {}),
     ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
     ...(webAppUrl !== undefined ? { webAppUrl } : {}),
+    ...(webDirectory !== undefined ? { webDirectory } : {}),
     allowRemoteTransport,
   }
+}
+
+function parseWebDirectory(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined
+  // Either platform's form: a saved service configuration is checked on the
+  // machine that reads it, which may not be the one it runs on.
+  if (value.length > 4_096 || value.trim() !== value || /[\0\r\n]/u.test(value)
+    || !(posix.isAbsolute(value) || win32.isAbsolute(value))) {
+    throw new DaemonConfigurationError("DOMOVOI_WEB_DIR must be an absolute directory path")
+  }
+  return value
+}
+
+// S3.2 plan section 1.2 (Q299 A): the user's own data folder, outside the
+// profile, so agent-written files under the profile are never served and a
+// daemon install directory, often shared or package-managed, is not used.
+export function defaultWebDirectory(platform: string, homeDirectory: string, environment: DaemonEnvironment): string {
+  if (platform === "win32") {
+    const local = environment.LOCALAPPDATA
+    return win32.join(local !== undefined && win32.isAbsolute(local) ? local : win32.join(homeDirectory, "AppData", "Local"), "Domovoi", "web")
+  }
+  if (platform === "darwin") return posix.join(homeDirectory, "Library", "Application Support", "Domovoi", "web")
+  // The XDG rule: a relative XDG_DATA_HOME is invalid and is ignored.
+  const data = environment.XDG_DATA_HOME
+  return posix.join(data !== undefined && posix.isAbsolute(data) ? data : posix.join(homeDirectory, ".local", "share"), "domovoi", "web")
 }
 
 function parseSshTunnels(value: string | undefined): ConfiguredSshTunnel[] | undefined {

@@ -48,12 +48,13 @@ import { fleetMachines } from "./fleet-entries.js"
 import { machineAttachment } from "./machine-selection.js"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { DaemonRpcError, ProjectSwitchConfirmationError, clientVersion } from "./client"
-import { SessionsDrawerColumn, SessionsDrawerTrigger, type SessionRowAction } from "./sessions-drawer"
+import { SessionsDrawerColumn, SessionsDrawerTrigger, sessionsColumnOpensByDefault, type SessionRowAction } from "./sessions-drawer"
+import { machineRoute } from "./route-word"
 import { useWorkspace } from "./use-workspace"
 import type { RelayPinStorage } from "./relay-pin"
 import { FleetAccessSession, fleetAgents, machineReading, useReadOnVisit, type HeldReading } from "./fleet-access-session"
 import { ClientAdmissionError } from "./client-admission-policy"
-import { prepareFleetEndpoint, withinFleetDeadline } from "./fleet-access"
+import { prepareFleetEndpoint, withinFleetDeadline, type FleetEndpoint } from "./fleet-access"
 import { Deadline } from "./deadline"
 import { advancePendingElsewhere, freshRefusal, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
 import { collectFleetInventories } from "./fleet-inventories"
@@ -377,9 +378,19 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (home.fleet) accessSession.retain(fleetMachines(home.fleet.entries))
   }, [home.fleet, accessSession])
   const access = attached ? accessSession.access(attached.machineId) : undefined
+  // The transport kind the attached machine's route resolved to, so the chip
+  // names the route dialed. Each attach is an epoch: choosing the attached
+  // machine again keeps it (and its connection), a return home ends it. A
+  // resolution that lands in a later epoch than it started in is dropped, so
+  // an abandoned route never names the live one, and one record is kept.
+  const attachEpoch = useMemo(() => ({ machineId: attached?.machineId }), [attached?.machineId])
+  const attachEpochRef = useRef(attachEpoch)
+  attachEpochRef.current = attachEpoch
+  const [dialedRoute, setDialedRoute] = useState<{ epoch: object; kind: FleetEndpoint["routeKind"] } | null>(null)
   const remote = useWorkspace(rpcUrl, clientKind, undefined, undefined,
     access ? { state: "client", admission: access,
-      resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline }),
+      resolveEndpoint: (deadline) => prepareFleetEndpoint({ ...accessInputs.current, ...access, deadline })
+        .then((endpoint) => { if (attachEpochRef.current === attachEpoch) setDialedRoute({ epoch: attachEpoch, kind: endpoint.routeKind }); return endpoint }),
     } : { state: "disabled" }, relayPinStorage)
   const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, tailnetStatus, revokeDevice, rotateDevice, renameDevice } = home
   // The snapshots this shell already holds are readings of their own
@@ -524,7 +535,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }
 
   const shellRef = useRef<HTMLDivElement>(null)
-  const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [sessionsOpen, setSessionsOpen] = useState(() => typeof window !== "undefined" && sessionsColumnOpensByDefault(clientKind, window.innerWidth))
   const dockCollapseButtonRef = useRef<HTMLButtonElement>(null)
   const dockUnpinButtonRef = useRef<HTMLButtonElement>(null)
   const sheetPinButtonRef = useRef<HTMLButtonElement>(null)
@@ -1637,7 +1648,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     <SurfaceCodeReload.Provider value={reloadForNewCode}>
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => { if (!watching) setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" })) }} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={connected ? attached ? "remote" : "local" : "unreachable"} theme={resolvedTheme} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" }))} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={!connected ? "unreachable" : !attached ? machineRoute(endpointUrl) : dialedRoute?.epoch === attachEpoch ? machineRoute(endpointUrl, dialedRoute.kind) : undefined} theme={resolvedTheme} />
         <WorkspaceConnectionStatus
           connected={connected}
           reconnecting={reconnecting}

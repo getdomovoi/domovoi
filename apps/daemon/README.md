@@ -54,6 +54,7 @@ The daemon listens on `127.0.0.1:47831` by default. Configure it with these envi
 | `DOMOVOI_SSH_TUNNELS` | Source-local JSON list of `{machineId, endpoint}` SSH forwards |
 | `DOMOVOI_ALLOWED_ORIGINS` | Comma-separated browser origins allowed to connect |
 | `DOMOVOI_WEB_APP_URL` | Web app a pairing code can be opened in. An absolute `http` or `https` URL without whitespace, control characters, credentials or a fragment, at most 2048 characters. When set, `device.issueCode` returns it as `webAppUrl` beside `pairingAddress`, so a pairing card can offer a browser link; when unset, the result has no `webAppUrl`. The service configuration file keeps it as `webAppUrl`. |
+| `DOMOVOI_WEB_DIR` | Absolute folder of the web app bundle this daemon serves; see [Web app](#web-app). Default: `~/Library/Application Support/Domovoi/web` on macOS, `$XDG_DATA_HOME/domovoi/web` (or `~/.local/share/domovoi/web`) on Linux, `%LOCALAPPDATA%\Domovoi\web` on Windows. The service configuration file keeps it as `webDirectory`. |
 | `DOMOVOI_ALLOW_REMOTE_TRANSPORT=1` | Explicitly permits a non-loopback listener |
 | `DOMOVOI_TOOL_PATH` | Directories searched first for agent CLIs, in the platform's PATH form; then the login shell's PATH, then the launcher's (`src/tool-path.ts`) |
 | `DOMOVOI_RELAY_IDENTITY_PUBLIC_KEY` | Off-machine signer's Ed25519 public key for relay provisioning; see [relay key provisioning](../../docs/relay-key-provisioning.md) |
@@ -97,6 +98,59 @@ The bearer token protects RPC access. Health checks remain public. Preview docum
 own short-lived signed capabilities on every listener, loopback included; each capability is scoped
 to one artifact revision, purpose, annotation bridge channel, and parent origin, and an unsigned or
 retargeted request returns 404.
+
+## Web app
+
+Every listener the daemon opens, loopback and the tailnet listener alike, serves the built web app
+(`apps/web`) at `/`, beside `/healthz`, `/artifacts/` and `/rpc` on the same port. The bundle is a
+separate artifact: the daemon reads it from `DOMOVOI_WEB_DIR`, or the default folder in the table
+above, once at startup, and serves it from memory. Replacing it takes a daemon restart. A bundle
+not read within 10 seconds is not served, and the daemon starts without it. The startup output
+says what happened:
+
+```text
+domovoid web app served from <folder> (web <version>, protocol <x.y.z>)
+domovoid web app not served: <reason> at <folder>
+```
+
+The daemon serves only the files the bundle's `domovoi-web.json` lists, and only when every check
+passes: the protocol major and minor match the daemon's, each file's size and SHA-256 match the
+manifest, no file or folder below it is a link, a file has no second hard link, the folder does
+not overlap the profile directory, and on POSIX every entry from `/` down to each file is owned by
+the daemon's account or root and is not writable by group or others (a folder above the bundle may
+be, with the sticky bit). A Homebrew-style prefix
+that the `admin` group can write is refused for that reason. Access control lists are not read,
+and on Windows neither owner nor mode is checked. A refused bundle is named in the daemon log with
+the check and the file; `/` then answers a 503 page that names no path.
+
+What a request without a credential can fetch is the public app: compiled JavaScript, CSS, fonts
+and icons, with a CSP that allows scripts only from the same origin, `frame-ancestors 'none'`,
+`X-Frame-Options: DENY` and `nosniff`. The bundle holds no secret; the page keeps the device
+credential it pairs for in the browser's `sessionStorage`. Each listener serves the app only to
+its own Host names: its bound address, `localhost` on loopback, the names on its certificate, and
+`DOMOVOI_ADVERTISE_HOST` or `DOMOVOI_TAILNET_HOST` when set.
+
+Each listener admits to `/rpc` the origins in `DOMOVOI_ALLOWED_ORIGINS` and its own pages, never
+another listener's. The loopback listener admits `http://127.0.0.1:<port>` and
+`http://localhost:<port>` (or `http://[::1]:<port>`, as bound) only while a bundle is loaded. A TLS
+listener admits `https://<name>:<port>` for each certificate name and its bound address, and, by
+the same-host rule a phone relies on, an `https` origin naming the Host the request carried; an
+`http` origin with the same host and port is refused. An advertised name is never a browser origin,
+and `Origin: null`, which every preview document sends, is refused everywhere. A preview's
+`frame-ancestors` names the configured origins and the pages of the listener it was fetched from.
+Origin checks are admission controls: a socket still needs the bearer or a device credential.
+
+Previews share the app's origin. Every artifact document carries a CSP `sandbox` without
+`allow-same-origin`, so it runs in an opaque origin and cannot read the app's storage or open the
+socket.
+
+Over the tailnet the page and its socket share one origin, and the browser checks the certificate
+for that name before the page loads, so a listener that cannot present it never serves the page.
+On plaintext loopback that does not hold: another local account that binds the port while the
+daemon is down can serve a page of its own and ask for a code (audit finding A14, a stated limit).
+A web code issued with full access makes a full client, on another machine when served over the
+tailnet: it can answer gates and grant repository trust. Choose the access level when you issue
+the code.
 
 ## Fleet enrollment and recovery
 

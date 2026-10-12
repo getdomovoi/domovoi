@@ -1,4 +1,4 @@
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { approvalCheckpointErrorCode, demoWorkspace } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
 import { errorResponseMessage, responseMessage } from "./response-message.js"
@@ -100,6 +100,19 @@ describe("errorResponseMessage", () => {
       message: "x",
       data: { kind: "session-attachment-refused", reason: "invalid-image", extra: 1 },
     } as never)).toThrow()
+  })
+
+  it("sends an approval checkpoint refusal, and only in its declared shape", () => {
+    const data = { kind: "approval-checkpoint-refused", cause: "lock-held", lockPath: "/repo/.git/index.lock" } as const
+    expect(JSON.parse(errorResponseMessage(1, { code: approvalCheckpointErrorCode, message: "Refused", data }).text).error.data)
+      .toEqual(data)
+    for (const refused of [
+      { kind: "approval-checkpoint-refused", cause: "lock-held" },
+      { kind: "approval-checkpoint-refused", cause: "unknown", lockPath: "/repo/.git/index.lock" },
+      { kind: "approval-checkpoint-refused", cause: "unknown", detail: "index.lock exists" },
+    ]) {
+      expect(() => errorResponseMessage(1, { code: approvalCheckpointErrorCode, message: "x", data: refused } as never)).toThrow()
+    }
   })
 
   it("refuses an id an error response may not carry", () => {
