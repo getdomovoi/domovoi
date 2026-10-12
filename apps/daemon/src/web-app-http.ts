@@ -12,7 +12,7 @@ export type WebAppHttpOptions = {
 
 const stateCsp = "default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'"
 
-function canonicalAuthority(authority: string | undefined, scheme: WebAppHttpOptions["scheme"]): string | undefined {
+export function canonicalAuthority(authority: string | undefined, scheme: WebAppHttpOptions["scheme"]): string | undefined {
   // Accept only a hostname or bracketed IP with an optional numeric port.
   // URL alone also accepts credentials, paths and characters unsafe in CSP.
   if (authority === undefined || !/^(?:[a-z0-9.-]+|\[[a-f0-9:]+\])(?::[0-9]+)?$/i.test(authority)) return undefined

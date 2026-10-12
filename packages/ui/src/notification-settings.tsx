@@ -13,6 +13,10 @@ import type {
   WorkspaceNotificationDelivery,
 } from "./workspace-platform.js"
 
+// Q363 A: the gate row comes first and is always on, as the 2026-09-23
+// desktop design draws it. The browser locks it too (Q56 A).
+const gateOption = { label: "A gate is waiting on you", description: "Always on. This is the one thing that blocks work." }
+
 const notificationOptions: readonly {
   key: NotificationPreferenceKey
   label: string
@@ -20,7 +24,6 @@ const notificationOptions: readonly {
 }[] = [
   { key: "completion", label: "Completions", description: "A session finishes a turn while its window is in the background." },
   { key: "failure", label: "Failures", description: "A turn stops on a provider, tool, or Git failure." },
-  { key: "approvalNeeded", label: "Approvals needed", description: "A session waits on an approval decision." },
 ]
 
 function deliveryDescription(delivery: WorkspaceNotificationDelivery): string {
@@ -107,12 +110,21 @@ export function NotificationSettings({
       <Card className="mt-6">
         <CardHeader>
           <CardTitle>{client ? "Browser notifications" : "Desktop notifications"}</CardTitle>
-          <CardDescription>Each kind is raised once per event, and never carries command text or file contents.</CardDescription>
+          <CardDescription>
+            {client ? "This browser only." : "This desktop only."} A waiting gate always notifies, and the rest is yours. Each kind is raised once per event, and never carries command text or file contents.
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-0">
-          {notificationOptions.map((option, index) => (
+          <Field orientation="horizontal" className="py-3">
+            <FieldContent>
+              <FieldLabel htmlFor="notification-gate">{gateOption.label}</FieldLabel>
+              <FieldDescription>{gateOption.description}</FieldDescription>
+            </FieldContent>
+            <Switch id="notification-gate" aria-label={gateOption.label} checked disabled />
+          </Field>
+          {notificationOptions.map((option) => (
             <div key={option.key}>
-              {index > 0 ? <Separator /> : null}
+              <Separator />
               <Field orientation="horizontal" className="py-3">
                 <FieldContent>
                   <FieldLabel htmlFor={`notification-${option.key}`}>{option.label}</FieldLabel>
