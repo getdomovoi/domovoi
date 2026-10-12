@@ -44,8 +44,9 @@ describe("runPairCommand", () => {
     expect(out).toContain("It lasts 3 minutes. Run this again for a fresh one, which stops the old code.")
     expect(out).toContain("A paired phone can:")
     for (const line of phoneAndTabletPromise) expect(out).toContain(line.text)
-    // The unbuilt line is marked, not silently listed beside the kept ones.
-    expect(out).toContain("! Terminal output is not on a phone yet.")
+    // The terminal line is a grant (Q61 A, 2026-10-11), and no line is marked unbuilt.
+    expect(out).toContain("+ Read terminal output. It cannot type, resize or take the claim.")
+    expect(out).not.toMatch(/^ {2}! /m)
   })
 
   it("does not print the promise for a client that is not carried by hand", async () => {

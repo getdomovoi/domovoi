@@ -157,6 +157,18 @@ describe("a valid bundle", () => {
     expect(Object.isFrozen(result)).toBe(true)
   })
 
+  // The release tarball (scripts/release-artifacts.mjs) unpacks the notices
+  // beside the manifest, which does not list them: the bundle loads and the
+  // notices are never served.
+  it("loads a bundle with the release tarball's notices beside it and does not serve them", async () => {
+    const root = await bundle()
+    await writeFile(join(root, "THIRD_PARTY_NOTICES.txt"), "Third-party software in the Domovoi web app\n", { mode: 0o644 })
+    const result = await load(root)
+    if (result.state !== "loaded") throw new Error(`expected loaded, got ${JSON.stringify(result)}`)
+    expect(result.files.has("/THIRD_PARTY_NOTICES.txt")).toBe(false)
+    expect([...result.files.keys()].some((path) => path.toLowerCase().includes("notices"))).toBe(false)
+  })
+
   it("caches for good only assets whose names carry Vite's content hash", async () => {
     // Names from a real apps/web build: Vite writes assets/<name>-<8 base64url characters>.<ext>.
     const files: Record<string, string> = {

@@ -9,6 +9,7 @@ import { describe, expect, it } from "vitest"
 import {
   isPausable,
   promptProblem,
+  recordedBuildBasis,
   sendReadiness,
   sendReadinessOverSocket,
   sessionDetail,
@@ -138,6 +139,45 @@ describe("threadEntries", () => {
 // Ruling Q357 A: only the latest receipt in the open turn is drawn in full.
 // Receipts carry no turn id today, so a receipt belongs to the open turn when
 // the session holds one and no message of yours has started another since.
+// Frame 17: the build basis a message sent is on that message's delivery
+// record. The latest one the session's messages carry is what the agent was
+// last told to build on.
+describe("recordedBuildBasis", () => {
+  const delivery = (artifactId?: string) => ({
+    version: 1 as const,
+    budget: { unit: "utf16-code-units" as const, limit: 262_144, used: 9_000 },
+    handoff: { status: "not-required" as const },
+    workingPlan: { status: "not-required" as const },
+    annotations: {
+      availableCount: 0, deliveredIds: [], omitted: { budget: 0, limit: 0 },
+      ...(artifactId ? { buildBasis: { artifactId } } : {}),
+    },
+    skills: { selection: "project-default" as const, delivered: [], omitted: { budget: [], limit: [], unavailable: [], reviewChanged: [], policy: [] } },
+  })
+  const user = (id: string, sessionId: string, artifactId?: string) => ({
+    id, sessionId, kind: "user" as const, body: "Build it", createdAt: "2026-09-30T14:00:00.000Z",
+    providerPromptDelivery: delivery(artifactId),
+  })
+
+  it("is the latest basis a message of the session sent", () => {
+    const snapshot = workspace()
+    snapshot.thread = [
+      user("one", "session-billing", "artifact-a"),
+      user("two", "session-billing", "artifact-b"),
+      user("three", "session-billing"),
+      user("elsewhere", "session-audit", "artifact-c"),
+    ]
+    expect(recordedBuildBasis(snapshot, "session-billing")).toBe("artifact-b")
+    expect(recordedBuildBasis(snapshot, "session-audit")).toBe("artifact-c")
+  })
+
+  it("is undefined when no message sent one", () => {
+    const snapshot = workspace()
+    snapshot.thread = [user("one", "session-billing")]
+    expect(recordedBuildBasis(snapshot, "session-billing")).toBeUndefined()
+  })
+})
+
 describe("current receipt", () => {
   function receipt(id: string, createdAt: string) {
     return {
@@ -211,6 +251,8 @@ describe("threadEntries receipt", () => {
       explanation: undefined,
       client: "phone",
       decidedBy: "phone",
+      decidedOn: "phone",
+      credential: undefined,
       declaredClient: "device fcbd…cdf8",
       checkpoint: "8f3c1de",
       checkpointTaken: true,
@@ -246,6 +288,38 @@ describe("threadEntries receipt", () => {
       decidedBy: "dana · phone · device fcbd…cdf8",
       declaredClient: undefined,
     })
+  })
+
+  // Phone v2 frame 03 lists the record in two rows: Decided on is the device's
+  // label, and Credential is the paired device the daemon verified, by its
+  // shortened id. A receipt with no device has no credential to name.
+  it("splits the paired device into the label it decided on and its credential", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "t-receipt",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "allow-once",
+      operation: "pnpm -w prisma migrate deploy",
+      checkpoint: "8f3c1de0000000000000000000000000deadbeef",
+      client: "phone",
+      device: { id: "device-fcbd4c3f99c7294586f0c5ca22f9cdf8", label: "dana" },
+      createdAt: "2026-08-25T21:52:00.000Z",
+    }, {
+      id: "t-receipt-2",
+      sessionId: "session-billing",
+      kind: "receipt",
+      decision: "deny",
+      operation: "rm -rf build",
+      checkpoint: "main",
+      client: "desktop",
+      createdAt: "2026-08-25T21:53:00.000Z",
+    }]
+
+    const { entries } = threadEntries(snapshot, "session-billing")
+
+    expect(entries[0]).toMatchObject({ decidedOn: "dana", credential: "device fcbd…cdf8" })
+    expect(entries[1]).toMatchObject({ decidedOn: "desktop", credential: undefined })
   })
 
   // A receipt written before the device field names the client alone as the
