@@ -1,4 +1,4 @@
-import { createServer, type IncomingMessage, type Server as HttpServer } from "node:http"
+import { createServer, type IncomingMessage, type RequestListener, type Server as HttpServer } from "node:http"
 import { createServer as createSecureServer } from "node:https"
 import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from "node:crypto"
 import { lstat, mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises"
@@ -6,8 +6,10 @@ import { arch, homedir, hostname, platform, tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
+  approvalCheckpointErrorCode,
   buildVersion,
   maximumRpcMessageBytes,
+  type ApprovalCheckpointRefusal,
   type SessionAttachmentRefusal,
   type SessionReviewRefusal,
   boundedClientThread,
@@ -111,6 +113,7 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { normalizeLegacyEffort } from "./legacy-effort.js"
+import { approvalCheckpointRefusal } from "./approval-checkpoint-refusal.js"
 import { approvalToolServerFact, type ApprovalScope } from "./approval-facts.js"
 import {
   ApprovalLedger,
@@ -210,7 +213,6 @@ import {
   RepositoryConfigRefusedError,
   RepositoryFilterRefusedError,
   RepositoryGitFilterRefusedError,
-  SubmoduleChangesRefusedError,
   GitWorkspaceService,
   WorkspaceEvidenceUnstableError,
   type FileRevert,
@@ -285,6 +287,9 @@ import {
   type DaemonTailnetListenerOptions,
   type TailnetListenerState,
 } from "./tailnet-listener.js"
+import { listenerAuthorities, type ListenerAuthorities } from "./listener-authorities.js"
+import type { WebAppBundleLoad } from "./web-app-bundle.js"
+import { createWebAppHttpHandler } from "./web-app-http.js"
 import { wslSharePath } from "./wsl-open-target.js"
 import { PairingCodeError, PairingCodeService, PairingDeviceLimitError, pairingCodeTtlMs } from "./pairing-codes.js"
 import { PairingIssuerSlot } from "./pairing-issuer.js"
@@ -596,14 +601,30 @@ function skillInstallAuditDetail(values: Record<string, unknown>): string {
 // carry and fails before a header is read. Over plaintext nothing stops it, so
 // the same-host rule holds only on a socket that was encrypted, and a
 // plaintext listener keeps the allow-list alone.
+//
+// A web origin is scheme, host and port, and only an encrypted listener gets
+// here, so the origin must be https (S3.2 plan section 3.5, review F4): a
+// page at http://<name>:<port> has the same authority and is another origin.
+// The phone sends https, mapped from the wss URL it dials. The served web app
+// is admitted by its exact origin from listener-authorities.ts, not by this.
 function namesThisDaemon(origin: string, request: IncomingMessage): boolean {
   const host = request.headers.host
   if (!host || !isEncrypted(request.socket)) return false
   try {
-    return new URL(origin).host === host
+    const parsed = new URL(origin)
+    return parsed.protocol === "https:" && parsed.host === host
   } catch {
     return false
   }
+}
+
+// S3.2 and Q46 A: what one listener serves and admits. browserOrigins are its
+// own pages, admitted to its /rpc beside the configured allow-list and named
+// in the frame-ancestors of a preview it serves; no listener admits another's.
+// web serves the app, or the state page, to its Host authorities.
+type ListenerServing = {
+  browserOrigins: ReadonlySet<string>
+  web: RequestListener | undefined
 }
 
 function isEncrypted(socket: IncomingMessage["socket"]): boolean {
@@ -1554,6 +1575,10 @@ export type DaemonServerOptions = {
   allowedOrigins?: string[]
   // The web app a pairing code can be opened in, when the owner set one.
   webAppUrl?: string
+  // S3.2: the web app bundle production loaded once at startup. Every
+  // listener serves it, or the state page at / when it was not loaded. Absent,
+  // the daemon serves no web app and / stays a 404.
+  webApp?: WebAppBundleLoad
   statePath?: string
   manageStateDirectoryPermissions?: boolean
   store?: WorkspaceStore
@@ -1713,6 +1738,10 @@ export class DomovoiDaemon {
   readonly requestedPort: number
   readonly allowedOrigins: ReadonlySet<string>
   readonly #webAppUrl: string | undefined
+  readonly #webApp: WebAppBundleLoad | undefined
+  // What the main listener serves and admits, set once it listens and the
+  // actual port is known (Q46 A). The tailnet listener keeps its own.
+  #mainServing: ListenerServing | undefined
   #http: HttpServer | undefined
   readonly #tailnetOptions: DaemonTailnetListenerOptions | undefined
   #tailnet: TailnetListenerState = { state: "off" }
@@ -2070,6 +2099,7 @@ export class DomovoiDaemon {
     }
     this.#tailnetOptions = options.tailnetListener
     this.#webAppUrl = options.webAppUrl
+    this.#webApp = options.webApp
     this.allowedOrigins = new Set(
       options.allowedOrigins ?? ["http://127.0.0.1:5178", "http://localhost:5178", "file://", "domovoi-app://desktop"],
     )
@@ -3089,12 +3119,30 @@ export class DomovoiDaemon {
         requestHandler,
       )
       : (requestHandler: Parameters<typeof createServer>[1]) => createServer(requestHandler)
-    this.#http = listen(this.#requestHandler(() => this.address && { hosts: [this.address.host], port: this.address.port }))
-    this.#rpcServer(this.#http)
+    this.#http = listen(this.#requestHandler(
+      () => this.address && { hosts: [this.address.host], port: this.address.port },
+      () => this.#mainServing,
+    ))
+    this.#rpcServer(this.#http, () => true, () => this.#mainServing)
 
     await new Promise<void>((resolve, reject) => {
       this.#http!.once("error", reject)
-      this.#http!.listen(this.requestedPort, this.host, () => resolve())
+      this.#http!.listen(this.requestedPort, this.host, () => {
+        // In the listen callback, before any connection is handled, once the
+        // actual port is known. With the tailnet listener on, the tailnet name
+        // belongs to that listener.
+        this.#mainServing = this.#listenerServing({
+          scheme: this.#tls ? "https" : "http",
+          host: this.host,
+          port: this.address!.port,
+          ...(this.#tls ? { certificate: this.#tls.cert.toString("utf8") } : {}),
+          hostOnlyNames: [
+            ...(this.#advertiseHost ? [this.#advertiseHost] : []),
+            ...(this.#tailnetHost && !this.#tailnetOptions ? [this.#tailnetHost] : []),
+          ],
+        })
+        resolve()
+      })
     })
     signal?.throwIfAborted()
     // Beside loopback, on the same port. Its failure never stops the daemon:
@@ -3111,9 +3159,24 @@ export class DomovoiDaemon {
     return this.address!
   }
 
+  // S3.2 and Q46 A: one listener's Host authorities and browser origins
+  // (listener-authorities.ts), and the web app handler bound to them. Without
+  // a webApp option the daemon serves no app and / stays a 404.
+  #listenerServing(facts: Omit<Parameters<typeof listenerAuthorities>[0], "webAppLoaded">): ListenerServing {
+    const authorities: ListenerAuthorities = listenerAuthorities({ ...facts, webAppLoaded: this.#webApp?.state === "loaded" })
+    return {
+      browserOrigins: authorities.browserOrigins,
+      web: this.#webApp && createWebAppHttpHandler({ bundle: this.#webApp, authorities: authorities.hostAuthorities, scheme: facts.scheme }),
+    }
+  }
+
   // Shared by the loopback and tailnet listeners. listener: the hosts an
-  // artifact request's Host may name on the listener it arrived on, and its port.
-  #requestHandler(listener: () => { hosts: readonly string[]; port: number } | undefined): Parameters<typeof createServer>[1] {
+  // artifact request's Host may name on the listener it arrived on, and its
+  // port. serving: what that listener serves and admits, once it listens.
+  #requestHandler(
+    listener: () => { hosts: readonly string[]; port: number } | undefined,
+    serving: () => ListenerServing | undefined,
+  ): Parameters<typeof createServer>[1] {
     return (request, response) => {
       if (request.url === "/healthz") {
         response.writeHead(200, { "content-type": "application/json" })
@@ -3127,7 +3190,16 @@ export class DomovoiDaemon {
           response.end(JSON.stringify({ error: "not_found" }))
           return
         }
-        void this.#serveArtifact(request.url, response)
+        void this.#serveArtifact(request.url, response, serving()?.browserOrigins)
+        return
+      }
+
+      // The web app, after the daemon's own routes (plan section 2.3). Its
+      // manifest cannot list rpc, healthz or artifacts/, and it answers every
+      // path it does not serve with the same 404.
+      const web = serving()?.web
+      if (web) {
+        web(request, response)
         return
       }
 
@@ -3140,10 +3212,12 @@ export class DomovoiDaemon {
   // budgets a connection the same way; nothing here depends on which one,
   // except that a listener may stop admitting while the daemon runs:
   // listening is false from then on, for that listener only.
-  #rpcServer(server: HttpServer, listening: () => boolean = () => true): WebSocketServer {
+  // Origins: the configured allow-list, this listener's own browser origins
+  // and no other listener's (Q46 A), then the https same-host rule on TLS.
+  #rpcServer(server: HttpServer, listening: () => boolean, serving: () => ListenerServing | undefined): WebSocketServer {
     const verifyClient: VerifyClientCallbackSync = ({ origin, req }) =>
       !this.#stopping && !this.#stopped && listening()
-      && (!origin || this.allowedOrigins.has(origin) || namesThisDaemon(origin, req))
+      && (!origin || this.allowedOrigins.has(origin) || serving()?.browserOrigins.has(origin) === true || namesThisDaemon(origin, req))
 
     const websocket = new WebSocketServer({
       server,
@@ -3262,15 +3336,22 @@ export class DomovoiDaemon {
     // name the address, a name on the certificate or the advertised tailnet
     // name. TLS has already held the connection to this certificate.
     const hosts = [address, ...certificateHostNames(options.tls.cert.toString("utf8")), ...(this.#tailnetHost ? [this.#tailnetHost] : [])]
+    // Q46 A: this listener's own origins, https under its address and the
+    // certificate's names. They live with this server: once it stops, no
+    // listener admits them.
+    const serving = this.#listenerServing({
+      scheme: "https", host: address, port, certificate: options.tls.cert.toString("utf8"),
+      hostOnlyNames: this.#tailnetHost ? [this.#tailnetHost] : [],
+    })
     try {
-      server = createSecureServer({ cert: options.tls.cert, key: options.tls.key }, this.#requestHandler(() => ({ hosts, port })))
+      server = createSecureServer({ cert: options.tls.cert, key: options.tls.key }, this.#requestHandler(() => ({ hosts, port }), () => serving))
     } catch {
       // Node names only "key values mismatch" or a parse failure here.
       return refuse("The tailnet certificate and key do not belong together, so the daemon answers on this computer only.", false, notAfter)
     }
     // Admits only while this server is the tailnet listener: not before it
     // listens, and not once expiry, a refusal or the daemon's stop let it go.
-    const rpc = this.#rpcServer(server, () => this.#tailnetHttp === server && this.#tailnet.state === "listening")
+    const rpc = this.#rpcServer(server, () => this.#tailnetHttp === server && this.#tailnet.state === "listening", () => serving)
     let listened = false
     return new Promise<void>((settle) => {
       server.once("error", (error: NodeJS.ErrnoException) => {
@@ -4198,7 +4279,7 @@ export class DomovoiDaemon {
     code: number,
     message: string,
     data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal
-      | RepositoryGitFilterRefusal | SessionReviewRefusal,
+      | RepositoryGitFilterRefusal | SessionReviewRefusal | ApprovalCheckpointRefusal,
   ): void {
     this.#send(socket, this.#errorFrame(id, { code, message, ...(data ? { data } : {}) }))
   }
@@ -6046,7 +6127,9 @@ export class DomovoiDaemon {
     return { ...runtime, model: model.id, reasoning: resolvedReasoning }
   }
 
-  async #serveArtifact(url: string, response: import("node:http").ServerResponse): Promise<void> {
+  // listenerOrigins: the browser origins of the listener the request arrived
+  // on, named in a preview's frame-ancestors beside the configured ones.
+  async #serveArtifact(url: string, response: import("node:http").ServerResponse, listenerOrigins: ReadonlySet<string> = new Set()): Promise<void> {
     let artifactId: string
     let sessionId: string | undefined
     let revision: number | undefined
@@ -6119,7 +6202,7 @@ export class DomovoiDaemon {
       response.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         "content-security-policy": purpose === "preview"
-          ? `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts; frame-ancestors ${frameAncestorsFor(this.allowedOrigins)}`
+          ? `default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; sandbox allow-scripts; frame-ancestors ${frameAncestorsFor([...this.allowedOrigins, ...listenerOrigins])}`
           : "default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'; sandbox",
         "referrer-policy": "no-referrer",
         "x-content-type-options": "nosniff",
@@ -9123,11 +9206,9 @@ export class DomovoiDaemon {
             approvedCheckpoint = { id: `checkpoint-${randomUUID()}`, commit: taken.commit }
           } catch (error) {
             this.#reportError("Domovoi could not take a checkpoint before an approved command", error)
-            if (error instanceof SubmoduleChangesRefusedError) {
-              this.#error(socket, request.id, invalidParams, "Domovoi could not take a checkpoint: a submodule has local changes a checkpoint cannot hold, so the command did not run")
-              return
-            }
-            this.#error(socket, request.id, internalError, "Domovoi could not take a checkpoint, so the command did not run; decide again")
+            // Typed, so a client draws the cause without reading the sentence.
+            const refusal = await approvalCheckpointRefusal(error, { timedOut: error instanceof OperationTimeoutError, worktree })
+            this.#error(socket, request.id, approvalCheckpointErrorCode, refusal.message, refusal.data)
             return
           }
           if (!this.#snapshot.approvals.some((pending) => pending.id === approval.id)) {

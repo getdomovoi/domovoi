@@ -2,7 +2,7 @@ import { join } from "node:path"
 
 import { describe, expect, it } from "vitest"
 
-import { DaemonConfigurationError, parseDaemonEnvironment } from "./config.js"
+import { DaemonConfigurationError, defaultWebDirectory, parseDaemonEnvironment } from "./config.js"
 
 describe("parseDaemonEnvironment", () => {
   const encryptedRemote = {
@@ -341,5 +341,50 @@ describe("the tailnet listener settings", () => {
   it("lets the tailnet name be advertised for the listener", () => {
     expect(parseDaemonEnvironment({ ...tailnet, DOMOVOI_TAILNET_HOST: "studio.tail4c2e.ts.net" }, "/home/tester"))
       .toMatchObject({ host: "127.0.0.1", tailnetHost: "studio.tail4c2e.ts.net" })
+  })
+})
+
+// S3.2 plan section 1.2 (Q299 A): where the daemon looks for the web app.
+// DOMOVOI_WEB_DIR overrides; otherwise the user's own data folder, outside
+// the profile.
+describe("the web app directory", () => {
+  it("is absent from the settings unless DOMOVOI_WEB_DIR is set", () => {
+    expect(parseDaemonEnvironment({}, "/home/tester")).not.toHaveProperty("webDirectory")
+    expect(parseDaemonEnvironment({ DOMOVOI_WEB_DIR: "/srv/domovoi-web" }, "/home/tester").webDirectory).toBe("/srv/domovoi-web")
+    // Either platform's form: a saved service configuration is checked on the
+    // machine that reads it, which may not be the one it runs on.
+    expect(parseDaemonEnvironment({ DOMOVOI_WEB_DIR: "C:\\Users\\Jean\\web" }, "/home/tester").webDirectory).toBe("C:\\Users\\Jean\\web")
+  })
+
+  it.each(["", "web", "./web", " /srv/web", "/srv/web ", "/srv/\0web", "/srv/\nweb", "/srv/web\r"])(
+    "refuses a directory that is not a plain absolute path: %j",
+    (value) => {
+      expect(() => parseDaemonEnvironment({ DOMOVOI_WEB_DIR: value }, "/home/tester"))
+        .toThrow(new DaemonConfigurationError("DOMOVOI_WEB_DIR must be an absolute directory path"))
+    },
+  )
+
+  it("defaults to Application Support on macOS", () => {
+    expect(defaultWebDirectory("darwin", "/Users/jean", {})).toBe("/Users/jean/Library/Application Support/Domovoi/web")
+  })
+
+  it("defaults to the XDG data folder on Linux", () => {
+    expect(defaultWebDirectory("linux", "/home/jean", { XDG_DATA_HOME: "/data/jean" })).toBe("/data/jean/domovoi/web")
+  })
+
+  it.each([undefined, "", "relative/data", "~/data"])("uses ~/.local/share when XDG_DATA_HOME is %j", (value) => {
+    expect(defaultWebDirectory("linux", "/home/jean", value === undefined ? {} : { XDG_DATA_HOME: value }))
+      .toBe("/home/jean/.local/share/domovoi/web")
+  })
+
+  it("defaults to the user's local AppData on Windows", () => {
+    expect(defaultWebDirectory("win32", "C:\\Users\\Jean", { LOCALAPPDATA: "D:\\Profiles\\Jean\\AppData\\Local" }))
+      .toBe("D:\\Profiles\\Jean\\AppData\\Local\\Domovoi\\web")
+    expect(defaultWebDirectory("win32", "C:\\Users\\Jean", {})).toBe("C:\\Users\\Jean\\AppData\\Local\\Domovoi\\web")
+    expect(defaultWebDirectory("win32", "C:\\Users\\Jean", { LOCALAPPDATA: "AppData" })).toBe("C:\\Users\\Jean\\AppData\\Local\\Domovoi\\web")
+  })
+
+  it("follows the Linux rule on other POSIX systems", () => {
+    expect(defaultWebDirectory("freebsd", "/home/jean", {})).toBe("/home/jean/.local/share/domovoi/web")
   })
 })

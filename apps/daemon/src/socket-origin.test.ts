@@ -71,12 +71,13 @@ async function daemonOnPort(tls?: { cert: Buffer, key: Buffer }) {
 
 type Attempt = { admitted: true } | { admitted: false, status?: number }
 
-async function connectWithOrigin(daemon: DomovoiDaemon, origin?: string, secure = false): Promise<Attempt> {
+async function connectWithOrigin(daemon: DomovoiDaemon, origin?: string, secure = false, host?: string): Promise<Attempt> {
   const address = daemon.address!
   const url = `${secure ? "wss" : "ws"}://${address.host}:${address.port}/rpc`
   const socket = new WebSocket(url, {
     ...(origin === undefined ? {} : { origin }),
     ...(secure ? { rejectUnauthorized: false } : {}),
+    ...(host === undefined ? {} : { headers: { host } }),
   })
   sockets.push(socket)
   return await new Promise<Attempt>((resolve) => {
@@ -102,6 +103,60 @@ describe.skipIf(!opensslAvailable())("which origins may open a TLS socket", () =
   it("still refuses a page served by somewhere else", async () => {
     const daemon = await daemonOnPort(await selfSignedMaterial())
     expect(await connectWithOrigin(daemon, "https://evil.example", true)).toMatchObject({ admitted: false, status: 401 })
+  })
+
+  // S3.2 plan section 3.5 (review F4, Q297). A web origin is scheme, host and
+  // port. The same-host rule used to compare host and port only, so a page at
+  // http://<name>:<port> with the same authority passed it on a TLS listener.
+  it("refuses a same-authority origin whose scheme is not https", async () => {
+    const daemon = await daemonOnPort(await selfSignedMaterial())
+    const { host, port } = daemon.address!
+    expect(await connectWithOrigin(daemon, `http://${host}:${port}`, true)).toMatchObject({ admitted: false, status: 401 })
+    expect(await connectWithOrigin(daemon, `ws://${host}:${port}`, true)).toMatchObject({ admitted: false, status: 401 })
+    expect(await connectWithOrigin(daemon, `wss://${host}:${port}`, true)).toMatchObject({ admitted: false, status: 401 })
+  })
+
+  // Every sandboxed preview document sends Origin: null. Admitting it would
+  // let a preview drive the daemon (plan section 3.4).
+  it("refuses the null origin", async () => {
+    const daemon = await daemonOnPort(await selfSignedMaterial())
+    expect(await connectWithOrigin(daemon, "null", true)).toMatchObject({ admitted: false, status: 401 })
+  })
+})
+
+// S3.2 plan section 3.5: the clients that reach /rpc through the same-host
+// rule, listed before it was narrowed to https, so their behaviour is kept on
+// purpose. Read 2026-10-11:
+// - the phone: React Native sets Origin from the URL it dials, mapping wss to
+//   https (RCTSRWebSocket on iOS, WebSocketModule on Android), so it sends
+//   https://<dialled host>:<port>. Kept: the rule still admits https.
+// - nothing else. The desktop shell sends domovoi-app://desktop and the vite
+//   dev server sends its own origin, both from the allow-list; the CLI, the
+//   desktop main process, fleet peers and the tests use the ws client, which
+//   sends no Origin, and are admitted without either rule.
+describe.skipIf(!opensslAvailable())("which clients reach a TLS socket through the same-host rule", () => {
+  // The certificate carries no subject alternative name, so localhost is not
+  // one of this listener's own origins: only the same-host rule admits it.
+  it("admits the phone's https origin for the host it dialled", async () => {
+    const daemon = await daemonOnPort(await selfSignedMaterial())
+    const { port } = daemon.address!
+    expect(await connectWithOrigin(daemon, `https://localhost:${port}`, true, `localhost:${port}`)).toEqual({ admitted: true })
+    expect(await connectWithOrigin(daemon, `http://localhost:${port}`, true, `localhost:${port}`)).toMatchObject({ admitted: false, status: 401 })
+    expect(await connectWithOrigin(daemon, `https://localhost:${port}`, true, `other.example:${port}`)).toMatchObject({ admitted: false, status: 401 })
+  })
+
+  // The listener's own origin is admitted by its exact value, whatever Host
+  // the request names, so this does not go through the same-host rule.
+  it("admits the listener's own https origin without it", async () => {
+    const daemon = await daemonOnPort(await selfSignedMaterial())
+    const { host, port } = daemon.address!
+    expect(await connectWithOrigin(daemon, `https://${host}:${port}`, true, `localhost:${port}`)).toEqual({ admitted: true })
+  })
+
+  it("admits the desktop shell and an origin-less client without it", async () => {
+    const daemon = await daemonOnPort(await selfSignedMaterial())
+    expect(await connectWithOrigin(daemon, "domovoi-app://desktop", true)).toEqual({ admitted: true })
+    expect(await connectWithOrigin(daemon, undefined, true)).toEqual({ admitted: true })
   })
 })
 

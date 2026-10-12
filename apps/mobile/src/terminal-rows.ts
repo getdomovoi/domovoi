@@ -6,6 +6,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import type { TerminalNotification } from "./lib/daemon"
+import { drawnText, nextLineStart, readableCut, readPiece, type DrawnText, type ReaderState } from "./terminal-line-model"
 
 // Phone v2 frame 04: a phone reads the claimant's shell and never types,
 // resizes or claims it. What the phone holds for one watched terminal is the
@@ -39,11 +40,16 @@ export type TerminalRecord = {
   // cut has passed that uncertain start, the text is drawn from its start.
   startsMidLine: boolean
   // Line breaks received live, counted as they arrive and never reduced by a
-  // cut, so what landed can be counted for the reader.
+  // cut, so what landed can be counted for the reader. Only line breaks the
+  // terminal draws count, not ones inside a payload.
   received: number
   // Pieces of output received live. A piece with no line break adds no line
-  // to count but can still wrap below the reader, so it is counted here.
+  // to count but can still wrap below the reader, so it is counted here. A
+  // piece that draws and moves nothing is not.
   pieces: number
+  // How the reader stands at the end of text, so the next piece is read on
+  // from there: a payload can start in one piece and end in the next.
+  readerState: ReaderState
   // The last time anything was heard for this terminal: the watch, then each
   // piece of output. The gap a dropped connection leaves starts here.
   lastHeardAt: string
@@ -77,6 +83,7 @@ export function watchFrom(result: TerminalWatchResult): TerminalRecord {
     startsMidLine: earlierOutputDropped,
     received: 0,
     pieces: 0,
+    readerState: readPiece("ground", buffer).state,
     lastHeardAt: watchedAt,
     confirmed: true,
   }
@@ -163,11 +170,13 @@ export function withNotification(record: TerminalRecord, notification: TerminalN
     }
   }
   const { data } = notification.params
+  const piece = readPiece(record.readerState, data)
   return bounded({
     ...record,
     text: record.text + data,
-    received: record.received + data.split("\n").length - 1,
-    pieces: record.pieces + 1,
+    received: record.received + piece.lineBreaks,
+    pieces: record.pieces + (piece.draws ? 1 : 0),
+    readerState: piece.state,
     lastHeardAt: now.toISOString(),
   })
 }
@@ -176,63 +185,37 @@ export function withNotification(record: TerminalRecord, notification: TerminalN
 // shown is whole. Output with no break that near is cut at the bound itself.
 const lineBreakReach = 256
 
-// The phone holds no more than the daemon keeps for a terminal. The oldest
-// text goes first.
-function bounded(record: TerminalRecord): TerminalRecord {
-  const excess = record.text.length - maximumTerminalReplayCharacters
-  if (excess <= 0) return record
-  const lineBreak = record.text.indexOf("\n", excess - 1)
-  const atLineBreak = lineBreak !== -1 && lineBreak + 1 - excess <= lineBreakReach
-  let cut = atLineBreak ? lineBreak + 1 : sequenceSafe(record.text, excess)
-  // A cut between the two halves of a character outside the basic plane
-  // takes the whole character.
-  if (isLowSurrogate(record.text.charCodeAt(cut))) cut += 1
-  return {
-    ...record,
-    text: record.text.slice(cut),
-    // Once the start of live output is cut away, nothing above it is left.
-    liveAt: record.liveAt !== undefined && record.liveAt > cut ? record.liveAt - cut : undefined,
-    phoneDropped: true,
-    // The phone's cut cannot see a sequence whose introducer the daemon cut,
-    // so the uncertain start stays hidden until the cut passes it.
-    startsMidLine: record.startsMidLine && cut < drawnStart(record),
-  }
-}
-
-// Escape sequences that draw nothing, each anchored at its introducer. The
-// two-character form leaves out "[" and "]", which open the longer ones.
-// eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-const sequenceAtStart = /^(?:\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)|\u001b\[[0-?]*[ -/]*[@-~]|\u001b[@-Z\\^_])/
-// A sequence still arriving: an introducer whose end has not come yet, so it
-// runs to the end of the text. A title can end in ESC with its backslash
-// still to come.
-// eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-const sequenceUnfinished = /^\u001b(?:\][^\u0007\u001b]*\u001b?|\[[0-?]*[ -/]*)?$/
 // The longest unfinished sequence kept whole across a cut, so the phone holds
 // at most this much past its bound. Longer, and the bound wins.
 const unfinishedSequenceReach = 4_096
 
-// A cut that would fall inside an escape sequence, however long, moves to
-// just after it, so what is kept never begins with a sequence's parameters,
-// such as "[31m", or a window title's text. One still arriving is kept whole
-// from its introducer, so it is read once its end comes.
-function sequenceSafe(text: string, cut: number): number {
-  const escape = text.lastIndexOf("\u001b", cut - 1)
-  if (escape === -1) return cut
-  const rest = text.slice(escape)
-  const sequence = sequenceAtStart.exec(rest)
-  if (sequence) return Math.max(cut, escape + sequence[0].length)
-  return sequenceUnfinished.test(rest) && cut - escape <= unfinishedSequenceReach ? escape : cut
-}
-
-function isLowSurrogate(code: number): boolean {
-  return code >= 0xdc00 && code <= 0xdfff
+// The phone holds no more than the daemon keeps for a terminal. The oldest
+// text goes first. The cut is read as the terminal reads the text
+// (readableCut), so what is kept never begins with a sequence's parameters,
+// such as "[31m", or a window title's or a control string's payload, and
+// never splits a character outside the basic plane.
+function bounded(record: TerminalRecord): TerminalRecord {
+  const excess = record.text.length - maximumTerminalReplayCharacters
+  if (excess <= 0) return record
+  const { at, prefix } = readableCut(record.text, excess, lineBreakReach, unfinishedSequenceReach)
+  return {
+    ...record,
+    text: prefix + record.text.slice(at),
+    // Once the start of live output is cut away, nothing above it is left.
+    liveAt: record.liveAt !== undefined && record.liveAt > at ? record.liveAt - at + prefix.length : undefined,
+    phoneDropped: true,
+    // The phone's cut cannot see a sequence whose introducer the daemon cut,
+    // so the uncertain start stays hidden until the cut passes it. A cut
+    // that opens its sequence again starts where the terminal would read.
+    startsMidLine: record.startsMidLine && prefix === "" && at < drawnStart(record),
+  }
 }
 
 // Where the drawn text starts when it began partway through a line: past the
 // rest of a window title it began inside, then past the rest of that line
-// when a line break is near. Without one the line is drawn as it stands
-// rather than dropping a long run of output.
+// when the terminal draws a line break near. Without one the line is drawn
+// as it stands rather than dropping a long run of output. A line break
+// inside a control string's payload is not one to start after.
 function drawnStart(record: TerminalRecord): number {
   if (!record.startsMidLine) return 0
   let start = 0
@@ -242,89 +225,33 @@ function drawnStart(record: TerminalRecord): number {
   // title that began before the text did.
   // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
   if (titleEnd && !/[\u001b\n]/.test(record.text.slice(0, titleEnd.index))) start = titleEnd.index + titleEnd[0].length
-  const lineBreak = record.text.indexOf("\n", start)
-  return lineBreak !== -1 && lineBreak - start < lineBreakReach ? lineBreak + 1 : start
+  return nextLineStart(record.text, start, lineBreakReach) ?? start
 }
 
-// What a terminal draws, read as lines. Colour and cursor-movement sequences
-// are dropped; a carriage return overwrites the line from its start as a
-// progress bar does; a backspace moves the cursor back; an erase-in-line
-// erases. The line still
-// being written is kept; the empty line after a final newline is not.
-export function terminalLines(text: string): string[] {
-  const lines = plainText(text).split("\n").map(drawnLine)
-  if (lines.at(-1) === "") lines.pop()
-  return lines
-}
+// Each change to a record is drawn by more than one view, the thread's block
+// and the open terminal, so the last few texts read are kept.
+const recentlyDrawn = new Map<string, DrawnText>()
 
-// Erase-in-line survives the stripping as one control character each, which
-// drawnLine acts on. The characters are cleared from the text first; they
-// draw nothing on a terminal either.
-const eraseToEnd = "\u0001"
-const eraseToStart = "\u0002"
-const eraseLine = "\u0003"
-
-// The text with escape sequences dropped and line breaks made plain.
-function plainText(text: string): string {
-  return text
-    // A sequence still arriving at the end draws nothing until it ends: output
-    // comes in pieces, and a piece can stop partway through one.
-    .replace(sequenceStillArriving, "")
-    // Operating system commands, such as a window title.
-    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-    .replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, "")
-    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-    .replace(/[\u0001-\u0003]/g, "")
-    // Erase in line: to its end, to its start, all of it.
-    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-    .replace(/\u001b\[([012]?)K/g, (_sequence, mode: string) => mode === "1" ? eraseToStart : mode === "2" ? eraseLine : eraseToEnd)
-    // Other control sequences: colour, cursor movement.
-    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-    .replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "")
-    // Any other two-character escape. "[" and "]" open the longer ones, so a
-    // malformed one is not mistaken for this and its parameters kept.
-    // eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-    .replace(/\u001b[@-Z\\^_]/g, "")
-    .replace(/\r\n/g, "\n")
-}
-
-// An introducer at the end of the text whose sequence has not ended.
-// eslint-disable-next-line no-control-regex -- the sequences are made of control characters
-const sequenceStillArriving = /\u001b(?:\][^\u0007\u001b]*\u001b?|\[[0-?]*[ -/]*)?$/
-
-// Tab stops every eight columns, as a terminal sets them by default.
-const tabWidth = 8
-
-// One cell per character, so a character outside the basic plane, two UTF-16
-// units, is overwritten and erased as one.
-function drawnLine(raw: string): string {
-  let cells: string[] = []
-  let column = 0
-  let erased = false
-  for (const char of raw) {
-    if (char === "\r") column = 0
-    else if (char === "\b") column = Math.max(0, column - 1)
-    else if (char === eraseToEnd) cells = cells.slice(0, column)
-    else if (char === eraseToStart || char === eraseLine) {
-      const through = char === eraseLine ? cells.length : Math.min(cells.length, column + 1)
-      cells = cells.map((cell, at) => at < through ? " " : cell)
-      erased = true
-    } else if (char === "\t") {
-      // A tab moves to the next stop and writes over nothing it passes.
-      column = (Math.floor(column / tabWidth) + 1) * tabWidth
-      while (cells.length < column) cells.push(" ")
-    } else if (char >= " " && char !== "\u007f") {
-      // A cursor past the end, after an erase to the end, leaves blanks.
-      while (cells.length < column) cells.push(" ")
-      cells[column] = char
-      column += 1
-    }
+function drawn(text: string): DrawnText {
+  const kept = recentlyDrawn.get(text)
+  if (kept) return kept
+  const read = drawnText(text)
+  recentlyDrawn.set(text, read)
+  for (const oldest of recentlyDrawn.keys()) {
+    if (recentlyDrawn.size <= 4) break
+    recentlyDrawn.delete(oldest)
   }
-  // A backspace moves the cursor and erases nothing: only what is written
-  // over it, or an erase sequence, changes a cell.
-  const drawn = cells.join("")
-  // Blanks an erase left at the end of a line are not text.
-  return erased ? drawn.replace(/ +$/, "") : drawn
+  return read
+}
+
+// What a terminal draws, read as lines of cells (terminal-line-model.ts):
+// colour is dropped; a carriage return, a backspace, a tab and a cursor move
+// along the line move the cursor, counting a wide character as two cells and
+// a combining mark as none; an erase erases. The line still being written is
+// kept; the empty line after a final newline is not.
+export function terminalLines(text: string): string[] {
+  const { lines } = drawn(text)
+  return lines.at(-1) === "" ? lines.slice(0, -1) : [...lines]
 }
 
 export function terminalLineCount(record: TerminalRecord): number {
@@ -346,7 +273,7 @@ export function terminalRows(record: TerminalRecord, connected: boolean): Termin
   const lines = terminalLines(text)
   // Live output that began inside the line not drawn has nothing above it.
   const liveAt = record.liveAt !== undefined ? record.liveAt - start : undefined
-  const markAt = record.liveFrom && liveAt !== undefined && liveAt > 0 ? wholeLines(text.slice(0, liveAt)) : undefined
+  const markAt = record.liveFrom && liveAt !== undefined && liveAt > 0 ? wholeLines(text, liveAt) : undefined
   const liveMark: TerminalRow | undefined = record.liveFrom
     ? { kind: "mark", key: "live-from", text: `Recent output above. Live from ${clock(record.liveFrom)}.` }
     : undefined
@@ -383,10 +310,13 @@ function endingSignal(summary: TerminalSummary): number | undefined {
   return summary.signal !== undefined && summary.signal !== 0 ? summary.signal : undefined
 }
 
-// The lines of a text that are finished: one per line break in what it
-// draws, whatever an erase or a sequence cut in half left after the last.
-function wholeLines(text: string): number {
-  return plainText(text).split("\n").length - 1
+// The lines finished before a point in a text: one per line break the
+// terminal drew before it, whatever an erase or a sequence cut in half left
+// after the last. A line break inside a control string's payload draws
+// nothing. The reader reads in order, so reading the whole text says what
+// reading up to the point would.
+function wholeLines(text: string, before: number): number {
+  return drawn(text).lineStarts.filter((start) => start <= before).length
 }
 
 // Failed is a shell that exited with a code other than zero. A shell ended by
