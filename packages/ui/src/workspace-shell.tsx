@@ -1835,7 +1835,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             readOnly={watching}
             // Machines locks the controls below that a tab's credential cannot
             // use; each handler refuses too, so nothing sends a request the
-            // daemon answers by closing the connection. fleet.clientRoute and
+            // daemon refuses with the authentication error, on which the
+            // client closes its connection. fleet.clientRoute and
             // terminal.create are not on phoneAndTabletRpcMethods.
             onAuthorizeClient={(machineId, credential, signal) => clientKind === "phone" || clientKind === "tablet"
               ? Promise.reject(new Error("A phone or tablet tab cannot authorize this client on another machine"))

@@ -661,8 +661,8 @@ it("keeps Rename, Rotate and Unpair live in the desktop app", async () => {
 })
 
 // fleet.enroll and fleet.forget, like the device methods, need the daemon's own
-// credential; the daemon closes a connection that sends them with a device
-// credential, which is all a browser tab holds.
+// credential. The daemon refuses them from a device credential, which is all a
+// browser tab holds, and the client closes its connection on that refusal.
 const pairAndForgetLocked = "Pair a machine and Forget are off in a browser tab: they need the daemon's own credential. Use the desktop app on workshop."
 
 it.each(["web", "phone", "tablet"] as const)("locks Pair a machine and Forget in a %s tab and says why", async (clientKind) => {
@@ -686,7 +686,8 @@ it.each(["web", "phone", "tablet"] as const)("locks Pair a machine and Forget in
 
 // A phone or tablet credential reaches only phoneAndTabletRpcMethods. Neither
 // fleet.clientRoute (how a client finds its way to another machine) nor
-// terminal.create is on it, and the daemon closes a connection that sends one.
+// terminal.create is on it; the daemon refuses either, and the client then
+// closes its connection.
 it.each(["phone", "tablet"] as const)("locks Authorize this client and Terminal in a %s tab and says why", async (clientKind) => {
   const { user, onAuthorizeClient, onOpenMachineTerminal } = renderFleet({ clientKind, authorizes: true })
   const studioCard = within(screen.getByRole("group", { name: "studio" }))

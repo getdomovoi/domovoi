@@ -250,14 +250,16 @@ function lockedInBrowserTab(binding: DeviceCredentialBinding, machine: string): 
 }
 
 // fleet.enroll and fleet.forget the same way: the daemon refuses both from any
-// device credential (server.ts) by closing the connection.
+// device credential (server.ts) with the authentication error, on which the
+// client closes its connection (client.ts).
 function fleetLockedInBrowserTab(controls: readonly string[], machine: string): string {
   const many = controls.length > 1
   return `${controls.join(" and ")} ${many ? "are" : "is"} off in a browser tab: ${many ? "they need" : "it needs"} the daemon's own credential. Use the desktop app on ${machine}.`
 }
 
-// A phone or tablet credential reaches only phoneAndTabletRpcMethods, and the
-// daemon closes a connection that sends anything else. fleet.clientRoute, the
+// A phone or tablet credential reaches only phoneAndTabletRpcMethods. The
+// daemon refuses anything else with the authentication error, and the client
+// then closes its connection. fleet.clientRoute, the
 // home daemon's lookup of a way to another machine, is not on it, so a
 // handheld tab cannot authorize itself there. The desktop app on the home
 // machine can authorize itself.
@@ -466,7 +468,7 @@ function MachineCard({
   onAuthorize?: ((machine: FleetMachine) => void) | undefined
   onRemoveAccess?: ((machine: FleetMachine) => void) | undefined
   // Controls this tab cannot use, because the daemon refuses their request
-  // for its credential. Forget's reason is one line for the whole view, named
+  // for its credential and the refusal drops the connection. Forget's reason is one line for the whole view, named
   // by its id; the others are this card's own line.
   forgetLockedBy?: string | undefined
   authorizeLocked?: string | undefined

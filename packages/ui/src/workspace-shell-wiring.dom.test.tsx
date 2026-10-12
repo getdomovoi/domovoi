@@ -122,7 +122,8 @@ describe("paired devices in a browser tab", () => {
 
 // Machines in a tab whose credential the daemon refuses fleet.enroll,
 // fleet.forget, fleet.clientRoute or terminal.create for. The daemon answers
-// each by closing the connection, so the tab never sends one.
+// each with the authentication error, on which the client closes its
+// connection, so the tab never sends one.
 describe("Machines in a browser tab", () => {
   const observedAt = "2026-10-01T09:00:00.000Z"
   const fleetMachine = (overrides: Partial<FleetMachine> & Pick<FleetMachine, "id" | "label" | "self">): FleetMachine => ({
