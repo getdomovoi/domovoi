@@ -66,6 +66,10 @@ describe("the step dots", () => {
     render(<TurnActivity items={items} running={false} />)
     await user.click(screen.getByRole("button", { name: /^4 tool calls/u }))
     expect(dotFill("pnpm build")).toBe("bg-faint")
+    // Review round 2: the design's words for it, "no result", not "running".
+    const row = screen.getByText("pnpm build").closest("li")!
+    expect(row.textContent).toContain("no result")
+    expect(row.textContent).not.toContain("running")
   })
 })
 

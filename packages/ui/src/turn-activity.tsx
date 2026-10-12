@@ -60,7 +60,8 @@ function activityLabel(items: readonly ToolActivity[], running: boolean, timing:
 // Desktop V2 colours a step's dot by its outcome: ok in success, a failure in
 // destructive, a call blocked at a gate in warning, one running in primary,
 // and one with no result in muted. A call still marked running in a row whose
-// turn is no longer running has no result anyone saw.
+// turn is no longer running has no result anyone saw, and its row says so in
+// the design's words, no result.
 function stepMeaning(item: ToolActivity, running: boolean): StepMeaning {
   if (item.failed || item.outcome === "failed") return "offline"
   switch (item.outcome) {
@@ -127,7 +128,7 @@ export const TurnActivity = memo(function TurnActivity({
                 {item.argument ? (
                   <span className="min-w-0 truncate font-mono text-[10.5px] text-muted-foreground">{item.argument}</span>
                 ) : null}
-                <span className="ml-auto font-mono text-[10.5px] text-faint">{item.outcome}</span>
+                <span className="ml-auto font-mono text-[10.5px] text-faint">{item.outcome === "running" && !running ? "no result" : item.outcome}</span>
               </>
             )
             return (
