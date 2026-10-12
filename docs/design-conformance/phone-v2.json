@@ -420,7 +420,8 @@
       ],
       "evidence": [
         "THIS PHONE WILL BE ABLE TO",
-        "{phoneAndTabletPromise.map((line) => ("
+        "{phoneAndTabletPromise.map((line) => (",
+        "Read terminal output. It cannot type, resize or take the claim."
       ]
     },
     {
@@ -895,6 +896,11 @@
       "id": "attach.sheet",
       "since": "2026-10-06",
       "note": "approved difference, ruling Q8 A, 2026-10-06: the Terminal output row says not built: a phone reads a terminal but cannot pick its output to attach, not the design's waits on a read-only terminal path, which a phone does not have yet, which stopped being true when watching.screen was built. The design's open question 5 names the change; attaching a selection is not drawn"
+    },
+    {
+      "id": "pairing.grant-line",
+      "since": "2026-10-11",
+      "note": "approved difference, ruling Q61 A, 2026-10-11 (task 72): the grant list now carries 04g's When this ships line, Read terminal output. It cannot type, resize or take the claim., as a grant with the success dot, in the place of Terminal output is not on a phone yet., which stopped being true when #739 let a phone watch terminal output. PairingCard and 04g's Today row still draw the old line, and GRANTS_NEXT marks the new one proposed, not shipped; the desktop card, the command line and the phone change together because they read one list, phoneAndTabletPromise. The line is true to the allow-list: terminal.list, terminal.watch and terminal.unwatch are on phoneAndTabletRpcMethods, and terminal.input, terminal.resize, terminal.claim, terminal.release, terminal.create and terminal.close are not. The design's open question on canonical copy (\"... Everything else here works.\" with a warning dot) is moot for this line"
     }
   ],
   "scriptBacklog": {
