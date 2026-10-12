@@ -35,6 +35,8 @@ function OfflineThread({ connected, onSend, onReconnect = vi.fn(), snapshot = id
       protocolError={null}
       connectionError=""
       machineName={snapshot.machine.name}
+      machineId={snapshot.machine.id}
+      endpoint="ws://127.0.0.1:47831/rpc"
       onReconnect={onReconnect}
     >
       <Thread

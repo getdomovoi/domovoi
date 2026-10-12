@@ -21,6 +21,8 @@ function Connection({ reconnecting = false, connectionError = "", authentication
       protocolError={null}
       connectionError={connectionError}
       machineName={undefined}
+      machineId={undefined}
+      endpoint="ws://127.0.0.1:47831/rpc"
       onReconnect={() => {}}
     >
       {children}

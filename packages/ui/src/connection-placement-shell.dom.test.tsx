@@ -40,8 +40,9 @@ it("draws the banner at the top of the thread column once there is one", async (
   await act(async () => { harness.socket(0).drop() })
   await settle()
 
-  const banners = screen.getAllByText(/^Lost the daemon on macbook-pro-m3/u)
+  const banners = screen.getAllByRole("status").filter((region) => region.textContent?.includes("Lost the daemon on macbook-pro-m3"))
   expect(banners).toHaveLength(1)
+  expect(banners[0]!.textContent).toContain("last heard")
   const thread = banners[0]!.closest("main")
   expect(thread).not.toBeNull()
   expect(thread!.querySelector("[data-workspace-composer]")).not.toBeNull()

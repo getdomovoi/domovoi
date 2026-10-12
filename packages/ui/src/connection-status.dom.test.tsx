@@ -126,11 +126,14 @@ describe("WorkspaceConnectionStatus", () => {
   })
 })
 
-// Last heard is when this client saw an open connection to that machine close.
-// A client that opened with the daemon already gone never heard it, and a
-// switch to another machine is not a loss of this one.
+// Last heard is when this client saw an open loopback connection to that
+// machine close: a daemon on this machine that stops or dies closes its socket
+// at once. A client that opened with the daemon already gone never heard it, a
+// switch to another machine is not a loss of this one, and a connection over a
+// network can die silently and be seen closing late, so none of them says a
+// time.
 describe("WorkspaceConnectionProvider", () => {
-  const connection = { ...baseProps, connected: true }
+  const connection = { ...baseProps, connected: true, machineId: "machine-1", endpoint: "ws://127.0.0.1:47831/rpc" }
   function Banner() {
     const state = useWorkspaceConnection()
     return state ? <WorkspaceConnectionStatus {...state} /> : null
@@ -138,7 +141,7 @@ describe("WorkspaceConnectionProvider", () => {
 
   afterEach(() => { vi.useRealTimers() })
 
-  it("records last heard when it sees the connection close", () => {
+  it("records last heard when it sees a loopback connection close", () => {
     vi.useFakeTimers({ now: new Date("2026-10-12T10:00:00.000Z") })
     const { rerender } = render(<WorkspaceConnectionProvider {...connection}><Banner /></WorkspaceConnectionProvider>)
     rerender(<WorkspaceConnectionProvider {...connection} connected={false}><Banner /></WorkspaceConnectionProvider>)
@@ -159,10 +162,51 @@ describe("WorkspaceConnectionProvider", () => {
 
   it("does not carry last heard to a machine it was not heard from", () => {
     const { rerender } = render(<WorkspaceConnectionProvider {...connection}><Banner /></WorkspaceConnectionProvider>)
-    rerender(<WorkspaceConnectionProvider {...connection} connected={false} machineName={undefined}><Banner /></WorkspaceConnectionProvider>)
-    rerender(<WorkspaceConnectionProvider {...connection} connected={false} machineName="other-machine"><Banner /></WorkspaceConnectionProvider>)
+    rerender(<WorkspaceConnectionProvider {...connection} connected={false} machineId={undefined} machineName={undefined}><Banner /></WorkspaceConnectionProvider>)
+    rerender(<WorkspaceConnectionProvider {...connection} connected={false} machineId="machine-2" machineName="other-machine"><Banner /></WorkspaceConnectionProvider>)
 
     expect(screen.getByText("Lost the daemon on other-machine")).toBeDefined()
     expect(screen.queryByText(/last heard/u)).toBeNull()
+  })
+
+  // Two machines can share a name. The time belongs to the machine, not to
+  // the word on the banner.
+  it("tells machines apart by id, not by name", () => {
+    const { rerender } = render(<WorkspaceConnectionProvider {...connection}><Banner /></WorkspaceConnectionProvider>)
+    rerender(<WorkspaceConnectionProvider {...connection} connected={false}><Banner /></WorkspaceConnectionProvider>)
+    rerender(<WorkspaceConnectionProvider {...connection} connected={false} machineId="machine-2"><Banner /></WorkspaceConnectionProvider>)
+
+    expect(screen.getByText("Lost the daemon on this-machine")).toBeDefined()
+    expect(screen.queryByText(/last heard/u)).toBeNull()
+  })
+
+  it("says no time for a daemon it reached over a network", () => {
+    const remote = { ...connection, endpoint: "wss://studio.tailnet.example:47831/rpc" }
+    const { rerender } = render(<WorkspaceConnectionProvider {...remote}><Banner /></WorkspaceConnectionProvider>)
+    rerender(<WorkspaceConnectionProvider {...remote} connected={false}><Banner /></WorkspaceConnectionProvider>)
+
+    expect(screen.getByText("Lost the daemon on this-machine")).toBeDefined()
+    expect(screen.queryByText(/last heard/u)).toBeNull()
+  })
+
+  // The age ticks every second. Inside a live region each tick would be
+  // announced again, so the ticking words are hidden from assistive
+  // technology and the region carries the clock time instead.
+  it("keeps the ticking age out of the live announcement", () => {
+    vi.useFakeTimers({ now: new Date("2026-10-12T10:00:00.000Z") })
+    const { rerender } = render(<WorkspaceConnectionProvider {...connection}><Banner /></WorkspaceConnectionProvider>)
+    rerender(<WorkspaceConnectionProvider {...connection} connected={false}><Banner /></WorkspaceConnectionProvider>)
+    const region = screen.getByRole("status")
+    const announced = () => {
+      const copy = region.cloneNode(true) as HTMLElement
+      for (const hidden of copy.querySelectorAll("[aria-hidden]")) hidden.remove()
+      return copy.textContent
+    }
+    const before = announced()
+    act(() => { vi.advanceTimersByTime(5_000) })
+
+    expect(announced()).toBe(before)
+    expect(announced()).toContain("last heard at")
+    expect(screen.getByText("Lost the daemon on this-machine, last heard 5s ago")).toBeDefined()
   })
 })
