@@ -219,9 +219,13 @@ export function PreviewRenderedList({
   const selectedIndex = selectedArtifactId === undefined
     ? -1
     : renders.findIndex((render) => render.artifactIds.includes(selectedArtifactId))
-  const newestStart = Math.max(0, renders.length - shown)
-  const start = selectedIndex >= 0 ? Math.min(newestStart, selectedIndex) : newestStart
+  const start = Math.max(0, renders.length - shown)
   const earlier = Math.min(previewRenderListPage, start)
+  // The render on screen, when it is older than the pages drawn, is drawn on
+  // its own above them rather than drawing every render in between.
+  const drawn = selectedIndex >= 0 && selectedIndex < start
+    ? [renders[selectedIndex]!, ...renders.slice(start)]
+    : renders.slice(start)
   return (
     <nav aria-label={PreviewCopy.renderedLabel} className={cn("flex flex-col gap-[3px] bg-sidebar px-2 py-[9px]", className)}>
       <div className="px-2.5 pt-[5px] pb-[7px] text-eyebrow tracking-[.13em] text-faint">{PreviewCopy.renderedHeading}</div>
@@ -235,7 +239,7 @@ export function PreviewRenderedList({
           {earlier === 1 ? "Show 1 earlier render" : `Show ${earlier} earlier renders`}
         </Button>
       ) : null}
-      {renders.slice(start).map((render) => {
+      {drawn.map((render) => {
         const selected = selectedArtifactId !== undefined && render.artifactIds.includes(selectedArtifactId)
         return (
           <Button

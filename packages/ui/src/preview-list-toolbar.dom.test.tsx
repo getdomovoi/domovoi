@@ -353,6 +353,27 @@ it("lists the newest renders first in view and shows earlier ones on request", a
   expect(within(list).queryByRole("button", { name: /earlier renders?$/u })).toBeNull()
 })
 
+it("draws an older render on screen beside the newest page, not every render between them", () => {
+  const many: Artifact[] = Array.from({ length: 1_000 }, (_, index) => ({
+    id: `render-${index}`,
+    sessionId,
+    title: `Render ${index}`,
+    type: "preview",
+    // The dock opens on the highest revision, here the first render.
+    revision: index === 0 ? 5 : 1,
+    mimeType: "text/html",
+    path: `previews/render-${index}.html`,
+  }))
+  renderDock(grantingAuthorize(), undefined, { ...snapshot, artifacts: many })
+  const list = screen.getByRole("navigation", { name: "Rendered this session" })
+  const rows = within(list).getAllByRole("button").filter((button) => button.textContent?.startsWith("Render "))
+  expect(rows).toHaveLength(51)
+  expect(rows[0]?.textContent).toContain("Render 0")
+  expect(rows[0]?.getAttribute("aria-current")).toBe("true")
+  expect(rows[1]?.textContent).toContain("Render 950")
+  expect(within(list).getByRole("button", { name: "Show 50 earlier renders" })).toBeTruthy()
+})
+
 it("names the build basis from another render instead of a variant of the one on screen", async () => {
   const user = userEvent.setup()
   const hero: Artifact[] = ["a", "b"].map((id, index) => ({
