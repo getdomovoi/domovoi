@@ -1007,30 +1007,27 @@
       "where": "top of the conversation: repo · branch · worktree, then the clock (started, running or stalled)",
       "evidence": [
         "function ThreadStartLine(",
-        "re:\\bstalled at"
+        "turn={headerTurn(active, snapshot.turns)}",
+        "`${started} · running ${formatTurnDuration(clock.elapsedMs)}`",
+        "`${started} · stalled at ${clockTime.format(clock.lostAt)}`",
+        "`${started} · stopped ${clockTime.format(clock.stoppedAt)}`"
       ],
-      "presence": [
-        "function ThreadStartLine("
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "ThreadStartLine draws repo, branch and worktree, then started HH:MM, and carries no controls; the gap is the clock. The design draws started 14:02 · 4m 18s when done, started 14:02 · running 1m 09s while working and started 13:41 · stalled at 14:06 when the daemon is lost. The clock is client work: session.history entries carry turn (sessionTurnSchema) with startedAt and completedAt, and usage-chip.tsx already reads the latest turn through latestTurnFromHistory. Q401 (2026-10-02) settles it: durations are client work from session.history today, and from the snapshot's derived turns once the fix/v2-protocol branch lands (a turn ended by a restart has no completedAt, so it shows no duration)"
-      }
+      "notes": [
+        "Re-derived 2026-10-12 (SL-2, D4) from the vendored file at the digest above; the live design was not read (DesignSync not authorized that session). Built: the line's clock describes the session's latest turn from the snapshot's turns (ruling Q401), through turn-clock.ts. started 14:02 · running 1m 09s ticks each second while the session runs the turn; started 14:02 · 4m 18s once it completed, from the turn's own start and end on the daemon's clock; started 14:02 · stopped 14:03 for a failed or interrupted turn with an end; started 13:41 · stalled at 14:06 when the daemon is lost while the turn ran, at the moment this thread saw the connection drop. A running turn no thread row links yet reads the session's activeTurnStartedAt. With no timing the line keeps started HH:MM from the first row."
+      ]
     },
     {
       "id": "conversation.user-turn",
       "name": "User message",
       "where": "right-aligned card",
       "evidence": [
-        "data-testid=\"user-turn\""
+        "data-testid=\"user-turn\" className={userTurn}",
+        "max-w-[74%] self-end rounded-[14px_14px_4px_14px] bg-accent px-[15px] py-[11px]",
+        "[&>div:first-child]:text-[13.5px] [&>div:first-child]:leading-[1.6]"
       ],
-      "presence": [
-        "item.kind === \"user\""
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "exists; arrangement not measured"
-      }
+      "notes": [
+        "Measured 2026-10-12 (SL-2, D8) against the vendored file at the digest above; the live design was not read. The design draws a right-aligned card at most 74% of the column, padding 11px 15px, radius 14px 14px 4px 14px, background accent, no border, 13.5px/1.6. thread.tsx drew it at 82% on card with a border, 12px corners and 13px/1.625; it now draws the design's measures. The prompt delivery note under the text keeps its own size."
+      ]
     },
     {
       "id": "conversation.assistant-prose",
@@ -1040,20 +1037,20 @@
         "working: caret",
         "done"
       ],
-      "presence": [
-        "<MarkdownQuickView source={stripPlanTags(item.body)} />"
-      ],
       "evidence": [
         "<MarkdownQuickView source={stripPlanTags(item.body)} />",
         {
-          "absent": "<DomovoiMark reduced className=\"size-4\" /></span><MarkdownQuickView",
+          "absent": "<DomovoiMark",
           "in": "packages/ui/src/thread.tsx"
-        }
+        },
+        "[&>div]:text-[13.5px] [&>div]:leading-[1.65]",
+        "[&>div>:last-child]:after:w-[1.5px]",
+        "[&>div>:last-child]:after:bg-primary",
+        "className={cn(assistantProse, item.id === workingProse && workingCaret)}"
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the prose renders as markdown (the earlier evidence matched only that call); it is not the drawn prose. thread.tsx puts a 24px DomovoiMark avatar box before it, which the design does not draw; there is no working caret (the design draws a 1.5px primary blinking caret after the last prose while working); the type is 13px/1.625 against 13.5px/1.65"
-      }
+      "notes": [
+        "Re-derived 2026-10-12 (SL-2, D5) from the vendored file at the digest above; the live design was not read. Built: no avatar box, the column's full width, 13.5px/1.65 with text-wrap pretty, and while the session runs a turn the latest prose (said after the latest message) carries a 1.5px by 15px primary caret 3px after its last block, blinking at 1.1s steps(1) as the composer's caret does, still under reduced motion. The caret is a pseudo-element after the markdown's last block, so after a list or code block it follows that block rather than a line of text."
+      ]
     },
     {
       "id": "conversation.plan-link",
@@ -1063,13 +1060,14 @@
         "Read it →"
       ],
       "evidence": [
-        "Wrote a",
-        "Read it"
+        "Wrote a {plan.steps.length} step plan",
+        "Read it <span aria-hidden>→</span>",
+        "function PlanLinkRow(",
+        "<PlanLinkRow plan={sessionPlan} onOpenPlanPreview={onOpenPlanPreview} />"
       ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "no plan link row under the prose; the earlier presence string matched the credential prompt's Read it from, not this element"
-      }
+      "notes": [
+        "Built 2026-10-12 (SL-2, D6) from the vendored file at the digest above; the live design was not read. The row reads the session's working plan, which the snapshot already carries: list icon, Wrote a N step plan, the time the plan was made, and Read it →, a button that opens the Plan preview dock tab through the thread's onOpenPlanPreview (not drawn where nothing can open it). A plan with no steps draws no row. Two differences, both from what the client holds: the working plan names no message or turn, so the row sits after the last message or prose made at or before the plan (Q65 A); and updatedAt also moves when a step's status changes, so a plan whose steps were rewritten says revised with no time (Q66 A)."
+      ]
     },
     {
       "id": "conversation.activity-row",
@@ -1082,16 +1080,18 @@
         "a step with a log open"
       ],
       "evidence": [
-        "Worked for",
-        "show the steps"
+        "`Worked for ${timing.duration}, show the steps`",
+        "if (timing?.kind === \"stopped\") return \"Stopped\"",
+        "<StatusDot meaning={stepMeaning(item, running)} label={item.name} size=\"inline\" />",
+        "working: \"bg-primary\"",
+        {
+          "absent": "\"Output\"",
+          "in": "packages/ui/src/turn-activity.tsx"
+        }
       ],
-      "presence": [
-        "turn-activity"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "activity groups exist and read N tool calls[, N failed]; the design's Working, Worked for 4m 18s, show the steps and Stopped labels are not drawn, step dots show online or offline only where the design colours them by outcome, and Output is a text button where the design toggles the whole row. Worked for N is client work: session.history entries carry turn (sessionTurnSchema) with startedAt and completedAt, which usage-chip.tsx already reads through latestTurnFromHistory. Q401 (2026-10-02): durations are client work from session.history today, and from the snapshot's derived turns once the fix/v2-protocol branch lands (a turn ended by a restart has no completedAt)"
-      }
+      "notes": [
+        "Re-derived 2026-10-12 (SL-2, D7) from the vendored file at the digest above; the live design was not read. Built: the label is Working while the row's turn runs, Worked for 4m 18s, show the steps (Worked for 4m 18s once open) from the turn's start and end in the snapshot's turns, and Stopped for a failed or interrupted turn. Only a turn's last activity row says it; an earlier row of the same turn, and a row whose turn has no timing, keeps N tool calls[, N failed]. A run of calls that crosses into another turn is two rows. Step dots take their outcome's colour as the design does: completed success, failed destructive, declined warning, running primary (StatusDot's working meaning), and a call left running in a row that no longer runs muted as no result. A step with a log is one button (aria-expanded, chevron) that opens its log; the Output link is gone. The dot is StatusDot's 5px inline size against the design's 6px, and a step's meta is its status word rather than the design's ok · 41ms, which the wire does not carry."
+      ]
     },
     {
       "id": "conversation.file-chips",
