@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from "node:util"
 
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
 import { bootstrapPlan, expectedChecksum } from "./bootstrap-plan.mjs"
-import { publishablePackages } from "./release-artifacts.mjs"
+import { publishablePackages, webArchiveName } from "./release-artifacts.mjs"
 import { evaluatePublishOrder } from "./publish-order.mjs"
 import { hashRuntimeFile } from "./runtime-verification.mjs"
 import { collectWorkspacePackages, evaluateVersionLockstep } from "./version-lockstep.mjs"
@@ -51,7 +51,15 @@ async function describeRelease(root, directory, commit, deadline) {
     packages.push({ name, version, archive, sbom, directory: dirname(pkg.path),
       integrity: `sha512-${await hashRuntimeFile(join(directory, archive), "sha512", deadline)}` })
   }
-  if (sums.trim().split(/\r?\n/u).length !== files.length) throw new Error("SHA256SUMS must name exactly this release's archives and SBOMs")
+  // The web app is a release file, not an npm package: it is checked and
+  // uploaded with the rest, and never enters the publish plan.
+  const web = webArchiveName(version)
+  const webPath = join(directory, web)
+  if (!(await deadline.run(() => lstat(webPath))).isFile()) throw new Error(`${web} is not a regular release file`)
+  const webSha256 = await hashRuntimeFile(webPath, "sha256", deadline)
+  if (expectedChecksum(sums, web) !== webSha256) throw new Error(`${web} does not match SHA256SUMS`)
+  files.push({ name: web, sha256: webSha256 })
+  if (sums.trim().split(/\r?\n/u).length !== files.length) throw new Error("SHA256SUMS must name exactly this release's archives, SBOMs and web app")
   files.push({ name: "SHA256SUMS", sha256: await hashRuntimeFile(join(directory, "SHA256SUMS"), "sha256", deadline) })
   return { schemaVersion: 1, commit, version, gitTag: `v${version}`, prerelease: Boolean(prerelease), npmTag, packages, files }
 }

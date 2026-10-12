@@ -1,5 +1,5 @@
 import { describe, expect, it, jest } from "@jest/globals"
-import { demoWorkspace, terminalWatchResultSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, terminalWatchResultSchema, type ApprovalDecision, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
@@ -53,6 +53,7 @@ async function draw(overrides: Partial<Parameters<typeof SessionScreen>[0]> = {}
     onPickLibrary: jest.fn<() => void>(),
     onTakePhoto: jest.fn<() => void>(),
     onRemoveAttachment: jest.fn<(index: number) => void>(),
+    onRemoveAttachments: jest.fn<() => void>(),
     starting: false,
     startProblem: "",
     onStartLike: jest.fn<(prompt: string, mode: "ask" | "plan" | "build") => void>(),
@@ -169,6 +170,32 @@ describe("SessionScreen pinned plan", () => {
   })
 })
 
+// Phone v2 frames 13b and 14b on the session screen: the model the session
+// uses reaches both the attach sheet and the composer.
+describe("SessionScreen images and the model", () => {
+  const photo = { name: "before.png", mimeType: "image/png" as const, width: 800, height: 600, data: "", bytes: 1_400_000 }
+
+  it("locks the image sources and the send for a model that takes no images", async () => {
+    const detail = sessionDetail(workspace(), "session-billing")
+    if (!detail) throw new Error("fixture needs the billing session")
+    const { props } = await draw({
+      detail: { ...detail, sending: { can: true, hint: undefined } },
+      draft: "Before",
+      attachments: [photo],
+      attachmentSummary: "x",
+      modelImages: { model: "qwen3-coder-72b", imageInput: false },
+    })
+
+    expect(screen.getByText("1 image cannot go to qwen3-coder-72b. Remove it or pick another model.")).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("button", { name: "Remove 1 image" }))
+    expect(props.onRemoveAttachments).toHaveBeenCalledTimes(1)
+
+    await fireEvent.press(screen.getByRole("button", { name: "Attach an image" }))
+    expect(screen.getByText("takes no image input, as its harness reports")).toBeOnTheScreen()
+    expect(screen.getAllByText("Locked for this model.")).toHaveLength(2)
+  })
+})
+
 describe("SessionScreen messages", () => {
   // Phone v2 frame 11: an agent reply is a bordered bubble and yours is filled
   // with the primary colour. No glyph stands in for the agent, so a screen
@@ -191,11 +218,13 @@ describe("SessionScreen decision receipt", () => {
     id: "receipt-1",
     kind: "receipt" as const,
     decision: "Allowed once",
-    recorded: "allow-once" as "allow-once" | "deny",
+    recorded: "allow-once" as ApprovalDecision,
     operation: "pnpm -w prisma migrate deploy",
     explanation: undefined,
     client: "phone",
     decidedBy: "phone",
+    decidedOn: "phone",
+    credential: undefined as string | undefined,
     declaredClient: undefined as string | undefined,
     checkpoint: "8f3c1de",
     checkpointTaken: true,
@@ -232,7 +261,8 @@ describe("SessionScreen decision receipt", () => {
     await drawReceipt(allowed)
 
     expect(screen.getByText("Checkpoint 8f3c1de was taken first, then it ran in 12s.")).toBeOnTheScreen()
-    for (const [key, value] of [["Decision", "allow-once"], ["Decided on", "phone"], ["Checkpoint", "8f3c1de"]]) {
+    // The decision reads as words, as frame 03 draws it, not as the wire value.
+    for (const [key, value] of [["Decision", "allow once"], ["Decided on", "phone"], ["Checkpoint", "8f3c1de"]]) {
       expect(screen.getByLabelText(`${key}, ${value}`)).toBeOnTheScreen()
     }
     // Ruling Q357 A drops the gate's wait from the record on the phone.
@@ -272,18 +302,42 @@ describe("SessionScreen decision receipt", () => {
   })
 
   it("does not speak of a phone's credential for a decision made elsewhere", async () => {
-    await drawReceipt({ ...allowed, client: "desktop", decidedBy: "desktop" })
+    await drawReceipt({ ...allowed, client: "desktop", decidedBy: "desktop", decidedOn: "desktop" })
 
     expect(screen.getByLabelText("Decided on, desktop")).toBeOnTheScreen()
     expect(screen.queryByText(/The audit row names this phone's verified credential/)).toBeNull()
   })
 
-  // Ruling Q424 A: the paired device the daemon wrote on the receipt names
-  // who decided, label first, then the client and the shortened device id.
-  it("names the deciding device in the record", async () => {
-    await drawReceipt({ ...allowed, decidedBy: "dana · phone · device fcbd…cdf8" })
+  // Status item 12: an allow that could take no checkpoint still ran, and how
+  // long it ran is not part of the checkpoint sentence.
+  it("keeps the run time when no checkpoint was taken", async () => {
+    await drawReceipt({ ...allowed, checkpoint: "no checkpoint", checkpointTaken: false, ranFor: "38s" })
 
-    expect(screen.getByLabelText("Decided on, dana · phone · device fcbd…cdf8")).toBeOnTheScreen()
+    expect(screen.queryByText(/was taken first/)).toBeNull()
+    expect(screen.getByText("It ran in 38s.")).toBeOnTheScreen()
+  })
+
+  it("keeps the run time on a history receipt that took no checkpoint", async () => {
+    await drawReceipt({ ...allowed, checkpoint: "no checkpoint", checkpointTaken: false, ranFor: "38s", current: false })
+
+    expect(screen.getByText("It ran in 38s.")).toBeOnTheScreen()
+  })
+
+  // Frame 03 names the decision in words for each recorded value.
+  it("names every recorded decision in words", async () => {
+    await drawReceipt({ ...allowed, decision: "Allowed for this project", recorded: "always-project" })
+    expect(screen.getByLabelText("Decision, always project")).toBeOnTheScreen()
+    await drawReceipt({ ...allowed, decision: "Denied with an explanation", recorded: "deny-explain", checkpointTaken: false, ranFor: undefined })
+    expect(screen.getByLabelText("Decision, deny explain")).toBeOnTheScreen()
+  })
+
+  // Frame 03's Decided on and Credential rows: the device's label, then the
+  // paired device the daemon verified on the deciding connection.
+  it("names the deciding device by its label and its credential by id", async () => {
+    await drawReceipt({ ...allowed, decidedBy: "dana · phone · device fcbd…cdf8", decidedOn: "dana", credential: "device fcbd…cdf8" })
+
+    expect(screen.getByLabelText("Decided on, dana")).toBeOnTheScreen()
+    expect(screen.getByLabelText("Credential, device fcbd…cdf8")).toBeOnTheScreen()
   })
 
   it("claims no checkpoint for a receipt that took none", async () => {

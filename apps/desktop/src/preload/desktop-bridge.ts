@@ -108,11 +108,13 @@ function serviceOutcome(value: unknown): DaemonServiceOutcome {
     // budget (scripts/performance-budgets.mjs).
     if ((result.profileRecovery !== undefined && !recovery)
       || (result.daemonAttached !== undefined && typeof result.daemonAttached !== "boolean")
-      || (result.lingerWarning !== undefined && !serviceText(result.lingerWarning))) throw new Error("Desktop returned an invalid service outcome")
+      || (result.lingerWarning !== undefined && !serviceText(result.lingerWarning))
+      || (result.lingerNote !== undefined && !serviceText(result.lingerNote))) throw new Error("Desktop returned an invalid service outcome")
     return {
       ok: true, kind, target: result.target, daemonRunning: result.daemonRunning,
       ...(typeof result.daemonAttached === "boolean" ? { daemonAttached: result.daemonAttached } : {}),
       ...(serviceText(result.lingerWarning) ? { lingerWarning: result.lingerWarning } : {}),
+      ...(serviceText(result.lingerNote) ? { lingerNote: result.lingerNote } : {}),
       ...(recovery ? { profileRecovery: recovery } : {}),
       ...(recovery && serviceText(result.profileRecoveryDetail) ? { profileRecoveryDetail: result.profileRecoveryDetail } : {}),
     }

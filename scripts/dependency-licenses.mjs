@@ -31,7 +31,11 @@ export const desktopPackages = [
 // the desktop manifest starts there too. The domovoi CLI ships in the same
 // runtime since Q336 A (2026-10-02), so the app can link it into ~/.local/bin.
 export const desktopRuntimeWorkspacePackages = ["@getdomovoi/daemon", "@getdomovoi/cli"]
-export const auditedPackages = [...new Set([...publishablePackages, ...desktopPackages])]
+// The web app release tarball (S3.2 slice 6) carries the bundle vite builds
+// from apps/web, which inlines the UI's and the protocol's graphs.
+// scripts/dependency-licenses.test.mjs checks this against the manifests.
+export const webPackages = ["@getdomovoi/web", "@getdomovoi/ui", "@getdomovoi/protocol"]
+export const auditedPackages = [...new Set([...publishablePackages, ...desktopPackages, ...webPackages])]
 
 // Electron is a development dependency of apps/desktop because electron-builder
 // bundles it into every desktop build rather than installing it, so the

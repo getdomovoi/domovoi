@@ -667,11 +667,15 @@
         "Copy once",
         "Each daemon keeps its own list",
         "Sign this device out",
-        "Shown once. Domovoi keeps a digest, not the secret."
+        "Shown once. Domovoi keeps a digest, not the secret.",
+        "return binding.kind === \"client\" ? \"Unpair\" : \"Revoke\""
+      ],
+      "notes": [
+        "2026-10-11 (SL-4, Q378 A): client rows say Unpair, with Unpair device in the confirmation and an Unpaired chip; machine bindings and legacy unbound credentials keep Revoke. The rows sit in one card under its heading and note (the column names are kept for a screen reader only), each row's consequence is a standing line under it on every pointer, and the rotated credential is an info-tinted panel led by Shown once. Domovoi keeps a digest, not the secret. (the daemon stores a sha256 of the token, device-registry.ts). The row keeps the kind icon and word, and the paired and last seen dates, where the frame draws a status dot and one meta line."
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "rows rename, rotate and revoke; they are not the drawn rows. Every row says Revoke where the design says Unpair, and Sign this device out on a web tab's own row (Q378 A, 2026-10-02: Unpair for client rows, Sign this device out for a tab's own row, Revoke kept for machine bindings). Sign this device out has no path today: Q378 named device.revokeCurrent, but that method is machine-only by contract and the daemon refuses any caller without a machine-paired credential, and device.revoke requires the daemon credential, so a web tab cannot revoke itself. It needs a client self-revocation method (protocol and daemon); the per-row notes are tooltips only, there is no self-row highlight, the layout is a five-column table where the design has card rows, and the rotated secret panel is accent, not info-tinted, without the Shown once line"
+        "since": "2026-10-11",
+        "reason": "Sign this device out on a web tab's own row, with its self-row highlight, waits for CX-4 (client self-revocation, Q52 A): device.revokeCurrent is machine-only by contract and device.revoke requires the daemon credential, so a web tab cannot revoke itself, and PairedDeviceSummary carries no flag that names the caller's own row"
       }
     },
     {
@@ -739,14 +743,19 @@
       ],
       "evidence": [
         "A gate is waiting on you",
+        "Always on. This is the one thing that blocks work.",
+        "if (kind === \"approval-needed\") return true",
         "Every tool call"
       ],
       "presence": [
         "<NotificationSettings"
       ],
+      "notes": [
+        "2026-10-11 (SL-4, Q363 A, Q56 A): A gate is waiting on you is the first row, drawn on and locked, on the desktop and in a browser; a stored approvals-off preference from an older build reads as on (notification-preferences.ts). The desktop card says This desktop only. A waiting gate always notifies, and the rest is yours.; a browser says This browser only. Q362 A: the panel stays live while the window watches."
+      ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "a notification settings panel exists with three switchable rows; the design draws five rows under This desktop only, with the gate row locked on. Approvals can be switched off today; Q363 A (2026-10-02) locks A gate is waiting on you on, desktop only. A run failed or a machine went unreachable and Changes are waiting for review can come from the snapshot and fleet health; Every tool call needs the tool events the thread already receives"
+        "since": "2026-10-11",
+        "reason": "one drawn row is built as drawn, the locked gate row. The panel also keeps two switchable rows of its own, Completions and Failures, which are not the frame's A session finished its plan row: those notifications carry neither a file count nor a suite result. Q55 A (2026-10-11) leaves A run failed or a machine went unreachable (fleet health), Changes are waiting for review, and Every tool call (tool events) after M1 under Q47 A: each needs a new notification kind in the tracker, the desktop main allow-list and the browser platform"
       }
     },
     {
@@ -758,19 +767,20 @@
         "These live on their own screens."
       ],
       "evidence": [
-        "<span>Machines and daemons</span>",
-        "<span>Skills</span>",
-        "<span>Audit log</span>",
-        "<span>Permissions and rules</span>",
-        "<span>Checkpoints</span>"
+        "{ label: \"Machines and daemons\"",
+        "{ label: \"Permissions and rules\", note: \"What you have already allowed, and what a rule can never cover.\"",
+        "{ label: \"Skills\"",
+        "{ label: \"Checkpoints\"",
+        "{ label: \"Audit log\"",
+        "onOpenPermissions={() => openSheetTab(\"rules\")}",
+        "onOpenCheckpoints={openCheckpoints}"
       ],
       "presence": [
         "id=\"settings-elsewhere\""
       ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "Machines and daemons, Skills and Audit log are links in Elsewhere; Permissions and rules is an inline settings section, not a link, and Checkpoints has no link"
-      }
+      "notes": [
+        "2026-10-11 (SL-4, Q57 B): the five links in the frame's order, each with a note and a chevron. Permissions and rules and Checkpoints open the sheet's Rules and Checkpoints tabs, one click from Settings, as the frame's settingsLinks do (tab: rules, tab: checkpoints). Checkpoints' note says a reset is worktree-only and the thread keeps its turns (Q341 A), where the frame says the thread reverts too. The inline Permissions and rules section stays as an addition to the frame: it holds the retired rules the Rules tab points to, the coverage notes, and every project's rules, none of which the Rules tab shows. Not drawn: the shortcut column, whose one entry is Machines and daemons' mod+shift+M; the app binds it (workspace-commands.ts, surface-fleet) and shows it in the palette, not in this row."
+      ]
     },
     {
       "id": "settings.appearance",
@@ -1896,6 +1906,8 @@
       "evidence": [
         "Transfer checks",
         "Not sent either way",
+        "Pick a reachable machine",
+        "the session is already here",
         {
           "absent": "check.ready).length} warnings</span>",
           "in": "packages/ui/src/transfer-session-dialog.tsx"
@@ -1908,7 +1920,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the phase shows the already-chosen target and two client-derived checks with no values; the design draws a TARGET list of every machine with reachability (unreachable ones disabled), seven daemon-checked rows with values (repository present, common base, provider auth there, toolchain, clean checkout, payload size, unversioned files), a holdback toggle and the estimate clone and worktree setup, about 20s. The summary reads n pass · m warnings, so it says 1 warnings and 0 warnings where the design says 6 pass · 1 warning (client-only). Five of the rows, the holdback and the estimate need protocol: sessionTransferPreviewSchema carries project ids and commits only"
+        "reason": "Updated 2026-10-11 (D24, client half). The dialog draws the TARGET list from the fleet the thread passes it (targetChoice): every machine with a health dot, the source as the session is already here, a reachable machine as reachable over its route (tailnet, loopback, or a direct route to its host), and a machine transferPreflight refuses disabled with the reason (daemon unreachable, cannot accept a session now; now rather than the design's yet, because Domovoi never queues a move). Picking a reachable row changes the target, and the confirm reads Pick a reachable machine when the chosen one cannot take the session. The summary reads n pass, or n pass · m blocking: every check this client draws stops the move, so none is a warning. Still missing because the wire does not carry them (CX-9): the seven daemon-checked rows with values (repository present, common base, provider auth there, toolchain, clean checkout, payload size, unversioned files), the holdback toggle and its file count, the estimate clone and worktree setup, about 20s, and which agents each target has installed (the design's claude-code and codex installed; FleetMachine carries health, route and capabilities only). sessionTransferPreviewSchema carries project ids and commits only. The design's 6 pass · 1 warning waits for daemon rows that can warn without blocking"
       }
     },
     {

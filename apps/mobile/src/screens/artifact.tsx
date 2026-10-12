@@ -174,6 +174,7 @@ export function ArtifactScreen({
   comments,
   render,
   variants,
+  builtOn,
   machine,
   onBack,
   onRetryRender,
@@ -188,6 +189,9 @@ export function ArtifactScreen({
   // The other renders in this one's variant group, this one included, in the
   // order the person named them. Empty when the render stands alone.
   variants: PreviewVariant[]
+  // The preview a message last told the agent to build on, from its delivery
+  // record (recordedBuildBasis). Undefined when no message sent one.
+  builtOn?: string | undefined
   machine: string
   onBack: () => void
   // Asks for the render again after a failed fetch.
@@ -197,6 +201,8 @@ export function ArtifactScreen({
 }) {
   const body = artifactBody(artifact)
   const open = openAnnotationCount(comments)
+  // Only a basis in this render's own group speaks for these variants.
+  const basis = variants.find((variant) => variant.id === builtOn)
   const rendered = artifact.type === "preview" && render !== undefined
   const [picking, setPicking] = useState(false)
   const [selection, setSelection] = useState<PreviewSelection | undefined>(undefined)
@@ -239,18 +245,24 @@ export function ArtifactScreen({
             <View className="flex-row gap-1.5">
               {variants.map((variant) => {
                 const selected = variant.id === artifact.id
+                const chosen = variant.id === basis?.id
                 return (
                   <Pressable
                     key={variant.id}
                     accessibilityRole="button"
-                    accessibilityLabel={`Variant ${variant.label}`}
+                    accessibilityLabel={chosen ? `Variant ${variant.label}, the build basis` : `Variant ${variant.label}`}
                     accessibilityState={{ selected }}
                     onPress={() => { if (!selected) onOpenVariant(variant.id) }}
                     className={cn(
-                      "min-h-tap flex-1 items-center justify-center rounded-lg border",
+                      "min-h-tap flex-1 flex-row items-center justify-center gap-1 rounded-lg border",
                       selected ? "border-primary bg-primary/15" : "border-border bg-card",
                     )}
                   >
+                    {chosen ? (
+                      <View testID="build-basis-check" accessibilityElementsHidden importantForAccessibility="no-hide-descendants">
+                        <Icon name="check" tone={selected ? "primary" : "muted"} size={13} />
+                      </View>
+                    ) : null}
                     <Text className={cn("font-sans-medium text-[12.5px]", selected ? "text-primary" : "text-muted-foreground")}>
                       {variant.label}
                     </Text>
@@ -258,11 +270,18 @@ export function ArtifactScreen({
                 )
               })}
             </View>
-            {/* Ruling Q342 A: until the chosen variant travels with a comment, a
-                desktop's choice is a bookmark for whoever is viewing and the
-                agent is not told. The design's wording says the choice is a
-                commitment the agent builds on, which is not true yet. */}
-            <Text variant="note" className="text-center">Marking a variant to build on happens at a desktop, and only as a bookmark for whoever is viewing; the agent is not told which one. To tell the agent, send a comment.</Text>
+            {/* Ruling Q342 A: a desktop's marked variant is a bookmark for
+                whoever is viewing until it travels with a message. Once a
+                message has carried one, its delivery record names it, and the
+                phone says which one the agent was told, as frame 17 does.
+                Frame 17's "a choice is a commitment" is not drawn: no client
+                sends a marked variant yet (Codex review r1). */}
+            {basis ? <>
+              <Text variant="note" className="text-center text-strong">{`${basis.label} is the one the agent was told to build on.`}</Text>
+              <Text variant="note" className="text-center">A variant marked at a desktop stays a bookmark for whoever is viewing; only a message that sends one changes what the agent was told.</Text>
+            </> : (
+              <Text variant="note" className="text-center">Marking a variant to build on happens at a desktop, and only as a bookmark for whoever is viewing; the agent is not told which one. To tell the agent, send a comment.</Text>
+            )}
           </View>
         ) : null}
 

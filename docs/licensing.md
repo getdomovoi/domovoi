@@ -15,6 +15,8 @@ Domovoi publishes:
 - the production graph of the desktop app and of every workspace package it ships, listed as
   `desktopPackages` in `scripts/dependency-licenses.mjs`. That includes `@getdomovoi/ui`, whose
   graph electron-vite inlines into the renderer bundle, and its two fonts;
+- the production graph of the web app release tarball: `@getdomovoi/web` and the workspace
+  packages vite inlines into its bundle, listed as `webPackages` in the same file;
 - Electron, the runtime every desktop build contains, listed as `bundledRuntimes`; and
 - `tailwindcss` and `shadcn`, UI development dependencies whose CSS `@tailwindcss/vite` inlines
   into the renderer stylesheet through `@import` rules in `packages/ui/src/styles.css`, listed
@@ -22,7 +24,8 @@ Domovoi publishes:
 
 `pnpm licenses list` does not follow workspace links, so the audit names each workspace package.
 `scripts/dependency-licenses.test.mjs` compares `desktopPackages` with the desktop's workspace
-dependencies, so a new one fails the test until the list names it. Every allowed entry is
+dependencies, and `webPackages` with the web app's, so a new one fails the test until the list
+names it. Every allowed entry is
 permissive and carries no source-disclosure obligation. A dependency that declares an SPDX expression rather than one identifier passes when
 the expression resolves against that list: any branch of an `OR`, every term of an `AND`.
 
@@ -68,6 +71,16 @@ The renderer's JavaScript bundles carry no license comments, and the app does no
 files on every platform. `apps/desktop/scripts/package-smoke.mjs` checks that a packaged build
 contains them; `pnpm package` runs the smoke, and the per-platform `package:mac`, `package:win`
 and `package:linux` scripts do not.
+
+## Notices in the web app
+
+The web app's bundle carries no license comments either. `pnpm release:artifacts` builds it and
+writes `THIRD_PARTY_NOTICES.txt` into `domovoi-web-<version>.tar.gz`, beside `domovoi-web.json`,
+in the same format as the desktop file: every package of the `webPackages` graph and the CSS
+Tailwind inlines, with each package's license and notice files, the two fonts' full SIL Open Font
+License among them. The bundle's manifest does not list the file, so the daemon never serves it.
+The release build stops when a package the bundle contains has no notice, and
+`scripts/third-party-notices.test.mjs` checks the same thing.
 
 The release SBOMs' inventory is broader: it comes from the packed all-platform runtime lock, or
 for the CLI and the credential store from `pnpm-lock.yaml`, including optional binaries absent
