@@ -799,6 +799,18 @@ describe("App", () => {
       expect(screen.getByRole("button", { name: "Allow once" })).toBeEnabled()
     })
 
+    // The connection drops before the daemon confirms. The tablet is then
+    // watching, and the card must still say the answer may have landed.
+    it("says an Allow lost to a dropped connection may or may not have landed", async () => {
+      const { socket } = await openApp(workspace())
+      await fireEvent.press(screen.getByRole("button", { name: "Allow once" }))
+      expect(socket.requests("approval.resolve")).toHaveLength(1)
+      await act(async () => { socket.close() })
+      await settle()
+
+      expect(screen.getByRole("alert")).toHaveTextContent("The daemon went away before it confirmed. The gate may or may not have been answered; when the connection returns, this screen shows which.")
+    })
+
     // A refusal belongs to the gate it answered. Another session's gate is a
     // different question and opens without it.
     it("does not show one gate's refusal on another session's gate", async () => {

@@ -143,6 +143,16 @@ describe("TabletShell", () => {
     expect(screen.getByRole("button", { name: "Allow once" })).toBeOnTheScreen()
   })
 
+  // A connection that drops while an answer is out leaves the tablet
+  // watching, and the answer may or may not have landed. The card still says
+  // so: it is the one fact about the gate the person cannot see elsewhere.
+  it("keeps an unconfirmed answer's sentence on a card that is now only watched", async () => {
+    await draw("normal", "watching", undefined, { decideProblem: "The daemon went away before it confirmed." })
+
+    expect(screen.getByRole("alert")).toHaveTextContent("The daemon went away before it confirmed.")
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()
+  })
+
   // While an answer is out, a second tap must not send a second one.
   it("takes no second answer while one is out", async () => {
     const { props } = await draw("normal", "full", undefined, { deciding: true })

@@ -182,15 +182,18 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = 
           </View>
         ))}
       </View>
+      {/* Drawn whatever the access: a connection that drops while an answer
+          is out leaves the tablet watching, and whether that answer landed is
+          still this gate's fact to tell. */}
+      {problem ? (
+        <Text accessibilityRole="alert" className="px-4 pt-3.5 text-[12px] leading-[18px] text-warn-fg">{problem}</Text>
+      ) : null}
       {watching ? (
         <Text variant="note" className="px-4 py-3.5 text-warn-dim">
           Watching only. A device paired with full access answers this gate.
         </Text>
       ) : (
       <View className="gap-2 px-4 py-3.5">
-        {problem ? (
-          <Text accessibilityRole="alert" className="text-[12px] leading-[18px] text-warn-fg">{problem}</Text>
-        ) : null}
         <Button
           title="Allow once"
           variant="affirm"
