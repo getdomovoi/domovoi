@@ -220,7 +220,10 @@ export function PreviewRenderedList({
     ? -1
     : renders.findIndex((render) => render.artifactIds.includes(selectedArtifactId))
   const start = Math.max(0, renders.length - shown)
-  const earlier = Math.min(previewRenderListPage, start)
+  // What the next page adds: the renders before `start`, less the one on
+  // screen, which is drawn already.
+  const revealFrom = Math.max(0, start - previewRenderListPage)
+  const earlier = start - revealFrom - (selectedIndex >= revealFrom && selectedIndex < start ? 1 : 0)
   // The render on screen, when it is older than the pages drawn, is drawn on
   // its own above them rather than drawing every render in between.
   const drawn = selectedIndex >= 0 && selectedIndex < start

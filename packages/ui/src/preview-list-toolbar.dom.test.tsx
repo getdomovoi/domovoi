@@ -374,6 +374,22 @@ it("draws an older render on screen beside the newest page, not every render bet
   expect(within(list).getByRole("button", { name: "Show 50 earlier renders" })).toBeTruthy()
 })
 
+it("offers no earlier renders when the only one is the render already drawn on screen", () => {
+  const many: Artifact[] = Array.from({ length: 51 }, (_, index) => ({
+    id: `render-${index}`,
+    sessionId,
+    title: `Render ${index}`,
+    type: "preview",
+    revision: index === 0 ? 5 : 1,
+    mimeType: "text/html",
+    path: `previews/render-${index}.html`,
+  }))
+  renderDock(grantingAuthorize(), undefined, { ...snapshot, artifacts: many })
+  const list = screen.getByRole("navigation", { name: "Rendered this session" })
+  expect(within(list).getAllByRole("button").filter((button) => button.textContent?.startsWith("Render "))).toHaveLength(51)
+  expect(within(list).queryByRole("button", { name: /earlier renders?$/u })).toBeNull()
+})
+
 it("names the build basis from another render instead of a variant of the one on screen", async () => {
   const user = userEvent.setup()
   const hero: Artifact[] = ["a", "b"].map((id, index) => ({
