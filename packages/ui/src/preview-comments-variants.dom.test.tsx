@@ -214,6 +214,21 @@ it("keeps a chosen lone render's state and Unpick", async () => {
   expect(onBuildBasisChange).toHaveBeenLastCalledWith(undefined)
 })
 
+// Bot review B1.1 on #824: the session's only preview can be the basis too.
+it("offers Build on this for the session's only preview", async () => {
+  const user = userEvent.setup()
+  const lone: Artifact = { id: "runbook", sessionId, title: "Runbook", type: "preview", revision: 1, mimeType: "text/html", path: "previews/runbook.html" }
+  const { onBuildBasisChange } = renderDock({ ...snapshot, artifacts: [lone] })
+
+  expect(screen.getByText("none chosen")).toBeTruthy()
+  // The notes compare a choice among several; one preview has no others.
+  expect(screen.queryByText("Nothing chosen, so the agent builds on none of them.")).toBeNull()
+  await user.click(screen.getByRole("button", { name: "Build on this" }))
+  expect(onBuildBasisChange).toHaveBeenLastCalledWith("runbook")
+  expect(screen.getByText("the agent builds on this one")).toBeTruthy()
+  expect(screen.queryByText("The others stay renderable for comparison.")).toBeNull()
+})
+
 it("drafts a picked element inline under the page and posts it", async () => {
   const user = userEvent.setup()
   const { authorize, onCreateAnnotation } = renderDock()

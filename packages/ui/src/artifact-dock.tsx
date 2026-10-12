@@ -705,13 +705,14 @@ export function ArtifactDock({
     setAnnotationError("")
   }
   // The foot under the page, in the dock and in fullscreen alike (D22). It
-  // shows whenever there is a choice of basis: other variants in the group
-  // (on any page of it), or other renders in the session (a lone render can
-  // be the basis too). A chosen basis rides every send, so its foot stays
-  // whatever else there is. The state line says what the next send carries:
-  // this variant, another, or none.
+  // shows under any preview: the session's only render can be the basis too,
+  // and a chosen basis rides every send, so its state and Unpick stay on
+  // screen. The state line says what the next send carries: this variant,
+  // another, or none. The notes under the page compare the choice with the
+  // others, so they show only when there are others (another variant in the
+  // group, on any page of it, or another render).
   const basisChoiceShown = preview !== undefined
-    && (previewWindow.total > 1 || renderedPreviews.length > 1 || buildBasis !== undefined)
+  const basisAlternatives = previewWindow.total > 1 || renderedPreviews.length > 1
   const viewingBasis = preview !== undefined && preview.id === buildBasis?.id
   const variantState = !buildBasis
     ? PreviewVariantCopy.noneChosen(previewWindow.total)
@@ -894,7 +895,7 @@ export function ArtifactDock({
               <EmptyHeader><EmptyMedia variant="icon"><CodeXmlIcon /></EmptyMedia><EmptyTitle>No preview yet</EmptyTitle><EmptyDescription>HTML artifacts created by the agent appear here.</EmptyDescription></EmptyHeader>
             </Empty>
           )}
-          {basisChoiceShown && !previewRefusal ? (
+          {basisChoiceShown && basisAlternatives && !previewRefusal ? (
             <p className="mx-auto mt-3 mb-0 max-w-[640px] text-[11px] leading-normal text-muted-foreground">
               {buildBasis ? PreviewVariantCopy.chosenNote : PreviewVariantCopy.noneNote}
             </p>
