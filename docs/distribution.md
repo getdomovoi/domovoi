@@ -272,8 +272,14 @@ it for the caller.
 
 - one npm tarball per publishable package, packed exactly as `pnpm publish` would;
 - a CycloneDX 1.6 SBOM beside each tarball, recording locked production components, their
-  versions, package URLs and archive SHA-512 hashes, plus the root tarball's own SHA-256; and
-- `SHA256SUMS` over both, in the format `sha256sum -c` and `shasum -a 256 -c` verify.
+  versions, package URLs and archive SHA-512 hashes, plus the root tarball's own SHA-256;
+- `domovoi-web-<version>.tar.gz`, the web app the daemon serves, built from `apps/web` at the
+  release version and unpacked flat into the daemon's web folder (the daemon README, Web app). It
+  holds the bundle, its `domovoi-web.json`, and `THIRD_PARTY_NOTICES.txt` for the packages and
+  fonts the bundle contains, which the manifest does not list and the daemon never serves. It is
+  not an npm package and has no SBOM. Entries are sorted, 0644 files and 0755 folders with one
+  fixed time, so the same build gives the same bytes; and
+- `SHA256SUMS` over all of them, in the format `sha256sum -c` and `shasum -a 256 -c` verify.
 
 Inventory comes from `runtime/lock.json` extracted from the packed daemon, not the build host's
 installed dependency list. It includes every optional platform package, multiple versions when

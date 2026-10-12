@@ -115,6 +115,36 @@ the name out of the certificate it is serving and puts that in the pairing code,
 code carries is one the phone can verify (`apps/daemon/src/pairing-address.ts`). A certificate that
 names no host, or more than one, is refused rather than guessed at.
 
+The same listener serves the web app, so a phone's browser can open
+`https://<the certificate's name>:47831/` as well, once a web app bundle is installed for the
+account that runs the daemon. Build the bundle in the checkout and unpack it into the default
+folder; the checksum check, the Windows folder and the other details are in
+[clean-machine setup](../../docs/clean-machine-setup.md#serve-the-web-app):
+
+```bash
+pnpm release:artifacts             # writes release/domovoi-web-<version>.tar.gz
+WEB="$HOME/Library/Application Support/Domovoi/web"   # Linux: $HOME/.local/share/domovoi/web
+(umask 022 && mkdir -p "$WEB" && tar -xzf release/domovoi-web-<version>.tar.gz -C "$WEB")
+```
+
+On Linux the folder is `$XDG_DATA_HOME/domovoi/web` instead when `XDG_DATA_HOME` is set to an
+absolute path. Restart the daemon: it reads the bundle once at startup and prints
+`domovoid web app served from <folder>`, or `domovoid web app not served: <reason> at <folder>`.
+`DOMOVOI_WEB_DIR`, saved by a service install as `webDirectory` in `service.json`, names another
+absolute folder instead. On Linux and macOS the daemon refuses the bundle when its folder,
+anything in it, or any folder above it is owned by an account other than the daemon's or root, or
+is writable by group or others (a folder above it may be when it has the sticky bit), so a
+group-writable location such as a Homebrew prefix is refused by design.
+
+Use a bundle built from a checkout that includes pull request #731, as every build that writes
+`domovoi-web.json` does. Off loopback that app offers pairing by code only and refuses the
+daemon's root credential; an older app would offer to paste it on the phone. Over the tailnet the
+page and its socket share the certificate's name, so a listener without that certificate never
+serves the page. On plaintext loopback that does not hold: another local account that binds the
+port while the daemon is down can serve a page of its own and ask for a pairing code (audit
+finding A14, a stated limit). A web code issued with full access makes a full client on the
+phone: it can answer gates and grant repository trust.
+
 ### Pairing
 
 Every daemon requires a credential. The phone sends the token in its greeting, and the daemon
