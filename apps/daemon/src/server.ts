@@ -287,7 +287,7 @@ import {
 } from "./tailnet-listener.js"
 import { listenerAuthorities, type ListenerAuthorities } from "./listener-authorities.js"
 import type { WebAppBundleLoad } from "./web-app-bundle.js"
-import { createWebAppHttpHandler } from "./web-app-http.js"
+import { canonicalAuthority, createWebAppHttpHandler } from "./web-app-http.js"
 import { wslSharePath } from "./wsl-open-target.js"
 import { PairingCodeError, PairingCodeService, PairingDeviceLimitError, pairingCodeTtlMs } from "./pairing-codes.js"
 import { PairingIssuerSlot } from "./pairing-issuer.js"
@@ -311,7 +311,7 @@ import { fileEvidenceAssociations } from "./file-evidence.js"
 import { ArtifactContentLimitError, readBoundedArtifactContent } from "./artifact-content.js"
 import { TerminalOutputBackpressure, TerminalOutputBatcher } from "./terminal-output.js"
 import { TerminalReplayBuffer, type TerminalReplayRecord } from "./terminal-replay.js"
-import { certificateHostNames, pairingAddressFor } from "./pairing-address.js"
+import { pairingAddressFor } from "./pairing-address.js"
 import { searchSessions } from "./session-search.js"
 import {
   type RpcOutboundBackpressureOptions,
@@ -619,9 +619,13 @@ function namesThisDaemon(origin: string, request: IncomingMessage): boolean {
 // S3.2 and Q46 A: what one listener serves and admits. browserOrigins are its
 // own pages, admitted to its /rpc beside the configured allow-list and named
 // in the frame-ancestors of a preview it serves; no listener admits another's.
-// web serves the app, or the state page, to its Host authorities.
+// hostAuthorities are the canonical Host values it answers to under scheme:
+// web serves the app, or the state page, to them, and artifacts answer to
+// them too (plan section 2.4).
 type ListenerServing = {
   browserOrigins: ReadonlySet<string>
+  hostAuthorities: ReadonlySet<string>
+  scheme: "http" | "https"
   web: RequestListener | undefined
 }
 
@@ -3117,10 +3121,7 @@ export class DomovoiDaemon {
         requestHandler,
       )
       : (requestHandler: Parameters<typeof createServer>[1]) => createServer(requestHandler)
-    this.#http = listen(this.#requestHandler(
-      () => this.address && { hosts: [this.address.host], port: this.address.port },
-      () => this.#mainServing,
-    ))
+    this.#http = listen(this.#requestHandler(() => this.#mainServing))
     this.#rpcServer(this.#http, () => true, () => this.#mainServing)
 
     await new Promise<void>((resolve, reject) => {
@@ -3164,17 +3165,16 @@ export class DomovoiDaemon {
     const authorities: ListenerAuthorities = listenerAuthorities({ ...facts, webAppLoaded: this.#webApp?.state === "loaded" })
     return {
       browserOrigins: authorities.browserOrigins,
+      hostAuthorities: authorities.hostAuthorities,
+      scheme: facts.scheme,
       web: this.#webApp && createWebAppHttpHandler({ bundle: this.#webApp, authorities: authorities.hostAuthorities, scheme: facts.scheme }),
     }
   }
 
-  // Shared by the loopback and tailnet listeners. listener: the hosts an
-  // artifact request's Host may name on the listener it arrived on, and its
-  // port. serving: what that listener serves and admits, once it listens.
-  #requestHandler(
-    listener: () => { hosts: readonly string[]; port: number } | undefined,
-    serving: () => ListenerServing | undefined,
-  ): Parameters<typeof createServer>[1] {
+  // Shared by the loopback and tailnet listeners. serving: what the listener
+  // a request arrived on serves and admits, once it listens; before that,
+  // artifacts answer to no Host.
+  #requestHandler(serving: () => ListenerServing | undefined): Parameters<typeof createServer>[1] {
     return (request, response) => {
       if (request.url === "/healthz") {
         response.writeHead(200, { "content-type": "application/json" })
@@ -3183,7 +3183,7 @@ export class DomovoiDaemon {
       }
 
       if (request.method === "GET" && request.url?.startsWith("/artifacts/")) {
-        if (!this.#acceptsHost(request.headers.host, listener())) {
+        if (!this.#acceptsHost(request.headers.host, serving())) {
           response.writeHead(404, { "content-type": "application/json" })
           response.end(JSON.stringify({ error: "not_found" }))
           return
@@ -3329,20 +3329,19 @@ export class DomovoiDaemon {
     if ("refused" in certificate) return refuse(certificate.refused!, false, "notAfter" in certificate ? certificate.notAfter : undefined)
     const { notAfter } = certificate
     let server: HttpServer
-    // Review of 049b1383 (P2-4): a phone dials the certificate's name, not
-    // the address, and builds preview URLs from it, so an artifact request may
-    // name the address, a name on the certificate or the advertised tailnet
-    // name. TLS has already held the connection to this certificate.
-    const hosts = [address, ...certificateHostNames(options.tls.cert.toString("utf8")), ...(this.#tailnetHost ? [this.#tailnetHost] : [])]
     // Q46 A: this listener's own origins, https under its address and the
     // certificate's names. They live with this server: once it stops, no
-    // listener admits them.
+    // listener admits them. Review of 049b1383 (P2-4): a phone dials the
+    // certificate's name, not the address, and builds preview URLs from it, so
+    // its Host authorities are the address, the certificate's names and the
+    // advertised tailnet name. TLS has already held the connection to this
+    // certificate.
     const serving = this.#listenerServing({
       scheme: "https", host: address, port, certificate: options.tls.cert.toString("utf8"),
       hostOnlyNames: this.#tailnetHost ? [this.#tailnetHost] : [],
     })
     try {
-      server = createSecureServer({ cert: options.tls.cert, key: options.tls.key }, this.#requestHandler(() => ({ hosts, port }), () => serving))
+      server = createSecureServer({ cert: options.tls.cert, key: options.tls.key }, this.#requestHandler(() => serving))
     } catch {
       // Node names only "key values mismatch" or a parse failure here.
       return refuse("The tailnet certificate and key do not belong together, so the daemon answers on this computer only.", false, notAfter)
@@ -5731,9 +5730,13 @@ export class DomovoiDaemon {
     }
   }
 
-  #acceptsHost(host: string | undefined, listener: { hosts: readonly string[]; port: number } | undefined): boolean {
-    if (!host || !listener) return false
-    return listener.hosts.some((name) => hostAuthorityMatches(host, name, listener.port))
+  // Plan section 2.4: an artifact request answers to the Host authorities of
+  // the listener it arrived on, compared in the canonical form the web app
+  // handler uses, so a certificate name is served wherever the app is.
+  #acceptsHost(host: string | undefined, serving: ListenerServing | undefined): boolean {
+    if (!serving) return false
+    const authority = canonicalAuthority(host, serving.scheme)
+    return authority !== undefined && serving.hostAuthorities.has(authority)
   }
 
   #enqueueMutation(task: () => Promise<void>): Promise<void> {
@@ -13946,25 +13949,6 @@ export function artifactAccessMatches(
     signArtifactAccess(secret, scope),
     suppliedSignature,
   )
-}
-
-export function hostAuthorityMatches(
-  authority: string,
-  listenerHost: string,
-  listenerPort: number,
-): boolean {
-  if (/[@/?#\\\\]/.test(authority)) return false
-  let parsed: URL
-  try {
-    parsed = new URL(`http://${authority}`)
-  } catch {
-    return false
-  }
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, "")
-  const authorityPort = parsed.port === "" ? 80 : Number(parsed.port)
-  if (authorityPort !== listenerPort) return false
-  if (hostname === listenerHost) return true
-  return hostname === "localhost" && isLoopbackHost(listenerHost)
 }
 
 function resolveInside(root: string, candidate: string): string | undefined {

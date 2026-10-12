@@ -311,6 +311,72 @@ describe("the web app on a TLS listener", () => {
   })
 })
 
+// S3.2 slice 5 (plan section 2.4): the legacy tailnet setup binds the main
+// listener to an address with TLS, while every client sends the certificate's
+// name as Host. Artifacts answer to the listener's Host authorities, the same
+// set the web app answers to, with or without a bundle.
+describe("artifacts on a TLS listener", () => {
+  for (const webApp of [loaded, undefined]) {
+    it(`serves artifacts under the certificate's name and refuses other names (${webApp ? "bundle" : "no bundle"})`, async () => {
+      const served = daemon({ ...(webApp ? { webApp } : {}), tls: { cert: certificate, key }, advertiseHost: "advertised.example" })
+      const { port } = await served.start()
+      const local = { host: "127.0.0.1", port, tls: true }
+      const call = await rpc(`wss://127.0.0.1:${port}/rpc`, served.authToken, true)
+      const path = await artifactPath(call, "preview")
+
+      for (const host of [`${name}:${port}`, `STUDIO.Example.ts.net:${port}`, `127.0.0.1:${port}`, `localhost:${port}`, `advertised.example:${port}`]) {
+        expect(await fetchFrom(local, path, { host }), host).toMatchObject({ status: 200, body: "<h1>Preview</h1>" })
+      }
+      for (const host of [
+        `127.0.0.2:${port}`, `other.example.ts.net:${port}`, `${name}:${port + 1}`, name,
+        `user@${name}:${port}`, `${name}:${port}/path`, `${name}:${port}?query`, `${name}:${port}#fragment`,
+      ]) {
+        expect(await fetchFrom(local, path, { host }), host).toMatchObject({ status: 404, body: '{"error":"not_found"}' })
+      }
+    })
+  }
+
+  // docs/clean-machine-setup.md step 4: a wildcard bind with TLS and a tailnet
+  // name. The wildcard address is no name a client dials.
+  it("serves artifacts on a wildcard bind under the certificate's and the tailnet's names only", async () => {
+    const served = daemon({ host: "0.0.0.0", allowRemoteTransport: true, tls: { cert: certificate, key }, tailnetHost: "workshop.example.ts.net" })
+    const { port } = await served.start()
+    const local = { host: "127.0.0.1", port, tls: true }
+    const path = await artifactPath(await rpc(`wss://127.0.0.1:${port}/rpc`, served.authToken, true), "preview")
+    for (const host of [`${name}:${port}`, `workshop.example.ts.net:${port}`]) {
+      expect(await fetchFrom(local, path, { host }), host).toMatchObject({ status: 200, body: "<h1>Preview</h1>" })
+    }
+    for (const host of [`0.0.0.0:${port}`, `127.0.0.1:${port}`, `localhost:${port}`]) {
+      expect(await fetchFrom(local, path, { host }), host).toMatchObject({ status: 404 })
+    }
+  })
+
+  // Plan section 3.4 and 3.8 under the tailnet name: the shared origin keeps
+  // every artifact document sandboxed, without allow-same-origin.
+  it("sandboxes every artifact document it returns under the certificate's name", async () => {
+    const served = daemon({ webApp: loaded, tls: { cert: certificate, key } })
+    const { port } = await served.start()
+    const call = await rpc(`wss://127.0.0.1:${port}/rpc`, served.authToken, true)
+    const previews = [
+      await artifactPath(call, "preview"),
+      await artifactPath(call, "preview", { channel: "a".repeat(32), parentOrigin: `https://${name}:${port}` }),
+    ]
+    const paths = [...previews, await artifactPath(call, "print"), await artifactPath(call, "download")]
+    for (const path of paths) {
+      const response = await fetchFrom({ host: "127.0.0.1", port, tls: true }, path, { host: `${name}:${port}` })
+      expect(response.status).toBe(200)
+      expect(response.headers["content-type"]).toBe("text/html; charset=utf-8")
+      expect(response.headers["x-content-type-options"]).toBe("nosniff")
+      const csp = String(response.headers["content-security-policy"])
+      expect(csp).toMatch(/(?:^|; )sandbox(?: allow-scripts)?(?:;|$)/)
+      expect(csp).not.toContain("allow-same-origin")
+      // A preview may be framed by the page served under that name.
+      if (previews.includes(path)) expect(frameAncestors(csp)).toContain(`https://${name}:${port}`)
+      expect(response.headers["content-security-policy-report-only"]).toBeUndefined()
+    }
+  })
+})
+
 describe("the web app on the tailnet listener", () => {
   function tailnetDaemon(expiryRecheckMs?: number) {
     return daemon({
