@@ -100,7 +100,9 @@ export function AppBar({
   const leadingInset = ownsDecoration ? bridge?.titlebarLeadingInset ?? 0 : 0
   const activeSession = snapshot?.sessions.find((session) => session.id === snapshot.activeSessionId)
   const titleText = title ?? activeSession?.title ?? snapshot?.project?.name ?? "Domovoi"
-  const transport = machineTransport ?? (connected ? "local" : "unreachable")
+  // The shell passes the route it dialed (route-word.ts). Without one the bar
+  // names no route rather than guessing one.
+  const transport = machineTransport ?? (connected ? undefined : "unreachable")
   const watching = clientAccess === "watching"
   const appearanceLabel = theme === "dark" ? "Light appearance" : "Dark appearance"
 
@@ -159,7 +161,7 @@ export function AppBar({
       >
         <StatusDot meaning={connected ? "online" : "offline"} label={`${connected ? "Connected to" : "Disconnected from"} ${snapshot?.machine.name ?? "daemon"}.`} size="inline" labelHidden />
         <span className="font-machine text-[10.5px]">{snapshot?.machine.name ?? "daemon"}</span>
-        <span className="text-[10.5px] text-faint">{transport}</span>
+        {transport ? <span className="text-[10.5px] text-faint">{transport}</span> : null}
       </Button>
       <StopMenu connected={connected} pending={emergencyStopPending} disabled={watching} onPauseAll={onPauseAll} onEmergencyStop={onEmergencyStop} />
       <Tooltip>
@@ -170,9 +172,11 @@ export function AppBar({
         </TooltipTrigger>
         <TooltipContent side="bottom" sideOffset={7} showArrow={false} className={titlebarTipClassName}>Settings</TooltipContent>
       </Tooltip>
+      {/* The theme is this client's preference and never reaches the daemon,
+          so watching does not lock it (Q362 A). */}
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label={theme === "dark" ? "Use light theme" : "Use dark theme"} disabled={watching || !onToggleTheme} onClick={onToggleTheme}>
+          <Button variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label={theme === "dark" ? "Use light theme" : "Use dark theme"} disabled={!onToggleTheme} onClick={onToggleTheme}>
             {theme === "dark" ? <MoonIcon className="size-4" /> : <SunIcon className="size-4" />}
           </Button>
         </TooltipTrigger>
