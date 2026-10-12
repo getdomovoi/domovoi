@@ -182,16 +182,19 @@ export class DaemonUpdates {
         const snapshot = updateSnapshotMetadataSchema.parse(values["snapshot.json"])
         const targets = updateTargetsMetadataSchema.parse(values["targets.json"])
         const digest = (name: string) => createHash("sha256").update(values.raw[name]!).digest("hex")
+        // A verified root rotation may have reset the online-role version
+        // floors. Compare within the trust epoch persisted by this refresh.
+        const refreshedTrusted = await readTrustedUpdateMetadata(options.homeDirectory)
         next = {
-          ...(await readTrustedUpdateMetadata(options.homeDirectory)),
+          ...refreshedTrusted,
           format: 1, rootVersion: root.signed.version, rootDigest: digest("root.json"),
           timestampVersion: timestamp.signed.version, timestampDigest: digest("timestamp.json"),
           snapshotVersion: snapshot.signed.version, snapshotDigest: digest("snapshot.json"),
           targetsVersion: targets.signed.version, targetsDigest: digest("targets.json"),
         }
         for (const role of ["root", "timestamp", "snapshot", "targets"] as const) {
-          if (next[`${role}Version`] < trusted[`${role}Version`]
-            || (next[`${role}Version`] === trusted[`${role}Version`] && next[`${role}Digest`] !== trusted[`${role}Digest`])) {
+          if (next[`${role}Version`] < refreshedTrusted[`${role}Version`]
+            || (next[`${role}Version`] === refreshedTrusted[`${role}Version`] && next[`${role}Digest`] !== refreshedTrusted[`${role}Digest`])) {
             throw new UpdateRefusal({ reason: "replay", message: "Update metadata conflicts with previously trusted metadata." })
           }
         }

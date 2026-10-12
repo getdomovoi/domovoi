@@ -18,7 +18,8 @@ must supply these fields, using `storedUpdatePolicySchema`:
 
 - `format`: `1`.
 - `channel`: `stable` or `beta`.
-- `metadataBaseUrl`: HTTPS directory containing the four signed metadata files.
+- `metadataBaseUrl`: HTTPS TUF repository containing sequential numbered roots,
+  timestamp metadata, and snapshot/targets metadata with consistent-snapshot names.
 - `artifactBaseUrl`: HTTPS release base consumed by the existing bootstrap installer.
 - `trustedRoot`: the independently provisioned root metadata envelope.
 - `automaticChecks`: reserved installer authorization for a future scheduler.
@@ -31,12 +32,25 @@ the scheduler slice implements and tests that boundary.
 
 ## State and persistence
 
-A check reads persisted trusted versions and digests, fetches bounded metadata,
-runs `verifyUpdateChain`, refuses replay or same-version changed bytes, selects the
-channel target, and stages it through `stageVerifiedUpdate`. Metadata persistence
-runs only after successful staging, or after a verified no-update result. Pending
-state is published only after that persistence succeeds. Neither failed staging
-nor failed persistence authorizes activation of the checked target. A failed
+A check passes the persisted trusted metadata bytes to the TUF client's `Updater`
+through `fetchUpdateMetadata`. The client verifies sequential root rotation and
+the bounded timestamp, snapshot, and targets chain. Accepted metadata bytes,
+versions, and digests are persisted through an atomic, flushed write under the
+profile lease before the next fetch and after refresh succeeds or fails. Verified
+trust therefore survives a later metadata or staging failure.
+
+An accepted root that changes timestamp or snapshot authority clears the retired
+online metadata and its version/digest floors for fast-forward recovery. Dispatch
+compares against the refreshed durable trust epoch, so the first successful
+recovery check can stage a target even when its metadata versions are lower.
+Unchanged authority retains rollback and same-version changed-byte refusals.
+The root-rotation limit's retry boundary is described in the
+[verification design](daemon-auto-update-design.md).
+
+After verification, the daemon selects the channel target and stages it through
+`stageVerifiedUpdate`. Pending state is published only after staging and final
+metadata persistence succeed. Neither failed staging nor failed persistence
+authorizes activation of the checked target. A failed
 refresh retains the previous verified pending target and reports its version
 alongside the failure in `deferred` state. While checking, the schema omits pending
 fields but the previous verified target remains held internally. Re-staging that

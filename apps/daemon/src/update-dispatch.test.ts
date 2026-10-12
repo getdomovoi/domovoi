@@ -24,9 +24,9 @@ afterEach(async () => {
   await removeScratchDirectories(homes)
 })
 
-function signedRepository(options: { version?: number; targetVersion?: string; expires?: string; targetName?: string; minimumUpdaterVersion?: string } = {}) {
+function signedRepository(options: { version?: number; keyid?: string; targetVersion?: string; expires?: string; targetName?: string; minimumUpdaterVersion?: string } = {}) {
   const pair = generateKeyPairSync("ed25519")
-  const keyid = "a".repeat(64)
+  const keyid = options.keyid ?? "a".repeat(64)
   const envelope = (signed: Record<string, unknown>) => ({ signed, signatures: [{ keyid, sig: sign(null, Buffer.from(canonicalUpdateJson(signed)), pair.privateKey).toString("hex") }] })
   const common = { spec_version: "1.0.31", version: options.version ?? 1, expires: options.expires ?? "2099-01-01T00:00:00.000Z" }
   const root = envelope({ ...common, _type: "root", consistent_snapshot: true,
@@ -54,7 +54,7 @@ function signedRepository(options: { version?: number; targetVersion?: string; e
     if (filename.endsWith("root.json")) return roots[filename] ? new Response(JSON.stringify(roots[filename])) : new Response(null, { status: 404 })
     return new Response(JSON.stringify(documents[filename.replace(/^\d+\./, "")]))
   })
-  return { root, documents, roots, fetcher, rotateRoot: (version: number) => envelope({ ...root.signed, version }) }
+  return { root, documents, roots, fetcher, signMetadata: envelope, rotateRoot: (version: number) => envelope({ ...root.signed, version }) }
 }
 
 async function setup(repository = signedRepository(), automaticChecks = false) {
@@ -219,6 +219,39 @@ describe("daemon update operation", () => {
     expect(await new DaemonUpdates(options).check()).toMatchObject({ refusal: { reason: "replay" } })
     expect(install).not.toHaveBeenCalled()
     expect(await readTrustedUpdateMetadata(homeDirectory)).toEqual(trusted)
+  })
+
+  it("stages on the first successful check after an online-key rotation resets metadata versions", async () => {
+    const { updates, options, repository, policy, install, homeDirectory } = await setup(signedRepository({ version: 2 }))
+    expect(await updates.check()).toMatchObject({ state: "pending", pendingVersion: "1.2.3" })
+    const replacement = signedRepository({ keyid: "b".repeat(64), targetVersion: "1.2.4" })
+    const replacementRoot = storedUpdatePolicySchema.shape.trustedRoot.parse(replacement.root)
+    repository.roots["3.root.json"] = repository.signMetadata({ ...policy.trustedRoot.signed, version: 3,
+      keys: { ...policy.trustedRoot.signed.keys, ...replacementRoot.signed.keys },
+      roles: { ...policy.trustedRoot.signed.roles,
+        timestamp: replacementRoot.signed.roles.timestamp,
+        snapshot: replacementRoot.signed.roles.snapshot,
+        targets: replacementRoot.signed.roles.targets,
+      },
+    })
+    for (const role of ["timestamp", "snapshot", "targets"]) repository.documents[`${role}.json`] = replacement.documents[`${role}.json`]
+    install.mockClear()
+    const result = await new DaemonUpdates(options).check()
+    expect(result.refusal).toBeUndefined()
+    expect(result).toMatchObject({ state: "pending", pendingVersion: "1.2.4" })
+    expect(install).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ version: "1.2.4" }))
+    expect(await readTrustedUpdateMetadata(homeDirectory)).toMatchObject({ rootVersion: 3, timestampVersion: 1, snapshotVersion: 1, targetsVersion: 1 })
+  })
+
+  it("refuses lower metadata versions without an online authority change before staging", async () => {
+    const { updates, options, repository, install } = await setup(signedRepository({ version: 2 }))
+    await updates.check()
+    repository.roots["3.root.json"] = repository.rotateRoot(3)
+    const timestamp = repository.documents["timestamp.json"] as { signed: Record<string, unknown> }
+    repository.documents["timestamp.json"] = repository.signMetadata({ ...timestamp.signed, version: 1 })
+    install.mockClear()
+    expect(await new DaemonUpdates(options).check()).toMatchObject({ state: "failed", refusal: { reason: "replay" } })
+    expect(install).not.toHaveBeenCalled()
   })
 
   it("persists a verified no-update result without installing", async () => {
