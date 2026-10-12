@@ -221,7 +221,8 @@ it("takes a labelled checkpoint from the head of the tab", async () => {
   render(panel(vi.fn(async () => page()), { onTakeCheckpoint }))
   await settle()
   await user.click(screen.getByRole("button", { name: "Take a checkpoint" }))
-  expect(screen.getByText("Optional label. It commits the worktree as it is now, on the session branch, and reverts like the others.")).toBeTruthy()
+  expect(screen.getByText(/During a turn, this saves a snapshot without moving the branch/)).toBeTruthy()
+  expect(screen.getByText(/A change that reverts between passes is missed/)).toBeTruthy()
   await user.type(screen.getByRole("textbox", { name: "Checkpoint label" }), "Before I shorten the claim expiry")
   await user.click(screen.getByRole("button", { name: "Take checkpoint" }))
   expect(onTakeCheckpoint).toHaveBeenCalledWith("Before I shorten the claim expiry")
@@ -241,12 +242,12 @@ it("takes an unlabelled checkpoint and keeps the form open when the daemon refus
   expect(screen.getByRole("textbox", { name: "Checkpoint label" })).toBeTruthy()
 })
 
-it("says why a checkpoint cannot be taken while a turn runs", async () => {
-  render(panel(vi.fn(async () => page()), { onTakeCheckpoint: vi.fn(), takeBlockedReason: "Stop the active turn before creating a checkpoint" }))
+it("preserves a supplied non-turn refusal", async () => {
+  render(panel(vi.fn(async () => page()), { onTakeCheckpoint: vi.fn(), takeBlockedReason: "Session has no worktree" }))
   await settle()
   const take = screen.getByRole("button", { name: "Take a checkpoint" })
   expect(take.hasAttribute("disabled")).toBe(true)
-  expect(screen.getByText("Stop the active turn before creating a checkpoint")).toBeTruthy()
+  expect(screen.getByText("Session has no worktree")).toBeTruthy()
 })
 
 it("offers no checkpoint to a client that cannot take one", async () => {
@@ -269,4 +270,25 @@ it("returns focus to Take a checkpoint when the form closes", async () => {
   await settle()
   expect(screen.queryByRole("textbox", { name: "Checkpoint label" })).toBeNull()
   expect(document.activeElement).toBe(take)
+})
+
+
+it.each(["matched", "unstable"] as const)("shows mid-turn capture facts and limits for %s", async (stability) => {
+  const entry = page().items[1]!
+  const result = page({ items: [{ ...entry, category: "checkpoints", label: "During the rename", midTurn: {
+    providerTurnId: "provider-turn-42", stability, changedPaths: stability === "unstable" ? ["src/a.ts", "src/b.ts"] : [],
+  } }] })
+  render(panel(vi.fn(async () => result), { onTakeCheckpoint: vi.fn(), restoreBlocked: true }))
+  await settle()
+  const row = within(screen.getByTestId("checkpoint-row"))
+  expect(row.getByText(/Taken mid-turn while the agent was running/).textContent).toContain("provider-turn-42")
+  expect(row.getByText(/A change that reverts between passes is missed/)).toBeTruthy()
+  if (stability === "unstable") {
+    expect(row.getByText("Files changed while it was taken:")).toBeTruthy()
+    expect(row.getByText("src/a.ts")).toBeTruthy()
+    expect(row.getByText("src/b.ts")).toBeTruthy()
+  } else {
+    expect(row.getByText("Two staging passes matched.")).toBeTruthy()
+  }
+  expect(screen.getByRole("button", { name: "Take a checkpoint" }).hasAttribute("disabled")).toBe(false)
 })

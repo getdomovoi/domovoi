@@ -94,7 +94,6 @@ import { usePreviewGrant } from "./preview-grant"
 import { previewRenderName, renderedPreviewsForActiveSession } from "./preview-renders"
 import { PlanSheet, planSheetArtifacts } from "./working-plan"
 import { RulesPanel } from "./rules-panel.js"
-import { checkpointBlockedReason } from "./checkpoint-actions.js"
 import { CheckpointsPanel, latestCheckpointRevision } from "./checkpoints-panel.js"
 import type { TerminalControls } from "./terminal-pane"
 import { SessionEvidencePanel } from "./session-evidence"
@@ -985,7 +984,6 @@ export function ArtifactDock({
             onTakeCheckpoint={onTakeCheckpoint && snapshot.activeSessionId && !readOnly
               ? (label) => onTakeCheckpoint(snapshot.activeSessionId!, label)
               : undefined}
-            takeBlockedReason={checkpointBlockedReason(activeSession(snapshot)?.activeTurnId)}
             restoreBlocked={
               readOnly
               || restoreBusy

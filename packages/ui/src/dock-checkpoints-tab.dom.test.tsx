@@ -49,10 +49,13 @@ describe("the dock's Checkpoints tab", () => {
     expect(screen.getByText(checkpointsIntro)).toBeTruthy()
   })
 
-  it("takes a labelled checkpoint for the active session through checkpoint.create", async () => {
+  it("takes a labelled checkpoint while the active turn keeps running", async () => {
     render(<WorkspaceShell />)
     const socket = harness.socket(0)
     const snapshot = workspaceSnapshot()
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    active.activeTurnId = "provider-running"
+    active.state = "active"
     await act(async () => { completeHandshake(socket, snapshot) })
     await settle()
     await openSheet()
