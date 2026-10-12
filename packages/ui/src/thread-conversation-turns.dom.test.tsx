@@ -59,6 +59,26 @@ describe("assistant prose", () => {
     expect(prose("The handler processes the event first.").hasAttribute("data-working")).toBe(false)
   })
 
+  // jsdom draws no pseudo-elements, so the caret's measures are read from
+  // the classes that make it: 1.5px by 15px of primary, 3px after the last
+  // block, blinking only where motion is allowed.
+  it("draws the caret as the design measures it, on the working prose only", () => {
+    const caret = [
+      "[&>div>:last-child]:after:content-['']",
+      "[&>div>:last-child]:after:inline-block",
+      "[&>div>:last-child]:after:w-[1.5px]",
+      "[&>div>:last-child]:after:h-[15px]",
+      "[&>div>:last-child]:after:ml-[3px]",
+      "[&>div>:last-child]:after:align-[-2px]",
+      "[&>div>:last-child]:after:bg-primary",
+      "motion-safe:[&>div>:last-child]:after:animate-[dv-composer-caret_1.1s_steps(1)_infinite]",
+    ]
+    const extra: ThreadItem[] = [{ id: "assistant-2", sessionId: demoWorkspace.activeSessionId!, kind: "assistant", body: "Adding a replay table.", createdAt: "2026-09-08T09:00:09.000Z" }]
+    render(<Thread snapshot={conversation(true, extra)} connected queued={undefined} {...handlers} />)
+    expect(classes(prose("Adding a replay table."))).toEqual(expect.arrayContaining(caret))
+    expect(classes(prose("The handler processes the event first.")).some((name) => name.includes(":after:"))).toBe(false)
+  })
+
   it("drops the caret once the turn is done", () => {
     render(<Thread snapshot={conversation(false)} connected queued={undefined} {...handlers} />)
     expect(prose("The handler processes the event first.").hasAttribute("data-working")).toBe(false)

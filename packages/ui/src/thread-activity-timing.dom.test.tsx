@@ -82,3 +82,22 @@ it("does not say Working while the daemon is lost", async () => {
   const dot = screen.getByText("pnpm build").closest("li")!.querySelector("[data-status-dot]")!
   expect(dot.className.split(/\s+/u)).toContain("bg-faint")
 })
+
+// Review round 1: a row whose own turn has ended is not the running turn's,
+// even when one of its calls was left marked running.
+it("says Stopped for an ended turn's row while a later turn runs", () => {
+  const snapshot = finishedTurn({ status: "interrupted", completedAt: "2026-09-08T09:02:00.000Z" })
+  const sessionId = snapshot.activeSessionId!
+  const session = snapshot.sessions.find((candidate) => candidate.id === sessionId)!
+  session.activeTurnId = "provider-turn-2"
+  const stale = snapshot.thread.at(-1) as Extract<ThreadItem, { kind: "tool" }>
+  stale.status = "running"
+  snapshot.thread.push(
+    { id: "user-2", sessionId, turnId: "turn-2", kind: "user", body: "Try again", createdAt: "2026-09-08T09:10:00.000Z" },
+    { id: "tool-2", sessionId, turnId: "turn-2", kind: "tool", tool: "command", status: "running", title: "pnpm again", createdAt: "2026-09-08T09:10:30.000Z" },
+  )
+  snapshot.turns!.push({ id: "turn-2", sessionId, ordinal: 2, startedAt: "2026-09-08T09:10:00.000Z", status: "pending" })
+  render(<Thread snapshot={snapshot} connected queued={undefined} {...handlers} />)
+  expect(screen.getByRole("button", { name: /^Stopped/u })).toBeTruthy()
+  expect(screen.getAllByRole("button", { name: /^Working/u })).toHaveLength(1)
+})

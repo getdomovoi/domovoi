@@ -110,6 +110,16 @@ describe("the header clock", () => {
     expect(screen.getByText(new RegExp(`^started ${clockAt("2026-09-08T10:00:00.000Z")} · running `, "u"))).toBeTruthy()
   })
 
+  // Review round 1: a pending turn in the ledger is not proof it is the turn
+  // the session runs now. The session's own start for its active turn wins.
+  it("prefers the session's start for its running turn over an older pending turn", () => {
+    const snapshot = withTurn({}, true)
+    const session = snapshot.sessions.find((candidate) => candidate.id === snapshot.activeSessionId)!
+    session.activeTurnStartedAt = "2026-09-08T10:00:00.000Z"
+    render(<Thread snapshot={snapshot} connected queued={undefined} {...handlers} />)
+    expect(screen.getByText(new RegExp(`^started ${clockAt("2026-09-08T10:00:00.000Z")} · running `, "u"))).toBeTruthy()
+  })
+
   it("does not show the last turn's duration while a newer turn runs with no known start", () => {
     render(<Thread snapshot={withTurn({ completedAt: "2026-09-08T09:04:18.000Z", status: "completed" }, true)} connected queued={undefined} {...handlers} />)
     expect(screen.queryByText(/4m 18s/u)).toBeNull()

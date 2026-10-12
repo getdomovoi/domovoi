@@ -1013,7 +1013,7 @@
         "`${started} · stopped ${clockTime.format(clock.stoppedAt)}`"
       ],
       "notes": [
-        "Re-derived 2026-10-12 (SL-2, D4) from the vendored file at the digest above; the live design was not read (DesignSync not authorized that session). Built: the line's clock describes the session's latest turn from the snapshot's turns (ruling Q401), through turn-clock.ts. started 14:02 · running 1m 09s ticks each second while the session runs the turn; started 14:02 · 4m 18s once it completed, from the turn's own start and end on the daemon's clock; started 14:02 · stopped 14:03 for a failed or interrupted turn with an end; started 13:41 · stalled at 14:06 when the daemon is lost while the turn ran, at the moment this thread saw the connection drop. A running turn no thread row links yet reads the session's activeTurnStartedAt. With no timing the line keeps started HH:MM from the first row."
+        "Re-derived 2026-10-12 (SL-2, D4) from the vendored file at the digest above; the live design was not read (DesignSync not authorized that session). Built: the line's clock describes the session's latest turn from the snapshot's turns (ruling Q401), through turn-clock.ts. started 14:02 · running 1m 09s ticks each second while the session runs the turn; started 14:02 · 4m 18s once it completed, from the turn's own start and end on the daemon's clock; started 14:02 · stopped 14:03 for a failed or interrupted turn with an end; started 13:41 · stalled at 14:06 when the daemon is lost while the turn ran, at the moment this thread saw the connection drop. While the session runs a turn the clock reads the session's activeTurnStartedAt, else the ledger's latest turn if it is pending, else the start alone. With no timing the line keeps started HH:MM from the first row. Limit: the running count is the daemon's start against this client's clock, held at zero rather than negative; a client whose clock differs from the daemon's (a browser on another device, an attached machine) is off by that difference, because the thread is given no daemon clock offset yet (the fleet's daemonTime offset is wired in workspace-shell.tsx, outside this change)."
       ]
     },
     {
@@ -1082,6 +1082,8 @@
       "evidence": [
         "`Worked for ${timing.duration}, show the steps`",
         "if (timing?.kind === \"stopped\") return \"Stopped\"",
+        "timing={activityTiming({",
+        "turn: row.turnId && lastActivityOfTurn.get(row.turnId) === row.id ? turnsById.get(row.turnId) : undefined,",
         "<StatusDot meaning={stepMeaning(item, running)} label={item.name} size=\"inline\" />",
         "working: \"bg-primary\"",
         {

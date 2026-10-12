@@ -436,14 +436,17 @@ function planAnchorId(rows: readonly ThreadRow[], plan: WorkingPlan | undefined)
 }
 
 // The turn the header clock reads. While the session runs a turn, only that
-// turn will do: the ledger's pending turn when the thread links it, else the
-// start the session carries. With neither, a finished turn's duration would
-// describe a turn that is over, so the clock has nothing to read.
+// turn will do: the start the session carries for its active turn, which the
+// daemon reads from the ledger beside that turn alone, else the ledger's
+// latest turn when it is still pending. A pending turn in the ledger is not
+// proof it is the one running now, so it comes second. With neither, a
+// finished turn's duration would describe a turn that is over, so the clock
+// has nothing to read.
 function headerTurn(session: SessionSummary, turns: WorkspaceSnapshot["turns"]): TurnTiming | undefined {
   const latest = latestSessionTurn(turns, session.id)
   if (!session.activeTurnId) return latest
-  if (latest?.status === "pending") return latest
-  return session.activeTurnStartedAt ? { startedAt: session.activeTurnStartedAt, status: "pending" } : undefined
+  if (session.activeTurnStartedAt) return { startedAt: session.activeTurnStartedAt, status: "pending" }
+  return latest?.status === "pending" ? latest : undefined
 }
 
 export function SessionReadOnlyNotice({
@@ -1347,7 +1350,10 @@ export function Thread({
               // Between two calls no single call is in flight, but the turn
               // still is. The row at the end of a running thread is the one
               // the turn is working in.
-              const rowRunning = Boolean(active.activeTurnId)
+              // A row whose own turn the ledger says has ended is not the
+              // running turn's, whatever its calls were last marked.
+              const rowTurnStatus = row.turnId === undefined ? undefined : turnsById.get(row.turnId)?.status
+              const rowRunning = Boolean(active.activeTurnId) && (rowTurnStatus === undefined || rowTurnStatus === "pending")
                 && (row === lastRow || row.items.some((call) => call.outcome === "running"))
               // A running turn's file list is still growing, so naming files
               // mid-flight would show a total that keeps changing under the
