@@ -162,14 +162,13 @@
         {
           "absent": "attached ? \"remote\" : \"local\"",
           "in": "packages/ui/src/workspace-shell.tsx"
-        }
+        },
+        "machineTransport={!connected ? \"unreachable\" : !attached ? machineRoute(endpointUrl)",
+        "if (isTailnetHost(name)) return \"tailnet\""
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the chip, its dot and the offline danger state are drawn; the transport word is not the drawn route. The design names the route (loopback, tailnet, domovoi cloud); workspace-shell passes local, remote or unreachable, so a desktop on its own daemon reads local where the design says loopback and a tailnet route reads remote. The fleet entry's connection and transports already name the route. The domovoi cloud state is the relay (M2)"
-      },
       "notes": [
-        "2026-10-01 (S3.10 slice 1): offline now turns the chip itself to danger border and background (machineChipStyle), not only its dot."
+        "2026-10-01 (S3.10 slice 1): offline now turns the chip itself to danger border and background (machineChipStyle), not only its dot.",
+        "2026-10-11 (SL-1, D1): the chip names the route of the endpoint the client dialed (packages/ui/src/route-word.ts): loopback, tailnet (a ts.net name or a Tailscale address only), direct for any other TLS host, plaintext for a non-loopback endpoint without TLS (the daemon refuses one), and ssh or wsl for an attached machine reached through a forwarded loopback port. For an attached machine the word follows the transport kind its route resolved to in the current attach (fleet-access.ts; a resolution abandoned by a return home is dropped), not the fleet entry's stored connection, and no word is drawn before that route has connected. A desktop on its own daemon reads loopback, not local. The domovoi cloud state is the relay (M2) and is not drawn. Pinned in packages/ui/src/route-word.test.ts and app-bar-route.dom.test.tsx."
       ]
     },
     {
@@ -244,10 +243,9 @@
           "in": "packages/ui/src/app-bar.tsx"
         }
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the toggle and its tooltips are built; it is disabled while the client is watching, though the theme is a client preference that never reaches the daemon, where the design keeps it live. Q362 A (2026-10-02) unlocks client-only preferences (theme, Appearance and Notifications)"
-      }
+      "notes": [
+        "2026-10-11 (SL-1, D2 titlebar half): the toggle stays live while watching (Q362 A); the theme is a client preference that never reaches the daemon. Pinned in packages/ui/src/app-bar-route.dom.test.tsx. Settings Appearance and Notifications are the settings half."
+      ]
     },
     {
       "id": "titlebar.window-controls",
@@ -284,12 +282,20 @@
       ],
       "evidence": [
         "aria-label={`Actions for",
-        "re:note: `running \\$\\{"
+        "`running ${elapsed(session.activeTurnStartedAt, now)}`",
+        "`failed ${elapsed(session.updatedAt, now)} ago`",
+        "`idle ${elapsed(session.updatedAt, now)}`",
+        "data-session-meta=\"\" className=\"mt-[3px] font-machine text-[10.5px] text-faint\"",
+        "entry.meaning === \"idle\" && \"opacity-55\"",
+        "re:`review \\$\\{"
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "rows draw a dot, the title and a note, with the row menu; the design's meta is not drawn. Notes are bare words (running, waiting on you, failed, idle) with no duration or count where the design draws running 12m, review 7 files, failed 1h ago and idle 2d; the meta is sans 11.5px muted with the dot inline before it, where the design has the dot as a left column and the meta in mono faint; quiet rows are at .70 opacity, not .55. Q364 A (2026-10-02) keeps the drawer to this machine for M1 with the machine name in the meta"
-      }
+        "since": "2026-10-11",
+        "reason": "rows draw the dot as a left column, the title, and the meta in mono faint: the machine name (Q364 A), the state and how long (running 12m from the turn start the daemon sends, activeTurnStartedAt; failed 1h ago and idle 2d from the session's last change); quiet rows are at .55. Two gaps remain. The design's review 7 files state, a finished turn whose changes wait for review, has no client fact: nothing records whether a session's changes were reviewed. The dot is the status atom's 5px inline size where the design draws 6px"
+      },
+      "notes": [
+        "2026-10-11 (SL-1, D3): was a dot, the title and a bare note at .70. A running session whose turn start the daemon does not send (its ledger has no record) says running with no duration rather than guess one. Pinned in packages/ui/src/sessions-drawer.dom.test.tsx."
+      ]
     },
     {
       "id": "drawer.row-menu",
@@ -2296,7 +2302,7 @@
     {
       "id": "titlebar.theme",
       "since": "2026-10-02",
-      "note": "Open gap, no ruling: the aria-label says Use light theme while the tooltip says Light appearance. The watching lock is the partial entry's gap (Q362 A)."
+      "note": "Open gap, no ruling: the aria-label says Use light theme while the tooltip says Light appearance. The watching lock was lifted on 2026-10-11 (Q362 A)."
     },
     {
       "id": "drawer.row",

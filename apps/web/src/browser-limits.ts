@@ -1,5 +1,7 @@
 import { maximumImageUploadDimension } from "@getdomovoi/protocol"
 
+import { routeOfEndpoint } from "@/route-word"
+
 import type { BrowserPlatformEnvironment } from "./browser-platform"
 import { browserRefusalMessage } from "./platform-refusals"
 
@@ -18,15 +20,12 @@ export type BrowserLimitRow = {
   why: string
 }
 
+// The route word comes from route-word.ts, the rule the app bar's chip uses.
+// A direct or unreadable route is "the route": the page does not name a
+// network it cannot prove.
 function routeName(rpcUrl: string): "loopback" | "the tailnet" | "the route" {
-  try {
-    const url = new URL(rpcUrl)
-    if (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1") return "loopback"
-    if (url.protocol === "wss:" || url.protocol === "https:") return "the tailnet"
-  } catch {
-    return "the route"
-  }
-  return "the route"
+  const route = routeOfEndpoint(rpcUrl)
+  return route === "loopback" ? "loopback" : route === "tailnet" ? "the tailnet" : "the route"
 }
 
 function notifications(environment: BrowserPlatformEnvironment): BrowserLimitRow {
