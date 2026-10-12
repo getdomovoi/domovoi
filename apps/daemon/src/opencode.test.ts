@@ -1,7 +1,7 @@
 import { waitForDaemon } from "./test-wait-for.js"
 import type { ChildProcess } from "node:child_process"
 import { EventEmitter, once } from "node:events"
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PassThrough } from "node:stream"
@@ -36,6 +36,15 @@ import { SqliteWorkspaceStore } from "./store.js"
 
 const scratchDirectories: string[] = []
 afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
+
+// The failure a turn ends with when an approval reply Domovoi did not send
+// arrives. Its action is what the client offers the person next.
+const answeredElsewhere = {
+  kind: "approval-answered-elsewhere",
+  action: "review-changes",
+  message: "An approval was answered outside Domovoi",
+  retryable: false,
+}
 
 class EventStream implements AsyncIterable<OpenCodeEvent> {
   #events: OpenCodeEvent[] = []
@@ -3163,7 +3172,7 @@ describe("reconciling a turn with the server's own state", () => {
     const end = turnEnds(events, turnId)
     expect(end).toEqual(ended("failed"))
     const error = ((end[0] as unknown as { params: { turn: { error?: string } } }).params.turn.error) ?? ""
-    if (cause === "outside") expect(end[0]).toMatchObject({ params: { failure: expect.anything() } })
+    if (cause === "outside") expect(end[0]).toMatchObject({ params: { turn: { error: answeredElsewhere.message }, failure: answeredElsewhere } })
     if (cause === "v2") expect(error).toContain("permission interface Domovoi does not answer")
     if (cause === "closed") expect(error).toContain("event stream")
     await adapter.close()
@@ -3260,9 +3269,14 @@ describe("reconciling a turn with the server's own state", () => {
       aborts.answer("ses_child")
       await tick(10)
     }
+    // The approval answered elsewhere wins over the request Domovoi cannot
+    // answer: the turn ends with its failure, whose action is to review the
+    // changes (docs/m1-acceptance-walk.md, provider failures).
     const end = turnEnds(events, turnId)
     expect(end).toHaveLength(1)
-    expect(end[0]).toMatchObject({ params: { turn: { status: "failed" }, failure: expect.anything() } })
+    expect(end[0]).toMatchObject({
+      params: { turn: { status: "failed", error: answeredElsewhere.message }, failure: answeredElsewhere },
+    })
     await adapter.close()
   })
 
@@ -3302,7 +3316,9 @@ describe("reconciling a turn with the server's own state", () => {
     await tick(10)
     const end = turnEnds(events, turnId)
     expect(end).toHaveLength(1)
-    expect(end[0]).toMatchObject({ params: { turn: { status: "failed" }, failure: expect.anything() } })
+    expect(end[0]).toMatchObject({
+      params: { turn: { status: "failed", error: answeredElsewhere.message }, failure: answeredElsewhere },
+    })
     endsBeforeNotices(events, turnId)
     await adapter.close()
   })
@@ -3680,12 +3696,6 @@ describe("SubagentRegistry tombstones", () => {
 // the server accepted from it, plus the rejections the server adds, after a
 // rejection Domovoi sent, for the requests waiting then in that turn.
 describe("approval replies Domovoi did not send", () => {
-  const answeredElsewhere = {
-    kind: "approval-answered-elsewhere",
-    action: "review-changes",
-    message: "An approval was answered outside Domovoi",
-    retryable: false,
-  }
   const adapters = [
     ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory, () => "turn-1")],
     ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory, () => "turn-1")],
@@ -4308,5 +4318,130 @@ describe("approval replies Domovoi did not send", () => {
     expect(client.session.abort).not.toHaveBeenCalled()
     expect(events.some((event) => event.type === "turn-completed")).toBe(false)
     await adapter.close()
+  })
+})
+
+// M1 definition of done: every supported provider failure produces an
+// actionable state without losing the worktree. An approval answered outside
+// Domovoi cannot be provoked by hand (docs/m1-acceptance-walk.md), so this
+// drives the real adapter, on a stand-in OpenCode server, through the daemon.
+describe("an approval answered outside Domovoi, through the daemon", () => {
+  it("fails the session with a failure to act on and leaves the worktree as the agent left it", async () => {
+    const worktree = await mkdtemp(join(tmpdir(), "domovoi-opencode-worktree-"))
+    const profile = await mkdtemp(join(tmpdir(), "domovoi-opencode-profile-"))
+    scratchDirectories.push(worktree, profile)
+    // The agent's work so far: files Domovoi has not checkpointed.
+    await writeFile(join(worktree, "README.md"), "Billing\n")
+    await mkdir(join(worktree, "src"))
+    await writeFile(join(worktree, "src", "invoice.ts"), "export const total = 42\n")
+    const { client, factory, server, stream } = harness()
+    // The adapter restarts the server after the stop: the old server's event
+    // stream ends, and the next server publishes on a stream of its own.
+    let live = stream
+    client.event.subscribe.mockImplementation(async () => ({ stream: live }))
+    server.stop.mockImplementation(async () => {
+      live.close()
+      live = new EventStream()
+      return true
+    })
+    let next = 0
+    const adapter = new OpenCodeSdkAdapter(factory, () => `turn-${++next}`)
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions.find(({ id }) => id === "session-billing")!
+    session.runtime = { ...runtime("build"), reasoning: "unset" }
+    session.state = "idle"
+    session.workspacePath = worktree
+    session.providerThreadId = "open-session"
+    delete session.activeTurnId
+    snapshot.approvals = []
+    snapshot.approvalRules = []
+    snapshot.workingPlans = []
+    const store = new SqliteWorkspaceStore(":memory:", workspaceSnapshotSchema.parse(snapshot))
+    const daemon = new DomovoiDaemon({
+      port: 0, statePath: ":memory:", profileDirectory: profile, store, agents: { opencode: adapter },
+      artifactWatcherFactory: () => ({ start: vi.fn(async () => {}), stop: vi.fn() }),
+    })
+    let socket: WebSocket | undefined
+    try {
+      const { port } = await daemon.start()
+      socket = new WebSocket(`ws://127.0.0.1:${port}/rpc`)
+      await once(socket, "open")
+      const responses = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>()
+      socket.on("message", (data) => {
+        const message = JSON.parse(data.toString()) as { id?: number; result?: unknown; error?: { message: string } }
+        if (message.id !== undefined) {
+          responses.get(message.id)?.(message)
+          responses.delete(message.id)
+        }
+      })
+      let nextId = 0
+      const rpc = (method: string, params: Record<string, unknown>) => new Promise<{ result?: unknown; error?: { message: string } }>((resolve) => {
+        const id = ++nextId
+        responses.set(id, resolve)
+        socket!.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      })
+      const workspace = async () => workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
+      const current = async () => (await workspace()).sessions.find(({ id }) => id === session.id)!
+      const files = async () => ({
+        entries: (await readdir(worktree, { recursive: true })).sort(),
+        readme: await readFile(join(worktree, "README.md"), "utf8"),
+        invoice: await readFile(join(worktree, "src", "invoice.ts"), "utf8"),
+      })
+      const before = await files()
+      expect((await rpc("system.hello", {
+        client: "desktop", clientVersion: "0.0.1", protocolVersion, authToken: daemon.authToken,
+      })).error).toBeUndefined()
+
+      expect((await rpc("session.send", { sessionId: session.id, prompt: "Build it", client: "desktop" })).error).toBeUndefined()
+      await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledOnce())
+      stream.emit({
+        type: "permission.asked",
+        properties: {
+          id: "per_1", sessionID: "open-session", permission: "bash", patterns: ["pnpm test"], metadata: { command: "pnpm test" },
+          always: ["pnpm *"], tool: { messageID: "turn-1", callID: "call_1" },
+        },
+      })
+      await waitForDaemon(async () => expect((await workspace()).approvals).toHaveLength(1))
+
+      // Another program holding the server's password answers the card.
+      stream.emit({ type: "permission.replied", properties: { sessionID: "open-session", requestID: "per_1", reply: "once" } })
+
+      await waitForDaemon(async () => expect((await current()).state).toBe("failed"))
+      const stopped = await current()
+      // The failure names its kind and what to do next: review the changes.
+      expect(stopped.providerFailure).toEqual(answeredElsewhere)
+      expect(stopped).not.toHaveProperty("activeTurnId")
+      expect(stopped).not.toHaveProperty("providerThreadId")
+      expect((await workspace()).approvals).toEqual([])
+      await waitForDaemon(() => expect(server.stop).toHaveBeenCalled())
+      expect(client.session.abort).toHaveBeenCalledWith(expect.objectContaining({
+        path: { id: "open-session" }, query: { directory: worktree },
+      }))
+      // The worktree is where it was, with the agent's files unchanged.
+      expect(stopped.workspacePath).toBe(worktree)
+      expect(stopped.archivedAt).toBeUndefined()
+      expect(await files()).toEqual(before)
+
+      // The session continues in a new provider session on the same worktree.
+      expect((await rpc("session.restartProviderThread", { sessionId: session.id, client: "desktop" })).error).toBeUndefined()
+      expect(client.session.create).toHaveBeenCalledWith(expect.objectContaining({ query: { directory: worktree } }))
+      expect((await rpc("session.send", { sessionId: session.id, prompt: "Go on", client: "desktop" })).error).toBeUndefined()
+      await waitForDaemon(() => expect(client.session.promptAsync).toHaveBeenCalledTimes(2))
+      expect(client.session.promptAsync).toHaveBeenLastCalledWith(expect.objectContaining({ query: { directory: worktree } }))
+      expect(live).not.toBe(stream)
+      const prompt = (client.session.promptAsync.mock.lastCall as unknown as [{ body: { messageID: string } }])[0].body.messageID
+      await waitForDaemon(async () => expect((await current()).activeTurnId).toBe(prompt))
+      // The new server answers the turn, and the turn ends normally.
+      finishRun(live, "open-session", prompt)
+      await waitForDaemon(async () => expect((await current()).activeTurnId).toBeUndefined())
+      const resumed = await current()
+      expect(resumed.state).not.toBe("failed")
+      expect(resumed.workspacePath).toBe(worktree)
+      expect(resumed).not.toHaveProperty("providerFailure")
+      expect(await files()).toEqual(before)
+    } finally {
+      socket?.terminate()
+      await daemon.stop()
+    }
   })
 })
