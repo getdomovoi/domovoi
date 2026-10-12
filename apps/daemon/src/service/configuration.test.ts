@@ -23,6 +23,7 @@ describe("service configuration", () => {
       DOMOVOI_SSH_TUNNELS: JSON.stringify([{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }]),
       DOMOVOI_ALLOWED_ORIGINS: "https://app.example.com,file://",
       DOMOVOI_WEB_APP_URL: "https://app.example.com/connect",
+      DOMOVOI_WEB_DIR: platform === "win32" ? `${root}\\Domovoi web` : `${root}/Domovoi web`,
       ANTHROPIC_API_KEY: "not-a-daemon-setting",
       NODE_OPTIONS: "not-a-daemon-setting",
     }, { platform, homeDirectory: root, workingDirectory: root })
@@ -32,6 +33,8 @@ describe("service configuration", () => {
     expect(decoded).toEqual(config)
     expect(decoded.webAppUrl).toBe("https://app.example.com/connect")
     expect(serviceEnvironment(decoded).DOMOVOI_WEB_APP_URL).toBe("https://app.example.com/connect")
+    // S3.2 plan section 1.2: a supervised daemon keeps the web app directory.
+    expect(serviceEnvironment(decoded).DOMOVOI_WEB_DIR).toBe(platform === "win32" ? `${root}\\Domovoi web` : `${root}/Domovoi web`)
     expect(decoded).toMatchObject({ tailnetHost: "studio.tailnet.example",
       sshTunnels: [{ machineId: `machine-${"b".repeat(32)}`, endpoint: "ws://127.0.0.1:47900/rpc" }] })
     // Same parser the production factory uses, not a test-only environment mapper.
@@ -98,6 +101,8 @@ describe("service configuration", () => {
     { allowedOrigins: ["https://app.example.com/path"] },
     { webAppUrl: "https://person:secret@app.example.com/" },
     { advertiseHost: "" },
+    { webDirectory: "relative/web" },
+    { webDirectory: "/srv/web\n" },
     { extra: "unexpected" },
     { lingerEnabledByDomovoi: "yes" },
   ])("refuses invalid or secret-bearing saved state without echoing it: %j", (override) => {

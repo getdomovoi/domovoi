@@ -78,12 +78,13 @@
         {
           "absent": "attached ? \"remote\" : \"local\"",
           "in": "packages/ui/src/workspace-shell.tsx"
-        }
+        },
+        "machineTransport={!connected ? \"unreachable\" : !attached ? machineRoute(endpointUrl)",
+        "import { routeOfEndpoint } from \"@/route-word\""
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "no longer blocked as a whole: the design's loopback and tailnet states are M1 (frame 0c, Attached over tailnet: the chip names the route and the machine). The web draws the desktop machine chip, and workspace-shell passes local, remote or unreachable, so a web tab over the tailnet reads local, which is false. The route is already known: routeName in apps/web/src/browser-limits.ts derives loopback or the tailnet from the RPC URL. Only the cloud relay · latency state is blocked (relay, M2)"
-      }
+      "notes": [
+        "2026-10-11 (SL-1, W4): the chip reads loopback or tailnet from the endpoint the tab dialed, by the one rule the limits page also uses (packages/ui/src/route-word.ts): tailnet only for a ts.net name or a Tailscale address, direct for any other TLS host such as a custom MagicDNS name or a LAN address, plaintext for a non-loopback endpoint without TLS (the daemon refuses one), never local. The cloud relay · latency state is the relay (M2) and is not drawn. Pinned in packages/ui/src/route-word.test.ts, app-bar-route.dom.test.tsx and apps/web/src/browser-limits.test.ts."
+      ]
     },
     {
       "id": "connect",
@@ -190,9 +191,12 @@
         }
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "the web draws the desktop v2 drawer, closed by default at 268px; the Web v2 frame draws an always-open 244px column carrying Paired for this tab. Q384 A (2026-10-02) opens it by default on the web at wide widths. The claimed Switch is in no source (the earlier evidence proved only that a column exists): Switch goes back to attach over Cloud, so that half is blocked on the relay (M2)"
-      }
+        "since": "2026-10-11",
+        "reason": "the web draws the desktop v2 drawer at 268px, open by default at widths of 1348px and up (Q384 A: room for the column beside a thread and dock side by side) and closed below that; the Web v2 frame draws an always-open 244px column carrying Paired for this tab. The claimed Switch is in no source (the earlier evidence proved only that a column exists): Switch goes back to attach over Cloud, so that half is blocked on the relay (M2)"
+      },
+      "notes": [
+        "2026-10-11 (SL-1, W8): the first state follows the tab's width when the workspace opens; later the column's own button decides. Pinned in packages/ui/src/app-bar-route.dom.test.tsx."
+      ]
     },
     {
       "id": "sessions-column.tab-credential",
