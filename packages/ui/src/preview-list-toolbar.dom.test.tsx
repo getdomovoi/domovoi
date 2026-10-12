@@ -75,23 +75,28 @@ function renderDock(
     onLoadSessionEvidence: () => new Promise<never>(() => {}),
     onRevertSessionFile: vi.fn(),
   }
-  const dock = (connected: boolean) => (
+  let current = { connected: true, offset: daemonTimeOffsetMs }
+  const dock = () => (
     <ArtifactDock
       {...(captureAnnotation ? { captureAnnotation } : {})}
       {...(buildBasisId ? { buildBasisId } : {})}
-      {...(daemonTimeOffsetMs === undefined ? {} : { daemonTimeOffsetMs })}
+      {...(current.offset === undefined ? {} : { daemonTimeOffsetMs: current.offset })}
       {...handlers}
       snapshot={dockSnapshot}
       defaultTab={defaultTab}
       rpcUrl="ws://127.0.0.1:47831/rpc"
       authorizeArtifact={authorizeArtifact}
-      connected={connected}
+      connected={current.connected}
       terminalControls={terminalControls}
       onCreateAnnotation={onCreateAnnotation}
     />
   )
-  const { rerender } = render(dock(true))
-  return { onCreateAnnotation, setConnected: (connected: boolean) => rerender(dock(connected)) }
+  const { rerender } = render(dock())
+  return {
+    onCreateAnnotation,
+    setConnected: (connected: boolean) => { current = { ...current, connected }; rerender(dock()) },
+    setDaemonTimeOffset: (offset: number) => { current = { ...current, offset }; rerender(dock()) },
+  }
 }
 
 function frameTitled(title: string): HTMLIFrameElement {
@@ -432,6 +437,18 @@ it("does not renew in a loop when this clock runs ahead of the daemon's and the 
 it("reads the grant's time left on the daemon's clock when the shell knows the offset", async () => {
   renderDock(skewedAuthorize(), undefined, snapshot, undefined, { daemonTimeOffsetMs: -55_000 })
   expect(await screen.findByText("authorized · 1m left")).toBeTruthy()
+})
+
+it("reads a held grant again when the daemon's clock offset arrives after it", async () => {
+  // The daemon's clock two minutes ahead of this one; its 60 s grant reads as
+  // three minutes until the fleet's daemon time says otherwise.
+  const authorize = grantingAuthorize(120 + 60)
+  const { setDaemonTimeOffset } = renderDock(authorize)
+  expect(await screen.findByText("authorized · 3m left")).toBeTruthy()
+
+  setDaemonTimeOffset(120_000)
+  expect(await screen.findByText("authorized · 1m left")).toBeTruthy()
+  expect(authorize.mock.calls.filter(([input]) => input.bridgeChannel)).toHaveLength(1)
 })
 
 it("asks for a fresh grant after a disconnect instead of reusing the one from before", async () => {

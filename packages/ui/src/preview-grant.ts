@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useState } from "react"
 import type { ArtifactAccess } from "@getdomovoi/protocol"
 
 // The daemon signs a preview grant for one document, revision, bridge channel
@@ -9,9 +9,9 @@ import type { ArtifactAccess } from "@getdomovoi/protocol"
 // and a frame that mounts never loads a grant about to lapse.
 export const previewGrantRenewLeadMs = 5_000
 
-// expiresAt is the daemon's clock, in seconds. It is turned into this client's
-// clock once, when the grant arrives: with the daemon's offset when the shell
-// knows it, and never shorter than this floor after receipt. The daemon just
+// expiresAt is the daemon's clock, in seconds. It is read on this client's
+// clock from when the grant arrived: with the daemon's offset as the shell
+// knows it now, and never shorter than this floor after receipt. The daemon just
 // signed the grant (its lifetime is 60 s), so a shorter one only means this
 // clock runs ahead of the daemon's; the floor keeps that from renewing in a
 // loop or never counting a grant fresh.
@@ -56,8 +56,8 @@ export function previewGrantRetryDelay(failures: number): number {
 type GrantState = {
   key: string
   access?: ArtifactAccess
-  // The access's expiry on this client's clock (previewGrantLocalExpiry).
-  expiresAtMs?: number
+  // When the access arrived, on this client's clock.
+  receivedAt?: number
   error: string
   renewalError: string
   renewalFailures: number
@@ -98,11 +98,13 @@ export function usePreviewGrant({
   const [state, setState] = useState<GrantState>(empty)
   const current = state.key === key ? state : empty
   const access = current.access
-  const expiresAtMs = current.expiresAtMs
+  // Derived from when the grant arrived and the offset known now, so an
+  // offset that arrives after the grant (fleet.list races the first
+  // artifact.authorize) still corrects the held grant and its renewal.
+  const expiresAtMs = access && current.receivedAt !== undefined
+    ? previewGrantLocalExpiry(access.expiresAt, current.receivedAt, daemonTimeOffsetMs)
+    : undefined
   const failures = current.renewalFailures
-  // Read when a grant arrives; a new offset alone is no reason to ask again.
-  const offset = useRef(daemonTimeOffsetMs)
-  useEffect(() => { offset.current = daemonTimeOffsetMs }, [daemonTimeOffsetMs])
 
   // A new document, channel or connection drops what was held: a grant from
   // before a disconnect may be signed with a secret the daemon no longer has.
@@ -129,7 +131,7 @@ export function usePreviewGrant({
           setState({
             key,
             access: granted,
-            expiresAtMs: previewGrantLocalExpiry(granted.expiresAt, Date.now(), offset.current),
+            receivedAt: Date.now(),
             error: "",
             renewalError: "",
             renewalFailures: 0,
