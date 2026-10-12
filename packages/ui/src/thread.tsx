@@ -70,6 +70,7 @@ import type { WorkingPlanEdit } from "./plan-step-editor.js"
 import { groupThreadActivity, type ThreadRow } from "./thread-activity-groups"
 import { ThreadFileChips } from "./thread-file-chips"
 import { TurnActivity } from "./turn-activity"
+import { headerClockText, latestSessionTurn, turnClock, type TurnTiming } from "./turn-clock"
 import { CheckpointRestore, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import {
   heldAfter,
@@ -332,30 +333,63 @@ function StoppedSessionNotice({ at, fromThisClient }: { at: Date, fromThisClient
 // lets it scroll away. The session title is already in the command palette pill
 // at the top of the window, so a fixed banner would say it twice and take the
 // height the thread wants.
+//
+// The clock on its right describes the session's latest turn (D4, ruling
+// Q401): started, then running, its duration, when it stopped, or stalled
+// when the daemon is lost (turn-clock.ts). With no turn timing it says when
+// the session started and nothing more. It ticks here, so a running turn
+// redraws this line each second and not the whole thread.
 function ThreadStartLine({
   project,
   branch,
   workspacePath,
   startedAt,
+  turn,
+  running,
+  connected,
+  lostAt,
 }: {
   project?: string | undefined
   branch?: string | undefined
   workspacePath?: string | undefined
   startedAt?: string | undefined
+  turn?: TurnTiming | undefined
+  running: boolean
+  connected: boolean
+  lostAt?: Date | undefined
 }) {
+  const [now, setNow] = useState(() => new Date())
+  const clock = turn ? turnClock({ turn, running, connected, lostAt, now }) : undefined
+  const ticking = clock?.kind === "running"
+  useEffect(() => {
+    if (!ticking) return
+    setNow(new Date())
+    const timer = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(timer)
+  }, [ticking])
   const worktree = workspacePath?.split(/[\\/]/u).filter(Boolean).at(-1)
   const parts = [project, branch, worktree].filter((part): part is string => Boolean(part))
-  if (parts.length === 0 && !startedAt) return null
+  const clockText = clock ? headerClockText(clock) : startedAt ? `started ${threadClock.format(new Date(startedAt))}` : undefined
+  if (parts.length === 0 && !clockText) return null
 
   return (
     <div className="flex items-center gap-2.5 text-faint">
       {parts.length > 0 ? <span className="font-machine text-[11px]">{parts.join(" · ")}</span> : null}
       <span aria-hidden className="h-px flex-1 bg-border" />
-      {startedAt ? (
-        <span className="font-machine text-[11px]">started {threadClock.format(new Date(startedAt))}</span>
-      ) : null}
+      {clockText ? <span className="font-machine text-[11px]">{clockText}</span> : null}
     </div>
   )
+}
+
+// The turn the header clock reads. While the session runs a turn, only that
+// turn will do: the ledger's pending turn when the thread links it, else the
+// start the session carries. With neither, a finished turn's duration would
+// describe a turn that is over, so the clock has nothing to read.
+function headerTurn(session: SessionSummary, turns: WorkspaceSnapshot["turns"]): TurnTiming | undefined {
+  const latest = latestSessionTurn(turns, session.id)
+  if (!session.activeTurnId) return latest
+  if (latest?.status === "pending") return latest
+  return session.activeTurnStartedAt ? { startedAt: session.activeTurnStartedAt, status: "pending" } : undefined
 }
 
 export function SessionReadOnlyNotice({
@@ -539,6 +573,11 @@ export function Thread({
   surface?: "desktop" | "web" | undefined
 }) {
   const watching = clientAccess === "watching"
+  // When this thread saw the daemon go, for the header's "stalled at". Set only
+  // on a change it saw: a thread that opens disconnected does not know when
+  // the daemon went, and says stalled with no time (turn-clock.ts).
+  const [link, setLink] = useState<{ connected: boolean, lostAt?: Date }>(() => ({ connected }))
+  if (link.connected !== connected) setLink(connected ? { connected } : { connected, lostAt: new Date() })
   const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)
   const approval = active
     ? snapshot.approvals.find((candidate) => candidate.sessionId === active.id)
@@ -1199,6 +1238,10 @@ export function Thread({
               {...(snapshot.project ? { project: snapshot.project.name, branch: snapshot.project.branch } : {})}
               {...(active.workspacePath ? { workspacePath: active.workspacePath } : {})}
               {...(threadStartedAt ? { startedAt: threadStartedAt } : {})}
+              turn={headerTurn(active, snapshot.turns)}
+              running={Boolean(active.activeTurnId)}
+              connected={connected}
+              lostAt={link.lostAt}
             />
           )}
           {active.state === "archived" ? <ArchivedSessionNotice session={active} /> : null}
