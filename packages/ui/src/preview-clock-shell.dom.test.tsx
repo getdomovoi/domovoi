@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, beforeEach, expect, it } from "vitest"
+import { afterEach, beforeEach, expect, it, vi } from "vitest"
 import { protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
 
 import { WorkspaceShell } from "./workspace-shell"
@@ -17,6 +17,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
   sockets.uninstall()
   if (happyDom && loadedFrames !== undefined) happyDom.settings.disableIframePageLoading = loadedFrames
 })
@@ -55,7 +56,10 @@ const openStudio = /^Open its (\d+ )?sessions? on Studio$/u
 // Studio 55 s behind: Studio's 60 s grant reads as one minute only with
 // Studio's offset (with the home's, or none, it would be the 10 s floor).
 it("reads an attached machine's preview grant with that machine's clock", async () => {
-  const now = Date.now()
+  // This client's clock stands still on a whole second, so the 60 s grant
+  // reads exactly 60 s whatever the runner's speed (see the delay below).
+  const now = Date.parse("2026-10-12T04:00:00.000Z")
+  vi.spyOn(Date, "now").mockReturnValue(now)
   const user = userEvent.setup()
   render(<WorkspaceShell />)
   const home = sockets.socket(0)
@@ -94,6 +98,11 @@ it("reads an attached machine's preview grant with that machine's clock", async 
   await user.click(await screen.findByRole("tab", { name: "Preview" }))
   await waitFor(() => expect(sentRequests(remote, "artifact.authorize")).toHaveLength(1))
   expect(sentRequests(home, "artifact.authorize")).toHaveLength(0)
+  // A slow runner (Windows CI took over a second here) between Studio's
+  // daemonTime and its grant answer. With a running clock that time is real
+  // grant age and the chip rightly reads 59s; the pinned clock above keeps
+  // both stamps and the receipt at one instant, so only the offset decides.
+  await new Promise((resolve) => setTimeout(resolve, 1_500))
   const request = sentRequests(remote, "artifact.authorize")[0]!.params as {
     sessionId: string, artifactId: string, revision: number, bridgeChannel?: string, parentOrigin?: string
   }
