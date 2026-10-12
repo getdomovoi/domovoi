@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { StrictMode } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary, type ProviderRuntime } from "@getdomovoi/protocol"
+import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type ClientKind, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary, type ProviderRuntime } from "@getdomovoi/protocol"
 
 import { DaemonRpcError } from "./client.js"
 import { useReadOnVisit, type FleetAccessState, type HeldReading, type MachineReading } from "./fleet-access-session.js"
@@ -538,6 +538,7 @@ function renderFleet(overrides: {
   readings?: Readonly<Record<string, HeldReading>>
   onReadMachine?: (machineId: string, signal: AbortSignal) => Promise<void>
   providers?: ProviderRuntime[]
+  clientKind?: ClientKind
 } = {}) {
   const devices = overrides.devices ?? [device]
   const onListDevices = vi.fn(overrides.onListDevices ?? (() => Promise.resolve({ devices })))
@@ -594,12 +595,67 @@ function renderFleet(overrides: {
         {...(overrides.readOnly !== undefined ? { readOnly: overrides.readOnly } : {})}
         {...(overrides.readings ? { readings: overrides.readings } : {})}
         {...(overrides.onReadMachine ? { onReadMachine: overrides.onReadMachine } : {})}
+        {...(overrides.clientKind ? { clientKind: overrides.clientKind } : {})}
         providers={overrides.providers ?? [claude]}
       />
     </TooltipProvider>,
   )
   return { user, onListDevices, onRevokeDevice, onRotateDevice, onRenameDevice, onPairMachine, onForgetMachine, onUseMachine, onOpenMachineTerminal, onMoveSessionHere }
 }
+
+// The daemon takes device.rename, device.rotate and device.revoke only with its
+// own credential, and refuses a device credential by closing the connection. A
+// browser tab always holds a device credential, so it offers none of the three
+// and says why beside each row, as Settings states its other locked controls.
+it("locks Rename, Rotate and Unpair in a browser tab and says why beside each row", async () => {
+  const { user, onRevokeDevice, onRotateDevice, onRenameDevice } = renderFleet({ clientKind: "web", devices: [device, runner] })
+  const client = await screen.findByRole("row", { name: /studio-ipad/ })
+  const machine = screen.getByRole("row", { name: /beelink-ser8/ })
+
+  for (const [row, label, word] of [[client, "studio-ipad", "Unpair"], [machine, "beelink-ser8", "Revoke"]] as const) {
+    const controls = [
+      within(row).getByRole("button", { name: `Rename ${label}` }),
+      within(row).getByRole("button", { name: new RegExp(`^Rotate the credential (on )?${label}( uses)?$`, "u") }),
+      within(row).getByRole("button", { name: `${word} ${label}` }),
+    ]
+    for (const control of controls) {
+      expect(control).toHaveProperty("disabled", true)
+      await user.click(control)
+    }
+    expect(row.textContent).toContain(`Rename, Rotate and ${word} are off in a browser tab: they need the daemon's own credential. Use the desktop app on workshop.`)
+  }
+  // The consequence lines are for a control this tab can press; here it cannot.
+  expect(screen.queryByText(clientConsequence)).toBeNull()
+  expect(screen.queryByText(machineConsequence)).toBeNull()
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  expect(onRenameDevice).not.toHaveBeenCalled()
+  expect(onRotateDevice).not.toHaveBeenCalled()
+  expect(onRevokeDevice).not.toHaveBeenCalled()
+})
+
+// On a handheld browser the web app greets as phone or tablet, and the daemon
+// answers device.list from such a credential by closing the connection
+// (phoneAndTabletRpcMethods). The tab never asks, and says so where the list
+// would be.
+it.each(["phone", "tablet"] as const)("never lists paired devices in a %s tab, and says why", async (clientKind) => {
+  const { onListDevices } = renderFleet({ clientKind, devices: [device, runner] })
+  await act(async () => { await Promise.resolve() })
+
+  expect(onListDevices).not.toHaveBeenCalled()
+  expect(screen.getByText("Paired devices are off in a phone or tablet tab: the daemon does not list them for a phone or tablet credential. Use the desktop app on workshop.")).toBeTruthy()
+  expect(screen.queryByText("Loading paired devices")).toBeNull()
+  expect(screen.queryByRole("row", { name: /studio-ipad/ })).toBeNull()
+})
+
+it("keeps Rename, Rotate and Unpair live in the desktop app", async () => {
+  renderFleet({ clientKind: "desktop" })
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+  expect(within(row).getByRole("button", { name: "Rename studio-ipad" })).toHaveProperty("disabled", false)
+  expect(within(row).getByRole("button", { name: "Rotate the credential on studio-ipad" })).toHaveProperty("disabled", false)
+  expect(within(row).getByRole("button", { name: "Unpair studio-ipad" })).toHaveProperty("disabled", false)
+  expect(row.textContent).not.toContain("are off in a browser tab")
+  expect(row.textContent).toContain(clientConsequence)
+})
 
 it("renders the v2 Machines hierarchy without a settings rail", () => {
   renderFleet()
