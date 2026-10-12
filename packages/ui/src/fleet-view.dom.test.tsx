@@ -604,8 +604,9 @@ function renderFleet(overrides: {
 // own credential, and refuses a device credential by closing the connection. A
 // browser tab always holds a device credential, so it offers none of the three
 // and says why beside each row, as Settings states its other locked controls.
-it("locks Rename, Rotate and Unpair in a browser tab and says why beside each row", async () => {
-  const { user, onRevokeDevice, onRotateDevice, onRenameDevice } = renderFleet({ clientKind: "web", devices: [device, runner] })
+// The web app greets as web, phone or tablet by the browser it runs in.
+it.each(["web", "phone", "tablet"] as const)("locks Rename, Rotate and Unpair in a %s browser tab and says why beside each row", async (clientKind) => {
+  const { user, onRevokeDevice, onRotateDevice, onRenameDevice } = renderFleet({ clientKind, devices: [device, runner] })
   const client = await screen.findByRole("row", { name: /studio-ipad/ })
   const machine = screen.getByRole("row", { name: /beelink-ser8/ })
 

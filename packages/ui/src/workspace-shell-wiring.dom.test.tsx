@@ -70,9 +70,10 @@ describe("the audit log's export line", () => {
 // device.rename, device.rotate and device.revoke from one by closing the
 // connection. The tab lists its daemon's devices but never sends those three.
 describe("paired devices in a browser tab", () => {
-  it("lists them and never sends a rename, rotation or unpairing", async () => {
+  // The web app greets as web, phone or tablet by the browser it runs in.
+  it.each(["web", "phone", "tablet"] as const)("a %s tab lists them and never sends a rename, rotation or unpairing", async (clientKind) => {
     const snapshot = workspaceSnapshot()
-    const socket = await openWorkspace(snapshot, { clientKind: "web" })
+    const socket = await openWorkspace(snapshot, { clientKind })
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: "Settings" }))
     await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))

@@ -1282,7 +1282,9 @@ export function FleetView({
   }
 
   // A browser tab never sends a request the daemon answers by closing it.
-  const browserTab = clientKind === "web"
+  // Only the desktop app is not one: the web app greets as web, phone or
+  // tablet by the browser it runs in (apps/web client-kind.ts).
+  const browserTab = clientKind !== "desktop"
   const managesDevices = !readOnly && !browserTab
 
   const revokeDevice = async (device: PairedDeviceSummary) => {
