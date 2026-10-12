@@ -260,6 +260,35 @@ describe("App", () => {
     expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeOnTheScreen()
   })
 
+  // The connection drops before the daemon confirms. The phone is then
+  // watching, and the gate must still say the answer may have landed.
+  it("says an Allow lost to a dropped connection may or may not have landed", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Allow once" }))
+    expect(socket.requests("approval.resolve")).toHaveLength(1)
+    await act(async () => { socket.close() })
+    await settle()
+
+    expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeOnTheScreen()
+    expect(screen.getByRole("alert")).toHaveTextContent("The daemon went away before it confirmed. The gate may or may not have been answered; when the connection returns, this screen shows which.")
+  })
+
+  // A refusal says the gate is still waiting. A drop after it does not
+  // change that, so the watching phone keeps the daemon's words.
+  it("keeps a refused Allow's sentence after the connection drops", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Allow once" }))
+    await act(async () => { socket.refuse("approval.resolve", -32603, "The approval store is unavailable") })
+    await settle()
+    await act(async () => { socket.close() })
+    await settle()
+
+    expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeOnTheScreen()
+    expect(screen.getByRole("alert")).toHaveTextContent("The daemon refused: The approval store is unavailable. The gate is still waiting.")
+  })
+
   // Ruling Q356 A: Tell the agent on a policy refusal sends the refusal's
   // remedy to the session as a steer, through the same session.send a typed
   // message uses. Like a typed message it names the session's open comments
