@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { StrictMode } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary, type ProviderRuntime } from "@getdomovoi/protocol"
+import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type ClientKind, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary, type ProviderRuntime } from "@getdomovoi/protocol"
 
 import { DaemonRpcError } from "./client.js"
 import { useReadOnVisit, type FleetAccessState, type HeldReading, type MachineReading } from "./fleet-access-session.js"
@@ -63,7 +63,10 @@ it("shows client authorization next to disabled remote controls and names its au
   expect(dialog.textContent).toContain("domovoid pair --client desktop prints a one-time pairing code, which this field does not take.")
   expect(dialog.textContent).not.toContain("--label")
   expect(dialog.textContent).toContain("session sends, approvals and terminals")
-  expect(dialog.textContent).toContain("Devices list")
+  // Q378 A: this app's credential is a client binding on studio, so its row
+  // there says Unpair, and only studio's own desktop app can press it.
+  expect(dialog.textContent).toContain("Closing the app or removing local access does not unpair this device. To end its authority, unpair it in the desktop app on studio, under Machines.")
+  expect(dialog.textContent).not.toMatch(/revoke/iu)
   expect(within(dialog).getByLabelText("Client credential").getAttribute("type")).toBe("password")
 })
 
@@ -535,6 +538,7 @@ function renderFleet(overrides: {
   readings?: Readonly<Record<string, HeldReading>>
   onReadMachine?: (machineId: string, signal: AbortSignal) => Promise<void>
   providers?: ProviderRuntime[]
+  clientKind?: ClientKind
 } = {}) {
   const devices = overrides.devices ?? [device]
   const onListDevices = vi.fn(overrides.onListDevices ?? (() => Promise.resolve({ devices })))
@@ -591,12 +595,67 @@ function renderFleet(overrides: {
         {...(overrides.readOnly !== undefined ? { readOnly: overrides.readOnly } : {})}
         {...(overrides.readings ? { readings: overrides.readings } : {})}
         {...(overrides.onReadMachine ? { onReadMachine: overrides.onReadMachine } : {})}
+        {...(overrides.clientKind ? { clientKind: overrides.clientKind } : {})}
         providers={overrides.providers ?? [claude]}
       />
     </TooltipProvider>,
   )
   return { user, onListDevices, onRevokeDevice, onRotateDevice, onRenameDevice, onPairMachine, onForgetMachine, onUseMachine, onOpenMachineTerminal, onMoveSessionHere }
 }
+
+// The daemon takes device.rename, device.rotate and device.revoke only with its
+// own credential, and refuses a device credential by closing the connection. A
+// browser tab always holds a device credential, so it offers none of the three
+// and says why beside each row, as Settings states its other locked controls.
+it("locks Rename, Rotate and Unpair in a browser tab and says why beside each row", async () => {
+  const { user, onRevokeDevice, onRotateDevice, onRenameDevice } = renderFleet({ clientKind: "web", devices: [device, runner] })
+  const client = await screen.findByRole("row", { name: /studio-ipad/ })
+  const machine = screen.getByRole("row", { name: /beelink-ser8/ })
+
+  for (const [row, label, word] of [[client, "studio-ipad", "Unpair"], [machine, "beelink-ser8", "Revoke"]] as const) {
+    const controls = [
+      within(row).getByRole("button", { name: `Rename ${label}` }),
+      within(row).getByRole("button", { name: new RegExp(`^Rotate the credential (on )?${label}( uses)?$`, "u") }),
+      within(row).getByRole("button", { name: `${word} ${label}` }),
+    ]
+    for (const control of controls) {
+      expect(control).toHaveProperty("disabled", true)
+      await user.click(control)
+    }
+    expect(row.textContent).toContain(`Rename, Rotate and ${word} are off in a browser tab: they need the daemon's own credential. Use the desktop app on workshop.`)
+  }
+  // The consequence lines are for a control this tab can press; here it cannot.
+  expect(screen.queryByText(clientConsequence)).toBeNull()
+  expect(screen.queryByText(machineConsequence)).toBeNull()
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  expect(onRenameDevice).not.toHaveBeenCalled()
+  expect(onRotateDevice).not.toHaveBeenCalled()
+  expect(onRevokeDevice).not.toHaveBeenCalled()
+})
+
+// On a handheld browser the web app greets as phone or tablet, and the daemon
+// answers device.list from such a credential by closing the connection
+// (phoneAndTabletRpcMethods). The tab never asks, and says so where the list
+// would be.
+it.each(["phone", "tablet"] as const)("never lists paired devices in a %s tab, and says why", async (clientKind) => {
+  const { onListDevices } = renderFleet({ clientKind, devices: [device, runner] })
+  await act(async () => { await Promise.resolve() })
+
+  expect(onListDevices).not.toHaveBeenCalled()
+  expect(screen.getByText("Paired devices are off in a phone or tablet tab: the daemon does not list them for a phone or tablet credential. Use the desktop app on workshop.")).toBeTruthy()
+  expect(screen.queryByText("Loading paired devices")).toBeNull()
+  expect(screen.queryByRole("row", { name: /studio-ipad/ })).toBeNull()
+})
+
+it("keeps Rename, Rotate and Unpair live in the desktop app", async () => {
+  renderFleet({ clientKind: "desktop" })
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+  expect(within(row).getByRole("button", { name: "Rename studio-ipad" })).toHaveProperty("disabled", false)
+  expect(within(row).getByRole("button", { name: "Rotate the credential on studio-ipad" })).toHaveProperty("disabled", false)
+  expect(within(row).getByRole("button", { name: "Unpair studio-ipad" })).toHaveProperty("disabled", false)
+  expect(row.textContent).not.toContain("are off in a browser tab")
+  expect(row.textContent).toContain(clientConsequence)
+})
 
 it("renders the v2 Machines hierarchy without a settings rail", () => {
   renderFleet()
@@ -693,18 +752,20 @@ it("lists paired devices the daemon reports", async () => {
   expect(row.textContent).toContain("studio-ipad")
 })
 
-it("revokes a device only after the confirmation is accepted", async () => {
+// Q378 A: a client row is unpaired; Revoke stays for machine bindings.
+it("unpairs a client device only after the confirmation is accepted", async () => {
   const { user, onRevokeDevice } = renderFleet()
   await screen.findByRole("row", { name: /studio-ipad/ })
+  expect(screen.queryByRole("button", { name: "Revoke studio-ipad" })).toBeNull()
 
-  await user.click(screen.getByRole("button", { name: "Revoke studio-ipad" }))
+  await user.click(screen.getByRole("button", { name: "Unpair studio-ipad" }))
   expect(onRevokeDevice).not.toHaveBeenCalled()
 
-  await user.click(await screen.findByRole("button", { name: "Revoke device" }))
+  await user.click(await screen.findByRole("button", { name: "Unpair device" }))
 
   expect(onRevokeDevice).toHaveBeenCalledWith({ deviceId: device.id })
   await waitFor(() => {
-    expect(screen.getByRole("row", { name: /studio-ipad/ }).textContent).toContain("Revoked")
+    expect(screen.getByRole("row", { name: /studio-ipad/ }).textContent).toContain("Unpaired")
   })
   // A deliberate revoke is not an upgrade, so it must not borrow the copy that
   // tells the operator to pair the device again.
@@ -753,11 +814,21 @@ it("tells one upgrade story for either credential migration", async () => {
   expect(explanations[1]).toBe(explanations[0])
 })
 
+it("says a client could not be unpaired when the failure carries no reason", async () => {
+  const { user } = renderFleet({ onRevokeDevice: () => Promise.reject("socket closed") })
+  await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(screen.getByRole("button", { name: "Unpair studio-ipad" }))
+  await user.click(await screen.findByRole("button", { name: "Unpair device" }))
+
+  expect((await screen.findByText("Device action failed")).parentElement?.textContent).toContain("That device could not be unpaired")
+})
+
 it("keeps the device when the confirmation is cancelled", async () => {
   const { user, onRevokeDevice } = renderFleet()
   await screen.findByRole("row", { name: /studio-ipad/ })
 
-  await user.click(screen.getByRole("button", { name: "Revoke studio-ipad" }))
+  await user.click(screen.getByRole("button", { name: "Unpair studio-ipad" }))
   await user.click(await screen.findByRole("button", { name: "Keep device" }))
 
   expect(onRevokeDevice).not.toHaveBeenCalled()
@@ -771,6 +842,9 @@ it("rotates a device credential and shows it once", async () => {
 
   expect(onRotateDevice).toHaveBeenCalledWith({ deviceId: device.id })
   const notice = await screen.findByRole("status")
+  // The frame's info-tinted panel and its line on what Domovoi keeps.
+  expect(notice.className.split(" ")).toEqual(expect.arrayContaining(["border-info-border", "bg-info-background"]))
+  expect(notice.textContent).toContain("Shown once. Domovoi keeps a digest, not the secret.")
   await user.click(within(notice).getByRole("button", { name: "Show the credential" }))
   expect(notice.textContent).toContain("r".repeat(43))
   expect(notice.textContent).toContain("shown once")
@@ -792,33 +866,42 @@ it("names the kind from the binding, never from the label", async () => {
   expect(chip.getAttribute("title")).toBe(runner.binding.kind === "machine" ? runner.binding.machineId : "")
 })
 
-it("states the consequence of revoking before the confirmation, per kind", async () => {
-  renderFleet({ devices: [device, runner] })
-  await screen.findByRole("row", { name: /studio-ipad/ })
-
-  act(() => screen.getByRole("button", { name: "Revoke studio-ipad" }).focus())
-  expect((await screen.findByRole("tooltip")).textContent).toBe(clientConsequence)
-
-  act(() => screen.getByRole("button", { name: "Revoke beelink-ser8" }).focus())
-  await waitFor(() => {
-    expect(screen.getByRole("tooltip").textContent).toBe(machineConsequence)
-  })
-})
-
-// Radix tooltips never open on touch, so the sentence has to stand on its own
-// wherever the pointer is coarse. That is a CSS variant, which happy-dom does not
-// evaluate, so this checks the variant is on the element that carries the sentence.
-it("keeps the consequence as standing text where hover does not exist", async () => {
+// The Desktop V2 frame draws the consequence as a standing line under each
+// row, on every pointer, so it is read before the confirmation opens.
+it("states the consequence of unpairing or revoking under each row, per kind", async () => {
   renderFleet({ devices: [device, runner] })
 
   const clientRow = await screen.findByRole("row", { name: /studio-ipad/ })
   const standing = within(clientRow).getByText(clientConsequence)
-  expect(standing.className.split(" ")).toContain("hidden")
-  expect(standing.className.split(" ")).toContain("pointer-coarse:block")
+  expect(standing.className.split(" ")).not.toContain("hidden")
 
   const machineRow = screen.getByRole("row", { name: /beelink-ser8/ })
-  expect(within(machineRow).getByText(machineConsequence).className.split(" "))
-    .toContain("pointer-coarse:block")
+  expect(within(machineRow).getByText(machineConsequence).className.split(" ")).not.toContain("hidden")
+  expect(within(machineRow).getByRole("button", { name: "Revoke beelink-ser8" })).toBeTruthy()
+})
+
+// The frame's rows sit in one card under its heading, not under a bare
+// five-column header; the column names stay for a screen reader.
+it("draws the paired devices as rows of one card under its heading", async () => {
+  renderFleet()
+
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+  const card = row.closest("table")?.parentElement
+  expect(card?.className.split(" ")).toEqual(expect.arrayContaining(["rounded-xl", "border", "bg-card"]))
+  expect(within(card!).getByRole("heading", { name: "Devices paired with workshop" })).toBeTruthy()
+  expect(screen.getByRole("columnheader", { name: "Kind" }).closest("thead")?.className).toContain("sr-only")
+  // With the header row hidden, each date says what it is, as the frame's
+  // meta line does.
+  expect(row.textContent).toMatch(/paired \d{2} Aug/u)
+  expect(row.textContent).toMatch(/last seen \d{2} Aug/u)
+})
+
+it("says a device that never connected was never seen", async () => {
+  const { lastSeenAt: _lastSeen, ...unseen } = device
+  renderFleet({ devices: [unseen] })
+
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+  expect(row.textContent).toContain("never seen")
 })
 
 it("masks a rotated credential and copies it without revealing it", async () => {
@@ -949,16 +1032,16 @@ it("confirms revoking a client device in that device's own words", async () => {
   const { user, onRevokeDevice } = renderFleet()
   await screen.findByRole("row", { name: /studio-ipad/ })
 
-  await user.click(screen.getByRole("button", { name: "Revoke studio-ipad" }))
+  await user.click(screen.getByRole("button", { name: "Unpair studio-ipad" }))
 
-  const dialog = await screen.findByRole("alertdialog", { name: "Revoke studio-ipad" })
+  const dialog = await screen.findByRole("alertdialog", { name: "Unpair studio-ipad" })
   expect(dialog.textContent).toContain(
     "That tablet loses access to this machine immediately and has to be paired again, from the tablet, to come back.",
   )
   expect(dialog.textContent).toContain("Sessions already on this machine are untouched.")
   expect(dialog.textContent).not.toContain("machine-")
   expect(within(dialog).getByRole("button", { name: "Keep device" })).toBeTruthy()
-  await user.click(within(dialog).getByRole("button", { name: "Revoke device" }))
+  await user.click(within(dialog).getByRole("button", { name: "Unpair device" }))
   expect(onRevokeDevice).toHaveBeenCalledWith({ deviceId: device.id })
 })
 
@@ -1018,10 +1101,10 @@ it("offers no consequence and no action on a revoked row", async () => {
   })
 
   const row = await screen.findByRole("row", { name: /studio-ipad/ })
-  expect(within(row).getByRole("button", { name: "Revoke studio-ipad" })).toHaveProperty("disabled", true)
+  expect(within(row).getByRole("button", { name: "Unpair studio-ipad" })).toHaveProperty("disabled", true)
   expect(within(row).getByRole("button", { name: "Rotate the credential on studio-ipad" })).toHaveProperty("disabled", true)
   expect(within(row).queryByText(clientConsequence)).toBeNull()
-  expect(row.textContent).toContain("revoked")
+  expect(row.textContent).toContain("unpaired")
 })
 
 it("renames a device in place and offers Undo after committing", async () => {
@@ -1038,7 +1121,7 @@ it("renames a device in place and offers Undo after committing", async () => {
   expect(onRenameDevice).toHaveBeenCalledWith({ deviceId: device.id, label: "kitchen-ipad" })
   const renamed = await screen.findByRole("row", { name: /kitchen-ipad/ })
   expect(within(renamed).queryByRole("textbox")).toBeNull()
-  expect(within(renamed).getByRole("button", { name: "Revoke kitchen-ipad" })).toBeTruthy()
+  expect(within(renamed).getByRole("button", { name: "Unpair kitchen-ipad" })).toBeTruthy()
 
   await user.click(within(renamed).getByRole("button", { name: "Undo" }))
 
@@ -1152,8 +1235,8 @@ it("states why a device action was refused", async () => {
   })
   await screen.findByRole("row", { name: /studio-ipad/ })
 
-  await user.click(screen.getByRole("button", { name: "Revoke studio-ipad" }))
-  await user.click(await screen.findByRole("button", { name: "Revoke device" }))
+  await user.click(screen.getByRole("button", { name: "Unpair studio-ipad" }))
+  await user.click(await screen.findByRole("button", { name: "Unpair device" }))
 
   expect((await screen.findByRole("alert")).textContent)
     .toContain("Managing paired devices requires the daemon credential")
@@ -1182,7 +1265,7 @@ it("keeps machine, pairing, and device mutations locked while watching", async (
   expect(screen.queryByRole("button", { name: /^Open its/u })).toBeNull()
   expect(within(row).getByRole("button", { name: "Rename studio-ipad" })).toHaveProperty("disabled", true)
   expect(within(row).getByRole("button", { name: "Rotate the credential on studio-ipad" })).toHaveProperty("disabled", true)
-  expect(within(row).getByRole("button", { name: "Revoke studio-ipad" })).toHaveProperty("disabled", true)
+  expect(within(row).getByRole("button", { name: "Unpair studio-ipad" })).toHaveProperty("disabled", true)
 })
 
 it("refuses to open a remote machine and names the missing credential", async () => {

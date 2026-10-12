@@ -1569,15 +1569,27 @@ describe("phone and tablet credential scope", () => {
 
   it("carries the pairing card's list", () => {
     // The card's list as PairingCard draws it (2026-09-23): the three grants,
-    // the gates-while-open limit, the line the daemon does not keep yet marked
-    // rather than dropped, and the repository limit last.
+    // the gates-while-open limit, the terminal line, and the repository limit
+    // last.
     expect(phoneAndTabletPromise).toHaveLength(6)
     expect(phoneAndTabletPromise[3]).toEqual({ text: "Gates reach it only while its app is open. Nothing is pushed to a phone yet.", tone: "limit" })
     expect(phoneAndTabletPromise.at(-1)).toEqual({ text: "It cannot pull the repository down. Files stay here.", tone: "limit" })
-    // The short form, ruled 2026-09-23; the line goes when the phone reads terminals.
-    expect(phoneAndTabletPromise.filter((line) => line.tone === "unbuilt")).toEqual([
-      { text: "Terminal output is not on a phone yet.", tone: "unbuilt" },
-    ])
+    // Ruling Q61 A (2026-10-11): since #739 the phone watches terminal output,
+    // so the line is Phone v2 frame 04g's "when this ships" grant, which names
+    // its read-only limit in the same breath. Nothing on the list is unbuilt.
+    expect(phoneAndTabletPromise[4]).toEqual({ text: "Read terminal output. It cannot type, resize or take the claim.", tone: "granted" })
+    expect(phoneAndTabletPromise.filter((line) => line.tone === "unbuilt")).toEqual([])
+  })
+
+  it("grants the terminal only as far as its line says", () => {
+    // "Read terminal output": the watch methods are on the allow-list.
+    for (const method of ["terminal.list", "terminal.watch", "terminal.unwatch"] as const) {
+      expect(phoneAndTabletRpcMethods.has(method), method).toBe(true)
+    }
+    // "It cannot type, resize or take the claim": nor create or close one.
+    for (const method of ["terminal.input", "terminal.resize", "terminal.claim", "terminal.release", "terminal.create", "terminal.close"] as const) {
+      expect(phoneAndTabletRpcMethods.has(method), method).toBe(false)
+    }
   })
 })
 
@@ -1595,6 +1607,14 @@ describe("session search", () => {
     expect(sessionSearchResultSchema.parse(result)).toEqual(result)
     expect(sessionSearchResultSchema.safeParse({ ...result, matches: [{ session, matchedIn: "body" }] }).success).toBe(false)
     expect(sessionSearchResultSchema.safeParse({ query: "webhooks", matches: [] }).success).toBe(false)
+    // The answering daemon's clock at reply time, so a client can age the
+    // match's timestamps on that machine's clock (the fleet's daemonTime).
+    expect(sessionSearchResultSchema.parse({ ...result, daemonTime: "2026-10-10T09:00:00.000Z" }))
+      .toEqual({ ...result, daemonTime: "2026-10-10T09:00:00.000Z" })
+    expect(sessionSearchResultSchema.parse({ ...result, daemonTime: "2026-10-10T11:00:00.000+02:00" }).daemonTime)
+      .toBe("2026-10-10T11:00:00.000+02:00")
+    expect(sessionSearchResultSchema.safeParse({ ...result, daemonTime: "not-a-time" }).success).toBe(false)
+    expect(sessionSearchResultSchema.safeParse({ ...result, daemonTime: "2026-10-10T09:00:00" }).success).toBe(false)
     expect(rpcMethodAuthorizations["session.search"]).toBe("observe")
     expect(rpcMethodMutations["session.search"]).toBe("read-only")
     // The palette fans out from a desktop or web client; the phone list is unchanged.

@@ -50,6 +50,7 @@ function screenFor(detail: NonNullable<ReturnType<typeof sessionDetail>>, draft 
         onPickLibrary={jest.fn<() => void>()}
         onTakePhoto={jest.fn<() => void>()}
         onRemoveAttachment={jest.fn<(index: number) => void>()}
+        onRemoveAttachments={jest.fn<() => void>()}
         starting={false}
         startProblem=""
         onStartLike={jest.fn<(prompt: string, mode: "ask" | "plan" | "build") => void>()}

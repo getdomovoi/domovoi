@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react"
 import { KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
-import { threadFollowState, type ClientAccess, type PermissionMode, type QueuedSessionSend } from "@getdomovoi/protocol"
+import { threadFollowState, type ApprovalDecision, type ClientAccess, type PermissionMode, type QueuedSessionSend } from "@getdomovoi/protocol"
 
 import type { ConnectionNotice } from "../connection-notice"
 
@@ -22,7 +22,7 @@ import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
 import type { ArtifactRow } from "../artifact-rows"
 import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
-import type { Attachment } from "../attachments"
+import type { Attachment, ModelImages } from "../attachments"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
 import type { PhoneRefusal } from "../session-refusal"
 import { watchedSummary, type TerminalWatch } from "../terminal-rows"
@@ -45,6 +45,15 @@ const textTone: Record<PlanRow["tone"], string> = {
   queued: "text-muted-foreground",
 }
 
+// Frame 03's RECORDED AS names the decision in words (allow once), not as
+// the wire value.
+const recordedWords: Record<ApprovalDecision, string> = {
+  "allow-once": "allow once",
+  "always-project": "always project",
+  deny: "deny",
+  "deny-explain": "deny explain",
+}
+
 // Memoized, with a stable onWatch from the screen: a keystroke or a streamed
 // batch re-renders the screen, and a row that has not changed is not drawn or
 // parsed again.
@@ -55,9 +64,12 @@ function Receipt({ entry, onWatch }: {
   // A deny is not a success, so it does not wear the success colours.
   const denied = entry.recorded === "deny" || entry.recorded === "deny-explain"
   const dim = denied ? "text-muted-foreground" : "text-ok-dim"
+  // The credential row appears only when the daemon verified a paired device
+  // on the deciding connection; a declared client id is never a credential.
   const record: Array<[string, string]> = [
-    ["Decision", entry.recorded],
-    ["Decided on", entry.decidedBy],
+    ["Decision", recordedWords[entry.recorded]],
+    ["Decided on", entry.decidedOn],
+    ...(entry.credential ? [["Credential", entry.credential] as [string, string]] : []),
     ...(entry.declaredClient ? [["Declared client", entry.declaredClient] as [string, string]] : []),
     ["Checkpoint", entry.checkpoint],
   ]
@@ -77,6 +89,12 @@ function Receipt({ entry, onWatch }: {
             {entry.ranFor
               ? <>was taken first, then it ran in <Text className="font-mono text-[12px]">{entry.ranFor}</Text>.</>
               : "was taken first."}
+          </Text>
+        ) : entry.ranFor ? (
+          // An allow that could take no checkpoint still ran, and how long it
+          // ran is its own fact, not part of the checkpoint sentence.
+          <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>
+            It ran in <Text className="font-mono text-[12px]">{entry.ranFor}</Text>.
           </Text>
         ) : null}
         <Text className={cn("font-sans text-[13px] leading-[20px]", dim)}>{entry.operation}</Text>
@@ -562,6 +580,8 @@ export function SessionScreen({
   onPickLibrary,
   onTakePhoto,
   onRemoveAttachment,
+  onRemoveAttachments,
+  modelImages,
   starting,
   startProblem,
   startRefusal,
@@ -613,6 +633,11 @@ export function SessionScreen({
   onPickLibrary: () => void
   onTakePhoto: () => void
   onRemoveAttachment: (index: number) => void
+  onRemoveAttachments: () => void
+  // Frames 13b and 14b: the session's model and whether its harness reports
+  // image input. A model reported to take none locks the image sources and
+  // the send of queued images; not knowing locks nothing.
+  modelImages?: ModelImages | undefined
   // Start another session like this one: same machine, repository, provider
   // and model, with words from the person and a mode, Plan by default.
   starting: boolean
@@ -861,12 +886,15 @@ export function SessionScreen({
         bottomInset={composerBottomInset}
         onOpenAttach={() => setAttachOpen(true)}
         onRemoveAttachment={onRemoveAttachment}
+        onRemoveAttachments={onRemoveAttachments}
+        images={modelImages}
         onFootprint={setComposerFootprint}
       /> : null}
       <AttachSheet
         open={attachOpen}
         machine={machine}
         problem={attachProblem}
+        images={modelImages}
         onPickLibrary={() => { setAttachOpen(false); onPickLibrary() }}
         onTakePhoto={() => { setAttachOpen(false); onTakePhoto() }}
         onClose={() => setAttachOpen(false)}

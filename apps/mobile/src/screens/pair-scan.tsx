@@ -229,9 +229,8 @@ export function PairScanScreen({
             <Text variant="label" className="tracking-[0.13em]">
               {device === "tablet" ? "THIS TABLET WILL BE ABLE TO" : "THIS PHONE WILL BE ABLE TO"}
             </Text>
-            {/* The card's own list, including the line it does not keep yet,
-                read from the protocol so this screen and the machine's card
-                cannot come to say different things. A grant wears the success
+            {/* The card's own list, read from the protocol so this screen and
+                the machine's card cannot come to say different things. A grant wears the success
                 dot and a limit the info dot, as the machine's card draws them. */}
             <View className="gap-1.5">
               {phoneAndTabletPromise.map((line) => (

@@ -1,6 +1,6 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { demoWorkspace } from "@getdomovoi/protocol"
+import { approvalCheckpointErrorCode, demoWorkspace } from "@getdomovoi/protocol"
 import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
@@ -47,6 +47,83 @@ it("shows the daemon's refusal of a decision inside the gate card", async () => 
   await user.click(screen.getByRole("button", { name: "Allow once" }))
   expect(within(card).queryByRole("alert")).toBeNull()
   expect(onResolve).toHaveBeenCalledTimes(2)
+})
+
+// S3.10h, #743: the daemon names why it could not take a checkpoint as typed
+// data, and the card draws the design's line from it, never from parsing the
+// daemon's sentence.
+const heldLock = "/Users/dana/acme-api/.git/refs/domovoi/checkpoints/cccc.lock"
+
+it("draws the design's line for a checkpoint refused over a held lock", async () => {
+  const user = userEvent.setup()
+  const snapshot = structuredClone(demoWorkspace)
+  const message = `Domovoi could not take a checkpoint: ${heldLock} is held by another git process, so the command did not run; decide again`
+  const onResolve = vi.fn().mockRejectedValueOnce(new DaemonRpcError(approvalCheckpointErrorCode, message, {
+    kind: "approval-checkpoint-refused", cause: "lock-held", lockPath: heldLock,
+  }))
+  render(refusalThread(onResolve)(snapshot))
+
+  await user.click(screen.getByRole("button", { name: "Allow once" }))
+
+  const card = screen.getByText(snapshot.approvals[0]!.command).closest("[role=alert]") as HTMLElement
+  const refusal = within(card).getByRole("alert")
+  expect(refusal.textContent).toBe(`Could not take a checkpoint: ${heldLock} is held by another git process, or was left by one that stopped. Nothing ran. Decide again.`)
+  expect(within(refusal).getByText(heldLock).className).toContain("font-machine")
+})
+
+it("shows the daemon's words when the refusal's data is not a checkpoint refusal it can read", async () => {
+  const user = userEvent.setup()
+  const message = "Domovoi could not take a checkpoint, so the command did not run; decide again"
+  for (const [code, data] of [
+    [approvalCheckpointErrorCode, undefined],
+    [approvalCheckpointErrorCode, { kind: "approval-checkpoint-refused", cause: "lock-held" }],
+    [approvalCheckpointErrorCode, { kind: "approval-checkpoint-refused", cause: "invented" }],
+    [approvalCheckpointErrorCode, { kind: "session-review-refused", reason: "comment-unavailable" }],
+    // Error data is not tied to a code on the wire: only the checkpoint
+    // refusal's own code makes the data a checkpoint refusal.
+    [-32603, { kind: "approval-checkpoint-refused", cause: "unknown" }],
+  ] as const) {
+    const snapshot = structuredClone(demoWorkspace)
+    const { unmount } = render(refusalThread(vi.fn().mockRejectedValueOnce(new DaemonRpcError(code, message, data)))(snapshot))
+    await user.click(screen.getByRole("button", { name: "Allow once" }))
+    const card = screen.getByText(snapshot.approvals[0]!.command).closest("[role=alert]") as HTMLElement
+    expect(within(card).getByRole("alert").textContent, JSON.stringify(data)).toBe(message)
+    unmount()
+  }
+})
+
+// The card itself is an alert; the refusal is the alert inside it.
+const refusalIn = () => screen.getAllByRole("alert").at(-1)!
+
+it.each([
+  ["submodule-changes", "Could not take a checkpoint: a submodule has local changes a checkpoint cannot hold. Nothing ran. Decide again."],
+  ["timed-out", "Could not take a checkpoint: it did not finish in time. Nothing ran. Decide again."],
+  ["git-failed", "Could not take a checkpoint: a Git command failed. Nothing ran. Decide again."],
+  ["unknown", "Could not take a checkpoint. Nothing ran. Decide again."],
+] as const)("draws the line for a checkpoint refused with cause %s", (cause, line) => {
+  const approval = structuredClone(demoWorkspace).approvals[0]!
+  render(<ApprovalCard approval={approval} onResolve={vi.fn()} surface="desktop" connected refusal={{
+    message: "Domovoi could not take a checkpoint, so the command did not run; decide again",
+    code: approvalCheckpointErrorCode,
+    data: { kind: "approval-checkpoint-refused", cause },
+  }} />)
+  expect(refusalIn().textContent).toBe(line)
+})
+
+// The repository's config and a missing Git need the daemon's own detail to
+// act on: which setting, or what to install. The card keeps it under the line.
+it.each([
+  ["repository-config", "Could not take a checkpoint: this repository's own Git config asks for something Domovoi does not run. Nothing ran. Decide again.",
+    "Domovoi could not take a checkpoint, so the command did not run; decide again. The repository sets the filter \"lfs\" in its own Git config. Nothing ran."],
+  ["repository-config-unreadable", "Could not take a checkpoint: Git could not read this repository's config. Nothing ran. Decide again.",
+    "Domovoi could not take a checkpoint, so the command did not run; decide again. Git could not read the repository's Git config."],
+  ["git-unavailable", "Could not take a checkpoint: this machine's Git is missing, or not a version Domovoi can use. Nothing ran. Decide again.",
+    "Domovoi could not take a checkpoint, so the command did not run; decide again. Domovoi found no git in an absolute PATH entry."],
+] as const)("keeps the daemon's detail under the line for cause %s", (cause, line, message) => {
+  const approval = structuredClone(demoWorkspace).approvals[0]!
+  render(<ApprovalCard approval={approval} onResolve={vi.fn()} surface="desktop" connected refusal={{ message, code: approvalCheckpointErrorCode, data: { kind: "approval-checkpoint-refused", cause } }} />)
+  expect(within(refusalIn()).getByText(line)).toBeTruthy()
+  expect(within(refusalIn()).getByText(message)).toBeTruthy()
 })
 
 function refusalThread(onResolve: ComponentProps<typeof Thread>["onResolve"]) {

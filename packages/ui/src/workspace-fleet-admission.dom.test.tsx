@@ -115,7 +115,7 @@ it.each(["Open its sessions on Studio", "Terminal on Studio"])("assembles author
   await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
   if (action === "Terminal on Studio") await user.click(screen.getByRole("button", { name: "Remove local access" }))
   expect(screen.getByRole("button", { name: openStudio }).hasAttribute("disabled")).toBe(true)
-  if (action === "Terminal on Studio") expect(screen.getByText(/This app no longer holds/).textContent).toContain("Devices list")
+  if (action === "Terminal on Studio") expect(screen.getByText(/This app no longer holds/).textContent).toBe("This app no longer holds the credential for Studio. To end its authority there, unpair this device in the desktop app on Studio, under Machines.")
   if (action === "Terminal on Studio") {
     await user.click(screen.getByRole("button", { name: "Authorize this client for Studio" }))
     const grant = screen.getByRole("dialog")

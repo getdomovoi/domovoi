@@ -182,7 +182,12 @@
     {
       "id": "pairing-card.grants",
       "since": "2026-10-02",
-      "note": "The design's open question on the unbuilt grant line is settled: phoneAndTabletPromise now says Terminal output is not on a phone yet., the design's line, word for word."
+      "note": "The design's open question on the unbuilt grant line is settled: phoneAndTabletPromise now says Terminal output is not on a phone yet., the design's line, word for word. Superseded by the 2026-10-11 note."
+    },
+    {
+      "id": "pairing-card.grants",
+      "since": "2026-10-11",
+      "note": "Differs from GRANTS on purpose, ruling Q61 A (task 72): the fifth line is Read terminal output. It cannot type, resize or take the claim. with the success dot, Phone v2 frame 04g's When this ships line, in the place of Terminal output is not on a phone yet. with the info dot, which stopped being true when #739 let a phone watch terminal output. The card, the command line and the phone read the one list, so they changed together; phone-v2.json's pairing.grant-line note holds the allow-list check."
     },
     {
       "id": "pairing-card.code",

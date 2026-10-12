@@ -4,7 +4,7 @@ import { imageUploadSchema, maximumSessionAttachments, sessionAttachmentSchema }
 import { protocolVersionSchema } from "./protocol-version.js"
 import { relayRecoveryParamsSchema, relayRecoveryResultSchema } from "./relay-recovery.js"
 import { serviceHandoffFenceParamsSchema, serviceHandoffFenceResultSchema } from "./service-handoff.js"
-import { dateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
+import { dateTimeSchema, offsetDateTimeSchema, utf16Length, utf16MaxLength } from "./validation.js"
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
 import { approvalRuleRevokeParamsSchema, permissionHardGatesParamsSchema, permissionHardGatesResultSchema } from "./rules.js"
@@ -517,6 +517,9 @@ export const sessionSearchResultSchema = z.object({
   matches: z.array(sessionSearchMatchSchema).max(maximumSessionSearchResults),
   // More sessions matched than the limit allowed; the list is not every match.
   truncated: z.boolean(),
+  // The answering daemon's clock when it replied, as on fleet snapshots: a
+  // client ages the matches' timestamps by this reply's offset, per machine.
+  daemonTime: offsetDateTimeSchema.optional(),
 }).strict()
 
 export const sessionHistoryPageSchema = z.object({
@@ -2131,21 +2134,30 @@ export const repositoryTrustRpcMethods = new Set<RpcMethod>([
   "repository.revokeTrust",
 ])
 
-// The pairing card's grant list, verbatim from PairingCard in the 2026-09-23
-// desktop design, in the order it draws them. The unbuilt line is one of the
-// grants rather than a note correcting them, because a drawing that needs a
-// footnote to stop being wrong is a drawing that should have said it. Every
-// surface showing the list reads it from here, so the machine's card, the CLI
-// and the phone cannot come to say different things. The gates-while-open line
-// is a limit of the first release: without the relay nothing is pushed.
-export const phoneAndTabletPromise = [
+// How a grant line reads. An unbuilt line is one of the grants rather than a
+// note correcting them, because a drawing that needs a footnote to stop being
+// wrong is a drawing that should have said it. No line is unbuilt today; the
+// tone stays so the next one is marked rather than dropped.
+export type PhoneAndTabletGrantTone = "granted" | "unbuilt" | "limit"
+
+// The pairing card's grant list, from PairingCard in the 2026-09-23 desktop
+// design, in the order it draws them. Every surface showing the list reads it
+// from here, so the machine's card, the CLI and the phone cannot come to say
+// different things. The gates-while-open line is a limit of the first release:
+// without the relay nothing is pushed. The terminal line is Phone v2 frame
+// 04g's "when this ships" grant, not PairingCard's "Terminal output is not on
+// a phone yet.": since #739 a phone or tablet watches terminal output through
+// terminal.list, terminal.watch and terminal.unwatch, and none of the methods
+// that type, resize or claim is on phoneAndTabletRpcMethods (ruling Q61 A,
+// 2026-10-11).
+export const phoneAndTabletPromise: readonly { readonly text: string, readonly tone: PhoneAndTabletGrantTone }[] = [
   { text: "Watch every session and its diffs", tone: "granted" },
   { text: "Answer gates, with the same three decisions", tone: "granted" },
   { text: "Start and stop sessions, and steer one mid-run", tone: "granted" },
   { text: "Gates reach it only while its app is open. Nothing is pushed to a phone yet.", tone: "limit" },
-  { text: "Terminal output is not on a phone yet.", tone: "unbuilt" },
+  { text: "Read terminal output. It cannot type, resize or take the claim.", tone: "granted" },
   { text: "It cannot pull the repository down. Files stay here.", tone: "limit" },
-] as const satisfies readonly { text: string, tone: "granted" | "unbuilt" | "limit" }[]
+]
 
 export type RpcParams<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["params"]>
 export type RpcResult<M extends RpcMethod> = z.infer<(typeof rpcMethods)[M]["result"]>

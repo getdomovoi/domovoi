@@ -6,7 +6,7 @@
     "apps/mobile/src/**/*.{ts,tsx}",
     "packages/protocol/src/**/*.ts"
   ],
-  "note": "Four frames: two pane with a gate waiting, decision made, the review sheet, on cellular. The tablet shell exists since #517 (apps/mobile/src/tablet-shell.tsx, mounted by app.tsx at widths of 768pt or more), and app.json sets supportsTablet, so every iPad gets it although SHIP-PLAN leaves the tablet out of M1. Re-read against the code 2026-10-02: each element that passed on a component name alone is partial, because the name proves a function exists, not that the design is met; presence holds the anchored component definition and evidence names what is drawn and missing. Q338 A (2026-10-02) fixes the correctness gaps now (silent gate and send failures, the false receipt, the zero-session dead end, the thread opening at the top, artifacts counted as files, the transparent command block, the false comment-anchor copy) and leaves visual parity, tablet type sizes included, to S3.5. The cellular frame reaches the machine over Domovoi Cloud, the Phase 2 relay (M2), so it is blocked. Phone v2 frame 04f, the terminal beside the thread on a tablet, is inventoried as tablet.terminal-beside in phone-v2.json.",
+  "note": "Four frames: two pane with a gate waiting, decision made, the review sheet, on cellular. The tablet shell exists since #517 (apps/mobile/src/tablet-shell.tsx, mounted by app.tsx at widths of 768pt or more), and app.json sets supportsTablet, so every iPad gets it although SHIP-PLAN leaves the tablet out of M1. Re-read against the code 2026-10-02: each element that passed on a component name alone is partial, because the name proves a function exists, not that the design is met; presence holds the anchored component definition and evidence names what is drawn and missing. Q338 A (2026-10-02) fixes the correctness gaps now (silent gate and send failures, the false receipt, the zero-session dead end, the thread opening at the top, artifacts counted as files, the transparent command block, the false comment-anchor copy) and leaves visual parity, tablet type sizes included, to S3.5. SL-7 (2026-10-12) fixes them; the deny explanation the tablet receipt drops stays open (thread.receipt). The cellular frame reaches the machine over Domovoi Cloud, the Phase 2 relay (M2), so it is blocked. Phone v2 frame 04f, the terminal beside the thread on a tablet, is inventoried as tablet.terminal-beside in phone-v2.json.",
   "sample": [
     "14:06",
     "62%",
@@ -53,8 +53,8 @@
         }
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "the pane draws Domovoi as text, a Machines pill, New session and the groups; the design draws the 26px mark, a machine chip (dot and name) and a 44px search square. With zero sessions TabletShell returns No session is selected. in place of the whole shell, so New session and Machines disappear and the tablet, which has no tab bar, dead-ends. Row metas are only waiting on you, running and quiet, with no age, review or failed state (the design draws review 7 files, failed 1h ago, running 12m, idle 2d), and failed and review sessions do not join NEEDS YOU. Q386 A (2026-10-02) ports the mark as an SVG component shared with the phone; search can be a client-side title filter (session.search is not on the phone and tablet allow-list)"
+        "since": "2026-10-12",
+        "reason": "the pane draws the 26px mark beside Domovoi (Q386 A, the SVG component shared with the phone), a Machines pill, New session and the groups; the design draws a machine chip (dot and name) in place of the pill, and a 44px search square. SL-7 (2026-10-12): with zero sessions the pane stays, so New session and Machines stay within reach, and the thread pane says Everything is idle with the phone's idle sentence (phone v2 frame 10; the tablet design draws no empty frame). Row metas are only waiting on you, running and quiet, with no age, review or failed state (the design draws review 7 files, failed 1h ago, running 12m, idle 2d), and failed and review sessions do not join NEEDS YOU. Search can be a client-side title filter (session.search is not on the phone and tablet allow-list)"
       }
     },
     {
@@ -76,8 +76,8 @@
         }
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "the header draws the title and project · branch · worktree; there is no clock, the files button counts the session's artifacts, not its changed files (session.changedFiles and session.evidence are on the allow-list), the button is an outline pill without the GitCompare icon, and the theme toggle draws the settings gear, not a moon or sun (those icons are not in components/ui/icon.tsx). The clock is client work: session.history (on the phone and tablet allow-list) carries each turn's startedAt and completedAt (sessionTurnSchema). Q401 (2026-10-02): durations are client work from session.history today, and from the snapshot's derived turns once the fix/v2-protocol branch lands (a turn ended by a restart has no completedAt)"
+        "since": "2026-10-12",
+        "reason": "the header draws the title and project · branch · worktree; there is no clock. SL-7 (2026-10-12): the files button counts the files the session changed (the snapshot's session.changedFiles, 1 file or N files) rather than its artifacts. The button is an outline pill without the GitCompare icon, and the theme toggle draws the settings gear, not a moon or sun (those icons are not in components/ui/icon.tsx). The clock is client work: session.history (on the phone and tablet allow-list) carries each turn's startedAt and completedAt (sessionTurnSchema). Q401 (2026-10-02): durations are client work from session.history today, and from the snapshot's derived turns once the fix/v2-protocol branch lands (a turn ended by a restart has no completedAt)"
       }
     },
     {
@@ -89,15 +89,18 @@
       ],
       "evidence": [
         "re:export function TabletThread\\(",
-        "Worked for",
+        {
+          "absent": "Work this turn",
+          "in": "apps/mobile/src/tablet-shell.tsx"
+        },
         {
           "absent": "const files = snapshot.artifacts",
           "in": "apps/mobile/src/tablet-shell.tsx"
         }
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "the thread draws turns and a static Work this turn pill with a session-wide tool count and an artifact count as files; it does not expand, every tool call renders inline as a note instead of folding into the activity list, the thread does not follow the end (TabletThread omits followEnd, so a long thread opens at the top with the gate off screen), and omitted items are not stated. The earlier evidence TabletThread was a substring of TabletThreadHeader and TabletThreadEntry, so it proved nothing. Worked for N is client work: session.history (on the allow-list) carries each turn's startedAt and completedAt, and Q401 (2026-10-02) makes it client work from there today and from the snapshot's derived turns once the fix/v2-protocol branch lands. Per-tool durations need protocol: a tool item has no duration"
+        "since": "2026-10-12",
+        "reason": "the thread draws turns and a static Work this turn pill where the design draws Worked for N; the pill has a session-wide tool count, does not expand, every tool call renders inline as a note instead of folding into the activity list, and omitted items are not stated. SL-7 (2026-10-12): the pill counts the session's changed files, not its artifacts, and the thread follows the end, so it opens at the latest turn with the gate in view and opens a newly chosen session at its own end. The evidence names the Work this turn label in tablet-shell.tsx, because Worked for is already drawn elsewhere in the mobile sources and so proved nothing about the tablet. The earlier evidence TabletThread was a substring of TabletThreadHeader and TabletThreadEntry, so it proved nothing. Worked for N is client work: session.history (on the allow-list) carries each turn's startedAt and completedAt, and Q401 (2026-10-02) makes it client work from there today and from the snapshot's derived turns once the fix/v2-protocol branch lands. Per-tool durations need protocol: a tool item has no duration"
       }
     },
     {
@@ -121,11 +124,15 @@
           "absent": "bg-warn-deep",
           "in": "apps/mobile/src/tablet-shell.tsx"
         },
-        "re:export function TabletGateCard\\(\\{[^}]*problem"
+        "re:export function TabletGateCard\\(\\{[^}]*problem",
+        {
+          "absent": "{approval.agent}</Text>",
+          "in": "apps/mobile/src/tablet-shell.tsx"
+        }
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "the card decides with 52 and 48px targets; a refused or failed Allow is silent (app.tsx sets decideProblem, TabletShell has no prop for it) and the card has no pending state, so a double tap sends twice. bg-warn-deep is not a registered token (warn-bg-deep is), so the command block has no background. step n of N is not drawn (the agent shows in its place); that is client work, because WorkspaceSnapshot.workingPlans steps carry blocker.approvalId, which the snapshot schema validates against the open approvals, so the blocked step and its position name the gate. Type sizes and radius differ (command 10px against 13, labels 12 against 15 and 14, radius 10.4 against 16), which Q338 A leaves to S3.5"
+        "since": "2026-10-12",
+        "reason": "the card decides with 52 and 48px targets. SL-7 (2026-10-12): a refused or failed answer shows decisionProblem's sentence on the card of the gate it answered, every decision is disabled while an answer is out and App latches the answer, so a double tap sends once; a refused deny shows on the reason screen; the command block sits on warn-bg-deep. step n of N is not drawn (the agent shows in its place); that is client work, because WorkspaceSnapshot.workingPlans steps carry blocker.approvalId, which the snapshot schema validates against the open approvals, so the blocked step and its position name the gate. Type sizes and radius differ (command 10px against 13, labels 12 against 15 and 14, radius 10.4 against 16), which Q338 A leaves to S3.5"
       }
     },
     {
@@ -148,8 +155,8 @@
         }
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "the colours and the checkpoint line are honest now: success colours only for an allow, and the checkpoint sentence only when an allow took one, with the run time when the receipt has it. Two gaps remain. The deny explanation is dropped: the receipt entry carries it and the phone's receipt draws it, but TabletReceipt does not. The meta shows the gate wait (decided after <wait>) or the client, not the design's checkpoint · ran for (ckpt_7f24 · 38s). The evidence holds both: entry.explanation inside TabletReceipt, and no decided-after meta in tablet-shell.tsx"
+        "since": "2026-10-12",
+        "reason": "the colours and the checkpoint line are honest now: success colours only for an allow, and the checkpoint sentence only when an allow took one, with the run time when the receipt has it. SL-7 (2026-10-12, P2): an allow that took no checkpoint says It ran in <duration>. on its own line, as the phone does. Two gaps remain. The deny explanation is dropped: the receipt entry carries it and the phone's receipt draws it, but TabletReceipt does not. The meta shows the gate wait (decided after <wait>) or the client, not the design's checkpoint · ran for (ckpt_7f24 · 38s). The evidence holds both: entry.explanation inside TabletReceipt, and no decided-after meta in tablet-shell.tsx"
       }
     },
     {
@@ -170,8 +177,8 @@
         "re:export function TabletComposer\\(\\{[^}]*(problem|queued)"
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "the field and send exist; a failed or refused send shows nothing (sendProblem is never passed), a watching or read-only tablet gets a dead field with no reason (detail.sending.reason is not drawn), and a queued send is invisible and cannot be cancelled (session.cancelQueuedSend is on the allow-list). There is no paperclip (AttachSheet exists for the phone), no usage ring or cost (session.usage and usage.window are on the allow-list), and the model reads claude-code · sonnet-4.6 where the design draws a harness glyph and the short name; the harness glyph asset is not in the repository"
+        "since": "2026-10-12",
+        "reason": "the field and send exist. SL-7 (2026-10-12): a failed or refused send shows its problem above the field, kept per session by App. Still open: a watching or read-only tablet gets a dead field with no reason (detail.sending.reason is not drawn), and a queued send is invisible and cannot be cancelled (session.cancelQueuedSend is on the allow-list). There is no paperclip (AttachSheet exists for the phone), no usage ring or cost (session.usage and usage.window are on the allow-list), and the model reads claude-code · sonnet-4.6 where the design draws a harness glyph and the short name; the harness glyph asset is not in the repository"
       }
     },
     {
@@ -185,7 +192,7 @@
       ],
       "presence": [
         "re:export function TabletReviewSheet\\(",
-        "Say what is wrong with this element"
+        "Say what is wrong with this render"
       ],
       "evidence": [
         "re:export function TabletReviewSheet\\(",
@@ -200,8 +207,8 @@
         }
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "the sheet has the grab handle and four tabs; Changes lists artifacts (PLAN, PREVIEW, DIFF) instead of changed files (session.evidence is on the allow-list); the diff has no file header, line numbers or tints; Review has no render, no anchored bubbles and no comment list, and posts every comment anchored to body while saying Tap a bubble to comment. Comments reference that element in this render., which is false (the phone's ArtifactScreen already does the anchored flow); tabs are primary pills where the design draws accent tabs"
+        "since": "2026-10-12",
+        "reason": "the sheet has the grab handle and four tabs; Changes lists artifacts (PLAN, PREVIEW, DIFF) instead of changed files (session.evidence is on the allow-list); the diff has no file header, line numbers or tints; Review has no render, no anchored bubbles and no comment list, and posts every comment anchored to body. SL-7 (2026-10-12): the note says so (A comment from this tablet is about the whole render, not one element.) and the draft reads Say what is wrong with this render, where the design's Tap a bubble note and this element placeholder promised an element the tablet never lets the person choose (the phone's ArtifactScreen does the anchored flow); tabs are primary pills where the design draws accent tabs"
       }
     },
     {
