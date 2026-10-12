@@ -39,6 +39,19 @@ function field() {
 }
 
 describe("DenyExplainScreen", () => {
+  // A denial the daemon did not take is not silent. The gate is still
+  // waiting, so the screen keeps the reason written and says why.
+  it("says why the daemon did not take the denial", async () => {
+    await draw({ problem: "The daemon refused: The approval store is unavailable. The gate is still waiting." })
+    expect(screen.getByRole("alert")).toHaveTextContent("The daemon refused: The approval store is unavailable. The gate is still waiting.")
+    expect(screen.getByRole("button", { name: "Send denial" })).toBeEnabled()
+  })
+
+  it("says nothing when no denial was refused", async () => {
+    await draw()
+    expect(screen.queryByRole("alert")).toBeNull()
+  })
+
   it("names the command that is not going to run", async () => {
     const { approval: request } = await draw()
     expect(screen.getByText(request.command)).toBeOnTheScreen()

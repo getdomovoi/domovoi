@@ -12,12 +12,9 @@ import {
 import {
   CircleStopIcon,
   CodeXmlIcon,
-  DownloadIcon,
-  MessageSquarePlusIcon,
   MessageSquareTextIcon,
   Maximize2Icon,
   XIcon,
-  PrinterIcon,
   TerminalSquareIcon,
 } from "lucide-react"
 import type {
@@ -65,7 +62,6 @@ import { Field, FieldGroup, FieldLabel } from "./components/ui/field"
 import { ScrollArea, ScrollBar } from "./components/ui/scroll-area"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/ui/tabs"
 import { Textarea } from "./components/ui/textarea"
-import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { cn } from "./lib/utils"
 import { artifactUrlFor } from "./artifact-url"
@@ -81,6 +77,21 @@ import {
 } from "./preview-bridge"
 import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
 import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
+import {
+  PreviewAnnotateButton,
+  PreviewCopy,
+  PreviewGrantChip,
+  PreviewOverflowMenu,
+  PreviewRenderedList,
+  PreviewVariantChips,
+  PreviewWidthToggle,
+  previewWidthPixels,
+  type PreviewWidth,
+} from "./preview-controls"
+import { PreviewFrame } from "./preview-frame"
+import { PreviewDraftCard, PreviewFullscreen } from "./preview-fullscreen"
+import { usePreviewGrant } from "./preview-grant"
+import { previewRenderName, renderedPreviewsForActiveSession } from "./preview-renders"
 import { PlanSheet, planSheetArtifacts } from "./working-plan"
 import { RulesPanel } from "./rules-panel.js"
 import { checkpointBlockedReason } from "./checkpoint-actions.js"
@@ -194,8 +205,12 @@ export function ArtifactDock({
   pinned = false,
   buildBasisId,
   onBuildBasisChange,
+  daemonTimeOffsetMs = 0,
 }: {
   snapshot: WorkspaceSnapshot
+  // The clock of the daemon that signs this dock's preview grants, less this
+  // client's (the fleet's daemonTime pattern); 0 when unknown.
+  daemonTimeOffsetMs?: number
   clientAccess?: ClientAccess
   onCollapse: () => void
   // The pin control sits in this tab row. Given a row of its own it is alone
@@ -281,8 +296,17 @@ export function ArtifactDock({
     () => previewVariantsForActiveSession(snapshot, selectedPreviewId),
     [selectedPreviewId, snapshot],
   )
+  const renderedPreviews = useMemo(() => renderedPreviewsForActiveSession(snapshot), [snapshot])
   const preview = previewVariants.find((artifact) => artifact.id === selectedPreviewId) ?? previewVariants.at(-1)
-  const buildBasis = previewVariants.find((artifact) => artifact.id === resolvedBuildBasisId) ?? previewVariants.at(-1)
+  // The basis may sit in another render than the one on screen, now that the
+  // list opens any of them; it is named there, never swapped for a variant of
+  // the render on screen.
+  const buildBasis = snapshot.artifacts.find((artifact) =>
+    artifact.id === resolvedBuildBasisId
+    && artifact.sessionId === snapshot.activeSessionId
+    && artifact.type === "preview",
+  ) ?? previewVariants.at(-1)
+  const buildBasisElsewhere = buildBasis !== undefined && !previewVariants.some((artifact) => artifact.id === buildBasis.id)
   const annotations = useMemo(() => annotationsForActiveSession(snapshot), [snapshot])
   // Comments belong to the artifact they were left on. The preview shows the
   // selected variant's, another variant's show when it is selected, the plan
@@ -302,10 +326,13 @@ export function ArtifactDock({
   ))
   const readOnly = archiveReadOnly || clientAccess === "watching"
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
+  const fullscreenFrameRef = useRef<HTMLIFrameElement>(null)
   const stageContainerRef = useRef<HTMLDivElement>(null)
   const [stageContainerWidth, setStageContainerWidth] = useState(0)
-  const [deviceWidth, setDeviceWidth] = useState(768)
+  const [previewWidth, setPreviewWidth] = useState<PreviewWidth>("lg")
+  const previewMaxWidth = previewWidthPixels(previewWidth)
   const [compareRequested, setCompareRequested] = useState(false)
+  const [thumbnailsShown, setThumbnailsShown] = useState(false)
   const reviewLayout = reviewLayoutFor(stageContainerWidth, compareRequested, previewVariants.length)
   const previewControlLayout = previewControlLayoutFor(stageContainerWidth)
   const reviewStageCount = reviewLayout.stages
@@ -314,7 +341,6 @@ export function ArtifactDock({
     [preview, previewVariants, reviewStageCount],
   )
   const comparisonStages = useMemo(() => reviewStages.slice(1), [reviewStages])
-  const previewAuthorizationKey = artifactAuthorizationKey(preview ? [preview] : [])
   const comparisonAuthorizationKey = artifactAuthorizationKey(comparisonStages)
   const [bridgeState, setBridgeState] = useState(() => ({
     previewKey: preview ? `${preview.id}:${preview.revision}` : undefined,
@@ -335,8 +361,6 @@ export function ArtifactDock({
   const [comment, setComment] = useState("")
   const [annotationPending, setAnnotationPending] = useState(false)
   const [annotationError, setAnnotationError] = useState("")
-  const [previewUrl, setPreviewUrl] = useState<string>()
-  const [previewError, setPreviewError] = useState("")
   const [derivedArtifactPending, setDerivedArtifactPending] = useState<"print" | "download">()
   const [derivedArtifactError, setDerivedArtifactError] = useState("")
   const [fullscreen, setFullscreen] = useState(false)
@@ -349,7 +373,17 @@ export function ArtifactDock({
     string,
     "selector" | "text-quote" | "bounding-box" | "unresolved"
   >>(() => new Map())
+  // The bridge talks to the fullscreen frame while it is open and to the
+  // dock's otherwise. Each frame says it is ready once per load, and a ready
+  // key names the frame, the document and that load ("dock:<previewKey>:3"),
+  // so a frame that loads again (fullscreen reopened, the tab shown again)
+  // starts anchor resolution again instead of repeating a key already seen.
   const [bridgeReadyKey, setBridgeReadyKey] = useState<string>()
+  const readyFrames = useRef<{ dock?: string | undefined, fullscreen?: string | undefined }>({})
+  const readyLoads = useRef(0)
+  // Counts picks; a capture that lands after a newer pick, a document change
+  // or the dock's unmount is dropped.
+  const selectionRequest = useRef(0)
   const pendingAnchorResolutionBatch = useRef<PreviewBridgeResolveAnchorsMessage | undefined>(undefined)
   const queuedAnchorResolutionBatches = useRef<PreviewBridgeResolveAnchorsMessage[]>([])
   const [uncontrolledTab, setUncontrolledTab] = useState<string>(defaultTab)
@@ -363,6 +397,33 @@ export function ArtifactDock({
   // plan gets out of the way. A pinned sheet sits beside that thread and was
   // put there on purpose, so it stays.
   const closeAfterPlanAnswer = useCallback(() => { if (!pinned) onCollapse() }, [pinned, onCollapse])
+  const grant = usePreviewGrant({
+    sessionId: preview?.sessionId,
+    artifactId: preview?.id,
+    revision: preview?.revision,
+    bridgeChannel,
+    enabled: connected && !previewRefusal,
+    active: activeTab === "preview" || fullscreen,
+    authorize: authorizeArtifact,
+    daemonTimeOffsetMs,
+  })
+  const previewUrl = grant.access ? artifactUrlFor(rpcUrl, grant.access) : undefined
+  const previewError = grant.error
+  // Shown in place of a frame that has nothing loaded and only a lapsed grant
+  // to load, while renewing it keeps failing. A page already loaded stays.
+  const grantUnavailable = grant.renewalError ? (
+    <Alert variant="destructive" className="m-3 w-auto" aria-live="polite">
+      <CircleStopIcon />
+      <AlertTitle>Preview unavailable</AlertTitle>
+      <AlertDescription>{grant.renewalError}</AlertDescription>
+    </Alert>
+  ) : undefined
+  const previewDocumentKey = `${previewKey ?? ""}:${bridgeChannel}`
+  const bridgeFrame = fullscreen ? "fullscreen" : "dock"
+  const activeFrame = useCallback(
+    () => (fullscreen ? fullscreenFrameRef : previewFrameRef).current,
+    [fullscreen],
+  )
   const stageObservationKey = previewStageObservationKey(preview?.id, previewError)
 
   useEffect(() => {
@@ -377,32 +438,15 @@ export function ArtifactDock({
 
   useEffect(() => () => previewThumbnailLifecycle.current.clear(), [])
 
-  useEffect(() => {
-    let active = true
-    setPreviewUrl(undefined)
-    setPreviewError("")
-    const [target] = artifactAuthorizationTargets(previewAuthorizationKey)
-    if (!target || !connected || previewRefusal) return () => { active = false }
-    void authorizeArtifact({ sessionId: target.sessionId, artifactId: target.id, revision: target.revision, purpose: "preview", bridgeChannel, parentOrigin: window.location.origin }).then(
-      (access) => {
-        if (active) setPreviewUrl(artifactUrlFor(rpcUrl, access))
-      },
-      (cause: unknown) => {
-        if (!active) return
-        setPreviewUrl(undefined)
-        setPreviewError(
-          cause instanceof Error ? cause.message : "Preview access could not be authorized",
-        )
-      },
-    )
-    return () => { active = false }
-  }, [authorizeArtifact, bridgeChannel, connected, previewAuthorizationKey, rpcUrl, previewRefusal])
-
+  // Comparison stages are framed only while the Preview tab shows, and each
+  // showing asks for fresh grants: a frame loads its grant once, and one kept
+  // from an earlier showing may have lapsed.
+  const previewTabShown = activeTab === "preview"
   useEffect(() => {
     let active = true
     setComparisonStageUrls(new Map())
     const targets = artifactAuthorizationTargets(comparisonAuthorizationKey)
-    if (!targets.length || !connected || previewRefusal) return () => { active = false }
+    if (!targets.length || !connected || previewRefusal || !previewTabShown) return () => { active = false }
     const authorizeComparisonStages = async () => {
       const entries: Array<readonly [string, string]> = []
       await Promise.all(targets.map(async (target) => {
@@ -422,7 +466,7 @@ export function ArtifactDock({
     }
     void authorizeComparisonStages()
     return () => { active = false }
-  }, [authorizeArtifact, comparisonAuthorizationKey, connected, rpcUrl, previewRefusal])
+  }, [authorizeArtifact, comparisonAuthorizationKey, connected, rpcUrl, previewRefusal, previewTabShown])
 
   const postPickerState = useCallback((active: boolean) => {
     const message: PreviewBridgePickerMessage = {
@@ -430,8 +474,28 @@ export function ArtifactDock({
       channel: bridgeChannel,
       active,
     }
-    previewFrameRef.current?.contentWindow?.postMessage(message, "*")
-  }, [bridgeChannel])
+    activeFrame()?.contentWindow?.postMessage(message, "*")
+  }, [activeFrame, bridgeChannel])
+
+  // Opening or leaving fullscreen moves the bridge to the other frame. The
+  // picker is turned off in the frame being left, and anchors are resolved
+  // again by the frame being entered once it is ready (at once if it already
+  // is: the dock's frame stays loaded under the fullscreen surface).
+  const changeFullscreen = useCallback((next: boolean) => {
+    postPickerState(false)
+    setPickerActive(false)
+    // The fullscreen frame mounts afresh on every open; until it says it is
+    // ready, an earlier open's readiness says nothing about it.
+    if (next) readyFrames.current.fullscreen = undefined
+    setFullscreen(next)
+  }, [postPickerState])
+
+  useEffect(() => {
+    pendingAnchorResolutionBatch.current = undefined
+    queuedAnchorResolutionBatches.current = []
+    const ready = readyFrames.current[bridgeFrame]
+    setBridgeReadyKey(previewKey !== undefined && ready?.startsWith(`${bridgeFrame}:${previewKey}:`) ? ready : undefined)
+  }, [bridgeFrame, previewKey])
 
   const capturePreviewThumbnail = async () => {
     if (!captureAnnotation || !preview || !previewUrl) return
@@ -480,8 +544,8 @@ export function ArtifactDock({
     const message = queuedAnchorResolutionBatches.current.shift()
     if (!message) return
     pendingAnchorResolutionBatch.current = message
-    previewFrameRef.current?.contentWindow?.postMessage(message, "*")
-  }, [])
+    activeFrame()?.contentWindow?.postMessage(message, "*")
+  }, [activeFrame])
 
   const startAnchorResolutionRequests = useCallback(() => {
     if (!preview) return
@@ -498,17 +562,22 @@ export function ArtifactDock({
   }, [annotations, bridgeChannel, postNextAnchorResolutionBatch, preview])
 
   useEffect(() => {
-    let active = true
     const receiveSelection = async (event: MessageEvent<unknown>) => {
-      if (
-        !preview
-        || event.source !== previewFrameRef.current?.contentWindow
-        || event.origin !== "null"
-      ) return
+      const sender = event.source === null
+        ? undefined
+        : event.source === previewFrameRef.current?.contentWindow
+          ? "dock"
+          : event.source === fullscreenFrameRef.current?.contentWindow ? "fullscreen" : undefined
+      if (!preview || !sender || event.origin !== "null") return
       if (previewReadyFor(event.data, bridgeChannel, preview.id)) {
-        setBridgeReadyKey(previewKey)
+        readyLoads.current += 1
+        const readyKey = `${sender}:${previewKey}:${readyLoads.current}`
+        readyFrames.current[sender] = readyKey
+        if (sender === bridgeFrame) setBridgeReadyKey(readyKey)
         return
       }
+      // Only the frame the bridge talks to answers anchors or picks elements.
+      if (sender !== bridgeFrame) return
       const pendingBatch = pendingAnchorResolutionBatch.current
       const anchorResolutionMessage = pendingBatch
         ? anchorResolutionsFor(
@@ -531,10 +600,15 @@ export function ArtifactDock({
       if (readOnly || !pickerActive) return
       const nextSelection = previewSelectionFor(event.data, bridgeChannel, preview.id)
       if (!nextSelection) return
+      // Turning the picker off renders the dock again and replaces this
+      // listener, so the capture below must not be dropped for that. What
+      // drops it is a later pick, another document, or the dock going away.
+      selectionRequest.current += 1
+      const request = selectionRequest.current
       postPickerState(false)
       setPickerActive(false)
       let visualContextUpload: RpcParams<"annotation.create">["visualContextUpload"]
-      const frame = previewFrameRef.current
+      const frame = activeFrame()
       if (captureAnnotation && nextSelection.anchor.bbox && frame) {
         const frameRect = frame.getBoundingClientRect()
         visualContextUpload = await annotationCaptureUpload(
@@ -545,29 +619,23 @@ export function ArtifactDock({
           preview.revision,
         )
       }
-      if (!active) return
+      if (request !== selectionRequest.current) return
       setSelectionVisualContext(visualContextUpload)
       setSelection(nextSelection)
       setComment("")
       setAnnotationError("")
     }
     window.addEventListener("message", receiveSelection)
-    return () => {
-      active = false
-      window.removeEventListener("message", receiveSelection)
-    }
-  }, [annotations, readOnly, bridgeChannel, captureAnnotation, pickerActive, postNextAnchorResolutionBatch, postPickerState, preview, previewKey])
+    return () => window.removeEventListener("message", receiveSelection)
+  }, [activeFrame, annotations, readOnly, bridgeChannel, bridgeFrame, captureAnnotation, pickerActive, postNextAnchorResolutionBatch, postPickerState, preview, previewKey])
 
   useEffect(() => {
-    if (!fullscreen) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setFullscreen(false)
-    }
-    window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
-  }, [fullscreen])
+    const requests = selectionRequest
+    return () => { requests.current += 1 }
+  }, [])
 
   useEffect(() => {
+    selectionRequest.current += 1
     setPickerActive(false)
     setSelection(null)
     setSelectionVisualContext(undefined)
@@ -580,8 +648,8 @@ export function ArtifactDock({
   }, [readOnly, preview?.id, preview?.revision])
 
   useEffect(() => {
-    if (bridgeReadyKey === previewKey) startAnchorResolutionRequests()
-  }, [annotations, bridgeReadyKey, previewKey, startAnchorResolutionRequests])
+    if (previewKey !== undefined && bridgeReadyKey?.startsWith(`${bridgeFrame}:${previewKey}:`)) startAnchorResolutionRequests()
+  }, [annotations, bridgeFrame, bridgeReadyKey, previewKey, startAnchorResolutionRequests])
 
   const togglePicker = () => {
     if (readOnly) return
@@ -631,6 +699,29 @@ export function ArtifactDock({
       />
     </section>
   ) : null
+  const discardSelection = () => {
+    setSelection(null)
+    setSelectionVisualContext(undefined)
+    setComment("")
+    setAnnotationError("")
+  }
+  // The foot under the page, in the dock and in fullscreen alike. It shows
+  // whenever there is a choice of basis: variants on screen, or other renders
+  // in the session (a lone render can be the basis too).
+  const variantFoot = preview && (previewVariants.length > 1 || renderedPreviews.length > 1) ? (
+    <div className="flex min-h-[46px] flex-none flex-wrap items-center gap-3 border-t px-[13px] py-2">
+      {previewVariants.length > 1 ? <PreviewVariantChips variants={previewVariants} selectedArtifactId={preview.id} onSelect={setSelectedPreviewId} /> : null}
+      <span className="font-machine text-[10.5px] text-muted-foreground">Viewing · {preview.variant?.label ?? preview.title}</span>
+      <span className="font-machine text-[10.5px] text-faint">Build basis · {buildBasis?.variant?.label ?? buildBasis?.title}{buildBasis && buildBasisElsewhere ? ` in ${previewRenderName(buildBasis)}` : ""}</span>
+      <span className="flex-1" />
+      {preview.id === buildBasis?.id ? <Badge variant="success">Chosen build basis</Badge> : (
+        <Button size="sm" onClick={() => {
+          setLocalBuildBasisId(preview.id)
+          onBuildBasisChange?.(preview.id)
+        }}>Use {preview.variant?.label ?? preview.title} as build basis</Button>
+      )}
+    </div>
+  ) : null
   return (
     <TooltipProvider>
     <aside aria-label="Session artifacts" data-workspace-panel="dock" className="flex h-full min-w-0 flex-col bg-background">
@@ -665,10 +756,26 @@ export function ArtifactDock({
           {pinControl}
           <Button ref={collapseButtonRef} variant="ghost" size="icon-sm" className="size-7 flex-none rounded-full text-muted-foreground" aria-label="Close" onClick={onCollapse}><XIcon className="size-4" /></Button>
         </div>
-        <TabsContent value="preview" className="min-h-0 overflow-auto p-3">
+        <TabsContent value="preview" className="@container min-h-0 overflow-auto p-3">
           {previewRefusal ? <Alert><AlertTitle>Remote preview unavailable</AlertTitle><AlertDescription>{previewRefusal}</AlertDescription></Alert> : preview ? (
-            <div className="flex min-h-full flex-col overflow-hidden rounded-xl border bg-background shadow-[var(--shadow-md)]">
-              {previewVariants.length > 1 ? (
+            <div className="flex min-h-full flex-col gap-3 @3xl:flex-row">
+            {/* The design draws the list as a column beside the page. A narrow
+                dock stacks it above, and leaves it out while there is only
+                the one render on screen. */}
+            <PreviewRenderedList
+              // Another session starts again at its newest page: pages shown
+              // in one session are no reason to draw thousands in the next.
+              key={snapshot.activeSessionId ?? ""}
+              renders={renderedPreviews}
+              selectedArtifactId={preview.id}
+              onPick={setSelectedPreviewId}
+              className={cn(
+                "max-h-40 flex-none overflow-y-auto rounded-xl border @3xl:max-h-none @3xl:w-[216px]",
+                renderedPreviews.length < 2 && "hidden @3xl:flex",
+              )}
+            />
+            <div className="flex min-h-full min-w-0 flex-1 flex-col overflow-hidden rounded-xl border bg-background shadow-[var(--shadow-md)]">
+              {thumbnailsShown && previewVariants.length > 1 ? (
                 <div className="border-b p-2">
                   <ScrollArea className="w-full whitespace-nowrap" aria-label="Design variants; use J and K or arrow keys to move">
                     <div className="flex gap-2 pb-2" onKeyDown={(event) => {
@@ -690,34 +797,28 @@ export function ArtifactDock({
                   </ScrollArea>
                 </div>
               ) : null}
-              <div className={cn("flex min-h-10 items-center justify-between gap-2 border-b px-3 py-1", previewToolbarLayoutFor(stageContainerWidth) === "wrap" && "flex-wrap")}>
-                <div><p className="m-0 text-[11px] font-medium">{preview.title}</p><p className="m-0 font-machine text-mono-xs text-faint">revision {preview.revision} · sandboxed</p></div>
+              <div className={cn("flex min-h-10 items-center justify-between gap-2 border-b px-[13px] py-[9px]", previewToolbarLayoutFor(stageContainerWidth) === "wrap" && "flex-wrap")}>
+                <div className="min-w-0"><p className="m-0 truncate text-[11.5px] text-strong">{preview.title}</p><p className="m-0 font-machine text-mono-xs text-faint">revision {preview.revision} · sandboxed</p></div>
                 <div className={cn("flex min-w-0 items-center justify-end gap-2", previewControlLayout.wrap && "flex-wrap", previewControlLayout.fullWidth && "w-full")}>
-                  <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Open sanitized print view" onClick={() => void openDerivedArtifact("print")}><PrinterIcon data-icon="inline-start" />{derivedArtifactPending === "print" ? "Preparing" : "Print view"}</Button>
-                  <Button variant="outline" size="xs" className="min-h-11" disabled={!connected || Boolean(derivedArtifactPending)} aria-label="Download sanitized offline HTML copy" onClick={() => void openDerivedArtifact("download")}><DownloadIcon data-icon="inline-start" />{derivedArtifactPending === "download" ? "Preparing" : "Download safe copy"}</Button>
-                   <ToggleGroup type="single" value={String(deviceWidth)} onValueChange={(value) => { if (value) setDeviceWidth(Number(value)) }} aria-label="Preview device width">
-                     {[390, 768, 1440].map((width) => <ToggleGroupItem key={width} value={String(width)} className="min-h-11 min-w-11" aria-label={`${width} pixel preview`}>{width}</ToggleGroupItem>)}
-                   </ToggleGroup>
-                   <Button variant="outline" size="xs" className="min-h-11" aria-label="Open fullscreen preview" onClick={() => setFullscreen(true)}><Maximize2Icon data-icon="inline-start" />Fullscreen</Button>
-
-                  {previewVariants.length > 1 ? <Button variant="outline" size="xs" className="min-h-11" aria-pressed={reviewLayout.compare} disabled={stageContainerWidth > 0 && stageContainerWidth < 760} onClick={() => setCompareRequested((value) => !value)}>Compare</Button> : null}
+                  <PreviewGrantChip expiresAtMs={grant.expiresAtMs} renewalError={grant.renewalError} />
+                  <PreviewWidthToggle value={previewWidth} onChange={setPreviewWidth} />
+                  {!readOnly ? <PreviewAnnotateButton active={pickerActive} onToggle={togglePicker} /> : null}
+                  <Button variant="ghost" size="icon-sm" className="min-h-11 min-w-11 rounded-full text-muted-foreground" aria-label="Open fullscreen preview" onClick={() => changeFullscreen(true)}><Maximize2Icon /></Button>
+                  <PreviewOverflowMenu
+                    connected={connected}
+                    pending={derivedArtifactPending}
+                    onPrint={() => void openDerivedArtifact("print")}
+                    onDownload={() => void openDerivedArtifact("download")}
+                    compare={previewVariants.length > 1 ? {
+                      checked: reviewLayout.compare,
+                      disabled: stageContainerWidth > 0 && stageContainerWidth < 760,
+                      onCheckedChange: setCompareRequested,
+                    } : undefined}
+                    thumbnails={previewVariants.length > 1 ? { checked: thumbnailsShown, onCheckedChange: setThumbnailsShown } : undefined}
+                  />
                   {previewVariants.length > 1 && stageContainerWidth > 0 && stageContainerWidth < 760 ? <span className="sr-only" role="status">Compare is unavailable at this width; showing the selected variant.</span> : null}
-                  {!readOnly ? (
-                    <Button
-                      variant={pickerActive ? "secondary" : "outline"}
-                      size="xs"
-                      className="min-h-11"
-                      aria-pressed={pickerActive}
-                      onClick={togglePicker}
-                    >
-                      <MessageSquarePlusIcon />
-                      {pickerActive ? "Select element" : "Annotate"}
-                    </Button>
-                  ) : null}
-                  <Badge variant="success">Live</Badge>
                 </div>
               </div>
-              <p className="m-0 border-b px-3 py-1 text-micro text-muted-foreground">Safe copies remove scripts, forms, and external assets.</p>
               {derivedArtifactError ? <Alert variant="destructive" className="m-3 w-auto" aria-live="polite"><CircleStopIcon /><AlertTitle>Safe copy unavailable</AlertTitle><AlertDescription>{derivedArtifactError}</AlertDescription></Alert> : null}
               {previewError ? (
                 <Alert variant="destructive" className="m-3 w-auto" aria-live="polite">
@@ -731,38 +832,38 @@ export function ArtifactDock({
                   className="grid min-h-0 flex-1 gap-3 overflow-auto p-2"
                   style={{ gridTemplateColumns: previewStageGridColumns(reviewLayout.stages) }}
                 >
-                {reviewStages.map((artifact, index) => (
-                  <iframe
+                {reviewStages.map((artifact, index) => index === 0 ? (
+                  <PreviewFrame
                     key={artifact.id}
-                    ref={index === 0 ? previewFrameRef : undefined}
-                    className="min-h-0 w-full justify-self-center border bg-background"
-                    style={{ maxWidth: deviceWidth }}
-                    referrerPolicy="no-referrer"
-                    sandbox="allow-scripts"
-                    src={index === 0 ? previewUrl ?? "about:blank" : comparisonStageUrls.get(artifact.id) ?? "about:blank"}
-                    title={index === 0 ? artifact.title : `${artifact.title} comparison`}
-                    onLoad={index === 0 ? () => {
+                    frameRef={previewFrameRef}
+                    url={previewUrl}
+                    expiresAtMs={grant.expiresAtMs}
+                    unavailable={grantUnavailable}
+                    documentKey={previewDocumentKey}
+                    className="h-full min-h-96 w-full justify-self-center border bg-background"
+                    style={{ maxWidth: previewMaxWidth }}
+                    title={artifact.title}
+                    onLoad={() => {
                       postPickerState(pickerActive)
                       void capturePreviewThumbnail()
-                    } : undefined}
+                    }}
+                  />
+                ) : (
+                  <PreviewFrame
+                    key={artifact.id}
+                    url={comparisonStageUrls.get(artifact.id)}
+                    documentKey={`${artifact.id}:${artifact.revision}`}
+                    className="h-full min-h-96 w-full justify-self-center border bg-background"
+                    style={{ maxWidth: previewMaxWidth }}
+                    title={`${artifact.title} comparison`}
                   />
                 ))}
                 </div>
                )}
-               {previewVariants.length > 1 ? (
-                 <div className="flex min-h-[46px] flex-wrap items-center gap-3 border-t px-[13px] py-2">
-                   <span className="font-machine text-[10.5px] text-muted-foreground">Viewing · {preview.variant?.label ?? preview.title}</span>
-                   <span className="font-machine text-[10.5px] text-faint">Build basis · {buildBasis?.variant?.label ?? buildBasis?.title}</span>
-                   <span className="flex-1" />
-                   {preview.id === buildBasis?.id ? <Badge variant="success">Chosen build basis</Badge> : (
-                     <Button size="sm" onClick={() => {
-                       setLocalBuildBasisId(preview.id)
-                       onBuildBasisChange?.(preview.id)
-                     }}>Use {preview.variant?.label ?? preview.title} as build basis</Button>
-                   )}
-                 </div>
-               ) : null}
+               {pickerActive ? <p className="m-0 px-[13px] pb-2 text-[11px] leading-normal text-faint">{PreviewCopy.pickHint}</p> : null}
+               {variantFoot}
              </div>
+            </div>
            ) : (
             <Empty className="min-h-full border">
               <EmptyHeader><EmptyMedia variant="icon"><CodeXmlIcon /></EmptyMedia><EmptyTitle>No preview yet</EmptyTitle><EmptyDescription>HTML artifacts created by the agent appear here.</EmptyDescription></EmptyHeader>
@@ -906,36 +1007,64 @@ export function ArtifactDock({
           ) : null}
         </TabsContent>
       </Tabs>
-      <Dialog open={fullscreen} onOpenChange={setFullscreen}>
-        <DialogContent className="flex h-[calc(100dvh-2rem)] max-w-[calc(100vw-2rem)] flex-col gap-3 p-4">
-          <DialogHeader>
-            <DialogTitle>{preview?.title ?? "Preview"}</DialogTitle>
-            <DialogDescription className="font-machine text-mono-xs">{preview?.path ?? "No preview selected"} · read-only · {deviceWidth}px</DialogDescription>
-          </DialogHeader>
-          {preview && previewUrl ? (
-            <iframe
-              className="min-h-0 flex-1 w-full border bg-background"
-              referrerPolicy="no-referrer"
-              sandbox="allow-scripts"
-              src={previewUrl}
-              title={`${preview.title} fullscreen`}
-            />
-          ) : (
-            <Alert><AlertTitle>Preview unavailable</AlertTitle><AlertDescription>The authorized preview is not ready.</AlertDescription></Alert>
-          )}
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setFullscreen(false)}>Exit fullscreen</Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <PreviewFullscreen
+        open={fullscreen}
+        onOpenChange={changeFullscreen}
+        title={preview?.title ?? "Preview"}
+        meta={`${preview?.path ?? "No preview selected"} · read-only`}
+        widths={<PreviewWidthToggle value={previewWidth} onChange={setPreviewWidth} />}
+        stage={preview && !previewError && !previewRefusal ? (
+          <PreviewFrame
+            frameRef={fullscreenFrameRef}
+            url={previewUrl}
+            expiresAtMs={grant.expiresAtMs}
+                    unavailable={grantUnavailable}
+            documentKey={previewDocumentKey}
+            className="mx-auto min-h-[50dvh] w-full flex-1 rounded-xl border bg-background"
+            style={{ maxWidth: previewMaxWidth }}
+            title={`${preview.title} fullscreen`}
+            onLoad={() => postPickerState(pickerActive)}
+          />
+        ) : (
+          <Alert><AlertTitle>Preview unavailable</AlertTitle><AlertDescription>{previewError || previewRefusal || "The authorized preview is not ready."}</AlertDescription></Alert>
+        )}
+        hint={pickerActive ? PreviewCopy.pickHint : undefined}
+        foot={variantFoot}
+        commentsTitle={preview?.variant ? `Comments on ${preview.variant.label}` : "Comments on this preview"}
+        commentCount={commentCount(previewComments)}
+        annotate={!readOnly && preview ? <PreviewAnnotateButton iconOnly active={pickerActive} onToggle={togglePicker} /> : undefined}
+        draft={!readOnly && selection ? (
+          <PreviewDraftCard
+            id="preview-annotation-fullscreen"
+            anchor={selection.label}
+            value={comment}
+            placeholder={AnnotationDraftCopy.placeholder}
+            pending={annotationPending}
+            error={annotationError}
+            submitLabel={AnnotationDraftCopy.submit}
+            cancelLabel={AnnotationDraftCopy.cancel}
+            onChange={setComment}
+            onPost={() => void saveAnnotation()}
+            onCancel={discardSelection}
+          />
+        ) : null}
+        comments={(
+          <AnnotationComments
+            idPrefix="fullscreen-annotation-reply"
+            annotations={previewComments}
+            anchorResolutions={anchorResolutions}
+            readOnly={readOnly}
+            onReply={onReplyToAnnotation}
+            onSetStatus={onSetAnnotationStatus}
+          />
+        )}
+      />
       <Dialog
-        open={!readOnly && selection !== null}
+        // In fullscreen the draft is the comments column's card instead.
+        open={!readOnly && selection !== null && !fullscreen}
         onOpenChange={(open) => {
           if (open || annotationPending) return
-          setSelection(null)
-          setSelectionVisualContext(undefined)
-          setComment("")
-          setAnnotationError("")
+          discardSelection()
         }}
       >
         <DialogContent>
@@ -994,10 +1123,14 @@ export function AnnotationComments({
   readOnly,
   onReply,
   onSetStatus,
+  idPrefix = "annotation-reply",
 }: {
   annotations: Annotation[]
   anchorResolutions?: ReadonlyMap<string, "selector" | "text-quote" | "bounding-box" | "unresolved">
   readOnly: boolean
+  // Fullscreen mounts a second list over the dock's; its fields need their
+  // own ids or their labels resolve to the dock's hidden copy.
+  idPrefix?: string
   onReply: (annotationId: string, body: string) => Promise<void>
   onSetStatus: (annotationId: string, status: Annotation["status"]) => Promise<void>
 }) {
@@ -1119,9 +1252,9 @@ export function AnnotationComments({
                   {isReplying ? (
                     <FieldGroup>
                       <Field>
-                        <FieldLabel htmlFor={`annotation-reply-${annotation.id}`}>Reply</FieldLabel>
+                        <FieldLabel htmlFor={`${idPrefix}-${annotation.id}`}>Reply</FieldLabel>
                         <Textarea
-                          id={`annotation-reply-${annotation.id}`}
+                          id={`${idPrefix}-${annotation.id}`}
                           value={reply}
                           rows={3}
                           disabled={pending}

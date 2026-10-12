@@ -675,13 +675,12 @@ describe("archived annotation controls", () => {
         onRevertSessionFile={vi.fn()}
       />,
     )
-    expect(dock).not.toContain(">Annotate</button>")
+    expect(dock).not.toContain("Add a comment")
     expect(dock).toContain("Variant A")
-    expect(dock).toContain("Selected")
+    expect(dock).toContain("Viewing · Variant A")
     expect(dock).toContain("390 pixel preview")
-    expect(dock).toContain(">Compare</button>")
-    expect(dock).toContain("Print view")
-    expect(dock).toContain("Download safe copy")
-    expect(dock).toContain("Safe copies remove scripts, forms, and external assets")
+    // Q380 A: Print view, Download safe copy and Compare stay for a read-only
+    // viewer, behind the toolbar's overflow control (closed in static markup).
+    expect(dock).toContain("More preview actions")
   })
 })

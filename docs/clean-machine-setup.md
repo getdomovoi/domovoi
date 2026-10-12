@@ -57,8 +57,8 @@ Bootstrap installs a runtime tree. It does not create a `domovoid` command on `P
 daemon, configure daemon state, or install supervision. Steps 2 onward do that.
 
 Release checksums and CycloneDX SBOMs are produced by `pnpm release:artifacts`, which writes
-`release/<package>-<version>.tgz`, `release/<package>-<version>.sbom.json`, and
-`release/SHA256SUMS` in a repository checkout. Signature verification of release artifacts is not
+`release/<package>-<version>.tgz`, `release/<package>-<version>.sbom.json`, the web app's
+`release/domovoi-web-<version>.tar.gz`, and `release/SHA256SUMS` in a repository checkout. Signature verification of release artifacts is not
 implemented yet.
 
 The full contract, including what freezing does not promise, is
@@ -179,6 +179,96 @@ domovoid
 
 Every connection is authenticated whatever the transport, including inside a tailnet.
 
+### Serve the web app
+
+Every listener, the loopback one included, serves the web app at `/` when a web app bundle is
+installed; see the daemon README, Web app. Without one, `/` answers a page that says none is
+installed, and the startup output names the folder the daemon looked in:
+
+```text
+domovoid web app not served: <reason> at <folder>
+```
+
+The bundle is a separate release file, `domovoi-web-<version>.tar.gz`, beside the daemon archive
+and listed in the same `SHA256SUMS`. Use the one from the daemon's own release. Until a release is
+published, build it in a repository checkout as in route B: `pnpm release:artifacts` writes
+`release/domovoi-web-<version>.tar.gz` and its line in `release/SHA256SUMS`. It refuses to run
+while any `VITE_` variable is set, because vite would compile it into the app.
+
+Unpack it into the default folder for the account that runs the daemon:
+
+| Platform | Default folder |
+| --- | --- |
+| macOS | `~/Library/Application Support/Domovoi/web` |
+| Linux | `$XDG_DATA_HOME/domovoi/web` when `XDG_DATA_HOME` is set to an absolute path, else `~/.local/share/domovoi/web` |
+| Windows | `%LOCALAPPDATA%\Domovoi\web` |
+
+macOS (Linux: `sha256sum -c -` in place of `shasum -a 256 -c -`, and the Linux folder). Nothing
+is unpacked unless the checksum matches:
+
+```bash
+WEB="$HOME/Library/Application Support/Domovoi/web"
+# umask 022, so no folder this creates is writable by group: the daemon refuses one that is.
+grep '  domovoi-web-<version>.tar.gz$' SHA256SUMS | shasum -a 256 -c - &&
+  (umask 022 && mkdir -p "$WEB" && tar -xzf domovoi-web-<version>.tar.gz -C "$WEB")
+```
+
+Windows PowerShell, which stops before unpacking when the hash differs from the file's line in
+`SHA256SUMS`:
+
+```powershell
+$archive = "domovoi-web-<version>.tar.gz"
+$expected = (Select-String -Path SHA256SUMS -SimpleMatch "  $archive").Line.Split(" ")[0]
+if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -ne $expected) {
+  Write-Error "$archive does not match SHA256SUMS"
+} else {
+  $web = Join-Path $env:LOCALAPPDATA "Domovoi\web"
+  New-Item -ItemType Directory -Force $web | Out-Null
+  tar -xzf $archive -C $web
+}
+```
+
+The archive unpacks flat: `domovoi-web.json`, `index.html` and the other files the manifest
+lists, and `THIRD_PARTY_NOTICES.txt`, which the manifest does not list and the daemon never
+serves. Files are 0644 and folders 0755, so unpacked by the account that runs the daemon they
+pass its owner and mode checks. Unpacking over an older bundle replaces its manifest; files the
+new manifest does not list stay on disk and are never served. When a check fails, the startup
+line names the reason and the daemon log names the file.
+
+The daemon reads the bundle once at startup, so restart it after unpacking. It then prints:
+
+```text
+domovoid web app served from <folder> (web <version>, protocol <x.y.z>)
+```
+
+To keep the bundle somewhere else, set `DOMOVOI_WEB_DIR` to an absolute folder. `domovoi daemon
+install` in step 5 saves it in `service.json` as `webDirectory`, so the service keeps it; without
+it the service uses the default folder of the account it runs as. A systemd user service has its
+manager's environment, usually without an `XDG_DATA_HOME` your shell sets, so if you set one, set
+`DOMOVOI_WEB_DIR` before the install. Whichever folder you choose, the
+daemon refuses a bundle inside the profile directory, and on Linux and macOS one where the bundle
+folder, its manifest, a file the manifest lists or a folder holding one, or any folder above it up
+to `/`, is owned by an account other than the daemon's or root, or is writable by group or others
+(above the bundle, a folder with the sticky bit may be). A
+group-writable location such as a
+Homebrew prefix, which the `admin` group can write, is refused by design. Access control lists are
+not read, and on Windows neither owner nor mode is checked.
+
+Use a bundle from a Domovoi release, or built from a checkout that includes pull request #731.
+That change made the build write `domovoi-web.json` and made the app, on a page served off
+loopback, offer pairing by code only and refuse the daemon's root credential. The daemon checks
+only that the bundle's protocol major and minor match its own, so a folder from an older build
+given a manifest some other way would load, and its page would offer to paste the root credential
+on another machine. Replace any such folder before serving over the tailnet.
+
+Over the tailnet the page and its socket share one origin, and the browser checks the certificate
+for that name before the page loads, so a listener that cannot present it never serves the page.
+On plaintext loopback that does not hold: another local account that binds the port while the
+daemon is down can serve a page of its own and ask for a pairing code (audit finding A14, a stated
+limit). A web code issued with full access makes a full client, on another machine when the app
+is served over the tailnet: it can answer gates and grant repository trust. Choose the access
+level when you issue the code.
+
 ## Step 5: install supervision
 
 Run the install with the environment you intend the service to keep, because installation captures
@@ -201,8 +291,9 @@ each prints its follow-up advice in its own spelling.
 `install` writes a systemd user unit on Linux, a launch agent under the user's own `LaunchAgents`
 on macOS, or a logon task on Windows, then asks that manager to load it. It also writes
 `~/.domovoi/service.json` holding a fresh registration UUID, the listener host and port, the remote
-opt-in, TLS certificate and key **paths**, advertised host, allowed origins, credential and machine
-identity paths, and the home directory used for durable state. No bearer, TLS key contents, or
+opt-in, TLS certificate and key **paths**, advertised host, allowed origins, the web app folder
+when `DOMOVOI_WEB_DIR` is set, credential and machine identity paths, and the home directory used
+for durable state. No bearer, TLS key contents, or
 provider credential is written to it.
 
 An install refuses before writing anything if `DOMOVOI_AUTH_TOKEN` is set. Point

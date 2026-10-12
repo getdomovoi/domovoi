@@ -126,8 +126,10 @@ describe("fleet enrollment coordinator", () => {
     })
     f.time(20_000)
     await configured.refresh()
+    // SSH answered, so the row says SSH. The older direct route stays as the
+    // first thing to try, still dated when it last authenticated.
     expect(configured.snapshot().entries[0]).toMatchObject({ machine: {
-      health: "healthy", heartbeat: { lastSeenAt: new Date(20_000).toISOString() },
+      health: "healthy", connection: "ssh", heartbeat: { lastSeenAt: new Date(20_000).toISOString() },
       verifiedRoute: { endpoint, lastAuthenticatedAt: new Date(1_000).toISOString() },
       transports: [],
     } })
