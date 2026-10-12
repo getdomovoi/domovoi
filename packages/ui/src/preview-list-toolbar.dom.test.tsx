@@ -451,6 +451,31 @@ it("reads a held grant again when the daemon's clock offset arrives after it", a
   expect(authorize.mock.calls.filter(([input]) => input.bridgeChannel)).toHaveLength(1)
 })
 
+it("keeps one renewal in flight while the clock offset moves", async () => {
+  const { user, advance } = fakeClock()
+  const granting = grantingAuthorize()
+  // Each answer takes a second, as from a busy daemon.
+  const authorize = vi.fn((input: AuthorizeInput) => new Promise<ArtifactAccess>((resolve) => {
+    setTimeout(() => resolve(granting(input)), 1_000)
+  }))
+  const { setDaemonTimeOffset } = renderDock(authorize as unknown as ReturnType<typeof grantingAuthorize>, undefined, snapshot, undefined, { daemonTimeOffsetMs: 0 })
+  await advance(1_100)
+  await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"))
+  const bridged = () => authorize.mock.calls.filter(([input]) => input.bridgeChannel).length
+
+  await advance(55_000)
+  expect(bridged()).toBe(2)
+  // fleet.changed moves the offset by a few milliseconds each time.
+  for (const offset of [1, 2, 1, 2]) {
+    setDaemonTimeOffset(offset)
+    await advance(150)
+  }
+  await advance(1_000)
+  expect(bridged()).toBe(2)
+  await user.click(screen.getByRole("button", { name: "Open fullscreen preview" }))
+  await waitFor(() => expect(frameTitled("Replay table B fullscreen").getAttribute("src")).toContain("signature=grant-2"))
+})
+
 it("asks for a fresh grant after a disconnect instead of reusing the one from before", async () => {
   // A restarted daemon signs with a new secret, so a grant from before the
   // disconnect would load nothing.

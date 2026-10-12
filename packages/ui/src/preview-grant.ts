@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { ArtifactAccess } from "@getdomovoi/protocol"
 
 // The daemon signs a preview grant for one document, revision, bridge channel
@@ -112,47 +112,44 @@ export function usePreviewGrant({
     setState((previous) => previous.key === key ? previous : { key, error: "", renewalError: "", renewalFailures: 0 })
   }, [key])
 
+  // The key whose request is waiting for an answer. Rescheduling (a new
+  // offset, the tab shown again) never drops or repeats that request; its
+  // answer counts for as long as the key is still the current one.
+  const inFlight = useRef<string | undefined>(undefined)
+
   useEffect(() => {
-    // The state may still hold the previous document's; start from empty then.
-    const base = (previous: GrantState): GrantState =>
-      previous.key === key ? previous : { key, error: "", renewalError: "", renewalFailures: 0 }
     if (!active || !enabled || sessionId === undefined || artifactId === undefined || revision === undefined) {
-      if (failures > 0) setState((previous) => ({ ...base(previous), renewalFailures: 0 }))
+      if (failures > 0) setState((previous) => previous.key === key ? { ...previous, renewalFailures: 0 } : previous)
       return
     }
-    let live = true
+    // The answer updates the state, which runs this effect again.
+    if (inFlight.current === key) return
     const delay = failures > 0
       ? previewGrantRetryDelay(failures)
       : expiresAtMs !== undefined ? previewGrantRenewDelay(expiresAtMs, Date.now()) : 0
     const timer = setTimeout(() => {
+      inFlight.current = key
+      const settle = () => { if (inFlight.current === key) inFlight.current = undefined }
       void authorize({ sessionId, artifactId, revision, purpose: "preview", bridgeChannel, parentOrigin: window.location.origin }).then(
         (granted) => {
-          if (!live) return
-          setState({
-            key,
-            access: granted,
-            receivedAt: Date.now(),
-            error: "",
-            renewalError: "",
-            renewalFailures: 0,
-          })
+          settle()
+          setState((previous) => previous.key === key
+            ? { key, access: granted, receivedAt: Date.now(), error: "", renewalError: "", renewalFailures: 0 }
+            : previous)
         },
         (cause: unknown) => {
+          settle()
           // Counting the failure re-runs this effect, which schedules the retry.
-          if (!live) return
           setState((previous) => {
-            const state = base(previous)
-            return state.access
-              ? { ...state, renewalError: errorText(cause, "The preview grant could not be renewed"), renewalFailures: state.renewalFailures + 1 }
-              : { ...state, error: errorText(cause, "Preview access could not be authorized"), renewalFailures: state.renewalFailures + 1 }
+            if (previous.key !== key) return previous
+            return previous.access
+              ? { ...previous, renewalError: errorText(cause, "The preview grant could not be renewed"), renewalFailures: previous.renewalFailures + 1 }
+              : { ...previous, error: errorText(cause, "Preview access could not be authorized"), renewalFailures: previous.renewalFailures + 1 }
           })
         },
       )
     }, delay)
-    return () => {
-      live = false
-      clearTimeout(timer)
-    }
+    return () => clearTimeout(timer)
   }, [access, active, artifactId, authorize, bridgeChannel, enabled, expiresAtMs, failures, key, revision, sessionId])
 
   return { access, expiresAtMs, error: current.error, renewalError: current.renewalError }
