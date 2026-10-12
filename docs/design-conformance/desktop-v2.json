@@ -1906,6 +1906,8 @@
       "evidence": [
         "Transfer checks",
         "Not sent either way",
+        "Pick a reachable machine",
+        "the session is already here",
         {
           "absent": "check.ready).length} warnings</span>",
           "in": "packages/ui/src/transfer-session-dialog.tsx"
@@ -1918,7 +1920,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the phase shows the already-chosen target and two client-derived checks with no values; the design draws a TARGET list of every machine with reachability (unreachable ones disabled), seven daemon-checked rows with values (repository present, common base, provider auth there, toolchain, clean checkout, payload size, unversioned files), a holdback toggle and the estimate clone and worktree setup, about 20s. The summary reads n pass · m warnings, so it says 1 warnings and 0 warnings where the design says 6 pass · 1 warning (client-only). Five of the rows, the holdback and the estimate need protocol: sessionTransferPreviewSchema carries project ids and commits only"
+        "reason": "Updated 2026-10-11 (D24, client half). The dialog draws the TARGET list from the fleet the thread passes it (targetChoice): every machine with a health dot, the source as the session is already here, a reachable machine as reachable over its route (tailnet, loopback, or a direct route to its host), and a machine transferPreflight refuses disabled with the reason (daemon unreachable, cannot accept a session now; now rather than the design's yet, because Domovoi never queues a move). Picking a reachable row changes the target, and the confirm reads Pick a reachable machine when the chosen one cannot take the session. The summary reads n pass, or n pass · m blocking: every check this client draws stops the move, so none is a warning. Still missing because the wire does not carry them (CX-9): the seven daemon-checked rows with values (repository present, common base, provider auth there, toolchain, clean checkout, payload size, unversioned files), the holdback toggle and its file count, the estimate clone and worktree setup, about 20s, and which agents each target has installed (the design's claude-code and codex installed; FleetMachine carries health, route and capabilities only). sessionTransferPreviewSchema carries project ids and commits only. The design's 6 pass · 1 warning waits for daemon rows that can warn without blocking"
       }
     },
     {

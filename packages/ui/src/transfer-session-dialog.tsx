@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { CheckIcon, CircleStopIcon } from "lucide-react"
 
 import {
   sessionTransferRefusalMessage,
   sourcePreflight,
   transferPreflight,
+  type FleetHealth,
   type FleetMachine,
+  type TransferRefusal,
   type SessionSummary,
   type SessionTransferParams,
   type SessionTransferPreview,
@@ -63,6 +65,123 @@ export function transferChecks(input: {
   ]
 }
 
+// The design's summary reads "6 pass · 1 warning". Every check this client can
+// draw today stops the move when it fails, so a failure is counted as blocking
+// rather than as a warning the operator could move past.
+export function preflightSummary(checks: readonly TransferCheck[]): string {
+  const blocking = checks.filter((check) => !check.ready).length
+  const pass = `${checks.length - blocking} pass`
+  return blocking === 0 ? pass : `${pass} · ${blocking} blocking`
+}
+
+// A row note says whether the machine could take the session right now. The
+// fleet carries health and the route, not which providers are installed there,
+// so the note stops at reachability.
+const unavailableNote: Record<TransferRefusal, string> = {
+  "target-is-source": "the session is already here",
+  "target-unreachable": "daemon unreachable, cannot accept a session now",
+  "target-not-responding": "not answering, cannot accept a session now",
+  "target-pairing-required": "must be paired again before it can accept a session",
+  "target-version-mismatch": "runs a newer Domovoi than this client can move a session to",
+  "target-upgrade-required": "runs an older Domovoi and needs an upgrade first",
+  "target-cannot-run-sessions": "does not run sessions",
+}
+
+const healthDot: Record<FleetHealth, string> = {
+  healthy: "bg-success",
+  reconnecting: "bg-warning",
+  degraded: "bg-warning",
+  "upgrade-required": "bg-warning",
+  "credential-store-unavailable": "bg-warning",
+  unreachable: "bg-destructive",
+  "version-mismatch": "bg-destructive",
+  "pairing-required": "bg-destructive",
+}
+
+function routeWord(machine: FleetMachine): string {
+  if (machine.connection === "local") return "loopback"
+  if (machine.connection === "direct" && machine.verifiedRoute) {
+    return `a direct route to ${new URL(machine.verifiedRoute.endpoint).host}`
+  }
+  return machine.connection
+}
+
+export function transferTargetRow(input: { machine: FleetMachine; source: FleetMachine }): {
+  available: boolean
+  note: string
+} {
+  const { machine, source } = input
+  const check = transferPreflight({ source, target: machine })
+  if (check.allowed) {
+    // Health says the machine answers the fleet, not which route the move
+    // would dial. With neither a verified route nor an advertised transport,
+    // only routes this client cannot see remain (an SSH forward or a WSL
+    // distribution on the source), so the row neither claims a route nor
+    // refuses one: the daemon's preview answers when the row is picked.
+    if (!machine.verifiedRoute && machine.transports.length === 0) {
+      return { available: true, note: "no advertised route, the preview says whether it can be dialed" }
+    }
+    return { available: true, note: `reachable over ${routeWord(machine)}` }
+  }
+  if (check.reason === "target-is-source" && machine.self) {
+    return { available: false, note: `this machine, ${unavailableNote[check.reason]}` }
+  }
+  // The preflight folds an unreadable keychain into unreachable. The daemon
+  // there may be fine, so the row says which side failed.
+  if (machine.health === "credential-store-unavailable") {
+    return { available: false, note: "the keychain here could not be read, cannot reach it now" }
+  }
+  return { available: false, note: unavailableNote[check.reason] }
+}
+
+function TargetList({
+  machines,
+  source,
+  target,
+  disabled,
+  onPick,
+}: {
+  machines: readonly FleetMachine[]
+  source: FleetMachine
+  target: FleetMachine
+  disabled: boolean
+  onPick: (machineId: string) => void
+}) {
+  const name = useId()
+  return (
+    <div role="radiogroup" aria-labelledby="transfer-target-title" className="flex flex-col gap-2">
+      {machines.map((machine) => {
+        const row = transferTargetRow({ machine, source })
+        const chosen = machine.id === target.id
+        const off = disabled || !row.available
+        return (
+          <label
+            key={machine.id}
+            className={`flex items-center gap-3 rounded-lg border bg-card px-3 py-2.5 has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring ${chosen ? "border-primary" : ""} ${off ? "opacity-50" : ""} ${off || chosen ? "cursor-default" : "cursor-pointer hover:bg-accent"}`}
+          >
+            <input
+              type="radio"
+              name={name}
+              className="sr-only"
+              checked={chosen}
+              disabled={off}
+              aria-labelledby={`${name}-${machine.id}-label`}
+              aria-describedby={`${name}-${machine.id}-note`}
+              onChange={() => onPick(machine.id)}
+            />
+            <span className={`size-1.5 shrink-0 rounded-full ${healthDot[machine.health]}`} />
+            <span className="min-w-0 flex-1">
+              <span id={`${name}-${machine.id}-label`} className="block font-machine text-[12px]">{machine.label}</span>
+              <span id={`${name}-${machine.id}-note`} className="mt-0.5 block text-[11px] text-muted-foreground">{row.note}</span>
+            </span>
+            <CheckIcon className={`size-4 shrink-0 ${chosen ? "text-primary" : "text-transparent"}`} />
+          </label>
+        )
+      })}
+    </div>
+  )
+}
+
 function FixedList({ label, items }: { label: string; items: readonly string[] }) {
   return (
     <div role="group" aria-label={label} className="min-w-0 flex-1">
@@ -86,6 +205,7 @@ export function TransferSessionDialog({
   onOutcome,
   onRecoverSource,
   onCloseAutoFocus,
+  targetChoice,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -104,16 +224,32 @@ export function TransferSessionDialog({
   // Where focus goes when the dialog closes, for an opener that cannot take
   // it back.
   onCloseAutoFocus?: ((event: Event) => void) | undefined
+  // The fleet to pick from, with the source among it. The opener owns the
+  // chosen target, so picking a row asks it to change rather than switching
+  // here; a receipt it writes then names the machine the move went to. The
+  // two travel together: a list nothing can pick from would draw choices
+  // that do nothing. Without them the dialog draws the chosen machine alone.
+  targetChoice?: {
+    machines: readonly FleetMachine[]
+    onTargetChange: (machineId: string) => void
+  } | undefined
 }) {
   const [method, setMethod] = useState<TransferMethod>("git-bundle")
   const [remote, setRemote] = useState("")
   const [pending, setPending] = useState(false)
   const [problem, setProblem] = useState<{ title: string; detail: string; from: "preview" | "move" } | undefined>(undefined)
-  const [preview, setPreview] = useState<SessionTransferPreview | undefined>(undefined)
+  const [answered, setAnswered] = useState<{ key: string; preview: SessionTransferPreview } | undefined>(undefined)
   const [previewing, setPreviewing] = useState(false)
   const [previewAttempt, setPreviewAttempt] = useState(0)
   const [incomplete, setIncomplete] = useState<IncompleteTransfer | undefined>(undefined)
   const [recovering, setRecovering] = useState(false)
+
+  // A preview answers one question: this session, to this machine, this way.
+  // Any change to those asks a new one, and until it lands the old answer is
+  // not this move's, even while a typed remote waits out its debounce. Keyed
+  // here rather than cleared in an effect, so no render offers the move on it.
+  const previewKey = JSON.stringify([session.id, target.id, method, method === "remote-ref" ? remote.trim() : null])
+  const preview = answered?.key === previewKey ? answered.preview : undefined
 
   // The daemon decides what this move would carry and whether it may happen at
   // all. Asking it is not a nicety: session.transfer refuses anything without
@@ -125,13 +261,13 @@ export function TransferSessionDialog({
     // the repository and calls the target. Typing a remote name would run one
     // per keystroke, so the request waits for the typing to stop.
     if (method === "remote-ref" && !remote.trim()) {
-      setPreview(undefined)
+      setAnswered(undefined)
       setPreviewing(false)
       return
     }
     const run = () => {
       setPreviewing(true)
-      setPreview(undefined)
+      setAnswered(undefined)
       void onPreview({
         sessionId: session.id,
         targetMachineId: target.id,
@@ -140,7 +276,7 @@ export function TransferSessionDialog({
       }).then(
         (next) => {
           if (!active) return
-          setPreview(next)
+          setAnswered({ key: previewKey, preview: next })
           // A preview that failed and then succeeded has nothing left to report,
           // so its error goes. A refused move stays: the operator asked for it
           // and the answer is what they are waiting to read.
@@ -167,7 +303,7 @@ export function TransferSessionDialog({
       active = false
       clearTimeout(timer)
     }
-  }, [method, onPreview, open, previewAttempt, remote, session.id, source.label, target.id])
+  }, [method, onPreview, open, previewAttempt, previewKey, remote, session.id, source.label, target.id])
 
   // What the move carries is the daemon's answer, so it is read off the preview
   // rather than described here. Before the preview lands there is nothing
@@ -180,7 +316,7 @@ export function TransferSessionDialog({
       setMethod("git-bundle")
       setRemote("")
       setProblem(undefined)
-      setPreview(undefined)
+      setAnswered(undefined)
       setIncomplete(undefined)
       setRecovering(false)
     }
@@ -188,6 +324,18 @@ export function TransferSessionDialog({
   }, [open])
 
   const checks = transferChecks({ session, source, target })
+  // The design asks for a reachable machine instead of naming one the move
+  // cannot reach, but only where the list offers one to pick.
+  const pickAnother = targetChoice !== undefined
+    && !transferTargetRow({ machine: target, source }).available
+    && targetChoice.machines.some((machine) => transferTargetRow({ machine, source }).available)
+  const pickTarget = (machineId: string) => {
+    if (!targetChoice || machineId === target.id) return
+    // A refusal or failure read for the previous machine says nothing about
+    // this one.
+    setProblem(undefined)
+    targetChoice.onTargetChange(machineId)
+  }
   const remoteReady = method === "git-bundle" || remote.trim().length > 0
   const ready = checks.every((check) => check.ready)
     && remoteReady
@@ -268,7 +416,7 @@ export function TransferSessionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[620px]" {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})}>
+      <DialogContent className="max-h-[calc(100dvh-2rem)] overflow-y-auto sm:max-w-[620px]" {...(onCloseAutoFocus ? { onCloseAutoFocus } : {})}>
         <DialogHeader>
           <DialogTitle>Move this session to another machine</DialogTitle>
           <DialogDescription>
@@ -286,10 +434,20 @@ export function TransferSessionDialog({
 
         <section className="flex flex-col gap-2" aria-labelledby="transfer-target-title">
           <h3 id="transfer-target-title" className="m-0 text-[10.5px] font-medium tracking-[0.13em] text-faint">TARGET</h3>
-          <div className="flex items-center gap-3 rounded-lg border border-primary bg-card px-3 py-2.5"><span className="size-1.5 rounded-full bg-success" /><span className="flex-1 font-machine text-[12px]">{target.label}</span><CheckIcon className="size-4 text-primary" /></div>
+          {targetChoice ? (
+            <TargetList
+              machines={targetChoice.machines}
+              source={source}
+              target={target}
+              disabled={pending || incomplete !== undefined}
+              onPick={pickTarget}
+            />
+          ) : (
+            <div className="flex items-center gap-3 rounded-lg border border-primary bg-card px-3 py-2.5"><span className={`size-1.5 rounded-full ${healthDot[target.health]}`} /><span className="flex-1 font-machine text-[12px]">{target.label}</span><CheckIcon className="size-4 text-primary" /></div>
+          )}
         </section>
 
-        <div className="flex items-center gap-2"><h3 className="m-0 text-[10.5px] font-medium tracking-[0.13em] text-faint">PRE-FLIGHT ON {target.label.toUpperCase()}</h3><span className="rounded-full bg-accent px-2 py-0.5 font-machine text-[10.5px] text-muted-foreground">{checks.filter((check) => check.ready).length} pass · {checks.filter((check) => !check.ready).length} warnings</span></div>
+        <div className="flex items-center gap-2"><h3 className="m-0 text-[10.5px] font-medium tracking-[0.13em] text-faint">PRE-FLIGHT ON {target.label.toUpperCase()}</h3><span className="rounded-full bg-accent px-2 py-0.5 font-machine text-[10.5px] text-muted-foreground">{preflightSummary(checks)}</span></div>
         <div role="group" aria-label="Transfer checks" className="overflow-hidden rounded-lg border">
           {checks.map((check) => (
             <p
@@ -411,7 +569,7 @@ export function TransferSessionDialog({
             Cancel
           </Button>
           {!incomplete ? <Button type="button" aria-label="Move session" disabled={!ready} onClick={() => void move()}>
-            {pending ? "Moving session" : `Move to ${target.label}`}
+            {pending ? "Moving session" : pickAnother ? "Pick a reachable machine" : `Move to ${target.label}`}
           </Button> : null}
         </DialogFooter>
       </DialogContent>
