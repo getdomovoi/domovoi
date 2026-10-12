@@ -763,6 +763,9 @@ export function ArtifactDock({
                 dock stacks it above, and leaves it out while there is only
                 the one render on screen. */}
             <PreviewRenderedList
+              // Another session starts again at its newest page: pages shown
+              // in one session are no reason to draw thousands in the next.
+              key={snapshot.activeSessionId ?? ""}
               renders={renderedPreviews}
               selectedArtifactId={preview.id}
               onPick={setSelectedPreviewId}
@@ -1047,6 +1050,7 @@ export function ArtifactDock({
         ) : null}
         comments={(
           <AnnotationComments
+            idPrefix="fullscreen-annotation-reply"
             annotations={previewComments}
             anchorResolutions={anchorResolutions}
             readOnly={readOnly}
@@ -1119,10 +1123,14 @@ export function AnnotationComments({
   readOnly,
   onReply,
   onSetStatus,
+  idPrefix = "annotation-reply",
 }: {
   annotations: Annotation[]
   anchorResolutions?: ReadonlyMap<string, "selector" | "text-quote" | "bounding-box" | "unresolved">
   readOnly: boolean
+  // Fullscreen mounts a second list over the dock's; its fields need their
+  // own ids or their labels resolve to the dock's hidden copy.
+  idPrefix?: string
   onReply: (annotationId: string, body: string) => Promise<void>
   onSetStatus: (annotationId: string, status: Annotation["status"]) => Promise<void>
 }) {
@@ -1244,9 +1252,9 @@ export function AnnotationComments({
                   {isReplying ? (
                     <FieldGroup>
                       <Field>
-                        <FieldLabel htmlFor={`annotation-reply-${annotation.id}`}>Reply</FieldLabel>
+                        <FieldLabel htmlFor={`${idPrefix}-${annotation.id}`}>Reply</FieldLabel>
                         <Textarea
-                          id={`annotation-reply-${annotation.id}`}
+                          id={`${idPrefix}-${annotation.id}`}
                           value={reply}
                           rows={3}
                           disabled={pending}

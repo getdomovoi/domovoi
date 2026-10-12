@@ -660,3 +660,67 @@ it("opens the draft once the desktop's visual capture of the picked element land
     bounds.mockRestore()
   }
 })
+
+it("starts the render list at the newest page again when another session becomes active", async () => {
+  const user = userEvent.setup()
+  const otherSessionId = demoWorkspace.sessions.find((session) => session.id !== sessionId)!.id
+  const rendersOf = (owner: string): Artifact[] => Array.from({ length: 120 }, (_, index) => ({
+    id: `${owner}-render-${index}`,
+    sessionId: owner,
+    title: `Render ${index}`,
+    type: "preview",
+    revision: 1,
+    mimeType: "text/html",
+    path: `previews/render-${index}.html`,
+  }))
+  const many = { ...snapshot, artifacts: [...rendersOf(sessionId), ...rendersOf(otherSessionId)] }
+  const dock = (active: string) => (
+    <ArtifactDock
+      snapshot={{ ...many, activeSessionId: active }}
+      onCollapse={vi.fn()}
+      defaultTab="preview"
+      rpcUrl="ws://127.0.0.1:47831/rpc"
+      authorizeArtifact={grantingAuthorize()}
+      connected
+      terminalControls={{ claim: vi.fn(), release: vi.fn(), write: vi.fn(), resize: vi.fn() } as never}
+      onReplyToAnnotation={vi.fn()}
+      onSetAnnotationStatus={vi.fn()}
+      onCreateAnnotation={vi.fn()}
+      onLoadSessionHistory={vi.fn()}
+      onLoadSessionEvidence={() => new Promise<never>(() => {})}
+      onRevertSessionFile={vi.fn()}
+    />
+  )
+  const { rerender } = render(dock(sessionId))
+  const rows = () => within(screen.getByRole("navigation", { name: "Rendered this session" })).getAllByRole("button")
+    .filter((button) => button.textContent?.startsWith("Render "))
+  await user.click(screen.getByRole("button", { name: "Show 50 earlier renders" }))
+  await user.click(screen.getByRole("button", { name: "Show 20 earlier renders" }))
+  expect(rows()).toHaveLength(120)
+
+  rerender(dock(otherSessionId))
+  expect(rows()).toHaveLength(50)
+})
+
+it("gives the fullscreen reply field its own id, so its label names it and not the dock's", async () => {
+  const user = userEvent.setup()
+  const annotation = {
+    ...demoWorkspace.annotations[0]!,
+    id: "annotation-on-b",
+    sessionId,
+    artifactId: "replay-b",
+    anchor: { cssSelector: "main > table" },
+    thread: [],
+  }
+  renderDock(grantingAuthorize(), undefined, { ...snapshot, annotations: [annotation] })
+  const dockComments = screen.getByRole("region", { name: "Comments on this preview" })
+  await user.click(within(dockComments).getByRole("button", { name: "Reply" }))
+  expect(within(dockComments).getByLabelText("Reply")).toBeTruthy()
+
+  await user.click(screen.getByRole("button", { name: "Open fullscreen preview" }))
+  const column = within(screen.getByRole("dialog")).getByRole("complementary", { name: "Comments on Variant B" })
+  await user.click(within(column).getByRole("button", { name: "Reply" }))
+  const field = within(column).getByLabelText("Reply")
+  expect(column.contains(field)).toBe(true)
+  expect(document.querySelectorAll(`[id="${field.id}"]`)).toHaveLength(1)
+})
