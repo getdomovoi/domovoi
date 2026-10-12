@@ -23,6 +23,11 @@ const protocolPath = "node_modules/@getdomovoi/protocol"
 // the bytes that lock pins, so both take their inventory from it.
 const runtimeLockRoots = { "@getdomovoi/daemon": "", "@getdomovoi/protocol": protocolPath }
 
+// The built web app (S3.2, docs/plans/s3-2-web-over-tailnet.md slice 6): a
+// release file the owner unpacks into the daemon's web folder, not an npm
+// package.
+export const webArchiveName = (version) => `domovoi-web-${version}.tar.gz`
+
 export function packageUrl(name, version) {
   return `pkg:npm/${name.replace("@", "%40")}@${version}`
 }
