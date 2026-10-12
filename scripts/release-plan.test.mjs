@@ -34,6 +34,9 @@ export async function releaseFixture(t) {
       sums.push(`${digest(bytes)}  ${file}\n`)
     }
   }
+  const web = `domovoi-web-${version}.tar.gz`
+  await put(`release/${web}`, "packed web app")
+  sums.push(`${digest("packed web app")}  ${web}\n`)
   await put("release/SHA256SUMS", sums.sort().join(""))
   const plan = { version: 1, plan: names.map((name) => [{ kind: "publish", name, version, access: "public", tag: "latest" }]) }
   await put("release/publish-plan.json", plan)
@@ -119,5 +122,22 @@ test("a retry can publish only the missing daemon while keeping every release ar
   await put("release/publish-plan.json", plan)
   const result = await prepare()
   assert.deepEqual(result.packages.map((entry) => entry.name), names)
-  assert.equal(result.files.length, names.length * 2 + 1)
+  assert.equal(result.files.length, names.length * 2 + 2)
+})
+
+// S3.2 slice 6: the web app is a release file beside the npm archives, never
+// an npm package. release:github uploads every entry of files, so it must be
+// named and checked there, and it never enters the publish plan.
+test("the release carries the web app tarball, checked against SHA256SUMS and never published to npm", async (t) => {
+  const { root, put, prepare } = await releaseFixture(t)
+  const web = `domovoi-web-${version}.tar.gz`
+  const result = await prepare()
+  assert.deepEqual(result.files.find((file) => file.name === web), { name: web, sha256: digest("packed web app") })
+  assert.equal(result.packages.some((pkg) => pkg.archive === web), false)
+  const packed = JSON.parse(await readFile(join(root, "release/pack/publish-plan.json"), "utf8"))
+  assert.equal(packed.plan.flat().some((entry) => entry.tarball.path.includes("domovoi-web")), false)
+  await put(`release/${web}`, "substituted web app")
+  await assert.rejects(prepare(), new RegExp(`${web.replaceAll(".", "\\.")} does not match SHA256SUMS`))
+  await rm(join(root, "release", web))
+  await assert.rejects(prepare(), /domovoi-web/)
 })

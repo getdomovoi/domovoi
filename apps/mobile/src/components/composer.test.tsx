@@ -31,6 +31,7 @@ async function draw(overrides: Partial<Parameters<typeof Composer>[0]> = {}) {
     onOpenSkills: jest.fn<() => void>(),
     onOpenAttach: jest.fn<() => void>(),
     onRemoveAttachment: jest.fn<(index: number) => void>(),
+    onRemoveAttachments: jest.fn<() => void>(),
     ...overrides,
   }
   await render(
@@ -106,5 +107,64 @@ describe("Composer attachments", () => {
 
     await draw({ attachmentsAllowed: false })
     expect(screen.queryByRole("button", { name: "Attach an image" })).toBeNull()
+  })
+})
+
+// Phone v2 frame 14b: images queued for a model whose harness reports no image
+// input lock send before it is pressed, and the line names the model. Only a
+// model that cannot take them locks it; not knowing says so and sends.
+describe("Composer images and the model", () => {
+  it("locks send for a model that takes no images, and unlocks it once they are removed", async () => {
+    const props = await draw({
+      draft: "Before and after",
+      attachments: [before, after],
+      attachmentSummary: "x",
+      images: { model: "qwen3-coder-72b", imageInput: false },
+    })
+
+    expect(screen.getByText("2 images cannot go to qwen3-coder-72b. Remove them or pick another model.")).toBeOnTheScreen()
+    expect(screen.getByRole("button", { name: "Send" }).props.accessibilityState).toMatchObject({ disabled: true })
+    await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+    expect(props.onSend).not.toHaveBeenCalled()
+    await fireEvent.press(screen.getByRole("button", { name: "Remove 2 images" }))
+    expect(props.onRemoveAttachments).toHaveBeenCalledTimes(1)
+
+    await draw({ draft: "Before and after", images: { model: "qwen3-coder-72b", imageInput: false } })
+    expect(screen.queryByText(/cannot go to/)).toBeNull()
+    expect(screen.getByRole("button", { name: "Send" }).props.accessibilityState).toMatchObject({ disabled: false })
+  })
+
+  it("names one image in the singular", async () => {
+    await draw({ draft: "This one", attachments: [before], attachmentSummary: "x", images: { model: "qwen3-coder-72b", imageInput: false } })
+    expect(screen.getByText("1 image cannot go to qwen3-coder-72b. Remove it or pick another model.")).toBeOnTheScreen()
+    expect(screen.getByRole("button", { name: "Remove 1 image" })).toBeOnTheScreen()
+  })
+
+  it("sends images to a model that takes them", async () => {
+    const props = await draw({
+      draft: "Before and after",
+      attachments: [before, after],
+      attachmentSummary: "x",
+      images: { model: "claude-sonnet-4.6", imageInput: true },
+    })
+
+    expect(screen.queryByText(/cannot go to/)).toBeNull()
+    expect(screen.queryByText(/does not know whether/)).toBeNull()
+    await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+    expect(props.onSend).toHaveBeenCalledTimes(1)
+  })
+
+  it("says it does not know, and sends, when the model's image input is not known", async () => {
+    const props = await draw({
+      draft: "Before and after",
+      attachments: [before],
+      attachmentSummary: "x",
+      images: { model: "qwen3-coder-72b", imageInput: undefined },
+    })
+
+    expect(screen.getByText("Domovoi does not know whether qwen3-coder-72b takes image input. If it does not, the machine refuses the send and nothing is sent.")).toBeOnTheScreen()
+    expect(screen.queryByText(/cannot go to/)).toBeNull()
+    await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+    expect(props.onSend).toHaveBeenCalledTimes(1)
   })
 })

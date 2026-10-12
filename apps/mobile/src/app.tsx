@@ -37,6 +37,7 @@ import { DaemonNotSentError, DaemonUnconfirmedError, watchTerminal } from "./lib
 import { DaemonTimeoutError } from "./lib/request-timeout"
 import { useDaemon } from "./lib/use-daemon"
 import { useDeviceIdentity } from "./lib/use-device-identity"
+import { useModelImages } from "./lib/use-model-images"
 import { connectedMachineActivity } from "./machine-activity"
 import { launchPhases } from "./launch-state"
 import * as ImagePicker from "expo-image-picker"
@@ -69,11 +70,11 @@ import {
   withNotification,
   type TerminalWatch,
 } from "./terminal-rows"
-import { promptProblem, sendReadinessOverSocket, sessionDetail } from "./session-detail"
+import { promptProblem, recordedBuildBasis, sendReadinessOverSocket, sessionDetail } from "./session-detail"
 import { queuedCancelParams, sendDelivery } from "./session-delivery"
 import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
-import { TabletShell } from "./tablet-shell"
+import { TabletShell, type GateProblem } from "./tablet-shell"
 import { useTheme } from "./theme/theme-provider"
 import {
   missingSkillProblem,
@@ -120,7 +121,11 @@ export function App() {
     else next.delete(sessionId)
     return next
   })
-  const [decideProblem, setDecideProblem] = useState("")
+  // Why the daemon did not take the last answer, with the gate it answered:
+  // the tablet shows a gate per session, and one gate's refusal must not
+  // appear on another's card.
+  const [decideProblem, setDecideProblem] = useState<GateProblem | undefined>(undefined)
+  const decideProblemFor = (approvalId: string) => decideProblem?.approvalId === approvalId ? decideProblem.text : ""
   // Frames 13 and 14: what the next turn carries besides words. Held here
   // and sent with the turn; nothing is kept once the send is answered.
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -166,6 +171,9 @@ export function App() {
   // state has re-rendered anything. The latch is read and set synchronously, so
   // the second tap has nothing left to do.
   const inFlightSend = useRef(false)
+  // The same latch for an answer to a gate: two taps on Allow once land
+  // before the deciding state has disabled anything.
+  const inFlightDecide = useRef(false)
   // Undefined is "the person has not chosen", which leaves the project's own
   // skills alone. An empty set is a deliberate "no skills this turn". The two
   // are different requests and the daemon treats them differently.
@@ -234,6 +242,8 @@ export function App() {
   // Compared with a gate's origin, so the approval screen can say this phone
   // started the turn.
   const deviceId = useDeviceIdentity(call, status, connectTo?.token)
+  // Frames 13b and 14b: whether the open session's model takes images.
+  const openModelImages = useModelImages(call, status, client, snapshot?.sessions.find((session) => session.id === openSessionId)?.runtime)
   const mutate = useCallback(
     <M extends RpcMethod>(method: M, params: RpcParams<M>) => mutationCall(clientAccess, call, method, params),
     [call, clientAccess],
@@ -653,8 +663,10 @@ export function App() {
     decision: ApprovalDecision,
     explanation?: string,
   ) => {
+    if (inFlightDecide.current) return
+    inFlightDecide.current = true
     setDeciding(true)
-    setDecideProblem("")
+    setDecideProblem(undefined)
     try {
       await mutate("approval.resolve", {
         approvalId: approval.id,
@@ -667,8 +679,9 @@ export function App() {
     } catch (cause) {
       // The gate is still waiting on the machine; a client that could not
       // answer it has not changed it. The screen stays and says why.
-      setDecideProblem(decisionProblem(cause))
+      setDecideProblem({ approvalId: approval.id, text: decisionProblem(cause) })
     } finally {
+      inFlightDecide.current = false
       setDeciding(false)
     }
   }
@@ -911,6 +924,7 @@ export function App() {
             <DenyExplainScreen
               approval={openApproval}
               pending={deciding}
+              problem={decideProblemFor(openApproval.id)}
               onSend={(explanation) => void decide(explanation ? "deny-explain" : "deny", explanation)}
               onBack={() => setExplaining(false)}
             />
@@ -922,7 +936,7 @@ export function App() {
               viewer={{ client, deviceId }}
               pending={deciding}
               notice={notice}
-              problem={decideProblem}
+              problem={decideProblemFor(openApproval.id)}
               onDecide={(decision) => void decide(decision)}
               onDenyExplain={() => setExplaining(true)}
               onBack={() => setOpenApprovalId(undefined)}
@@ -946,6 +960,7 @@ export function App() {
             comments={openArtifactComments}
             render={previewRender}
             variants={openVariants}
+            builtOn={snapshot ? recordedBuildBasis(snapshot, openArtifact.sessionId) : undefined}
             machine={snapshot?.machine.name ?? "the machine"}
             onBack={() => setOpenArtifactId(undefined)}
             onRetryRender={() => setRenderAttempt((attempt) => attempt + 1)}
@@ -1006,6 +1021,9 @@ export function App() {
             draft={draft}
             access={clientAccess}
             sending={sending || deciding}
+            deciding={deciding}
+            decideProblem={decideProblem}
+            sendProblems={sendProblems}
             onSelectSession={(sessionId) => {
               setOpenSessionId(sessionId)
               setOpenApprovalId(undefined)
@@ -1093,6 +1111,8 @@ export function App() {
             onPickLibrary={() => void pickImage("library")}
             onTakePhoto={() => void pickImage("camera")}
             onRemoveAttachment={(index) => setAttachments((current) => current.filter((_item, at) => at !== index))}
+            onRemoveAttachments={() => setAttachments([])}
+            modelImages={openModelImages}
             starting={starting}
             startProblem={startProblem}
             startRefusal={startRefusal}

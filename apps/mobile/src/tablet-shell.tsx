@@ -23,8 +23,11 @@ import { Text } from "./components/ui/text"
 import { PageScroller } from "./components/page-scroller"
 import { approvalFacts } from "./screens/approval"
 import { PolicyRefusalCards } from "./screens/session"
+import { idleSentence } from "./screens/sessions"
 
 type TabletDecision = Extract<ApprovalDecision, "allow-once" | "always-project">
+// Why the daemon did not take an answer, kept with the gate it answered.
+export type GateProblem = { approvalId: string, text: string }
 type ReviewTab = "changes" | "diff" | "plan" | "review"
 
 function TabletSessionRow({ row, selected, access, onPress }: {
@@ -102,16 +105,24 @@ export function TabletSessionsPane({ snapshot, selectedSessionId, access, onSele
   )
 }
 
-export function TabletThreadHeader({ snapshot, detail, artifactCount, onOpenReview }: {
+// The design's "7 files" is how many files the session changed, which the
+// daemon counts on the session itself. The artifacts it made are another
+// thing and are not counted here.
+function changedFilesLabel(snapshot: WorkspaceSnapshot, sessionId: string): string {
+  const count = snapshot.sessions.find((session) => session.id === sessionId)?.changedFiles ?? 0
+  return count === 1 ? "1 file" : `${count} files`
+}
+
+export function TabletThreadHeader({ snapshot, detail, onOpenReview }: {
   snapshot: WorkspaceSnapshot
   detail: SessionDetail
-  artifactCount: number
   onOpenReview: () => void
 }) {
   const { resolved, setPreference } = useTheme()
   const session = snapshot.sessions.find((candidate) => candidate.id === detail.id)
   const worktree = session?.workspacePath?.split(/[\\/]/u).at(-1)
   const project = snapshot.project
+  const files = changedFilesLabel(snapshot, detail.id)
   return (
     <View className="min-h-[60px] flex-row items-center gap-3 border-b border-border px-5 py-3">
       <View className="min-w-0 flex-1">
@@ -120,7 +131,7 @@ export function TabletThreadHeader({ snapshot, detail, artifactCount, onOpenRevi
           {[project?.name, project?.branch, worktree].filter(Boolean).join(" · ")}
         </Text>
       </View>
-      <Button title={`${artifactCount} files`} accessibilityLabel={`Open review sheet, ${artifactCount} files`} onPress={onOpenReview} />
+      <Button title={files} accessibilityLabel={`Open review sheet, ${files}`} onPress={onOpenReview} />
       <Pressable
         accessibilityRole="button"
         accessibilityLabel={`Use ${resolved === "dark" ? "light" : "dark"} appearance`}
@@ -133,13 +144,19 @@ export function TabletThreadHeader({ snapshot, detail, artifactCount, onOpenRevi
   )
 }
 
-export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = false }: {
+export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = false, pending = false, problem = "" }: {
   approval: ApprovalRequest
   // The revision is the one this card shows, so the daemon can refuse an
   // Allow given to a card it has since rewritten.
   onResolve: (approvalId: string, decision: TabletDecision, revision: number) => void
   onDenyExplain: (approvalId: string) => void
   watching?: boolean
+  // An answer is out to the daemon. Every decision waits for it, so a second
+  // tap cannot send a second answer.
+  pending?: boolean
+  // Why the daemon did not take the last answer to this gate, in the phone's
+  // words (decisionProblem). The gate is still waiting, so the card stays.
+  problem?: string
 }) {
   const hardGate = approval.risk === "hard-gate"
   return (
@@ -153,7 +170,7 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = 
       </View>
       <View className="gap-2.5 px-4 pb-3.5">
         <Text className="text-[13px] leading-[19px] text-warn-fg">{approval.operation}</Text>
-        <View className="rounded-xl bg-warn-deep px-3.5 py-3">
+        <View className="rounded-xl bg-warn-bg-deep px-3.5 py-3">
           <Text variant="machine" className="text-warn-fg">{approval.command}</Text>
         </View>
       </View>
@@ -165,6 +182,12 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = 
           </View>
         ))}
       </View>
+      {/* Drawn whatever the access: a connection that drops while an answer
+          is out leaves the tablet watching, and whether that answer landed is
+          still this gate's fact to tell. */}
+      {problem ? (
+        <Text accessibilityRole="alert" className="px-4 pt-3.5 text-[12px] leading-[18px] text-warn-fg">{problem}</Text>
+      ) : null}
       {watching ? (
         <Text variant="note" className="px-4 py-3.5 text-warn-dim">
           Watching only. A device paired with full access answers this gate.
@@ -175,15 +198,16 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = 
           title="Allow once"
           variant="affirm"
           className="h-[52px] rounded-xl"
+          disabled={pending}
           onPress={() => onResolve(approval.id, "allow-once", approval.revision)}
         />
         <View className="flex-row gap-2">
           {/* The daemon refuses a standing rule on a hard gate and for a request
               it could not resolve (ruled 2026-09-24). */}
           {hardGate || approval.execution.state !== "resolved" ? null : (
-            <Button title="Always here" className="h-12 flex-1 rounded-xl border-warn-border" onPress={() => onResolve(approval.id, "always-project", approval.revision)} />
+            <Button title="Always here" className="h-12 flex-1 rounded-xl border-warn-border" disabled={pending} onPress={() => onResolve(approval.id, "always-project", approval.revision)} />
           )}
-          <Button title="Deny" className="h-12 flex-1 rounded-xl border-warn-border" onPress={() => onDenyExplain(approval.id)} />
+          <Button title="Deny" className="h-12 flex-1 rounded-xl border-warn-border" disabled={pending} onPress={() => onDenyExplain(approval.id)} />
         </View>
       </View>
       )}
@@ -192,8 +216,8 @@ export function TabletGateCard({ approval, onResolve, onDenyExplain, watching = 
 }
 
 // The phone's receipt logic at tablet size: success colours only for an
-// allow, the checkpoint sentence only when an allow took one, and the gate's
-// wait named as the wait.
+// allow, the checkpoint sentence only when an allow took one, the run time
+// whether or not it did, and the gate's wait named as the wait.
 export function TabletReceipt({ entry }: { entry: Extract<ThreadEntry, { kind: "receipt" }> }) {
   const denied = entry.recorded === "deny" || entry.recorded === "deny-explain"
   const ink = denied ? "text-strong" : "text-ok-fg"
@@ -219,6 +243,10 @@ export function TabletReceipt({ entry }: { entry: Extract<ThreadEntry, { kind: "
             ? `Checkpoint ${entry.checkpoint} was taken first, then it ran in ${entry.ranFor}.`
             : `Checkpoint ${entry.checkpoint} was taken first.`}
         </Text>
+      ) : entry.ranFor ? (
+        // An allow that could take no checkpoint still ran, and how long it
+        // ran is its own fact, as the phone's receipt says it.
+        <Text className={cn("text-[13px] leading-[19px]", dim)}>{`It ran in ${entry.ranFor}.`}</Text>
       ) : null}
     </Card>
   )
@@ -251,69 +279,93 @@ function TabletThreadEntry({ entry }: { entry: ThreadEntry }) {
   return <Text variant="note">{entry.body}{entry.meta ? ` · ${entry.meta}` : ""}</Text>
 }
 
-export function TabletThread({ snapshot, detail, approval, access, onResolve, onDenyExplain }: {
+export function TabletThread({ snapshot, detail, approval, access, deciding, decideProblem, onResolve, onDenyExplain }: {
   snapshot: WorkspaceSnapshot
   detail: SessionDetail
   approval: ApprovalRequest | undefined
   access: ClientAccess
+  deciding: boolean
+  decideProblem: string
   onResolve: (approvalId: string, decision: TabletDecision, revision: number) => void
   onDenyExplain: (approvalId: string) => void
 }) {
   const tools = snapshot.thread.filter((item) => item.sessionId === detail.id && item.kind === "tool").length
-  const files = snapshot.artifacts.filter((artifact) => artifact.sessionId === detail.id).length
+  const files = snapshot.sessions.find((session) => session.id === detail.id)?.changedFiles ?? 0
   return (
+    // The thread reads newest last and the gate sits at its end, so it opens
+    // at the latest turn and follows what lands while the person is there.
+    // Keyed by session, so a session chosen from the pane opens at its own end
+    // rather than where the last one was left.
     <PageScroller
+      key={detail.id}
       testID="tablet-thread"
       className="flex-1"
       contentContainerClassName="grow justify-end gap-5 px-6 pb-3 pt-6"
+      followEnd
     >
       {detail.entries.map((entry) => <TabletThreadEntry key={entry.id} entry={entry} />)}
       {tools > 0 || files > 0 ? (
         <View className="flex-row items-center gap-2 self-start rounded-full border border-border px-3 py-2">
           <Icon name="chevron-right" tone="faint" size={14} />
           <Text className="text-[12.5px]">Work this turn</Text>
-          <Text variant="machine" className="text-faint">{tools} tools · {files} files</Text>
+          <Text variant="machine" className="text-faint">{`${tools} tools · ${changedFilesLabel(snapshot, detail.id)}`}</Text>
         </View>
       ) : null}
       {approval
-        ? <TabletGateCard approval={approval} onResolve={onResolve} onDenyExplain={onDenyExplain} watching={access !== "full"} />
+        ? (
+          <TabletGateCard
+            approval={approval}
+            onResolve={onResolve}
+            onDenyExplain={onDenyExplain}
+            watching={access !== "full"}
+            pending={deciding}
+            problem={decideProblem}
+          />
+        )
         : null}
     </PageScroller>
   )
 }
 
-export function TabletComposer({ detail, draft, sending, onChangeDraft, onSend }: {
+export function TabletComposer({ detail, draft, sending, problem, onChangeDraft, onSend }: {
   detail: SessionDetail
   draft: string
   sending: boolean
+  // Why the last send to this session did not go, kept per session by App.
+  problem: string
   onChangeDraft: (draft: string) => void
   onSend: () => void
 }) {
   const canSend = detail.sending.can && !sending && draft.trim().length > 0
   return (
-    <View className="flex-row items-end gap-2 px-6 pb-4 pt-3">
-      <View className="min-h-[52px] flex-1 flex-row items-center gap-3 rounded-2xl border border-border bg-card px-4">
-        <TextInput
-          multiline
-          accessibilityLabel="Tablet reply"
-          editable={detail.sending.can && !sending}
-          value={draft}
-          onChangeText={onChangeDraft}
-          placeholder="Reply, or steer the plan"
-          className="max-h-32 flex-1 py-3 font-sans text-[14px] text-foreground"
-        />
-        <Text variant="machine" className="text-faint">{detail.runtime}</Text>
+    <View className="gap-2 px-6 pb-4 pt-3">
+      {problem ? (
+        <Text accessibilityRole="alert" className="text-[12px] leading-[18px] text-destructive">{problem}</Text>
+      ) : null}
+      <View className="flex-row items-end gap-2">
+        <View className="min-h-[52px] flex-1 flex-row items-center gap-3 rounded-2xl border border-border bg-card px-4">
+          <TextInput
+            multiline
+            accessibilityLabel="Tablet reply"
+            editable={detail.sending.can && !sending}
+            value={draft}
+            onChangeText={onChangeDraft}
+            placeholder="Reply, or steer the plan"
+            className="max-h-32 flex-1 py-3 font-sans text-[14px] text-foreground"
+          />
+          <Text variant="machine" className="text-faint">{detail.runtime}</Text>
+        </View>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Send message"
+          accessibilityState={{ disabled: !canSend, busy: sending }}
+          disabled={!canSend}
+          onPress={onSend}
+          className={cn("h-[52px] w-[52px] items-center justify-center rounded-2xl", canSend ? "bg-primary" : "bg-accent")}
+        >
+          <Icon name="arrow-up" tone={canSend ? "primary-foreground" : "faint"} size={18} />
+        </Pressable>
       </View>
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Send message"
-        accessibilityState={{ disabled: !canSend, busy: sending }}
-        disabled={!canSend}
-        onPress={onSend}
-        className={cn("h-[52px] w-[52px] items-center justify-center rounded-2xl", canSend ? "bg-primary" : "bg-accent")}
-      >
-        <Icon name="arrow-up" tone={canSend ? "primary-foreground" : "faint"} size={18} />
-      </Pressable>
     </View>
   )
 }
@@ -383,7 +435,9 @@ export function TabletReviewSheet({ open, snapshot, sessionId, access, onPostRev
           {tab === "plan" ? rows.map((row) => <Card key={row.id} className="flex-row gap-3"><Text variant="machine" className="text-primary">{row.mark}</Text><View className="flex-1"><Text>{row.text}</Text><Text variant="machine" className="mt-1 text-faint">{row.meta}</Text></View></Card>) : null}
           {tab === "review" ? (
             preview ? <>
-              <Card className="gap-2"><Text variant="title">{preview.title}</Text><Text variant="note">Tap a bubble to comment. Comments reference that element in this render.</Text></Card>
+              {/* App posts a tablet comment anchored to the render's body, so it
+                  names no element, and the note says so (Q338 A). */}
+              <Card className="gap-2"><Text variant="title">{preview.title}</Text><Text variant="note">A comment from this tablet is about the whole render, not one element.</Text></Card>
               {access !== "full" ? (
                 <Text variant="note">Watching only. A device paired with full access can post a review.</Text>
               ) : (
@@ -392,7 +446,7 @@ export function TabletReviewSheet({ open, snapshot, sessionId, access, onPostRev
                   multiline
                   value={draft}
                   onChangeText={setDraft}
-                  placeholder="Say what is wrong with this element"
+                  placeholder="Say what is wrong with this render"
                   accessibilityLabel="Review comment"
                   className="min-h-[66px] font-sans text-[14px] text-foreground"
                 />
@@ -418,6 +472,9 @@ export function TabletShell({
   draft,
   access,
   sending,
+  deciding,
+  decideProblem,
+  sendProblems,
   onSelectSession,
   onNewSession,
   onOpenMachines,
@@ -435,6 +492,14 @@ export function TabletShell({
   draft: string
   access: ClientAccess
   sending: boolean
+  // An answer to a gate is out to the daemon, and why the daemon did not
+  // take the last answer, with the gate it was for. The card draws it only
+  // on that gate: another session's gate is a different question.
+  deciding: boolean
+  decideProblem: GateProblem | undefined
+  // Why the last send to each session did not go, kept per session by App.
+  // The composer draws the one for the session on screen.
+  sendProblems: ReadonlyMap<string, string>
   onSelectSession: (sessionId: string) => void
   onNewSession: () => void
   onOpenMachines: () => void
@@ -453,33 +518,71 @@ export function TabletShell({
     () => sessionId ? sessionDetail(snapshot, sessionId, access) : undefined,
     [access, sessionId, snapshot],
   )
-  if (!sessionId || !detail) return <View className="flex-1 items-center justify-center"><Text variant="meta">No session is selected.</Text></View>
+  const pane = (
+    <TabletSessionsPane
+      snapshot={snapshot}
+      selectedSessionId={sessionId}
+      access={access}
+      onSelectSession={onSelectSession}
+      onNewSession={onNewSession}
+      onOpenMachines={onOpenMachines}
+    />
+  )
+  // The tablet has no tab bar, so the sessions pane is its only way to New
+  // session and Machines. It stays when there is no thread to show (Q338 A).
+  if (!sessionId || !detail) {
+    return (
+      <View className="flex-1 flex-row bg-background">
+        {pane}
+        <TabletIdlePane snapshot={snapshot} notice={notice} />
+      </View>
+    )
+  }
   const approval = snapshot.approvals.find((candidate) => candidate.sessionId === sessionId)
-  const artifactCount = snapshot.artifacts.filter((artifact) => artifact.sessionId === sessionId).length
   return (
     <View className="flex-1 flex-row bg-background">
-      <TabletSessionsPane
-        snapshot={snapshot}
-        selectedSessionId={sessionId}
-        access={access}
-        onSelectSession={onSelectSession}
-        onNewSession={onNewSession}
-        onOpenMachines={onOpenMachines}
-      />
+      {pane}
       <View className="min-w-0 flex-1">
-        <TabletThreadHeader snapshot={snapshot} detail={detail} artifactCount={artifactCount} onOpenReview={() => setReviewOpen(true)} />
+        <TabletThreadHeader snapshot={snapshot} detail={detail} onOpenReview={() => setReviewOpen(true)} />
         {notice ? <View className="px-6 pt-3"><ConnectionBanner notice={notice} /></View> : null}
         <TabletThread
           snapshot={snapshot}
           detail={detail}
           approval={approval}
           access={access}
+          deciding={deciding}
+          decideProblem={approval && decideProblem?.approvalId === approval.id ? decideProblem.text : ""}
           onResolve={onResolve}
           onDenyExplain={onDenyExplain}
         />
-        <TabletComposer detail={detail} draft={draft} sending={sending} onChangeDraft={onChangeDraft} onSend={() => onSend(sessionId)} />
+        <TabletComposer
+          detail={detail}
+          draft={draft}
+          sending={sending}
+          problem={sendProblems.get(sessionId) ?? ""}
+          onChangeDraft={onChangeDraft}
+          onSend={() => onSend(sessionId)}
+        />
       </View>
       <TabletReviewSheet open={reviewOpen} snapshot={snapshot} sessionId={sessionId} access={access} onPostReview={onPostReview} onClose={() => setReviewOpen(false)} />
+    </View>
+  )
+}
+
+// The thread pane with no session in it. The tablet design draws no frame for
+// this, so it says what the phone's Sessions screen says with nothing listed
+// (phone v2 frame 10): the machine answers and has no work in flight. With
+// sessions listed but none to show, it says only that none is selected.
+function TabletIdlePane({ snapshot, notice }: { snapshot: WorkspaceSnapshot, notice: ConnectionNotice | undefined }) {
+  return (
+    <View className="min-w-0 flex-1 justify-center gap-3 px-6">
+      {notice ? <ConnectionBanner notice={notice} /> : null}
+      {snapshot.sessions.length === 0 ? (
+        <Card className="gap-2 border-ok-border bg-ok-bg">
+          <Text variant="title" className="text-ok-fg">Everything is idle</Text>
+          <Text variant="meta" className="text-ok-dim">{idleSentence(snapshot.machine.name, undefined, notice !== undefined)}</Text>
+        </Card>
+      ) : <Text variant="meta" className="text-center">No session is selected.</Text>}
     </View>
   )
 }

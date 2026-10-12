@@ -1,7 +1,7 @@
-import { maximumImageUploadBytes, maximumImageUploadDimension } from "@getdomovoi/protocol"
+import { maximumImageUploadBytes, maximumImageUploadDimension, type ProviderModel } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { attachmentFrom, attachmentRefusalMessage, attachmentSummary, type Attachment } from "./attachments"
+import { attachmentFrom, attachmentRefusalMessage, attachmentSummary, modelImages, modelImagesLine, type Attachment } from "./attachments"
 
 // A 1x1 PNG, the smallest real image, as the picker hands it back.
 const png1x1 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
@@ -71,5 +71,34 @@ describe("attachmentRefusalMessage", () => {
     expect(attachmentRefusalMessage({ data: { kind: "session-attachment-refused", reason: "invalid-image" } })).toMatch(/refused an image/)
     expect(attachmentRefusalMessage({ data: { kind: "other" } })).toBeUndefined()
     expect(attachmentRefusalMessage(new Error("x"))).toBeUndefined()
+  })
+})
+
+// Phone v2 frames 13 and 13b: the session's model, and whether its harness
+// reports image input, read from runtime.models. Absent from the answer, or
+// not yet read, is not known, which is not the same as no.
+describe("modelImages", () => {
+  const model = (id: string, imageInput?: boolean): ProviderModel => ({
+    provider: "kilo", id, displayName: id, description: "", supportedReasoningEfforts: [], isDefault: false,
+    ...(imageInput === undefined ? {} : { imageInput }),
+  })
+  const runtime = { provider: "kilo", model: "qwen3-coder-72b" }
+
+  it("reads the session's own model", () => {
+    expect(modelImages([model("other", true), model("qwen3-coder-72b", false)], runtime)).toEqual({ model: "qwen3-coder-72b", imageInput: false })
+    expect(modelImages([model("qwen3-coder-72b", true)], runtime)).toEqual({ model: "qwen3-coder-72b", imageInput: true })
+  })
+
+  it("does not know when the model is unread, missing or silent", () => {
+    expect(modelImages(undefined, runtime)).toEqual({ model: "qwen3-coder-72b", imageInput: undefined })
+    expect(modelImages([model("other", false)], runtime)).toEqual({ model: "qwen3-coder-72b", imageInput: undefined })
+    expect(modelImages([model("qwen3-coder-72b")], runtime)).toEqual({ model: "qwen3-coder-72b", imageInput: undefined })
+    expect(modelImages([{ ...model("qwen3-coder-72b", false), provider: "codex" }], runtime).imageInput).toBeUndefined()
+  })
+
+  it("says what the harness reports, in frame 13's words", () => {
+    expect(modelImagesLine(true)).toBe("takes image input, as its harness reports")
+    expect(modelImagesLine(false)).toBe("takes no image input, as its harness reports")
+    expect(modelImagesLine(undefined)).toBe("image input not known")
   })
 })

@@ -1300,7 +1300,7 @@ export function FleetView({
       const result = await onRevokeDevice({ deviceId: device.id })
       replaceDevice(result.device)
     } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : "That device could not be revoked")
+      setActionError(cause instanceof Error ? cause.message : `That device could not be ${removedWord(device.binding)}`)
     } finally {
       setPendingDeviceId("")
       setRevoking(null)
@@ -1405,7 +1405,9 @@ export function FleetView({
 
           <section className="mt-[22px] flex flex-col gap-3.5" aria-label="Machines">
             {removedAccess ? <Alert><AlertTitle>Local client access removed</AlertTitle><AlertDescription>
-              This app no longer holds the credential for {removedAccess.label}. Revoke this device in {removedAccess.label}'s Devices list to end its authority there.
+              {/* Q378 A: a client binding there, so its control is Unpair, in
+                  the one app holding that daemon's own credential. */}
+              This app no longer holds the credential for {removedAccess.label}. To end its authority there, unpair this device in the desktop app on {removedAccess.label}, under Machines.
             </AlertDescription></Alert> : null}
             {fleetOverflow ? <FleetOverflowAlert overflow={fleetOverflow} /> : null}
             {forgetNotice?.outcome === "refused" ? (
