@@ -61,7 +61,8 @@ describe("SessionsScreen", () => {
     await draw({ snapshot, now: Date.parse(approval.requestedAt) + 4 * 60_000 })
 
     expect(screen.getByText(`${snapshot.machine.name} · 4m`)).toBeOnTheScreen()
-    expect(screen.getAllByText(new RegExp(`^${snapshot.machine.name} · `))).toHaveLength(1)
+    // Only the waiting card carries a clock after its machine.
+    expect(screen.getAllByText(new RegExp(`^${snapshot.machine.name} · (now|\\d+[mhd])$`))).toHaveLength(1)
   })
 
   // The card opens the approval its clock counts from: the earliest one the
@@ -200,13 +201,55 @@ describe("SessionsScreen", () => {
 
     const headings = ["NEEDS YOU", "RUNNING", "QUIET"].map((label) => screen.getByText(label))
     expect(headings).toHaveLength(3)
-    expect(screen.getByText(/^1 need you · /)).toBeOnTheScreen()
+    expect(screen.getByText("1 need you")).toBeOnTheScreen()
 
     // The session holding the approval is the first card after the lead.
     const order = tappable()
     const firstSession = order.findIndex((label) =>
       snapshot.sessions.some((session) => session.title === label))
     expect(order[firstSession]).toBe(waiting.title)
+  })
+
+  // Phone v2 frame 01: the header's count is a warning pill of its own, not
+  // the head of the meta line, and each group's count is a pill tinted with
+  // the group's state. Needs-you cards wear the warning ground and border, and
+  // the gate is a pill on the card rather than an uppercase label.
+  it("draws frame 01's pills and needs-you cards", async () => {
+    const { snapshot } = await draw()
+    const waiting = snapshot.sessions.find((session) => session.id === snapshot.approvals[0]?.sessionId)
+    if (!waiting) throw new Error("fixture needs a pending approval")
+
+    const needed = screen.getByTestId("needs-you-pill")
+    expect(within(needed).getByText("1 need you")).toBeOnTheScreen()
+    expect(String(needed.props.className)).toContain("bg-warn-bg")
+    expect(String(within(needed).getByText("1 need you").props.className)).toContain("text-warn-fg")
+    expect(screen.queryByText(/^1 need you · /)).toBeNull()
+    expect(screen.getByText(/^macbook-pro-m3 · 1 running$/)).toBeOnTheScreen()
+
+    const tints = Object.fromEntries(["needs-you", "running", "quiet"].map((id) => [
+      id,
+      String(screen.getByTestId(`group-count-${id}`).props.className),
+    ]))
+    expect(tints["needs-you"]).toContain("bg-warning/15")
+    expect(tints.running).toContain("bg-success/15")
+    expect(tints.quiet).toContain("bg-muted")
+
+    const card = screen.getByRole("button", { name: waiting.title })
+    expect(String(card.props.className)).toContain("border-warn-border")
+    expect(String(card.props.className)).toContain("bg-warn-bg")
+    expect(within(card).getByText("gate")).toBeOnTheScreen()
+    expect(within(card).queryByText("approval")).toBeNull()
+
+    const other = snapshot.sessions.find((session) => session.id !== waiting.id)
+    if (!other) throw new Error("fixture needs a second session")
+    const calm = screen.getByRole("button", { name: other.title })
+    expect(String(calm.props.className)).not.toContain("bg-warn-bg")
+    expect(within(calm).queryByText("gate")).toBeNull()
+  })
+
+  it("tints the UNREACHABLE count as muted", async () => {
+    await draw({ fleet: [entry("mac-mini", "healthy", true), entry("wsl", "unreachable")] })
+    expect(String(screen.getByTestId("group-count-unreachable").props.className)).toContain("bg-muted")
   })
 
   it("says nobody is needed only by leaving the count out", async () => {

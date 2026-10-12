@@ -174,6 +174,43 @@ describe("installDaemonService", () => {
       .not.toHaveProperty("lingerWarning")
   })
 
+  // D28 (m1-remaining.md): a removal says what became of lingering, in the
+  // CLI's own words from linger.ts, as the install does. A line the CLI
+  // writes to stdout is a note; one it writes to stderr is a warning.
+  it("carries the CLI's lingering line on removal", async () => {
+    const recorded = (lingerEnabledByDomovoi: boolean) => vi.fn(() => ({ ...createServiceConfiguration({}, { platform: "linux", homeDirectory: "/home/dl", workingDirectory: "/home/dl" }), lingerEnabledByDomovoi }))
+    const worked = vi.fn(async () => ({ code: 0, stdout: "" }))
+    const disabled = await removeDaemonService(dependencies({ platform: "linux", home: "/home/dl", uid: 1000, user: "dl", capture: worked, readConfiguration: recorded(true) }))
+    expect(disabled).toMatchObject({ kind: "file", linger: { kind: "disabled" }, lingerNote: "Turned off lingering for dl, which Domovoi turned on at install." })
+    expect(disabled).not.toHaveProperty("lingerWarning")
+
+    const leftOn = await removeDaemonService(dependencies({ platform: "linux", home: "/home/dl", uid: 1000, user: "dl", capture: worked, readConfiguration: recorded(false) }))
+    expect(leftOn).toMatchObject({ kind: "file", linger: { kind: "left-on" }, lingerNote: "Lingering for dl was on before Domovoi was installed, so it was left on." })
+
+    const refused = vi.fn(async (command: string) => command === "loginctl" ? { code: 1, stdout: "", stderr: "Access denied" } : { code: 0, stdout: "" })
+    const failed = await removeDaemonService(dependencies({ platform: "linux", home: "/home/dl", uid: 1000, user: "dl", capture: refused, readConfiguration: recorded(true) }))
+    expect(failed).toMatchObject({ kind: "file", linger: { kind: "failed" } })
+    expect(failed).not.toHaveProperty("lingerNote")
+    if (failed.kind !== "file" || failed.lingerWarning === undefined) throw new Error("expected a lingering warning")
+    expect(failed.lingerWarning).toMatch(/^Could not turn off lingering for dl, which Domovoi turned on at install: .+\. Lingering stays on, so dl's user services keep running after logout\. Run loginctl disable-linger if nothing else needs it\.$/u)
+
+    // A record that names no lingering leaves it as found and says nothing.
+    const silent = await removeDaemonService(dependencies({ platform: "linux", home: "/home/dl", uid: 1000, user: "dl", capture: worked }))
+    expect(silent).not.toHaveProperty("lingerNote")
+    expect(silent).not.toHaveProperty("lingerWarning")
+  })
+
+  it("keeps the removal's lingering warning inside the app's text limit", async () => {
+    const recorded = vi.fn(() => ({ ...createServiceConfiguration({}, { platform: "linux", homeDirectory: "/home/dl", workingDirectory: "/home/dl" }), lingerEnabledByDomovoi: true }))
+    for (const [user, diagnostic] of [["dl", "x".repeat(4_600)], ["\u{1F600}".repeat(300), "\u{1F600}".repeat(2_300)]] as const) {
+      const refused = vi.fn(async (command: string) => command === "loginctl" ? { code: 1, stdout: "", stderr: diagnostic } : { code: 0, stdout: "" })
+      const removed = await removeDaemonService(dependencies({ platform: "linux", home: "/home/dl", uid: 1000, user, capture: refused, readConfiguration: recorded }))
+      if (removed.kind !== "file" || removed.lingerWarning === undefined) throw new Error("expected a lingering warning")
+      expect(removed.lingerWarning.length).toBeLessThanOrEqual(4_096)
+      expect(removed.lingerWarning.endsWith("Run loginctl disable-linger if nothing else needs it.")).toBe(true)
+    }
+  })
+
   // Review of #698 round 4 (P2): the app refuses service text over 4,096
   // UTF-16 units. The warning stays inside that limit whatever loginctl says
   // and whatever the user is called, characters outside the BMP included, and

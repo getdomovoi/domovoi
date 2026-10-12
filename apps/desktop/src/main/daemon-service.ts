@@ -36,7 +36,9 @@ export type DaemonServiceOutcome =
   | { ok: true; kind: "file" | "task"; target: string; configurationPath: string; daemonRunning: true; lingerWarning?: string }
   // daemonRunning: a daemon runs and this app reaches it. daemonAttached: that
   // daemon is one this app did not start, so quitting the app leaves it be.
-  | { ok: true; kind: "file" | "task"; target: string; profileRecovery: DaemonServiceRemovalResult["profileRecovery"]; profileRecoveryDetail?: string; daemonRunning: boolean; daemonAttached: boolean }
+  // lingerNote, lingerWarning: the daemon's own line on what a Linux removal
+  // did to lingering (D28), a note or a warning as the CLI prints it.
+  | { ok: true; kind: "file" | "task"; target: string; profileRecovery: DaemonServiceRemovalResult["profileRecovery"]; profileRecoveryDetail?: string; daemonRunning: boolean; daemonAttached: boolean; lingerNote?: string; lingerWarning?: string }
   | { ok: false; reason: "runtime-missing"; part: "node" | "daemon"; path: string; message: string }
   // The service is installed and this app's daemon is stopped, but the app
   // could not attach to the service. It does not start its own daemon again:
@@ -234,9 +236,13 @@ export class DesktopDaemonService {
       const daemon = await this.#daemonAfter()
       const reached = { daemonRunning: daemon !== "stopped", daemonAttached: daemon === "attached" }
       const recovery = { profileRecovery: removed.profileRecovery, ...(removed.profileRecoveryDetail === undefined ? {} : { profileRecoveryDetail: removed.profileRecoveryDetail }) }
-      return removed.kind === "file"
-        ? { ok: true, kind: "file", target: removed.path, ...recovery, ...reached }
-        : { ok: true, kind: "task", target: removed.name, ...recovery, ...reached }
+      if (removed.kind !== "file") return { ok: true, kind: "task", target: removed.name, ...recovery, ...reached }
+      const { lingerNote, lingerWarning } = removed
+      return {
+        ok: true, kind: "file", target: removed.path, ...recovery, ...reached,
+        ...(lingerNote === undefined ? {} : { lingerNote }),
+        ...(lingerWarning === undefined ? {} : { lingerWarning }),
+      }
     } finally {
       fence?.release()
       if (held) this.deps.daemon.endHandoff()

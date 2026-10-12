@@ -28,7 +28,7 @@ import { launchdPlistProgram, systemdUnitProgram } from "./units.js"
 import { withinServiceDeadline } from "./deadline.js"
 import { DaemonServiceUpdateError, publishFirst, runServiceUpdate, trackInFlight } from "./update-outcome.js"
 import { prepareWslUpdate } from "./wsl-install.js"
-import { lingerInstallLine, type LingerInstallOutcome, type LingerRemovalOutcome } from "./linger.js"
+import { lingerInstallLine, lingerRemovalLine, type LingerInstallOutcome, type LingerRemovalOutcome } from "./linger.js"
 import { windowsSchtasksPath } from "./windows-task.js"
 import { DaemonServiceRuntimeMissingError } from "./runtime-stage.js"
 
@@ -102,8 +102,12 @@ export type DaemonServiceInstallResult =
   | { kind: "file"; path: string; configurationPath: string; linger?: LingerInstallOutcome; lingerWarning?: string }
   | { kind: "task"; name: string; configurationPath: string }
 
+// On removal, the CLI's own line about lingering, from linger.ts, so the app
+// says what became of it: lingerNote when the CLI writes it to stdout (turned
+// off, or left on as found), lingerWarning when to stderr (could not turn it
+// off). Neither when the record named no lingering.
 export type DaemonServiceRemovalResult =
-  | { kind: "file"; path: string; profileRecovery: ProfileRecovery; profileRecoveryDetail?: string; linger?: LingerRemovalOutcome }
+  | { kind: "file"; path: string; profileRecovery: ProfileRecovery; profileRecoveryDetail?: string; linger?: LingerRemovalOutcome; lingerNote?: string; lingerWarning?: string }
   | { kind: "task"; name: string; profileRecovery: ProfileRecovery; profileRecoveryDetail?: string }
 
 type ProfileRecovery = "recorded" | "operator-confirmation-required" | "proof-unavailable" | "not-needed"
@@ -340,9 +344,13 @@ export async function removeDaemonService(
     profileRecovery: removed.profileRecovery,
     ...(removed.profileRecoveryDetail === undefined ? {} : { profileRecoveryDetail: removed.profileRecoveryDetail }),
   }
-  return removed.kind === "file"
-    ? { kind: "file", path: removed.path, ...recovery, ...(removed.linger === undefined ? {} : { linger: removed.linger }) }
-    : { kind: "task", name: taskName, ...recovery }
+  if (removed.kind !== "file") return { kind: "task", name: taskName, ...recovery }
+  const line = removed.linger === undefined ? undefined : lingerRemovalLine(removed.linger, target(dependencies))
+  return {
+    kind: "file", path: removed.path, ...recovery,
+    ...(removed.linger === undefined ? {} : { linger: removed.linger }),
+    ...(line === undefined ? {} : line.stream === "stderr" ? { lingerWarning: line.text.trim() } : { lingerNote: line.text.trim() }),
+  }
 }
 
 export function nodeDaemonServiceDependencies(): DaemonServiceDependencies & ServiceEffects {

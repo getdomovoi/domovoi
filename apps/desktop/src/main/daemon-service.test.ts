@@ -311,6 +311,19 @@ describe("DesktopDaemonService", () => {
     expect(calls).toEqual(["fence", "hold", "restart", "unfence", "release"])
   })
 
+  // D28: a Linux removal says what became of lingering, in the daemon's own
+  // words, as a note or, when lingering could not be turned off, a warning.
+  it("carries the daemon's lingering line with a successful removal", async () => {
+    const path = "/home/dana/.config/systemd/user/domovoid.service"
+    const lingerNote = "Turned off lingering for dana, which Domovoi turned on at install."
+    const noted = harness({ remove: vi.fn(async () => ({ kind: "file" as const, path, profileRecovery: "not-needed" as const, linger: { kind: "disabled" as const }, lingerNote })) })
+    await expect(noted.service.remove()).resolves.toEqual({ ok: true, kind: "file", target: path, profileRecovery: "not-needed", daemonRunning: true, daemonAttached: false, lingerNote })
+
+    const lingerWarning = "Could not turn off lingering for dana, which Domovoi turned on at install: Access denied. Lingering stays on, so dana's user services keep running after logout. Run loginctl disable-linger if nothing else needs it."
+    const warned = harness({ remove: vi.fn(async () => ({ kind: "file" as const, path, profileRecovery: "not-needed" as const, linger: { kind: "failed" as const, detail: "Access denied" }, lingerWarning })) })
+    await expect(warned.service.remove()).resolves.toEqual({ ok: true, kind: "file", target: path, profileRecovery: "not-needed", daemonRunning: true, daemonAttached: false, lingerWarning })
+  })
+
   it("carries the removal's profile recovery and says when the app's own daemon did not come back", async () => {
     const { service, deps } = harness({ remove: vi.fn(async () => ({ kind: "task" as const, name: "\\Domovoi\\domovoid", profileRecovery: "proof-unavailable" as const, profileRecoveryDetail: "The service record could not be read" })) })
     vi.mocked(deps.daemon.restart).mockImplementationOnce(async () => ({ kind: "refused", reason: "owner-unreachable", message: "no daemon" }) as never)

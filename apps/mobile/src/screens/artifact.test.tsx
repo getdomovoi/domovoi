@@ -1,6 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals"
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { fireEvent, render, screen } from "@testing-library/react-native"
+import { fireEvent, render, screen, within } from "@testing-library/react-native"
 import { Linking } from "react-native"
 
 import { ArtifactScreen, type PreviewRender } from "./artifact"
@@ -185,6 +185,51 @@ describe("ArtifactScreen preview", () => {
     // so the phone does not say a choice decides what the agent builds on.
     expect(screen.queryByText(/a choice is a commitment/)).toBeNull()
     expect(screen.getByText("Marking a variant to build on happens at a desktop, and only as a bookmark for whoever is viewing; the agent is not told which one. To tell the agent, send a comment.")).toBeOnTheScreen()
+    expect(screen.queryByTestId("build-basis-check")).toBeNull()
+  })
+
+  // Frame 17: once a message has told the agent which variant to build on, the
+  // record says so, and the phone names that variant and checks its tab. The
+  // daemon writes the build basis a message sent on its delivery record.
+  it("names the variant a message told the agent to build on", async () => {
+    const mine = preview()
+    mine.variant = { id: "a", groupId: "g", label: "A", order: 0 }
+    await draw({
+      artifact: mine,
+      render: { state: "ready", url: "https://x/y", channel },
+      variants: [
+        { id: mine.id, label: "A" },
+        { id: "artifact-preview-b", label: "B" },
+      ],
+      builtOn: "artifact-preview-b",
+    })
+
+    expect(screen.getByText("B is the one the agent was told to build on.")).toBeOnTheScreen()
+    // Codex review r1: a desktop's marked variant is still a bookmark, so the
+    // phone does not say marking one decides what the agent builds on.
+    expect(screen.getByText("A variant marked at a desktop stays a bookmark for whoever is viewing; only a message that sends one changes what the agent was told.")).toBeOnTheScreen()
+    expect(screen.queryByText(/a choice is a commitment/)).toBeNull()
+    expect(screen.queryByText(/only as a bookmark/)).toBeNull()
+    expect(within(screen.getByRole("button", { name: "Variant B, the build basis" })).getByTestId("build-basis-check", { includeHiddenElements: true })).toBeOnTheScreen()
+    expect(screen.getByRole("button", { name: "Variant A" })).toBeOnTheScreen()
+  })
+
+  // A basis from another group says nothing about this one.
+  it("keeps the bookmark sentence when the recorded basis is another render", async () => {
+    const mine = preview()
+    mine.variant = { id: "a", groupId: "g", label: "A", order: 0 }
+    await draw({
+      artifact: mine,
+      render: { state: "ready", url: "https://x/y", channel },
+      variants: [
+        { id: mine.id, label: "A" },
+        { id: "artifact-preview-b", label: "B" },
+      ],
+      builtOn: "artifact-elsewhere",
+    })
+
+    expect(screen.getByText(/only as a bookmark for whoever is viewing/)).toBeOnTheScreen()
+    expect(screen.queryByText(/was told to build on/)).toBeNull()
   })
 
 })
