@@ -131,10 +131,11 @@ On Linux the folder is `$XDG_DATA_HOME/domovoi/web` instead when `XDG_DATA_HOME`
 absolute path. Restart the daemon: it reads the bundle once at startup and prints
 `domovoid web app served from <folder>`, or `domovoid web app not served: <reason> at <folder>`.
 `DOMOVOI_WEB_DIR`, saved by a service install as `webDirectory` in `service.json`, names another
-absolute folder instead. On Linux and macOS the daemon refuses the bundle when its folder,
-anything in it, or any folder above it is owned by an account other than the daemon's or root, or
-is writable by group or others (a folder above it may be when it has the sticky bit), so a
-group-writable location such as a Homebrew prefix is refused by design.
+absolute folder instead. On Linux and macOS the daemon refuses the bundle when its folder, its
+manifest, a file the manifest lists or a folder holding one, or any folder above it is owned by an
+account other than the daemon's or root, or is writable by group or others (a folder above it may
+be when it has the sticky bit), so a group-writable location such as a Homebrew prefix is refused
+by design.
 
 Use a bundle built from a checkout that includes pull request #731, as every build that writes
 `domovoi-web.json` does. Off loopback that app offers pairing by code only and refuses the

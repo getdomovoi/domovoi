@@ -203,22 +203,29 @@ Unpack it into the default folder for the account that runs the daemon:
 | Linux | `$XDG_DATA_HOME/domovoi/web` when `XDG_DATA_HOME` is set to an absolute path, else `~/.local/share/domovoi/web` |
 | Windows | `%LOCALAPPDATA%\Domovoi\web` |
 
-macOS (Linux: `sha256sum -c -` in place of `shasum -a 256 -c -`, and the Linux folder):
+macOS (Linux: `sha256sum -c -` in place of `shasum -a 256 -c -`, and the Linux folder). Nothing
+is unpacked unless the checksum matches:
 
 ```bash
-grep '  domovoi-web-<version>.tar.gz$' SHA256SUMS | shasum -a 256 -c -
 WEB="$HOME/Library/Application Support/Domovoi/web"
 # umask 022, so no folder this creates is writable by group: the daemon refuses one that is.
-(umask 022 && mkdir -p "$WEB" && tar -xzf domovoi-web-<version>.tar.gz -C "$WEB")
+grep '  domovoi-web-<version>.tar.gz$' SHA256SUMS | shasum -a 256 -c - &&
+  (umask 022 && mkdir -p "$WEB" && tar -xzf domovoi-web-<version>.tar.gz -C "$WEB")
 ```
 
-Windows PowerShell, comparing the printed hash with the file's line in `SHA256SUMS` by eye:
+Windows PowerShell, which stops before unpacking when the hash differs from the file's line in
+`SHA256SUMS`:
 
 ```powershell
-(Get-FileHash domovoi-web-<version>.tar.gz -Algorithm SHA256).Hash.ToLower()
-$web = Join-Path $env:LOCALAPPDATA "Domovoi\web"
-New-Item -ItemType Directory -Force $web | Out-Null
-tar -xzf domovoi-web-<version>.tar.gz -C $web
+$archive = "domovoi-web-<version>.tar.gz"
+$expected = (Select-String -Path SHA256SUMS -SimpleMatch "  $archive").Line.Split(" ")[0]
+if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLower() -ne $expected) {
+  Write-Error "$archive does not match SHA256SUMS"
+} else {
+  $web = Join-Path $env:LOCALAPPDATA "Domovoi\web"
+  New-Item -ItemType Directory -Force $web | Out-Null
+  tar -xzf $archive -C $web
+}
 ```
 
 The archive unpacks flat: `domovoi-web.json`, `index.html` and the other files the manifest
@@ -239,9 +246,10 @@ install` in step 5 saves it in `service.json` as `webDirectory`, so the service 
 it the service uses the default folder of the account it runs as. A systemd user service has its
 manager's environment, usually without an `XDG_DATA_HOME` your shell sets, so if you set one, set
 `DOMOVOI_WEB_DIR` before the install. Whichever folder you choose, the
-daemon refuses a bundle inside the profile directory, and on Linux and macOS one where the bundle,
-or any folder above it up to `/`, is owned by an account other than the daemon's or root, or is
-writable by group or others (above the bundle, a folder with the sticky bit may be). A
+daemon refuses a bundle inside the profile directory, and on Linux and macOS one where the bundle
+folder, its manifest, a file the manifest lists or a folder holding one, or any folder above it up
+to `/`, is owned by an account other than the daemon's or root, or is writable by group or others
+(above the bundle, a folder with the sticky bit may be). A
 group-writable location such as a
 Homebrew prefix, which the `admin` group can write, is refused by design. Access control lists are
 not read, and on Windows neither owner nor mode is checked.

@@ -130,21 +130,30 @@ function bundleFiles(directory, prefix = "") {
   return files
 }
 
-async function buildWebArchive(root, destination, version, deadline) {
+// Neither the vite build nor the notice reads can be cancelled, so the
+// deadline bounds the wait for each, and a build it gave up on keeps its
+// staging folder until it ends: removing it under a running vite could fail
+// on Windows or be rewritten afterwards. build and notices are swappable for
+// a test.
+export async function buildWebArchive(root, destination, version, deadline, { build = buildWebApp, notices = collectWebNotices } = {}) {
   refuseWebBuildEnvironment(process.env)
   const staging = mkdtempSync(join(tmpdir(), "domovoi-web-"))
+  const removeStaging = () => rmSync(staging, { force: true, recursive: true })
+  let building
+  let built = false
   try {
     const outDir = join(staging, "web")
     const envDir = join(staging, "env")
     mkdirSync(envDir)
-    const bundled = await deadline.run(() => buildWebApp(root, { outDir, envDir }))
+    building = Promise.resolve().then(() => build(root, { outDir, envDir })).finally(() => { built = true })
+    const bundled = await deadline.run(() => building)
     const manifest = JSON.parse(readFileSync(join(outDir, webBundleManifestFile), "utf8"))
     if (manifest.version !== version) throw new Error(`The web app was built at ${manifest.version}, not the release version ${version}`)
     const files = bundleFiles(outDir).sort()
     const listed = [...Object.keys(manifest.files), webBundleManifestFile].sort()
     if (JSON.stringify(files) !== JSON.stringify(listed)) throw new Error(`The web app build holds files ${webBundleManifestFile} does not list, or lacks some it does`)
     if (files.includes(webNoticesFile)) throw new Error(`The web app build wrote its own ${webNoticesFile}`)
-    const entries = await collectWebNotices(root, { deadline })
+    const entries = await deadline.run(() => notices(root, { deadline }))
     const noticed = new Set(entries.map((entry) => entry.name))
     const missing = bundled.filter((name) => !noticed.has(name) && !name.startsWith("@getdomovoi/"))
     if (missing.length) throw new Error(`The web app bundles ${missing.join(", ")} with no notice`)
@@ -156,7 +165,8 @@ async function buildWebArchive(root, destination, version, deadline) {
     ]))
     return { file, sha256: sha256File(join(destination, file)) }
   } finally {
-    rmSync(staging, { force: true, recursive: true })
+    if (building === undefined || built) removeStaging()
+    else building.then(removeStaging, removeStaging).catch(() => {})
   }
 }
 

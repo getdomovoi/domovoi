@@ -1,9 +1,10 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
+import { existsSync } from "node:fs"
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import test from "node:test"
 import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
@@ -215,6 +216,44 @@ test("refuses to build the release web app with a VITE_ variable set", () => {
   assert.equal(typeof release.refuseWebBuildEnvironment, "function")
   assert.doesNotThrow(() => release.refuseWebBuildEnvironment({ PATH: "/usr/bin", DOMOVOI_WEB_DIR: "/srv/web" }))
   assert.throws(() => release.refuseWebBuildEnvironment({ VITE_DOMOVOI_RPC_URL: "ws://elsewhere/rpc" }), /VITE_DOMOVOI_RPC_URL/u)
+})
+
+// Review round 1: neither vite nor the notice reads can be cancelled, so the
+// release deadline must bound the wait for each, and the staging folder vite
+// writes into must outlive a build the deadline gave up on.
+test("the release deadline bounds the web build and the notices, and staging goes once the build ends", async (t) => {
+  assert.equal(typeof release.buildWebArchive, "function")
+  const destination = await mkdtemp(join(tmpdir(), "domovoi-web-deadline-"))
+  t.after(() => rm(destination, { recursive: true, force: true }))
+  const { bootstrapDeadline } = await import("./bootstrap-deadline.mjs")
+  const root = fileURLToPath(new URL("../", import.meta.url))
+  const expired = /web deadline/u
+
+  let outDir
+  let finish
+  const lateBuild = (_root, options) => { outDir = options.outDir; return new Promise((resolve) => { finish = resolve }) }
+  const first = bootstrapDeadline(50, "web deadline")
+  t.after(() => first.clear())
+  await assert.rejects(release.buildWebArchive(root, destination, "1.0.0", first, { build: lateBuild, notices: async () => [] }), expired)
+  const staging = dirname(outDir)
+  assert.ok(existsSync(staging), "vite may still be writing, so its folder stays")
+  finish([])
+  await new Promise((resolve) => setImmediate(resolve))
+  assert.equal(existsSync(staging), false, "the folder goes once the build ends")
+
+  const quickBuild = async (_root, options) => {
+    outDir = options.outDir
+    await mkdir(outDir, { recursive: true })
+    const html = "<!doctype html>"
+    await writeFile(join(outDir, "index.html"), html)
+    await writeFile(join(outDir, "domovoi-web.json"), JSON.stringify({ version: "1.0.0", files: { "index.html": { sha256: "0".repeat(64), bytes: html.length } } }))
+    return []
+  }
+  const second = bootstrapDeadline(50, "web deadline")
+  t.after(() => second.clear())
+  await assert.rejects(release.buildWebArchive(root, destination, "1.0.0", second, { build: quickBuild, notices: () => new Promise(() => {}) }), expired)
+  assert.equal(existsSync(dirname(outDir)), false)
+  assert.deepEqual(await readdir(destination), [], "no archive is written")
 })
 
 test("refuses a web app path tar could not hold as written", () => {
