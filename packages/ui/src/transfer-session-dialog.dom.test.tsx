@@ -162,6 +162,14 @@ it("blames this side's keychain, not the target's daemon, when the keychain cann
   expect(describedBy(row)).toBe("the keychain here could not be read, cannot reach it now")
 })
 
+it("does not call a healthy machine with nothing to dial reachable", () => {
+  renderDialog({ machines: [source, target, { ...spare, transports: [] }] })
+
+  const row = screen.getByRole("radio", { name: "garage" })
+  expect(row).toHaveProperty("disabled", true)
+  expect(describedBy(row)).toBe("advertises no route to dial, cannot accept a session now")
+})
+
 it("moves the choice to another reachable machine", async () => {
   const { user, onTargetChange } = renderDialog({ machines: [source, target, spare] })
 

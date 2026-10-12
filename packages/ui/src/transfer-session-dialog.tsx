@@ -112,7 +112,16 @@ export function transferTargetRow(input: { machine: FleetMachine; source: FleetM
 } {
   const { machine, source } = input
   const check = transferPreflight({ source, target: machine })
-  if (check.allowed) return { available: true, note: `reachable over ${routeWord(machine)}` }
+  if (check.allowed) {
+    // Health says the machine answers the fleet, not that the daemon has a
+    // route to dial for the move. With neither a verified route nor an
+    // advertised transport the dial fails, so the row is not offered. A
+    // verified route alone is enough: the daemon dials it first.
+    if (!machine.verifiedRoute && machine.transports.length === 0) {
+      return { available: false, note: "advertises no route to dial, cannot accept a session now" }
+    }
+    return { available: true, note: `reachable over ${routeWord(machine)}` }
+  }
   if (check.reason === "target-is-source" && machine.self) {
     return { available: false, note: `this machine, ${unavailableNote[check.reason]}` }
   }
