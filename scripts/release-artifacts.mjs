@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto"
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, posix, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
+import { gzipSync } from "node:zlib"
 
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
 import { validateCycloneDx } from "./cyclonedx-validation.mjs"
@@ -12,6 +13,8 @@ import { inspectArchive, packPackage, readArchiveEntry } from "./pack-package.mj
 import { resolveRuntimeDependency } from "./runtime-lock.mjs"
 import { hashRuntimeFile, validateRuntimeLock } from "./runtime-verification.mjs"
 import { publishablePackages } from "./release-packages.mjs"
+import { buildWebApp } from "./renderer-bundle-packages.mjs"
+import { collectWebNotices, renderThirdPartyNotices, webNoticeHeading } from "./third-party-notices.mjs"
 import { collectWorkspacePackages } from "./version-lockstep.mjs"
 
 export { publishDependencies, publishablePackages } from "./release-packages.mjs"
@@ -27,6 +30,135 @@ const runtimeLockRoots = { "@getdomovoi/daemon": "", "@getdomovoi/protocol": pro
 // release file the owner unpacks into the daemon's web folder, not an npm
 // package.
 export const webArchiveName = (version) => `domovoi-web-${version}.tar.gz`
+export const webNoticesFile = "THIRD_PARTY_NOTICES.txt"
+// webBundleManifestFileName in packages/protocol/src/web-bundle.ts.
+const webBundleManifestFile = "domovoi-web.json"
+
+// One time for every entry, 1980-01-01T00:00:00Z, so the same files give the
+// same archive bytes.
+const webArchiveTime = 315_532_800
+
+function octalField(header, offset, length, value) {
+  header.write(`${value.toString(8).padStart(length - 1, "0")}\0`, offset, length, "ascii")
+}
+
+// ustar keeps a name in 100 bytes, or splits it at a "/" into a prefix of up
+// to 155 bytes and a name of up to 100.
+function ustarName(path) {
+  if (Buffer.byteLength(path) <= 100) return { prefix: "", name: path }
+  const end = path.endsWith("/") ? path.length - 1 : path.length
+  for (let index = path.indexOf("/"); index !== -1 && index < end; index = path.indexOf("/", index + 1)) {
+    const prefix = path.slice(0, index)
+    const name = path.slice(index + 1)
+    if (Buffer.byteLength(prefix) <= 155 && Buffer.byteLength(name) <= 100) return { prefix, name }
+  }
+  throw new Error(`The web app path ${path} is too long for a ustar header`)
+}
+
+function ustarHeader(path, size, directory) {
+  const header = Buffer.alloc(512)
+  const { prefix, name } = ustarName(path)
+  header.write(name, 0, 100, "utf8")
+  octalField(header, 100, 8, directory ? 0o755 : 0o644)
+  octalField(header, 108, 8, 0)
+  octalField(header, 116, 8, 0)
+  octalField(header, 124, 12, size)
+  octalField(header, 136, 12, webArchiveTime)
+  header.fill(" ", 148, 156)
+  header.write(directory ? "5" : "0", 156, 1, "ascii")
+  header.write("ustar\0" + "00", 257, 8, "ascii")
+  header.write(prefix, 345, 155, "utf8")
+  let checksum = 0
+  for (const byte of header) checksum += byte
+  header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii")
+  return header
+}
+
+// A gzipped ustar archive of files, each { path, bytes } with a "/"-separated
+// relative path, unpacked flat into the folder tar is given. Folders come
+// before what they hold. Files are 0644 and folders 0755 with no owner name,
+// so tar run by the owner gives the owner's files that only the owner can
+// write, as the daemon's loader requires. Entries are sorted and carry one
+// fixed time, and the gzip header no time or system, so the bytes depend on
+// the files alone (and on the zlib that compresses them).
+export function webArchive(files) {
+  const entries = new Map()
+  for (const { path, bytes } of files) {
+    const parts = path.split("/")
+    if (path.includes("\\") || path.includes("\0") || parts.some((part) => part === "" || part === "." || part === "..")) {
+      throw new Error(`Unsafe web app path ${JSON.stringify(path)}`)
+    }
+    if (entries.has(path) || entries.has(`${path}/`)) throw new Error(`The web app path ${path} is listed twice`)
+    for (let index = 1; index < parts.length; index += 1) {
+      const folder = parts.slice(0, index).join("/")
+      if (entries.has(folder)) throw new Error(`The web app path ${folder} is both a file and a folder`)
+      entries.set(`${folder}/`, undefined)
+    }
+    entries.set(path, Buffer.from(bytes))
+  }
+  const blocks = []
+  for (const path of [...entries.keys()].sort((left, right) => (left < right ? -1 : left > right ? 1 : 0))) {
+    const bytes = entries.get(path)
+    blocks.push(ustarHeader(path, bytes?.byteLength ?? 0, bytes === undefined))
+    if (bytes === undefined) continue
+    blocks.push(bytes, Buffer.alloc((512 - (bytes.byteLength % 512)) % 512))
+  }
+  blocks.push(Buffer.alloc(1024))
+  const archive = gzipSync(Buffer.concat(blocks), { level: 9 })
+  // The gzip operating system byte differs by the zlib build; 255 is unknown.
+  archive[9] = 255
+  return archive
+}
+
+// vite compiles every VITE_ variable in its environment into the app, and the
+// web app reads VITE_DOMOVOI_RPC_URL ahead of its own location, so a release
+// built in a shell that sets one would dial that address from every daemon.
+export function refuseWebBuildEnvironment(environment) {
+  const names = Object.keys(environment).filter((name) => name.startsWith("VITE_")).sort()
+  if (names.length) throw new Error(`Unset ${names.join(", ")} before building the release web app; vite would compile it into the bundle`)
+}
+
+// Every regular file under directory, by its "/"-joined relative path.
+function bundleFiles(directory, prefix = "") {
+  const files = []
+  for (const entry of readdirSync(join(directory, prefix), { withFileTypes: true })) {
+    const relative = prefix ? `${prefix}/${entry.name}` : entry.name
+    if (entry.isDirectory()) files.push(...bundleFiles(directory, relative))
+    else if (entry.isFile()) files.push(relative)
+    else throw new Error(`The web app build wrote ${relative}, which is not a regular file`)
+  }
+  return files
+}
+
+async function buildWebArchive(root, destination, version, deadline) {
+  refuseWebBuildEnvironment(process.env)
+  const staging = mkdtempSync(join(tmpdir(), "domovoi-web-"))
+  try {
+    const outDir = join(staging, "web")
+    const envDir = join(staging, "env")
+    mkdirSync(envDir)
+    const bundled = await deadline.run(() => buildWebApp(root, { outDir, envDir }))
+    const manifest = JSON.parse(readFileSync(join(outDir, webBundleManifestFile), "utf8"))
+    if (manifest.version !== version) throw new Error(`The web app was built at ${manifest.version}, not the release version ${version}`)
+    const files = bundleFiles(outDir).sort()
+    const listed = [...Object.keys(manifest.files), webBundleManifestFile].sort()
+    if (JSON.stringify(files) !== JSON.stringify(listed)) throw new Error(`The web app build holds files ${webBundleManifestFile} does not list, or lacks some it does`)
+    if (files.includes(webNoticesFile)) throw new Error(`The web app build wrote its own ${webNoticesFile}`)
+    const entries = await collectWebNotices(root, { deadline })
+    const noticed = new Set(entries.map((entry) => entry.name))
+    const missing = bundled.filter((name) => !noticed.has(name) && !name.startsWith("@getdomovoi/"))
+    if (missing.length) throw new Error(`The web app bundles ${missing.join(", ")} with no notice`)
+    deadline.check()
+    const file = webArchiveName(version)
+    writeFileSync(join(destination, file), webArchive([
+      ...files.map((path) => ({ path, bytes: readFileSync(join(outDir, ...path.split("/"))) })),
+      { path: webNoticesFile, bytes: Buffer.from(renderThirdPartyNotices(entries, webNoticeHeading)) },
+    ]))
+    return { file, sha256: sha256File(join(destination, file)) }
+  } finally {
+    rmSync(staging, { force: true, recursive: true })
+  }
+}
 
 export function packageUrl(name, version) {
   return `pkg:npm/${name.replace("@", "%40")}@${version}`
@@ -286,6 +418,7 @@ async function buildWithinDeadline(root, destination, deadline) {
     checksums.push({ file, sha256 }, { file: sbomFile, sha256: sha256File(join(destination, sbomFile)) })
   }
 
+  checksums.push(await buildWebArchive(root, destination, daemon.manifest.version, deadline))
   deadline.check()
   writeFileSync(join(destination, "SHA256SUMS"), checksumManifest(checksums))
   return { destination, files: checksums.map((entry) => entry.file).sort() }

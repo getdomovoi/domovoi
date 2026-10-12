@@ -1,12 +1,13 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import test from "node:test"
 import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
+import { gunzipSync } from "node:zlib"
 
 import { buildReleaseArtifacts, checksumManifest, sbomComponents, sbomDocument } from "./release-artifacts.mjs"
 import * as release from "./release-artifacts.mjs"
@@ -151,6 +152,75 @@ test("conflicting exact-version license observations refuse instead of picking o
     MIT: [{ name: "leaf", versions: ["1.0.0"] }],
     ISC: [{ name: "leaf", versions: ["1.0.0"] }],
   }), /Conflicting license observations/)
+})
+
+// The ustar headers of a gzipped archive, read the way the format lays them
+// out, so a test sees the modes and names tar would apply.
+function tarHeaders(archive) {
+  const tar = gunzipSync(archive)
+  const headers = []
+  for (let offset = 0; offset + 512 <= tar.length;) {
+    const block = tar.subarray(offset, offset + 512)
+    if (block.every((byte) => byte === 0)) break
+    const text = (start, length) => block.subarray(start, start + length).toString("utf8").replace(/\0.*$/su, "")
+    const octal = (start, length) => Number.parseInt(text(start, length).trim(), 8)
+    const prefix = text(345, 155)
+    const name = prefix ? `${prefix}/${text(0, 100)}` : text(0, 100)
+    const size = octal(124, 12)
+    headers.push({ name, mode: octal(100, 8), uid: octal(108, 8), gid: octal(116, 8), size, mtime: octal(136, 12), type: text(156, 1), magic: text(257, 6) })
+    offset += 512 + Math.ceil(size / 512) * 512
+  }
+  return headers
+}
+
+test("packs the web app as a flat, reproducible tar.gz that tar unpacks with owner-only write", async (t) => {
+  assert.equal(typeof release.webArchive, "function", "the web app archive is written by the release script")
+  assert.equal(release.webArchiveName("1.2.3"), "domovoi-web-1.2.3.tar.gz")
+  // Past ustar's 100-byte name field, so it is split into prefix and name.
+  const folder = `assets/${"d".repeat(60)}`
+  const long = `${folder}/${"a".repeat(60)}.js`
+  const files = [
+    { path: "index.html", bytes: Buffer.from("<!doctype html>") },
+    { path: "assets/index-B0V_-a_P.js", bytes: Buffer.from("console.log(1)") },
+    { path: long, bytes: Buffer.alloc(1300, 7) },
+    { path: "domovoi-web.json", bytes: Buffer.from("{}\n") },
+  ]
+  const archive = release.webArchive(files)
+  assert.deepEqual(release.webArchive([...files].reverse()), archive, "the same files give the same bytes in any order")
+  assert.deepEqual(archive.subarray(0, 4), Buffer.from([0x1f, 0x8b, 8, 0]), "gzip with no name or comment")
+  assert.equal(archive.readUInt32LE(4), 0, "no build time in the gzip header")
+  const headers = tarHeaders(archive)
+  assert.deepEqual(headers.map((header) => header.name), ["assets/", `${folder}/`, long, "assets/index-B0V_-a_P.js", "domovoi-web.json", "index.html"])
+  for (const header of headers) {
+    assert.equal(header.magic, "ustar")
+    assert.equal(header.uid, 0)
+    assert.equal(header.gid, 0)
+    assert.equal(header.mtime, headers[0].mtime, "one fixed time for every entry")
+    assert.equal(header.mode, header.type === "5" ? 0o755 : 0o644, `${header.name} is writable by its owner only`)
+    assert.equal(header.type, header.name.endsWith("/") ? "5" : "0", `${header.name} is a plain file or folder, never a link`)
+  }
+
+  const directory = await mkdtemp(join(tmpdir(), "domovoi-web-archive-"))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  await writeFile(join(directory, "web.tar.gz"), archive)
+  await mkdir(join(directory, "web"))
+  await promisify(execFile)("tar", ["-xzf", "web.tar.gz", "-C", "web"], { cwd: directory, timeout: 10_000, killSignal: "SIGKILL" })
+  for (const { path, bytes } of files) assert.deepEqual(await readFile(join(directory, "web", ...path.split("/"))), bytes, path)
+})
+
+// A VITE_ variable in the release shell would be compiled into the app:
+// VITE_DOMOVOI_RPC_URL would send every served page's socket to that address
+// instead of the daemon that served it.
+test("refuses to build the release web app with a VITE_ variable set", () => {
+  assert.equal(typeof release.refuseWebBuildEnvironment, "function")
+  assert.doesNotThrow(() => release.refuseWebBuildEnvironment({ PATH: "/usr/bin", DOMOVOI_WEB_DIR: "/srv/web" }))
+  assert.throws(() => release.refuseWebBuildEnvironment({ VITE_DOMOVOI_RPC_URL: "ws://elsewhere/rpc" }), /VITE_DOMOVOI_RPC_URL/u)
+})
+
+test("refuses a web app path tar could not hold as written", () => {
+  for (const path of ["../escape.js", "/root.js", "assets\\index.js", "a//b.js", "./index.html", "", `${"a".repeat(101)}.js`, `${"d".repeat(156)}/x.js`]) {
+    assert.throws(() => release.webArchive([{ path, bytes: Buffer.from("x") }]), /web app path/u, JSON.stringify(path))
+  }
 })
 
 test("writes checksums in the format sha256sum verifies", () => {
@@ -308,6 +378,38 @@ test("the real release SBOM covers every packed runtime coordinate, not just thi
   for (const line of checksums.trim().split("\n")) {
     const [digest, file] = line.split("  ")
     assert.equal(createHash("sha256").update(await readFile(join(output, file))).digest("hex"), digest)
+  }
+
+  // S3.2 slice 6: the web app tarball, listed in SHA256SUMS, unpacks to a
+  // bundle whose manifest lists every file but itself and the notices, which
+  // the daemon therefore never serves (it serves listed files only).
+  const web = release.webArchiveName(manifest.version)
+  assert.ok(checksums.split("\n").some((line) => line.endsWith(`  ${web}`)), `${web} has its line in SHA256SUMS`)
+  const unpacked = join(directory, "web")
+  await mkdir(unpacked)
+  await promisify(execFile)("tar", ["-xzf", join(output, web), "-C", unpacked], { timeout: 30_000, killSignal: "SIGKILL" })
+  const bundle = JSON.parse(await readFile(join(unpacked, "domovoi-web.json"), "utf8"))
+  assert.equal(bundle.version, manifest.version, "the web app is built at the release version")
+  const unpackedFiles = (await readdir(unpacked, { recursive: true, withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => join(entry.parentPath, entry.name).slice(unpacked.length + 1).split(/[\\/]/u).join("/"))
+    .sort()
+  assert.deepEqual(unpackedFiles, [...Object.keys(bundle.files), "THIRD_PARTY_NOTICES.txt", "domovoi-web.json"].sort())
+  assert.equal(Object.hasOwn(bundle.files, "THIRD_PARTY_NOTICES.txt"), false, "the notices are not part of the served app")
+  for (const [path, { sha256, bytes }] of Object.entries(bundle.files)) {
+    const contents = await readFile(join(unpacked, ...path.split("/")))
+    assert.equal(contents.byteLength, bytes, path)
+    assert.equal(createHash("sha256").update(contents).digest("hex"), sha256, path)
+  }
+  const notices = await readFile(join(unpacked, "THIRD_PARTY_NOTICES.txt"), "utf8")
+  assert.match(notices, /^Third-party software in the Domovoi web app$/mu)
+  assert.match(notices, /^react-dom@/mu)
+  // Each font's section carries the whole OFL, from its title to its last line.
+  for (const font of ["instrument-sans", "jetbrains-mono"]) {
+    const section = notices.split(/^={72}$/mu).find((text) => text.startsWith(`\n@fontsource-variable/${font}@`))
+    assert.ok(section, `${font} has a notice`)
+    assert.match(section, /^License: OFL-1\.1$/mu)
+    assert.match(section, /SIL OPEN FONT LICENSE Version 1\.1 - 26 February 2007[\s\S]*OTHER DEALINGS IN THE\s+FONT SOFTWARE\./u)
   }
   t.diagnostic(`SBOM covers all ${expected.size} locked runtime components, including non-host packages and first-party protocol`)
 })
