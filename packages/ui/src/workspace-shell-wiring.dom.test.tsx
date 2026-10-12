@@ -9,6 +9,7 @@ import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
   completeHandshake,
   installFakeWebSocket,
+  respond,
   sentRequests,
   workspaceSnapshot,
   type FakeWebSocketHarness,
@@ -62,6 +63,42 @@ describe("the audit log's export line", () => {
 
     expect(screen.getByText(/^saves to this device · /u)).toBeTruthy()
     expect(screen.queryByText(/writes a file on this machine/u)).toBeNull()
+  })
+})
+
+// A browser tab holds a device credential, and the daemon refuses
+// device.rename, device.rotate and device.revoke from one by closing the
+// connection. The tab lists its daemon's devices but never sends those three.
+describe("paired devices in a browser tab", () => {
+  it("lists them and never sends a rename, rotation or unpairing", async () => {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind: "web" })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+    await waitFor(() => expect(sentRequests(socket, "device.list")).not.toHaveLength(0))
+    await act(async () => {
+      respond(socket, "device.list", { devices: [{
+        id: `device-${"d".repeat(32)}`,
+        label: "kitchen-phone",
+        pairedAt: "2026-10-01T09:00:00.000Z",
+        binding: { kind: "client", client: "phone", clientAccess: "full" },
+      }] })
+    })
+    const row = await screen.findByRole("row", { name: /kitchen-phone/u })
+
+    for (const name of ["Rename kitchen-phone", "Rotate the credential on kitchen-phone", "Unpair kitchen-phone"]) {
+      const control = within(row).getByRole("button", { name })
+      expect(control).toHaveProperty("disabled", true)
+      await user.click(control)
+    }
+    await settle()
+
+    expect(row.textContent).toContain(`Rename, Rotate and Unpair are off in a browser tab: they need the daemon's own credential. Use the desktop app on ${snapshot.machine.name}.`)
+    expect(sentRequests(socket, "device.rename")).toEqual([])
+    expect(sentRequests(socket, "device.rotate")).toEqual([])
+    expect(sentRequests(socket, "device.revoke")).toEqual([])
+    expect(socket.readyState).toBe(socket.OPEN)
   })
 })
 

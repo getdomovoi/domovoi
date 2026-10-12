@@ -239,6 +239,16 @@ function rotationInstruction(binding: DeviceCredentialBinding): string {
   return `Enter it on that ${heldWord(binding)}. It is shown once, and the old credential no longer works.`
 }
 
+// The daemon takes device.rename, device.rotate and device.revoke only from a
+// connection holding its own credential, and answers a device credential by
+// closing the connection (server.ts). A browser tab always holds a device
+// credential: a pasted daemon credential is spent once to mint one. The
+// desktop app on the machine connects with the daemon's own credential. The
+// line follows Settings' form for a locked control: what is off, then why.
+function lockedInBrowserTab(binding: DeviceCredentialBinding, machine: string): string {
+  return `Rename, Rotate and ${removalWord(binding)} are off in a browser tab: they need the daemon's own credential. Use the desktop app on ${machine}.`
+}
+
 const timestamp = new Intl.DateTimeFormat("en-GB", {
   day: "2-digit",
   month: "short",
@@ -831,6 +841,7 @@ function LabelCell({
 function DeviceRow({
   device,
   disabled,
+  lockedReason,
   undoable,
   onRotate,
   onRevoke,
@@ -839,6 +850,9 @@ function DeviceRow({
 }: {
   device: PairedDeviceSummary
   disabled: boolean
+  // Set where this client can never press the row's controls; it replaces the
+  // consequence line, which describes a control this client cannot reach.
+  lockedReason: string | undefined
   undoable: boolean
   onRotate: () => void
   onRevoke: () => void
@@ -847,12 +861,13 @@ function DeviceRow({
 }) {
   const revoked = device.revokedAt !== undefined
   const isMachine = device.binding.kind === "machine"
+  const locked = disabled || lockedReason !== undefined
   return (
     <tr>
       <KindCell binding={device.binding} dimmed={revoked} />
       <LabelCell
         device={device}
-        disabled={disabled}
+        disabled={locked}
         undoable={undoable}
         onRename={onRename}
         onUndo={onUndoRename}
@@ -875,7 +890,7 @@ function DeviceRow({
           <Button
             variant="outline"
             className={secondaryControl}
-            disabled={disabled || revoked}
+            disabled={locked || revoked}
             aria-label={
               isMachine
                 ? `Rotate the credential ${device.label} uses`
@@ -889,7 +904,7 @@ function DeviceRow({
           <Button
             variant="ghost"
             className={destructiveControl}
-            disabled={disabled || revoked}
+            disabled={locked || revoked}
             aria-label={`${removalWord(device.binding)} ${device.label}`}
             {...(revoked ? {} : { onClick: onRevoke })}
           >
@@ -898,7 +913,9 @@ function DeviceRow({
         </div>
         {/* The Desktop V2 frame draws the consequence as a standing line
             under each row, read before the confirmation opens. */}
-        {revoked ? null : (
+        {lockedReason !== undefined ? (
+          <p className="mt-2 max-w-[38ch] text-[11px] leading-relaxed text-faint">{lockedReason}</p>
+        ) : revoked ? null : (
           <p className="mt-2 max-w-[38ch] text-[11px] leading-relaxed text-muted-foreground">
             {revokeConsequence(device.binding)}
           </p>
@@ -1264,8 +1281,12 @@ export function FleetView({
       : current)
   }
 
+  // A browser tab never sends a request the daemon answers by closing it.
+  const browserTab = clientKind === "web"
+  const managesDevices = !readOnly && !browserTab
+
   const revokeDevice = async (device: PairedDeviceSummary) => {
-    if (readOnly) return
+    if (!managesDevices) return
     setPendingDeviceId(device.id)
     setActionError("")
     try {
@@ -1280,7 +1301,7 @@ export function FleetView({
   }
 
   const renameDevice = async (device: PairedDeviceSummary, label: string) => {
-    if (readOnly) return
+    if (!managesDevices) return
     setPendingDeviceId(device.id)
     setActionError("")
     try {
@@ -1301,7 +1322,7 @@ export function FleetView({
   // renamed the row in between, the daemon refuses and sends the row as it
   // stands, which replaces the stale one here instead of being overwritten.
   const undoRename = async () => {
-    if (readOnly || !undo) return
+    if (!managesDevices || !undo) return
     setPendingDeviceId(undo.deviceId)
     setActionError("")
     try {
@@ -1341,7 +1362,7 @@ export function FleetView({
   }
 
   const rotateDevice = async (device: PairedDeviceSummary) => {
-    if (readOnly) return
+    if (!managesDevices) return
     setPendingDeviceId(device.id)
     setActionError("")
     setReceipt(null)
@@ -1483,6 +1504,7 @@ export function FleetView({
                         key={paired.id}
                         device={paired}
                          disabled={readOnly || !connected || pendingDeviceId === paired.id}
+                        lockedReason={browserTab ? lockedInBrowserTab(paired.binding, devicesMachineLabel ?? "this machine") : undefined}
                         undoable={undo?.deviceId === paired.id}
                         onRotate={() => void rotateDevice(paired)}
                         onRevoke={() => setRevoking(paired)}
@@ -1535,7 +1557,7 @@ export function FleetView({
       </ScrollArea>
 
       <RevokeConfirmation
-        device={readOnly ? null : revoking}
+        device={managesDevices ? revoking : null}
         busy={pendingDeviceId !== ""}
         onConfirm={(device) => void revokeDevice(device)}
         onClose={() => setRevoking(null)}
