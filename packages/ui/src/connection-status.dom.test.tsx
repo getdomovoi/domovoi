@@ -189,6 +189,18 @@ describe("WorkspaceConnectionProvider", () => {
     expect(screen.queryByText(/last heard/u)).toBeNull()
   })
 
+  // An attached machine can be reached through an SSH forward, whose local
+  // end is a loopback address. The tunnel closing says nothing about when the
+  // daemon at the far end was last heard.
+  it("says no time for an attached machine, even through a loopback tunnel", () => {
+    const attached = { ...connection, endpoint: undefined }
+    const { rerender } = render(<WorkspaceConnectionProvider {...attached}><Banner /></WorkspaceConnectionProvider>)
+    rerender(<WorkspaceConnectionProvider {...attached} connected={false}><Banner /></WorkspaceConnectionProvider>)
+
+    expect(screen.getByText("Lost the daemon on this-machine")).toBeDefined()
+    expect(screen.queryByText(/last heard/u)).toBeNull()
+  })
+
   // The age ticks every second. Inside a live region each tick would be
   // announced again, so the ticking words are hidden from assistive
   // technology and the region carries the clock time instead.

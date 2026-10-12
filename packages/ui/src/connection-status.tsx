@@ -20,8 +20,9 @@ export type WorkspaceConnection = {
   // Machines), and a daemon on this machine that stops or dies closes its
   // socket at once, so the close is the last moment it was heard. Undefined
   // when this client does not know: it never saw the connection open, the
-  // machine changed, or the daemon is reached over a network, where a link
-  // can die silently and the socket report the close minutes later.
+  // machine changed, the machine is attached (possibly through a tunnel), or
+  // the daemon is reached over a network, where a link can die silently and
+  // the socket report the close minutes later.
   lastHeardAt?: Date | undefined
 }
 
@@ -31,9 +32,10 @@ export function useWorkspaceConnection(): WorkspaceConnection | null {
   return useContext(ConnectionContext)
 }
 
-type Link = { connected: boolean, machineId: string | undefined, endpoint: string, lastHeardAt?: Date }
+type Link = { connected: boolean, machineId: string | undefined, endpoint: string | undefined, lastHeardAt?: Date }
 
-function loopback(endpoint: string): boolean {
+function loopback(endpoint: string | undefined): boolean {
+  if (endpoint === undefined) return false
   try {
     const host = new URL(endpoint).hostname
     return host === "localhost" || host === "[::1]" || host === "::1" || /^127(?:\.\d{1,3}){3}$/u.test(host)
@@ -47,8 +49,11 @@ function loopback(endpoint: string): boolean {
 export function WorkspaceConnectionProvider({ children, machineId, endpoint, ...state }: Omit<WorkspaceConnection, "lastHeardAt"> & {
   // The machine the snapshot is from, by id: two machines can share a name.
   machineId: string | undefined
-  // The address this client dialled.
-  endpoint: string
+  // The address this client dialled for its own daemon. Undefined for an
+  // attached machine: its route can be an SSH forward whose local end is a
+  // loopback address, and that tunnel closing says nothing about when the
+  // daemon at the far end was last heard.
+  endpoint: string | undefined
   children: ReactNode
 }) {
   const [link, setLink] = useState<Link>(() => ({ connected: state.connected, machineId, endpoint }))
