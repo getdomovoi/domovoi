@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest"
 
-import { previewGrantFresh, previewGrantLabel, previewGrantRenewDelay, previewGrantRenewLeadMs, previewGrantRetryDelay } from "./preview-grant"
+import {
+  previewGrantFresh,
+  previewGrantLabel,
+  previewGrantLocalExpiry,
+  previewGrantMinimumLifetimeMs,
+  previewGrantRenewDelay,
+  previewGrantRenewLeadMs,
+  previewGrantRetryDelay,
+} from "./preview-grant"
 
 describe("preview grant timing", () => {
   it("names the time left on the grant, as drawn in the toolbar", () => {
@@ -14,11 +22,24 @@ describe("preview grant timing", () => {
 
   it("renews ahead of expiry so a frame never loads a grant about to lapse", () => {
     const now = 1_000_000
-    // expiresAt is in seconds, as the daemon signs it.
-    expect(previewGrantRenewDelay(now / 1_000 + 60, now)).toBe(60_000 - previewGrantRenewLeadMs)
-    expect(previewGrantRenewDelay(now / 1_000 + 1, now)).toBe(0)
-    expect(previewGrantFresh({ expiresAt: now / 1_000 + 60 }, now)).toBe(true)
-    expect(previewGrantFresh({ expiresAt: now / 1_000 + 2 }, now)).toBe(false)
+    expect(previewGrantRenewDelay(now + 60_000, now)).toBe(60_000 - previewGrantRenewLeadMs)
+    expect(previewGrantRenewDelay(now + 1_000, now)).toBe(0)
+    expect(previewGrantFresh(now + 60_000, now)).toBe(true)
+    expect(previewGrantFresh(now + 2_000, now)).toBe(false)
+  })
+
+  it("reads the daemon's expiry on this client's clock", () => {
+    const receivedAt = 1_000_000
+    // Same clocks: the daemon's 60 s.
+    expect(previewGrantLocalExpiry(receivedAt / 1_000 + 60, receivedAt, 0)).toBe(receivedAt + 60_000)
+    // This clock 55 s ahead, offset known: still 60 s from receipt.
+    const daemonNow = receivedAt - 55_000
+    expect(previewGrantLocalExpiry(daemonNow / 1_000 + 60, receivedAt, -55_000)).toBe(receivedAt + 60_000)
+    // Offset unknown: never shorter than the floor, so no renewal loop.
+    expect(previewGrantLocalExpiry(daemonNow / 1_000 + 60, receivedAt, 0)).toBe(receivedAt + previewGrantMinimumLifetimeMs)
+    // This clock behind, offset known: the daemon's expiry, not a later one.
+    const aheadDaemon = receivedAt + 120_000
+    expect(previewGrantLocalExpiry(aheadDaemon / 1_000 + 60, receivedAt, 120_000)).toBe(receivedAt + 60_000)
   })
 
   it("backs off a failing renewal to one try every 30 seconds", () => {

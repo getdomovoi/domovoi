@@ -205,8 +205,12 @@ export function ArtifactDock({
   pinned = false,
   buildBasisId,
   onBuildBasisChange,
+  daemonTimeOffsetMs = 0,
 }: {
   snapshot: WorkspaceSnapshot
+  // The clock of the daemon that signs this dock's preview grants, less this
+  // client's (the fleet's daemonTime pattern); 0 when unknown.
+  daemonTimeOffsetMs?: number
   clientAccess?: ClientAccess
   onCollapse: () => void
   // The pin control sits in this tab row. Given a row of its own it is alone
@@ -401,6 +405,7 @@ export function ArtifactDock({
     enabled: connected && !previewRefusal,
     active: activeTab === "preview" || fullscreen,
     authorize: authorizeArtifact,
+    daemonTimeOffsetMs,
   })
   const previewUrl = grant.access ? artifactUrlFor(rpcUrl, grant.access) : undefined
   const previewError = grant.error
@@ -700,10 +705,12 @@ export function ArtifactDock({
     setComment("")
     setAnnotationError("")
   }
-  // The foot under the page, in the dock and in fullscreen alike.
-  const variantFoot = preview && previewVariants.length > 1 ? (
+  // The foot under the page, in the dock and in fullscreen alike. It shows
+  // whenever there is a choice of basis: variants on screen, or other renders
+  // in the session (a lone render can be the basis too).
+  const variantFoot = preview && (previewVariants.length > 1 || renderedPreviews.length > 1) ? (
     <div className="flex min-h-[46px] flex-none flex-wrap items-center gap-3 border-t px-[13px] py-2">
-      <PreviewVariantChips variants={previewVariants} selectedArtifactId={preview.id} onSelect={setSelectedPreviewId} />
+      {previewVariants.length > 1 ? <PreviewVariantChips variants={previewVariants} selectedArtifactId={preview.id} onSelect={setSelectedPreviewId} /> : null}
       <span className="font-machine text-[10.5px] text-muted-foreground">Viewing · {preview.variant?.label ?? preview.title}</span>
       <span className="font-machine text-[10.5px] text-faint">Build basis · {buildBasis?.variant?.label ?? buildBasis?.title}{buildBasis && buildBasisElsewhere ? ` in ${previewRenderName(buildBasis)}` : ""}</span>
       <span className="flex-1" />
@@ -790,7 +797,7 @@ export function ArtifactDock({
               <div className={cn("flex min-h-10 items-center justify-between gap-2 border-b px-[13px] py-[9px]", previewToolbarLayoutFor(stageContainerWidth) === "wrap" && "flex-wrap")}>
                 <div className="min-w-0"><p className="m-0 truncate text-[11.5px] text-strong">{preview.title}</p><p className="m-0 font-machine text-mono-xs text-faint">revision {preview.revision} · sandboxed</p></div>
                 <div className={cn("flex min-w-0 items-center justify-end gap-2", previewControlLayout.wrap && "flex-wrap", previewControlLayout.fullWidth && "w-full")}>
-                  <PreviewGrantChip access={grant.access} renewalError={grant.renewalError} />
+                  <PreviewGrantChip expiresAtMs={grant.expiresAtMs} renewalError={grant.renewalError} />
                   <PreviewWidthToggle value={previewWidth} onChange={setPreviewWidth} />
                   {!readOnly ? <PreviewAnnotateButton active={pickerActive} onToggle={togglePicker} /> : null}
                   <Button variant="ghost" size="icon-sm" className="min-h-11 min-w-11 rounded-full text-muted-foreground" aria-label="Open fullscreen preview" onClick={() => changeFullscreen(true)}><Maximize2Icon /></Button>
@@ -827,7 +834,7 @@ export function ArtifactDock({
                     key={artifact.id}
                     frameRef={previewFrameRef}
                     url={previewUrl}
-                    expiresAt={grant.access?.expiresAt}
+                    expiresAtMs={grant.expiresAtMs}
                     unavailable={grantUnavailable}
                     documentKey={previewDocumentKey}
                     className="h-full min-h-96 w-full justify-self-center border bg-background"
@@ -1007,7 +1014,7 @@ export function ArtifactDock({
           <PreviewFrame
             frameRef={fullscreenFrameRef}
             url={previewUrl}
-            expiresAt={grant.access?.expiresAt}
+            expiresAtMs={grant.expiresAtMs}
                     unavailable={grantUnavailable}
             documentKey={previewDocumentKey}
             className="mx-auto min-h-[50dvh] w-full flex-1 rounded-xl border bg-background"

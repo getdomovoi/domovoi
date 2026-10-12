@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { DownloadIcon, LockIcon, MessageSquarePlusIcon, MoreHorizontalIcon, PrinterIcon } from "lucide-react"
-import type { Artifact, ArtifactAccess } from "@getdomovoi/protocol"
+import type { Artifact } from "@getdomovoi/protocol"
 
 import { Button } from "./components/ui/button"
 import {
@@ -16,7 +16,7 @@ import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import { Tooltip, TooltipContent, TooltipTrigger } from "./components/ui/tooltip"
 import { Chip } from "./chip"
 import { cn } from "./lib/utils"
-import { previewGrantLabel, previewGrantMsLeft } from "./preview-grant"
+import { previewGrantLabel } from "./preview-grant"
 import type { RenderedPreview } from "./preview-renders"
 
 export const PreviewCopy = {
@@ -69,18 +69,19 @@ export function PreviewWidthToggle({ value, onChange }: { value: PreviewWidth, o
 }
 
 // Q379 A: authorization stays automatic, and the chip draws the grant's time
-// left from expiresAt. It ticks on its own so the dock does not re-render
-// every second.
-export function PreviewGrantChip({ access, renewalError }: { access: ArtifactAccess | undefined, renewalError: string }) {
+// left from expiresAt (turned into this client's clock when the grant arrived,
+// as expiresAtMs). It ticks on its own so the dock does not re-render every
+// second.
+export function PreviewGrantChip({ expiresAtMs, renewalError }: { expiresAtMs: number | undefined, renewalError: string }) {
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    if (!access) return
+    if (expiresAtMs === undefined) return
     setNow(Date.now())
     const timer = setInterval(() => setNow(Date.now()), 1_000)
     return () => clearInterval(timer)
-  }, [access])
-  if (!access) return null
-  const msLeft = previewGrantMsLeft(access, now)
+  }, [expiresAtMs])
+  if (expiresAtMs === undefined) return null
+  const msLeft = expiresAtMs - now
   return (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -196,6 +197,8 @@ export function PreviewVariantChips({
   )
 }
 
+export const previewRenderListPage = 50
+
 // RENDERED THIS SESSION (D20). Without it a preview outside the newest variant
 // group could not be opened at all.
 export function PreviewRenderedList({
@@ -209,10 +212,30 @@ export function PreviewRenderedList({
   onPick: (artifactId: string) => void
   className?: string | undefined
 }) {
+  // A long session can hold thousands of renders (the snapshot does not bound
+  // them), so the list draws the newest page and earlier pages on request,
+  // always including the render on screen. Every render stays reachable.
+  const [shown, setShown] = useState(previewRenderListPage)
+  const selectedIndex = selectedArtifactId === undefined
+    ? -1
+    : renders.findIndex((render) => render.artifactIds.includes(selectedArtifactId))
+  const newestStart = Math.max(0, renders.length - shown)
+  const start = selectedIndex >= 0 ? Math.min(newestStart, selectedIndex) : newestStart
+  const earlier = Math.min(previewRenderListPage, start)
   return (
     <nav aria-label={PreviewCopy.renderedLabel} className={cn("flex flex-col gap-[3px] bg-sidebar px-2 py-[9px]", className)}>
       <div className="px-2.5 pt-[5px] pb-[7px] text-eyebrow tracking-[.13em] text-faint">{PreviewCopy.renderedHeading}</div>
-      {renders.map((render) => {
+      {earlier > 0 ? (
+        <Button
+          variant="ghost"
+          size="sm"
+          className="min-h-11 justify-start px-[11px] font-normal text-muted-foreground"
+          onClick={() => setShown(renders.length - start + previewRenderListPage)}
+        >
+          {earlier === 1 ? "Show 1 earlier render" : `Show ${earlier} earlier renders`}
+        </Button>
+      ) : null}
+      {renders.slice(start).map((render) => {
         const selected = selectedArtifactId !== undefined && render.artifactIds.includes(selectedArtifactId)
         return (
           <Button

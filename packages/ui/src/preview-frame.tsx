@@ -12,11 +12,12 @@ import { previewGrantFresh } from "./preview-grant"
 // A frame keeps the URL it first loaded for a document. A renewed grant
 // changes the URL but must not reload the page on screen, so only a new
 // document (or a new bridge channel, which is part of `documentKey`) or the
-// loss of the URL moves the frame. With `expiresAt`, a grant about to lapse
-// is not loaded; the frame waits for the renewal instead.
+// loss of the URL moves the frame. With `expiresAtMs` (the grant's expiry on
+// this client's clock), a grant about to lapse is not loaded; the frame waits
+// for the renewal instead.
 export function PreviewFrame({
   url,
-  expiresAt,
+  expiresAtMs,
   documentKey,
   title,
   frameRef,
@@ -26,7 +27,7 @@ export function PreviewFrame({
   unavailable,
 }: {
   url: string | undefined
-  expiresAt?: number | undefined
+  expiresAtMs?: number | undefined
   documentKey: string
   title: string
   frameRef?: Ref<HTMLIFrameElement> | undefined
@@ -35,7 +36,7 @@ export function PreviewFrame({
   style?: CSSProperties | undefined
   unavailable?: ReactNode
 }) {
-  const loadableUrl = expiresAt === undefined || previewGrantFresh({ expiresAt }) ? url : undefined
+  const loadableUrl = expiresAtMs === undefined || previewGrantFresh(expiresAtMs) ? url : undefined
   const [latched, setLatched] = useState(() => loadableUrl === undefined ? undefined : { documentKey, url: loadableUrl })
   // No URL at all (no grant, offline, refused) blanks the frame as before.
   const current = url !== undefined && latched?.documentKey === documentKey ? latched.url : undefined

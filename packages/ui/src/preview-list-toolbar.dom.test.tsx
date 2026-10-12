@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
@@ -64,7 +64,7 @@ function renderDock(
   onCreateAnnotation = vi.fn(async () => {}),
   dockSnapshot: WorkspaceSnapshot = snapshot,
   captureAnnotation?: Parameters<typeof ArtifactDock>[0]["captureAnnotation"],
-  { defaultTab = "preview", buildBasisId }: { defaultTab?: "changes" | "preview", buildBasisId?: string } = {},
+  { defaultTab = "preview", buildBasisId, daemonTimeOffsetMs }: { defaultTab?: "changes" | "preview", buildBasisId?: string, daemonTimeOffsetMs?: number } = {},
 ) {
   const terminalControls = { claim: vi.fn(), release: vi.fn(), write: vi.fn(), resize: vi.fn() } as never
   const handlers = {
@@ -79,6 +79,7 @@ function renderDock(
     <ArtifactDock
       {...(captureAnnotation ? { captureAnnotation } : {})}
       {...(buildBasisId ? { buildBasisId } : {})}
+      {...(daemonTimeOffsetMs === undefined ? {} : { daemonTimeOffsetMs })}
       {...handlers}
       snapshot={dockSnapshot}
       defaultTab={defaultTab}
@@ -115,8 +116,19 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.useRealTimers()
   if (happyDom && loadedFrames !== undefined) happyDom.settings.disableIframePageLoading = loadedFrames
 })
+
+// Grants last 60 s, as the daemon signs them; the clock jumps instead of the
+// test waiting. Time still runs, so the dock's own short timers fire.
+function fakeClock() {
+  vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] })
+  return {
+    user: userEvent.setup({ advanceTimers: vi.advanceTimersByTime }),
+    advance: (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms) }),
+  }
+}
 
 it("opens a preview rendered earlier in the session from the list", async () => {
   const user = userEvent.setup()
@@ -183,24 +195,24 @@ it("draws the design's toolbar and keeps the shipped extras behind one overflow 
 })
 
 it("renews the grant before it lapses without reloading the page on screen", async () => {
-  const user = userEvent.setup()
-  // Six seconds is one past the renewal lead, so the renewal is due in one.
-  const authorize = grantingAuthorize(6)
+  const { user, advance } = fakeClock()
+  const authorize = grantingAuthorize()
   renderDock(authorize)
 
   await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"))
-  await waitFor(() => expect(authorize.mock.calls.filter(([input]) => input.purpose === "preview" && input.bridgeChannel).length).toBeGreaterThan(1), { timeout: 3_000 })
+  // The renewal is due five seconds before the 60 s grant ends.
+  await advance(56_000)
+  await waitFor(() => expect(authorize.mock.calls.filter(([input]) => input.purpose === "preview" && input.bridgeChannel)).toHaveLength(2))
   expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1")
 
   await user.click(screen.getByRole("button", { name: "Open fullscreen preview" }))
-  const fullscreen = frameTitled("Replay table B fullscreen")
-  expect(fullscreen.getAttribute("src")).toMatch(/signature=grant-[2-9]/u)
-  expectSandboxed(fullscreen)
+  await waitFor(() => expect(frameTitled("Replay table B fullscreen").getAttribute("src")).toContain("signature=grant-2"))
+  expectSandboxed(frameTitled("Replay table B fullscreen"))
 })
 
 it("retries a failed renewal instead of leaving the preview without a grant", async () => {
-  const user = userEvent.setup()
-  const granting = grantingAuthorize(6)
+  const { user, advance } = fakeClock()
+  const granting = grantingAuthorize()
   let renewals = 0
   const authorize = vi.fn(async (input: AuthorizeInput): Promise<ArtifactAccess> => {
     if (input.bridgeChannel && granting.mock.calls.length > 0 && renewals++ === 0) throw new Error("daemon busy")
@@ -209,23 +221,27 @@ it("retries a failed renewal instead of leaving the preview without a grant", as
   renderDock(authorize as unknown as ReturnType<typeof grantingAuthorize>)
   await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"))
 
-  // The renewal due after one second fails; the retry gets the next grant.
-  await waitFor(() => expect(renewals).toBeGreaterThan(1), { timeout: 4_000 })
+  // The renewal fails; the retry a second later gets the next grant.
+  await advance(56_000)
+  await waitFor(() => expect(renewals).toBe(1))
+  await advance(1_100)
+  await waitFor(() => expect(renewals).toBe(2))
   await user.click(screen.getByRole("button", { name: "Open fullscreen preview" }))
-  await waitFor(() => expect(frameTitled("Replay table B fullscreen").getAttribute("src")).toMatch(/signature=grant-[2-9]/u), { timeout: 3_000 })
+  await waitFor(() => expect(frameTitled("Replay table B fullscreen").getAttribute("src")).toContain("signature=grant-2"))
 })
 
 it("says why a frame cannot load when the grant lapsed and renewing it keeps failing", async () => {
-  const user = userEvent.setup()
-  const granting = grantingAuthorize(6)
+  const { user, advance } = fakeClock()
+  const granting = grantingAuthorize()
   const authorize = vi.fn(async (input: AuthorizeInput): Promise<ArtifactAccess> => {
     if (input.bridgeChannel && granting.mock.calls.length > 0) throw new Error("Preview artifact does not exist")
     return granting(input)
   })
   renderDock(authorize as unknown as ReturnType<typeof grantingAuthorize>)
   await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"))
-  // Past the point where grant-1 is too close to its end to load.
-  await new Promise((resolve) => setTimeout(resolve, 1_300))
+  // Past the point where grant-1 is too close to its end to load; the
+  // renewal at that point fails.
+  await advance(56_000)
 
   await user.click(screen.getByRole("button", { name: "Open fullscreen preview" }))
   const surface = screen.getByRole("dialog")
@@ -257,8 +273,8 @@ it("asks for no grant while the dock opens on another tab, and retries a first g
 })
 
 it("asks again at once when a preview whose renewals were failing is shown again", async () => {
-  const user = userEvent.setup()
-  const granting = grantingAuthorize(6)
+  const { user, advance } = fakeClock()
+  const granting = grantingAuthorize()
   let daemonUp = true
   const authorize = vi.fn(async (input: AuthorizeInput): Promise<ArtifactAccess> => {
     if (input.bridgeChannel && granting.mock.calls.length > 0 && !daemonUp) throw new Error("daemon busy")
@@ -268,15 +284,74 @@ it("asks again at once when a preview whose renewals were failing is shown again
   await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"))
   daemonUp = false
   const bridged = () => authorize.mock.calls.filter(([input]) => input.bridgeChannel).length
-  // Renewal at 1 s fails, the retry 1 s later fails: the next is 2 s out.
-  await waitFor(() => expect(bridged()).toBe(3), { timeout: 4_000 })
+  // The renewal fails, the retry a second later fails: the next is 2 s out.
+  await advance(56_000)
+  await advance(1_100)
+  await waitFor(() => expect(bridged()).toBe(3))
 
   await user.click(screen.getByRole("tab", { name: "Rules" }))
   daemonUp = true
   await user.click(screen.getByRole("tab", { name: "Preview" }))
-  await waitFor(() => expect(bridged()).toBe(4), { timeout: 800 })
+  await advance(100)
+  expect(bridged()).toBe(4)
   await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-2"))
-}, 10_000)
+})
+
+it("offers a standalone render as the build basis when the session has other renders", async () => {
+  const user = userEvent.setup()
+  const onBuildBasisChange = vi.fn()
+  render(
+    <ArtifactDock
+      snapshot={snapshot}
+      onCollapse={vi.fn()}
+      defaultTab="preview"
+      rpcUrl="ws://127.0.0.1:47831/rpc"
+      authorizeArtifact={grantingAuthorize()}
+      connected
+      terminalControls={{ claim: vi.fn(), release: vi.fn(), write: vi.fn(), resize: vi.fn() } as never}
+      onReplyToAnnotation={vi.fn()}
+      onSetAnnotationStatus={vi.fn()}
+      onCreateAnnotation={vi.fn()}
+      onLoadSessionHistory={vi.fn()}
+      onLoadSessionEvidence={() => new Promise<never>(() => {})}
+      onRevertSessionFile={vi.fn()}
+      onBuildBasisChange={onBuildBasisChange}
+    />,
+  )
+
+  await user.click(within(screen.getByRole("navigation", { name: "Rendered this session" })).getByRole("button", { name: /^Duplicate-delivery runbook/u }))
+  expect(screen.getByText("Viewing · Duplicate-delivery runbook")).toBeTruthy()
+  expect(screen.getByText("Build basis · Variant B in replay")).toBeTruthy()
+  expect(screen.queryByRole("radiogroup", { name: "Design variants" })).toBeNull()
+  await user.click(screen.getByRole("button", { name: "Use Duplicate-delivery runbook as build basis" }))
+  expect(onBuildBasisChange).toHaveBeenCalledWith("runbook")
+  expect(screen.getByText("Chosen build basis")).toBeTruthy()
+})
+
+it("lists the newest renders first in view and shows earlier ones on request", async () => {
+  const user = userEvent.setup()
+  const many: Artifact[] = Array.from({ length: 120 }, (_, index) => ({
+    id: `render-${index}`,
+    sessionId,
+    title: `Render ${index}`,
+    type: "preview",
+    revision: index === 119 ? 2 : 1,
+    mimeType: "text/html",
+    path: `previews/render-${index}.html`,
+  }))
+  renderDock(grantingAuthorize(), undefined, { ...snapshot, artifacts: many })
+  const list = screen.getByRole("navigation", { name: "Rendered this session" })
+  const rows = () => within(list).getAllByRole("button").filter((button) => button.textContent?.startsWith("Render "))
+  expect(rows()).toHaveLength(50)
+  expect(rows()[0]?.textContent).toContain("Render 70")
+  expect(rows().at(-1)?.getAttribute("aria-current")).toBe("true")
+
+  await user.click(within(list).getByRole("button", { name: "Show 50 earlier renders" }))
+  expect(rows()).toHaveLength(100)
+  await user.click(within(list).getByRole("button", { name: "Show 20 earlier renders" }))
+  expect(rows()).toHaveLength(120)
+  expect(within(list).queryByRole("button", { name: /earlier renders?$/u })).toBeNull()
+})
 
 it("names the build basis from another render instead of a variant of the one on screen", async () => {
   const user = userEvent.setup()
@@ -301,6 +376,27 @@ it("names the build basis from another render instead of a variant of the one on
   expect(screen.getByRole("button", { name: "Use Variant A as build basis" })).toBeTruthy()
 })
 
+// The daemon's clock 55 s behind this one: each grant it signs for 60 s looks
+// five seconds long here.
+function skewedAuthorize() {
+  const granting = grantingAuthorize(60 - 55)
+  return granting
+}
+
+it("does not renew in a loop when this clock runs ahead of the daemon's and the offset is unknown", async () => {
+  const authorize = skewedAuthorize()
+  renderDock(authorize)
+  await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"))
+  await new Promise((resolve) => setTimeout(resolve, 1_500))
+  expect(authorize.mock.calls.filter(([input]) => input.bridgeChannel)).toHaveLength(1)
+  expect(screen.getByText(/^authorized · \d+s left$/u)).toBeTruthy()
+})
+
+it("reads the grant's time left on the daemon's clock when the shell knows the offset", async () => {
+  renderDock(skewedAuthorize(), undefined, snapshot, undefined, { daemonTimeOffsetMs: -55_000 })
+  expect(await screen.findByText("authorized · 1m left")).toBeTruthy()
+})
+
 it("asks for a fresh grant after a disconnect instead of reusing the one from before", async () => {
   // A restarted daemon signs with a new secret, so a grant from before the
   // disconnect would load nothing.
@@ -315,8 +411,8 @@ it("asks for a fresh grant after a disconnect instead of reusing the one from be
 })
 
 it("signs no grants while the preview is hidden and loads a fresh one when it shows again", async () => {
-  const user = userEvent.setup()
-  const authorize = grantingAuthorize(6)
+  const { user, advance } = fakeClock()
+  const authorize = grantingAuthorize()
   renderDock(authorize)
   const bridged = () => authorize.mock.calls.filter(([input]) => input.bridgeChannel).length
   await waitFor(() => expect(frameTitled("Replay table B").getAttribute("src")).toContain("signature=grant-1"))
@@ -324,7 +420,7 @@ it("signs no grants while the preview is hidden and loads a fresh one when it sh
   await user.click(screen.getByRole("tab", { name: "Rules" }))
   const hiddenAt = bridged()
   // Past the first grant's renewal point: shown, it would have been renewed.
-  await new Promise((resolve) => setTimeout(resolve, 1_300))
+  await advance(70_000)
   expect(bridged()).toBe(hiddenAt)
 
   await user.click(screen.getByRole("tab", { name: "Preview" }))

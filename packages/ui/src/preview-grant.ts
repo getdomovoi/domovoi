@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import type { ArtifactAccess } from "@getdomovoi/protocol"
 
 // The daemon signs a preview grant for one document, revision, bridge channel
@@ -9,16 +9,25 @@ import type { ArtifactAccess } from "@getdomovoi/protocol"
 // and a frame that mounts never loads a grant about to lapse.
 export const previewGrantRenewLeadMs = 5_000
 
-export function previewGrantMsLeft(access: Pick<ArtifactAccess, "expiresAt">, now: number): number {
-  return access.expiresAt * 1_000 - now
+// expiresAt is the daemon's clock, in seconds. It is turned into this client's
+// clock once, when the grant arrives: with the daemon's offset when the shell
+// knows it, and never shorter than this floor after receipt. The daemon just
+// signed the grant (its lifetime is 60 s), so a shorter one only means this
+// clock runs ahead of the daemon's; the floor keeps that from renewing in a
+// loop or never counting a grant fresh.
+export const previewGrantMinimumLifetimeMs = 10_000
+
+export function previewGrantLocalExpiry(expiresAt: number, receivedAt: number, daemonTimeOffsetMs: number): number {
+  return receivedAt + Math.max(previewGrantMinimumLifetimeMs, expiresAt * 1_000 - daemonTimeOffsetMs - receivedAt)
 }
 
-export function previewGrantFresh(access: Pick<ArtifactAccess, "expiresAt">, now = Date.now()): boolean {
-  return previewGrantMsLeft(access, now) > previewGrantRenewLeadMs
+// The rest takes the local expiry, in this client's milliseconds.
+export function previewGrantFresh(expiresAtMs: number, now = Date.now()): boolean {
+  return expiresAtMs - now > previewGrantRenewLeadMs
 }
 
-export function previewGrantRenewDelay(expiresAt: number, now: number): number {
-  return Math.max(0, expiresAt * 1_000 - previewGrantRenewLeadMs - now)
+export function previewGrantRenewDelay(expiresAtMs: number, now: number): number {
+  return Math.max(0, expiresAtMs - previewGrantRenewLeadMs - now)
 }
 
 export function previewGrantLabel(msLeft: number): string {
@@ -47,6 +56,8 @@ export function previewGrantRetryDelay(failures: number): number {
 type GrantState = {
   key: string
   access?: ArtifactAccess
+  // The access's expiry on this client's clock (previewGrantLocalExpiry).
+  expiresAtMs?: number
   error: string
   renewalError: string
   renewalFailures: number
@@ -70,6 +81,7 @@ export function usePreviewGrant({
   enabled,
   active,
   authorize,
+  daemonTimeOffsetMs = 0,
 }: {
   sessionId: string | undefined
   artifactId: string | undefined
@@ -78,13 +90,19 @@ export function usePreviewGrant({
   enabled: boolean
   active: boolean
   authorize: AuthorizePreview
-}): { access: ArtifactAccess | undefined, error: string, renewalError: string } {
+  // The signing daemon's clock less this client's, when the shell knows it.
+  daemonTimeOffsetMs?: number
+}): { access: ArtifactAccess | undefined, expiresAtMs: number | undefined, error: string, renewalError: string } {
   const key = JSON.stringify([sessionId, artifactId, revision, bridgeChannel, enabled])
   const empty: GrantState = { key, error: "", renewalError: "", renewalFailures: 0 }
   const [state, setState] = useState<GrantState>(empty)
   const current = state.key === key ? state : empty
   const access = current.access
+  const expiresAtMs = current.expiresAtMs
   const failures = current.renewalFailures
+  // Read when a grant arrives; a new offset alone is no reason to ask again.
+  const offset = useRef(daemonTimeOffsetMs)
+  useEffect(() => { offset.current = daemonTimeOffsetMs }, [daemonTimeOffsetMs])
 
   // A new document, channel or connection drops what was held: a grant from
   // before a disconnect may be signed with a secret the daemon no longer has.
@@ -103,11 +121,19 @@ export function usePreviewGrant({
     let live = true
     const delay = failures > 0
       ? previewGrantRetryDelay(failures)
-      : access ? previewGrantRenewDelay(access.expiresAt, Date.now()) : 0
+      : expiresAtMs !== undefined ? previewGrantRenewDelay(expiresAtMs, Date.now()) : 0
     const timer = setTimeout(() => {
       void authorize({ sessionId, artifactId, revision, purpose: "preview", bridgeChannel, parentOrigin: window.location.origin }).then(
         (granted) => {
-          if (live) setState({ key, access: granted, error: "", renewalError: "", renewalFailures: 0 })
+          if (!live) return
+          setState({
+            key,
+            access: granted,
+            expiresAtMs: previewGrantLocalExpiry(granted.expiresAt, Date.now(), offset.current),
+            error: "",
+            renewalError: "",
+            renewalFailures: 0,
+          })
         },
         (cause: unknown) => {
           // Counting the failure re-runs this effect, which schedules the retry.
@@ -125,7 +151,7 @@ export function usePreviewGrant({
       live = false
       clearTimeout(timer)
     }
-  }, [access, active, artifactId, authorize, bridgeChannel, enabled, failures, key, revision, sessionId])
+  }, [access, active, artifactId, authorize, bridgeChannel, enabled, expiresAtMs, failures, key, revision, sessionId])
 
-  return { access, error: current.error, renewalError: current.renewalError }
+  return { access, expiresAtMs, error: current.error, renewalError: current.renewalError }
 }
