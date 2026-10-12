@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { isAbsolute, join, resolve } from "node:path"
@@ -56,10 +56,33 @@ async function cssImportPackages(config, stylesheets) {
   return packages
 }
 
+// A vite plugin that adds to packages every npm package with a module or an
+// emitted asset in the bundle. Fonts arrive as assets from CSS url(), so chunk
+// modules alone would miss them, and CSS that Tailwind inlines through @import
+// is found by following those rules.
+function bundlePackagesPlugin(packages) {
+  let resolvedConfig
+  return {
+    name: "domovoi:renderer-bundle-packages",
+    configResolved(value) { resolvedConfig = value },
+    async generateBundle(_options, bundle) {
+      const stylesheets = new Set()
+      for (const output of Object.values(bundle)) {
+        const sources = output.type === "chunk" ? output.moduleIds : output.originalFileNames ?? []
+        for (const source of sources) {
+          const name = packageOfModule(source)
+          if (name) packages.add(name)
+          const file = source.replace(/^\0/u, "").split("?")[0]
+          if (file.endsWith(".css") && isAbsolute(file)) stylesheets.add(file)
+        }
+      }
+      for (const name of await cssImportPackages(resolvedConfig, stylesheets)) packages.add(name)
+    },
+  }
+}
+
 // Builds the desktop renderer as packaging does, without writing it, and names
-// every npm package with a module or an emitted asset in the result. Fonts
-// arrive as assets from CSS url(), so chunk modules alone would miss them, and
-// CSS that Tailwind inlines through @import is found by following those rules.
+// every npm package in the result.
 export async function rendererBundlePackages(root = repositoryRoot) {
   const desktopRoot = join(root, "apps/desktop")
   const desktopRequire = createRequire(join(desktopRoot, "package.json"))
@@ -74,27 +97,36 @@ export async function rendererBundlePackages(root = repositoryRoot) {
     if (!config?.renderer) throw new Error("apps/desktop has no renderer build")
     // electron-vite resolves the renderer root against the working directory.
     config.renderer.root ??= join(desktopRoot, "src/renderer")
-    let resolvedConfig
-    config.renderer.plugins = [...(config.renderer.plugins ?? []), {
-      name: "domovoi:renderer-bundle-packages",
-      configResolved(value) { resolvedConfig = value },
-      async generateBundle(_options, bundle) {
-        const stylesheets = new Set()
-        for (const output of Object.values(bundle)) {
-          const sources = output.type === "chunk" ? output.moduleIds : output.originalFileNames ?? []
-          for (const source of sources) {
-            const name = packageOfModule(source)
-            if (name) packages.add(name)
-            const file = source.replace(/^\0/u, "").split("?")[0]
-            if (file.endsWith(".css") && isAbsolute(file)) stylesheets.add(file)
-          }
-        }
-        for (const name of await cssImportPackages(resolvedConfig, stylesheets)) packages.add(name)
-      },
-    }]
+    config.renderer.plugins = [...(config.renderer.plugins ?? []), bundlePackagesPlugin(packages)]
     await build(config.renderer)
   } finally {
     await rm(outDir, { recursive: true, force: true })
   }
   return [...packages].sort()
+}
+
+// Builds the web app (apps/web) with its own vite config into outDir, as
+// `vite build` does, domovoi-web.json included, and names every npm package
+// in the result. envDir names the folder vite reads .env files from; the
+// release passes an empty one so a developer's .env never reaches the bundle.
+export async function buildWebApp(root, { outDir, envDir }) {
+  const webRoot = join(root, "apps/web")
+  const { build } = await import(pathToFileURL(createRequire(join(webRoot, "package.json")).resolve("vite")).href)
+  const packages = new Set()
+  await build({
+    root: webRoot, configFile: join(webRoot, "vite.config.ts"), envDir, mode: "production", logLevel: "error",
+    build: { outDir, emptyOutDir: true }, plugins: [bundlePackagesPlugin(packages)],
+  })
+  return [...packages].sort()
+}
+
+// The packages of a web app build, written to a folder removed afterwards.
+export async function webBundlePackages(root = repositoryRoot) {
+  const scratch = await mkdtemp(join(tmpdir(), "domovoi-web-bundle-"))
+  try {
+    await mkdir(join(scratch, "env"))
+    return await buildWebApp(root, { outDir: join(scratch, "web"), envDir: join(scratch, "env") })
+  } finally {
+    await rm(scratch, { recursive: true, force: true })
+  }
 }

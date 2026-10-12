@@ -63,6 +63,31 @@ test("names every workspace package the desktop app and the npm packages carry a
   for (const name of publishablePackages) assert.ok(auditedPackages.includes(name), `${name} is audited`)
 })
 
+// The web app release tarball (S3.2 slice 6) carries what vite bundles from
+// apps/web: its own graph and every workspace package it reaches, development
+// dependencies included, since vite inlines those too.
+test("names every workspace package the web app tarball carries, and audits them", async () => {
+  const { webPackages } = await import("./dependency-licenses.mjs")
+  assert.ok(Array.isArray(webPackages), "the web app's packages are named")
+  const { packages } = await collectWorkspacePackages(root)
+  const manifests = new Map(await Promise.all(packages.map(async ({ name, path }) =>
+    [name, JSON.parse(await readFile(join(root, path), "utf8"))])))
+  const seen = new Set()
+  const pending = ["@getdomovoi/web"]
+  while (pending.length) {
+    const name = pending.pop()
+    if (seen.has(name)) continue
+    seen.add(name)
+    const manifest = manifests.get(name)
+    const ranges = name === "@getdomovoi/web" ? { ...manifest.dependencies, ...manifest.devDependencies } : manifest.dependencies ?? {}
+    for (const [dependency, range] of Object.entries(ranges)) {
+      if (range.startsWith("workspace:")) pending.push(dependency)
+    }
+  }
+  assert.deepEqual([...seen].sort(), [...webPackages].sort())
+  for (const name of webPackages) assert.ok(auditedPackages.includes(name), `${name} is audited`)
+})
+
 // Review P3-5: every workspace package the runtime deploys beside the archive
 // (the daemon, and since Q336 A the domovoi CLI) is walked by the audit and
 // the notices.

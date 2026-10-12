@@ -1438,6 +1438,7 @@ export function Thread({
                     confirmation: "target-does-not-have-session",
                   }).then(() => undefined),
                 } : {})}
+                targetChoice={{ machines, onTargetChange: setTransferTargetId }}
                 onCloseAutoFocus={(event) => returnFocusFromMachineMenu(event, { dialog: true })}
               />
             </Suspense>

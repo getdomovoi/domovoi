@@ -3,7 +3,9 @@ import { createRequire } from "node:module"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
 
-import { collectDependencyLicenses, collectRuntimeLicenses, desktopPackages, mergeLicenseGraphs } from "./dependency-licenses.mjs"
+import {
+  collectDependencyLicenses, collectRuntimeLicenses, desktopPackages, inlinedStylesheetPackages, mergeLicenseGraphs, webPackages,
+} from "./dependency-licenses.mjs"
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 
@@ -26,7 +28,24 @@ export async function readNoticeTexts(directory) {
   return Promise.all(files.map(async (file) => ({ file, text: (await readFile(join(directory, file), "utf8")).trim() })))
 }
 
-export function renderThirdPartyNotices(entries) {
+export const desktopNoticeHeading = [
+  "Third-party software in Domovoi Desktop",
+  "",
+  "Each section names a package this build contains, its version, the license its manifest",
+  "declares, and the license and notice files the package publishes. Chromium's notices are",
+  "in LICENSES.chromium.html and Electron's license is in LICENSE.electron.txt.",
+]
+
+// The web app release tarball carries this file beside domovoi-web.json. The
+// manifest does not list it, so the daemon never serves it.
+export const webNoticeHeading = [
+  "Third-party software in the Domovoi web app",
+  "",
+  "Each section names a package this bundle contains, its version, the license its manifest",
+  "declares, and the license and notice files the package publishes.",
+]
+
+export function renderThirdPartyNotices(entries, heading = desktopNoticeHeading) {
   const rule = "=".repeat(72)
   const sections = entries.map(({ name, version, license, texts }) => [
     rule,
@@ -38,11 +57,7 @@ export function renderThirdPartyNotices(entries) {
       : texts.map(({ file, text }) => `--- ${file} ---\n${text}`).join("\n\n"),
   ].join("\n"))
   return [
-    "Third-party software in Domovoi Desktop",
-    "",
-    "Each section names a package this build contains, its version, the license its manifest",
-    "declares, and the license and notice files the package publishes. Chromium's notices are",
-    "in LICENSES.chromium.html and Electron's license is in LICENSE.electron.txt.",
+    ...heading,
     "",
     ...sections,
     "",
@@ -50,7 +65,19 @@ export function renderThirdPartyNotices(entries) {
 }
 
 export async function collectDesktopNotices(root = repositoryRoot) {
-  const graph = mergeLicenseGraphs(await collectDependencyLicenses(root, desktopPackages), await collectRuntimeLicenses(root))
+  return noticeEntries(mergeLicenseGraphs(await collectDependencyLicenses(root, desktopPackages), await collectRuntimeLicenses(root)))
+}
+
+// The web app's own graph, the UI's and the protocol's, and the CSS Tailwind
+// inlines into its stylesheet. Electron and the daemon runtime are not in it.
+export async function collectWebNotices(root = repositoryRoot, { deadline } = {}) {
+  return noticeEntries(mergeLicenseGraphs(
+    await collectDependencyLicenses(root, webPackages, { deadline }),
+    await collectRuntimeLicenses(root, inlinedStylesheetPackages),
+  ))
+}
+
+async function noticeEntries(graph) {
   const entries = []
   for (const [license, packages] of Object.entries(graph)) {
     for (const { name, versions, paths } of packages) {
