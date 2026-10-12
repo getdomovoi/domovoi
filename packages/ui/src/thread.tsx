@@ -70,7 +70,7 @@ import type { WorkingPlanEdit } from "./plan-step-editor.js"
 import { groupThreadActivity, type ThreadRow } from "./thread-activity-groups"
 import { ThreadFileChips } from "./thread-file-chips"
 import { TurnActivity } from "./turn-activity"
-import { headerClockText, latestSessionTurn, turnClock, type TurnTiming } from "./turn-clock"
+import { activityTiming, headerClockText, latestSessionTurn, turnClock, type TurnTiming } from "./turn-clock"
 import { CheckpointRestore, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import {
   heldAfter,
@@ -841,6 +841,12 @@ export function Thread({
     )
   }
 
+  // "Worked for N" speaks for a whole turn, so only the turn's last activity
+  // row says it; an earlier row of the same turn keeps its count.
+  const turnsById = new Map((snapshot.turns ?? []).map((turn) => [turn.id, turn]))
+  const lastActivityOfTurn = new Map<string, string>()
+  for (const row of threadRows) if (row.kind === "activity" && row.turnId) lastActivityOfTurn.set(row.turnId, row.id)
+
   const entries = fleet ?? [localFleetEntry(snapshot)]
   const latestReceiptId = renderedThread.filter((item) => item.kind === "receipt").at(-1)?.id
   const receiptActions = {
@@ -1282,7 +1288,14 @@ export function Thread({
                 : toolFileEntries(row.items.flatMap((call) => call.files ?? []))
               return (
                 <Fragment key={row.id}>
-                  <TurnActivity items={row.items} running={rowRunning} />
+                  <TurnActivity
+                    items={row.items}
+                    running={rowRunning}
+                    timing={activityTiming({
+                      running: rowRunning,
+                      turn: row.turnId && lastActivityOfTurn.get(row.turnId) === row.id ? turnsById.get(row.turnId) : undefined,
+                    })}
+                  />
                   {touched.length > 0 ? <ThreadFileChips files={touched} onReview={onOpenSheet} /> : null}
                 </Fragment>
               )

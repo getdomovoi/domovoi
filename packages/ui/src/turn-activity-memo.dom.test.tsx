@@ -44,6 +44,17 @@ it("draws again when the tool calls change", () => {
   expect(chevronRenders).toHaveBeenCalledTimes(2)
 })
 
+// The thread builds the turn's timing afresh on every render.
+it("does not draw again for a fresh timing that says the same", () => {
+  const { rerender } = render(<TurnActivity items={items} running={false} timing={{ kind: "worked", duration: "4m 18s" }} />)
+  rerender(<TurnActivity items={items} running={false} timing={{ kind: "worked", duration: "4m 18s" }} />)
+  expect(chevronRenders).toHaveBeenCalledTimes(1)
+  rerender(<TurnActivity items={items} running={false} timing={{ kind: "worked", duration: "4m 19s" }} />)
+  expect(chevronRenders).toHaveBeenCalledTimes(2)
+  rerender(<TurnActivity items={items} running={false} timing={{ kind: "stopped" }} />)
+  expect(chevronRenders).toHaveBeenCalledTimes(3)
+})
+
 it("draws again when the turn stops running", () => {
   const { rerender } = render(<TurnActivity items={items} running />)
   rerender(<TurnActivity items={items} running={false} />)

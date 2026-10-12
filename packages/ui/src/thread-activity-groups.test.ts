@@ -62,6 +62,26 @@ describe("collapsing tool calls into one row", () => {
     expect(items[1]!.log).toBeUndefined()
   })
 
+  // D7: the row says how long its turn worked, so it names the turn its calls
+  // belong to, and a run that crosses into another turn is two rows.
+  it("names the turn its calls belong to", () => {
+    const rows = groupThreadActivity([{ ...tool("a", "completed"), turnId: "turn-1" } as ThreadItem, tool("b", "completed")])
+    expect(rows[0]!.kind === "activity" && rows[0]!.turnId).toBe("turn-1")
+  })
+
+  it("names no turn when no call links one", () => {
+    const rows = groupThreadActivity([tool("a", "completed")])
+    expect(rows[0]!.kind === "activity" && rows[0]!.turnId).toBeUndefined()
+  })
+
+  it("starts a new row where the calls move to another turn", () => {
+    const rows = groupThreadActivity([
+      { ...tool("a", "completed"), turnId: "turn-1" } as ThreadItem,
+      { ...tool("b", "completed"), turnId: "turn-2" } as ThreadItem,
+    ])
+    expect(rows.map((row) => row.kind === "activity" ? row.turnId : row.kind)).toEqual(["turn-1", "turn-2"])
+  })
+
   it("leaves every other kind of item exactly where it was", () => {
     const items = [message("m1"), tool("a", "completed"), message("m2")]
     const rows = groupThreadActivity(items)
