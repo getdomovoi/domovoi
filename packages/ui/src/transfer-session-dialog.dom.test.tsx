@@ -162,12 +162,15 @@ it("blames this side's keychain, not the target's daemon, when the keychain cann
   expect(describedBy(row)).toBe("the keychain here could not be read, cannot reach it now")
 })
 
-it("does not call a healthy machine with nothing to dial reachable", () => {
-  renderDialog({ machines: [source, target, { ...spare, transports: [] }] })
+// The daemon may still dial it over an SSH forward or a WSL distribution on
+// the source, neither of which the fleet entry shows, so the row is offered
+// without claiming a route and the preview settles it.
+it("neither claims nor refuses a route for a healthy machine that advertises none", () => {
+  renderDialog({ machines: [source, target, { ...spare, connection: "ssh", transports: [] }] })
 
   const row = screen.getByRole("radio", { name: "garage" })
-  expect(row).toHaveProperty("disabled", true)
-  expect(describedBy(row)).toBe("advertises no route to dial, cannot accept a session now")
+  expect(row).toHaveProperty("disabled", false)
+  expect(describedBy(row)).toBe("no advertised route, the preview says whether it can be dialed")
 })
 
 it("moves the choice to another reachable machine", async () => {
