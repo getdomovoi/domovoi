@@ -329,7 +329,16 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
-  it.each([false, true])("takes a real mid-turn snapshot without moving HEAD or the shared index (racing=%s)", async (racing) => {
+  it.each([
+    { name: "quiet", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
+    { name: "snapshot unavailable", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
+    { name: "racing", racing: true, reportedPaths: undefined, expectedPaths: ["file.txt"], total: 1 },
+    { name: "over path count cap", racing: false,
+      reportedPaths: Array.from({ length: 55 }, (_, index) => `file-${String(54 - index).padStart(2, "0")}.txt`),
+      expectedPaths: Array.from({ length: 50 }, (_, index) => `file-${String(index).padStart(2, "0")}.txt`), total: 55 },
+    { name: "over path length cap", racing: false, reportedPaths: ["z.txt", "x".repeat(4097), "a.txt", "a.txt"], expectedPaths: ["a.txt", "z.txt"], total: 3 },
+    { name: "unmatched without named paths", racing: false, reportedPaths: [], expectedPaths: [], total: 0 },
+  ])("takes a mid-turn snapshot without moving HEAD or the shared index: $name", async ({ name, racing, reportedPaths, expectedPaths, total }) => {
     const path = await mkdtemp(join(tmpdir(), "domovoi-mid-turn-"))
     scratchDirectories.push(path)
     const git = (...args: string[]) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8" }).trim()
@@ -357,10 +366,15 @@ describe("DomovoiDaemon", () => {
         if (racing) await writeFile(join(path, "file.txt"), `racing ${pass}\n`)
       },
     })
+    if (reportedPaths) vi.spyOn(workspaceService, "snapshot").mockResolvedValue({
+      commit: before.head, changedFiles: [], matched: false, unstablePaths: reportedPaths,
+    })
+    if (name === "snapshot unavailable") Object.defineProperty(workspaceService, "snapshot", { value: undefined })
     const checkpoint = vi.spyOn(workspaceService, "checkpoint")
+    const save = vi.fn((_snapshot: WorkspaceSnapshot) => {})
     const daemon = new DomovoiDaemon({
       port: 0, agents: {}, workspaceService,
-      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+      store: { load: () => snapshot, save, close: vi.fn() },
     })
     running.push(daemon)
     const address = await daemon.start()
@@ -380,12 +394,23 @@ describe("DomovoiDaemon", () => {
       socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
     })
     const result = await rpc("checkpoint.create", { sessionId: session.id, label: "capture", client: "desktop" })
+    if (name === "snapshot unavailable") {
+      expect(result).toMatchObject({ error: { code: -32602, message: "This workspace cannot take a checkpoint while the agent runs" } })
+      expect(checkpoint).not.toHaveBeenCalled()
+      socket.close()
+      return
+    }
     expect(result).not.toHaveProperty("error")
     const view = workspaceSnapshotSchema.parse(result.result)
     const item = view.thread.find((item) => item.kind === "checkpoint" && item.label.endsWith(" · capture"))!
     expect(item).toMatchObject({
       kind: "checkpoint", reason: "manual",
-      midTurn: { providerTurnId: "capture-turn", stability: racing ? "unstable" : "matched", changedPaths: racing ? ["file.txt"] : [] },
+      midTurn: { providerTurnId: "capture-turn", stability: racing || reportedPaths ? "unstable" : "matched", changedPaths: expectedPaths, changedPathCount: total },
+    })
+    const persisted = workspaceSnapshotSchema.parse(save.mock.lastCall?.[0])
+    expect(persisted.thread.find((saved) => saved.id === item.id)).toEqual(item)
+    expect(await rpc("session.history", { sessionId: session.id, categories: ["checkpoints"] })).toMatchObject({
+      result: { items: expect.arrayContaining([expect.objectContaining({ sourceId: item.id, midTurn: item.kind === "checkpoint" ? item.midTurn : undefined })]) },
     })
     expect(checkpoint).not.toHaveBeenCalled()
     expect({ head: git("rev-parse", "HEAD"), branch: git("symbolic-ref", "HEAD"), index: await readFile(join(path, ".git", "index")) }).toEqual(before)
@@ -9581,7 +9606,7 @@ describe("DomovoiDaemon", () => {
         restoredCommit: "b".repeat(40),
         recoveryCommit: "c".repeat(40),
       })),
-      snapshot: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: ["src/app.ts"] })),
+      snapshot: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: ["src/app.ts"], matched: true })),
     } satisfies WorkspaceService
     const initialSnapshot = createEmptyWorkspace({
       id: `machine-${"8".repeat(32)}`,
@@ -9873,7 +9898,7 @@ describe("DomovoiDaemon", () => {
       label: "while-agent-is-running",
       client: "desktop",
     })
-    const midTurn = { providerTurnId: "provider-turn-1", stability: "matched", changedPaths: [] }
+    const midTurn = { providerTurnId: "provider-turn-1", stability: "matched", changedPaths: [], changedPathCount: 0 }
     expect(activeCheckpoint).toMatchObject({
       result: { thread: expect.arrayContaining([expect.objectContaining({
         kind: "checkpoint", reason: "manual", commit: "d".repeat(40), midTurn,

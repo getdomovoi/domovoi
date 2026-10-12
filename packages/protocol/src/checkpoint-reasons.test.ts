@@ -54,9 +54,15 @@ describe("checkpoint reasons", () => {
 
 
 describe("mid-turn checkpoints", () => {
-  const matched = { providerTurnId: "provider-turn-1", stability: "matched", changedPaths: [] }
-  const unstable = { providerTurnId: "provider-turn-1", stability: "unstable", changedPaths: ["src/a.ts", " "] }
-  it.each([matched, unstable])("preserves capture facts in thread and history: %j", (midTurn) => {
+  const matched = { providerTurnId: "provider-turn-1", stability: "matched", changedPaths: [], changedPathCount: 0 }
+  const unstable = { providerTurnId: "provider-turn-1", stability: "unstable", changedPaths: ["src/a.ts", " "], changedPathCount: 2 }
+  it.each([matched, unstable,
+    { ...unstable, changedPaths: Array.from({ length: 50 }, (_, index) => `file-${index}`), changedPathCount: 75 },
+    { ...unstable, changedPaths: ["x".repeat(4096)], changedPathCount: 1 },
+    { ...unstable, changedPaths: ["😀".repeat(2048)], changedPathCount: 100_001 },
+    { ...unstable, changedPaths: [], changedPathCount: 1 },
+    { ...unstable, changedPaths: [], changedPathCount: 0 },
+  ])("preserves capture facts in thread and history: %j", (midTurn) => {
     expect(threadItemSchema.parse({ ...checkpoint, midTurn })).toEqual({ ...checkpoint, midTurn })
     expect(sessionHistoryEntrySchema.parse({ ...history, midTurn })).toEqual({ ...history, midTurn })
   })
@@ -65,9 +71,17 @@ describe("mid-turn checkpoints", () => {
     { ...matched, providerTurnId: "x".repeat(1025) },
     { ...matched, stability: "atomic" },
     { ...matched, changedPaths: ["a.ts"] },
-    { ...unstable, changedPaths: [] },
+    { ...matched, changedPathCount: 1 },
+    { ...unstable, changedPathCount: 1 },
+    { ...unstable, changedPathCount: -1 },
+    { ...unstable, changedPathCount: 1.5 },
+    { ...unstable, changedPathCount: Number.MAX_SAFE_INTEGER + 1 },
+    { ...unstable, changedPathCount: "2" },
+    { ...unstable, changedPathCount: undefined },
+    { ...unstable, changedPaths: Array.from({ length: 51 }, (_, index) => `file-${index}`), changedPathCount: 51 },
     { ...unstable, changedPaths: [""] },
     { ...unstable, changedPaths: ["x".repeat(4097)] },
+    { ...unstable, changedPaths: ["😀".repeat(2049)] },
     { ...unstable, changedPaths: [1] },
     { ...matched, unexpected: true },
   ])("rejects invalid capture facts in thread and history: %j", (midTurn) => {

@@ -67,6 +67,8 @@ export type SessionBranchFacts = {
 export type Checkpoint = {
   commit: string
   changedFiles: string[]
+  // snapshot only: true when two consecutive staging passes matched.
+  matched?: boolean
   // snapshot only: absent when two consecutive staging passes matched.
   unstablePaths?: string[]
 }
@@ -1960,11 +1962,11 @@ export class GitWorkspaceService implements WorkspaceService {
   // temporary index. HEAD, the branch, the shared index and every file stay as
   // they were, so an agent mid-turn sees nothing. The temporary index starts as
   // a copy of the shared one, so files tracked despite an ignore rule stay in.
-  async snapshot(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
+  async snapshot(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint & { matched: boolean }> {
     return this.#isolated(worktreePath, worktreePath, signal, (isolated) => this.#snapshot(worktreePath, label, isolated, signal))
   }
 
-  async #snapshot(worktreePath: string, label: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<Checkpoint> {
+  async #snapshot(worktreePath: string, label: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<Checkpoint & { matched: boolean }> {
     const head = await currentHead(worktreePath, signal)
     if (head !== undefined) await isolated.setHead(head)
     if (await submoduleHasLocalChanges(worktreePath, signal)) throw new SubmoduleChangesRefusedError()
@@ -2026,7 +2028,7 @@ export class GitWorkspaceService implements WorkspaceService {
         ], signal)
       }
       await git(worktreePath, ["update-ref", checkpointRef(commit), commit], signal)
-      return { commit, changedFiles, ...(!matched ? { unstablePaths: [...changedDuringCapture].sort() } : {}) }
+      return { commit, changedFiles, matched, ...(!matched ? { unstablePaths: [...changedDuringCapture].sort() } : {}) }
     } catch (error) {
       if (isolated.indexLocksLeft.includes(`${temporaryIndex}.lock`) && error instanceof Error) {
         error.message = `${error.message} Domovoi left the temporary index ${temporaryIndex} in place with it.`

@@ -251,6 +251,9 @@ export function CheckpointsPanel({
                         <ul className="list-inside list-disc font-machine">
                           {entry.midTurn.changedPaths.map((path, index) => <li key={index} className="whitespace-pre-wrap wrap-anywhere">{path}</li>)}
                         </ul>
+                        {entry.midTurn.changedPathCount > entry.midTurn.changedPaths.length ? (
+                          <p>{entry.midTurn.changedPathCount - entry.midTurn.changedPaths.length} more changed {entry.midTurn.changedPathCount - entry.midTurn.changedPaths.length === 1 ? "path" : "paths"} not shown.</p>
+                        ) : null}
                       </>
                     ) : <p>Two staging passes matched.</p>}
                     <p>Matching passes do not guarantee a single point in time. A change that reverts between passes is missed.</p>

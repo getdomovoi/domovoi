@@ -86,6 +86,7 @@ describe("GitWorkspaceService.snapshot", () => {
       },
     })
     const snapshot = await service.snapshot(path, "mid-turn")
+    expect(snapshot).toHaveProperty("matched", false)
     expect(snapshot.unstablePaths).toEqual(["new.txt", "tracked.txt"])
     expect(pass).toBeLessThanOrEqual(4)
     expect(await gitOut(path, "show", `${snapshot.commit}:tracked.txt`)).toBe(`writer version ${pass - 1}\n`)
@@ -105,6 +106,7 @@ describe("GitWorkspaceService.snapshot", () => {
     })
     const snapshot = await service.snapshot(path, "mid-turn")
     expect(await gitOut(path, "show", `${snapshot.commit}:tracked.txt`)).toBe("settled writer content\n")
+    expect(snapshot).toHaveProperty("matched", true)
     expect(snapshot.unstablePaths).toBeUndefined()
   })
 
@@ -153,7 +155,7 @@ describe("GitWorkspaceService.snapshot", () => {
 
     const snapshot = await service.snapshot(path, "before approved command")
 
-    expect(snapshot).toEqual({ commit: head, changedFiles: [] })
+    expect(snapshot).toEqual({ commit: head, changedFiles: [], matched: true })
     expect((await gitOut(path, "rev-parse", `refs/domovoi/checkpoints/${head}^{commit}`)).trim()).toBe(head)
   })
 

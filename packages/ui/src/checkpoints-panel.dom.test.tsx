@@ -276,7 +276,7 @@ it("returns focus to Take a checkpoint when the form closes", async () => {
 it.each(["matched", "unstable"] as const)("shows mid-turn capture facts and limits for %s", async (stability) => {
   const entry = page().items[1]!
   const result = page({ items: [{ ...entry, category: "checkpoints", label: "During the rename", midTurn: {
-    providerTurnId: "provider-turn-42", stability, changedPaths: stability === "unstable" ? ["src/a.ts", "src/b.ts"] : [],
+    providerTurnId: "provider-turn-42", stability, changedPaths: stability === "unstable" ? ["src/a.ts", "src/b.ts"] : [], changedPathCount: stability === "unstable" ? 2 : 0,
   } }] })
   render(panel(vi.fn(async () => result), { onTakeCheckpoint: vi.fn(), restoreBlocked: true }))
   await settle()
@@ -291,4 +291,17 @@ it.each(["matched", "unstable"] as const)("shows mid-turn capture facts and limi
     expect(row.getByText("Two staging passes matched.")).toBeTruthy()
   }
   expect(screen.getByRole("button", { name: "Take a checkpoint" }).hasAttribute("disabled")).toBe(false)
+})
+
+
+it.each([1, 8])("shows the count of %s omitted changed paths", async (omitted) => {
+  const entry = page().items[1]!
+  const result = page({ items: [{ ...entry, category: "checkpoints", label: "During the rename", midTurn: {
+    providerTurnId: "provider-turn-42", stability: "unstable", changedPaths: ["src/a.ts"], changedPathCount: 1 + omitted,
+  } }] })
+  render(panel(vi.fn(async () => result)))
+  await settle()
+  const row = within(screen.getByTestId("checkpoint-row"))
+  expect(row.getByText(`${omitted} more changed ${omitted === 1 ? "path" : "paths"} not shown.`)).toBeTruthy()
+  expect(row.getByText("src/a.ts")).toBeTruthy()
 })

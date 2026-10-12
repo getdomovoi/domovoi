@@ -9,6 +9,8 @@ import {
   approvalCheckpointErrorCode,
   buildVersion,
   maximumRpcMessageBytes,
+  maximumMidTurnCheckpointPaths,
+  maximumMidTurnCheckpointPathLength,
   type ApprovalCheckpointRefusal,
   type SessionAttachmentRefusal,
   type SessionReviewRefusal,
@@ -10827,7 +10829,7 @@ export class DomovoiDaemon {
             socket,
             request.id,
             invalidParams,
-            "Mid-turn snapshots are unavailable",
+            "This workspace cannot take a checkpoint while the agent runs",
           )
           return
         }
@@ -10848,6 +10850,11 @@ export class DomovoiDaemon {
         }
         currentSession.changedFiles = checkpoint.changedFiles.length
         currentSession.updatedAt = new Date().toISOString()
+        // Bound canonical state before persistence and broadcast. Omit overlong
+        // paths instead of shortening them into names that refer to other files.
+        const changedPaths = providerTurnId && checkpoint.matched !== true
+          ? [...new Set(checkpoint.unstablePaths ?? [])].sort()
+          : []
         this.#snapshot.thread.push({
           id: `checkpoint-${randomUUID()}`,
           sessionId: currentSession.id,
@@ -10857,8 +10864,9 @@ export class DomovoiDaemon {
             ...turnLink,
             midTurn: {
               providerTurnId,
-              stability: checkpoint.unstablePaths?.length ? "unstable" as const : "matched" as const,
-              changedPaths: checkpoint.unstablePaths ?? [],
+              stability: checkpoint.matched === true ? "matched" as const : "unstable" as const,
+              changedPaths: changedPaths.filter((path) => path.length > 0 && path.length <= maximumMidTurnCheckpointPathLength).slice(0, maximumMidTurnCheckpointPaths),
+              changedPathCount: changedPaths.length,
             },
           } : {}),
           label: `${checkpoint.commit.slice(0, 8)} · ${label}`,

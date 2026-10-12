@@ -19,16 +19,24 @@ export const checkpointReasonSchema = z.enum([
 ])
 export type CheckpointReason = z.infer<typeof checkpointReasonSchema>
 
+export const maximumMidTurnCheckpointPaths = 50
+export const maximumMidTurnCheckpointPathLength = 4_096
+
 // Matching consecutive staging passes is an observation, not an atomic
 // snapshot: a write that reverts between passes cannot be detected.
 export const midTurnCheckpointSchema = z.object({
   providerTurnId: z.string().min(1).check(utf16MaxLength(1_024)),
   stability: z.enum(["matched", "unstable"]),
   // Do not trim: whitespace is legal in a Git path.
-  changedPaths: z.array(z.string().min(1).check(utf16MaxLength(4_096))).max(100_000),
-}).strict().refine((capture) => (capture.stability === "matched") === (capture.changedPaths.length === 0), {
-  path: ["changedPaths"],
-  message: "Unstable captures name changed paths; matching captures have none",
+  changedPaths: z.array(z.string().min(1).check(utf16MaxLength(maximumMidTurnCheckpointPathLength))).max(maximumMidTurnCheckpointPaths),
+  // Total distinct observed paths, including those omitted by either bound.
+  changedPathCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+}).strict().refine((capture) => capture.changedPathCount >= capture.changedPaths.length, {
+  path: ["changedPathCount"],
+  message: "The changed-path count must include every displayed path",
+}).refine((capture) => capture.stability !== "matched" || capture.changedPathCount === 0, {
+  path: ["changedPathCount"],
+  message: "Matching captures have no changed paths",
 })
 export type MidTurnCheckpoint = z.infer<typeof midTurnCheckpointSchema>
 
