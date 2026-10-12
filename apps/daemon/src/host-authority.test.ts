@@ -54,6 +54,18 @@ describe("canonical Host authority", () => {
     expect(answers("", { scheme: "http", host: "127.0.0.1", port: 47831 })).toBe(false)
   })
 
+  // Codex review round 1 (Minor): a wildcard bind is no name a client dials,
+  // however the bind address is spelled.
+  it("answers no wildcard address, however the bind is spelled", () => {
+    for (const host of ["0.0.0.0", "0", "0x0", "0.0", "::", "[::]", "::0", "0:0:0:0:0:0:0:0", "[0:0:0:0:0:0:0:0]"]) {
+      const facts = { scheme: "https", host, port: 47831 } as const
+      for (const authority of ["0.0.0.0:47831", "0:47831", "[::]:47831", "[0:0:0:0:0:0:0:0]:47831"]) {
+        expect(answers(authority, facts), `${host} ${authority}`).toBe(false)
+      }
+    }
+    expect(answers("100.64.0.1:47831", { scheme: "https", host: "100.64.0.1", port: 47831 })).toBe(true)
+  })
+
   it("answers only the listener's own names and port", () => {
     const loopback = { scheme: "http", host: "127.0.0.1", port: 47831 } as const
     expect(answers("127.0.0.1:47831", loopback)).toBe(true)
