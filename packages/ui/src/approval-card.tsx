@@ -1,6 +1,14 @@
-import { useRef, useState, type MouseEvent } from "react"
+import { useRef, useState, type MouseEvent, type ReactNode } from "react"
 import { CircleStopIcon } from "lucide-react"
-import { approvalPlanStep, type ApprovalDecision, type ApprovalRequest, type WorkingPlan } from "@getdomovoi/protocol"
+import {
+  approvalCheckpointErrorCode,
+  approvalCheckpointRefusalSchema,
+  approvalPlanStep,
+  type ApprovalCheckpointRefusal,
+  type ApprovalDecision,
+  type ApprovalRequest,
+  type WorkingPlan,
+} from "@getdomovoi/protocol"
 
 import { approvalOriginLine, outsideProjectText } from "./approval-facts"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
@@ -38,10 +46,11 @@ export function ApprovalCard({
   // A decision made with no daemon to hear it goes nowhere, so the card holds
   // every decision until the connection is back and says why.
   connected: boolean
-  // The daemon's answer when it refused the last decision on this gate, such
-  // as a checkpoint it could not take. Shown in its words: the cause is
-  // whatever the daemon reported, and nothing more.
-  refusal?: string | undefined
+  // The daemon's answer when it refused the last decision on this gate: its
+  // sentence and the error's data. A checkpoint it could not take carries
+  // its cause as data, and the card draws the cause; any other refusal, or
+  // data this build cannot read, is shown in the daemon's words.
+  refusal?: ApprovalDecisionRefusal | undefined
   // Set while a decision this client sent is still waiting for its answer.
   // Every decision holds until then, so a second press cannot send another,
   // or land on the next gate drawn in this one's place.
@@ -169,10 +178,10 @@ export function ApprovalCard({
         {refusal ? (
           // The daemon's refusal of the last decision on this gate, such as a
           // checkpoint it could not take, in the design's danger block.
-          <p role="alert" className="m-0 flex items-start gap-2.5 rounded-lg border border-danger-border bg-danger-background px-[13px] py-[11px] text-[12.5px] leading-[1.55] text-danger-foreground">
+          <div role="alert" className="m-0 flex items-start gap-2.5 rounded-lg border border-danger-border bg-danger-background px-[13px] py-[11px] text-[12.5px] leading-[1.55] text-danger-foreground">
             <span aria-hidden className="mt-1.5 size-[7px] shrink-0 rounded-full bg-destructive" />
-            {refusal}
-          </p>
+            <DecisionRefusal refusal={refusal} />
+          </div>
         ) : null}
         {!watching && !connected ? (
           // The client knows it is disconnected, not why, so no cause is named.
@@ -273,3 +282,58 @@ export function ApprovalCard({
 
 // The design outlines Always and Deny in the gate's own border, on no fill.
 const outline = "border-warn-border bg-transparent hover:bg-warn-deep dark:border-warn-border dark:bg-transparent dark:hover:bg-warn-deep"
+
+export type ApprovalDecisionRefusal = {
+  message: string
+  // The JSON-RPC error code. Error data is not tied to a code on the wire, so
+  // the data reads as a checkpoint refusal only under that refusal's code.
+  code?: number | undefined
+  // The error's data as the daemon sent it, read here by its schema.
+  data?: unknown
+}
+
+// The cause of a refused checkpoint as the design words it: Could not take a
+// checkpoint: <cause>. Nothing ran. Decide again. The command is what did not
+// run; the daemon's attempt at the checkpoint may have run Git.
+function checkpointCause(refusal: ApprovalCheckpointRefusal): ReactNode {
+  switch (refusal.cause) {
+    case "lock-held":
+      return <><span className="font-machine text-[11.5px]">{refusal.lockPath}</span> is held by another git process, or was left by one that stopped</>
+    case "submodule-changes":
+      return "a submodule has local changes a checkpoint cannot hold"
+    case "repository-config":
+      return "this repository's own Git config asks for something Domovoi does not run"
+    case "repository-config-unreadable":
+      return "Git could not read this repository's config"
+    case "git-unavailable":
+      return "this machine's Git is missing, or not a version Domovoi can use"
+    case "timed-out":
+      return "it did not finish in time"
+    case "git-failed":
+      return "a Git command failed"
+    case "unknown":
+      return undefined
+  }
+}
+
+const checkpointCausesWithDetail: ReadonlySet<ApprovalCheckpointRefusal["cause"]> = new Set([
+  "repository-config", "repository-config-unreadable", "git-unavailable",
+])
+
+function DecisionRefusal({ refusal }: { refusal: ApprovalDecisionRefusal }) {
+  const checkpoint = refusal.code === approvalCheckpointErrorCode ? approvalCheckpointRefusalSchema.safeParse(refusal.data) : undefined
+  if (checkpoint?.success !== true) return <span>{refusal.message}</span>
+  const cause = checkpointCause(checkpoint.data)
+  // Which setting refused, what Git stopped on, or what to install, is the
+  // daemon's own detail, and the person needs it to act; the other causes
+  // say all there is.
+  const detail = checkpointCausesWithDetail.has(checkpoint.data.cause)
+  const line = <>Could not take a checkpoint{cause === undefined ? "" : <>: {cause}</>}. Nothing ran. Decide again.</>
+  if (!detail) return <span>{line}</span>
+  return (
+    <span className="flex min-w-0 flex-col gap-1">
+      <span>{line}</span>
+      <span className="text-[11.5px] opacity-80">{refusal.message}</span>
+    </span>
+  )
+}

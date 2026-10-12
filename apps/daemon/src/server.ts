@@ -6,8 +6,10 @@ import { arch, homedir, hostname, platform, tmpdir } from "node:os"
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path"
 
 import {
+  approvalCheckpointErrorCode,
   buildVersion,
   maximumRpcMessageBytes,
+  type ApprovalCheckpointRefusal,
   type SessionAttachmentRefusal,
   type SessionReviewRefusal,
   boundedClientThread,
@@ -111,6 +113,7 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { normalizeLegacyEffort } from "./legacy-effort.js"
+import { approvalCheckpointRefusal } from "./approval-checkpoint-refusal.js"
 import { approvalToolServerFact, type ApprovalScope } from "./approval-facts.js"
 import {
   ApprovalLedger,
@@ -210,7 +213,6 @@ import {
   RepositoryConfigRefusedError,
   RepositoryFilterRefusedError,
   RepositoryGitFilterRefusedError,
-  SubmoduleChangesRefusedError,
   GitWorkspaceService,
   WorkspaceEvidenceUnstableError,
   type FileRevert,
@@ -4277,7 +4279,7 @@ export class DomovoiDaemon {
     code: number,
     message: string,
     data?: ProjectSwitchConfirmation | TurnSkillSelectionRefusal | FleetSnapshotOverflow | DeviceLabelMismatch | ProtocolMismatch | SkillInstallRefusal | SessionAttachmentRefusal
-      | RepositoryGitFilterRefusal | SessionReviewRefusal,
+      | RepositoryGitFilterRefusal | SessionReviewRefusal | ApprovalCheckpointRefusal,
   ): void {
     this.#send(socket, this.#errorFrame(id, { code, message, ...(data ? { data } : {}) }))
   }
@@ -9204,11 +9206,9 @@ export class DomovoiDaemon {
             approvedCheckpoint = { id: `checkpoint-${randomUUID()}`, commit: taken.commit }
           } catch (error) {
             this.#reportError("Domovoi could not take a checkpoint before an approved command", error)
-            if (error instanceof SubmoduleChangesRefusedError) {
-              this.#error(socket, request.id, invalidParams, "Domovoi could not take a checkpoint: a submodule has local changes a checkpoint cannot hold, so the command did not run")
-              return
-            }
-            this.#error(socket, request.id, internalError, "Domovoi could not take a checkpoint, so the command did not run; decide again")
+            // Typed, so a client draws the cause without reading the sentence.
+            const refusal = await approvalCheckpointRefusal(error, { timedOut: error instanceof OperationTimeoutError, worktree })
+            this.#error(socket, request.id, approvalCheckpointErrorCode, refusal.message, refusal.data)
             return
           }
           if (!this.#snapshot.approvals.some((pending) => pending.id === approval.id)) {
