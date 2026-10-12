@@ -2,13 +2,13 @@ import { execFile, spawnSync, type ChildProcess } from "node:child_process"
 import { createServer } from "node:http"
 import { createServer as createNetServer, type AddressInfo, type Socket } from "node:net"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { copyFile, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
+import { copyFile, cp, link, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rm, symlink, unlink, utimes, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, relative, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { promisify } from "node:util"
 
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 
 import { windowsTreeKill } from "./claude-process.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
@@ -1004,9 +1004,14 @@ describe("GitWorkspaceService", () => {
     const service = new GitWorkspaceService(join(scratch, "worktrees"))
     const workspace = await service.createSessionWorkspace(repositoryPath, "session-hooks")
     const markerPath = join(scratch, "hook-ran").replaceAll("\\", "/")
-    await mkdir(join(workspace.path, ".githooks"))
+    const hooks = join(workspace.path, ".githooks")
+    await mkdir(hooks)
+    // One script under every hook name, as hard links, records the name Git
+    // ran it by. macOS checks each new executable file the first time it runs,
+    // one file at a time for the whole machine; a script per hook made
+    // the control commit below wait seconds behind other tests' new files.
+    await writeFile(join(hooks, "pre-commit"), `#!/bin/sh\necho "$(basename "$0")" >> "${markerPath}"\n`, { mode: 0o755 })
     for (const hook of [
-      "pre-commit",
       "prepare-commit-msg",
       "commit-msg",
       "post-commit",
@@ -1014,11 +1019,7 @@ describe("GitWorkspaceService", () => {
       "post-index-change",
       "reference-transaction",
     ]) {
-      await writeFile(
-        join(workspace.path, ".githooks", hook),
-        `#!/bin/sh\necho ${hook} >> "${markerPath}"\n`,
-        { mode: 0o755 },
-      )
+      await link(join(hooks, "pre-commit"), join(hooks, hook))
     }
     await execute("git", [
       "-C", workspace.path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid",
@@ -1793,10 +1794,12 @@ describe("GitWorkspaceService bundle restore", () => {
     return { promise, release }
   }
 
-  async function sourceWithBundle(prefix: string) {
-    const scratch = await mkdtemp(join(tmpdir(), prefix))
-    scratchDirectories.push(scratch)
-    const repositoryPath = join(scratch, "project")
+  // Every root made, a failed one included, is removed after the block.
+  const sharedRoots: string[] = []
+  async function makeSharedSource() {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-restore-source-"))
+    sharedRoots.push(root)
+    const repositoryPath = join(root, "project")
     await execute("git", ["init", "--initial-branch=main", repositoryPath])
     await execute("git", ["-C", repositoryPath, "config", "core.autocrlf", "false"])
     await execute("git", ["-C", repositoryPath, "config", "core.eol", "lf"])
@@ -1808,13 +1811,40 @@ describe("GitWorkspaceService bundle restore", () => {
       "-c", "user.email=test@example.invalid",
       "commit", "-m", "initial",
     ])
-    const targetRepositoryPath = join(scratch, "target-project")
-    await execute("git", ["clone", "--quiet", repositoryPath, targetRepositoryPath])
-    const source = new GitWorkspaceService(join(scratch, "source-worktrees"))
+    const targetTemplate = join(root, "target-project")
+    await execute("git", ["clone", "--quiet", repositoryPath, targetTemplate])
+    const source = new GitWorkspaceService(join(root, "source-worktrees"))
     const workspace = await source.createSessionWorkspace(repositoryPath, "session-1")
     await writeFile(join(workspace.path, "README.md"), "moved\n")
     const checkpoint = await source.checkpoint(workspace.path, "before-transfer")
-    const bundle = await source.bundleSession(workspace.path, join(scratch, "session.bundle"))
+    const bundle = await source.bundleSession(workspace.path, join(root, "session.bundle"))
+    return { targetTemplate, checkpoint, bundle }
+  }
+
+  // The source repository, its checkpoint and its bundle are only read here,
+  // so they are made once for this block. Each test gets its own copy of the
+  // target, cloned before the source took the session as before. Making the
+  // source was most of each test's Git work, about 1 s of 1.5 s on an idle
+  // Windows runner (diagnostic run 38177732109). When a runner stall slowed
+  // every Git process 5 to 15 times, these tests ran past their 30 s timeout
+  // (CI runs 37648689682 and 37655021737).
+  let sharedSource: ReturnType<typeof makeSharedSource> | undefined
+  afterAll(async () => {
+    await sharedSource?.catch(() => undefined)
+    await removeScratchDirectories(sharedRoots)
+  })
+
+  async function sourceWithBundle(prefix: string) {
+    // A failed setup is retried by the next test instead of failing them all.
+    sharedSource ??= makeSharedSource().catch((error: unknown) => {
+      sharedSource = undefined
+      throw error
+    })
+    const { targetTemplate, checkpoint, bundle } = await sharedSource
+    const scratch = await mkdtemp(join(tmpdir(), prefix))
+    scratchDirectories.push(scratch)
+    const targetRepositoryPath = join(scratch, "target-project")
+    await cp(targetTemplate, targetRepositoryPath, { recursive: true })
     return { scratch, targetRepositoryPath, checkpoint, bundle }
   }
 
@@ -2461,17 +2491,86 @@ describe("GitWorkspaceService session refs", () => {
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
 
-  it("pushes without the repository's own ssh command", async () => {
+  // Runs work with HOME and XDG_CONFIG_HOME at a home of the test's own, so
+  // the person's global Git config is the one written there.
+  async function withHome<T>(home: string, work: () => Promise<T>): Promise<T> {
+    const previous = { HOME: process.env.HOME, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME }
+    process.env.HOME = home
+    process.env.XDG_CONFIG_HOME = join(home, ".config")
+    try {
+      return await work()
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]
+        else process.env[name] = value
+      }
+    }
+  }
+
+  it("pushes with the person's own ssh command, not the repository's", async () => {
+    const { scratch, service, workspace } = await sessionWithRemote("domovoi-ref-ssh-person-")
+    const repositoryPath = join(scratch, "project")
+    const markerPath = join(scratch, "transport-ran").replaceAll("\\", "/")
+    const personMarker = join(scratch, "person-ssh-ran").replaceAll("\\", "/")
+    const personSsh = join(scratch, "person-ssh.sh").replaceAll("\\", "/")
+    await writeFile(join(workspace.path, "evil.sh"), `echo ran >> "${markerPath}"\nexit 1\n`)
+    await writeFile(personSsh, `echo ran >> "${personMarker}"\nexit 1\n`)
+    const home = join(scratch, "home")
+    await mkdir(home)
+    // Git writes the value, so the quotes around the path survive its parser.
+    await execute("git", ["config", "--file", join(home, ".gitconfig"), "core.sshCommand", `sh "${personSsh}"`])
+    await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", "ssh://git@127.0.0.1/remote.git"])
+    await execute("git", ["-C", repositoryPath, "config", "core.sshCommand", "sh ./evil.sh"])
+    await service.checkpoint(workspace.path, "with the script")
+
+    await withHome(home, () => expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow())
+
+    await expect(readFile(personMarker, "utf8")).resolves.toContain("ran")
+    await expect(readFile(markerPath, "utf8")).rejects.toThrow()
+  })
+
+  // With no ssh command of the person's own, Git starts plain ssh. The first
+  // ssh.exe a Windows runner starts took 0.7 to 0.8 s on an idle runner, more
+  // under the suite's load, and once this test ran past its 30 s timeout (CI
+  // run 37740051526). The fallback is the same code on every platform, so it
+  // runs on macOS and Linux; the case above covers the refusal on Windows.
+  it.skipIf(process.platform === "win32")("pushes with plain ssh when the person sets none, not the repository's command", async ({ skip }) => {
     const { scratch, service, workspace } = await sessionWithRemote("domovoi-ref-ssh-")
     const repositoryPath = join(scratch, "project")
     const markerPath = join(scratch, "transport-ran").replaceAll("\\", "/")
     await writeFile(join(workspace.path, "evil.sh"), `echo ran >> "${markerPath}"\nexit 1\n`)
-    await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", "ssh://git@example.invalid/remote.git"])
-    await execute("git", ["-C", repositoryPath, "config", "core.sshCommand", "sh ./evil.sh"])
-    await service.checkpoint(workspace.path, "with the script")
+    // An empty home of the test's own. A system config that sets an ssh
+    // command is the person's too, and the push rightly uses it instead. The
+    // probe drops every GIT_ variable itself, outside a repository, so a
+    // product that read an inherited one would fail here rather than skip.
+    const home = join(scratch, "home")
+    await mkdir(home)
+    const personCommand = await withHome(home, () => {
+      const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("GIT_")))
+      return execute("git", ["config", "--get-all", "core.sshCommand"], { cwd: home, env: environment })
+        .then(({ stdout }) => stdout.trim(), () => "")
+    })
+    if (personCommand !== "") skip("This machine's Git config sets core.sshCommand, so the push never falls back to plain ssh")
+    // A loopback port that closes each connection, so ssh fails on its first
+    // read without a name lookup. A connection shows plain ssh did run.
+    let connections = 0
+    const closing = createNetServer((socket) => {
+      connections += 1
+      socket.destroy()
+    })
+    await new Promise<void>((listening) => closing.listen(0, "127.0.0.1", listening))
+    try {
+      const { port } = closing.address() as AddressInfo
+      await execute("git", ["-C", repositoryPath, "remote", "set-url", "origin", `ssh://git@127.0.0.1:${port}/remote.git`])
+      await execute("git", ["-C", repositoryPath, "config", "core.sshCommand", "sh ./evil.sh"])
+      await service.checkpoint(workspace.path, "with the script")
 
-    await expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow()
+      await withHome(home, () => expect(service.pushSessionRef(workspace.path, "origin", "session-1")).rejects.toThrow())
+    } finally {
+      await new Promise<void>((closed) => closing.close(() => closed()))
+    }
 
+    expect(connections).toBeGreaterThan(0)
     await expect(readFile(markerPath, "utf8")).rejects.toThrow()
   })
 
@@ -3131,13 +3230,17 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     await writeFile(fake, [
       "import { execFileSync } from \"node:child_process\"",
       "import { writeFileSync } from \"node:fs\"",
-      "const config = (...args) => { try { return execFileSync(\"git\", [\"config\", ...args], { encoding: \"utf8\" }).trim() } catch { return \"\" } }",
-      `writeFileSync(${JSON.stringify(seen("storage"))}, config("--get", "lfs.storage"))`,
-      `writeFileSync(${JSON.stringify(seen("remote"))}, config("--get", "remote.origin.url"))`,
-      "for (const value of [",
-      "  ...[\"core.sshcommand\", \"core.askpass\", \"credential.helper\"].map((key) => config(\"--get\", key)),",
-      "  config(\"--get-urlmatch\", \"credential.helper\", \"https://lfs.example.test/repo\"),",
-      "]) if (value.includes(\"payload\")) execFileSync(\"sh\", [\"-c\", value])",
+      // One `git config --list` per run instead of a Git process per key: git
+      // starts this fake about twenty times in a test, and six reads a run
+      // added about eighty Git processes to each test. Every value of a key
+      // counts, not only the one `--get` would pick.
+      "const entries = (() => { try { return execFileSync(\"git\", [\"config\", \"--list\", \"-z\"], { encoding: \"utf8\" }).split(\"\\0\").filter(Boolean).map((entry) => { const at = entry.indexOf(\"\\n\"); return at === -1 ? [entry, \"\"] : [entry.slice(0, at), entry.slice(at + 1)] }) } catch { return [] } })()",
+      "const last = (key) => entries.filter(([name]) => name === key).at(-1)?.[1] ?? \"\"",
+      `writeFileSync(${JSON.stringify(seen("storage"))}, last("lfs.storage"))`,
+      `writeFileSync(${JSON.stringify(seen("remote"))}, last("remote.origin.url"))`,
+      "for (const [name, value] of entries) {",
+      "  if (/^(core\\.(sshcommand|askpass)|credential\\.(.+\\.)?helper)$/.test(name) && value.includes(\"payload\")) execFileSync(\"sh\", [\"-c\", value])",
+      "}",
       "if (process.argv[2] !== \"filter-process\") {",
       "  process.stdin.pipe(process.stdout)",
       "} else {",
@@ -3220,6 +3323,22 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
   // for git-lfs. The isolation these tests check is platform-independent code,
   // and macOS and Linux cover it (as ruling Q110 A did for the keeper tests).
   const fakeLfsRuns = process.platform !== "win32"
+
+  // The tests below pass when the fake runs nothing, so this control shows the
+  // fake does run the program each key names when that config is visible to it.
+  it.skipIf(!fakeLfsRuns).each([
+    ["core.sshCommand", "ssh"], ["core.askPass", "askpass"], ["credential.helper", "helper"],
+    ["credential.https://lfs.example.test.helper", "url-helper"],
+  ])("has the fake git-lfs run what the repository's %s names when it reads that config", async (key, label) => {
+    const { repositoryPath, payload, git, ran, withLfs } = await lfsRepository(`domovoi-lfs-control-${label}-`)
+    await git("config", key, `sh ${payload}`)
+
+    await withLfs(() => new Promise<void>((finished) => {
+      execFile("git-lfs", ["smudge", "--", "object.bin"], { cwd: repositoryPath }, () => finished()).stdin?.end()
+    }))
+
+    expect(await ran()).toBe(true)
+  })
 
   it.skipIf(!fakeLfsRuns).each([
     ["core.sshCommand", "ssh"], ["core.askPass", "askpass"], ["credential.helper", "helper"],
@@ -3805,6 +3924,12 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect((await run("-C", targetClone, "branch", "--list", "domovoi/*")).stdout.trim()).toBe("")
   })
 
+  // The two tests below start the fake git-lfs, a Node process, about twenty
+  // times and about 120 Git processes each: 1.5 to 1.7 s on an idle macOS
+  // runner (diagnostic run 38177732109), and up to 5 s within the full suite
+  // there, where four CI runs hit the 5 s timeout. Twice the worst seen.
+  const lfsOperationsTimeout = 10_000
+
   // The operations on a session worktree that already exists run every Git
   // command that can start a program through an isolated Git directory too
   // (ruling Q223 extended in P8 PR B): no repository config key starts
@@ -3835,7 +3960,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await ran()).toBe(false)
     expect(await readFile(join(workspace.path, "object.bin"), "utf8")).toBe("changed\n")
     expect(await readFile(join(repositoryPath, "object.bin"), "utf8")).toBe("object\n")
-  })
+  }, lfsOperationsTimeout)
 
   it.skipIf(!fakeLfsRuns)("runs no program the target repository's credential helper names when a bundle applies to a session it holds", async () => {
     const { scratch, repositoryPath, payload, git, ran, withLfs } = await lfsRepository("domovoi-ops-lfs-transfer-")
@@ -3862,7 +3987,7 @@ describe("GitWorkspaceService checkout under repository git filters", () => {
     expect(await readFile(join(updated.path, "object.bin"), "utf8")).toBe("second\n")
     expect((await run("-C", updated.path, "status", "--porcelain")).stdout).toBe("")
     expect(await ran()).toBe(false)
-  })
+  }, lfsOperationsTimeout)
 
   // The exact lines `git lfs install` writes are not a repository filter
   // (ruling Q207 A) for these operations either, as for a new session.
