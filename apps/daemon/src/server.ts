@@ -4031,10 +4031,10 @@ export class DomovoiDaemon {
     this.#notifyClients(this.#rpcClients, method, params)
   }
 
-  // Terminals are not on the pairing card: a phone or tablet credential, and a
-  // watching-only one, is never an audience for one unless it asked to watch
-  // it. Anything else that adds such a connection to an audience does not
-  // make it a reader.
+  // The pairing card grants a phone or tablet terminal output only as a
+  // reader: such a credential, and a watching-only one, is never an audience
+  // for a terminal unless it asked to watch it. Anything else that adds such a
+  // connection to an audience does not make it a reader.
   #mayWatchTerminals(socket: RpcOutboundSocket): boolean {
     const binding = this.#deviceCredentials.get(socket)?.verified?.binding
     if (binding?.kind !== "client") return true
