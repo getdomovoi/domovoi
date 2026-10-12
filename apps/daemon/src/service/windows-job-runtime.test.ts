@@ -148,7 +148,7 @@ it("retires a claimable lease with no launch record after a prelaunch failure", 
   lease.release()
   vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: f.record.loop.bootId, identity: f.record.loop })
   // Start the stop's budget after setup. On a stalled Windows runner the
-  // synchronous setup above once used all 2 s before the stop began.
+  // deadline once expired before the stop's first deadline check.
   const deadline = OperationDeadline.start(2000)
   try {
     expect(await stopWindowsSupervisor(f.path, deadline)).toMatchObject({ state: "stopped", attempts: [], reason: "deliberate-stop" })
