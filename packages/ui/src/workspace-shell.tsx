@@ -1833,7 +1833,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             clientKind={clientKind}
             clientAccess={fleetClientAccess}
             readOnly={watching}
-            onAuthorizeClient={(machineId, credential, signal) => accessSession.authorize(machineId, credential, signal)}
+            // Machines locks the controls below that a tab's credential cannot
+            // use; each handler refuses too, so nothing sends a request the
+            // daemon answers by closing the connection. fleet.clientRoute and
+            // terminal.create are not on phoneAndTabletRpcMethods.
+            onAuthorizeClient={(machineId, credential, signal) => clientKind === "phone" || clientKind === "tablet"
+              ? Promise.reject(new Error("A phone or tablet tab cannot authorize this client on another machine"))
+              : accessSession.authorize(machineId, credential, signal)}
             onRemoveClientAccess={removeClientAccess}
             currentMachineId={attached?.machineId ?? snapshot.machine.id}
             devicesMachineLabel={home.snapshot?.machine.name}
@@ -1846,8 +1852,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onRevokeDevice={revokeDevice}
             onRotateDevice={rotateDevice}
             onRenameDevice={renameDevice}
-            onPairMachine={pairMachine}
+            // fleet.enroll and fleet.forget need the daemon's own credential,
+            // and a browser tab holds only a device credential.
+            onPairMachine={clientKind === "desktop" ? pairMachine : () => Promise.reject(new Error("A browser tab cannot pair a machine"))}
             onForgetMachine={async (machineId: string) => {
+              if (clientKind !== "desktop") throw new Error("A browser tab cannot forget a machine")
               const result = await forgetMachine({ machineId })
               if (result.outcome === "forgotten") removeClientAccess(machineId)
               return result
@@ -1862,6 +1871,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               setSurface("workspace")
             } } : {})}
             onOpenMachineTerminal={(machineId: string) => {
+              if (clientKind === "phone" || clientKind === "tablet") return
               switchMachine(machineId)
               setSurface("workspace")
               openDockTab("terminal")
