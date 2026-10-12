@@ -44,6 +44,7 @@ export const notificationSchemas = {
 
 // Structured data attached to RPC errors.
 export const errorDataSchemas = [
+  "approvalCheckpointRefusalSchema",
   "deviceLabelMismatchSchema",
   "fleetSnapshotOverflowSchema",
   "projectCapRefusalSchema",
