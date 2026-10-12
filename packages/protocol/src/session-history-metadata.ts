@@ -21,14 +21,21 @@ export type CheckpointReason = z.infer<typeof checkpointReasonSchema>
 
 export const maximumMidTurnCheckpointPaths = 50
 export const maximumMidTurnCheckpointPathLength = 4_096
+// A full history page or retained thread holds up to 100 entries. Budget the
+// serialized array, including JSON escaping and UTF-8 expansion, per capture.
+export const maximumMidTurnCheckpointPathsBytes = 16 * 1_024
 
 // Matching consecutive staging passes is an observation, not an atomic
 // snapshot: a write that reverts between passes cannot be detected.
 export const midTurnCheckpointSchema = z.object({
-  providerTurnId: z.string().min(1).check(utf16MaxLength(1_024)),
+  // Copies sessionSummary.activeTurnId, whose nonempty strings have no cap.
+  providerTurnId: z.string().min(1),
   stability: z.enum(["matched", "unstable"]),
   // Do not trim: whitespace is legal in a Git path.
-  changedPaths: z.array(z.string().min(1).check(utf16MaxLength(maximumMidTurnCheckpointPathLength))).max(maximumMidTurnCheckpointPaths),
+  changedPaths: z.array(z.string().min(1).check(utf16MaxLength(maximumMidTurnCheckpointPathLength))).max(maximumMidTurnCheckpointPaths).refine(
+    (paths) => new TextEncoder().encode(JSON.stringify(paths)).byteLength <= maximumMidTurnCheckpointPathsBytes,
+    "Changed paths exceed their serialized byte budget",
+  ),
   // Total distinct observed paths, including those omitted by either bound.
   changedPathCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
 }).strict().refine((capture) => capture.changedPathCount >= capture.changedPaths.length, {

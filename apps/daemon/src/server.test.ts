@@ -22,6 +22,8 @@ import {
   devicePairingLimitErrorCode,
   machineIdSchema,
   maximumEffectiveClientThreadItems,
+  maximumSessionHistoryPageItems,
+  maximumRpcMessageBytes,
   maximumTerminalOutputChunkCharacters,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
@@ -331,6 +333,14 @@ afterEach(async () => {
 describe("DomovoiDaemon", () => {
   it.each([
     { name: "quiet", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
+    { name: "long active turn id", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
+    { name: "over serialized path budget", racing: false,
+      reportedPaths: Array.from({ length: 50 }, (_, index) => String(index).padStart(2, "0") + "x".repeat(4094)),
+      expectedPaths: Array.from({ length: 3 }, (_, index) => String(index).padStart(2, "0") + "x".repeat(4094)), total: 50 },
+    { name: "over UTF-8 path budget", racing: false,
+      reportedPaths: Array.from({ length: 50 }, (_, index) => String(index).padStart(2, "0") + "漢".repeat(4094)),
+      expectedPaths: ["00" + "漢".repeat(4094)], total: 50 },
+    { name: "over escaped path budget", racing: false, reportedPaths: ["\u0001".repeat(3000)], expectedPaths: [], total: 1 },
     { name: "snapshot unavailable", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
     { name: "racing", racing: true, reportedPaths: undefined, expectedPaths: ["file.txt"], total: 1 },
     { name: "over path count cap", racing: false,
@@ -356,7 +366,8 @@ describe("DomovoiDaemon", () => {
     snapshot.activeSessionId = session.id
     snapshot.approvals = []
     session.workspacePath = path
-    session.activeTurnId = "capture-turn"
+    const providerTurnId = name === "long active turn id" ? "turn-" + "😀".repeat(2_000) : "capture-turn"
+    session.activeTurnId = providerTurnId
     session.state = "active"
     const activateTurns = deferLiveTurns(snapshot)
     let pass = 0
@@ -405,13 +416,20 @@ describe("DomovoiDaemon", () => {
     const item = view.thread.find((item) => item.kind === "checkpoint" && item.label.endsWith(" · capture"))!
     expect(item).toMatchObject({
       kind: "checkpoint", reason: "manual",
-      midTurn: { providerTurnId: "capture-turn", stability: racing || reportedPaths ? "unstable" : "matched", changedPaths: expectedPaths, changedPathCount: total },
+      midTurn: { providerTurnId, stability: racing || reportedPaths ? "unstable" : "matched", changedPaths: expectedPaths, changedPathCount: total },
     })
     const persisted = workspaceSnapshotSchema.parse(save.mock.lastCall?.[0])
     expect(persisted.thread.find((saved) => saved.id === item.id)).toEqual(item)
-    expect(await rpc("session.history", { sessionId: session.id, categories: ["checkpoints"] })).toMatchObject({
+    const history = await rpc("session.history", { sessionId: session.id, categories: ["checkpoints"] })
+    expect(history).toMatchObject({
       result: { items: expect.arrayContaining([expect.objectContaining({ sourceId: item.id, midTurn: item.kind === "checkpoint" ? item.midTurn : undefined })]) },
     })
+    const page = sessionHistoryPageSchema.parse(history.result)
+    const entry = page.items.find((entry) => entry.sourceId === item.id)!
+    // Even a full page or retained thread of these captures leaves room in the
+    // RPC envelope. Count JSON escapes and UTF-8, not only String.length.
+    expect(Buffer.byteLength(JSON.stringify({ ...history, result: { ...page, items: Array(maximumSessionHistoryPageItems).fill(entry) } }))).toBeLessThan(maximumRpcMessageBytes)
+    expect(Buffer.byteLength(JSON.stringify({ ...result, result: { ...view, thread: Array(maximumEffectiveClientThreadItems).fill(item) } }))).toBeLessThan(maximumRpcMessageBytes)
     expect(checkpoint).not.toHaveBeenCalled()
     expect({ head: git("rev-parse", "HEAD"), branch: git("symbolic-ref", "HEAD"), index: await readFile(join(path, ".git", "index")) }).toEqual(before)
     expect(await rpc("checkpoint.restore", { sessionId: session.id, checkpointId: item.id, client: "desktop" })).toMatchObject({

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { approvalRequestSchema, threadItemSchema } from "./schema.js"
+import { approvalRequestSchema, sessionSummarySchema, threadItemSchema } from "./schema.js"
 import { sessionHistoryEntrySchema } from "./rpc.js"
 
 const checkpoint = { id: "checkpoint", sessionId: "session", kind: "checkpoint", label: "Words a person chose", commit: "a".repeat(40), createdAt: "2026-09-10T12:00:00.000Z" }
@@ -56,6 +56,30 @@ describe("checkpoint reasons", () => {
 describe("mid-turn checkpoints", () => {
   const matched = { providerTurnId: "provider-turn-1", stability: "matched", changedPaths: [], changedPathCount: 0 }
   const unstable = { providerTurnId: "provider-turn-1", stability: "unstable", changedPaths: ["src/a.ts", " "], changedPathCount: 2 }
+  it("accepts a long active turn id without narrowing the session identity contract", () => {
+    const providerTurnId = "turn-" + "😀".repeat(2_000)
+    expect(sessionSummarySchema.shape.activeTurnId.parse(providerTurnId)).toBe(providerTurnId)
+    const midTurn = { ...matched, providerTurnId }
+    expect(threadItemSchema.parse({ ...checkpoint, midTurn })).toEqual({ ...checkpoint, midTurn })
+    expect(sessionHistoryEntrySchema.parse({ ...history, midTurn })).toEqual({ ...history, midTurn })
+  })
+  const exactBudgetPaths = ["a".repeat(4095), "b".repeat(4092), "c".repeat(4092), "d".repeat(4092)]
+  it("accepts the exact 16 KiB serialized path budget", () => {
+    expect(new TextEncoder().encode(JSON.stringify(exactBudgetPaths)).byteLength).toBe(16 * 1024)
+    const midTurn = { ...unstable, changedPaths: exactBudgetPaths, changedPathCount: 4 }
+    expect(threadItemSchema.parse({ ...checkpoint, midTurn })).toEqual({ ...checkpoint, midTurn })
+    expect(sessionHistoryEntrySchema.parse({ ...history, midTurn })).toEqual({ ...history, midTurn })
+  })
+  it.each([
+    [...exactBudgetPaths.slice(0, 3), "d".repeat(4093)],
+    ["漢".repeat(4096), "語".repeat(4096)],
+    ["\u0001".repeat(3000)],
+  ].map((changedPaths) => ({ changedPaths })))("rejects path details over the serialized byte budget: %#", ({ changedPaths }) => {
+    expect(new TextEncoder().encode(JSON.stringify(changedPaths)).byteLength).toBeGreaterThan(16 * 1024)
+    const midTurn = { ...unstable, changedPaths, changedPathCount: changedPaths.length }
+    expect(threadItemSchema.safeParse({ ...checkpoint, midTurn }).success).toBe(false)
+    expect(sessionHistoryEntrySchema.safeParse({ ...history, midTurn }).success).toBe(false)
+  })
   it.each([matched, unstable,
     { ...unstable, changedPaths: Array.from({ length: 50 }, (_, index) => `file-${index}`), changedPathCount: 75 },
     { ...unstable, changedPaths: ["x".repeat(4096)], changedPathCount: 1 },
@@ -68,7 +92,6 @@ describe("mid-turn checkpoints", () => {
   })
   it.each([
     { ...matched, providerTurnId: "" },
-    { ...matched, providerTurnId: "x".repeat(1025) },
     { ...matched, stability: "atomic" },
     { ...matched, changedPaths: ["a.ts"] },
     { ...matched, changedPathCount: 1 },

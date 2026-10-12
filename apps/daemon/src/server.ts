@@ -11,6 +11,7 @@ import {
   maximumRpcMessageBytes,
   maximumMidTurnCheckpointPaths,
   maximumMidTurnCheckpointPathLength,
+  maximumMidTurnCheckpointPathsBytes,
   type ApprovalCheckpointRefusal,
   type SessionAttachmentRefusal,
   type SessionReviewRefusal,
@@ -10855,6 +10856,13 @@ export class DomovoiDaemon {
         const changedPaths = providerTurnId && checkpoint.matched !== true
           ? [...new Set(checkpoint.unstablePaths ?? [])].sort()
           : []
+        const displayedChangedPaths: string[] = []
+        for (const path of changedPaths) {
+          if (path.length === 0 || path.length > maximumMidTurnCheckpointPathLength) continue
+          if (displayedChangedPaths.length >= maximumMidTurnCheckpointPaths
+            || Buffer.byteLength(JSON.stringify([...displayedChangedPaths, path]), "utf8") > maximumMidTurnCheckpointPathsBytes) break
+          displayedChangedPaths.push(path)
+        }
         this.#snapshot.thread.push({
           id: `checkpoint-${randomUUID()}`,
           sessionId: currentSession.id,
@@ -10865,7 +10873,7 @@ export class DomovoiDaemon {
             midTurn: {
               providerTurnId,
               stability: checkpoint.matched === true ? "matched" as const : "unstable" as const,
-              changedPaths: changedPaths.filter((path) => path.length > 0 && path.length <= maximumMidTurnCheckpointPathLength).slice(0, maximumMidTurnCheckpointPaths),
+              changedPaths: displayedChangedPaths,
               changedPathCount: changedPaths.length,
             },
           } : {}),

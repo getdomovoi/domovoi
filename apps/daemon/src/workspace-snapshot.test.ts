@@ -74,6 +74,25 @@ async function observe(path: string) {
 }
 
 describe("GitWorkspaceService.snapshot", () => {
+  it("drops newly ignored untracked paths on a later pass but retains original tracked paths", async () => {
+    const { path } = await worktreeWithWork()
+    const before = await observe(path)
+    let pass = 0
+    const service = new GitWorkspaceService(join(path, "unused"), {
+      afterCheckpointStaging: async () => {
+        if (++pass === 1) await writeFile(join(path, ".gitignore"), "build/\nnew.txt\ntracked.txt\n")
+      },
+    })
+    const snapshot = await service.snapshot(path, "ignore rules changed")
+    expect(snapshot.matched).toBe(true)
+    expect(snapshot.changedFiles).not.toContain("new.txt")
+    await expect(gitOut(path, "show", `${snapshot.commit}:new.txt`)).rejects.toThrow()
+    expect(await gitOut(path, "show", `${snapshot.commit}:tracked.txt`)).toBe("agent edit\n")
+    expect(await gitOut(path, "show", `${snapshot.commit}:build/keep.js`)).toBe("tracked despite the ignore rule\n")
+    const after = await observe(path)
+    expect({ head: after.head, branch: after.branch, index: after.index }).toEqual({ head: before.head, branch: before.branch, index: before.index })
+  })
+
   it("keeps the last snapshot and names paths when a writer never settles", async () => {
     const { path } = await worktreeWithWork()
     const before = await observe(path)

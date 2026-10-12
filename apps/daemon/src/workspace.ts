@@ -1980,17 +1980,21 @@ export class GitWorkspaceService implements WorkspaceService {
         await copyFile(sharedIndex, temporaryIndex)
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-        if (head !== undefined) await isolated.run(["read-tree", head], { index: temporaryIndex, signal })
+        await isolated.run(["read-tree", head ?? "--empty"], { index: temporaryIndex, signal })
       }
-      // Every command that reads or writes the temporary index runs in the
+      const seedIndex = await readFile(temporaryIndex)
+      // Every Git command that reads or writes the temporary index runs in the
       // isolated directory: writing an index can run a clean filter.
       let tree = ""
       let matched = false
       const changedDuringCapture = new Set<string>()
       // Bound the observation window. A matching pair is not an atomic
       // filesystem snapshot: a write that reverts between passes is missed.
-      // Reuse the index so each pass sees deletions as well as additions.
+      // Reset the same temporary index to its original tracked set on retry.
+      // Otherwise an early untracked addition stays tracked when a later pass
+      // should exclude it under newly written ignore rules.
       for (let pass = 0; pass < 4; pass += 1) {
+        if (pass > 0) await writeFile(temporaryIndex, seedIndex)
         await isolated.run(["add", "--all"], { index: temporaryIndex, signal })
         await this.#afterCheckpointStaging?.()
         const nextTree = (await isolated.run(["write-tree"], { index: temporaryIndex, signal })).trim()
