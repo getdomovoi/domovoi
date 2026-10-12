@@ -186,6 +186,35 @@ describe("Machines in a browser tab", () => {
     expect(socket.readyState).toBe(socket.OPEN)
   })
 
+  // The machine menu the sessions drawer opens offers Pair a machine too, and
+  // that sends fleet.enroll on the same home connection.
+  async function openMachineMenu(clientKind: "desktop" | "web" | "phone" | "tablet") {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: /^Sessions \d/u }))
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    await user.click(screen.getByRole("button", { name: `Actions for ${active.title}` }))
+    await user.click(screen.getByRole("menuitem", { name: "Move to another machine" }))
+    await settle()
+    const menu = await screen.findByRole("menu")
+    return { socket, menu }
+  }
+
+  it.each(["web", "phone", "tablet"] as const)("a %s tab's machine menu offers no Pair a machine and sends no fleet.enroll", async (clientKind) => {
+    const { socket, menu } = await openMachineMenu(clientKind)
+    expect(menu.textContent).toContain("Machines")
+    expect(within(menu).queryByRole("menuitem", { name: "+ Pair a machine" })).toBeNull()
+    await settle()
+    expect(sentRequests(socket, "fleet.enroll")).toEqual([])
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  it("the desktop app's machine menu still offers Pair a machine", async () => {
+    const { menu } = await openMachineMenu("desktop")
+    expect(within(menu).getByRole("menuitem", { name: "+ Pair a machine" })).toBeTruthy()
+  })
+
   // The daemon routes a web credential and opens a shell for it.
   it("a web tab keeps Authorize this client and Terminal", async () => {
     const { snapshot } = await openMachines("web")
