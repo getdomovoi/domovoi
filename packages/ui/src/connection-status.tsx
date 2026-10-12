@@ -20,9 +20,10 @@ export type WorkspaceConnection = {
   // Machines), and a daemon on this machine that stops or dies closes its
   // socket at once, so the close is the last moment it was heard. Undefined
   // when this client does not know: it never saw the connection open, the
-  // machine changed, the machine is attached (possibly through a tunnel), or
-  // the daemon is reached over a network, where a link can die silently and
-  // the socket report the close minutes later.
+  // machine changed, the daemon is not this desktop app's own (an attached
+  // machine or a browser tab may sit behind a tunnel), or it is reached over
+  // a network, where a link can die silently and the socket report the close
+  // minutes later.
   lastHeardAt?: Date | undefined
 }
 
@@ -49,10 +50,11 @@ function loopback(endpoint: string | undefined): boolean {
 export function WorkspaceConnectionProvider({ children, machineId, endpoint, ...state }: Omit<WorkspaceConnection, "lastHeardAt"> & {
   // The machine the snapshot is from, by id: two machines can share a name.
   machineId: string | undefined
-  // The address this client dialled for its own daemon. Undefined for an
-  // attached machine: its route can be an SSH forward whose local end is a
-  // loopback address, and that tunnel closing says nothing about when the
-  // daemon at the far end was last heard.
+  // The address this client dialled for the daemon it runs on this machine
+  // (the desktop app's own). Undefined for an attached machine or a browser
+  // tab: either can reach another machine through an SSH forward whose local
+  // end is a loopback address, and that tunnel closing says nothing about
+  // when the daemon at the far end was last heard.
   endpoint: string | undefined
   children: ReactNode
 }) {

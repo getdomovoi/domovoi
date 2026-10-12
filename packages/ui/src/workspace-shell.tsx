@@ -1654,7 +1654,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       connectionError={connectionError}
       machineName={snapshot?.machine.name}
       machineId={snapshot?.machine.id}
-      endpoint={attached ? undefined : endpointUrl}
+      endpoint={localDaemon && !attached ? endpointUrl : undefined}
       onChangeCredential={attached ? undefined : onChangeCredential}
       onReconnect={reconnectDaemon}
     >

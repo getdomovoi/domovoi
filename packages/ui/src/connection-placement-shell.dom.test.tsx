@@ -32,7 +32,29 @@ it("draws the banner across the window when there is no thread column", async ()
   expect(screen.getByTestId("thread-skeleton").textContent).toBe("Not connected. Nothing has been read from 127.0.0.1:47831 yet.")
 })
 
+const lostBanners = () => screen.getAllByRole("status").filter((region) => region.textContent?.includes("Lost the daemon on macbook-pro-m3"))
+
+// The desktop app runs its own daemon on this machine, so the close of its
+// loopback socket is when the daemon was last heard.
 it("draws the banner at the top of the thread column once there is one", async () => {
+  render(<WorkspaceShell clientKind="desktop" localDaemon={{ title: "Running Domovoi inside this app", detail: "", owner: "app" }} />)
+  await act(async () => { completeHandshake(harness.socket(0)) })
+  await settle()
+
+  await act(async () => { harness.socket(0).drop() })
+  await settle()
+
+  const banners = lostBanners()
+  expect(banners).toHaveLength(1)
+  expect(banners[0]!.textContent).toContain("last heard")
+  const thread = banners[0]!.closest("main")
+  expect(thread).not.toBeNull()
+  expect(thread!.querySelector("[data-workspace-composer]")).not.toBeNull()
+})
+
+// A browser tab's loopback address can be the local end of an SSH forward to
+// another machine, so a tab says no time.
+it("says no time in a browser, whose loopback address may be a forward", async () => {
   render(<WorkspaceShell />)
   await act(async () => { completeHandshake(harness.socket(0)) })
   await settle()
@@ -40,10 +62,7 @@ it("draws the banner at the top of the thread column once there is one", async (
   await act(async () => { harness.socket(0).drop() })
   await settle()
 
-  const banners = screen.getAllByRole("status").filter((region) => region.textContent?.includes("Lost the daemon on macbook-pro-m3"))
+  const banners = lostBanners()
   expect(banners).toHaveLength(1)
-  expect(banners[0]!.textContent).toContain("last heard")
-  const thread = banners[0]!.closest("main")
-  expect(thread).not.toBeNull()
-  expect(thread!.querySelector("[data-workspace-composer]")).not.toBeNull()
+  expect(banners[0]!.textContent).not.toContain("last heard")
 })
