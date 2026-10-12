@@ -54,7 +54,7 @@
       ],
       "partial": {
         "since": "2026-10-12",
-        "reason": "the pane draws Domovoi as text, a Machines pill, New session and the groups; the design draws the 26px mark, a machine chip (dot and name) and a 44px search square. SL-7 (2026-10-12): with zero sessions the pane stays, so New session and Machines stay within reach, and the thread pane says Everything is idle with the phone's idle sentence (phone v2 frame 10; the tablet design draws no empty frame). Row metas are only waiting on you, running and quiet, with no age, review or failed state (the design draws review 7 files, failed 1h ago, running 12m, idle 2d), and failed and review sessions do not join NEEDS YOU. Q386 A (2026-10-02) ports the mark as an SVG component shared with the phone; search can be a client-side title filter (session.search is not on the phone and tablet allow-list)"
+        "reason": "the pane draws the 26px mark beside Domovoi (Q386 A, the SVG component shared with the phone), a Machines pill, New session and the groups; the design draws a machine chip (dot and name) in place of the pill, and a 44px search square. SL-7 (2026-10-12): with zero sessions the pane stays, so New session and Machines stay within reach, and the thread pane says Everything is idle with the phone's idle sentence (phone v2 frame 10; the tablet design draws no empty frame). Row metas are only waiting on you, running and quiet, with no age, review or failed state (the design draws review 7 files, failed 1h ago, running 12m, idle 2d), and failed and review sessions do not join NEEDS YOU. Search can be a client-side title filter (session.search is not on the phone and tablet allow-list)"
       }
     },
     {
