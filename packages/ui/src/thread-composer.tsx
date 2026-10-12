@@ -360,10 +360,15 @@ export function ThreadComposer({
         // the card. The dark variant on the shared Textarea has to be
         // turned off by name, or it paints a panel the design never draws.
         // Its md:text-sm is overridden the same way, at the same breakpoint,
-        // or the field renders at 14px on every desktop width.
+        // or the field renders at 14px on every desktop width. Offline the
+        // card carries the .5, so the field draws neither the shared
+        // disabled panel nor a second dimming.
         className={slashOpen
           ? "sr-only"
-          : "max-h-[172px] min-h-[22px] resize-none overflow-y-auto border-0 bg-transparent p-0 text-[13.5px] leading-[1.6] shadow-none [field-sizing:content] placeholder:text-faint focus-visible:ring-0 md:text-[13.5px] dark:bg-transparent"}
+          : cn(
+            "max-h-[172px] min-h-[22px] resize-none overflow-y-auto border-0 bg-transparent p-0 text-[13.5px] leading-[1.6] shadow-none [field-sizing:content] placeholder:text-faint focus-visible:ring-0 md:text-[13.5px] dark:bg-transparent",
+            !connected && "disabled:bg-transparent disabled:opacity-100 dark:disabled:bg-transparent",
+          )}
         placeholder={connected && freshProject
           ? `Say what you want done in ${freshProject}`
           : surface === "web" && connected

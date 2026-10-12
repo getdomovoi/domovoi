@@ -92,6 +92,9 @@ it("dims the composer and leaves its field and chips dead while offline", () => 
 
   expect(composerCard().className.split(" ")).toContain("opacity-50")
   expect(field().disabled).toBe(true)
+  // The card carries the .5. The shared Textarea's disabled panel and second
+  // dimming are not drawn: the design's field has no box of its own.
+  expect(field().className.split(" ")).toEqual(expect.arrayContaining(["disabled:bg-transparent", "disabled:opacity-100"]))
   expect(field().getAttribute("placeholder")).toBe("Cannot send, the daemon is not answering")
   const card = within(composerCard())
   for (const name of ["Attach", /^Mode: /u, "Expand prompt editor", "Send message"]) {
