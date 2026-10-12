@@ -669,8 +669,13 @@ export function Thread({
   // A turn that has not called a tool yet still has to say it is alive. Once
   // the turn has an activity row at the end of the thread, that row is the one
   // working, and a second row beside it would say the same thing twice.
+  //
+  // Working is what this client can see. With the daemon lost the last
+  // snapshot still names a running turn, but nobody can see it work: the
+  // header says stalled, and no row, caret or sweep claims Working.
   const lastRow = threadRows.at(-1)
-  const workingRow = Boolean(active?.activeTurnId) && lastRow?.kind !== "activity"
+  const turnSeenWorking = Boolean(active?.activeTurnId) && connected
+  const workingRow = turnSeenWorking && lastRow?.kind !== "activity"
   // The session carries no start time of its own, so the first thing said in it
   // is the honest one. An empty thread has not started yet and says nothing.
   const threadStartedAt = renderedThread[0]?.createdAt
@@ -902,7 +907,7 @@ export function Thread({
   for (const row of threadRows) if (row.kind === "activity" && row.turnId) lastActivityOfTurn.set(row.turnId, row.id)
   // The prose the running turn is writing: the last thing said in the thread,
   // when the agent said it after the latest message. It carries the caret.
-  const lastSaid = active.activeTurnId
+  const lastSaid = turnSeenWorking
     ? threadRows.findLast((row) => row.kind === "item" && (row.item.kind === "user" || row.item.kind === "assistant"))
     : undefined
   const workingProse = lastSaid?.kind === "item" && lastSaid.item.kind === "assistant" ? lastSaid.item.id : undefined
@@ -1350,13 +1355,16 @@ export function Thread({
               const touched = rowRunning
                 ? []
                 : toolFileEntries(row.items.flatMap((call) => call.files ?? []))
+              // The chips still wait while the daemon is lost; the row stops
+              // saying Working, because nobody can see it work.
+              const rowSeenWorking = rowRunning && connected
               return (
                 <Fragment key={row.id}>
                   <TurnActivity
                     items={row.items}
-                    running={rowRunning}
+                    running={rowSeenWorking}
                     timing={activityTiming({
-                      running: rowRunning,
+                      running: rowSeenWorking,
                       turn: row.turnId && lastActivityOfTurn.get(row.turnId) === row.id ? turnsById.get(row.turnId) : undefined,
                     })}
                   />

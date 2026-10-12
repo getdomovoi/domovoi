@@ -64,6 +64,13 @@ describe("assistant prose", () => {
     expect(prose("The handler processes the event first.").hasAttribute("data-working")).toBe(false)
   })
 
+  // With the daemon lost nobody can see the turn working; the header says
+  // stalled, and the prose does not keep claiming it.
+  it("drops the caret while the daemon is lost", () => {
+    render(<Thread snapshot={conversation(true)} connected={false} queued={undefined} {...handlers} />)
+    expect(prose("The handler processes the event first.").hasAttribute("data-working")).toBe(false)
+  })
+
   it("does not put the caret on prose from before the running turn's message", () => {
     const extra: ThreadItem[] = [{ id: "user-2", sessionId: demoWorkspace.activeSessionId!, kind: "user", body: "Now the tests.", createdAt: "2026-09-08T09:01:00.000Z" }]
     render(<Thread snapshot={conversation(true, extra)} connected queued={undefined} {...handlers} />)

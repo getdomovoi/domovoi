@@ -1,5 +1,6 @@
 import { demoWorkspace, type ThreadItem, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { cleanup, render, screen } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { Thread } from "./thread"
@@ -62,4 +63,22 @@ it("keeps the count when the snapshot carries no timing", () => {
   render(<Thread snapshot={snapshot} connected queued={undefined} {...handlers} />)
   expect(screen.getByRole("button", { name: /^2 tool calls/u })).toBeTruthy()
   expect(screen.queryByRole("button", { name: /Worked for/u })).toBeNull()
+})
+
+// The design's offline state: a turn this client can no longer see is not
+// Working, and a call it last saw running has no result anyone saw.
+it("does not say Working while the daemon is lost", async () => {
+  const snapshot = finishedTurn({ status: "pending" })
+  delete snapshot.turns![0]!.completedAt
+  const session = snapshot.sessions.find((candidate) => candidate.id === snapshot.activeSessionId)!
+  session.activeTurnId = "provider-turn"
+  const last = snapshot.thread.at(-1) as Extract<ThreadItem, { kind: "tool" }>
+  last.status = "running"
+  render(<Thread snapshot={snapshot} connected={false} queued={undefined} {...handlers} />)
+  expect(screen.queryByRole("button", { name: /^Working/u })).toBeNull()
+  expect(document.querySelectorAll(".sweep-bar")).toHaveLength(0)
+  const row = screen.getByRole("button", { name: /^2 tool calls/u })
+  await userEvent.setup().click(row)
+  const dot = screen.getByText("pnpm build").closest("li")!.querySelector("[data-status-dot]")!
+  expect(dot.className.split(/\s+/u)).toContain("bg-faint")
 })
