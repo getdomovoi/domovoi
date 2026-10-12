@@ -705,10 +705,13 @@ export function ArtifactDock({
     setAnnotationError("")
   }
   // The foot under the page, in the dock and in fullscreen alike (D22). It
-  // shows whenever there is a choice of basis: variants on screen, or other
-  // renders in the session (a lone render can be the basis too). The state
-  // line says what the next send carries: this variant, another, or none.
-  const basisChoiceShown = preview !== undefined && (previewVariants.length > 1 || renderedPreviews.length > 1)
+  // shows whenever there is a choice of basis: other variants in the group
+  // (on any page of it), or other renders in the session (a lone render can
+  // be the basis too). A chosen basis rides every send, so its foot stays
+  // whatever else there is. The state line says what the next send carries:
+  // this variant, another, or none.
+  const basisChoiceShown = preview !== undefined
+    && (previewWindow.total > 1 || renderedPreviews.length > 1 || buildBasis !== undefined)
   const viewingBasis = preview !== undefined && preview.id === buildBasis?.id
   const variantState = !buildBasis
     ? PreviewVariantCopy.noneChosen(previewWindow.total)
@@ -717,7 +720,7 @@ export function ArtifactDock({
       : PreviewVariantCopy.buildsOn(`${buildBasis.variant?.label ?? buildBasis.title}${buildBasisElsewhere ? ` in ${previewRenderName(buildBasis)}` : ""}`)
   const variantFoot = preview && basisChoiceShown ? (
     <div className="flex min-h-[46px] flex-none flex-wrap items-center gap-3 border-t px-[13px] py-2">
-      {previewVariants.length > 1 || previewWindow.total > previewVariants.length ? (
+      {previewWindow.total > 1 ? (
         <PreviewVariantChips
           variants={previewVariants}
           selectedArtifactId={preview.id}

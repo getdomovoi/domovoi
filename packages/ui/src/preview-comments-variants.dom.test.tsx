@@ -188,6 +188,32 @@ it("pages the chips of a group over the variant budget", async () => {
   expect(chips()).toHaveLength(24)
 })
 
+// Review R1.1: a last page of one chip (25 variants) still draws the foot,
+// with the way back to the earlier pages.
+it("keeps the foot on a last page of one variant", async () => {
+  const user = userEvent.setup()
+  const many = Array.from({ length: 25 }, (_, index) => variant(`v${index + 1}`, index, index === 24 ? 2 : 1))
+  renderDock({ ...snapshot, artifacts: many })
+
+  expect(within(screen.getByRole("radiogroup", { name: "Design variants" })).getAllByRole("radio")).toHaveLength(1)
+  expect(screen.getByText("25-25 of 25")).toBeTruthy()
+  expect(screen.getByText("none chosen, all 25 stay alive")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Earlier variants" }))
+  expect(within(screen.getByRole("radiogroup", { name: "Design variants" })).getAllByRole("radio")).toHaveLength(24)
+})
+
+// A chosen basis rides every send, so its state and Unpick stay on screen even
+// when the session has nothing else to choose between.
+it("keeps a chosen lone render's state and Unpick", async () => {
+  const user = userEvent.setup()
+  const lone: Artifact = { id: "runbook", sessionId, title: "Runbook", type: "preview", revision: 1, mimeType: "text/html", path: "previews/runbook.html" }
+  const { onBuildBasisChange } = renderDock({ ...snapshot, artifacts: [lone] }, "runbook")
+
+  expect(screen.getByText("the agent builds on this one")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Unpick" }))
+  expect(onBuildBasisChange).toHaveBeenLastCalledWith(undefined)
+})
+
 it("drafts a picked element inline under the page and posts it", async () => {
   const user = userEvent.setup()
   const { authorize, onCreateAnnotation } = renderDock()
