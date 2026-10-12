@@ -59,8 +59,12 @@ function readingFrom(from: string): string {
 // doing about it. `from` is the machine being read, or the address dialled.
 export function ThreadSkeleton({ from }: { from: string }) {
   const connection = useWorkspaceConnection()
+  // A failed attempt schedules the next one (reconnecting) or, refused, says
+  // why (authenticationRequired). The shell's connectionError is not read: it
+  // outlives a change of target, and a failed manual reconnect also schedules
+  // the next attempt.
   const failing = connection !== null && !connection.connected
-    && (connection.reconnecting || connection.connectionError !== "" || connection.authenticationRequired !== null)
+    && (connection.reconnecting || connection.authenticationRequired !== null)
   // The failure belongs to the target that failed: a new target reads
   // afresh. The shell resets its connection state in an effect after the
   // target changes, so a failure that arrives with a new target is the old

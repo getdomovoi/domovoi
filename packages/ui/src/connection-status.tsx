@@ -50,8 +50,8 @@ function loopback(endpoint: string | undefined): boolean {
 export function WorkspaceConnectionProvider({ children, machineId, endpoint, ...state }: Omit<WorkspaceConnection, "lastHeardAt"> & {
   // The machine the snapshot is from, by id: two machines can share a name.
   machineId: string | undefined
-  // The address this client dialled for the daemon it runs on this machine
-  // (the desktop app's own). Undefined for an attached machine or a browser
+  // The address the desktop app dialled for the daemon on this machine (its
+  // own, or the installed service). Undefined for an attached machine or a browser
   // tab: either can reach another machine through an SSH forward whose local
   // end is a loopback address, and that tunnel closing says nothing about
   // when the daemon at the far end was last heard.

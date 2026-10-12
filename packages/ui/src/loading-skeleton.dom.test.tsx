@@ -114,11 +114,24 @@ it("reads afresh when the target changes", () => {
   expect(screen.getByRole("status").textContent).toBe("Not connected. Nothing has been read from machine-b yet.")
 })
 
-it("stops for a refused or failed connection too", () => {
+it("stops for a refused connection too", () => {
   render(<Connection authenticationRequired="authentication failed"><ThreadSkeleton from="ws://127.0.0.1:47831/rpc" /></Connection>)
   expect(screen.getByRole("status").textContent).toBe("Not connected. Nothing has been read from 127.0.0.1:47831 yet.")
-  cleanup()
+})
 
-  render(<Connection connectionError="Cannot reach ws://127.0.0.1:47831/rpc"><ThreadSkeleton from="ws://127.0.0.1:47831/rpc" /></Connection>)
-  expect(screen.getByRole("status").textContent).toBe("Not connected. Nothing has been read from 127.0.0.1:47831 yet.")
+// The shell keeps a failed manual reconnect's message until a connection
+// succeeds, across a change of target. It is not the new target's failure, and
+// it must not stop the new target from noticing its own.
+it("does not let a kept reconnect error hide the new target's own failure", () => {
+  const { rerender } = render(
+    <Connection reconnecting connectionError="Cannot reach machine-a"><ThreadSkeleton from="machine-a" /></Connection>,
+  )
+  expect(screen.getByRole("status").textContent).toBe("Not connected. Nothing has been read from machine-a yet.")
+
+  rerender(<Connection reconnecting connectionError="Cannot reach machine-a"><ThreadSkeleton from="machine-b" /></Connection>)
+  rerender(<Connection connectionError="Cannot reach machine-a"><ThreadSkeleton from="machine-b" /></Connection>)
+  expect(screen.getByRole("status").textContent).toBe("reading the thread from machine-b")
+
+  rerender(<Connection reconnecting connectionError="Cannot reach machine-a"><ThreadSkeleton from="machine-b" /></Connection>)
+  expect(screen.getByRole("status").textContent).toBe("Not connected. Nothing has been read from machine-b yet.")
 })
