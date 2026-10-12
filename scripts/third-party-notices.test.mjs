@@ -5,7 +5,9 @@ import { join } from "node:path"
 import test from "node:test"
 import { fileURLToPath } from "node:url"
 
+import * as notices from "./third-party-notices.mjs"
 import { collectDesktopNotices, readNoticeTexts, renderThirdPartyNotices } from "./third-party-notices.mjs"
+import * as bundles from "./renderer-bundle-packages.mjs"
 import { cssImportSpecifiers, rendererBundlePackages } from "./renderer-bundle-packages.mjs"
 
 const root = fileURLToPath(new URL("../", import.meta.url))
@@ -21,6 +23,28 @@ test("renders each shipped package with its declared license and the files it pu
   assert.match(text, /^License: Apache-2\.0$/mu)
   assert.match(text, /--- LICENSE ---\nApache License text/u)
   assert.match(text, /--- NOTICE ---\nFixture notice/u)
+})
+
+// The desktop file is unchanged by the web app's notices (S3.2 slice 6): the
+// heading is the one every desktop build has carried, line for line.
+test("the desktop notices keep their heading, and the web app's name the bundle instead", () => {
+  const entry = { name: "fixture", version: "1.0.0", license: "MIT", texts: [{ file: "LICENSE", text: "MIT text" }] }
+  const section = ["=".repeat(72), "fixture@1.0.0", "License: MIT", "", "--- LICENSE ---\nMIT text"].join("\n")
+  assert.equal(renderThirdPartyNotices([entry]), [
+    "Third-party software in Domovoi Desktop",
+    "",
+    "Each section names a package this build contains, its version, the license its manifest",
+    "declares, and the license and notice files the package publishes. Chromium's notices are",
+    "in LICENSES.chromium.html and Electron's license is in LICENSE.electron.txt.",
+    "",
+    section,
+    "",
+  ].join("\n"))
+  assert.ok(Array.isArray(notices.webNoticeHeading), "the web app has its own heading")
+  const web = renderThirdPartyNotices([entry], notices.webNoticeHeading)
+  assert.equal(web, [...notices.webNoticeHeading, "", section, ""].join("\n"))
+  assert.match(web, /^Third-party software in the Domovoi web app$/mu)
+  assert.doesNotMatch(web, /Chromium|Electron/u)
 })
 
 test("says so when a package publishes no license file instead of leaving it out", () => {
@@ -73,4 +97,29 @@ test("every package the renderer bundle contains has a desktop notice", { timeou
   }
   const noticed = new Set((await collectDesktopNotices(root)).map((entry) => entry.name))
   assert.deepEqual(bundled.filter((name) => !noticed.has(name)), [], "renderer packages without a notice")
+})
+
+// The web app release tarball (S3.2 slice 6) carries its own notices: the
+// web app's, the UI's and the protocol's production graphs and the CSS
+// Tailwind inlines, never the desktop's runtime or Electron.
+test("the web app notices carry the fonts' license and nothing only the desktop ships", { timeout: 60_000 }, async () => {
+  assert.equal(typeof notices.collectWebNotices, "function")
+  const entries = await notices.collectWebNotices(root)
+  const byName = new Map(entries.map((entry) => [entry.name, entry]))
+  for (const font of ["@fontsource-variable/instrument-sans", "@fontsource-variable/jetbrains-mono"]) {
+    assert.match(byName.get(font)?.texts.map((entry) => entry.text).join("\n") ?? "", /SIL Open Font License/u, `${font} carries its OFL text`)
+  }
+  for (const name of ["react", "react-dom", "tailwindcss", "shadcn", "zod"]) assert.ok(byName.has(name), `${name} is named`)
+  for (const name of ["electron", "@anthropic-ai/claude-agent-sdk", "node-pty"]) assert.equal(byName.has(name), false, `${name} is not in the web app`)
+  assert.deepEqual(entries.filter((entry) => entry.name.startsWith("@getdomovoi/")), [], "first-party packages are not third-party")
+})
+
+test("every package the web app bundle contains has a web app notice", { timeout: 120_000 }, async () => {
+  assert.equal(typeof bundles.webBundlePackages, "function")
+  const bundled = await bundles.webBundlePackages(root)
+  for (const name of ["@fontsource-variable/instrument-sans", "react", "react-dom", "tailwindcss"]) {
+    assert.ok(bundled.includes(name), `the web app bundle contains ${name}`)
+  }
+  const noticed = new Set((await notices.collectWebNotices(root)).map((entry) => entry.name))
+  assert.deepEqual(bundled.filter((name) => !noticed.has(name)), [], "web app packages without a notice")
 })
