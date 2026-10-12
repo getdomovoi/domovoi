@@ -1185,7 +1185,11 @@ export function AnnotationComments({
               ?? (annotation.anchor.textQuote ? undefined : "Visual selection")
             return (
               <Card key={annotation.id} size="sm" role="article" className={cn("gap-0 py-0", anchorState === "unavailable" && "border-danger-border")}>
-                <div className="flex items-center gap-[9px] border-b px-3 py-[9px]">
+                {/* The list sits in a scroll area whose content box grows to
+                    its content's min-content width, so nothing here may be
+                    nowrap: a long selector breaks and clamps instead of
+                    pushing the chips and actions out of the column. */}
+                <div className="flex flex-wrap items-center gap-[9px] border-b px-3 py-[9px]">
                   <span
                     data-anchor={anchorState}
                     className={cn(
@@ -1195,13 +1199,13 @@ export function AnnotationComments({
                   >
                     {index + 1}
                   </span>
-                  <span className="min-w-0 flex-1 truncate font-machine text-mono-xs text-strong">{anchorLabel}</span>
+                  <span title={anchorLabel} className="line-clamp-2 min-w-0 flex-1 basis-24 font-machine text-mono-xs break-all text-strong">{anchorLabel}</span>
                   {anchorState === "holds" ? <Badge variant="secondary">anchor holds</Badge> : null}
                   {anchorState === "unavailable" ? <Badge variant="destructive">anchor unavailable</Badge> : null}
                   <Badge variant={annotation.status === "open" ? "warning" : "success"}>{annotation.status}</Badge>
                 </div>
                 {annotation.anchor.textQuote ? (
-                  <span className="block border-l-2 border-primary bg-primary/10 px-[11px] py-[7px] font-machine text-mono-xs leading-normal break-words text-strong">
+                  <span className="block border-l-2 border-primary bg-primary/10 px-[11px] py-[7px] font-machine text-mono-xs leading-normal [overflow-wrap:anywhere] text-strong">
                     {annotation.anchor.textQuote}
                   </span>
                 ) : null}
