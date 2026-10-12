@@ -1,0 +1,5 @@
+---
+"@getdomovoi/daemon": minor
+---
+
+The daemon serves the web app. At startup it loads the bundle once from `DOMOVOI_WEB_DIR` (`webDirectory` in the service configuration file), or by default from the user's data folder (`~/Library/Application Support/Domovoi/web` on macOS, `$XDG_DATA_HOME/domovoi/web` or `~/.local/share/domovoi/web` on Linux, `%LOCALAPPDATA%\Domovoi\web` on Windows), and every listener it opens, loopback and the tailnet listener, serves it at `/` to that listener's own Host names. A missing, refused or incompatible bundle leaves a 503 page at `/` that names no path, a startup line that says why, and for a refused bundle a daemon log entry naming the check and the file. Each listener admits to `/rpc` the configured origins plus only its own pages: the literal loopback origins while a bundle is loaded, and `https://<name>:<port>` for its certificate names and bound address on TLS. The same-host rule on a TLS listener now admits only an `https` origin, so a same-authority `http` page is refused. A preview's `frame-ancestors` names the configured origins and the pages of the listener that served it.

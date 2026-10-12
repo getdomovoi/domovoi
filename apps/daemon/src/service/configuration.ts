@@ -38,6 +38,7 @@ const configurationSchema = z.object({
   sshTunnels: configuredSshTunnelsSchema.optional(),
   allowedOrigins: z.array(z.string()).optional(),
   webAppUrl: z.unknown().optional(),
+  webDirectory: pathSchema.optional(),
   allowRemoteTransport: z.boolean(),
 }).strict()
 
@@ -88,6 +89,7 @@ export function serviceEnvironment(config: ServiceConfiguration): DaemonEnvironm
     ...(config.sshTunnels !== undefined ? { DOMOVOI_SSH_TUNNELS: JSON.stringify(config.sshTunnels) } : {}),
     ...(config.allowedOrigins !== undefined ? { DOMOVOI_ALLOWED_ORIGINS: config.allowedOrigins.join(",") } : {}),
     ...(config.webAppUrl !== undefined ? { DOMOVOI_WEB_APP_URL: config.webAppUrl } : {}),
+    ...(config.webDirectory !== undefined ? { DOMOVOI_WEB_DIR: config.webDirectory } : {}),
   }
 }
 
@@ -218,7 +220,7 @@ export function serviceProfileMismatch(input: { environment: NodeJS.ProcessEnv; 
 export function parseServiceConfiguration(text: string): ServiceConfiguration {
   try {
     if (Buffer.byteLength(text, "utf8") > maximumConfigurationBytes) throw new Error("oversized")
-    const { tls, tailnetListener, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, serviceRuntime, lingerEnabledByDomovoi, ...required } = configurationSchema.parse(JSON.parse(text))
+    const { tls, tailnetListener, advertiseHost, tailnetHost, sshTunnels, allowedOrigins, webAppUrl: savedWebAppUrl, webDirectory, registrationId, relayIdentityPublicKey, relayCredentialFile, profileDirectory, wsl, serviceRuntime, lingerEnabledByDomovoi, ...required } = configurationSchema.parse(JSON.parse(text))
     const webAppUrl = webAppUrlSetting(savedWebAppUrl)
     const config: ServiceConfiguration = {
       ...required,
@@ -236,6 +238,7 @@ export function parseServiceConfiguration(text: string): ServiceConfiguration {
       ...(sshTunnels !== undefined ? { sshTunnels } : {}),
       ...(allowedOrigins !== undefined ? { allowedOrigins } : {}),
       ...(webAppUrl !== undefined ? { webAppUrl } : {}),
+      ...(webDirectory !== undefined ? { webDirectory } : {}),
     }
     // Reuse the production listener and origin checks, including required TLS.
     parseDaemonEnvironment(serviceEnvironment(config), config.homeDirectory)
