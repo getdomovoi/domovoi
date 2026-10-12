@@ -51,3 +51,27 @@ describe("checkpoint reasons", () => {
   })
 })
 
+
+
+describe("mid-turn checkpoints", () => {
+  const matched = { providerTurnId: "provider-turn-1", stability: "matched", changedPaths: [] }
+  const unstable = { providerTurnId: "provider-turn-1", stability: "unstable", changedPaths: ["src/a.ts", " "] }
+  it.each([matched, unstable])("preserves capture facts in thread and history: %j", (midTurn) => {
+    expect(threadItemSchema.parse({ ...checkpoint, midTurn })).toEqual({ ...checkpoint, midTurn })
+    expect(sessionHistoryEntrySchema.parse({ ...history, midTurn })).toEqual({ ...history, midTurn })
+  })
+  it.each([
+    { ...matched, providerTurnId: "" },
+    { ...matched, providerTurnId: "x".repeat(1025) },
+    { ...matched, stability: "atomic" },
+    { ...matched, changedPaths: ["a.ts"] },
+    { ...unstable, changedPaths: [] },
+    { ...unstable, changedPaths: [""] },
+    { ...unstable, changedPaths: ["x".repeat(4097)] },
+    { ...unstable, changedPaths: [1] },
+    { ...matched, unexpected: true },
+  ])("rejects invalid capture facts in thread and history: %j", (midTurn) => {
+    expect(threadItemSchema.safeParse({ ...checkpoint, midTurn }).success).toBe(false)
+    expect(sessionHistoryEntrySchema.safeParse({ ...history, midTurn }).success).toBe(false)
+  })
+})

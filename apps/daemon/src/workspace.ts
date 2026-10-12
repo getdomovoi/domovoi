@@ -67,6 +67,8 @@ export type SessionBranchFacts = {
 export type Checkpoint = {
   commit: string
   changedFiles: string[]
+  // snapshot only: absent when two consecutive staging passes matched.
+  unstablePaths?: string[]
 }
 
 export type RestoreResult = {
@@ -1980,8 +1982,26 @@ export class GitWorkspaceService implements WorkspaceService {
       }
       // Every command that reads or writes the temporary index runs in the
       // isolated directory: writing an index can run a clean filter.
-      await isolated.run(["add", "--all"], { index: temporaryIndex, signal })
-      await this.#afterCheckpointStaging?.()
+      let tree = ""
+      let matched = false
+      const changedDuringCapture = new Set<string>()
+      // Bound the observation window. A matching pair is not an atomic
+      // filesystem snapshot: a write that reverts between passes is missed.
+      // Reuse the index so each pass sees deletions as well as additions.
+      for (let pass = 0; pass < 4; pass += 1) {
+        await isolated.run(["add", "--all"], { index: temporaryIndex, signal })
+        await this.#afterCheckpointStaging?.()
+        const nextTree = (await isolated.run(["write-tree"], { index: temporaryIndex, signal })).trim()
+        if (tree === nextTree) {
+          matched = true
+          break
+        }
+        if (tree) {
+          const differences = await isolated.run(["diff-tree", "--no-commit-id", "--no-renames", "--name-only", "-r", "-z", tree, nextTree, "--"], { signal })
+          for (const path of differences.split("\0").filter(Boolean)) changedDuringCapture.add(path)
+        }
+        tree = nextTree
+      }
       // Against the HEAD captured above, not whatever HEAD is now: the agent may
       // commit meanwhile, and the snapshot's parent is the captured one.
       const names = await isolated.run(head === undefined
@@ -1990,7 +2010,6 @@ export class GitWorkspaceService implements WorkspaceService {
       const changedFiles = names.split("\0").filter(Boolean)
       let commit = head
       if (commit === undefined || changedFiles.length > 0) {
-        const tree = (await isolated.run(["write-tree"], { index: temporaryIndex, signal })).trim()
         commit = await git(worktreePath, [
           "-c",
           "user.name=Domovoi",
@@ -2007,7 +2026,7 @@ export class GitWorkspaceService implements WorkspaceService {
         ], signal)
       }
       await git(worktreePath, ["update-ref", checkpointRef(commit), commit], signal)
-      return { commit, changedFiles }
+      return { commit, changedFiles, ...(!matched ? { unstablePaths: [...changedDuringCapture].sort() } : {}) }
     } catch (error) {
       if (isolated.indexLocksLeft.includes(`${temporaryIndex}.lock`) && error instanceof Error) {
         error.message = `${error.message} Domovoi left the temporary index ${temporaryIndex} in place with it.`

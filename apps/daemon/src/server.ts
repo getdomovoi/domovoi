@@ -1231,6 +1231,7 @@ export function sessionHistoryEntries(
         category: "checkpoints",
         label: item.label,
         ...(item.reason ? { reason: item.reason } : {}),
+        ...(item.midTurn ? { midTurn: item.midTurn } : {}),
         ...(item.commit ? { commit: item.commit } : {}),
       })
     } else if (item.kind === "user") {
@@ -10816,18 +10817,25 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session has no worktree")
           return
         }
-        if (session.activeTurnId) {
+        // Capture before awaiting: the turn may finish while files are staged.
+        const providerTurnId = session.activeTurnId
+        const turnLink = providerTurnId && session.providerThreadId
+          ? this.#turnLink(session.id, session.runtime.provider, session.providerThreadId, providerTurnId)
+          : {}
+        if (providerTurnId && !this.#workspaceService.snapshot) {
           this.#error(
             socket,
             request.id,
             invalidParams,
-            "Stop the active turn before creating a checkpoint",
+            "Mid-turn snapshots are unavailable",
           )
           return
         }
         const label = params.label ?? "manual"
         const checkpoint = await this.#withAbortTimeout(
-          (signal) => this.#workspaceService.checkpoint(session.workspacePath!, label, signal),
+          (signal) => providerTurnId
+            ? this.#workspaceService.snapshot!(session.workspacePath!, label, signal)
+            : this.#workspaceService.checkpoint(session.workspacePath!, label, signal),
           this.#agentTimeoutMs,
           "Checkpoint timed out",
         )
@@ -10845,6 +10853,14 @@ export class DomovoiDaemon {
           sessionId: currentSession.id,
           kind: "checkpoint",
           reason: "manual",
+          ...(providerTurnId ? {
+            ...turnLink,
+            midTurn: {
+              providerTurnId,
+              stability: checkpoint.unstablePaths?.length ? "unstable" as const : "matched" as const,
+              changedPaths: checkpoint.unstablePaths ?? [],
+            },
+          } : {}),
           label: `${checkpoint.commit.slice(0, 8)} · ${label}`,
           commit: checkpoint.commit,
           createdAt: currentSession.updatedAt,

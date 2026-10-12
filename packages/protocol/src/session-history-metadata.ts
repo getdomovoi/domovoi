@@ -1,4 +1,5 @@
 import { z } from "zod"
+import { utf16MaxLength } from "./validation.js"
 
 import { commitShaSchema, machineIdSchema, transferIdSchema } from "./identifiers.js"
 import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
@@ -17,6 +18,20 @@ export const checkpointReasonSchema = z.enum([
   "before-approved-command",
 ])
 export type CheckpointReason = z.infer<typeof checkpointReasonSchema>
+
+// Matching consecutive staging passes is an observation, not an atomic
+// snapshot: a write that reverts between passes cannot be detected.
+export const midTurnCheckpointSchema = z.object({
+  providerTurnId: z.string().min(1).check(utf16MaxLength(1_024)),
+  stability: z.enum(["matched", "unstable"]),
+  // Do not trim: whitespace is legal in a Git path.
+  changedPaths: z.array(z.string().min(1).check(utf16MaxLength(4_096))).max(100_000),
+}).strict().refine((capture) => (capture.stability === "matched") === (capture.changedPaths.length === 0), {
+  path: ["changedPaths"],
+  message: "Unstable captures name changed paths; matching captures have none",
+})
+export type MidTurnCheckpoint = z.infer<typeof midTurnCheckpointSchema>
+
 
 // Wall-clock time from the approval request to its resolution. This is consent
 // latency, never the execution duration of the approved operation.

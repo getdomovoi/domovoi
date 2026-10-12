@@ -1,6 +1,6 @@
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { waitForDaemon } from "./test-wait-for.js"
-import { access, chmod, link, mkdir, mkdtemp, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { access, readFile, chmod, link, mkdir, mkdtemp, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { execFileSync } from "node:child_process"
@@ -86,6 +86,7 @@ import {
 } from "./skill-signing.js"
 import { FileSkillCatalog, SkillNotFoundError, type SkillCatalog } from "./skills.js"
 import {
+  GitWorkspaceService,
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
   RepositoryFilterRefusedError,
@@ -328,6 +329,72 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it.each([false, true])("takes a real mid-turn snapshot without moving HEAD or the shared index (racing=%s)", async (racing) => {
+    const path = await mkdtemp(join(tmpdir(), "domovoi-mid-turn-"))
+    scratchDirectories.push(path)
+    const git = (...args: string[]) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8" }).trim()
+    git("init", "--initial-branch=main")
+    await writeFile(join(path, "file.txt"), "base\n")
+    git("add", "--all")
+    git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial")
+    await writeFile(join(path, "file.txt"), "staged\n")
+    git("add", "--all")
+    await writeFile(join(path, "file.txt"), "working\n")
+    const before = { head: git("rev-parse", "HEAD"), branch: git("symbolic-ref", "HEAD"), index: await readFile(join(path, ".git", "index")) }
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    snapshot.sessions = [session]
+    snapshot.activeSessionId = session.id
+    snapshot.approvals = []
+    session.workspacePath = path
+    session.activeTurnId = "capture-turn"
+    session.state = "active"
+    const activateTurns = deferLiveTurns(snapshot)
+    let pass = 0
+    const workspaceService = new GitWorkspaceService(join(path, "unused"), {
+      afterCheckpointStaging: async () => {
+        pass += 1
+        if (racing) await writeFile(join(path, "file.txt"), `racing ${pass}\n`)
+      },
+    })
+    const checkpoint = vi.spyOn(workspaceService, "checkpoint")
+    const daemon = new DomovoiDaemon({
+      port: 0, agents: {}, workspaceService,
+      store: { load: () => snapshot, save: vi.fn(), close: vi.fn() },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    activateTurns()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject) })
+    let id = 0
+    const rpc = (method: string, params: object) => new Promise<Record<string, unknown>>((resolve) => {
+      const requestId = ++id
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>
+        if (message.id !== requestId) return
+        socket.off("message", receive)
+        resolve(message)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+    })
+    const result = await rpc("checkpoint.create", { sessionId: session.id, label: "capture", client: "desktop" })
+    expect(result).not.toHaveProperty("error")
+    const view = workspaceSnapshotSchema.parse(result.result)
+    const item = view.thread.find((item) => item.kind === "checkpoint" && item.label.endsWith(" · capture"))!
+    expect(item).toMatchObject({
+      kind: "checkpoint", reason: "manual",
+      midTurn: { providerTurnId: "capture-turn", stability: racing ? "unstable" : "matched", changedPaths: racing ? ["file.txt"] : [] },
+    })
+    expect(checkpoint).not.toHaveBeenCalled()
+    expect({ head: git("rev-parse", "HEAD"), branch: git("symbolic-ref", "HEAD"), index: await readFile(join(path, ".git", "index")) }).toEqual(before)
+    expect(await rpc("checkpoint.restore", { sessionId: session.id, checkpointId: item.id, client: "desktop" })).toMatchObject({
+      error: { code: -32602, message: "Stop the active turn before restoring a checkpoint" },
+    })
+    socket.close()
+  })
+
   it.each(["x", "n".repeat(42), "n".repeat(44)])(
     "refuses a daemon credential without 256 bits: %s",
     (authToken) => {
@@ -9806,10 +9873,18 @@ describe("DomovoiDaemon", () => {
       label: "while-agent-is-running",
       client: "desktop",
     })
+    const midTurn = { providerTurnId: "provider-turn-1", stability: "matched", changedPaths: [] }
     expect(activeCheckpoint).toMatchObject({
-      error: { code: -32602, message: "Stop the active turn before creating a checkpoint" },
+      result: { thread: expect.arrayContaining([expect.objectContaining({
+        kind: "checkpoint", reason: "manual", commit: "d".repeat(40), midTurn,
+      })]) },
     })
     expect(workspaceService.checkpoint).not.toHaveBeenCalled()
+    expect(workspaceService.snapshot).toHaveBeenCalledTimes(2)
+    const activeHistory = await rpc("session.history", { sessionId, categories: ["checkpoints"] })
+    expect(activeHistory).toMatchObject({ result: { items: expect.arrayContaining([
+      expect.objectContaining({ category: "checkpoints", midTurn }),
+    ]) } })
 
     const activeRestore = await rpc("checkpoint.restore", {
       sessionId,
@@ -9912,9 +9987,11 @@ describe("DomovoiDaemon", () => {
         ]),
       },
     })
-    const checkpointId = workspaceSnapshotSchema.parse(checkpointed.result).thread.find(
-      (item) => item.kind === "checkpoint" && item.reason === "manual",
-    )!.id
+    const idleCheckpoint = workspaceSnapshotSchema.parse(checkpointed.result).thread.find(
+      (item) => item.kind === "checkpoint" && item.reason === "manual" && item.label.includes("after-tests"),
+    )!
+    expect(idleCheckpoint).not.toHaveProperty("midTurn")
+    const checkpointId = idleCheckpoint.id
 
     const unknownRestore = await rpc("checkpoint.restore", {
       sessionId,
