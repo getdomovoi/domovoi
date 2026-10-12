@@ -92,6 +92,20 @@ it("stops and says nothing has been read once the first attempt failed", () => {
   stopped()
 })
 
+// A failure belongs to the target that failed. A new target starts reading
+// afresh, and its first attempt shimmers.
+it("reads afresh when the target changes", () => {
+  const { container, rerender } = render(
+    <Connection reconnecting><ThreadSkeleton from="machine-a" /></Connection>,
+  )
+  expect(screen.getByRole("status").textContent).toBe("Not connected. Nothing has been read from machine-a yet.")
+
+  rerender(<Connection><ThreadSkeleton from="machine-b" /></Connection>)
+
+  expect(screen.getByRole("status").textContent).toBe("reading the thread from machine-b")
+  for (const bar of container.querySelectorAll("span[aria-hidden]")) expect(bar.className).toContain("skeleton-bar")
+})
+
 it("stops for a refused or failed connection too", () => {
   render(<Connection authenticationRequired="authentication failed"><ThreadSkeleton from="ws://127.0.0.1:47831/rpc" /></Connection>)
   expect(screen.getByRole("status").textContent).toBe("Not connected. Nothing has been read from 127.0.0.1:47831 yet.")

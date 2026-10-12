@@ -61,9 +61,10 @@ export function ThreadSkeleton({ from }: { from: string }) {
   const connection = useWorkspaceConnection()
   const failing = connection !== null && !connection.connected
     && (connection.reconnecting || connection.connectionError !== "" || connection.authenticationRequired !== null)
-  const [failed, setFailed] = useState(failing)
-  if (failing && !failed) setFailed(true)
-  const still = failed || failing
+  // The failure belongs to the target that failed: a new target reads afresh.
+  const [failedFrom, setFailedFrom] = useState(failing ? from : undefined)
+  if (failing && failedFrom !== from) setFailedFrom(from)
+  const still = failing || failedFrom === from
   const target = readingFrom(from)
   return (
     <div data-testid="thread-skeleton" className="flex min-h-0 flex-1 flex-col gap-4 p-4">
