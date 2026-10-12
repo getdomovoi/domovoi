@@ -102,6 +102,7 @@ import {
   loadWorkspaceUiState,
   reconcileWorkspaceUiState,
   saveWorkspaceUiState,
+  withPreviewBuildBasis,
   type WorkspaceSurface,
 } from "./workspace-persistence"
 import {
@@ -468,7 +469,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     reviewSkill,
     previewSkillInstall,
     installSkill,
-    sendMessage,
+    sendMessage: sendWorkspaceMessage,
     sessionUsage,
     usageWindow,
     setSkillEnabled,
@@ -593,6 +594,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     theme,
     windowDecoration,
   } = workspaceUi
+  // Every send of a session carries the variant chosen for it with Build on
+  // this (Q342 A): the thread's, a released queued one and carry on alike.
+  const sendMessage = useCallback((...[sessionId, prompt, skillSelection, attachments]: Parameters<typeof sendWorkspaceMessage>) =>
+    sendWorkspaceMessage(sessionId, prompt, skillSelection, attachments, previewBuildBasis[sessionId]), [previewBuildBasis, sendWorkspaceMessage])
   const [activeWindowDecoration, setActiveWindowDecoration] = useState<WorkspaceWindowDecoration>("domovoi")
   useAppearanceTheme(theme)
   const resolvedTheme = resolveAppearanceTheme(theme, colorSchemeQuery()?.matches ?? true)
@@ -1307,7 +1312,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // Named before the snapshot exists, because the snapshot is what is being
   // waited for. The endpoint is what this client actually knows it is reading.
   const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
-  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} daemonTimeOffsetMs={(attached ? remote : home).fleetDaemonTimeOffsetMs} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: { ...current.previewBuildBasis, [sessionId]: artifactId } })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={() => snapshot.activeSessionId ? sendMessage(snapshot.activeSessionId, "Looks right, carry on") : Promise.reject(new Error("No session is active"))} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} daemonTimeOffsetMs={(attached ? remote : home).fleetDaemonTimeOffsetMs} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, artifactId) })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={() => snapshot.activeSessionId ? sendMessage(snapshot.activeSessionId, "Looks right, carry on") : Promise.reject(new Error("No session is active"))} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = !dockCollapsed && dockPinned ? "drawer.dock" : "drawer.thread"
   const defaultLayout = layouts[layoutKey]
   const shellTitle = launcherMode

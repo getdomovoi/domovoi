@@ -6,6 +6,7 @@ import { Button } from "./components/ui/button"
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./components/ui/dialog"
 import { Field, FieldLabel } from "./components/ui/field"
 import { Textarea } from "./components/ui/textarea"
+import { cn } from "./lib/utils"
 
 // The design's fullscreen preview (D23): a full surface over the shell with
 // the title, the read-only path line, widths and Exit fullscreen (esc) on top,
@@ -88,6 +89,9 @@ export function PreviewFullscreen({
   )
 }
 
+// The draft of a new comment. The fullscreen column draws the anchor over the
+// text with Post and Cancel; the dock's card under the page (D22) leads with a
+// `new comment` pill beside the anchor and says when the agent reads it.
 export function PreviewDraftCard({
   id,
   anchor,
@@ -100,6 +104,9 @@ export function PreviewDraftCard({
   onChange,
   onPost,
   onCancel,
+  pill,
+  note,
+  className,
 }: {
   id: string
   anchor: string
@@ -112,10 +119,22 @@ export function PreviewDraftCard({
   onChange: (value: string) => void
   onPost: () => void
   onCancel: () => void
+  pill?: string | undefined
+  note?: string | undefined
+  className?: string | undefined
 }) {
+  const pillId = `${id}-pill`
   return (
-    <div className="mx-[15px] mt-[13px] flex-none overflow-hidden rounded-xl border border-primary bg-card">
-      <div className="border-b px-3 py-[9px] text-[11px] leading-[1.45] break-words text-strong">{anchor}</div>
+    <section
+      aria-labelledby={pill ? pillId : undefined}
+      className={cn("mx-[15px] mt-[13px] flex-none overflow-hidden rounded-xl border border-primary bg-card", className)}
+    >
+      {pill ? (
+        <div className="flex items-center gap-[9px] border-b px-[13px] py-2.5">
+          <span id={pillId} className="flex-none rounded-full bg-accent px-2 py-0.5 font-machine text-mono-xs text-muted-foreground">{pill}</span>
+          <span className="min-w-0 flex-1 truncate text-[11.5px] text-strong">{anchor}</span>
+        </div>
+      ) : <div className="border-b px-3 py-[9px] text-[11px] leading-[1.45] break-words text-strong">{anchor}</div>}
       {error ? (
         <Alert variant="destructive" className="m-3 w-auto" aria-live="polite">
           <CircleStopIcon />
@@ -135,10 +154,11 @@ export function PreviewDraftCard({
           onChange={(event) => onChange(event.target.value)}
         />
       </Field>
-      <div className="flex items-center gap-[9px] border-t px-3 py-[9px]">
+      <div className="flex flex-wrap items-center gap-[9px] border-t px-3 py-[9px]">
         <Button size="sm" disabled={!value.trim() || pending} onClick={onPost}>{pending ? "Posting" : submitLabel}</Button>
         <Button size="sm" variant="outline" disabled={pending} onClick={onCancel}>{cancelLabel}</Button>
+        {note ? <span className="ml-auto font-machine text-mono-xs text-faint">{note}</span> : null}
       </div>
-    </div>
+    </section>
   )
 }
