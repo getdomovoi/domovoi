@@ -1,4 +1,5 @@
 import {
+  approvalCheckpointRefusalSchema,
   deviceLabelMismatchSchema,
   fleetSnapshotOverflowSchema,
   projectCapRefusalSchema,
@@ -12,6 +13,7 @@ import {
   sessionReviewRefusalSchema,
   skillInstallRefusalSchema,
   turnSkillSelectionRefusalSchema,
+  type ApprovalCheckpointRefusal,
   type DeviceLabelMismatch,
   type FleetSnapshotOverflow,
   type ProjectCapRefusal,
@@ -43,6 +45,7 @@ export type RpcErrorData =
   | RepositoryGitFilterRefusal
   | ProjectCapRefusal
   | ProjectCloseConfirmation
+  | ApprovalCheckpointRefusal
 
 export type RpcErrorObject = { code: number, message: string, data?: RpcErrorData }
 
@@ -60,6 +63,7 @@ const errorDataSchemas = {
   "repository-git-filter": repositoryGitFilterRefusalSchema,
   "project_cap": projectCapRefusalSchema,
   "project-close-confirmation": projectCloseConfirmationSchema,
+  "approval-checkpoint-refused": approvalCheckpointRefusalSchema,
 } as const
 
 const issuedFrames = new WeakSet<ResponseFrame>()

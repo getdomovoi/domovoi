@@ -1,3 +1,4 @@
+import { approvalCheckpointErrorCode } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
 import { decisionProblem } from "./decision-problem"
@@ -40,5 +41,54 @@ describe("decisionProblem", () => {
     expect(decisionProblem(new DaemonUnconfirmedError("The daemon closed the connection"))).toBe(unknown)
     expect(decisionProblem(new DaemonTimeoutError("approval.resolve", 10_000))).toBe(unknown)
     expect(decisionProblem(new Error("something else"))).not.toMatch(/Not sent/)
+  })
+
+  // S3.10h, #743: a checkpoint the daemon could not take arrives with its
+  // cause as data. The phone says the cause from the data, as the desktop
+  // card does, and never parses the daemon's sentence.
+  describe("a refused checkpoint", () => {
+    const generic = "Domovoi could not take a checkpoint, so the command did not run; decide again"
+    const refused = (data: unknown, message = generic) => new DaemonError(message, approvalCheckpointErrorCode, data)
+    const kind = "approval-checkpoint-refused"
+
+    it("names a held lock by its path", () => {
+      const lockPath = "/Users/dana/acme-api/.git/refs/domovoi/checkpoints/cccc.lock"
+      expect(decisionProblem(refused({ kind, cause: "lock-held", lockPath })))
+        .toBe(`The daemon refused: Could not take a checkpoint: ${lockPath} is held by another git process, or was left by one that stopped. Nothing ran. The gate is still waiting.`)
+    })
+
+    it.each([
+      ["submodule-changes", "Could not take a checkpoint: a submodule has local changes a checkpoint cannot hold. Nothing ran."],
+      ["timed-out", "Could not take a checkpoint: it did not finish in time. Nothing ran."],
+      ["git-failed", "Could not take a checkpoint: a Git command failed. Nothing ran."],
+      ["unknown", "Could not take a checkpoint. Nothing ran."],
+    ])("says the cause %s", (cause, line) => {
+      expect(decisionProblem(refused({ kind, cause }))).toBe(`The daemon refused: ${line} The gate is still waiting.`)
+    })
+
+    it.each([
+      ["repository-config", "Could not take a checkpoint: this repository's own Git config asks for something Domovoi does not run. Nothing ran.",
+        `${generic}. The repository sets the filter "lfs" in its own Git config. Nothing ran.`],
+      ["repository-config-unreadable", "Could not take a checkpoint: Git could not read this repository's config. Nothing ran.",
+        `${generic}. Git could not read the repository's Git config.`],
+      ["git-unavailable", "Could not take a checkpoint: this machine's Git is missing, or not a version Domovoi can use. Nothing ran.",
+        `${generic}. Domovoi found no git in an absolute PATH entry.`],
+    ])("keeps the daemon's detail for the cause %s", (cause, line, message) => {
+      expect(decisionProblem(refused({ kind, cause }, message)))
+        .toBe(`The daemon refused: ${line} ${message} The gate is still waiting.`)
+    })
+
+    it("quotes the daemon when the data is not a checkpoint refusal it can read", () => {
+      for (const data of [undefined, { kind, cause: "lock-held" }, { kind, cause: "invented" }, { kind: "session-review-refused", reason: "comment-unavailable" }]) {
+        expect(decisionProblem(refused(data))).toBe(`The daemon refused: ${generic}. The gate is still waiting.`)
+      }
+    })
+
+    // Error data is not tied to a code on the wire: only the checkpoint
+    // refusal's own code makes the data a checkpoint refusal.
+    it("quotes the daemon when checkpoint data comes with another code", () => {
+      expect(decisionProblem(new DaemonError(generic, -32603, { kind, cause: "unknown" })))
+        .toBe(`The daemon refused: ${generic}. The gate is still waiting.`)
+    })
   })
 })
