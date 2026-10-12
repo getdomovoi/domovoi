@@ -137,6 +137,7 @@ function bundleFiles(directory, prefix = "") {
 // a test.
 export async function buildWebArchive(root, destination, version, deadline, { build = buildWebApp, notices = collectWebNotices } = {}) {
   refuseWebBuildEnvironment(process.env)
+  deadline.check()
   const staging = mkdtempSync(join(tmpdir(), "domovoi-web-"))
   const removeStaging = () => rmSync(staging, { force: true, recursive: true })
   let building
@@ -145,8 +146,11 @@ export async function buildWebArchive(root, destination, version, deadline, { bu
     const outDir = join(staging, "web")
     const envDir = join(staging, "env")
     mkdirSync(envDir)
-    building = Promise.resolve().then(() => build(root, { outDir, envDir })).finally(() => { built = true })
-    const bundled = await deadline.run(() => building)
+    // Started inside run, after its own deadline check.
+    const bundled = await deadline.run(() => {
+      building = Promise.resolve().then(() => build(root, { outDir, envDir })).finally(() => { built = true })
+      return building
+    })
     const manifest = JSON.parse(readFileSync(join(outDir, webBundleManifestFile), "utf8"))
     if (manifest.version !== version) throw new Error(`The web app was built at ${manifest.version}, not the release version ${version}`)
     const files = bundleFiles(outDir).sort()

@@ -254,6 +254,14 @@ test("the release deadline bounds the web build and the notices, and staging goe
   await assert.rejects(release.buildWebArchive(root, destination, "1.0.0", second, { build: quickBuild, notices: () => new Promise(() => {}) }), expired)
   assert.equal(existsSync(dirname(outDir)), false)
   assert.deepEqual(await readdir(destination), [], "no archive is written")
+
+  // Review round 2: a deadline already spent starts no build at all.
+  const spent = bootstrapDeadline(1, "web deadline")
+  t.after(() => spent.clear())
+  await new Promise((resolve) => setTimeout(resolve, 10))
+  let started = false
+  await assert.rejects(release.buildWebArchive(root, destination, "1.0.0", spent, { build: async () => { started = true; return [] }, notices: async () => [] }), expired)
+  assert.equal(started, false, "vite is not started past the deadline")
 })
 
 test("refuses a web app path tar could not hold as written", () => {
