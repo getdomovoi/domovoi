@@ -100,10 +100,18 @@ it("reads afresh when the target changes", () => {
   )
   expect(screen.getByRole("status").textContent).toBe("Not connected. Nothing has been read from machine-a yet.")
 
+  // The shell's connection state resets in an effect after the target
+  // changes, so for a render B arrives with A's failure still attached.
+  rerender(<Connection reconnecting><ThreadSkeleton from="machine-b" /></Connection>)
+  expect(screen.getByRole("status").textContent).toBe("reading the thread from machine-b")
   rerender(<Connection><ThreadSkeleton from="machine-b" /></Connection>)
 
   expect(screen.getByRole("status").textContent).toBe("reading the thread from machine-b")
   for (const bar of container.querySelectorAll("span[aria-hidden]")) expect(bar.className).toContain("skeleton-bar")
+
+  // B's own first failure stops it.
+  rerender(<Connection reconnecting><ThreadSkeleton from="machine-b" /></Connection>)
+  expect(screen.getByRole("status").textContent).toBe("Not connected. Nothing has been read from machine-b yet.")
 })
 
 it("stops for a refused or failed connection too", () => {
