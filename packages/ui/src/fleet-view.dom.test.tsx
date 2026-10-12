@@ -63,7 +63,10 @@ it("shows client authorization next to disabled remote controls and names its au
   expect(dialog.textContent).toContain("domovoid pair --client desktop prints a one-time pairing code, which this field does not take.")
   expect(dialog.textContent).not.toContain("--label")
   expect(dialog.textContent).toContain("session sends, approvals and terminals")
-  expect(dialog.textContent).toContain("Devices list")
+  // Q378 A: this app's credential is a client binding on studio, so its row
+  // there says Unpair, and only studio's own desktop app can press it.
+  expect(dialog.textContent).toContain("Closing the app or removing local access does not unpair this device. To end its authority, unpair it in the desktop app on studio, under Machines.")
+  expect(dialog.textContent).not.toMatch(/revoke/iu)
   expect(within(dialog).getByLabelText("Client credential").getAttribute("type")).toBe("password")
 })
 
@@ -753,6 +756,16 @@ it("tells one upgrade story for either credential migration", async () => {
     "This pairing predates bound credentials. Pair this device again to restore it.",
   )
   expect(explanations[1]).toBe(explanations[0])
+})
+
+it("says a client could not be unpaired when the failure carries no reason", async () => {
+  const { user } = renderFleet({ onRevokeDevice: () => Promise.reject("socket closed") })
+  await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(screen.getByRole("button", { name: "Unpair studio-ipad" }))
+  await user.click(await screen.findByRole("button", { name: "Unpair device" }))
+
+  expect((await screen.findByText("Device action failed")).parentElement?.textContent).toContain("That device could not be unpaired")
 })
 
 it("keeps the device when the confirmation is cancelled", async () => {

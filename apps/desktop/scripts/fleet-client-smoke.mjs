@@ -213,7 +213,7 @@ try {
   await click("Settings")
   await click("Machines")
   await click("Remove local access")
-  await text("Devices list")
+  await text("unpair this device in the desktop app on Studio, under Machines")
   assert.equal(await evaluate(`${buttons}.find(button => /^Open its (\\d+ )?sessions? on Studio$/.test(button.getAttribute('aria-label') ?? '')).disabled`), true)
   console.info("DOMOVOI_FLEET_CLIENT_PROOF_OK use=1 terminal=1 inventory=1 comparison=1 remove=1")
 } catch (error) {
