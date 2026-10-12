@@ -1017,7 +1017,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The release lives here rather than in Thread because a turn ending in A is
   // A's business whether or not A is the session on screen.
   useEffect(() => {
-    if (watching) return
+    if (watching || !connected) return
     for (const message of releasableQueues(snapshot?.sessions ?? [], queues, { busy: emergencyStopPending })) {
       const session = { id: message.sessionId }
       if (releasing.current.has(session.id)) continue
@@ -1066,7 +1066,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           setSettled((count) => count + 1)
         })
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory, settled, watching])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory, settled, watching, connected])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
