@@ -205,16 +205,16 @@ describe("redeeming a web code", () => {
     const client = fakeClient()
     const caught = await redeemBrowserCode({ url: "wss://daemon.example/rpc", client: "phone", code: "hearth-quiet-ember-42", label: "Phone browser 4f2a1c9d", createClient: () => client }).catch((error: unknown) => error)
     expect(client.disconnect).toHaveBeenCalledOnce()
-    // Only the machine's desktop app revokes devices, and the card names the
+    // Only the machine's desktop app unpairs devices, and the card names the
     // device the daemon enrolled under this page's label.
     expect(pairingOutcomeFor(caught, "mac-mini-m4.tail4c2e.ts.net", "Phone browser 4f2a1c9d")).toEqual({
       tone: "danger",
       pill: "not kept",
       title: "This code is for a web browser",
       mono: "pair.refused · kind_mismatch · code web, browser phone",
-      body: "This browser counts as a phone. On mac-mini-m4.tail4c2e.ts.net, show a phone code under Settings, Phone and tablet. The code was used, so in the desktop app on mac-mini-m4.tail4c2e.ts.net, under Machines, revoke Phone browser 4f2a1c9d.",
+      body: "This browser counts as a phone. On mac-mini-m4.tail4c2e.ts.net, show a phone code under Settings, Phone and tablet. The code was used, so in the desktop app on mac-mini-m4.tail4c2e.ts.net, under Machines, unpair Phone browser 4f2a1c9d.",
     })
-    expect(pairingOutcomeFor(caught, "host").body).toContain("The code was used, so in the desktop app on host, under Machines, revoke this browser's device.")
+    expect(pairingOutcomeFor(caught, "host").body).toContain("The code was used, so in the desktop app on host, under Machines, unpair this browser's device.")
   })
 
   it("names each kind a code can be bound to and a browser can greet as", async () => {
@@ -328,10 +328,10 @@ describe("redeeming a web code", () => {
     expect(pairingNextStep("socket closed")).toBe("new-code")
     expect(pairingOutcomeFor(new Error("anything else"), "host", "Web browser 4f2a1c9d")).toEqual({
       tone: "plain", pill: "unconfirmed", title: "Pairing with host did not finish", mono: "pair · unconfirmed",
-      body: "If host lists Web browser 4f2a1c9d under Machines, it paired. Before you pair again, revoke it there, in the desktop app on host.",
+      body: "If host lists Web browser 4f2a1c9d under Machines, it paired. Before you pair again, unpair it there, in the desktop app on host.",
     })
     // Without a label the card still names no control a browser cannot reach.
-    expect(pairingOutcomeFor(new PairingReplyError(), "host").body).toBe("It may have paired this browser. If it did, in the desktop app on host, under Machines, revoke this browser's device.")
+    expect(pairingOutcomeFor(new PairingReplyError(), "host").body).toBe("It may have paired this browser. If it did, in the desktop app on host, under Machines, unpair this browser's device.")
     expect(pairingNextStep(new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused"))).toBe("new-code")
     expect(pairingNextStep(new CodeShapeError("web"))).toBe("new-code")
     expect(pairingNextStep(new DeviceKindMismatchError("web", "phone"))).toBe("new-code")

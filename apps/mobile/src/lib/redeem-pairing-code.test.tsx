@@ -116,6 +116,14 @@ describe("spending a pairing code", () => {
     await expect(answered(paired("desktop"))).rejects.toThrow(/issued for a desktop.*phone or tablet/)
   })
 
+  // Q378 A: a client binding is unpaired, and only the machine's desktop app
+  // holds the credential that may do it, under Machines.
+  it("names the Unpair control and where it is for a code it did not keep", async () => {
+    await expect(answered(paired("web"))).rejects.toThrow(
+      "This code was issued for a web browser, so this app did not keep it. In the desktop app on the machine, under Machines, unpair \"iPad\", then show a code for a phone or tablet.",
+    )
+  })
+
   it("says the protocols differ and that the code was not used, rather than calling it spent", async () => {
     const daemonProtocolVersion = "99.0.0"
     const pending = answered({ error: {
@@ -134,7 +142,7 @@ describe("spending a pairing code", () => {
 
   it("says the machine has too many paired devices rather than calling the code spent", async () => {
     const pending = answered({ error: { code: -32013, message: "The paired device limit is reached" } })
-    await expect(pending).rejects.toThrow(/too many paired devices/)
+    await expect(pending).rejects.toThrow("The machine has too many paired devices. Unpair one in the desktop app on the machine, under Machines, then show a fresh code and scan again.")
     await expect(pending).rejects.not.toThrow(/may already have been used/)
   })
 

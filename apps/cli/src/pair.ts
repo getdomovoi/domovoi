@@ -20,18 +20,20 @@ export type RpcCall = (method: string, params: Record<string, unknown>) => Promi
 // validated enum.
 const copy = {
   notACode: "That is not a pairing code. Paste the line 'domovoid pair --client cli' printed, or the code alone.",
-  issuedForAnother: (client: string, label: string) => `This code was issued for a ${client}, so nothing was kept. ${revoke(label)}`,
+  issuedForAnother: (client: string, label: string) => `This code was issued for a ${client}, so nothing was kept. ${unpair(label)}`,
   // Both run after the code was spent: the daemon lists the device under its
   // label with nobody holding its token, and it counts toward the device
-  // limit, so the person is told to revoke it before showing another code.
-  helloRefused: (reason: string | undefined, label: string) => `The daemon refused the credential this code minted${reason === undefined ? "" : ` (${terminalSafe(reason)})`}, so nothing was kept. ${revoke(label)}`,
-  notStored: (reason: string, label: string) => `The credential works but could not be stored (${terminalSafe(reason)}), so nothing was kept. ${revoke(label)}`,
+  // limit, so the person is told to unpair it before showing another code.
+  helloRefused: (reason: string | undefined, label: string) => `The daemon refused the credential this code minted${reason === undefined ? "" : ` (${terminalSafe(reason)})`}, so nothing was kept. ${unpair(label)}`,
+  notStored: (reason: string, label: string) => `The credential works but could not be stored (${terminalSafe(reason)}), so nothing was kept. ${unpair(label)}`,
   relayNotEnrolled: (reason: string) => `The daemon is paired, but its relay identity was not enrolled (${terminalSafe(reason)}). Relay use will need pairing again.`,
   unreadableReply: "The daemon answered with something this client could not read.",
 }
 
-function revoke(label: string): string {
-  return `Revoke "${terminalSafe(label)}" on the machine, then show a code for the cli.`
+// A cli binding is a client, whose control is Unpair (Q378 A), and only the
+// machine's desktop app holds the daemon credential that may press it.
+function unpair(label: string): string {
+  return `Unpair "${terminalSafe(label)}" in the desktop app on the machine, under Machines, then show a code for the cli.`
 }
 
 // The label is bounded here, before anything is sent: the daemon admits the
