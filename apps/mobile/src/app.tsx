@@ -37,6 +37,7 @@ import { DaemonNotSentError, DaemonUnconfirmedError, watchTerminal } from "./lib
 import { DaemonTimeoutError } from "./lib/request-timeout"
 import { useDaemon } from "./lib/use-daemon"
 import { useDeviceIdentity } from "./lib/use-device-identity"
+import { useModelImages } from "./lib/use-model-images"
 import { connectedMachineActivity } from "./machine-activity"
 import { launchPhases } from "./launch-state"
 import * as ImagePicker from "expo-image-picker"
@@ -69,7 +70,7 @@ import {
   withNotification,
   type TerminalWatch,
 } from "./terminal-rows"
-import { promptProblem, sendReadinessOverSocket, sessionDetail } from "./session-detail"
+import { promptProblem, recordedBuildBasis, sendReadinessOverSocket, sessionDetail } from "./session-detail"
 import { queuedCancelParams, sendDelivery } from "./session-delivery"
 import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
@@ -234,6 +235,8 @@ export function App() {
   // Compared with a gate's origin, so the approval screen can say this phone
   // started the turn.
   const deviceId = useDeviceIdentity(call, status, connectTo?.token)
+  // Frames 13b and 14b: whether the open session's model takes images.
+  const openModelImages = useModelImages(call, status, client, snapshot?.sessions.find((session) => session.id === openSessionId)?.runtime)
   const mutate = useCallback(
     <M extends RpcMethod>(method: M, params: RpcParams<M>) => mutationCall(clientAccess, call, method, params),
     [call, clientAccess],
@@ -946,6 +949,7 @@ export function App() {
             comments={openArtifactComments}
             render={previewRender}
             variants={openVariants}
+            builtOn={snapshot ? recordedBuildBasis(snapshot, openArtifact.sessionId) : undefined}
             machine={snapshot?.machine.name ?? "the machine"}
             onBack={() => setOpenArtifactId(undefined)}
             onRetryRender={() => setRenderAttempt((attempt) => attempt + 1)}
@@ -1093,6 +1097,8 @@ export function App() {
             onPickLibrary={() => void pickImage("library")}
             onTakePhoto={() => void pickImage("camera")}
             onRemoveAttachment={(index) => setAttachments((current) => current.filter((_item, at) => at !== index))}
+            onRemoveAttachments={() => setAttachments([])}
+            modelImages={openModelImages}
             starting={starting}
             startProblem={startProblem}
             startRefusal={startRefusal}
