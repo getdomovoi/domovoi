@@ -142,7 +142,8 @@ describe("spending a pairing code", () => {
 
   it("says the machine has too many paired devices rather than calling the code spent", async () => {
     const pending = answered({ error: { code: -32013, message: "The paired device limit is reached" } })
-    await expect(pending).rejects.toThrow("The machine has too many paired devices. Unpair one in the desktop app on the machine, under Machines, then show a fresh code and scan again.")
+    // The limit counts machine bindings too, and their control is Revoke.
+    await expect(pending).rejects.toThrow("The machine has too many paired devices. In the desktop app on the machine, under Machines, unpair a device or revoke a machine, then show a fresh code and scan again.")
     await expect(pending).rejects.not.toThrow(/may already have been used/)
   })
 

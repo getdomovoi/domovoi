@@ -185,7 +185,12 @@ describe("redeeming a web code", () => {
     const host = "mac-mini-m4.tail4c2e.ts.net"
     expect(pairingOutcomeFor(new DaemonRpcError(daemonAuthenticationErrorCode, "Pairing was refused"), host)).toMatchObject({ pill: "refused", title: "That code was refused", body: "It may have expired or been used already. Show another on mac-mini-m4.tail4c2e.ts.net, under Settings, Phone and tablet." })
     expect(pairingOutcomeFor(new DaemonRpcError(protocolVersionMismatchErrorCode, "x", { kind: "protocol-mismatch", daemonProtocolVersion: "0.9.0", clientProtocolVersion: "0.8.0", compatibility: "machine-ahead" }), host)).toMatchObject({ pill: "refused", title: "This page is older than the daemon on mac-mini-m4.tail4c2e.ts.net", mono: "pair.refused · protocol_mismatch · page 0.8.0, daemon 0.9.0" })
-    expect(pairingOutcomeFor(new DaemonRpcError(devicePairingLimitErrorCode, "The paired device limit is reached"), host)).toMatchObject({ pill: "refused", title: "mac-mini-m4.tail4c2e.ts.net has no room for another device" })
+    // The limit counts machine bindings too, and their control is Revoke.
+    expect(pairingOutcomeFor(new DaemonRpcError(devicePairingLimitErrorCode, "The paired device limit is reached"), host)).toMatchObject({
+      pill: "refused",
+      title: "mac-mini-m4.tail4c2e.ts.net has no room for another device",
+      body: "In the desktop app on mac-mini-m4.tail4c2e.ts.net, under Machines, unpair a device or revoke a machine, then show another code.",
+    })
     const { PairingTransportError } = await import("@/browser-pairing-client")
     expect(pairingOutcomeFor(new PairingTransportError("Daemon connection closed"), host)).toMatchObject({ pill: "unconfirmed", title: "mac-mini-m4.tail4c2e.ts.net did not answer, so pairing is unconfirmed" })
   })
@@ -253,7 +258,12 @@ describe("redeeming a web code", () => {
     expect(refusal).toBeInstanceOf(DeviceKindMismatchError)
     expect((refusal as Error).message).toBe("The code paired a device that is not a client, and this browser greets as web")
     expect(new DeviceKindMismatchError("web", "phone").message).toBe("The code paired web, and this browser greets as phone")
-    expect(pairingOutcomeFor(refusal, "host")).toMatchObject({ title: "This code is not for a browser", mono: "pair.refused · kind_mismatch · code none, browser web" })
+    // Q378 A: a row that is not a client keeps Revoke.
+    expect(pairingOutcomeFor(refusal, "host", "x")).toMatchObject({
+      title: "This code is not for a browser",
+      mono: "pair.refused · kind_mismatch · code none, browser web",
+      body: "This browser counts as a web browser. On host, show a web code under Settings, Phone and tablet. The code was used, so in the desktop app on host, under Machines, revoke x.",
+    })
   })
 
   it("keeps a credential bound to the kind this page greets as", async () => {

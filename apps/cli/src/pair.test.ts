@@ -330,6 +330,14 @@ describe("pair", () => {
     await expect(redeemPairingCode({ endpoint: "ws://127.0.0.1:47831/rpc", code, label: "my shell", open: other.open }))
       .rejects.toThrow(new PairingError(`This code was issued for a phone, so nothing was kept. Unpair "my shell${shown}" in the desktop app on the machine, under Machines, then show a code for the cli.`))
 
+    // Q378 A: a machine binding's row keeps Revoke.
+    const machine = fakeRedeemer({ result: {
+      device: { id: deviceId, label: "build box", pairedAt: "2026-10-03T10:00:00Z", binding: { kind: "machine", machineId } },
+      token,
+    } })
+    await expect(redeemPairingCode({ endpoint: "ws://127.0.0.1:47831/rpc", code, label: "my shell", open: machine.open }))
+      .rejects.toThrow(new PairingError("This code was issued for a machine, so nothing was kept. Revoke \"build box\" in the desktop app on the machine, under Machines, then show a code for the cli."))
+
     const refusing = fakeRedeemer({ refuse: new DaemonRefusedError(`Pairing was refused${hostile}`, -32001) })
     await expect(redeemPairingCode({ endpoint: "ws://127.0.0.1:47831/rpc", code, label: "my shell", open: refusing.open }))
       .rejects.toThrow(new PairingError(`Pairing was refused${shown}`))
