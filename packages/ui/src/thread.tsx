@@ -6,6 +6,7 @@ import {
   CheckIcon,
   CircleStopIcon,
   FolderOpenIcon,
+  ListIcon,
 } from "lucide-react"
 import type {
   ApprovalRequest,
@@ -29,6 +30,7 @@ import type {
   UsageWindow,
   TurnSkillSelection,
   ThreadItem,
+  WorkingPlan,
   WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 import { maximumEffectiveClientThreadItems, selectableTurnSkills, threadFollowPillText, sessionTransferRefusalMessage, toolFileEntries, turnSkillSelectionFor } from "@getdomovoi/protocol"
@@ -61,7 +63,6 @@ import { fleetMachines, transferTargets } from "./fleet-entries.js"
 import { PairMachineDialog } from "./pair-machine-dialog.js"
 import type { PairedMachine, PairMachineRequest } from "./pair-machine.js"
 import { cn } from "./lib/utils"
-import { DomovoiMark } from "./domovoi-mark"
 import { ApprovalReceipt, receiptCheckpointTaken, type ReceiptDockTab } from "./approval-receipt"
 import { PlanStrip } from "./plan-strip"
 import { effortName } from "./effort-scales.js"
@@ -300,6 +301,23 @@ function ArchivedSessionNotice({ session }: { session: SessionSummary }) {
 
 const threadClock = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false })
 
+// Desktop V2's conversation turns, as measured from the design. The markdown
+// view sets its own type on its root, so these reach it as [&>div].
+//
+// The user's message: a right-aligned card at most 74% of the column, 11px by
+// 15px of padding, 14px corners with a 4px one at the bottom right, on accent
+// with no border, at 13.5px/1.6. :first-child keeps the delivery note under
+// the text at its own size.
+const userTurn = "max-w-[74%] self-end rounded-[14px_14px_4px_14px] bg-accent px-[15px] py-[11px] [&>div:first-child]:text-[13.5px] [&>div:first-child]:leading-[1.6]"
+// The agent's prose: the column's full width with no avatar box, at
+// 13.5px/1.65, wrapped with text-wrap: pretty.
+const assistantProse = "min-w-0 [&>div]:text-[13.5px] [&>div]:leading-[1.65] [&>div]:text-pretty"
+// The working caret: 1.5px by 15px of primary, 3px after the last prose,
+// blinking as the composer's caret does. It sits after the markdown's last
+// block, so it follows the text however the reply is laid out. Under reduced
+// motion it holds still and stays.
+const workingCaret = "[&>div>:last-child]:after:ml-[3px] [&>div>:last-child]:after:inline-block [&>div>:last-child]:after:h-[15px] [&>div>:last-child]:after:w-[1.5px] [&>div>:last-child]:after:align-[-2px] [&>div>:last-child]:after:bg-primary [&>div>:last-child]:after:content-[''] motion-safe:[&>div>:last-child]:after:animate-[dv-composer-caret_1.1s_steps(1)_infinite]"
+
 // The rows the daemon writes when a pause ended a session's turn. A failed
 // interrupt writes "Pause failed for <client>." instead.
 function pauseRows(thread: readonly ThreadItem[], sessionId: string): Extract<ThreadItem, { kind: "system" }>[] {
@@ -379,6 +397,42 @@ function ThreadStartLine({
       {clockText ? <span className="font-machine text-[11px]">{clockText}</span> : null}
     </div>
   )
+}
+
+// D6: the plan the agent wrote, as a row under the prose (Desktop V2
+// conversation.plan-link). It is built from the session's working plan: its
+// step count and when it was made. updatedAt also moves when a step's status
+// changes, so it cannot say when the steps were revised; a plan whose steps
+// were rewritten (structureRevision past its first) says revised with no time.
+function PlanLinkRow({ plan, onOpenPlanPreview }: { plan: WorkingPlan, onOpenPlanPreview?: (() => void) | undefined }) {
+  const meta = `${threadClock.format(new Date(plan.createdAt))}${plan.structureRevision > 1 ? " · revised" : ""}`
+  return (
+    <div data-plan-link="" className="flex items-center gap-[9px] self-start rounded-lg border border-dashed border-border px-3 py-1.5 text-muted-foreground">
+      <ListIcon aria-hidden className="size-3.5 shrink-0" strokeWidth={1.5} />
+      <span className="text-[11.5px]">Wrote a {plan.steps.length} step plan</span>
+      <span className="font-machine text-[10.5px] text-faint">{meta}</span>
+      {onOpenPlanPreview ? (
+        <button type="button" onClick={onOpenPlanPreview} className="rounded-sm text-[11px] text-primary outline-none hover:underline focus-visible:ring-[3px] focus-visible:ring-ring/50">
+          Read it <span aria-hidden>→</span>
+        </button>
+      ) : null}
+    </div>
+  )
+}
+
+// Where the plan row goes. The plan names no message or turn, so it sits
+// after the last thing said (the agent's prose or the person's message) at or
+// before the plan was made, and before the first row when nothing was.
+// Ruled Q65 (2026-10-12).
+function planAnchorId(rows: readonly ThreadRow[], plan: WorkingPlan | undefined): string | null | undefined {
+  if (!plan || plan.steps.length === 0) return undefined
+  const madeAt = Date.parse(plan.createdAt)
+  let anchor: string | null = null
+  for (const row of rows) {
+    if (row.kind !== "item" || (row.item.kind !== "assistant" && row.item.kind !== "user")) continue
+    if (Date.parse(row.item.createdAt) <= madeAt) anchor = row.item.id
+  }
+  return anchor
 }
 
 // The turn the header clock reads. While the session runs a turn, only that
@@ -846,6 +900,15 @@ export function Thread({
   const turnsById = new Map((snapshot.turns ?? []).map((turn) => [turn.id, turn]))
   const lastActivityOfTurn = new Map<string, string>()
   for (const row of threadRows) if (row.kind === "activity" && row.turnId) lastActivityOfTurn.set(row.turnId, row.id)
+  // The prose the running turn is writing: the last thing said in the thread,
+  // when the agent said it after the latest message. It carries the caret.
+  const lastSaid = active.activeTurnId
+    ? threadRows.findLast((row) => row.kind === "item" && (row.item.kind === "user" || row.item.kind === "assistant"))
+    : undefined
+  const workingProse = lastSaid?.kind === "item" && lastSaid.item.kind === "assistant" ? lastSaid.item.id : undefined
+  const sessionPlan = snapshot.workingPlans.find((candidate) => candidate.sessionId === active.id)
+  const planAnchor = planAnchorId(threadRows, sessionPlan)
+  const planLink = sessionPlan && planAnchor !== undefined ? <PlanLinkRow plan={sessionPlan} onOpenPlanPreview={onOpenPlanPreview} /> : null
 
   const entries = fleet ?? [localFleetEntry(snapshot)]
   const latestReceiptId = renderedThread.filter((item) => item.kind === "receipt").at(-1)?.id
@@ -1273,6 +1336,7 @@ export function Thread({
               <AlertDescription>{providerFailureActionCopy(active.providerFailure)}</AlertDescription>
             </Alert>
           ) : null}
+          {planAnchor === null ? planLink : null}
           {threadRows.map((row) => {
             if (row.kind === "activity") {
               // Between two calls no single call is in flight, but the turn
@@ -1306,13 +1370,16 @@ export function Thread({
             }
             if (item.kind === "user") {
               return (
-                <div key={item.id} className="max-w-[82%] self-end rounded-xl border bg-card px-4 py-3">
-                  <MarkdownQuickView source={item.body} />
-                  <PromptDeliveryNote
-                    delivery={item.providerPromptDelivery}
-                    skillNames={skillNames ?? {}}
-                  />
-                </div>
+                <Fragment key={item.id}>
+                  <div data-testid="user-turn" className={userTurn}>
+                    <MarkdownQuickView source={item.body} />
+                    <PromptDeliveryNote
+                      delivery={item.providerPromptDelivery}
+                      skillNames={skillNames ?? {}}
+                    />
+                  </div>
+                  {item.id === planAnchor ? planLink : null}
+                </Fragment>
               )
             }
             if (item.kind === "system" && item.notice === "context-compaction") {
@@ -1342,7 +1409,18 @@ export function Thread({
               return <PolicyRefusalCard key={item.id} refusal={item} onSeeRules={onOpenDockTab ? () => onOpenDockTab("rules") : undefined} />
             }
             if (item.kind === "tool") return null
-            return <div key={item.id} className="flex max-w-2xl gap-3"><span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-md border bg-card text-primary"><DomovoiMark reduced className="size-4" /></span><MarkdownQuickView source={stripPlanTags(item.body)} /></div>
+            return (
+              <Fragment key={item.id}>
+                <div
+                  data-assistant-prose=""
+                  {...(item.id === workingProse ? { "data-working": "" } : {})}
+                  className={cn(assistantProse, item.id === workingProse && workingCaret)}
+                >
+                  <MarkdownQuickView source={stripPlanTags(item.body)} />
+                </div>
+                {item.id === planAnchor ? planLink : null}
+              </Fragment>
+            )
           })}
           {workingRow ? <TurnActivity items={[]} running /> : null}
           {transferReceipt ? (
