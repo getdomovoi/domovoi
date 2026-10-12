@@ -1655,53 +1655,68 @@
         "new comment",
         "Post the comment",
         "Cancel",
-        "the agent reads it next turn"
+        "the agent reads it next turn",
+        "Say what is wrong with this element"
       ],
       "evidence": [
+        "new comment",
         "Post the comment",
-        "the agent reads it next turn"
-      ],
-      "presence": [
-        "Comments on this preview"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "commenting exists as a modal Annotate preview dialog with a Comment label, Cancel and Post; the design draws an inline draft card under the frame (new comment pill, the anchor and quote, Post the comment, Cancel, the agent reads it next turn). Under today's auto-carry every open comment reaches the next turn whether or not it is finished; Q348 A (2026-10-02) makes sending explicit (see dock.preview-comments)"
-      }
+        "the agent reads it next turn",
+        "Say what is wrong with this element",
+        "pill={PreviewDraftCopy.pill}"
+      ]
     },
     {
       "id": "dock.preview-comments",
       "name": "Comments on a variant",
       "where": "Preview tab: COMMENTS ON VARIANT n, count, send to the agent, rows with pin, anchor, state, status, replies, action",
+      "copy": [
+        "anchor unavailable",
+        "anchor holds",
+        "Mark resolved"
+      ],
       "evidence": [
         "re:COMMENTS ON \\$\\{preview\\.variant\\.label\\.toUpperCase\\(\\)\\}",
+        "anchor holds",
+        "anchor unavailable",
+        "Mark resolved",
+        "data-anchor={anchorState}",
         "Send 2 open comments to the agent",
         "Comments reach the agent only when you send them.",
         "Design variants"
       ],
       "presence": [
-        "Design variants"
+        "Design variants",
+        "Mark resolved"
       ],
       "partial": {
-        "since": "2026-09-18",
-        "reason": "the dynamic variant heading and comment rows exist; the design's explicit decision to attach open comments to the next turn is absent, while the daemon carries every open annotation into every turn (annotation-context.ts). Q348 A (2026-10-02): an explicit send on every client through a protocol field and a daemon change. Rows also differ: no pin number, no anchor holds or unavailable state, Resolve where the design says Mark resolved, and a count of n open · m in all where the design says N on this document"
+        "since": "2026-10-12",
+        "reason": "SL-3b (D22) built the rows: pin number, the anchor and its quote, anchor holds or anchor unavailable (an anchor the page reports as unresolved draws a muted pin and a danger border, never as attached; before the page answers neither chip is drawn), open or resolved, replies, and Mark resolved or Reopen. The review field is on the wire (session.send review, protocol 0.8.0) and every send names the session's open comments (rulings Q348 A, Q402), so nothing here waits on the protocol. What is left: the design's explicit Send N open comments to the agent with its attached state and note, which needs a product call on top of Q402's every-open-comment send, and the count, which reads n open · m in all where the design says N on this document"
       }
     },
     {
       "id": "dock.preview-variants",
       "name": "Variant chips and Build on this",
       "where": "Preview tab foot: variant chips, state text, Build on this / Unpick",
+      "copy": [
+        "the agent builds on this one",
+        "the agent builds on",
+        "none chosen, all three stay alive",
+        "The others stay renderable for comparison.",
+        "Nothing chosen, so the agent builds on none of them.",
+        "Build on this"
+      ],
       "evidence": [
         "Build on this",
-        "Unpick"
-      ],
-      "presence": [
-        "Design variants"
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "variants exist as a thumbnail filmstrip with Use X as build basis; the design draws segmented A B C chips at the foot with a state line and Build on this or Unpick, and a none chosen state the code cannot reach because the basis defaults to the latest. The chosen basis lives only in local UI state and no turn carries it, so the agent never hears it. Q342 A (2026-10-02) carries the chosen variant with the explicit comment send (Q348, protocol) and, until then, words the choice as a viewer bookmark"
-      }
+        "Unpick",
+        "the agent builds on this one",
+        "the agent builds on ${name}",
+        "stay alive",
+        "The others stay renderable for comparison.",
+        "Nothing chosen, so the agent builds on none of them.",
+        "buildBasis: { artifactId: buildBasis.id }",
+        "previewBuildBasis[sessionId]"
+      ]
     },
     {
       "id": "dock.terminal",
@@ -1978,8 +1993,8 @@
         "Comments reach the agent only when you send them."
       ],
       "partial": {
-        "since": "2026-10-11",
-        "reason": "SL-3a (D23) built the full surface: title, path · read-only, sm md lg widths, Exit fullscreen with the esc hint, the page with its hint, the variant chips at the foot and a 340px Comments on <variant> column with the annotate toggle and an inline draft with Post and Cancel. Annotating works in fullscreen: the bridge talks to the fullscreen frame while it is open. What is left belongs to D22 (SL-3b) and is shared with the dock: the foot still offers Use X as build basis where the design says Build on this or Unpick with a state line, and the column has no explicit send to the agent (Q348 A)"
+        "since": "2026-10-12",
+        "reason": "SL-3a (D23) built the full surface: title, path · read-only, sm md lg widths, Exit fullscreen with the esc hint, the page with its hint, the variant chips at the foot and a 340px Comments on <variant> column with the annotate toggle and an inline draft with Post and Cancel. Annotating works in fullscreen: the bridge talks to the fullscreen frame while it is open. SL-3b (D22) gave the shared foot Build on this or Unpick with the state line, and the column the D22 comment rows. What is left is shared with dock.preview-comments: the column has no explicit Send open comments to the agent, since every send names the open comments (rulings Q348 A, Q402)"
       }
     },
     {
@@ -2360,6 +2375,21 @@
       "id": "dock.preview",
       "since": "2026-10-11",
       "note": "Q379 A: the preview authorizes on open, so the drawn authorize to view click is not built; the chip shows authorized and the time left. The daemon's grant lasts 60 seconds, not the drawn nine minutes, so the chip reads seconds; the client renews it five seconds before expiry while the preview is on screen, without reloading the page shown, and a frame mounted later loads the fresh grant. Q380 A: Print view, Download safe copy, Compare, the filmstrip (Variant thumbnails), the Live note and the safe-copies line are shipped features the design does not draw; they stay behind one overflow control (More preview actions) in the design's toolbar. RENDERED THIS SESSION rows (D20, 2026-10-11) keep the order the daemon first saw each render, one row per variant group; the wire carries no render time, so the meta names the directory and the revision or variant count where the design draws design-studio · 14:09. The list is a 216px column at a dock width of 48rem and up and stacks above the page below that, where a single render leaves it out. The hint under the frame is drawn in annotate mode only; the idle hint (Plus adds a comment, a number opens one) describes the comment pins of D22."
+    },
+    {
+      "id": "dock.preview-draft",
+      "since": "2026-10-12",
+      "note": "SL-3b (D22): picking an element in the dock opens the inline card under the page, as drawn: the new comment pill and the anchor, the text (placeholder Say what is wrong with this element), Post the comment, Cancel and the agent reads it next turn. The anchor is the label the preview bridge reports for the picked element, where the design writes the document and row (webhook_replay · the claimed row, on a quote). The agent does read it next turn: every send names the session's open comments (Q402). Fullscreen keeps its column card with Post and Cancel, as drawn there. Read against the vendored handoff only; DesignSync was not authorized for this slice, so the live design was not checked."
+    },
+    {
+      "id": "dock.preview-comments",
+      "since": "2026-10-12",
+      "note": "SL-3b (D22): each row has the pin number, the anchor (the CSS selector, or Visual selection for a box-only anchor), anchor holds or anchor unavailable, open or resolved, the quote, the body, replies, the origin line, and Mark resolved or Reopen with Reply. A third anchor state is kept: until the page answers (no frame loaded, a lapsed grant, a comment on another artifact) neither chip is drawn and the pin is muted, so nothing is drawn as attached that the page has not confirmed. Pins are not drawn inside the page (the bridge resolves anchors, it does not draw markers), so a number does not open a comment from the page. Read against the vendored handoff only; DesignSync was not authorized for this slice."
+    },
+    {
+      "id": "dock.preview-variants",
+      "since": "2026-10-12",
+      "note": "SL-3b (D22): nothing is chosen until Build on this; Unpick clears it. While chosen, every send of the session (the thread's send, a queued send when released, carry on) carries it as session.send review.buildBasis (Q342 A); an id that no longer names a preview of that session is not sent, since the daemon would refuse the whole message, and reads as none chosen. Chips carry the variant's own label (Variant A) with a check on the chosen one, where the design draws A B C. The state line counts the group (none chosen, all 4 stay alive; both for two; none chosen for a lone render) where the design draws all three (Q68). A group over 24 variants shows a page of 24 chips with Earlier variants, Later variants and 25-48 of 60 (#810 B5.3, Q68). The chosen variant is shown at the preview foot and in its note; the design's composer chip (2 comments · variant B) belongs to the explicit comment send and is not built (Q69). Choices stored before this release were viewer bookmarks never sent, and are dropped (Q70). Read against the vendored handoff only; DesignSync was not authorized for this slice."
     },
     {
       "id": "dock.plan-doc",
@@ -2934,9 +2964,6 @@
       "done · 38s",
       "on this app",
       "on this document",
-      "anchor unavailable",
-      "anchor holds",
-      "Mark resolved",
       "Comments belong to design-studio previews, anchored to an element in the render.",
       "You hold this shell",
       "Claimed by iPhone 16 Pro since 14:04",
@@ -3040,12 +3067,6 @@
       "event_id claimed 14:06:02, no side effects yet",
       "handler finished, claim committed 14:06:03",
       "claimed 13:41:12, never committed, retried after 15m",
-      "the agent builds on this one",
-      "the agent builds on",
-      "none chosen, all three stay alive",
-      "The others stay renderable for comparison.",
-      "Nothing chosen, so the agent builds on none of them.",
-      "Build on this",
       "Open comments on this app are attached to your next turn",
       "Send open comments to the agent",
       "are attached to your next turn",
@@ -3057,7 +3078,6 @@
       "Plus adds a comment, a number opens one.",
       "Click an element",
       "Add a comment",
-      "Say what is wrong with this element",
       "Show when the first delivery landed next to each refused duplicate, so on-call can match it to Stripe's log.",
       "The expiry should be 90 seconds, not 15 minutes, so the second Stripe retry is not blocked.",
       "you · desktop · just now",
