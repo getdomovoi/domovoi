@@ -11,7 +11,6 @@ import { promisify } from "node:util"
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest"
 
 import { windowsTreeKill } from "./claude-process.js"
-import { gitEnvironment } from "./git-environment.js"
 import { readRepositoryProviderConfig } from "./repository-provider-config.js"
 import { projectRootRead } from "./repository-trust-apply.js"
 import type { RepositoryTrustGrant } from "./repository-trust-store.js"
@@ -2541,11 +2540,16 @@ describe("GitWorkspaceService session refs", () => {
     const markerPath = join(scratch, "transport-ran").replaceAll("\\", "/")
     await writeFile(join(workspace.path, "evil.sh"), `echo ran >> "${markerPath}"\nexit 1\n`)
     // An empty home of the test's own. A system config that sets an ssh
-    // command is the person's too, and the push rightly uses it instead.
+    // command is the person's too, and the push rightly uses it instead. The
+    // probe drops every GIT_ variable itself, outside a repository, so a
+    // product that read an inherited one would fail here rather than skip.
     const home = join(scratch, "home")
     await mkdir(home)
-    const personCommand = await withHome(home, () => execute("git", ["config", "--get-all", "core.sshCommand"], { cwd: home, env: gitEnvironment() })
-      .then(({ stdout }) => stdout.trim(), () => ""))
+    const personCommand = await withHome(home, () => {
+      const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.toUpperCase().startsWith("GIT_")))
+      return execute("git", ["config", "--get-all", "core.sshCommand"], { cwd: home, env: environment })
+        .then(({ stdout }) => stdout.trim(), () => "")
+    })
     if (personCommand !== "") skip("This machine's Git config sets core.sshCommand, so the push never falls back to plain ssh")
     // A loopback port that closes each connection, so ssh fails on its first
     // read without a name lookup. A connection shows plain ssh did run.
