@@ -1,4 +1,4 @@
-import { fleetClientRouteResultSchema, isTransportLoopbackHost, type ClientKind, type FleetClientRouteParams, type FleetClientRouteResult } from "@getdomovoi/protocol"
+import { fleetClientRouteResultSchema, isTransportLoopbackHost, type ClientKind, type FleetClientRouteParams, type FleetClientRouteResult, type TransportCandidate } from "@getdomovoi/protocol"
 
 import { DomovoiClient, type DomovoiEndpoint } from "./client.js"
 import { ClientAdmissionError, type ClientAdmission } from "./client-admission-policy.js"
@@ -8,6 +8,9 @@ import { FleetWorkerSocket } from "./fleet-worker-socket.js"
 
 export type FleetRouteReader = (params: FleetClientRouteParams, options: { deadline: Deadline }) => Promise<FleetClientRouteResult>
 export type FleetAccess = Required<ClientAdmission> & { credential: string }
+// The endpoint and the transport kind the route resolved to, so the shell can
+// name the route this client actually dials (route-word.ts).
+export type FleetEndpoint = DomovoiEndpoint & { routeKind: TransportCandidate["kind"] }
 
 // IPC is bounded by the same clock as route discovery, open, hello and the
 // receipt. The main process has its own maximum too; a late reply grants no use.
@@ -36,7 +39,7 @@ export function withinFleetDeadline<T>(deadline: Deadline, work: () => Promise<T
 export async function prepareFleetEndpoint(input: {
   machineId: string; credential: string; homeUrl: string; kind: ClientKind; route: FleetRouteReader;
   bridge?: Pick<DesktopWindowBridge, "fleetRoute">; deadline: Deadline
-}): Promise<DomovoiEndpoint> {
+}): Promise<FleetEndpoint> {
   try {
     let ticket: unknown
     const raw = await withinFleetDeadline(input.deadline, async () => {
@@ -58,13 +61,13 @@ export async function prepareFleetEndpoint(input: {
         throw new ClientAdmissionError("verification-unavailable")
       }
       const verifiedTicket = ticket
-      return { url: route.transport.endpoint, token: input.credential,
+      return { url: route.transport.endpoint, token: input.credential, routeKind: route.transport.kind,
         createSocket: (url) => {
           if (url !== route.transport.endpoint) throw new ClientAdmissionError("identity-mismatch")
           return new FleetWorkerSocket(url, verifiedTicket)
         } }
     }
-    return { url: route.transport.endpoint, token: input.credential }
+    return { url: route.transport.endpoint, token: input.credential, routeKind: route.transport.kind }
   } catch (error) { throw fleetAccessError(error) }
 }
 
