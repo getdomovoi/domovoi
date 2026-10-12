@@ -70,10 +70,9 @@ describe("the audit log's export line", () => {
 // device.rename, device.rotate and device.revoke from one by closing the
 // connection. The tab lists its daemon's devices but never sends those three.
 describe("paired devices in a browser tab", () => {
-  // The web app greets as web, phone or tablet by the browser it runs in.
-  it.each(["web", "phone", "tablet"] as const)("a %s tab lists them and never sends a rename, rotation or unpairing", async (clientKind) => {
+  it("a web tab lists them and never sends a rename, rotation or unpairing", async () => {
     const snapshot = workspaceSnapshot()
-    const socket = await openWorkspace(snapshot, { clientKind })
+    const socket = await openWorkspace(snapshot, { clientKind: "web" })
     const user = userEvent.setup()
     await user.click(screen.getByRole("button", { name: "Settings" }))
     await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
@@ -99,6 +98,23 @@ describe("paired devices in a browser tab", () => {
     expect(sentRequests(socket, "device.rename")).toEqual([])
     expect(sentRequests(socket, "device.rotate")).toEqual([])
     expect(sentRequests(socket, "device.revoke")).toEqual([])
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  // On a handheld browser the web app greets as phone or tablet, and the
+  // daemon refuses device.list from that credential too (phoneAndTabletRpcMethods).
+  it.each(["phone", "tablet"] as const)("a %s tab sends no device request at all", async (clientKind) => {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+    await screen.findByText(`Paired devices are off in a phone or tablet tab: the daemon does not list them for a phone or tablet credential. Use the desktop app on ${snapshot.machine.name}.`)
+    await settle()
+
+    for (const method of ["device.list", "device.rename", "device.rotate", "device.revoke"] as const) {
+      expect(sentRequests(socket, method)).toEqual([])
+    }
     expect(socket.readyState).toBe(socket.OPEN)
   })
 })

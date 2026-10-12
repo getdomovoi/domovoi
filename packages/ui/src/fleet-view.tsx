@@ -1270,10 +1270,15 @@ export function FleetView({
     }
   }, [onListDevices])
 
+  // The web app greets as phone or tablet on a handheld browser, and the
+  // daemon answers device.list from that credential by closing the
+  // connection (phoneAndTabletRpcMethods), so such a tab never asks.
+  const handheld = clientKind === "phone" || clientKind === "tablet"
+
   useEffect(() => {
-    if (!connected) return
+    if (!connected || handheld) return
     void loadDevices()
-  }, [connected, loadDevices])
+  }, [connected, handheld, loadDevices])
 
   const replaceDevice = (device: PairedDeviceSummary) => {
     setDevices((current) => current
@@ -1537,7 +1542,13 @@ export function FleetView({
               </Empty>
             ) : null}
 
-            {connected && !devices && !devicesError ? (
+            {connected && handheld ? (
+              <p className="m-0 px-[15px] pb-3 text-[11px] leading-relaxed text-faint">
+                {`Paired devices are off in a phone or tablet tab: the daemon does not list them for a phone or tablet credential. Use the desktop app on ${devicesMachineLabel ?? "this machine"}.`}
+              </p>
+            ) : null}
+
+            {connected && !handheld && !devices && !devicesError ? (
               <>
                 <table className="w-full animate-pulse border-collapse">
                   <caption className="sr-only">Devices paired with this machine</caption>

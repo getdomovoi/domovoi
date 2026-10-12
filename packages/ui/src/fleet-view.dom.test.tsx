@@ -604,9 +604,8 @@ function renderFleet(overrides: {
 // own credential, and refuses a device credential by closing the connection. A
 // browser tab always holds a device credential, so it offers none of the three
 // and says why beside each row, as Settings states its other locked controls.
-// The web app greets as web, phone or tablet by the browser it runs in.
-it.each(["web", "phone", "tablet"] as const)("locks Rename, Rotate and Unpair in a %s browser tab and says why beside each row", async (clientKind) => {
-  const { user, onRevokeDevice, onRotateDevice, onRenameDevice } = renderFleet({ clientKind, devices: [device, runner] })
+it("locks Rename, Rotate and Unpair in a browser tab and says why beside each row", async () => {
+  const { user, onRevokeDevice, onRotateDevice, onRenameDevice } = renderFleet({ clientKind: "web", devices: [device, runner] })
   const client = await screen.findByRole("row", { name: /studio-ipad/ })
   const machine = screen.getByRole("row", { name: /beelink-ser8/ })
 
@@ -629,6 +628,20 @@ it.each(["web", "phone", "tablet"] as const)("locks Rename, Rotate and Unpair in
   expect(onRenameDevice).not.toHaveBeenCalled()
   expect(onRotateDevice).not.toHaveBeenCalled()
   expect(onRevokeDevice).not.toHaveBeenCalled()
+})
+
+// On a handheld browser the web app greets as phone or tablet, and the daemon
+// answers device.list from such a credential by closing the connection
+// (phoneAndTabletRpcMethods). The tab never asks, and says so where the list
+// would be.
+it.each(["phone", "tablet"] as const)("never lists paired devices in a %s tab, and says why", async (clientKind) => {
+  const { onListDevices } = renderFleet({ clientKind, devices: [device, runner] })
+  await act(async () => { await Promise.resolve() })
+
+  expect(onListDevices).not.toHaveBeenCalled()
+  expect(screen.getByText("Paired devices are off in a phone or tablet tab: the daemon does not list them for a phone or tablet credential. Use the desktop app on workshop.")).toBeTruthy()
+  expect(screen.queryByText("Loading paired devices")).toBeNull()
+  expect(screen.queryByRole("row", { name: /studio-ipad/ })).toBeNull()
 })
 
 it("keeps Rename, Rotate and Unpair live in the desktop app", async () => {
