@@ -478,8 +478,13 @@ export function ThreadComposer({
             </DropdownMenuContent>
           </DropdownMenu>
           {/* v2's model chip follows the attachment control and opens the flat,
-              searchable list of what every harness here reports. */}
+              searchable list of what every harness here reports. The chips
+              are keyed on the connection: losing the daemon remounts them,
+              which closes an open menu or confirmation instead of leaving a
+              choice live the daemon cannot take, or a dialog whose buttons
+              are all off. */}
           <ModelPopover
+            key={connected ? "model-online" : "model-offline"}
             runtime={runtime}
             providers={providers}
             machineName={machineName}
@@ -494,8 +499,9 @@ export function ThreadComposer({
           />
           {/* v2's mode chip sits beside the model, and the effort chip
               after it. */}
-          <ModeChip runtime={runtime} pending={runtimePending || readOnly || !connected} onSetRuntime={onRuntimeChange} />
+          <ModeChip key={connected ? "mode-online" : "mode-offline"} runtime={runtime} pending={runtimePending || readOnly || !connected} onSetRuntime={onRuntimeChange} />
           <EffortChip
+            key={connected ? "effort-online" : "effort-offline"}
             runtime={runtime}
             model={effortModel}
             dropped={effortDropped}

@@ -1,5 +1,5 @@
-import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react"
+import { demoWorkspace, type ProviderModel, type Runtime, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useState } from "react"
 import { afterEach, expect, it, vi } from "vitest"
@@ -20,11 +20,13 @@ function idle(): WorkspaceSnapshot {
   return snapshot
 }
 
-function OfflineThread({ connected, onSend, onReconnect = vi.fn(), snapshot = idle() }: {
+function OfflineThread({ connected, onSend, onReconnect = vi.fn(), snapshot = idle(), onListModels = vi.fn(async () => []), onSetRuntime = vi.fn(async () => {}) }: {
   connected: boolean
   onSend: SendSpy
   onReconnect?: () => void
   snapshot?: WorkspaceSnapshot
+  onListModels?: (provider: string) => Promise<ProviderModel[]>
+  onSetRuntime?: (runtime: Runtime) => Promise<void>
 }) {
   const [queued, setQueued] = useState<QueuedMessage>()
   return (
@@ -46,9 +48,9 @@ function OfflineThread({ connected, onSend, onReconnect = vi.fn(), snapshot = id
         queued={queued}
         onQueuedChange={setQueued}
         onResolve={vi.fn(async () => {})}
-        onSetRuntime={vi.fn(async () => {})}
+        onSetRuntime={onSetRuntime}
         onForkSession={vi.fn(async () => {})}
-        onListModels={vi.fn(async () => [])}
+        onListModels={onListModels}
         onNewSession={vi.fn()}
         onSend={onSend}
         onCheckpoint={vi.fn(async () => {})}
@@ -133,6 +135,35 @@ it("sends nothing from the field while offline", () => {
 
   expect(onSend).not.toHaveBeenCalled()
   expect(field().value).toBe("Do the work")
+})
+
+// A model menu or its confirmation open when the link drops would leave a
+// choice live that the daemon cannot take, or a dialog whose buttons are all
+// off. Losing the daemon closes them.
+it("closes an open model menu and its confirmation when the daemon is lost", async () => {
+  const user = userEvent.setup()
+  const snapshot = idle()
+  snapshot.machine.providers = [{ id: "claude-code", command: "claude", status: "ready", sessionCapable: true }]
+  const models: ProviderModel[] = [
+    { provider: "claude-code", id: "sonnet-4.6", displayName: "sonnet-4.6", description: "", supportedReasoningEfforts: [], defaultReasoningEffort: "medium", isDefault: true },
+    { provider: "claude-code", id: "claude-opus-4.2", displayName: "claude-opus-4.2", description: "", supportedReasoningEfforts: [], defaultReasoningEffort: "medium", isDefault: false },
+  ]
+  const onListModels = vi.fn(async () => models)
+  const onSetRuntime = vi.fn(async () => {})
+  const onSend = vi.fn<SendSpy>(async () => {})
+  const { rerender } = render(<OfflineThread connected onSend={onSend} snapshot={snapshot} onListModels={onListModels} onSetRuntime={onSetRuntime} />)
+  const trigger = within(composerCard()).getByRole("button", { name: /·/u })
+  await user.click(trigger)
+  await act(async () => { for (let index = 0; index < 8; index += 1) await Promise.resolve() })
+  await user.click(screen.getByRole("option", { name: "claude-opus-4.2, claude-code" }))
+  expect(screen.getByText("Switch here or fork session?")).toBeTruthy()
+
+  rerender(<OfflineThread connected={false} onSend={onSend} snapshot={snapshot} onListModels={onListModels} onSetRuntime={onSetRuntime} />)
+
+  expect(screen.queryByText("Switch here or fork session?")).toBeNull()
+  expect(screen.queryByRole("listbox", { name: "Models" })).toBeNull()
+  expect((within(composerCard()).getByRole("button", { name: /·/u }) as HTMLButtonElement).disabled).toBe(true)
+  expect(onSetRuntime).not.toHaveBeenCalled()
 })
 
 // The larger editor is the same draft, and its send is the composer's send.
