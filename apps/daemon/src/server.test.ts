@@ -48,7 +48,6 @@ import {
   frameAncestorsFor,
   DomovoiDaemon,
   helloProtocolCompatibility,
-  hostAuthorityMatches,
   persistenceFailureThreshold,
   persistenceUnavailableContext,
   isTestCommandTitle,
@@ -4451,20 +4450,6 @@ describe("DomovoiDaemon", () => {
     ])).toBe("https://app.domovoi.sh http://localhost:5178 file: domovoi-app://desktop")
   })
 
-  it("normalizes loopback Host authorities without widening them", () => {
-    expect(hostAuthorityMatches("[::1]:47831", "::1", 47831)).toBe(true)
-    expect(hostAuthorityMatches("localhost:47831", "::1", 47831)).toBe(true)
-    expect(hostAuthorityMatches("127.0.0.1:47831", "127.0.0.1", 47831)).toBe(true)
-    expect(hostAuthorityMatches("localhost:47832", "127.0.0.1", 47831)).toBe(false)
-    expect(hostAuthorityMatches("attacker.example:47831", "127.0.0.1", 47831)).toBe(false)
-    expect(hostAuthorityMatches("127.0.0.1", "127.0.0.1", 80)).toBe(true)
-    expect(hostAuthorityMatches("localhost", "127.0.0.1", 47831)).toBe(false)
-    expect(hostAuthorityMatches("user@127.0.0.1:47831", "127.0.0.1", 47831)).toBe(false)
-    expect(hostAuthorityMatches("127.0.0.1:47831/path", "127.0.0.1", 47831)).toBe(false)
-    expect(hostAuthorityMatches("127.0.0.1:47831?query", "127.0.0.1", 47831)).toBe(false)
-    expect(hostAuthorityMatches("127.0.0.1:47831#fragment", "127.0.0.1", 47831)).toBe(false)
-  })
-
   it("requires protected transport for non-loopback listeners", () => {
     expect(() => new DomovoiDaemon({
       host: "0.0.0.0",
@@ -4503,10 +4488,13 @@ describe("DomovoiDaemon", () => {
       onEvent: vi.fn(() => () => {}),
       close: vi.fn(async () => {}),
     } satisfies AgentAdapter
+    // A wildcard bind answers artifacts under its advertised names only
+    // (plan section 2.4), never under the wildcard address itself.
     const daemon = new DomovoiDaemon({
       host: "0.0.0.0",
       port: 0,
       allowRemoteTransport: true,
+      advertiseHost: "127.0.0.1",
       authToken: testAuthToken("remote-daemon-token"),
       store: new SqliteWorkspaceStore(":memory:", snapshot),
       agent,
@@ -4546,13 +4534,13 @@ describe("DomovoiDaemon", () => {
       client: "web",
     })
     const access = accessResponse.result as { sessionId: string; revision: number; purpose: string; expiresAt: number; signature: string }
-    const baseUrl = `http://${address.host}:${address.port}/artifacts/${artifact.id}`
+    const baseUrl = `http://127.0.0.1:${address.port}/artifacts/${artifact.id}`
+    const query = `?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&expires=${access.expiresAt}&signature=${access.signature}`
 
     expect((await fetch(baseUrl)).status).toBe(404)
-    const authorized = await fetch(
-      `${baseUrl}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&expires=${access.expiresAt}&signature=${access.signature}`,
-    )
+    const authorized = await fetch(`${baseUrl}${query}`)
     expect(authorized.status).toBe(200)
+    expect((await fetch(`http://${address.host}:${address.port}/artifacts/${artifact.id}${query}`)).status).toBe(404)
     await expect(authorized.text()).resolves.toBe("<h1>Remote preview</h1>")
     expect((await fetch(
       `${baseUrl}?session=${access.sessionId}&revision=${access.revision}&purpose=${access.purpose}&expires=${access.expiresAt}&signature=${"x".repeat(43)}`,

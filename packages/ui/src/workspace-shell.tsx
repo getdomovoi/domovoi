@@ -621,8 +621,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     restoreFocusAfterUpdate(pinned ? dockUnpinButtonRef : sheetPinButtonRef)
   }
 
+  // Q362 A: this window's own preference, saved by the desktop, never the
+  // daemon, so a watching window changes it too.
   const changeWindowDecoration = (decoration: WorkspaceWindowDecoration) => {
-    if (watching) return
     setWorkspaceUi((current) => ({ ...current, windowDecoration: decoration }))
     if (!windowBridge) return
     setWorkspaceError("")
@@ -1747,8 +1748,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             })}
             approvalRules={snapshot.approvalRules}
             notifications={notificationPreferences}
+            // Q362 A: notifications and theme stay on this client and never
+            // reach the daemon, so a watching window changes them too.
             onNotificationsChange={(next: NotificationPreferences) => {
-              if (watching) return
               setWorkspaceUi((current) => ({ ...current, notifications: next }))
             }}
             {...(notificationDelivery && installState ? {
@@ -1762,9 +1764,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onOpenFleet={() => setSurface("fleet")}
             onOpenSkills={() => setSurface("skills")}
             onOpenAudit={() => setSurface("audit")}
+            onOpenPermissions={() => openSheetTab("rules")}
+            onOpenCheckpoints={openCheckpoints}
             theme={theme}
             onThemeChange={(next: WorkspaceTheme) => {
-              if (watching) return
               setWorkspaceUi((current) => ({ ...current, theme: next }))
             }}
             {...(firstRunEnabled ? { onResetFirstRun: resetFirstRun } : {})}

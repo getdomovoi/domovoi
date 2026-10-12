@@ -240,18 +240,12 @@
         "need you",
         "label=\"UNREACHABLE\"",
         "<UnreachableMachines fleet={fleet} now={fleetNow} />",
-        "re:<Badge[^\\n]*need you"
-      ],
-      "presence": [
-        "NEEDS YOU",
-        "need you",
-        "label=\"UNREACHABLE\"",
-        "<UnreachableMachines fleet={fleet} now={fleetNow} />"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "ruling Q358 A settles the third group: QUIET for idle sessions, plus the UNREACHABLE line for fleet machines that do not answer. Not ruled and not built: the header's need-you count is a meta line, not frame 01's warning pill; group counts are plain, not tinted pills; NEEDS YOU cards sit on the card colour, not warn-bg with warn-border; the gate shows as runtime and mode badges with an uppercase approval label, not a gate pill. The evidence for the pill is the count drawn as a Badge"
-      }
+        "testID=\"needs-you-pill\" className=\"rounded-full bg-warn-bg",
+        "testID={`group-count-${id}`}",
+        "\"needs-you\": \"warning\"",
+        "approval: { text: \"gate\"",
+        "\"border-warn-border bg-warn-bg\""
+      ]
     },
     {
       "id": "sessions.gates-while-open",
@@ -325,7 +319,8 @@
         "Reverting happens on a desktop",
         "was taken first, then it ran in",
         "Renaming the device later does not rewrite the record.",
-        "allow once"
+        "\"allow-once\": \"allow once\"",
+        "[\"Credential\", entry.credential]"
       ],
       "presence": [
         "Allowed once",
@@ -334,8 +329,8 @@
         "Reverting happens on a desktop"
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "RECORDED AS differs from frame 03: the Decision row shows the recorded value (allow-once) rather than the words allow once; Decided on shows the client kind (phone) rather than the device's label; the checkpoint is named by its commit because the receipt carries no short checkpoint id (kept by ruling Q357 A). By the same ruling the record, the notes and Watch appear only on the latest receipt of the open turn, every other receipt is its headline and checkpoint line, and the phone draws no Decided after row. The design's Credential row (device 9c41…a7e) is not drawn: current receipts record a verified connection id, not a credential, and a legacy receipt's clientId is a value the hello declared, so the phone lists it as Declared client. The note that the audit row names this phone's verified credential is not drawn: a receipt records a client kind and a connection id, and a daemon bearer typed into Settings can declare phone over a recorded connection too, so the phone cannot show the claim is true for a given receipt"
+        "since": "2026-10-11",
+        "reason": "SL-6 (P5, 2026-10-11): the Decision row names the decision in words (allow once), Decided on is the paired device's label the daemon wrote on the receipt (ruling Q424 A), and a Credential row names that paired device by its shortened id; a receipt with no device (the daemon credential, or one written before the field) names the client kind and draws no Credential row, and a legacy clientId stays Declared client. An allow that took no checkpoint says It ran in <duration>. on its own line (status item 12). Still different: the checkpoint is named by its commit because the receipt carries no short checkpoint id (kept by ruling Q357 A); by the same ruling the record, the notes and Watch appear only on the latest receipt of the open turn, every other receipt is its headline and checkpoint line, and the phone draws no Decided after row. The note that the audit row names this phone's verified credential is not drawn: the session screen is not told this phone's device id, so it cannot show the receipt's device is this phone"
       }
     },
     {
@@ -420,7 +415,8 @@
       ],
       "evidence": [
         "THIS PHONE WILL BE ABLE TO",
-        "{phoneAndTabletPromise.map((line) => ("
+        "{phoneAndTabletPromise.map((line) => (",
+        "Read terminal output. It cannot type, resize or take the claim."
       ]
     },
     {
@@ -666,11 +662,23 @@
       ],
       "evidence": [
         "attach.image.model_no_input",
-        "as its harness reports"
+        "as its harness reports",
+        "Locked for this model.",
+        "cannot go to ",
+        "Remove them or pick another model.",
+        "`Remove ${imageCount}`",
+        "call(\"runtime.models\", { provider, client })",
+        "Change model"
       ],
-      "missing": {
-        "since": "2026-10-02",
-        "reason": "not built on the phone. The protocol no longer blocks it: providerModelSchema carries imageInput per model since d5bdbe60, runtime.models is on the phone allow-list, the daemon refuses with image-input-unsupported, and modelImageInputRefusalCode is the client constant frame 13b draws. The phone reads the refusal (attachments.ts) but never asks runtime.models, so it cannot lock a source or name the model before send"
+      "presence": [
+        "as its harness reports",
+        "Locked for this model.",
+        "cannot go to ",
+        "call(\"runtime.models\", { provider, client })"
+      ],
+      "partial": {
+        "since": "2026-10-11",
+        "reason": "SL-6 (P3, 2026-10-11) built frames 13, 13b (guard A) and 14b from runtime.models: the phone asks for the open session's provider (use-model-images.ts) and reads imageInput for the session's model. The attach sheet names the model and what its harness reports; a model reported to take none locks Photo or screenshot and Take a photo with Locked for this model. and refused by <machine> · attach.image.model_no_input; queued images for such a model lock send with N images cannot go to <model>. Remove them or pick another model. and Remove N images, which unlocks it. Image input that is not known (not read yet, not answered, or not reported) locks nothing: the sheet says image input not known and the composer says Domovoi does not know whether <model> takes image input, and that the machine refuses the send if it does not. Not built: Change model, because the phone has no model picker (session.setRuntime is on the allow-list but no phone screen sends it); the harness mark beside the model is not drawn (ruling Q388); the lock glyph is the ban icon the phone already ships. Not checked on a device"
       }
     },
     {
@@ -712,15 +720,19 @@
       "evidence": [
         "The render stays on",
         "only as a bookmark for whoever is viewing; the agent is not told which one.",
+        "is the one the agent was told to build on.",
+        "only a message that sends one changes what the agent was told.",
+        "testID=\"build-basis-check\"",
         "is the one the agent builds on"
       ],
       "presence": [
         "The render stays on",
-        "only as a bookmark for whoever is viewing; the agent is not told which one."
+        "only as a bookmark for whoever is viewing; the agent is not told which one.",
+        "is the one the agent was told to build on."
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "frame 17 names which variant the agent builds on and checks its tab, and says a choice is a commitment. Under ruling Q342 A a desktop's choice is a bookmark for whoever is viewing until the chosen variant travels with a comment (Q348, protocol), so the phone says the agent is not told which one and does not draw the build-basis line (previewBuildBasis in packages/ui/src/workspace-persistence.ts is per-client state; artifactVariantSchema has no such field). The variant switch, its note and Comment also sit at the top of the screen rather than in the floating card at the foot"
+        "since": "2026-10-11",
+        "reason": "SL-6 (P4, 2026-10-11) checked the inference: the wire carries the build basis (sessionSendReviewSchema.buildBasis, a894fcb7) and the daemon tells the agent (annotation-context.ts: Build on that preview.) and records it on the message's delivery record (providerPromptDelivery.annotations.buildBasis). No client sends one yet: previewBuildBasis in packages/ui/src/workspace-persistence.ts is still per-client state and no session.send names it. The phone now reads the latest recorded basis (recordedBuildBasis in session-detail.ts); when it is a variant of the open render, the phone says <label> is the one the agent was told to build on., checks that tab, and says A variant marked at a desktop stays a bookmark for whoever is viewing; only a message that sends one changes what the agent was told. With none recorded, which is every session today, it keeps the bookmark sentence of ruling Q342 A. Still different: the line says was told to build on rather than frame 17's builds on, because the record proves the agent was told, not what it did; frame 17's Choosing which variant the agent builds on happens at a desktop. A comment is a note; a choice is a commitment. is not drawn, because a desktop's marked variant is still a bookmark that no client sends; the variant switch, its note and Comment sit at the top of the screen rather than in the floating card at the foot"
       }
     },
     {
@@ -862,6 +874,11 @@
       "note": "NEEDS YOU never collapses: behaviour, not copy"
     },
     {
+      "id": "sessions.list",
+      "since": "2026-10-11",
+      "note": "SL-6 (P6) built frame 01's pills: the header's N need you is a warn-bg pill, each group count is a pill tinted by its group (NEEDS YOU warning, RUNNING success, QUIET and UNREACHABLE muted), NEEDS YOU cards sit on warn-bg with warn-border, and an approval shows as a gate pill on the card. Kept differences: the header keeps its meta line (machine, running count, fleet summary) under the title; each card keeps its runtime and mode badges, and its meta line names the machine and the wait but not the project, because a snapshot is one project's sessions; a preview keeps a primary preview pill, which frame 01 does not draw. Not checked on a device"
+    },
+    {
       "id": "shell.tab-bar",
       "since": "2026-10-02",
       "note": "approved difference, ruling Q330 A: the design draws the tab bar as a solid card; the phone keeps the floating bar's wash and blur (FloatingBar in floating-bar.tsx), because fetzy asked for the Android blur to match iOS. A solid bar was built in c5361d0c and reverted in 6547a654"
@@ -895,6 +912,11 @@
       "id": "attach.sheet",
       "since": "2026-10-06",
       "note": "approved difference, ruling Q8 A, 2026-10-06: the Terminal output row says not built: a phone reads a terminal but cannot pick its output to attach, not the design's waits on a read-only terminal path, which a phone does not have yet, which stopped being true when watching.screen was built. The design's open question 5 names the change; attaching a selection is not drawn"
+    },
+    {
+      "id": "pairing.grant-line",
+      "since": "2026-10-11",
+      "note": "approved difference, ruling Q61 A, 2026-10-11 (task 72): the grant list now carries 04g's When this ships line, Read terminal output. It cannot type, resize or take the claim., as a grant with the success dot, in the place of Terminal output is not on a phone yet., which stopped being true when #739 let a phone watch terminal output. PairingCard and 04g's Today row still draw the old line, and GRANTS_NEXT marks the new one proposed, not shipped; the desktop card, the command line and the phone change together because they read one list, phoneAndTabletPromise. The line is true to the allow-list: terminal.list, terminal.watch and terminal.unwatch are on phoneAndTabletRpcMethods, and terminal.input, terminal.resize, terminal.claim, terminal.release, terminal.create and terminal.close are not. The design's open question on canonical copy (\"... Everything else here works.\" with a warning dot) is moot for this line"
     }
   ],
   "scriptBacklog": {
