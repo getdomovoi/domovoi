@@ -224,6 +224,10 @@ export function ThreadComposer({
     <div ref={composerCard} data-workspace-composer="" className={cn(
       "relative mx-auto flex max-w-[var(--shell-thread)] flex-col gap-[11px] rounded-[16px] border bg-card pt-[13px] pr-[15px] pb-[11px] pl-[15px]",
       readOnly && "[&_button:disabled]:opacity-[.45]",
+      // Offline the design dims the whole card to .5 and nothing in it is
+      // live. The card carries the dimming, so a control that is off is not
+      // dimmed a second time.
+      !connected && "opacity-50 [&_button:disabled]:opacity-100",
     )}>
       {notice}
       {failures.map((attempt) => (
@@ -234,7 +238,7 @@ export function ThreadComposer({
             <Button
               variant="ghost"
               size="sm"
-              disabled={readOnly}
+              disabled={readOnly || !connected}
               onClick={() => {
               // Queueing it again replaces whatever is waiting, which the
               // person can see beside it before they press.
@@ -269,7 +273,7 @@ export function ThreadComposer({
               : turnRunning ? "queued, sends when this turn ends" : "queued"}
           </span>
           {queued.state === "held" ? (
-            <Button variant="ghost" size="sm" disabled={readOnly || turnRunning || pending || emergencyStopPending || providerRestartRequired} onClick={() => onQueuedChange({ ...queued, state: "waiting" })}>Send</Button>
+            <Button variant="ghost" size="sm" disabled={readOnly || !connected || turnRunning || pending || emergencyStopPending || providerRestartRequired} onClick={() => onQueuedChange({ ...queued, state: "waiting" })}>Send</Button>
           ) : null}
           <Button variant="ghost" size="icon-sm" aria-label="Unqueue the message" className="size-6 flex-none text-faint" disabled={readOnly} onClick={() => onQueuedChange(undefined)}><XIcon className="size-3" /></Button>
         </div>
@@ -351,7 +355,7 @@ export function ThreadComposer({
         aria-expanded={slashOpen}
         aria-controls={slashOpen ? slashListId : undefined}
         rows={2}
-        disabled={readOnly}
+        disabled={readOnly || !connected}
         // v2 draws the field with no box of its own: it sits straight on
         // the card. The dark variant on the shared Textarea has to be
         // turned off by name, or it paints a panel the design never draws.
@@ -359,7 +363,7 @@ export function ThreadComposer({
         // or the field renders at 14px on every desktop width.
         className={slashOpen
           ? "sr-only"
-          : "max-h-[172px] min-h-[22px] resize-none overflow-y-auto border-0 bg-transparent p-0 text-[13.5px] leading-[1.6] shadow-none [field-sizing:content] focus-visible:ring-0 md:text-[13.5px] dark:bg-transparent"}
+          : "max-h-[172px] min-h-[22px] resize-none overflow-y-auto border-0 bg-transparent p-0 text-[13.5px] leading-[1.6] shadow-none [field-sizing:content] placeholder:text-faint focus-visible:ring-0 md:text-[13.5px] dark:bg-transparent"}
         placeholder={connected && freshProject
           ? `Say what you want done in ${freshProject}`
           : surface === "web" && connected
@@ -433,7 +437,7 @@ export function ThreadComposer({
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
-              <Button variant="ghost" size="icon-sm" aria-label="Attach" className="size-7 rounded-full" disabled={readOnly || attachments.length >= desktopAttachmentLimit}>
+              <Button variant="ghost" size="icon-sm" aria-label="Attach" className="size-7 rounded-full" disabled={readOnly || !connected || attachments.length >= desktopAttachmentLimit}>
                 <PaperclipIcon className="size-4" />
               </Button>
             </DropdownMenuTrigger>
@@ -474,7 +478,7 @@ export function ThreadComposer({
             runtime={runtime}
             providers={providers}
             machineName={machineName}
-            pending={runtimePending || readOnly}
+            pending={runtimePending || readOnly || !connected}
             turnRunning={turnRunning}
             {...(forkCheckpointId ? { forkCheckpointId } : {})}
             {...(forkBlockedReason ? { forkBlockedReason } : {})}
@@ -485,12 +489,12 @@ export function ThreadComposer({
           />
           {/* v2's mode chip sits beside the model, and the effort chip
               after it. */}
-          <ModeChip runtime={runtime} pending={runtimePending || readOnly} onSetRuntime={onRuntimeChange} />
+          <ModeChip runtime={runtime} pending={runtimePending || readOnly || !connected} onSetRuntime={onRuntimeChange} />
           <EffortChip
             runtime={runtime}
             model={effortModel}
             dropped={effortDropped}
-            pending={runtimePending || readOnly}
+            pending={runtimePending || readOnly || !connected}
             onSetRuntime={onRuntimeChange}
           />
           {/* v2 opens the machine surfaces from the row itself, on Changes.
@@ -515,7 +519,7 @@ export function ThreadComposer({
             size="icon-sm"
             aria-label="Expand prompt editor"
             className="size-7 flex-none rounded-full text-muted-foreground hover:bg-accent hover:text-foreground"
-            disabled={readOnly}
+            disabled={readOnly || !connected}
             onClick={onOpenPromptEditor}
           >
             <Maximize2Icon className="size-4" />

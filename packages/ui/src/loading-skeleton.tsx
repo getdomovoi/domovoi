@@ -1,3 +1,6 @@
+import { useState } from "react"
+
+import { useWorkspaceConnection } from "./connection-status"
 import { cn } from "./lib/utils"
 
 // The design draws exactly two loading states and calls them "skeletons in the
@@ -39,15 +42,33 @@ export function SkeletonBars({ blocks }: { blocks: number }) {
   )
 }
 
+// Before the hello there is no machine name, only what was dialled. An RPC
+// address names its host; the scheme and path say nothing to a reader.
+function readingFrom(from: string): string {
+  if (!/^(?:wss?|https?):\/\//iu.test(from)) return from
+  try {
+    return new URL(from).host || from
+  } catch {
+    return from
+  }
+}
+
 // Ruled Q344 A: once the first attempt has failed, nothing is being read, so
-// the shimmer stops and the line says so. notConnectedTo names the host the
-// client dialled. The shell's banner keeps saying what it is doing about it.
-export function ThreadSkeleton({ reading, notConnectedTo }: { reading: string, notConnectedTo?: string | undefined }) {
-  const still = notConnectedTo !== undefined
+// the shimmer stops and the line says so, and it stays stopped while the next
+// attempt runs under the banner. The shell's banner keeps saying what it is
+// doing about it. `from` is the machine being read, or the address dialled.
+export function ThreadSkeleton({ from }: { from: string }) {
+  const connection = useWorkspaceConnection()
+  const failing = connection !== null && !connection.connected
+    && (connection.reconnecting || connection.connectionError !== "" || connection.authenticationRequired !== null)
+  const [failed, setFailed] = useState(failing)
+  if (failing && !failed) setFailed(true)
+  const still = failed || failing
+  const target = readingFrom(from)
   return (
     <div data-testid="thread-skeleton" className="flex min-h-0 flex-1 flex-col gap-4 p-4">
       <p role="status" className="font-machine text-mono-xs text-faint">
-        {still ? `Not connected. Nothing has been read from ${notConnectedTo} yet.` : reading}
+        {still ? `Not connected. Nothing has been read from ${target} yet.` : `reading the thread from ${target}`}
       </p>
       {[0, 1, 2].map((block) => (
         <div key={block} className="flex flex-col gap-2">

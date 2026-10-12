@@ -1,7 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, render, screen } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
-import { WorkspaceConnectionStatus } from "./connection-status.js"
+import { useWorkspaceConnection, WorkspaceConnectionProvider, WorkspaceConnectionStatus } from "./connection-status.js"
 
 afterEach(cleanup)
 
@@ -60,17 +60,48 @@ describe("WorkspaceConnectionStatus", () => {
     expect(screen.queryByText("Lost the daemon")).toBeNull()
   })
 
-  it("keeps the lost-daemon copy for an ordinary disconnect", () => {
+  // The design's banner: the machine on one line, then the mono line that says
+  // what is still true on it.
+  it("names the machine and says what is still intact on it", () => {
     render(<WorkspaceConnectionStatus {...baseProps} reconnecting />)
 
+    expect(screen.getByText("Lost the daemon on this-machine")).toBeDefined()
     expect(
-      screen.getByText(
-        "Lost the daemon on this-machine. The worktree and this thread are intact on the machine. Nothing was rolled back.",
-      ),
+      screen.getByText("the worktree and this thread are intact on the machine, nothing was rolled back"),
     ).toBeDefined()
     expect(screen.getByText("retrying")).toBeDefined()
     expect(screen.getByRole("button", { name: "Retry now" })).toBeDefined()
     expect(screen.queryByRole("button", { name: "Change credential" })).toBeNull()
+  })
+
+  // Drawn as an outline in the banner's own danger tones. A filled
+  // destructive button reads as an action that destroys something.
+  it("draws Retry now as an outline in danger tones", () => {
+    render(<WorkspaceConnectionStatus {...baseProps} />)
+
+    const retry = screen.getByRole("button", { name: "Retry now" })
+    expect(retry.className).toContain("border-danger-border")
+    expect(retry.className).toContain("text-danger-foreground")
+    expect(retry.className).not.toContain("bg-destructive")
+  })
+
+  it("says when the daemon was last heard only when that is known", () => {
+    const lostAt = new Date("2026-10-12T10:00:00.000Z")
+    const { rerender } = render(
+      <WorkspaceConnectionStatus {...baseProps} lastHeardAt={lostAt} now={new Date("2026-10-12T10:00:41.000Z")} />,
+    )
+    expect(screen.getByText("Lost the daemon on this-machine, last heard 41s ago")).toBeDefined()
+
+    rerender(<WorkspaceConnectionStatus {...baseProps} lastHeardAt={undefined} now={new Date("2026-10-12T10:00:41.000Z")} />)
+    expect(screen.getByText("Lost the daemon on this-machine")).toBeDefined()
+    expect(screen.queryByText(/last heard/u)).toBeNull()
+  })
+
+  it("leaves the lost banner to the thread column when the shell has one", () => {
+    render(<WorkspaceConnectionStatus {...baseProps} lostBanner={false} protocolError="Client is too old" />)
+
+    expect(screen.queryByText(/Lost the daemon/u)).toBeNull()
+    expect(screen.getByText("This client is out of date with the daemon. Client is too old")).toBeDefined()
   })
 
   it("offers the credential action when one is available", () => {
@@ -92,5 +123,46 @@ describe("WorkspaceConnectionStatus", () => {
     screen.getByRole("button", { name: "Retry now" }).click()
 
     expect(onReconnect).toHaveBeenCalledOnce()
+  })
+})
+
+// Last heard is when this client saw an open connection to that machine close.
+// A client that opened with the daemon already gone never heard it, and a
+// switch to another machine is not a loss of this one.
+describe("WorkspaceConnectionProvider", () => {
+  const connection = { ...baseProps, connected: true }
+  function Banner() {
+    const state = useWorkspaceConnection()
+    return state ? <WorkspaceConnectionStatus {...state} /> : null
+  }
+
+  afterEach(() => { vi.useRealTimers() })
+
+  it("records last heard when it sees the connection close", () => {
+    vi.useFakeTimers({ now: new Date("2026-10-12T10:00:00.000Z") })
+    const { rerender } = render(<WorkspaceConnectionProvider {...connection}><Banner /></WorkspaceConnectionProvider>)
+    rerender(<WorkspaceConnectionProvider {...connection} connected={false}><Banner /></WorkspaceConnectionProvider>)
+    act(() => { vi.advanceTimersByTime(41_000) })
+
+    expect(screen.getByText("Lost the daemon on this-machine, last heard 41s ago")).toBeDefined()
+
+    rerender(<WorkspaceConnectionProvider {...connection}><Banner /></WorkspaceConnectionProvider>)
+    expect(screen.queryByText(/Lost the daemon/u)).toBeNull()
+  })
+
+  it("does not invent a time for a daemon it never heard", () => {
+    render(<WorkspaceConnectionProvider {...connection} connected={false}><Banner /></WorkspaceConnectionProvider>)
+
+    expect(screen.getByText("Lost the daemon on this-machine")).toBeDefined()
+    expect(screen.queryByText(/last heard/u)).toBeNull()
+  })
+
+  it("does not carry last heard to a machine it was not heard from", () => {
+    const { rerender } = render(<WorkspaceConnectionProvider {...connection}><Banner /></WorkspaceConnectionProvider>)
+    rerender(<WorkspaceConnectionProvider {...connection} connected={false} machineName={undefined}><Banner /></WorkspaceConnectionProvider>)
+    rerender(<WorkspaceConnectionProvider {...connection} connected={false} machineName="other-machine"><Banner /></WorkspaceConnectionProvider>)
+
+    expect(screen.getByText("Lost the daemon on other-machine")).toBeDefined()
+    expect(screen.queryByText(/last heard/u)).toBeNull()
   })
 })
