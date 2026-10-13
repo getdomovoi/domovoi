@@ -54,14 +54,20 @@ function checkpointingWorkspace(): WorkspaceService {
   }
 }
 
-// One call's budget. An Allow settles its card again first, which may spend
-// the whole real path lookup budget by design, and then saves, copies and
-// sends the snapshot, in-process work timed by the suite's observation budget
-// for this platform. A fixed 4 s left 2 s for that work on every platform. On
+// One call's budget, an allowance from measurement rather than a bound on the
+// call: an Allow reads its file target and saves through the persistence
+// worker with no deadline of their own. Between those it settles the card
+// again, which may spend the whole real path lookup budget by design. On
 // Windows CI the hidden-file test below took twice as long as on macOS (median
-// 4951 ms against 2397 ms over 100 runs), and twice one approval.resolve
-// there outlived 4 s (CI runs 37097510351 and 38320188619).
-const rpcTimeoutMs = realPathLookupBudgetMs + daemonWaitTimeoutMs(process.platform)
+// 4951 ms against 2397 ms over 100 runs), and twice one approval.resolve there
+// outlived a fixed 4 s (CI runs 37097510351 and 38320188619), so Windows gets
+// the lookup budget plus its observation budget, 12 s, below its 30 s test
+// budget. On macOS and Linux CI no call outlived 4 s in 600 runs, and 4 s
+// stays below the 5 s test budget, so a call that never answers is named
+// before the test times out.
+const rpcTimeoutMs = process.platform === "win32"
+  ? realPathLookupBudgetMs + daemonWaitTimeoutMs(process.platform)
+  : 4_000
 
 function rpc(socket: WebSocket, method: string, params: Record<string, unknown> = {}) {
   const id = ++requestId
