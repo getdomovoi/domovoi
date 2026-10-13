@@ -8,7 +8,7 @@ import { dateTimeSchema, offsetDateTimeSchema, utf16Length, utf16MaxLength } fro
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
 import { approvalRuleRevokeParamsSchema, permissionHardGatesParamsSchema, permissionHardGatesResultSchema } from "./rules.js"
-import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, midTurnCheckpointSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import {
   updateActivateParamsSchema,
   updateActivateResultSchema,
@@ -463,6 +463,7 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     ...historyEntryBase,
     category: z.literal("checkpoints"),
     reason: checkpointReasonSchema.optional(),
+    midTurn: midTurnCheckpointSchema.optional(),
     label: z.string(),
     commit: commitShaSchema.optional(),
   }),

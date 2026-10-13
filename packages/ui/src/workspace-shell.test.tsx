@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, PreviewVariantThumbnail, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, PreviewVariantThumbnail, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
 import { ProviderReadinessList } from "./launcher-dialog"
 import { buildWorkspaceCommands } from "./workspace-commands"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
@@ -441,15 +441,6 @@ describe("HistoryPanel", () => {
   })
 })
 
-describe("checkpointBlockedReason", () => {
-  it("explains why manual checkpoints are unavailable during an active turn", () => {
-    expect(checkpointBlockedReason("turn-active")).toBe(
-      "Stop the active turn before creating a checkpoint",
-    )
-    expect(checkpointBlockedReason(undefined)).toBeUndefined()
-  })
-})
-
 describe("Thread", () => {
   // v2 carries no fixed session banner, so the worktree action lives in the
   // command palette. The editor it names is still the one the operator chose.
@@ -610,7 +601,7 @@ describe("archived annotation controls", () => {
       />,
     )
 
-    expect(markup).toContain("text anchor")
+    expect(markup).toContain("anchor holds")
     expect(markup).toContain("anchor unavailable")
     expect(markup).toContain("visual context · 320×120 · revision 3")
   })
@@ -638,7 +629,7 @@ describe("archived annotation controls", () => {
 
     expect(markup).toContain(annotations[0]!.body)
     expect(markup).not.toContain(">Reply</button>")
-    expect(markup).not.toContain(">Resolve</button>")
+    expect(markup).not.toContain(">Mark resolved</button>")
     expect(sessionIsArchiveReadOnly({ ...archived, state: "archiving" })).toBe(true)
     expect(sessionIsArchiveReadOnly({ ...archived, state: "idle" })).toBe(false)
 
@@ -677,7 +668,10 @@ describe("archived annotation controls", () => {
     )
     expect(dock).not.toContain("Add a comment")
     expect(dock).toContain("Variant A")
-    expect(dock).toContain("Viewing · Variant A")
+    // The state line reads; choosing a basis is a send-side change a
+    // read-only viewer cannot make.
+    expect(dock).toContain("none chosen, both stay alive")
+    expect(dock).not.toContain("Build on this")
     expect(dock).toContain("390 pixel preview")
     // Q380 A: Print view, Download safe copy and Compare stay for a read-only
     // viewer, behind the toolbar's overflow control (closed in static markup).

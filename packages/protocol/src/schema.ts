@@ -5,7 +5,7 @@ import { dateTimeSchema, offsetDateTimeSchema, utf16MaxLength } from "./validati
 import { executionResolutionSchema, resolvedExecutionSchema } from "./execution.js"
 import { maximumImageUploadBytes, maximumImageUploadDimension, maximumSessionAttachments, maximumTextAttachmentBytes } from "./image-upload.js"
 import { providerPromptDeliverySchema } from "./prompt-delivery.js"
-import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, midTurnCheckpointSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
 
 import {
@@ -672,6 +672,7 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     turnId: sessionTurnIdSchema.optional(),
     kind: z.literal("checkpoint"),
     reason: checkpointReasonSchema.optional(),
+    midTurn: midTurnCheckpointSchema.optional(),
     label: z.string(),
     commit: commitShaSchema.optional(),
     createdAt: dateTimeSchema,

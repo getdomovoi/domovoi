@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { execFile as execFileCallback } from "node:child_process"
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -24,6 +24,20 @@ const metadata = {
 }
 
 describe("daemon update state", () => {
+  it("refuses stored documents whose bytes do not match their trust record", async () => {
+    const home = await mkdtemp(join(tmpdir(), "domovoi-update-document-test-"))
+    const lease = claimProfile(home)
+    try {
+      await writeFile(join(home, ".domovoi", "update-metadata.json"), JSON.stringify({
+        ...metadata, documents: { root: JSON.stringify({ signed: { version: 1 } }) },
+      }))
+      await expect(readTrustedUpdateMetadata(home)).rejects.toThrow(/does not match/)
+    } finally {
+      lease.release()
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+
   it("persists trusted metadata atomically under a held profile lease", async () => {
     const home = await mkdtemp(join(tmpdir(), "domovoi-update-state-"))
     const lease = claimProfile(home)

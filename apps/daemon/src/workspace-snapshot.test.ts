@@ -74,6 +74,61 @@ async function observe(path: string) {
 }
 
 describe("GitWorkspaceService.snapshot", () => {
+  it("drops newly ignored untracked paths on a later pass but retains original tracked paths", async () => {
+    const { path } = await worktreeWithWork()
+    const before = await observe(path)
+    let pass = 0
+    const service = new GitWorkspaceService(join(path, "unused"), {
+      afterCheckpointStaging: async () => {
+        if (++pass === 1) await writeFile(join(path, ".gitignore"), "build/\nnew.txt\ntracked.txt\n")
+      },
+    })
+    const snapshot = await service.snapshot(path, "ignore rules changed")
+    expect(snapshot.matched).toBe(true)
+    expect(snapshot.changedFiles).not.toContain("new.txt")
+    await expect(gitOut(path, "show", `${snapshot.commit}:new.txt`)).rejects.toThrow()
+    expect(await gitOut(path, "show", `${snapshot.commit}:tracked.txt`)).toBe("agent edit\n")
+    expect(await gitOut(path, "show", `${snapshot.commit}:build/keep.js`)).toBe("tracked despite the ignore rule\n")
+    const after = await observe(path)
+    expect({ head: after.head, branch: after.branch, index: after.index }).toEqual({ head: before.head, branch: before.branch, index: before.index })
+  })
+
+  it("keeps the last snapshot and names paths when a writer never settles", async () => {
+    const { path } = await worktreeWithWork()
+    const before = await observe(path)
+    let pass = 0
+    const service = new GitWorkspaceService(join(path, "unused"), {
+      afterCheckpointStaging: async () => {
+        pass += 1
+        await writeFile(join(path, "tracked.txt"), `writer version ${pass}\n`)
+        await writeFile(join(path, "new.txt"), `new version ${pass}\n`)
+      },
+    })
+    const snapshot = await service.snapshot(path, "mid-turn")
+    expect(snapshot).toHaveProperty("matched", false)
+    expect(snapshot.unstablePaths).toEqual(["new.txt", "tracked.txt"])
+    expect(pass).toBeLessThanOrEqual(4)
+    expect(await gitOut(path, "show", `${snapshot.commit}:tracked.txt`)).toBe(`writer version ${pass - 1}\n`)
+    const after = await observe(path)
+    expect({ head: after.head, branch: after.branch, index: after.index }).toEqual({ head: before.head, branch: before.branch, index: before.index })
+  })
+
+  it("retries until a writer settles and keeps the matching tree", async () => {
+    const { path } = await worktreeWithWork()
+    let changed = false
+    const service = new GitWorkspaceService(join(path, "unused"), {
+      afterCheckpointStaging: async () => {
+        if (changed) return
+        changed = true
+        await writeFile(join(path, "tracked.txt"), "settled writer content\n")
+      },
+    })
+    const snapshot = await service.snapshot(path, "mid-turn")
+    expect(await gitOut(path, "show", `${snapshot.commit}:tracked.txt`)).toBe("settled writer content\n")
+    expect(snapshot).toHaveProperty("matched", true)
+    expect(snapshot.unstablePaths).toBeUndefined()
+  })
+
   it("records the worktree as a checkpoint without touching HEAD, the index or any file", async () => {
     const { service, path } = await worktreeWithWork()
     const before = await observe(path)
@@ -119,7 +174,7 @@ describe("GitWorkspaceService.snapshot", () => {
 
     const snapshot = await service.snapshot(path, "before approved command")
 
-    expect(snapshot).toEqual({ commit: head, changedFiles: [] })
+    expect(snapshot).toEqual({ commit: head, changedFiles: [], matched: true })
     expect((await gitOut(path, "rev-parse", `refs/domovoi/checkpoints/${head}^{commit}`)).trim()).toBe(head)
   })
 
@@ -153,9 +208,12 @@ describe("GitWorkspaceService.snapshot", () => {
     await execute("git", ["-C", path, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial"])
     const started = (await gitOut(path, "rev-parse", "HEAD")).trim()
     await writeFile(join(path, "tracked.txt"), "agent edit\n")
+    let committed = false
     const service = new GitWorkspaceService(join(scratch, "worktrees"), {
-      // The agent commits its edit after the snapshot staged it.
+      // The agent commits once, after the first staging pass.
       afterCheckpointStaging: async () => {
+        if (committed) return
+        committed = true
         await execute("git", ["-C", path, "-c", "user.name=Agent", "-c", "user.email=agent@example.invalid", "commit", "-am", "agent"])
       },
     })
