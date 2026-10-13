@@ -56,6 +56,25 @@ describe("checkpoint reasons", () => {
 describe("mid-turn checkpoints", () => {
   const matched = { providerTurnId: "provider-turn-1", stability: "matched", changedPaths: [], changedPathCount: 0 }
   const unstable = { providerTurnId: "provider-turn-1", stability: "unstable", changedPaths: ["src/a.ts", " "], changedPathCount: 2 }
+  it.each(["matched", "unstable"])("accepts approval capture facts without a known turn: %s", (stability) => {
+    const midTurn = { stability, changedPaths: [], changedPathCount: 0 }
+    expect(threadItemSchema.parse({ ...checkpoint, reason: "before-approved-command", midTurn })).toMatchObject({ midTurn })
+    expect(sessionHistoryEntrySchema.parse({ ...history, reason: "before-approved-command", midTurn })).toMatchObject({ midTurn })
+  })
+  it.each([undefined, "manual", "session-start", "fork", "before-restore", "before-revert", "before-provider-handoff", "before-provider-recovery", "before-archive"])("requires a turn for non-approval capture facts: %s", (reason) => {
+    const midTurn = { stability: "matched", changedPaths: [], changedPathCount: 0 }
+    expect(threadItemSchema.safeParse({ ...checkpoint, reason, midTurn }).success).toBe(false)
+    expect(sessionHistoryEntrySchema.safeParse({ ...history, reason, midTurn }).success).toBe(false)
+    for (const identity of [{ providerTurnId: "turn-1" }, { providerTurnIdSha256: "a".repeat(64) }]) {
+      expect(threadItemSchema.safeParse({ ...checkpoint, reason, midTurn: { ...midTurn, ...identity } }).success).toBe(true)
+      expect(sessionHistoryEntrySchema.safeParse({ ...history, reason, midTurn: { ...midTurn, ...identity } }).success).toBe(true)
+    }
+  })
+  it("rejects both turn identities even for an approval capture", () => {
+    const midTurn = { ...matched, providerTurnIdSha256: "a".repeat(64) }
+    expect(threadItemSchema.safeParse({ ...checkpoint, reason: "before-approved-command", midTurn }).success).toBe(false)
+    expect(sessionHistoryEntrySchema.safeParse({ ...history, reason: "before-approved-command", midTurn }).success).toBe(false)
+  })
   it("accepts a bounded turn ID without narrowing the session identity contract", () => {
     const providerTurnId = "turn-" + "😀".repeat(2_000)
     expect(sessionSummarySchema.shape.activeTurnId.parse(providerTurnId)).toBe(providerTurnId)
@@ -78,7 +97,6 @@ describe("mid-turn checkpoints", () => {
     { providerTurnId: "t".repeat(1025) },
     { providerTurnId: "漢".repeat(1025) },
     { providerTurnId: "😀".repeat(513) },
-    { providerTurnId: undefined },
     { providerTurnId: "turn", providerTurnIdSha256: "a".repeat(64) },
     { providerTurnId: undefined, providerTurnIdSha256: "a".repeat(63) },
     { providerTurnId: undefined, providerTurnIdSha256: "G".repeat(64) },

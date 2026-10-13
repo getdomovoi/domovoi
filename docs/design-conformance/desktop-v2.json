@@ -587,7 +587,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "The card carries supervisor facts through the existing guarded status read and validates the complete group in Settings. It shows exhaustion with the recorded crash count, last exit, a live daemon pid and uptime where supplied, explicit unknown facts otherwise, and Check again. Q80 applies domovoid service install as terminal recovery because no dedicated desktop start path can restart an unreachable daemon. Left: the drawn card arrangement (header row, service sub-card, WHAT IT WROTE rows, footer). The TailnetReach row remains the card footer."
+        "reason": "The card carries supervisor facts through the existing guarded status read and validates the complete group in Settings. It shows exhaustion with the recorded crash count, last exit, a live daemon pid and uptime where supplied, explicit unknown facts otherwise, and Check again. Q80 applies domovoid service install as terminal recovery because no dedicated desktop start path can restart an unreachable daemon. Left: the drawn card arrangement (header row, service sub-card, WHAT IT WROTE rows, footer). The TailnetReach row remains the card footer. CX-11 (Q49, Q92) adds replacement through the existing update path only for equal versions with known, differing runtime commits, and a one-line reason when a commit is unknown. App build metadata is validated separately from supervisor facts. About this build rereads the daemon after success."
       }
     },
     {
@@ -804,16 +804,11 @@
       "evidence": [
         "Lost the daemon on",
         "Retry now",
-        "last heard"
-      ],
-      "presence": [
-        "Lost the daemon on",
-        "Retry now"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "connection-status draws one sentence (Lost the daemon on X. The worktree and this thread are intact on the machine. Nothing was rolled back.) where the design draws Lost the daemon on <machine>, last heard 41s ago, then the mono danger-dim line; there is no last heard (client-side, from the last socket message), Retry now is a filled destructive button where the design draws an outline, and the banner spans the window under the titlebar where the design puts it at the top of the thread column"
-      }
+        "last heard",
+        "the worktree and this thread are intact on the machine, nothing was rolled back",
+        "border-danger-border bg-transparent text-danger-foreground",
+        "<ThreadConnectionBanner />"
+      ]
     },
     {
       "id": "thread.session-notice",
@@ -1211,13 +1206,9 @@
         "Reviewing and moving this session both need the daemon, since the worktree only exists on that machine."
       ],
       "evidence": [
-        "Reconnect to",
+        "Reconnect to {snapshot.machine.name}",
         "Reviewing and moving this session both need the daemon"
-      ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "no Reconnect to <machine> action or explanation in the thread; the earlier presence string matched the audit log's error text, not this element"
-      }
+      ]
     },
     {
       "id": "composer.jump-pill",
@@ -1506,12 +1497,6 @@
         "working: Steer it while it works",
         "offline: Cannot send, the daemon is not answering"
       ],
-      "presence": [
-        "Reply, or steer the plan",
-        "Steer it while it works",
-        "Cannot send, the daemon is not answering",
-        "max-h-[172px]"
-      ],
       "evidence": [
         "Reply, or steer the plan",
         "Steer it while it works",
@@ -1519,12 +1504,9 @@
         "max-h-[172px]",
         "md:text-[13.5px]",
         "re:max-h-\\[172px\\][^\"]*placeholder:text-faint|placeholder:text-faint[^\"]*max-h-\\[172px\\]",
-        "re:data-workspace-composer=\"\"[^>]*opacity-(?:50|\\[\\.5\\])"
+        "re:data-workspace-composer=\"\"[^>]*opacity-(?:50|\\[\\.5\\])",
+        "disabled={readOnly || !connected}"
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the field, its three placeholders, the 172px cap and the 13.5px size are built. The placeholder is muted where the design uses faint: the composer's field class does not override the shared Textarea's placeholder:text-muted-foreground. Offline the design dims the whole composer card to .5; the card itself does not dim for a lost connection, only Send and Stop go disabled, and the field and the attach, model and mode chips stay live. The two re: evidence strings hold those gaps: placeholder:text-faint in the field's class beside max-h-[172px], and an opacity of .5 on the data-workspace-composer card"
-      },
       "note": "the design carries these strings in its data, not as drawn copy"
     },
     {
@@ -2230,6 +2212,21 @@
     }
   ],
   "humanRead": [
+    {
+      "id": "thread.offline-banner",
+      "since": "2026-10-12",
+      "note": "Built against the vendored handoff only; the live design root was not read for this (DesignSync not authorized). Drawn at the top of the thread column, inside the thread, on the workspace surface. Other surfaces, a start refusal and the loading state have no thread column, so the banner spans the window there as before. Last heard (Q75 B) is when this client saw an open loopback connection to that machine close: an open connection counts as heard now, as on Machines, and a daemon on this machine that stops or dies closes its socket at once. It is drawn only for the desktop app's own daemon. Over a network a link can die silently and the socket report the close minutes later, so there, for an attached machine or a browser tab (either can sit behind an SSH forward with a loopback local end), after a machine switch, or when the client opened with the daemon gone, the banner draws no time. A loopback daemon that hangs before it dies is heard until its socket closes. The ticking age is hidden from assistive technology, which reads the clock time. Retrying (a reconnect is scheduled) and the refused and reconnect-failed sentences are kept beside the design's line; the design draws neither."
+    },
+    {
+      "id": "conversation.offline-actions",
+      "since": "2026-10-12",
+      "note": "The design draws Reconnect to <machine> and its explanation inside the latest receipt, in place of Review and Move. Here it is its own row at the end of the thread, drawn whenever the daemon is lost, receipt or not, because a thread with no receipt has the same need. The button is the banner's Retry now under another name: both ask the shell to reconnect."
+    },
+    {
+      "id": "composer.input",
+      "since": "2026-10-12",
+      "note": "Offline the card is at .5 and its field, attach, model, mode and effort chips, the prompt editor control and Send are off, and a send from the field or the prompt editor is refused in Thread. The design hides the queued row offline; here it stays, with its Send off, so a waiting message is not hidden. Unqueue, Dismiss and removing an attachment stay live: they touch only this client's draft. Not checked against the live design root."
+    },
     {
       "id": "fleet.machine-card",
       "since": "2026-10-07",

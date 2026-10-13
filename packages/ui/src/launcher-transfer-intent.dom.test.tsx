@@ -16,7 +16,7 @@ const machine: FleetMachine = {
   heartbeat: { state: "online", lastSeenAt: "2026-09-13T00:00:00.000Z" },
   transports: [{ kind: "tailnet", endpoint: "wss://studio.tailnet:47831/rpc", authenticated: true }],
 }
-async function setup() {
+async function setup(clientKind?: "phone" | "tablet") {
   const snapshot = workspaceSnapshot()
   snapshot.sessions = snapshot.sessions.slice(0, 2).map((session, index) => {
     const { activeTurnId: _active, ...rest } = session
@@ -25,7 +25,7 @@ async function setup() {
   expect(snapshot.sessions).toHaveLength(2)
   snapshot.activeSessionId = snapshot.sessions[0]!.id
   snapshot.approvals = []
-  render(<WorkspaceShell />)
+  render(clientKind ? <WorkspaceShell clientKind={clientKind} /> : <WorkspaceShell />)
   const socket = sockets.socket(0)
   await act(async () => { completeHandshake(socket, snapshot) })
   await settle()
@@ -90,4 +90,23 @@ it("does not revive transfer intent when a previously active session returns", a
   await settle()
   expect(sentRequests(socket, "session.transferPreview")).toHaveLength(1)
   expect(screen.queryByRole("dialog", { name: /Move session to Review destination/ })).toBeNull()
+})
+
+// session.transferPreview and session.transfer are not on
+// phoneAndTabletRpcMethods. The daemon refuses either from a phone or tablet
+// credential with the authentication error, on which the client closes its
+// connection, and the dialog asks for a preview as it opens. A handheld tab
+// answers that preview itself with the reason and offers no Move session.
+it.each(["phone", "tablet"] as const)("a %s tab opens the move dialog without asking the daemon for a preview", async (clientKind) => {
+  const { socket, snapshot, user } = await setup(clientKind)
+  await pick(user, "Review chosen session")
+  await act(async () => { respond(socket, "session.activate", { ...snapshot, activeSessionId: snapshot.sessions[1]!.id }) })
+  await settle()
+
+  const dialog = await screen.findByRole("dialog", { name: /Move this session to another machine/ })
+  expect(dialog.textContent).toContain(`Moving a session is off in a phone or tablet tab: the daemon does not preview or make a move for a phone or tablet credential. Use the desktop app on ${snapshot.machine.name}.`)
+  expect(screen.getByRole("button", { name: "Move session" })).toHaveProperty("disabled", true)
+  expect(sentRequests(socket, "session.transferPreview")).toEqual([])
+  expect(sentRequests(socket, "session.transfer")).toEqual([])
+  expect(socket.readyState).toBe(socket.OPEN)
 })

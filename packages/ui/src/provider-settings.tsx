@@ -16,6 +16,7 @@ import {
 } from "./desktop-platform.js"
 import { fleetOverflowNotice } from "./fleet-overflow.js"
 import { cn } from "./lib/utils"
+import { providerAccountCommand } from "./runtime.js"
 
 export type ProviderSecretStatus = {
   provider: "anthropic" | "openai" | "openrouter"
@@ -32,13 +33,15 @@ type ProviderSettingsProps = {
   // so the rows cannot cover the other machines and the pane says so.
   fleetOverflow?: FleetSnapshotOverflow | undefined
   secrets: readonly ProviderSecretStatus[]
+  // Why this client has no key status, in place of the key rows.
+  secretsRefusal?: string | undefined
   localDaemon?: { title: string; detail: string }
   // Q336 A: names a command as it runs on the execution machine, when that
   // is this one; otherwise commands print as written.
   printCommand?: ((command: string) => string) | undefined
 }
 
-export function ProviderSettings({ providers, machines, fleetOverflow, secrets, localDaemon, printCommand }: ProviderSettingsProps) {
+export function ProviderSettings({ providers, machines, fleetOverflow, secrets, secretsRefusal, localDaemon, printCommand }: ProviderSettingsProps) {
   const rows = machines ?? [{ machineId: "this-machine", label: "this machine", providers }]
   return (
     <>
@@ -84,7 +87,9 @@ export function ProviderSettings({ providers, machines, fleetOverflow, secrets, 
             <CardDescription>Optional credentials for future direct API capabilities. Domovoi never displays, syncs, or logs stored key material.</CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-4">
-            {secrets.map((secret) => (
+            {secretsRefusal ? (
+              <p className="m-0 text-micro leading-relaxed text-muted-foreground">{secretsRefusal}</p>
+            ) : secrets.map((secret) => (
               <ProviderKeyRow key={secret.provider} status={secret} print={printCommand ?? ((command) => command)} />
             ))}
           </CardContent>
@@ -438,18 +443,7 @@ function AgentRow({ name, machine, state, tone, dimmed = false, problem, signIn 
   )
 }
 
-// The provider CLI's own sign-in command. Undefined for a provider whose
-// command Domovoi does not know (review P3-9): a help command is not one.
-export function providerAccountCommand(provider: ProviderRuntime): string | undefined {
-  if (provider.id === "claude-code") return "claude auth login"
-  if (provider.id === "codex") return "codex login"
-  if (provider.id === "cursor-agent") return `${provider.command} login`
-  if (provider.id === "grok") return "grok login"
-  if (provider.id === "opencode" || provider.id === "kilo") {
-    return `${provider.command} auth login`
-  }
-  return undefined
-}
+export { providerAccountCommand }
 
 function directProviderName(provider: ProviderSecretStatus["provider"]): string {
   if (provider === "openai") return "OpenAI"

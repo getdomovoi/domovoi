@@ -37,7 +37,7 @@ import {
 } from "./components/ui/alert-dialog"
 import { Button } from "./components/ui/button"
 import { closestComposed, focusedElement, focusEventElement } from "./composed-focus"
-import { WorkspaceConnectionStatus } from "./connection-status"
+import { ShellConnectionStatus, WorkspaceConnectionProvider } from "./connection-status"
 import { shouldCollapseDockForWidth } from "./dock-auto-collapse"
 import {
   ResizableHandle,
@@ -59,7 +59,7 @@ import { Deadline } from "./deadline"
 import { advancePendingElsewhere, freshRefusal, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
 import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
-import { type ProviderSecretStatus } from "./provider-settings"
+import type { ProviderSecretStatus } from "./provider-settings"
 import type { LocalDaemonDescription } from "./settings-shell"
 import type { SkillsSurfaceTab } from "./skills-surface"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
@@ -81,11 +81,8 @@ import {
   type SessionQueues,
 } from "./turn-queue"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
-import {
-  DesktopFirstRunDialog,
-  desktopFirstRunAvailable,
-  firstRunDefaultProvider,
-} from "./desktop-first-run"
+import { DesktopFirstRunDialog } from "./desktop-first-run-lazy"
+import { desktopFirstRunAvailable, firstRunDefaultProvider } from "./desktop-first-run-rules"
 import {
   browserDesktopFirstRunStorage,
   completeDesktopFirstRun,
@@ -424,11 +421,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const homeSkillInventory = home.getSkillInventory
   const homeVersion = home.snapshot?.machine.version
   const openReleasePage = windowBridge?.openReleasePage
+  // The web app greets as phone or tablet on a handheld browser. The daemon
+  // refuses every method outside phoneAndTabletRpcMethods from that credential
+  // with the authentication error, on which the client closes its connection,
+  // so the reads the shell makes on its own leave those methods out:
+  // update.status, provider.secret.list and skill.inventory.
+  const handheld = clientKind === "phone" || clientKind === "tablet"
   const about = useMemo(() => attached || homeVersion === undefined ? undefined : {
     version: homeVersion,
-    onUpdateStatus: updateStatus,
+    ...(handheld ? {} : { onUpdateStatus: updateStatus }),
     ...(openReleasePage ? { onOpenReleasePage: openReleasePage } : {}),
-  }, [attached, homeVersion, updateStatus, openReleasePage])
+  }, [attached, homeVersion, handheld, updateStatus, openReleasePage])
   const {
     activateSession,
     archiveSession,
@@ -489,7 +492,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     subscribeTerminal,
     terminalClientId,
     transferSession,
-    previewTransfer,
+    previewTransfer: previewWorkspaceTransfer,
     releaseSession,
     releaseTerminal,
     listTerminals,
@@ -500,6 +503,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     protocolError,
     reconnecting,
   } = attached ? remote : home
+  // The move dialog asks for session.transferPreview as it opens, and neither
+  // it nor session.transfer is on phoneAndTabletRpcMethods. A handheld answers
+  // the preview here with the reason, which the dialog shows; without a
+  // preview it offers no Move session, so session.transfer is never sent (Q86).
+  const handheldMachineName = snapshot?.machine.name
+  const previewTransfer = useCallback<typeof previewWorkspaceTransfer>((...args) => handheld
+    ? Promise.reject(new Error(`Moving a session is off in a phone or tablet tab: the daemon does not preview or make a move for a phone or tablet credential. Use the desktop app on ${handheldMachineName}.`))
+    : previewWorkspaceTransfer(...args), [handheld, handheldMachineName, previewWorkspaceTransfer])
   const watching = workspaceAccess === "watching"
   const terminalControls = useMemo<TerminalControls>(() => ({
     clientId: terminalClientId,
@@ -672,6 +683,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const [skillInventories, setSkillInventories] = useState<SkillInventorySource[]>([])
   const [localSkillInventory, setLocalSkillInventory] = useState<SkillInventorySource | null>(null)
+  // The machine and project whose catalog last answered. A handheld lists it
+  // without reading the machine's inventory, so this is not the inventory.
+  const [skillCatalogKey, setSkillCatalogKey] = useState<string | null>(null)
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
@@ -790,6 +804,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   )?.workspacePath
   const skillMachineKey = skillInventoryRefreshKey(snapshot)
   const skillProjectKey = skillProjectRefreshKey(snapshot)
+  // Read in render, so the snapshot that moves the project or branch is the
+  // one that stops a queued skill choice from leaving on the old catalog.
+  const skillCatalogFor = `${skillMachineKey}\u0000${skillProjectKey}`
+  const skillCatalogLoaded = skillCatalogKey === skillCatalogFor
   // The composer names the skills a turn carries, so the catalog cannot wait
   // for someone to open the Skills surface first.
   const skillsWanted = surface === "skills" || skillProjectKey !== "no-project"
@@ -1032,7 +1050,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The release lives here rather than in Thread because a turn ending in A is
   // A's business whether or not A is the session on screen.
   useEffect(() => {
-    if (watching) return
+    if (watching || !connected) return
     for (const message of releasableQueues(snapshot?.sessions ?? [], queues, { busy: emergencyStopPending })) {
       const session = { id: message.sessionId }
       if (releasing.current.has(session.id)) continue
@@ -1040,7 +1058,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       // Waiting, not held: an unloaded catalog says nothing about whether the
       // chosen skill still exists, and "your skill is gone" is a lie until it
       // has answered.
-      if (chosen && chosen.length > 0 && localSkillInventory?.state !== "available") continue
+      if (chosen && chosen.length > 0 && !skillCatalogLoaded) continue
       const { selection, missing } = turnSkillSelectionFor(
         chosen ? new Set(chosen) : undefined,
         selectableTurnSkills(skills, snapshot?.skillEnablements ?? [], snapshot?.project?.id),
@@ -1081,7 +1099,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           setSettled((count) => count + 1)
         })
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory, settled, watching])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, settled, watching, connected])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
@@ -1320,8 +1338,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // One dock, rendered either as the pinned panel or inside the floating sheet.
   // Named before the snapshot exists, because the snapshot is what is being
   // waited for. The endpoint is what this client actually knows it is reading.
-  const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
-  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} daemonTimeOffsetMs={(attached ? remote : home).fleetDaemonTimeOffsetMs} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, artifactId) })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={() => snapshot.activeSessionId ? sendMessage(snapshot.activeSessionId, "Looks right, carry on") : Promise.reject(new Error("No session is active"))} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} daemonTimeOffsetMs={(attached ? remote : home).fleetDaemonTimeOffsetMs} clientAccess={workspaceAccess} clientKind={clientKind} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, artifactId) })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={() => snapshot.activeSessionId ? sendMessage(snapshot.activeSessionId, "Looks right, carry on") : Promise.reject(new Error("No session is active"))} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = !dockCollapsed && dockPinned ? "drawer.dock" : "drawer.thread"
   const defaultLayout = layouts[layoutKey]
   const shellTitle = launcherMode
@@ -1521,6 +1538,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
 
   useEffect(() => {
     if (surface !== "providers") return
+    // provider.secret.list is not on phoneAndTabletRpcMethods. Settings says
+    // why there is no key status instead (secretsRefusal).
+    if (handheld) {
+      setProviderSecrets([])
+      return
+    }
     if (!connected) {
       setProviderSecrets([
         { provider: "anthropic", state: "unavailable", source: "keychain" },
@@ -1541,7 +1564,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       },
     )
     return () => { active = false }
-  }, [connected, listProviderSecrets, surface])
+  }, [connected, handheld, listProviderSecrets, surface])
 
   // A refresh follows the machine and project keys, a reconnect, and an
   // explicit retry. Other workspace changes and surface moves leave the catalog
@@ -1551,6 +1574,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (!skillsWanted) return
     if (!connected) {
       setLocalSkillInventory(null)
+      setSkillCatalogKey(null)
       setSkillsLoading(false)
       setSkillInventories(skillMachine ? [{
         state: "unreachable",
@@ -1564,10 +1588,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     const options = { signal: refresh.signal }
     setSkillsLoading(true)
     setSkillsError("")
-    void Promise.all([listSkills(options), getSkillInventory(options)]).then(
+    // skill.inventory is not on phoneAndTabletRpcMethods (skill.list is: the
+    // composer offers skills by name), so a handheld lists the catalog only
+    // and the Skills surface shows no machine comparison.
+    void Promise.all([listSkills(options), handheld ? undefined : getSkillInventory(options)]).then(
       ([discovered, inventory]) => {
         if (!active) return
         setSkills(discovered)
+        setSkillCatalogKey(skillCatalogFor)
+        if (!inventory) {
+          setSkillInventories([])
+          return
+        }
         setLocalSkillInventory({ state: "available", inventory })
         setSkillInventories([{ state: "available", inventory }])
       },
@@ -1590,7 +1622,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }, [
     connected,
     getSkillInventory,
+    handheld,
     listSkills,
+    skillCatalogFor,
     skillMachine,
     skillProjectKey,
     skillsRefresh,
@@ -1661,19 +1695,24 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
 
   return (
     <SurfaceCodeReload.Provider value={reloadForNewCode}>
+    <WorkspaceConnectionProvider
+      connected={connected}
+      reconnecting={reconnecting}
+      authenticationRequired={authenticationRequired}
+      protocolError={protocolError}
+      connectionError={connectionError}
+      machineName={snapshot?.machine.name}
+      machineId={snapshot?.machine.id}
+      endpoint={localDaemon && !attached ? endpointUrl : undefined}
+      onChangeCredential={attached ? undefined : onChangeCredential}
+      onReconnect={reconnectDaemon}
+    >
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" }))} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={!connected ? "unreachable" : !attached ? machineRoute(endpointUrl) : dialedRoute?.epoch === attachEpoch ? machineRoute(endpointUrl, dialedRoute.kind) : undefined} theme={resolvedTheme} />
-        <WorkspaceConnectionStatus
-          connected={connected}
-          reconnecting={reconnecting}
-          authenticationRequired={authenticationRequired}
-          protocolError={protocolError}
-          connectionError={connectionError}
-          machineName={snapshot?.machine.name}
-          onChangeCredential={attached ? undefined : onChangeCredential}
-          onReconnect={reconnectDaemon}
-        />
+        {/* The thread column draws the lost banner at its own top, as the
+            design does. Without one it spans the window here. */}
+        <ShellConnectionStatus threadColumn={Boolean(snapshot) && surface === "workspace" && !startRefusal} />
         {attached ? <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2 text-sm" role="status">
           <span>{!access ? "Client access is no longer verified for" : connected ? "Using" : "Connecting to"} <span className="font-machine">{fleetMachines(fleet?.entries ?? []).find((machine) => machine.id === attached.machineId)?.label ?? attached.machineId}</span>{access ? " with this app's client credential." : ". Return home and authorize this client again."}</span>
           <Button variant="outline" size="sm" onClick={() => setAttached(null)}>Return to home daemon</Button>
@@ -1727,6 +1766,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             }) : undefined}
             providerFleetOverflow={fleet ? undefined : fleetOverflow ?? undefined}
             secrets={providerSecrets}
+            secretsWithheldFrom={handheld ? snapshot.machine.name : undefined}
             readOnly={watching}
             {...(localDaemon && !attached ? { localDaemon: {
               ...localDaemon,
@@ -1818,6 +1858,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               loading: skillsLoading,
               error: skillsError,
               readOnly: watching,
+              handheldMachine: handheld ? snapshot.machine.name : undefined,
               onOpenAudit: () => setSurface("audit"),
               onReadSkill: readSkill,
               requestedSkillId,
@@ -1962,7 +2003,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         </div> : (
           <main className="flex min-h-0 flex-1 bg-background">
             <h1 className="sr-only">Connecting to the daemon</h1>
-            <ThreadSkeleton reading={readingLabel} />
+            <ThreadSkeleton from={attached?.machineId ?? endpointUrl} />
           </main>
         )}
         {workspaceError || visibleStateRecovery ? (
@@ -2090,6 +2131,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         ) : null}
       </div>
     </TooltipProvider>
+    </WorkspaceConnectionProvider>
     </SurfaceCodeReload.Provider>
   )
 }

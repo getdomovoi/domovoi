@@ -57,12 +57,13 @@ export type DaemonServiceOutcome =
 export type ServiceReadBack = { installed: boolean | null; running: boolean }
 
 export type DaemonServiceStatusReport =
-  | (Pick<DaemonServiceStatus, "installed" | "running" | "detail"> & { supervisor?: Omit<DaemonServiceStatus, "installed" | "running" | "detail"> })
+  | (Pick<DaemonServiceStatus, "installed" | "running" | "detail"> & { supervisor?: Omit<DaemonServiceStatus, "installed" | "running" | "detail"> & { appSourceCommit?: string } })
   | { unavailable: string }
 
 export type ServiceHandoffFence = { refusal: string } | { release: () => void }
 
 export type DesktopDaemonServiceDependencies = {
+  appSourceCommit?: () => string | undefined
   // Copies the shipped runtime under the profile and names the copy, or
   // throws DaemonServiceRuntimeMissingError naming the part that is not there.
   stageRuntime: (operation: "install" | "update") => Promise<PreparedDaemonRuntime>
@@ -138,7 +139,11 @@ export class DesktopDaemonService {
   async status(): Promise<DaemonServiceStatusReport> {
     try {
       const { installed, running, detail, ...supervisor } = await this.deps.status()
-      return { installed, running, detail, supervisor }
+      const appSourceCommit = this.deps.appSourceCommit?.()
+      // Build metadata rides the existing supervisor passthrough to preserve
+      // the preload byte budget. Settings reads it separately, not as a
+      // supervisor fact. It describes the shipped runtime we stage below.
+      return { installed, running, detail, supervisor: { ...supervisor, ...(appSourceCommit === undefined ? {} : { appSourceCommit }) } }
     } catch (cause) {
       return { unavailable: message(cause) }
     }

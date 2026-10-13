@@ -231,7 +231,8 @@ export function SkillBrowser({
   onInstallSkill,
   onRetry,
   requestedSkillId,
-  readOnly = false,
+  readOnly: watchingOnly = false,
+  handheldMachine,
 }: {
   skills: readonly SkillSummary[]
   inventorySources?: readonly SkillInventorySource[]
@@ -264,7 +265,18 @@ export function SkillBrowser({
   }) => Promise<SkillSummary>
   onRetry: () => void
   readOnly?: boolean
+  // Set in a phone or tablet tab, to the machine's name. skill.read,
+  // skill.setEnabled, skill.review, skill.installPreview, skill.install and
+  // skill.inventory are not on phoneAndTabletRpcMethods: the daemon refuses
+  // each with the authentication error, on which the client closes its
+  // connection. The browser lists the catalog, sends none of them, and says
+  // why (Q87).
+  handheldMachine?: string | undefined
 }) {
+  const readOnly = watchingOnly || handheldMachine !== undefined
+  const inventoriesOff = handheldMachine === undefined
+    ? undefined
+    : `Machine comparison is off in a phone or tablet tab: the daemon does not report skill inventories to a phone or tablet credential. Use the desktop app on ${handheldMachine}.`
   const [query, setQuery] = useState("")
   const [selectedId, setSelectedId] = useState(() => skills[0]?.id ?? "")
   const [sourceSkill, setSourceSkill] = useState<SkillSummary>()
@@ -353,6 +365,7 @@ export function SkillBrowser({
   }, [reviewSettled])
 
   const readSource = (skill: SkillSummary) => {
+    if (handheldMachine !== undefined) return
     const generation = ++sourceRequestGeneration.current
     setSourceSkill(skill)
     setSourceContent("")
@@ -491,6 +504,11 @@ export function SkillBrowser({
             <Button disabled={readOnly} onClick={openAdd}><PlusIcon data-icon="inline-start" />Install from a path</Button>
             {reReview ? <Badge variant="warning">1 REVIEW NO LONGER CURRENT</Badge> : null}
           </div>
+          {handheldMachine !== undefined ? (
+            <p className="m-0 mt-2 text-[11.5px] leading-[1.5] text-muted-foreground">
+              {`Install, Trust, Revoke and View SKILL.md are off in a phone or tablet tab: the daemon does not let a phone or tablet credential read or change a skill. Use the desktop app on ${handheldMachine}.`}
+            </p>
+          ) : null}
 
           <div className="relative mt-4">
             <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-faint" />
@@ -570,7 +588,7 @@ export function SkillBrowser({
                   </li>
                 ))}
               </ul>
-            ) : <p className="m-0 px-3.5 py-3 text-[11px] text-muted-foreground">No other paired machine reports the skills capability.</p>}
+            ) : <p className="m-0 px-3.5 py-3 text-[11px] text-muted-foreground">{inventoriesOff ?? "No other paired machine reports the skills capability."}</p>}
           </section>
 
           {selected && filtered.some((skill) => skill.id === selected.id) ? (
@@ -641,7 +659,9 @@ export function SkillBrowser({
                   <CardDescription>Metadata only. Domovoi never copies, installs, or syncs skills between machines.</CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-2">
-                  {selectedComparison ? selectedComparison.machines.map((machine) => (
+                  {inventoriesOff ? (
+                    <p className="m-0 text-[11px] text-muted-foreground">{inventoriesOff}</p>
+                  ) : selectedComparison ? selectedComparison.machines.map((machine) => (
                     <div key={machine.machineId} className="flex items-center justify-between gap-3">
                       <span className="truncate font-machine text-[10.5px]">{machine.machineName}</span>
                       <Badge variant={comparisonVariant(machine.state)}>{comparisonLabel[machine.state]}</Badge>
@@ -649,7 +669,7 @@ export function SkillBrowser({
                   )) : (
                     <p className="m-0 text-[11px] text-muted-foreground">Unknown until this machine inventory is fetched.</p>
                   )}
-                  {inventorySources.length === 1 ? (
+                  {inventorySources.length === 1 && !inventoriesOff ? (
                     <p className="m-0 text-[10.5px] text-muted-foreground">No other paired machine reports the skills capability.</p>
                   ) : null}
                 </CardContent>
@@ -688,7 +708,7 @@ export function SkillBrowser({
                 </Alert>
               ) : null}
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                <Button variant="outline" onClick={() => readSource(selected)}>
+                <Button variant="outline" disabled={handheldMachine !== undefined} onClick={() => readSource(selected)}>
                   <FileTextIcon data-icon="inline-start" />
                   View SKILL.md
                 </Button>

@@ -59,7 +59,8 @@ export type DaemonServiceOutcome =
 
 export type DaemonServiceStatusReport =
   // Preload transports this group only as a plain object. Settings validates
-  // its complete shape before displaying any supervisor fact.
+  // its complete shape before displaying any supervisor fact. The app runtime
+  // commit shares this transport group but is validated separately as metadata.
   | { installed: boolean | null; running: boolean; detail: string; supervisor?: unknown }
   | { unavailable: string }
 

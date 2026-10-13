@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen, within } from "@testing-library/react"
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
@@ -45,6 +45,9 @@ async function openSettings(windowBridge: DesktopWindowBridge, localDaemon: Para
   await act(async () => { completeHandshake(socket, workspaceSnapshot()) })
   await settle()
   const user = userEvent.setup()
+  // Setup's code loads when it opens, so its frame gives way to it before
+  // Skip is looked for.
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Domovoi setup" })).toBeNull())
   const skip = screen.queryByRole("button", { name: "Skip for now" })
   if (skip) { await user.click(skip); await settle() }
   await user.click(screen.getByRole("button", { name: "Settings" }))

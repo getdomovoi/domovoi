@@ -1,3 +1,4 @@
+import { CheckpointCaptureLine } from "./checkpoints-panel.js"
 import { useEffect, useRef, useState } from "react"
 import { CircleStopIcon, HistoryIcon, SearchIcon } from "lucide-react"
 import { annotationsOverLimitLine, type RpcParams, type SessionHistoryCategory, type SessionHistoryPage } from "@getdomovoi/protocol"
@@ -244,6 +245,7 @@ export function HistoryPanel({
                   {/* Wraps rather than truncates: the scroll viewport's content
                       box grows to its widest child, so a truncated line widens
                       the whole list and the viewport hides the rest. */}
+                  {entry.category === "checkpoints" ? <CheckpointCaptureLine entry={entry} /> : null}
                   {detail ? <p data-testid="history-meta" className="break-words font-machine text-mono-xs text-muted-foreground">{detail}</p> : null}
                   {/* The thread's note beside a sent message, in the same
                       words, for the open annotations the per-turn limit left
