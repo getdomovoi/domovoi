@@ -1257,10 +1257,11 @@
         "attachmentMeta",
         "re:\\+\\$\\{[^}]*\\} more"
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "chips exist as rounded rectangles with a primary-coloured TXT or FILE mark; the design draws pills with a muted badge per kind (TS, DIR, PNG, LOG, TXT, SKILL), meta such as on <machine> or 820 kB · sent to <machine>, and a dashed +N more pill after three chips. The code shows every chip and clips the overflow"
-      }
+      "notes": [
+        "Built 2026-10-13 (SL-12): pills with a muted badge per kind (a worktree file's extension, LOG for terminal output, TXT, PNG or JPG), meta on <machine> for a worktree path and <size> · sent to <machine> for anything copied from this device, and a dashed +N more after three chips that opens the rest. Checked against the vendored handoff only: the chip data lies past the first 256 KiB, the part task 78 matched to the live file.",
+        "Not drawn: the SKILL chip (a turn's skills are chosen outside the attachments) and the remote meta that names Domovoi Cloud (no relay route in M1). A path the design marks DIR reads its extension, or FILE when it has none: a worktree path cannot say whether it is a directory.",
+        "The protocol takes two attachments per message, so +N more shows only when the chosen preview variant chip (task 83) and the attachments pass three."
+      ]
     },
     {
       "id": "composer.images-locked",
@@ -1272,10 +1273,11 @@
       "evidence": [
         "cannot go to"
       ],
-      "missing": {
-        "since": "2026-10-02",
-        "reason": "no longer blocked: runtime.models reports ProviderModel.imageInput on every model (the daemon fills it from the provider's capabilities), the refusal code attach.image.model_no_input is in the protocol, and the daemon's refusal is the design's sentence (N images cannot go to <model>. Remove them or pick another model.). No client reads imageInput: the composer draws no notice, no Remove or Change model, and no image tags or lock in the menus. Client-only; an absent imageInput means not known and must not lock"
-      }
+      "notes": [
+        "Built 2026-10-13 (SL-12) from ProviderModel.imageInput of the session's model: the notice with Remove and Change model, red image chips reading no image input, send held off, the attach menu's device source locked with refused by <machine> · attach.image.model_no_input (the phone's line), and no image input on model rows. The design's default guard (A) locks the source; its option B, attach then block, is not built.",
+        "An absent imageInput is not known, never no: nothing locks, and a line says Domovoi does not know whether the model takes image input and that the machine refuses the send if it does not (the phone's words). A message queued before a model change still goes out at release, where the daemon refuses it.",
+        "Checked against the vendored handoff only for the notice's words, which live in the design's data past the first 256 KiB."
+      ]
     },
     {
       "id": "composer.slash",
@@ -1295,10 +1297,10 @@
           "in": "packages/ui/src/thread.tsx"
         }
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the list draws /run, /revert, /replan, /mode, /skill and /handoff; /checkpoint is missing though checkpoint.create exists, and /commit is J27, blocked with dock.commits (not M1, Q397 A). The argument column shows the design's sample data as if live (ckpt_7f24, hetzner-cx42, pr-triage) where it should show a real argument or a placeholder; the name column is 70px against 86px"
-      }
+      "notes": [
+        "Built 2026-10-13 (SL-12): /checkpoint after /replan takes a checkpoint through checkpoint.create with the label typed after it, mid-turn too (#825); its note says that during a turn it saves a snapshot without moving the branch, where the design says at the next tool boundary (Q72/Q73). The name column is 86px. /commit is J27, blocked with dock.commits (not M1, Q397 A).",
+        "The argument column shows this session's latest checkpoint, first reviewed skill and first other machine, or the argument's shape; never the design's sample (ckpt_7f24, before the expiry change, pr-triage, hetzner-cx42). The list's data lies past the first 256 KiB, so it was checked against the vendored handoff only."
+      ]
     },
     {
       "id": "composer.paste-converted",
@@ -1373,10 +1375,10 @@
         "That is this computer, so nothing leaves it.",
         "takes image input, as its harness reports"
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the four rows exist; the device row's mark is FILE where the design has PNG, and its note The selected file is copied to X with the next message replaces It is copied to <machine>. That is this computer, so nothing leaves it. There is no kbd column (@, drag or paste, the paste shortcut) and no footer with the model and takes image input, as its harness reports, which is client-buildable now from ProviderModel.imageInput"
-      }
+      "notes": [
+        "Built 2026-10-13 (SL-12): the device row carries PNG, and the footer names the session's model with takes image input, takes no image input, or image input not known, as its harness reports. The device note says It is copied to <machine>. That is this computer, so nothing leaves it. only for the desktop app's own daemon dialled on loopback, the rule that also decides the lost banner's last heard (connection-status.tsx); a browser tab, whose loopback address may be an SSH forward, and an attached machine keep The selected file is copied to <machine> with the next message.",
+        "No kbd column: nothing in this composer answers @, a drag, an image paste or a paste-terminal shortcut, so drawing those keys would promise what does not happen. The harness mark in the footer is not vendored (Q388 A). The design's Paste 640 lines and Paste 12 lines rows demonstrate the paste states and are not menu rows. The menu's data lies past the first 256 KiB, so it was checked against the vendored handoff only."
+      ]
     },
     {
       "id": "composer.model-chip",
@@ -1407,7 +1409,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the chip reads provider · model in text where the design draws the harness mark and the short name; rows have no harness avatar, no SUBSCRIPTIONS AND LOCAL or API KEYS group headers and no image-input tag; the menu is 330px against 360px. The no-match line ends may live under another harness or need a sign-in first; Q373 A (2026-10-02) takes the design's may live on another machine. Key badges belong to api-keys (blocked); harness marks are not vendored (Q388 A keeps Skills and Tools text-only for that reason)"
+        "reason": "Since 2026-10-13 (SL-12) the menu is 360px, rows carry the design's no image input tag from ProviderModel.imageInput, the short name is mono, and rows sit under a header per harness, the design's other grouping (its key option). The design's default SUBSCRIPTIONS AND LOCAL and API KEYS headers need what pays for each model, which is not on the wire (CX-8). The chip reads provider · short name in text where the design draws the harness mark, and rows have no harness avatar: harness marks are not vendored (Q388 A). Key badges belong to api-keys (blocked). Q373 A's no-match line is built. The menu's data lies past the first 256 KiB, so it was checked against the vendored handoff only"
       }
     },
     {
@@ -1462,7 +1464,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the ring (drawn when the provider reports its windows) and the unreported state are built, and the Q374 A reworded cost note is built (#710, 30760c18). Two gaps remain. The api state is not drawn: no price after the separator, no cost in the session row and no BILLED BY row, because nothing on the wire says what pays for a runtime (subscription, API key or local), though it carries the cost each provider reported. The popover draws no connection note under USAGE in any state, where the design draws one per state. The evidence holds both: the api note's bills the key's owner, and the unreported note's No window reported, so no dial."
+        "reason": "the ring (drawn when the provider reports its windows) and the unreported state are built, and the Q374 A reworded cost note is built (#710, 30760c18). Since 2026-10-13 (SL-12) the popover carries a connection note under USAGE: the design's No window reported, so no dial. line without a window, and with one a line that the chip carries the window rather than a price, plus the design's two-windows sentence when two run. That line does not call the connection a subscription, since nothing on the wire says so. The api state is not drawn: no price after the separator, no cost in the session row, no BILLED BY row and no bills the key's owner note, because nothing on the wire says what pays for a runtime (subscription, API key or local), though it carries the cost each provider reported (CX-8). The notes lie past the first 256 KiB, so they were checked against the vendored handoff only."
       }
     },
     {
@@ -2171,10 +2173,9 @@
         "data-prompt-editor-scrim",
         "re:export function PromptEditorDialog\\(\\{[^}]*attachments"
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the editor matches in size, header, format control, inserts and footer; the design body draws the composer's attachments as removable chips (its comment: attachments carry through from the composer), and PromptEditorDialog takes no attachments: thread.tsx holds them and does not pass them"
-      }
+      "notes": [
+        "Built 2026-10-13 (SL-12): the body draws the draft's attachments above the field as the composer's chips, with a pasted file as a chip too since the editor has no pasted-file card; a removal there is a removal from the same draft. The chosen preview variant shows first, as in the composer. Checked against the vendored handoff only: the editor template lies past the first 256 KiB."
+      ]
     },
     {
       "id": "editor.format-toggle",
@@ -2385,7 +2386,7 @@
     {
       "id": "dock.preview-variants",
       "since": "2026-10-12",
-      "note": "SL-3b (D22): nothing is chosen until Build on this; Unpick clears it. While chosen, every send of the session (the thread's send, a queued send when released, carry on) carries it as session.send review.buildBasis (Q342 A); an id that no longer names a preview of that session is not sent, since the daemon would refuse the whole message, and reads as none chosen. Chips carry the variant's own label (Variant A) with a check on the chosen one, where the design draws A B C. The state line counts the group (none chosen, all 4 stay alive; both for two; none chosen for a lone render) where the design draws all three (Q68). The foot shows under any preview, the session's only render included; the notes under the page (The others stay renderable for comparison, Nothing chosen...) show only when there is another variant or render to compare with. A group over 24 variants shows a page of 24 chips with Earlier variants, Later variants and 25-48 of 60 (#810 B5.3, Q68). The chosen variant is shown at the preview foot and in its note; the design's composer chip (2 comments · variant B) belongs to the explicit comment send and is not built (Q69). Choices stored before this release were viewer bookmarks never sent, and are dropped (Q70). Read against the vendored handoff only; DesignSync was not authorized for this slice."
+      "note": "SL-3b (D22): nothing is chosen until Build on this; Unpick clears it. While chosen, every send of the session (the thread's send, a queued send when released, carry on) carries it as session.send review.buildBasis (Q342 A); an id that no longer names a preview of that session is not sent, since the daemon would refuse the whole message, and reads as none chosen. Chips carry the variant's own label (Variant A) with a check on the chosen one, where the design draws A B C. The state line counts the group (none chosen, all 4 stay alive; both for two; none chosen for a lone render) where the design draws all three (Q68). The foot shows under any preview, the session's only render included; the notes under the page (The others stay renderable for comparison, Nothing chosen...) show only when there is another variant or render to compare with. A group over 24 variants shows a page of 24 chips with Earlier variants, Later variants and 25-48 of 60 (#810 B5.3, Q68). The chosen variant is shown at the preview foot and in its note. Since 2026-10-13 (task 83, the Q69 A follow-up) it is also the first chip in the composer and the prompt editor, by the send's own rule: the preview's file kind (HTML), the variant's label, its render and the agent builds on this one, with Unpick on the chip. The design's chip names the open comments as well (2 comments · variant B, NOTES); that half belongs to the explicit comment send (task 84) and is not built. Choices stored before this release were viewer bookmarks never sent, and are dropped (Q70). Read against the vendored handoff only; DesignSync was not authorized for this slice."
     },
     {
       "id": "dock.plan-doc",
