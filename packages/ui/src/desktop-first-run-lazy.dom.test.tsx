@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import type { DesktopWindowBridge } from "./desktop-platform"
-import { loadDesktopFirstRunState } from "./desktop-first-run-persistence"
+import { dismissDesktopFirstRun, loadDesktopFirstRunState, saveDesktopFirstRunState } from "./desktop-first-run-persistence"
 import { completeHandshake, installFakeWebSocket, workspaceSnapshot, type FakeWebSocketHarness } from "./test-support/fake-websocket"
 
 // First-run setup opens only in the desktop app, so its code is not part of
@@ -117,6 +117,9 @@ it("never loads the setup code in the web client, at launch or at idle", async (
   await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
   await settle()
   await act(async () => { for (const run of idle) run() })
+  // The idle prefetch imports every other surface. They finish here, before
+  // the next test resets the module registry under them.
+  await act(async () => { await vi.dynamicImportSettled() })
   await settle()
   expect(chunk.requests).toBe(0)
   expect(screen.queryByRole("dialog")).toBeNull()
@@ -209,4 +212,28 @@ it("leaves the workspace as it was when setup was closed before its code failed 
   expect(screen.queryByRole("dialog")).toBeNull()
   expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy()
   expect(loadDesktopFirstRunState(localStorage).status).toBe("dismissed")
+})
+
+it.each([
+  ["Skip for now", async (user: ReturnType<typeof userEvent.setup>) => { await user.click(screen.getByRole("button", { name: "Skip for now" })) }],
+  ["Escape", async (user: ReturnType<typeof userEvent.setup>) => { await user.keyboard("{Escape}") }],
+])("gives focus back to Settings when setup that did not load is closed with %s", async (_label, close) => {
+  saveDesktopFirstRunState(localStorage, dismissDesktopFirstRun())
+  chunk.failures = 1
+  // The failed load is logged by design; the frame is what is checked here.
+  vi.spyOn(console, "error").mockImplementation(() => {})
+  await openDesktop()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  const user = userEvent.setup()
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  const opener = await screen.findByRole("button", { name: "First-run setup" })
+  await user.click(opener)
+  await act(async () => { await chunk.requested })
+  await arrive()
+  await screen.findByRole("dialog", { name: "Setup did not load in this window. Nothing on the machine changed." })
+
+  await close(user)
+  await settle()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(document.activeElement).toBe(screen.getByRole("button", { name: "First-run setup" }))
 })

@@ -43,6 +43,12 @@ function currentAttempt(): LazyDialog<DesktopFirstRunDialogProps> {
 export function DesktopFirstRunDialog(props: DesktopFirstRunDialogProps) {
   const drawn = useDrawnOnceOpen(props.open)
   const [, setRetries] = useState(0)
+  // What had focus when setup opened, read as the open is drawn and before
+  // any frame takes focus. The loading frame and the loaded dialog each give
+  // focus back on their own; the frame that says setup did not load replaced
+  // them, so it gives focus back to this.
+  const [opened, setOpened] = useState<{ open: boolean; from: HTMLElement | null }>({ open: false, from: null })
+  if (props.open !== opened.open) setOpened({ open: props.open, from: props.open ? focusedElement() : opened.from })
   // The web reloads the page after a failed chunk; the desktop loads again.
   const reload = useContext(SurfaceCodeReload)
   if (!drawn) return null
@@ -57,7 +63,7 @@ export function DesktopFirstRunDialog(props: DesktopFirstRunDialogProps) {
   }
   const Loaded = currentAttempt().Dialog
   return (
-    <SetupLoadBoundary key={attempt} open={props.open} onSkip={skip} onRetry={retry}>
+    <SetupLoadBoundary key={attempt} open={props.open} restoreFocusTo={opened.from} onSkip={skip} onRetry={retry}>
       <Loaded
         {...props}
         loading={(
@@ -74,7 +80,17 @@ export function DesktopFirstRunDialog(props: DesktopFirstRunDialogProps) {
   )
 }
 
-type BoundaryProps = { open: boolean; onSkip: () => void; onRetry: () => void; children: ReactNode }
+function focusedElement(): HTMLElement | null {
+  return typeof document !== "undefined" && document.activeElement instanceof HTMLElement ? document.activeElement : null
+}
+
+type BoundaryProps = {
+  open: boolean
+  restoreFocusTo: HTMLElement | null
+  onSkip: () => void
+  onRetry: () => void
+  children: ReactNode
+}
 type BoundaryState = { error: Error | undefined }
 
 class SetupLoadBoundary extends Component<BoundaryProps, BoundaryState> {
@@ -94,10 +110,19 @@ class SetupLoadBoundary extends Component<BoundaryProps, BoundaryState> {
     // Setup that loaded and then failed to draw is not a load failure; the
     // workspace boundary above says what that is.
     if (!(error instanceof SurfaceLoadError)) throw error
-    const { open, onSkip, onRetry } = this.props
+    const { open, restoreFocusTo, onSkip, onRetry } = this.props
     return (
       <Dialog open={open} onOpenChange={(next) => { if (!next) onSkip() }}>
-        <DialogContent showCloseButton={false} aria-describedby={undefined} className={frameClassName}>
+        <DialogContent
+          showCloseButton={false}
+          aria-describedby={undefined}
+          className={frameClassName}
+          onCloseAutoFocus={(event) => {
+            if (!restoreFocusTo?.isConnected) return
+            event.preventDefault()
+            restoreFocusTo.focus()
+          }}
+        >
           <section className="flex w-full max-w-[620px] flex-col gap-4 self-center pt-10">
             <div className="overflow-hidden rounded-xl border border-danger-border bg-danger-background">
               <div className="flex items-center gap-3 px-4 py-3 text-danger-foreground">
