@@ -17,9 +17,7 @@ export function CheckpointCaptureLine({ entry }: { entry: Pick<CheckpointEntry, 
   if (!entry.midTurn) return null
   const origin = entry.reason === "before-approved-command"
     ? "Taken before an approved command."
-    : entry.midTurn.providerTurnId !== undefined || entry.midTurn.providerTurnIdSha256 !== undefined
-      ? "Taken mid-turn while the agent was running."
-      : "Checkpoint capture."
+    : "Taken mid-turn while the agent was running."
   const stability = entry.midTurn.stability === "matched"
     ? "Two staging passes matched."
     : entry.midTurn.changedPathCount > 0 ? "Files changed while it was taken." : "Capture was unstable."
