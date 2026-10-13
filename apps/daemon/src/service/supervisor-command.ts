@@ -56,12 +56,14 @@ function boundRecord(path: string): SupervisorRecord | undefined {
   return record
 }
 
-function lastExit(record: SupervisorRecord): string {
-  const exit = record.attempts.findLast((attempt) => attempt.exit !== null)?.exit
-  if (!exit) return "no completed child exit recorded"
-  const value = exit.errorCode !== null ? `launch failure ${exit.errorCode}`
+function exitValue(exit: NonNullable<SupervisorRecord["attempts"][number]["exit"]>): string {
+  return exit.errorCode !== null ? `launch failure ${exit.errorCode}`
     : exit.signal !== null ? `signal ${exit.signal}` : `code ${exit.code}`
-  return `last exit ${value} at ${exit.at}`
+}
+
+function lastExit(record: SupervisorRecord): string {
+  const exit = record.attempts.at(-1)?.exit
+  return exit ? `last exit ${exitValue(exit)} at ${exit.at}` : "no completed child exit recorded"
 }
 
 class GuestSupervisorBusyError extends Error {}
@@ -130,9 +132,10 @@ export function readGuestSupervisorStatus(home: string, alive = guestProcessAliv
   const supervisionFailure = configuration === undefined ? "configuration-missing"
     : record.state === "exhausted" ? "exhausted" : record.state === "failed" ? "observation-failure" : undefined
   const detail = configuration ? observed : `service configuration missing; guest evidence is not bound to an installed service; ${observed}`
+  const completed = record.attempts.findLast((attempt) => attempt.exit !== null)?.exit
   // A guest record cannot establish whether the Windows registration exists.
   return { installed: null, running, detail, crashCount: record.crashes,
-    ...(record.attempts.some((attempt) => attempt.exit !== null) ? { lastExit: lastExit(record) } : {}),
+    ...(completed ? { lastExit: exitValue(completed) } : {}),
     ...(running && activeChild?.child ? { pid: activeChild.child.pid } : {}),
     ...(supervisionFailure === undefined ? {} : { supervisionFailure }) }
 }

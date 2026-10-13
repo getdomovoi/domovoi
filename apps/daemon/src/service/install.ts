@@ -1519,7 +1519,7 @@ async function statusWithDeadline(
     // and launchctl does not supply a daemon birth timestamp in this read.
     const field = (key: string): number | undefined => {
       if (state === undefined) return undefined
-      const matches = [...printed.stdout.matchAll(new RegExp(`^\\t${key} = (-?[0-9]+)\\r?$`, "gm"))]
+      const matches = [...printed.stdout.matchAll(new RegExp(`^\\t${key} = (-?[0-9]+)${key === "last exit code" ? "(?:: [A-Z][A-Z0-9_]*)?" : ""}\\r?$`, "gm"))]
       const value = Number(matches[0]?.[1])
       return matches.length === 1 && Number.isSafeInteger(value) ? value : undefined
     }

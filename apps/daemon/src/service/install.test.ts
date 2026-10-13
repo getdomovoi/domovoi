@@ -1180,3 +1180,8 @@ it("does not borrow pid or last exit from a foreign launchd plist", async () => 
   expect(status).not.toHaveProperty("pid")
   expect(status).not.toHaveProperty("lastExit")
 })
+
+it("reads the numeric part of a named launchd exit code", async () => {
+  const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "job = {\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = not running\n\tlast exit code = 75: EX_TEMPFAIL\n}" })) })
+  expect(await serviceStatus(darwin, dependencies)).toHaveProperty("lastExit", "code 75")
+})

@@ -448,7 +448,7 @@ it("carries guest exhaustion facts but not historical pid or intent time", () =>
   exhaust(f.record)
   writeSupervisorRecord(f.home, f.record)
   const status = readGuestSupervisorStatus(f.home, () => false)
-  expect(status).toMatchObject({ crashCount: 4, lastExit: "last exit code 127 at 2026-09-12T12:00:01.000Z", supervisionFailure: "exhausted" })
+  expect(status).toMatchObject({ crashCount: 4, lastExit: "code 127", supervisionFailure: "exhausted" })
   expect(status).not.toHaveProperty("pid")
   expect(status).not.toHaveProperty("startedAt")
 })
@@ -463,4 +463,16 @@ it("carries the live guest child pid but keeps boot-relative uptime unknown", ()
   expect(status).not.toHaveProperty("startedAt")
   expect(status).not.toHaveProperty("lastExit")
   expect(readGuestSupervisorStatus(f.home, () => false)).not.toHaveProperty("pid")
+})
+
+it("keeps detail on the last attempt while exposing the previous completed exit separately", () => {
+  const f = fixture()
+  f.record.state = "running"; f.record.attemptCount = 2
+  f.record.attempts[0]!.backoffOutcome = "completed"
+  f.record.attempts[0]!.backoffEndedAt = f.record.updatedAt
+  f.record.attempts.push({ ...f.record.attempts[0]!, number: 2, child: { ...f.record.loop, pid: 102 }, exit: null, backoffMs: 0, backoffOutcome: null, backoffEndedAt: null })
+  writeSupervisorRecord(f.home, f.record)
+  const status = readGuestSupervisorStatus(f.home, () => false)
+  expect(status).toHaveProperty("lastExit", "code 127")
+  expect(status?.detail).toContain("supervisor is not alive; no completed child exit recorded")
 })
