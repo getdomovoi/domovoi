@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { BrowserLimitsPanel, type BrowserLimit } from "./browser-limits-panel.js"
+import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog.js"
 
 afterEach(cleanup)
 
@@ -66,6 +67,32 @@ describe("BrowserLimitsPanel", () => {
     rerender(<BrowserLimitsPanel rows={rows} onContinue={onContinue} continueLabel="Back" dialog={{ open: false, returnFocusTo: opener }} />)
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
     await waitFor(() => expect(document.activeElement).toBe(opener))
+    opener.remove()
+  })
+
+  // The palette can open over the dialog and attach the session elsewhere,
+  // which would leave the rows naming a route the session left. So focus
+  // moving to another surface closes the limits, and focus stays there.
+  it("closes when focus moves to another surface over it, and leaves focus there", async () => {
+    const opener = document.createElement("button")
+    document.body.append(opener)
+    const onContinue = vi.fn()
+    const { rerender } = render(<BrowserLimitsPanel rows={rows} onContinue={onContinue} continueLabel="Back" dialog={{ open: true, returnFocusTo: opener }} />)
+    expect(screen.getByRole("dialog").hasAttribute("data-browser-limits")).toBe(true)
+
+    rerender(<>
+      <BrowserLimitsPanel rows={rows} onContinue={onContinue} continueLabel="Back" dialog={{ open: true, returnFocusTo: opener }} />
+      <Dialog open><DialogContent aria-describedby={undefined}><DialogTitle>Commands</DialogTitle><input aria-label="Search" autoFocus /></DialogContent></Dialog>
+    </>)
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1))
+    const search = screen.getByRole("textbox", { name: "Search" })
+    rerender(<>
+      <BrowserLimitsPanel rows={rows} onContinue={onContinue} continueLabel="Back" dialog={{ open: false, returnFocusTo: opener }} />
+      <Dialog open><DialogContent aria-describedby={undefined}><DialogTitle>Commands</DialogTitle><input aria-label="Search" autoFocus /></DialogContent></Dialog>
+    </>)
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "What a browser tab can and cannot do" })).toBeNull())
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(document.activeElement).toBe(search)
     opener.remove()
   })
 

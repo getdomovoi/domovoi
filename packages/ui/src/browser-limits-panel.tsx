@@ -78,16 +78,32 @@ function BrowserLimitsDialog({ rows, onContinue, continueLabel, open, returnFocu
   returnFocusTo: HTMLElement | null
 }) {
   const heading = useRef<HTMLHeadingElement>(null)
+  // Set when focus left for another surface, which then keeps it.
+  const leftForElsewhere = useRef(false)
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) onContinue() }}>
       <DialogContent
+        data-browser-limits=""
         showCloseButton={false}
         className="max-h-[85dvh] overflow-y-auto sm:max-w-2xl"
         onOpenAutoFocus={(event) => {
+          leftForElsewhere.current = false
           event.preventDefault()
           heading.current?.focus()
         }}
+        // The session's palette can open over the dialog and attach the
+        // session to another machine, which would leave the rows naming a
+        // route the session left. Focus moving to another surface closes the
+        // limits instead; asked for again, they read the route afresh.
+        onFocusOutside={() => {
+          leftForElsewhere.current = true
+          onContinue()
+        }}
         onCloseAutoFocus={(event) => {
+          if (leftForElsewhere.current) {
+            event.preventDefault()
+            return
+          }
           if (!returnFocusTo?.isConnected) return
           event.preventDefault()
           returnFocusTo.focus()

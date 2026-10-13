@@ -242,9 +242,14 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
         clearDaemonSession(storage)
         leaveSession()
       },
-      // Asked for again while open (the palette over the dialog), the dialog
-      // keeps the control that first opened it: the new opener is inside it.
-      onOpenLimits: (opener, route) => setSessionLimits((current) => current.open ? current : { open: true, opener, route }),
+      // The rows always take the route the session is on now. Asked for from a
+      // palette opened over the limits, the opener is inside the limits, so
+      // the dialog keeps the control that first opened it.
+      onOpenLimits: (opener, route) => setSessionLimits((current) => ({
+        open: true,
+        route,
+        opener: current.opener && opener?.closest("[data-browser-limits]") ? current.opener : opener,
+      })),
     })}
     <BrowserLimitsPanel
       // The session's route as its chip names it, which for an attached

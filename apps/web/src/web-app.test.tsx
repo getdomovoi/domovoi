@@ -758,11 +758,24 @@ describe("limits from the workspace", () => {
     const first = button("First opener")
     await act(async () => { open!(first, "loopback") })
     await settle()
-    await act(async () => { open!(dialogButton("Back"), "loopback") })
+    // Asked for again from inside the limits while open, with the route the
+    // session is on now: the rows follow the route, focus still goes home.
+    await act(async () => { open!(dialogButton("Back"), "tailnet") })
     await settle()
-    await act(async () => { dialogButton("Back").click() })
+    expect(limitsDialog()?.textContent).toContain("The daemon streams the thread and the plan over the tailnet.")
+    const inside = dialogButton("Back")
+    await act(async () => { inside.click() })
     await settle()
     expect(limitsDialog()).toBeNull()
+    expect(document.activeElement).toBe(first)
+
+    // Closed because the palette took focus, then asked for again from that
+    // palette: its opener was inside the limits, so the first opener stays.
+    await act(async () => { open!(inside, "ssh") })
+    await settle()
+    expect(limitsDialog()?.textContent).toContain("The daemon streams the thread and the plan over the route.")
+    await act(async () => { dialogButton("Back").click() })
+    await settle()
     expect(document.activeElement).toBe(first)
   })
 
