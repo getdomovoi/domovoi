@@ -2,7 +2,25 @@ import { describe, expect, it } from "vitest"
 
 import { demoWorkspace, maximumRenderedPreviewStages, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
-import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { latestArtifactForActiveSession, maximumPreviewVariants, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, previewVariantWindowForActiveSession, reviewLayoutFor, sessionPreviewBuildBasis } from "./artifacts"
+
+// The basis a send may carry is the one the daemon accepts: a preview artifact
+// of that same session. Anything else would refuse the whole message.
+describe("sessionPreviewBuildBasis", () => {
+  const snapshot = structuredClone(demoWorkspace) as WorkspaceSnapshot
+  snapshot.artifacts.push({
+    id: "onboarding-preview", sessionId: "session-onboarding", title: "Onboarding", type: "preview", revision: 1,
+  })
+  it("names a preview of the session", () => {
+    expect(sessionPreviewBuildBasis(snapshot, "session-billing", "artifact-preview")?.id).toBe("artifact-preview")
+  })
+  it("drops an id that is gone, of another session, not a preview, or absent", () => {
+    expect(sessionPreviewBuildBasis(snapshot, "session-billing", "gone")).toBeUndefined()
+    expect(sessionPreviewBuildBasis(snapshot, "session-billing", "onboarding-preview")).toBeUndefined()
+    expect(sessionPreviewBuildBasis(snapshot, "session-billing", "artifact-plan")).toBeUndefined()
+    expect(sessionPreviewBuildBasis(snapshot, "session-billing", undefined)).toBeUndefined()
+  })
+})
 
 describe("latestArtifactForActiveSession", () => {
   it("returns the newest matching artifact for the active session", () => {
@@ -54,10 +72,56 @@ describe("previewVariantsForActiveSession", () => {
       type: "preview" as const, revision: 1, path: `design-studio/x/variant-${index}.html`, mimeType: "text/html",
       variant: { id: `${index}`, groupId: "design-studio/x", label: `Variant ${index}`, order: 29 - index },
     }))
+    // The window is a page of 24 by order: variant-0 (order 29) sits on the
+    // second page, orders 24 to 29.
     const selectedWindow = previewVariantsForActiveSession(snapshot, "variant-0")
-    expect(selectedWindow).toHaveLength(24)
-    expect(selectedWindow[0]?.variant?.order).toBe(6)
+    expect(selectedWindow).toHaveLength(6)
+    expect(selectedWindow[0]?.variant?.order).toBe(24)
     expect(selectedWindow.at(-1)?.id).toBe("variant-0")
+    const firstPage = previewVariantsForActiveSession(snapshot, "variant-29")
+    expect(firstPage).toHaveLength(24)
+    expect(firstPage[0]?.id).toBe("variant-29")
+  })
+
+  // #810 B5.3: a group over 24 variants opened at its first variant showed
+  // orders 0 to 23 and nothing reached the rest. Pages reach every variant.
+  it("pages a group over the variant budget so every variant is reachable", () => {
+    const snapshot = structuredClone(demoWorkspace) as WorkspaceSnapshot
+    snapshot.activeSessionId = "session-billing"
+    snapshot.artifacts = Array.from({ length: 60 }, (_, index) => ({
+      id: `variant-${index}`, sessionId: "session-billing", title: `Variant ${index}`,
+      type: "preview" as const, revision: 1, path: `design-studio/x/variant-${index}.html`, mimeType: "text/html",
+      variant: { id: `${index}`, groupId: "design-studio/x", label: `Variant ${index}`, order: index },
+    }))
+    const reached = new Set<string>()
+    let window = previewVariantWindowForActiveSession(snapshot, "variant-0")
+    expect(window).toMatchObject({ start: 0, total: 60 })
+    expect(window.previousPageArtifactId).toBeUndefined()
+    for (;;) {
+      expect(window.variants.length).toBeLessThanOrEqual(maximumPreviewVariants)
+      for (const variant of window.variants) reached.add(variant.id)
+      if (!window.nextPageArtifactId) break
+      window = previewVariantWindowForActiveSession(snapshot, window.nextPageArtifactId)
+    }
+    expect(reached.size).toBe(60)
+    expect(window).toMatchObject({ start: 48, total: 60 })
+    expect(window.variants.map((variant) => variant.id)).toContain("variant-59")
+    expect(window.previousPageArtifactId).toBe("variant-24")
+    expect(previewVariantWindowForActiveSession(snapshot, "variant-24").variants[0]?.id).toBe("variant-24")
+  })
+
+  it("keeps a group within the budget on one page", () => {
+    const snapshot = structuredClone(demoWorkspace) as WorkspaceSnapshot
+    snapshot.activeSessionId = "session-billing"
+    snapshot.artifacts = Array.from({ length: 3 }, (_, index) => ({
+      id: `variant-${index}`, sessionId: "session-billing", title: `Variant ${index}`,
+      type: "preview" as const, revision: 1, path: `design-studio/x/variant-${index}.html`, mimeType: "text/html",
+      variant: { id: `${index}`, groupId: "design-studio/x", label: `Variant ${index}`, order: index },
+    }))
+    const window = previewVariantWindowForActiveSession(snapshot, "variant-2")
+    expect(window).toMatchObject({ start: 0, total: 3 })
+    expect(window.previousPageArtifactId).toBeUndefined()
+    expect(window.nextPageArtifactId).toBeUndefined()
   })
 
   it("falls back from compare when the container is narrow", () => {

@@ -161,14 +161,17 @@ export function ApprovalScreen({
           at the end of a scroll, and the affirmative one wears the warning the
           request wears, so neither answer reads as the safe default. */}
       <FloatingBar shape="decision" padding="stack" lifted onFootprint={setFootprint}>
+        {/* Drawn whatever the access: a connection that drops while an answer
+            is out leaves the phone watching, and whether that answer landed is
+            still this gate's fact to tell. */}
+        {problem ? (
+          <Text accessibilityRole="alert" className="px-1 text-[12px] leading-[18px] text-warn-fg">{problem}</Text>
+        ) : null}
         {watching ? (
           <Text variant="note" className="px-1 text-center">
             Watching only. A device paired with full access answers this gate.
           </Text>
         ) : <>
-        {problem ? (
-          <Text accessibilityRole="alert" className="px-1 text-[12px] leading-[18px] text-warn-fg">{problem}</Text>
-        ) : null}
         <Button
           title="Allow once"
           variant="affirm"

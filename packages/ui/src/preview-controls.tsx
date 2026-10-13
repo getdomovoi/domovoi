@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react"
-import { DownloadIcon, LockIcon, MessageSquarePlusIcon, MoreHorizontalIcon, PrinterIcon } from "lucide-react"
+import { ChevronLeftIcon, ChevronRightIcon, DownloadIcon, LockIcon, MessageSquarePlusIcon, MoreHorizontalIcon, PrinterIcon } from "lucide-react"
 import type { Artifact } from "@getdomovoi/protocol"
 
 import { Button } from "./components/ui/button"
@@ -28,6 +28,29 @@ export const PreviewCopy = {
   grantNote: "The daemon signs this grant for this document only. While the preview is on screen, a new one is requested before it expires. A page already loaded keeps running without one.",
   safeCopies: "Safe copies remove scripts, forms, and external assets.",
   live: "Live · reloads when the agent renders a new revision",
+} as const
+
+// The dock's comment draft and variant foot (D22), in the handoff's words.
+export const PreviewDraftCopy = {
+  pill: "new comment",
+  post: "Post the comment",
+  note: "the agent reads it next turn",
+} as const
+
+export const PreviewVariantCopy = {
+  buildOnThis: "Build on this",
+  unpick: "Unpick",
+  buildsOnThis: "the agent builds on this one",
+  buildsOn: (name: string) => `the agent builds on ${name}`,
+  // The handoff draws three variants: "none chosen, all three stay alive".
+  noneChosen: (variants: number) => variants >= 3
+    ? `none chosen, all ${variants} stay alive`
+    : variants === 2 ? "none chosen, both stay alive" : "none chosen",
+  chosenNote: "The others stay renderable for comparison.",
+  noneNote: "Nothing chosen, so the agent builds on none of them.",
+  earlier: "Earlier variants",
+  later: "Later variants",
+  range: (first: number, last: number, total: number) => `${first}-${last} of ${total}`,
 } as const
 
 // The design's sm, md and lg. lg is the default and fills the stage.
@@ -168,32 +191,80 @@ export function PreviewOverflowMenu({
   )
 }
 
-// The design's segmented variant chips at the foot of the preview.
+// The design's segmented variant chips at the foot of the preview. The chosen
+// build basis carries a check and the success colour; the chip on screen is
+// the selected radio.
 export function PreviewVariantChips({
   variants,
   selectedArtifactId,
+  chosenArtifactId,
   onSelect,
+  pages,
 }: {
   variants: readonly Pick<Artifact, "id" | "title" | "variant">[]
   selectedArtifactId: string | undefined
+  chosenArtifactId?: string | undefined
   onSelect: (artifactId: string) => void
+  // A group over the 24-variant budget (performance-budgets.json) shows one
+  // page of chips; these turn it (#810 B5.3).
+  pages?: {
+    start: number
+    total: number
+    previousArtifactId?: string | undefined
+    nextArtifactId?: string | undefined
+  } | undefined
 }) {
-  return (
+  const chips = (
     <ToggleGroup
       type="single"
       value={selectedArtifactId ?? ""}
       onValueChange={(next) => { if (next) onSelect(next) }}
       aria-label="Design variants"
-      // A group may hold up to 24 variants (performance-budgets.json); the
-      // row scrolls rather than clip the later chips in a narrow dock.
+      // A page holds up to 24 chips; the row scrolls rather than clip the
+      // later chips in a narrow dock.
       className="max-w-full overflow-x-auto rounded-full bg-accent p-[3px]"
     >
       {variants.map((artifact) => (
-        <ToggleGroupItem key={artifact.id} value={artifact.id} className="min-h-11 rounded-full px-3 text-[11.5px] data-[state=on]:bg-background">
+        <ToggleGroupItem
+          key={artifact.id}
+          value={artifact.id}
+          className={cn("min-h-11 rounded-full px-3 text-[11.5px] data-[state=on]:bg-background", artifact.id === chosenArtifactId && "text-success data-[state=on]:text-success")}
+        >
           {artifact.variant?.label ?? artifact.title}
+          {artifact.id === chosenArtifactId ? <span aria-hidden="true">✓</span> : null}
         </ToggleGroupItem>
       ))}
     </ToggleGroup>
+  )
+  if (!pages || pages.total <= variants.length) return chips
+  const { previousArtifactId, nextArtifactId } = pages
+  return (
+    <div className="flex min-w-0 max-w-full items-center gap-1">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="min-h-11 min-w-11 flex-none rounded-full text-muted-foreground"
+        aria-label={PreviewVariantCopy.earlier}
+        disabled={!previousArtifactId}
+        onClick={() => { if (previousArtifactId) onSelect(previousArtifactId) }}
+      >
+        <ChevronLeftIcon />
+      </Button>
+      {chips}
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        className="min-h-11 min-w-11 flex-none rounded-full text-muted-foreground"
+        aria-label={PreviewVariantCopy.later}
+        disabled={!nextArtifactId}
+        onClick={() => { if (nextArtifactId) onSelect(nextArtifactId) }}
+      >
+        <ChevronRightIcon />
+      </Button>
+      <span className="flex-none font-machine text-mono-xs text-faint">
+        {PreviewVariantCopy.range(pages.start + 1, pages.start + variants.length, pages.total)}
+      </span>
+    </div>
   )
 }
 

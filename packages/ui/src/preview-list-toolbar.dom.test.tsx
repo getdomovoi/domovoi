@@ -305,7 +305,7 @@ it("asks again at once when a preview whose renewals were failing is shown again
 it("offers a standalone render as the build basis when the session has other renders", async () => {
   const user = userEvent.setup()
   const onBuildBasisChange = vi.fn()
-  render(
+  const dock = (buildBasisId?: string) => (
     <ArtifactDock
       snapshot={snapshot}
       onCollapse={vi.fn()}
@@ -320,17 +320,21 @@ it("offers a standalone render as the build basis when the session has other ren
       onLoadSessionHistory={vi.fn()}
       onLoadSessionEvidence={() => new Promise<never>(() => {})}
       onRevertSessionFile={vi.fn()}
+      buildBasisId={buildBasisId}
       onBuildBasisChange={onBuildBasisChange}
-    />,
+    />
   )
+  const view = render(dock())
 
   await user.click(within(screen.getByRole("navigation", { name: "Rendered this session" })).getByRole("button", { name: /^Duplicate-delivery runbook/u }))
-  expect(screen.getByText("Viewing · Duplicate-delivery runbook")).toBeTruthy()
-  expect(screen.getByText("Build basis · Variant B in replay")).toBeTruthy()
+  expect(screen.getByText("none chosen")).toBeTruthy()
   expect(screen.queryByRole("radiogroup", { name: "Design variants" })).toBeNull()
-  await user.click(screen.getByRole("button", { name: "Use Duplicate-delivery runbook as build basis" }))
+  await user.click(screen.getByRole("button", { name: "Build on this" }))
   expect(onBuildBasisChange).toHaveBeenCalledWith("runbook")
-  expect(screen.getByText("Chosen build basis")).toBeTruthy()
+  // The shell holds the choice and passes it back.
+  view.rerender(dock("runbook"))
+  expect(screen.getByText("the agent builds on this one")).toBeTruthy()
+  expect(screen.getByRole("button", { name: "Unpick" })).toBeTruthy()
 })
 
 it("lists the newest renders first in view and shows earlier ones on request", async () => {
@@ -410,12 +414,14 @@ it("names the build basis from another render instead of a variant of the one on
   renderDock(grantingAuthorize(), undefined, { ...snapshot, artifacts: [...artifacts, ...hero] }, undefined, { buildBasisId: "replay-a" })
 
   await user.click(within(screen.getByRole("navigation", { name: "Rendered this session" })).getByRole("button", { name: /^replay/u }))
-  expect(screen.getByText("Build basis · Variant A")).toBeTruthy()
+  // Variant B is on screen; the basis is A of the same render.
+  expect(screen.getByText("the agent builds on Variant A")).toBeTruthy()
 
   await user.click(within(screen.getByRole("navigation", { name: "Rendered this session" })).getByRole("button", { name: /^hero/u }))
-  expect(screen.getByText("Build basis · Variant A in replay")).toBeTruthy()
-  expect(screen.queryByText("Chosen build basis")).toBeNull()
-  expect(screen.getByRole("button", { name: "Use Variant A as build basis" })).toBeTruthy()
+  expect(screen.getByText("the agent builds on Variant A in replay")).toBeTruthy()
+  expect(screen.queryByText("the agent builds on this one")).toBeNull()
+  expect(screen.queryByRole("button", { name: "Unpick" })).toBeNull()
+  expect(screen.getByRole("button", { name: "Build on this" })).toBeTruthy()
 })
 
 // The daemon's clock 55 s behind this one: each grant it signs for 60 s looks
@@ -654,7 +660,8 @@ it("opens the draft once the desktop's visual capture of the picked element land
     const dock = standInWindow(frameTitled("Replay table B"))
     await user.click(screen.getByRole("button", { name: "Add a comment" }))
     window.dispatchEvent(new MessageEvent("message", { origin: "null", source: dock.frameWindow, data: selection }))
-    expect(await screen.findByRole("dialog", { name: "Annotate preview" })).toBeTruthy()
+    // In the dock the draft is the inline card under the page (D22).
+    expect(await screen.findByRole("region", { name: "new comment" })).toBeTruthy()
     expect(capture).toHaveBeenCalledTimes(2)
   } finally {
     bounds.mockRestore()

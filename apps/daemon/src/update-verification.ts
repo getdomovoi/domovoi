@@ -1,75 +1,77 @@
-import { createHash, createPublicKey, verify as verifySignature } from "node:crypto"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { canonicalize } from "@tufjs/canonical-json"
+import { Metadata, MetadataKind } from "@tufjs/models"
+import { UnsignedMetadataError } from "@tufjs/models/dist/error.js"
+import { Updater, type Fetcher } from "tuf-js"
+import { z } from "zod"
+// These typed errors are not re-exported by the pinned client's entry point.
+import { BadVersionError, DownloadHTTPError, ExpiredMetadataError } from "tuf-js/dist/error.js"
 
 import {
-  type UpdateChannel,
-  type UpdateRoleName,
-  type UpdateRootMetadata,
-  updateRootMetadataSchema,
-  updateTargetsMetadataSchema,
-  updateSnapshotMetadataSchema,
-  updateTimestampMetadataSchema,
-  updateTargetNameSchema,
-  updateVersionSchema,
+  type UpdateChannel, type UpdateRoleName, type UpdateRootMetadata,
+  updateRootMetadataSchema, updateTargetsMetadataSchema,
+  updateSnapshotMetadataSchema, updateTimestampMetadataSchema,
+  updateTargetNameSchema, updateVersionSchema,
 } from "@getdomovoi/protocol"
 
 export const maximumUpdateMetadataBytes = 1_048_576
 export const updateFetchTimeoutMs = 30_000
 export const updateInactivityTimeoutMs = 10_000
+export const maximumUpdateRootRotations = 32
+export type TrustedUpdateDocuments = Partial<Record<UpdateRoleName, string | undefined>>
+const roles = ["root", "timestamp", "snapshot", "targets"] as const
+const schemas = { root: updateRootMetadataSchema, timestamp: updateTimestampMetadataSchema, snapshot: updateSnapshotMetadataSchema, targets: updateTargetsMetadataSchema }
 
 export class UpdateVerificationError extends Error {
-  constructor(readonly reason: "expired" | "signature" | "replay" | "target-mismatch" | "malformed-metadata" | "network", message: string, options?: { cause?: unknown }) {
+  constructor(readonly reason: "expired" | "signature" | "replay" | "target-mismatch" | "malformed-metadata" | "network" | "policy", message: string, options?: { cause?: unknown }) {
     super(message, options)
     this.name = "UpdateVerificationError"
   }
 }
 
-/** TUF signatures cover canonical JSON of the signed object, never the envelope. */
-export function canonicalUpdateJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value)
-  if (Array.isArray(value)) return `[${value.map(canonicalUpdateJson).join(",")}]`
-  const entries = Object.entries(value as Record<string, unknown>)
-    .filter(([, entry]) => entry !== undefined)
-    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-  return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalUpdateJson(entry)}`).join(",")}}`
+/** The same OLPC canonicalization as the TUF verifier, also used by signing fixtures. */
+export function canonicalUpdateJson(value: unknown): string { return canonicalize(value) }
+
+/** Only call with roots already accepted by the TUF client. */
+export function resetUpdateRoles(previous: string | undefined, next: string | undefined): UpdateRoleName[] {
+  if (!previous || !next || previous === next) return []
+  const oldRoot = updateRootMetadataSchema.parse(JSON.parse(previous)).signed
+  const newRoot = updateRootMetadataSchema.parse(JSON.parse(next)).signed
+  if (newRoot.version <= oldRoot.version) return []
+  const authority = (root: typeof oldRoot, role: UpdateRoleName) => canonicalize({
+    threshold: root.roles[role].threshold,
+    keys: [...root.roles[role].keyids].sort().map((keyid) => [keyid, root.keys[keyid]]),
+  })
+  const changed = (role: UpdateRoleName) => authority(oldRoot, role) !== authority(newRoot, role)
+  // TUF 5.3.11: discard the compromised online epoch to recover from
+  // fast-forward attacks. Targets' extra local byte/version guard follows it.
+  if (changed("timestamp") || changed("snapshot")) return ["timestamp", "snapshot", "targets"]
+  return changed("targets") ? ["targets"] : []
 }
 
-function publicKey(value: string): ReturnType<typeof createPublicKey> {
-  const raw = Buffer.from(value, "base64")
-  if (raw.length !== 32 || raw.toString("base64") !== value) throw new UpdateVerificationError("signature", "Update signing key is not a canonical Ed25519 key")
-  const spki = Buffer.concat([Buffer.from("302a300506032b6570032100", "hex"), raw])
-  return createPublicKey({ key: spki, format: "der", type: "spki" })
-}
-
-function verifyRoleSignatures(role: UpdateRoleName, envelope: { signed: unknown, signatures: Array<{ keyid: string, sig: string }> }, root: UpdateRootMetadata): void {
-  const delegation = root.signed.roles[role]
-  if (!delegation) throw new UpdateVerificationError("signature", `Update role ${role} is not delegated`)
-  const keys = new Set(delegation.keyids)
-  const valid = new Set<string>()
-  const payload = Buffer.from(canonicalUpdateJson(envelope.signed), "utf8")
-  for (const signature of envelope.signatures) {
-    if (!keys.has(signature.keyid) || valid.has(signature.keyid)) continue
-    const key = root.signed.keys[signature.keyid]
-    if (!key) continue
-    const ok = (() => {
-      try {
-        const signatureBytes = Buffer.from(signature.sig, "base64")
-        return signatureBytes.length === 64 && signatureBytes.toString("base64") === signature.sig
-          && verifySignature(null, payload, publicKey(key.keyval.public), signatureBytes)
-      } catch {
-        return false
-      }
-    })()
-    if (ok) valid.add(signature.keyid)
+function parseMetadata(role: UpdateRoleName, text: string) {
+  try {
+    if (Buffer.byteLength(text) > maximumUpdateMetadataBytes) throw new Error("Metadata exceeds limit")
+    const metadata = schemas[role].parse(JSON.parse(text))
+    if (new Set(metadata.signatures.map(({ keyid }) => keyid)).size !== metadata.signatures.length
+      || metadata.signatures.some(({ sig }) => !/^[a-f0-9]{128}$/.test(sig))) {
+      throw new UpdateVerificationError("signature", "Update metadata requires standard TUF Ed25519 signatures")
+    }
+    return metadata
+  } catch (error) {
+    if (error instanceof UpdateVerificationError) throw error
+    throw new UpdateVerificationError("malformed-metadata", "Update metadata is malformed", { cause: error })
   }
-  if (valid.size < delegation.threshold) throw new UpdateVerificationError("signature", `Update role ${role} did not meet its signature threshold`)
 }
 
-function assertFresh(expires: string, now: number): void {
-  if (Date.parse(expires) <= now) throw new UpdateVerificationError("expired", "Update metadata is expired")
-}
-
-function metadataDigest(bytes: Uint8Array): { length: number, sha256: string } {
-  return { length: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") }
+function verificationError(error: unknown): UpdateVerificationError {
+  if (error instanceof UpdateVerificationError) return error
+  const reason = error instanceof UnsignedMetadataError ? "signature"
+    : error instanceof ExpiredMetadataError ? "expired"
+    : error instanceof BadVersionError ? "replay" : "target-mismatch"
+  return new UpdateVerificationError(reason, "TUF update verification failed", { cause: error })
 }
 
 export function compareVersions(left: string, right: string): number {
@@ -98,51 +100,6 @@ export function compareVersions(left: string, right: string): number {
   return 0
 }
 
-export function verifyUpdateRoot(value: unknown, trustedRoot: UpdateRootMetadata): UpdateRootMetadata {
-  const envelope = updateRootMetadataSchema.parse(value)
-  verifyRoleSignatures("root", envelope, trustedRoot)
-  if (envelope.signed.version < trustedRoot.signed.version) throw new UpdateVerificationError("replay", "Update root metadata rolls back its version")
-  if (envelope.signed.version === trustedRoot.signed.version
-    && canonicalUpdateJson(envelope.signed) !== canonicalUpdateJson(trustedRoot.signed)) {
-    throw new UpdateVerificationError("replay", "Update root metadata changed at an existing version")
-  }
-  verifyRoleSignatures("root", envelope, envelope)
-  return envelope
-}
-
-export function verifyUpdateMetadata(role: Exclude<UpdateRoleName, "root">, value: unknown, root: UpdateRootMetadata): unknown {
-  const envelope = role === "targets"
-    ? updateTargetsMetadataSchema.parse(value)
-    : role === "snapshot" ? updateSnapshotMetadataSchema.parse(value) : updateTimestampMetadataSchema.parse(value)
-  verifyRoleSignatures(role, envelope, root)
-  assertFresh(envelope.signed.expires, Date.now())
-  return envelope
-}
-
-export function verifyUpdateChain(values: { root: unknown, timestamp: unknown, snapshot: unknown, targets: unknown, raw: Record<string, Uint8Array> }, trustedRoot: UpdateRootMetadata, now = Date.now()): UpdateRootMetadata {
-  const root = verifyUpdateRoot(values.root, trustedRoot)
-  assertFresh(root.signed.expires, now)
-  const timestamp = updateTimestampMetadataSchema.parse(values.timestamp)
-  const snapshot = updateSnapshotMetadataSchema.parse(values.snapshot)
-  const targets = updateTargetsMetadataSchema.parse(values.targets)
-  for (const metadata of [timestamp, snapshot, targets]) assertFresh(metadata.signed.expires, now)
-  verifyRoleSignatures("timestamp", timestamp, root)
-  verifyRoleSignatures("snapshot", snapshot, root)
-  verifyRoleSignatures("targets", targets, root)
-  const snapshotMeta = timestamp.signed.meta["snapshot.json"]
-  const targetsMeta = snapshot.signed.meta["targets.json"]
-  if (!snapshotMeta || snapshotMeta.version !== snapshot.signed.version) throw new UpdateVerificationError("target-mismatch", "Timestamp does not bind the snapshot version")
-  if (!targetsMeta || targetsMeta.version !== targets.signed.version) throw new UpdateVerificationError("target-mismatch", "Snapshot does not bind the targets version")
-  const snapshotBytes = values.raw["snapshot.json"]
-  const targetsBytes = values.raw["targets.json"]
-  if (!snapshotBytes || !targetsBytes) throw new UpdateVerificationError("target-mismatch", "Update metadata is missing served bytes for binding")
-  const snapshotDigest = metadataDigest(snapshotBytes)
-  const targetsDigest = metadataDigest(targetsBytes)
-  if (snapshotMeta.length !== snapshotDigest.length || snapshotMeta.hashes.sha256 !== snapshotDigest.sha256) throw new UpdateVerificationError("target-mismatch", "Timestamp does not bind the snapshot bytes")
-  if (targetsMeta.length !== targetsDigest.length || targetsMeta.hashes.sha256 !== targetsDigest.sha256) throw new UpdateVerificationError("target-mismatch", "Snapshot does not bind the targets bytes")
-  return root
-}
-
 export function selectUpdateTarget(value: unknown, channel: UpdateChannel, currentVersion: string): { name: string, version: string, sourceCommit: string } | undefined {
   const metadata = updateTargetsMetadataSchema.parse(value)
   const candidates = Object.entries(metadata.signed.targets)
@@ -155,10 +112,12 @@ export function selectUpdateTarget(value: unknown, channel: UpdateChannel, curre
   return { name: selected[0], version: selected[1].custom.version, sourceCommit: selected[1].custom.sourceCommit }
 }
 
-async function readMetadata(response: Response): Promise<{ value: unknown, bytes: Uint8Array }> {
-  if (!response.ok) throw new UpdateVerificationError("network", `Update metadata request failed with HTTP ${response.status}`)
+async function readMetadata(response: Response, limit: number, signal: AbortSignal): Promise<Buffer> {
   const contentLength = response.headers.get("content-length")
-  if (contentLength !== null && Number(contentLength) > maximumUpdateMetadataBytes) throw new UpdateVerificationError("network", "Update metadata exceeds its byte limit")
+  if (contentLength !== null && Number(contentLength) > limit) {
+    void response.body?.cancel().catch(() => {})
+    throw new UpdateVerificationError(limit < maximumUpdateMetadataBytes ? "target-mismatch" : "network", "Update metadata exceeds its byte limit")
+  }
   if (!response.body) throw new UpdateVerificationError("network", "Update metadata response has no body")
   const reader = response.body.getReader()
   const chunks: Uint8Array[] = []
@@ -166,55 +125,172 @@ async function readMetadata(response: Response): Promise<{ value: unknown, bytes
   try {
     while (true) {
       let timer: ReturnType<typeof setTimeout> | undefined
+      let abort: (() => void) | undefined
       try {
         const result = await Promise.race([
           reader.read(),
-          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new UpdateVerificationError("network", "Update metadata read timed out")), updateInactivityTimeoutMs) }),
+          new Promise<never>((_, reject) => {
+            abort = () => reject(new UpdateVerificationError("network", "Update metadata fetch timed out"))
+            signal.addEventListener("abort", abort, { once: true })
+            if (signal.aborted) abort()
+            timer = setTimeout(() => reject(new UpdateVerificationError("network", "Update metadata read timed out")), updateInactivityTimeoutMs)
+          }),
         ])
         if (result.done) break
         total += result.value.byteLength
-        if (total > maximumUpdateMetadataBytes) {
-          await reader.cancel()
-          throw new UpdateVerificationError("network", "Update metadata exceeds its byte limit")
-        }
+        if (total > limit) throw new UpdateVerificationError(limit < maximumUpdateMetadataBytes ? "target-mismatch" : "network", "Update metadata exceeds its byte limit")
         chunks.push(result.value)
       } finally {
         if (timer !== undefined) clearTimeout(timer)
+        if (abort) signal.removeEventListener("abort", abort)
       }
     }
   } finally {
+    // Do not let a hostile stream's cancel promise hold the update open.
+    void reader.cancel().catch(() => {})
     reader.releaseLock()
   }
-  const bytes = new Uint8Array(total)
-  let offset = 0
-  for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength }
-  try {
-    return { value: JSON.parse(new TextDecoder().decode(bytes)), bytes }
-  } catch (error) {
-    throw new UpdateVerificationError("malformed-metadata", "Update metadata is not valid JSON", { cause: error })
-  }
+  return Buffer.concat(chunks, total)
 }
 
-export async function fetchUpdateMetadata(baseUrl: string, fetcher: typeof fetch = fetch): Promise<Record<string, unknown> & { raw: Record<string, Uint8Array> }> {
-  const base = new URL(baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`)
-  if (base.protocol !== "https:") throw new UpdateVerificationError("network", "Update metadata requires HTTPS")
+/** TUF owns root rotation, role ordering, thresholds, expiry, and metadata bindings.
+ * Its ordinary cache writes stay in scratch; only verified files are published by
+ * the caller's atomic, flushed persistence under the profile lease.
+ */
+export async function fetchUpdateMetadata(options: {
+  baseUrl: string
+  trustedRoot: UpdateRootMetadata
+  trusted?: TrustedUpdateDocuments
+  fetcher?: typeof fetch
+  persist: (documents: TrustedUpdateDocuments) => Promise<void>
+}): Promise<Record<string, unknown> & { raw: Record<string, Uint8Array> }> {
+  const base = new URL(options.baseUrl.endsWith("/") ? options.baseUrl : `${options.baseUrl}/`)
+  if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) {
+    throw new UpdateVerificationError("network", "Update metadata requires a credential-free HTTPS URL")
+  }
+  const referenceTime = new Date()
+  const directory = await mkdtemp(join(tmpdir(), "domovoi-tuf-"))
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), updateFetchTimeoutMs)
-  try {
-    const names = ["root.json", "timestamp.json", "snapshot.json", "targets.json"] as const
-    const entries: Array<readonly [string, { value: unknown, bytes: Uint8Array }]> = []
-    for (const name of names) {
-      const url = new URL(name, base)
-      if (url.origin !== base.origin) throw new UpdateVerificationError("network", "Update metadata redirect changed origin")
-      const response = await fetcher(url, { signal: controller.signal, redirect: "error" })
-      entries.push([name, await readMetadata(response)])
+  let callbackFailure: unknown
+  let lastPublished = ""
+  let initialized = false
+  let persistenceFailed = false
+  const documents: TrustedUpdateDocuments = { ...options.trusted }
+  documents.root ??= JSON.stringify(options.trustedRoot)
+  const publishProgress = async () => {
+    if (!initialized || persistenceFailed) return
+    const previousRoot = documents.root
+    for (const role of roles) {
+      try { documents[role] = await readFile(join(directory, `${role}.json`), "utf8") }
+      catch (error) { if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error }
     }
-    const raw = Object.fromEntries(entries.map(([name, document]) => [name, document.bytes]))
-    return { ...Object.fromEntries(entries.map(([name, document]) => [name, document.value])), raw }
+    const reset = resetUpdateRoles(previousRoot, documents.root)
+    for (const role of reset) {
+      await rm(join(directory, `${role}.json`), { force: true })
+      delete documents[role]
+    }
+    const serialized = JSON.stringify(documents)
+    if (serialized !== lastPublished) {
+      try { await options.persist({ ...documents }) }
+      catch (error) {
+        persistenceFailed = true
+        throw new UpdateVerificationError("policy", "Verified update metadata could not be persisted", { cause: error })
+      }
+      lastPublished = serialized
+    }
+    return reset.length > 0
+  }
+  try {
+    for (const role of roles) {
+      const text = documents[role]
+      if (text !== undefined) {
+        parseMetadata(role, text)
+        await writeFile(join(directory, `${role}.json`), text, { mode: 0o600, flag: "wx" })
+      }
+    }
+    const fetcher: Fetcher = {
+      downloadFile: async () => { throw new Error("Artifact downloads use the verified bootstrap installer") },
+      downloadBytes: async (address, requestedLimit) => {
+        try {
+          // A previous request may have advanced trust before this next await.
+          const reset = await publishProgress()
+          // At the rotation cap, Updater may already have loaded the previous
+          // timestamp before this callback. Restart from the durable reset on
+          // the next check instead of retaining that in-memory version floor.
+          if (reset && address.endsWith("/timestamp.json")) {
+            throw new UpdateVerificationError("policy", "Update trust rotated at the refresh limit; retry the check")
+          }
+          if (controller.signal.aborted) throw new UpdateVerificationError("network", "Update metadata fetch timed out")
+          const url = new URL(address)
+          if (url.origin !== base.origin || !url.pathname.startsWith(base.pathname) || url.search || url.hash) {
+            throw new UpdateVerificationError("network", "Update metadata request changed repository")
+          }
+          const match = /(?:^|\/)(?:[0-9]+\.)?(root|timestamp|snapshot|targets)\.json$/.exec(url.pathname)
+          const role = match?.[1] as UpdateRoleName | undefined
+          if (!role) throw new UpdateVerificationError("malformed-metadata", "Unsupported update role")
+          let response: Response
+          try { response = await (options.fetcher ?? fetch)(url, { signal: controller.signal, redirect: "error" }) }
+          catch (error) { throw new UpdateVerificationError("network", "Update metadata fetch failed", { cause: error }) }
+          if (!response.ok) {
+            void response.body?.cancel().catch(() => {})
+            if (role === "root" && [403, 404].includes(response.status)) throw new DownloadHTTPError("Root unavailable", response.status)
+            throw new UpdateVerificationError("network", "Update metadata request failed")
+          }
+          if (response.redirected || (response.url && response.url !== url.href)) {
+            void response.body?.cancel().catch(() => {})
+            throw new UpdateVerificationError("network", "Update metadata redirect refused")
+          }
+          const bytes = await readMetadata(response, Math.min(requestedLimit, maximumUpdateMetadataBytes), controller.signal)
+          let text: string
+          try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes) }
+          catch (error) { throw new UpdateVerificationError("malformed-metadata", "Update metadata is not valid UTF-8", { cause: error }) }
+          const value = parseMetadata(role, text)
+          const previous = documents[role]
+          if (previous !== undefined) {
+            const old = parseMetadata(role, previous)
+            if (value.signed.version < old.signed.version || (value.signed.version === old.signed.version && text !== previous)) {
+              throw new UpdateVerificationError("replay", "Update metadata changed at an existing or older version")
+            }
+          }
+          // Validate role signatures using the library before the updater wraps
+          // snapshot/targets errors; keep the public refusal taxonomy typed.
+          if (role !== "root") {
+            const root = Metadata.fromJSON(MetadataKind.Root, updateRootMetadataSchema.parse(JSON.parse(documents.root!)))
+            const metadata = role === "timestamp" ? Metadata.fromJSON(MetadataKind.Timestamp, updateTimestampMetadataSchema.parse(value))
+              : role === "snapshot" ? Metadata.fromJSON(MetadataKind.Snapshot, updateSnapshotMetadataSchema.parse(value))
+                : Metadata.fromJSON(MetadataKind.Targets, z.record(z.string(), z.json()).parse(value))
+            root.verifyDelegate(role, metadata)
+            if (metadata.signed.isExpired(referenceTime)) throw new ExpiredMetadataError("Update metadata expired")
+          }
+          return bytes
+        } catch (error) {
+          // Missing next root is the library's normal completion signal.
+          if (!(error instanceof DownloadHTTPError)) callbackFailure = error
+          throw error
+        }
+      },
+    }
+    const updater = new Updater({ metadataDir: directory, metadataBaseUrl: base.href, fetcher,
+      config: { maxRootRotations: maximumUpdateRootRotations, rootMaxLength: maximumUpdateMetadataBytes,
+        timestampMaxLength: maximumUpdateMetadataBytes, snapshotMaxLength: maximumUpdateMetadataBytes,
+        targetsMaxLength: maximumUpdateMetadataBytes, maxDelegations: 0, fetchRetry: 0 } })
+    initialized = true
+    await updater.refresh()
+    await publishProgress()
+    const raw: Record<string, Uint8Array> = {}
+    const values: Record<string, unknown> = {}
+    for (const role of roles) {
+      raw[`${role}.json`] = Buffer.from(documents[role]!)
+      values[`${role}.json`] = parseMetadata(role, documents[role]!)
+    }
+    return { ...values, raw }
   } catch (error) {
-    if (error instanceof UpdateVerificationError) throw error
-    throw new UpdateVerificationError("network", "Update metadata fetch failed", { cause: error })
+    throw verificationError(callbackFailure ?? error)
   } finally {
     clearTimeout(timer)
+    controller.abort()
+    try { await publishProgress() }
+    finally { await rm(directory, { recursive: true, force: true }) }
   }
 }

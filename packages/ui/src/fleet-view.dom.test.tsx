@@ -539,6 +539,7 @@ function renderFleet(overrides: {
   onReadMachine?: (machineId: string, signal: AbortSignal) => Promise<void>
   providers?: ProviderRuntime[]
   clientKind?: ClientKind
+  authorizes?: boolean
 } = {}) {
   const devices = overrides.devices ?? [device]
   const onListDevices = vi.fn(overrides.onListDevices ?? (() => Promise.resolve({ devices })))
@@ -571,6 +572,7 @@ function renderFleet(overrides: {
   const onUseMachine = vi.fn()
   const onOpenMachineTerminal = vi.fn()
   const onMoveSessionHere = vi.fn(overrides.onMoveSessionHere)
+  const onAuthorizeClient = vi.fn((_machineId: string, _credential: string, _signal: AbortSignal) => Promise.resolve())
   const user = userEvent.setup()
   render(
     <TooltipProvider>
@@ -591,6 +593,7 @@ function renderFleet(overrides: {
         onUseMachine={onUseMachine}
         onOpenMachineTerminal={onOpenMachineTerminal}
         onMoveSessionHere={onMoveSessionHere}
+        {...(overrides.authorizes ? { onAuthorizeClient } : {})}
         {...(overrides.clientAccess ? { clientAccess: overrides.clientAccess } : {})}
         {...(overrides.readOnly !== undefined ? { readOnly: overrides.readOnly } : {})}
         {...(overrides.readings ? { readings: overrides.readings } : {})}
@@ -600,7 +603,7 @@ function renderFleet(overrides: {
       />
     </TooltipProvider>,
   )
-  return { user, onListDevices, onRevokeDevice, onRotateDevice, onRenameDevice, onPairMachine, onForgetMachine, onUseMachine, onOpenMachineTerminal, onMoveSessionHere }
+  return { user, onListDevices, onRevokeDevice, onRotateDevice, onRenameDevice, onPairMachine, onForgetMachine, onUseMachine, onOpenMachineTerminal, onMoveSessionHere, onAuthorizeClient }
 }
 
 // The daemon takes device.rename, device.rotate and device.revoke only with its
@@ -655,6 +658,71 @@ it("keeps Rename, Rotate and Unpair live in the desktop app", async () => {
   expect(within(row).getByRole("button", { name: "Unpair studio-ipad" })).toHaveProperty("disabled", false)
   expect(row.textContent).not.toContain("are off in a browser tab")
   expect(row.textContent).toContain(clientConsequence)
+})
+
+// fleet.enroll and fleet.forget, like the device methods, need the daemon's own
+// credential. The daemon refuses them from a device credential, which is all a
+// browser tab holds, and the client closes its connection on that refusal.
+const pairAndForgetLocked = "Pair a machine and Forget are off in a browser tab: they need the daemon's own credential. Use the desktop app on workshop."
+
+it.each(["web", "phone", "tablet"] as const)("locks Pair a machine and Forget in a %s tab and says why", async (clientKind) => {
+  const { user, onPairMachine, onForgetMachine } = renderFleet({ clientKind })
+  const pair = screen.getByRole("button", { name: "Pair a machine" })
+  const forget = within(screen.getByRole("group", { name: "studio" })).getByRole("button", { name: "Forget studio" })
+
+  for (const control of [pair, forget]) {
+    expect(control).toHaveProperty("disabled", true)
+    await user.click(control)
+  }
+  expect(screen.getByText(pairAndForgetLocked)).toBeTruthy()
+  expect(forget.getAttribute("aria-describedby")).toBe(screen.getByText(pairAndForgetLocked).id)
+  // The consequence line is for a Forget this tab can press; here it cannot.
+  expect(screen.queryByText(/^Deletes the credential this machine holds for it/u)).toBeNull()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  expect(onPairMachine).not.toHaveBeenCalled()
+  expect(onForgetMachine).not.toHaveBeenCalled()
+})
+
+// A phone or tablet credential reaches only phoneAndTabletRpcMethods. Neither
+// fleet.clientRoute (how a client finds its way to another machine) nor
+// terminal.create is on it; the daemon refuses either, and the client then
+// closes its connection.
+it.each(["phone", "tablet"] as const)("locks Authorize this client and Terminal in a %s tab and says why", async (clientKind) => {
+  const { user, onAuthorizeClient, onOpenMachineTerminal } = renderFleet({ clientKind, authorizes: true })
+  const studioCard = within(screen.getByRole("group", { name: "studio" }))
+  const workshopCard = within(screen.getByRole("group", { name: "workshop" }))
+  const authorize = studioCard.getByRole("button", { name: "Authorize this client for studio" })
+  const terminal = workshopCard.getByRole("button", { name: "Terminal on workshop" })
+
+  for (const control of [authorize, terminal]) {
+    expect(control).toHaveProperty("disabled", true)
+    await user.click(control)
+  }
+  expect(studioCard.getByText("Authorize this client is off in a phone or tablet tab: the daemon does not look up a route to another machine for a phone or tablet credential. Use the desktop app on workshop.")).toBeTruthy()
+  expect(studioCard.queryByText(/Authorize this client to read them/u)).toBeNull()
+  expect(workshopCard.getByText("Terminal is off in a phone or tablet tab: the daemon does not open a shell for a phone or tablet credential. Use the desktop app on workshop.")).toBeTruthy()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(onAuthorizeClient).not.toHaveBeenCalled()
+  expect(onOpenMachineTerminal).not.toHaveBeenCalled()
+})
+
+// The daemon sends fleet.clientRoute and opens a shell for a web credential, so
+// a web tab keeps both.
+it("keeps Authorize this client and Terminal live in a web tab", () => {
+  renderFleet({ clientKind: "web", authorizes: true })
+  expect(screen.getByRole("button", { name: "Authorize this client for studio" })).toHaveProperty("disabled", false)
+  expect(screen.getByRole("button", { name: "Terminal on workshop" })).toHaveProperty("disabled", false)
+  expect(screen.queryByText(/off in a phone or tablet tab/u)).toBeNull()
+})
+
+it("keeps Pair a machine, Forget, Authorize this client and Terminal live in the desktop app", () => {
+  renderFleet({ clientKind: "desktop", authorizes: true })
+  for (const name of ["Pair a machine", "Forget studio", "Authorize this client for studio", "Terminal on workshop"]) {
+    expect(screen.getByRole("button", { name })).toHaveProperty("disabled", false)
+  }
+  expect(screen.queryByText(pairAndForgetLocked)).toBeNull()
+  expect(screen.queryByText(/off in a (browser|phone or tablet) tab/u)).toBeNull()
 })
 
 it("renders the v2 Machines hierarchy without a settings rail", () => {

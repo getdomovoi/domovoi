@@ -67,12 +67,17 @@ it("keeps the viewed preview distinct from the build basis", async () => {
   const user = userEvent.setup()
   renderDock()
 
-  expect(screen.getByText("Build basis · Variant B")).toBeTruthy()
+  // Nothing is chosen until the person chooses (D22's none chosen state).
+  expect(screen.getByText("none chosen, both stay alive")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Build on this" }))
+  expect(screen.getByText("the agent builds on this one")).toBeTruthy()
   await user.click(screen.getByRole("radio", { name: "Variant A" }))
-  expect(screen.getByText("Viewing · Variant A")).toBeTruthy()
-  expect(screen.getByText("Build basis · Variant B")).toBeTruthy()
-  await user.click(screen.getByRole("button", { name: "Use Variant A as build basis" }))
-  expect(screen.getByText("Build basis · Variant A")).toBeTruthy()
+  expect(screen.getByRole("radio", { name: "Variant A" }).getAttribute("aria-checked")).toBe("true")
+  expect(screen.getByText("the agent builds on Variant B")).toBeTruthy()
+  await user.click(screen.getByRole("button", { name: "Build on this" }))
+  expect(screen.getByText("the agent builds on this one")).toBeTruthy()
+  await user.click(screen.getByRole("radio", { name: "Variant B" }))
+  expect(screen.getByText("the agent builds on Variant A")).toBeTruthy()
 })
 
 it("keeps sandbox authorization and sheet controls visible", () => {
