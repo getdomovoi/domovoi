@@ -15,7 +15,7 @@ compilation or the external toolchain.
 | --- | --- | --- |
 | npm, pnpm, Bun | `@getdomovoi/protocol` | signed npm tarballs |
 | verified bootstrap | frozen daemon and CLI runtime | caller-pinned release archive and embedded integrity lock |
-| Homebrew | `domovoi` CLI and `domovoid` service formulae | GitHub release checksums |
+| Homebrew | `domovoi` desktop cask, macOS arm64 and x64 DMGs | TUF-authenticated canonical release inventory |
 | AUR | source and binary packages | GitHub release checksums |
 | Windows | signed installer and package-manager manifest | GitHub release artifacts |
 | macOS | signed and notarized desktop app | GitHub release artifacts |
@@ -265,6 +265,89 @@ the verified archive separately from the retained staging. An interrupted proces
 directory by hand. No age-based or recursive cleanup runs automatically. A conflicting archive
 also requires an explicit operator decision or a different destination; bootstrap never replaces
 it for the caller.
+
+## Authenticated distribution inventory and cask preparation
+
+The repository APIs can prepare a candidate inventory and consume one authenticated through
+the existing TUF client. They do not sign it, upload it, create a tap, or extend the live release
+workflow. The current `release:prepare`, `release:verify`, `release:github` and checksum bootstrap
+CLI retain their schema1 contract. A schema2 inventory placed in that live release directory is
+refused by the existing verifier. Publisher tests use mocked ports only; they do not establish a
+production upload path for inventory, TUF metadata or DMGs.
+
+`prepareDistributionInventory` from `scripts/release-plan.mjs` requires an explicit new
+`stagingDirectory`, source `commit` and update `channel`, plus the existing `root` and release
+`directory`. It first runs `verifyRelease`, including the packed plan and D9 evidence. It copies
+and rehashes the actual artifacts, then writes a separate `release.json` last. The strict schema2
+inventory contains version, channel, commit, tag, and typed file identities with lengths and
+SHA-256 digests. Its eleven mandatory files are the four npm archives, four SBOMs, web archive,
+`SHA256SUMS`, and `reproducibility.json`. The inventory cannot contain its own hash. Its signed
+target length/hash and the TUF role documents remain separate assets.
+
+Optional `preparedDmgs` entries declare `path`, `name`, `version`, `sourceCommit`, `kind: "desktop"`,
+`packageName: "@getdomovoi/desktop"`, `platform: "darwin"`, `arch: "arm64"` or `"x64"`,
+`format: "dmg"`, `bundleId: "sh.domovoi.desktop"`, `app: "Domovoi.app"`, `length` and `sha256`.
+The basename must be `domovoi-desktop-<version>-<arch>.dmg`. Preparation rejects links, duplicate
+architectures, identity disagreements and changed bytes. Each staged input has a 2 GiB resource
+ceiling; the configurable preparation deadline defaults to 60 seconds. These limits do not
+promise a packaging size or native performance target. An error retains the explicit staging
+directory for inspection because an outstanding filesystem copy can finish after timeout.
+Stop the invocation and confirm its filesystem work has settled before removing that exact
+directory. No automatic broad cleanup or replacement is performed.
+
+A prepared descriptor is a declaration for signing review. It does not inspect a DMG's bundle,
+prove its architecture, establish Developer ID/notarization, or prove that native binaries came
+from the declared commit. Those native checks remain held. The D9 comparison still covers its
+original ten artifacts; the receipt and DMGs are not added to that reproducibility claim.
+
+### Trust and consumer contract
+
+`fetchVerifiedReleaseInventory` is the shared built entry at
+`apps/daemon/dist/update-verification.js`. Build protocol and daemon before using repository
+scripts. It accepts `baseUrl` for TUF metadata, `targetBaseUrl` for target bytes,
+`trustedRoot`, `trusted`, `persist`, and required expected `version`, `channel` and `sourceCommit`.
+The root must come from independently established operator trust, never the downloaded inventory.
+The caller owns an exclusive trust-state lock and atomic, flushed persistence; it reloads the
+previously persisted documents into `trusted` for each invocation. Missing persistence is refused.
+An in-memory callback is useful only in isolated tests and cannot protect against replay across
+process restarts. Do not treat callback presence, a receipt, or a `verified` boolean as proof of
+durable trust storage.
+
+The existing client verifies root rotation, thresholds, expiry, timestamp/snapshot/target
+bindings and stored version floors. It obtains `release.json` as a distinct authenticated target,
+checks bounded exact bytes before JSON parsing, and binds inventory identity to both signed
+target policy and the caller's expected release. Consistent-snapshot repositories use the
+SHA-256-prefixed inventory target filename. Credential-bearing URLs and redirects are refused.
+The old daemon tarball target and runtime-lock policy remain separate; an inventory target can
+never be selected or staged as a daemon update. Trust advancement is persisted even when later
+target verification fails, so a retry cannot forget a newer accepted metadata floor.
+
+`generateDistributionManifests({ config, verification })` from
+`scripts/distribution-manifests.mjs` calls that verifier itself. `verification` supplies the inputs
+above. `scripts/distribution-config.json` explicitly selects the desktop package, bundle, app,
+platform, both architectures, DMG format and canonical release URL base. Configuration must
+match authenticated identities; it cannot override a digest, version or architecture. The
+result returns cask text in `files["domovoi.rb"]` and the verified inventory's SHA-256 for local
+evidence. This returned digest is not a portable signature or authorization to publish.
+
+Both DMGs must be present. The deterministic cask uses `on_arm` and `on_intel`, exact versioned
+URLs and SHA-256 values, `depends_on :macos`, and the declared app-install stanza, following the
+[Homebrew Cask Cookbook](https://docs.brew.sh/Cask-Cookbook). Strings are bounded and escaped;
+control characters and Ruby interpolation are refused. It emits no install scripts, service
+actions, moving-branch builds or unpinned downloads. Generation is not a Homebrew installation
+test, acceptance into a tap, or evidence of Gatekeeper approval. Other channels remain held.
+The macOS-only declaration does not establish the app's minimum supported macOS version;
+native qualification must establish that constraint before any channel uses the cask.
+
+`bootstrapDaemonFromInventory` and `installBootstrapDaemonFromInventory` from
+`scripts/bootstrap-daemon.mjs` provide the signed-inventory alternatives for embedding callers.
+They verify first, select the authenticated daemon archive and derive its expected SHA-256.
+The existing download/installation path then retains its checksum, extraction, frozen runtime,
+native-load and no-replace checks. The archive limit can tighten the authenticated size; a caller
+cannot replace the authenticated digest. Verification has its own bounded TUF refresh deadline,
+followed by the unchanged bootstrap deadline and cleanup budget. These APIs do not install a
+service or run a daemon. The original four-argument CLI still requires its caller-pinned digest
+and does not silently fall back between trust models.
 
 ## Release artifacts
 
