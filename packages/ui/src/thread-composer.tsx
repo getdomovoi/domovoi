@@ -428,7 +428,7 @@ export function ThreadComposer({
                   )}
                 >
                   <span className={cn(
-                    "w-[70px] flex-none font-machine text-[11.5px]",
+                    "w-[86px] flex-none font-machine text-[11.5px]",
                     match ? "text-primary" : "text-muted-foreground",
                   )}>{command.name}</span>
                   <span className="min-w-0 flex-1 truncate font-machine text-[10.5px] text-faint">{argument}</span>

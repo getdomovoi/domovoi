@@ -527,6 +527,7 @@ export function Thread({
   onListModels,
   onNewSession,
   onSend,
+  onCheckpoint,
   onRestoreCheckpoint,
   restoreBusy = false,
   pendingTransferTargetId = null,
@@ -590,7 +591,9 @@ export function Thread({
     skillSelection?: TurnSkillSelection,
     attachments?: SessionAttachment[],
   ) => Promise<void>
-  onCheckpoint: (sessionId: string) => Promise<void>
+  // checkpoint.create, as the Checkpoints tab takes one; /checkpoint passes
+  // the label typed after it.
+  onCheckpoint: (sessionId: string, label?: string) => Promise<void>
   onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
   // Set while a restore started anywhere in the shell is still running.
   restoreBusy?: boolean
@@ -1091,6 +1094,24 @@ export function Thread({
           setPrompt("")
           await restoreCheckpoint(intent.checkpointId)
           return
+        case "checkpoint": {
+          // Allowed while a turn runs (#825): it is not a message, so it is
+          // never queued behind the turn.
+          const command = prompt
+          setPending(true)
+          setPrompt("")
+          try {
+            if (intent.label === undefined) await onCheckpoint(active.id)
+            else await onCheckpoint(active.id, intent.label)
+          } catch (cause) {
+            setSendError(cause instanceof Error ? cause.message : "The checkpoint was not taken")
+            // The command comes back, but never over something typed since.
+            setPrompt((current) => current.length > 0 ? current : command)
+          } finally {
+            setPending(false)
+          }
+          return
+        }
         case "skill":
           setSkillSelection(new Set([intent.skillId]))
           setPrompt("")

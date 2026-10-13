@@ -34,6 +34,14 @@ export const slashCommands: readonly SlashCommand[] = [
     note: "Keeps the finished steps and asks for a new plan for the rest. The old plan stays readable in the thread.",
   },
   {
+    name: "/checkpoint",
+    placeholder: "[label]",
+    // checkpoint.create, the Checkpoints tab's path. The design says it waits
+    // for the next tool boundary; the daemon does not (#825, Q72/Q73): during
+    // a turn it saves a snapshot and leaves the branch where it is.
+    note: "Takes a checkpoint of the worktree now. Between turns it commits on the session branch. During a turn it saves a snapshot without moving the branch.",
+  },
+  {
     name: "/mode",
     placeholder: "plan · ask · build",
     note: "Applies from the next turn. A turn already in flight keeps the mode it started with, and auto is only legal with build.",
@@ -64,6 +72,7 @@ export type SlashIntent =
   | { kind: "send", prompt: string }
   | { kind: "mode", permissionMode: PermissionMode }
   | { kind: "revert", checkpointId: string }
+  | { kind: "checkpoint", label?: string }
   | { kind: "skill", skillId: string }
   | { kind: "handoff", machineId: string }
   | { kind: "invalid", message: string }
@@ -115,6 +124,10 @@ export function slashIntent(input: string, context: SlashIntentContext): SlashIn
         ? { kind: "revert", checkpointId: checkpoint }
         : { kind: "invalid", message: slashUsage.revert }
     }
+    case "/checkpoint":
+      // The daemon trims the label and takes up to 512 UTF-16 units; it
+      // refuses a longer one, and that refusal is shown as it comes.
+      return argument ? { kind: "checkpoint", label: argument } : { kind: "checkpoint" }
     case "/skill": {
       const normalized = argument.toLowerCase()
       const skill = oneMatch(context.skills, (candidate) =>
@@ -134,6 +147,6 @@ export function slashIntent(input: string, context: SlashIntentContext): SlashIn
         : { kind: "invalid", message: slashUsage.handoff }
     }
     default:
-      return { kind: "invalid", message: "Usage: /run, /revert, /replan, /mode, /skill, or /handoff" }
+      return { kind: "invalid", message: "Usage: /run, /revert, /replan, /checkpoint, /mode, /skill, or /handoff" }
   }
 }
