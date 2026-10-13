@@ -8,10 +8,12 @@ import { WebSocket } from "ws"
 import { demoWorkspace, executionRecordSchema, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { unrestrictedApprovalScope } from "./approval-facts.js"
-import { savedSettlementInput, settleApproval } from "./approval-settlement.js"
+import { heldSettlementInput, savedSettlementInput, settleApproval } from "./approval-settlement.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { realPathLookupBudgetMs } from "./credential-stores.js"
 import { fileScopedTools, resolveCommandExecution, resolveExecution } from "./execution-resolution.js"
+import * as followedPath from "./followed-path.js"
+import { OperationDeadline } from "./operation-deadline.js"
 import { DomovoiDaemon } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import {
@@ -55,9 +57,9 @@ function checkpointingWorkspace(): WorkspaceService {
 }
 
 // One call's budget, an allowance from measurement rather than a bound on the
-// call: an Allow reads its file target and saves through the persistence
-// worker with no deadline of their own. Between those it settles the card
-// again, which may spend the whole real path lookup budget by design. On
+// call: an Allow reads its file target and settles the card again under
+// one real path lookup budget, then saves through the persistence worker
+// without a deadline of its own. On
 // Windows CI the hidden-file test below took twice as long as on macOS (median
 // 4951 ms against 2397 ms over 100 runs), and twice one approval.resolve there
 // outlived a fixed 4 s (CI runs 37097510351 and 38320188619), so Windows gets
@@ -296,6 +298,69 @@ describe("approval settlement", () => {
         affects: "The file [REDACTED] in the session worktree.",
         execution: { state: "unresolved", reason: "sensitive-content" },
       })
+    }
+  })
+
+  it.each(["resolve", "reject"] as const)("bounds a stalled Allow identity read and ignores its late %s", async (late) => {
+    const { directory, socket, emit, card, agent } = await setup(undefined, undefined, { live: true })
+    const request = { workspace: directory, cwd: directory, command: "Edit", path: "notes.txt", reason: "Edit notes.txt; blocked-target", blockedPath: "blocked-target" }
+    emit({ requestId: 33, ...request })
+    const waiting = await waitForDaemon(async () => {
+      const found = await card(33)
+      expect(found).toMatchObject({ risk: "normal" })
+      return found!
+    })
+    const identity = await followedPath.fileTargetIdentity(directory, "notes.txt")
+    let finish!: (value: followedPath.FileTargetIdentity) => void
+    let fail!: (error: Error) => void
+    let entered!: () => void
+    const reading = new Promise<void>((resolve) => { entered = resolve })
+    vi.spyOn(followedPath, "fileTargetIdentity").mockImplementationOnce(() => {
+      entered()
+      return new Promise((resolve, reject) => { finish = resolve; fail = reject })
+    })
+    let now = 0
+    let expire: (() => void) | undefined
+    const startDeadline = OperationDeadline.start.bind(OperationDeadline)
+    const deadlines = vi.spyOn(OperationDeadline, "start").mockImplementation((budget) => startDeadline(budget, {
+      now: () => now,
+      scheduler: {
+        setTimeout: (callback, delay) => { expect(delay).toBe(realPathLookupBudgetMs); expire = callback; return 1 },
+        clearTimeout: () => {},
+      },
+    }))
+    const answer = rpc(socket, "approval.resolve", { approvalId: waiting.id, revision: waiting.revision, decision: "allow-once", client: "cli" })
+    try {
+      await reading
+      expect(deadlines).toHaveBeenCalledWith(realPathLookupBudgetMs)
+      now = realPathLookupBudgetMs - 1
+      expect(agent.resolveApproval).not.toHaveBeenCalled()
+      now += 1
+      expire!()
+      expect(await answer).toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
+      const sealed = await card(33)
+      expect(sealed).toMatchObject({
+        revision: waiting.revision + 1,
+        risk: "hard-gate",
+        directory: "[REDACTED] in the session worktree",
+        affects: "The file [REDACTED] in the session worktree.",
+        execution: { state: "unresolved", reason: "sensitive-content" },
+      })
+      // Identity expiry must use exactly the same held-request sealing as
+      // settlement expiry, including request-only blocked path spellings.
+      const expired = startDeadline(realPathLookupBudgetMs, { signal: AbortSignal.abort() })
+      const expected = await settleApproval(heldSettlementInput(waiting, request, undefined, "resolve", () => "normal"), expired)
+      expired.clear()
+      expect(sealed).toEqual({ ...expected.approval, revision: waiting.revision + 1 })
+      if (late === "resolve") finish(identity)
+      else fail(new Error("Late filesystem failure"))
+      expect(await card(33)).toEqual(sealed)
+      expect(agent.resolveApproval).not.toHaveBeenCalled()
+      expect(deadlines).toHaveBeenCalledTimes(1)
+    } finally {
+      finish(identity)
+      deadlines.mockRestore()
+      await answer
     }
   })
 

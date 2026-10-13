@@ -13,6 +13,7 @@ import {
   maximumMidTurnCheckpointPaths,
   maximumMidTurnCheckpointPathLength,
   maximumMidTurnCheckpointPathsBytes,
+  type MidTurnCheckpoint,
   type ApprovalCheckpointRefusal,
   type SessionAttachmentRefusal,
   type SessionReviewRefusal,
@@ -118,6 +119,7 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { normalizeLegacyEffort } from "./legacy-effort.js"
+import { realPathLookupBudgetMs } from "./credential-stores.js"
 import { approvalCheckpointRefusal } from "./approval-checkpoint-refusal.js"
 import { approvalToolServerFact, type ApprovalScope } from "./approval-facts.js"
 import {
@@ -126,6 +128,7 @@ import {
   sameApproval,
   sameExecution,
   savedSettlementInput,
+  type Settlement,
   nextRevision,
   settleApproval,
   type ApprovalRequest,
@@ -220,6 +223,7 @@ import {
   RepositoryGitFilterRefusedError,
   GitWorkspaceService,
   WorkspaceEvidenceUnstableError,
+  type Checkpoint,
   type FileRevert,
   type WorkspaceService,
 } from "./workspace.js"
@@ -1678,6 +1682,27 @@ type HeldApproval = {
   request: ApprovalRequest
   execution: ExecutionResolution
   identity?: FileTargetIdentity | undefined
+}
+
+// Bound canonical capture facts before persistence and broadcast. Omit unsafe
+// and overlong paths rather than shortening them into names of other files.
+function checkpointCaptureFacts(providerTurnId: string | undefined, checkpoint: Checkpoint): MidTurnCheckpoint {
+  const changedPaths = checkpoint.matched === true ? [] : [...new Set(checkpoint.unstablePaths ?? [])].sort()
+  const displayedChangedPaths: string[] = []
+  for (const path of changedPaths) {
+    if (path.length === 0 || path.length > maximumMidTurnCheckpointPathLength || !checkpointPathIsSafe(path)) continue
+    if (displayedChangedPaths.length >= maximumMidTurnCheckpointPaths
+      || Buffer.byteLength(JSON.stringify([...displayedChangedPaths, path]), "utf8") > maximumMidTurnCheckpointPathsBytes) break
+    displayedChangedPaths.push(path)
+  }
+  return {
+    ...(providerTurnId ? (providerTurnId.length <= maximumMidTurnCheckpointTurnIdLength
+      ? { providerTurnId }
+      : { providerTurnIdSha256: createHash("sha256").update(providerTurnId).digest("hex") }) : {}),
+    stability: checkpoint.matched === true ? "matched" : "unstable",
+    changedPaths: displayedChangedPaths,
+    changedPathCount: changedPaths.length,
+  }
 }
 
 // A file tool's request: the file an edit reaches, read again at every Allow.
@@ -3878,11 +3903,6 @@ export class DomovoiDaemon {
     if (workspace === undefined) return { refusal: undefined, otherNames: false }
     const held = this.#approvalTargets.get(approval.id)
     const fileTool = held !== undefined && heldFileTool(held.request)
-    const identity = fileTool
-      ? await fileTargetIdentity(held.request.workspace, held.request.path!, held.request.cwd ?? held.request.workspace)
-      : undefined
-    const otherNames = identity !== undefined && fileTargetHasOtherNames(identity)
-    const targetChanged = identity !== undefined && fileTargetChanged(held?.identity, identity)
     const heldExecution = held?.execution ?? approval.execution
     const reResolve = fileTool || (heldExecution.state === "resolved"
       && heldExecution.record.kind === "shell"
@@ -3897,9 +3917,28 @@ export class DomovoiDaemon {
         execution,
       }).risk
     }
-    const settlement = await settleApproval(held
+    // Identity and settlement share one budget. A stalled filesystem read
+    // must not hold an Allow before the path-check clock has even started.
+    const deadline = OperationDeadline.start(realPathLookupBudgetMs)
+    const input = held
       ? heldSettlementInput(approval, held.request, scope, reResolve ? "resolve" : held.execution, risk)
-      : savedSettlementInput(approval, workspace, scope, risk))
+      : savedSettlementInput(approval, workspace, scope, risk)
+    let identity: FileTargetIdentity | undefined
+    let settlement: Settlement
+    try {
+      identity = fileTool
+        ? await beforeDeadline(fileTargetIdentity(held.request.workspace, held.request.path!, held.request.cwd ?? held.request.workspace), deadline)
+        : undefined
+      settlement = await settleApproval(input, deadline)
+    } catch {
+      // The expired deadline seals the same held request as a settlement
+      // timeout. No late identity result can publish state or allow the card.
+      settlement = await settleApproval(input, deadline)
+    } finally {
+      deadline.clear()
+    }
+    const otherNames = identity !== undefined && fileTargetHasOtherNames(identity)
+    const targetChanged = fileTool && (identity === undefined || fileTargetChanged(held?.identity, identity))
     const current = this.#snapshot.approvals.find((candidate) => candidate.id === approval.id)
     if (current === undefined) return { refusal: undefined, otherNames }
     // The record a hidden card keeps in memory can change while every copy of
@@ -9207,8 +9246,10 @@ export class DomovoiDaemon {
         // mid-turn, so the checkpoint is a snapshot that leaves HEAD, the
         // index and the files alone (ruled B the same day).
         const allows = params.decision === "allow-once" || params.decision === "always-project"
-        let approvedCheckpoint: { id: string, commit: string } | undefined
+        let approvedCheckpoint: { id: string, commit: string, midTurn: MidTurnCheckpoint } | undefined
         if (allows && session?.workspacePath) {
+          // The turn can end while the snapshot is being staged.
+          const providerTurnId = session.activeTurnId
           const worktree = session.workspacePath
           try {
             const taken = await this.#withAbortTimeout(
@@ -9219,7 +9260,10 @@ export class DomovoiDaemon {
               this.#agentTimeoutMs,
               "Approval checkpoint timed out",
             )
-            approvedCheckpoint = { id: `checkpoint-${randomUUID()}`, commit: taken.commit }
+            approvedCheckpoint = {
+              id: `checkpoint-${randomUUID()}`, commit: taken.commit,
+              midTurn: checkpointCaptureFacts(providerTurnId, taken),
+            }
           } catch (error) {
             this.#reportError("Domovoi could not take a checkpoint before an approved command", error)
             // Typed, so a client draws the cause without reading the sentence.
@@ -9287,6 +9331,7 @@ export class DomovoiDaemon {
             reason: "before-approved-command",
             label: `${approvedCheckpoint.commit.slice(0, 8)} · before an approved command`,
             commit: approvedCheckpoint.commit,
+            midTurn: approvedCheckpoint.midTurn,
             createdAt: decidedAt,
           })
         }
@@ -10860,18 +10905,6 @@ export class DomovoiDaemon {
         }
         currentSession.changedFiles = checkpoint.changedFiles.length
         currentSession.updatedAt = new Date().toISOString()
-        // Bound canonical state before persistence and broadcast. Omit overlong
-        // paths instead of shortening them into names that refer to other files.
-        const changedPaths = providerTurnId && checkpoint.matched !== true
-          ? [...new Set(checkpoint.unstablePaths ?? [])].sort()
-          : []
-        const displayedChangedPaths: string[] = []
-        for (const path of changedPaths) {
-          if (path.length === 0 || path.length > maximumMidTurnCheckpointPathLength || !checkpointPathIsSafe(path)) continue
-          if (displayedChangedPaths.length >= maximumMidTurnCheckpointPaths
-            || Buffer.byteLength(JSON.stringify([...displayedChangedPaths, path]), "utf8") > maximumMidTurnCheckpointPathsBytes) break
-          displayedChangedPaths.push(path)
-        }
         this.#snapshot.thread.push({
           id: `checkpoint-${randomUUID()}`,
           sessionId: currentSession.id,
@@ -10879,14 +10912,7 @@ export class DomovoiDaemon {
           reason: "manual",
           ...(providerTurnId ? {
             ...turnLink,
-            midTurn: {
-              ...(providerTurnId.length <= maximumMidTurnCheckpointTurnIdLength
-                ? { providerTurnId }
-                : { providerTurnIdSha256: createHash("sha256").update(providerTurnId).digest("hex") }),
-              stability: checkpoint.matched === true ? "matched" as const : "unstable" as const,
-              changedPaths: displayedChangedPaths,
-              changedPathCount: changedPaths.length,
-            },
+            midTurn: checkpointCaptureFacts(providerTurnId, checkpoint),
           } : {}),
           label: `${checkpoint.commit.slice(0, 8)} · ${label}`,
           commit: checkpoint.commit,
