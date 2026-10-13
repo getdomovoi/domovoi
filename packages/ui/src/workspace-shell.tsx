@@ -687,9 +687,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const [skillInventories, setSkillInventories] = useState<SkillInventorySource[]>([])
   const [localSkillInventory, setLocalSkillInventory] = useState<SkillInventorySource | null>(null)
-  // Whether the open project's catalog has answered. A handheld lists it
+  // The machine and project whose catalog last answered. A handheld lists it
   // without reading the machine's inventory, so this is not the inventory.
-  const [skillCatalogLoaded, setSkillCatalogLoaded] = useState(false)
+  const [skillCatalogKey, setSkillCatalogKey] = useState<string | null>(null)
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
@@ -808,6 +808,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   )?.workspacePath
   const skillMachineKey = skillInventoryRefreshKey(snapshot)
   const skillProjectKey = skillProjectRefreshKey(snapshot)
+  // Read in render, so the snapshot that moves the project or branch is the
+  // one that stops a queued skill choice from leaving on the old catalog.
+  const skillCatalogFor = `${skillMachineKey}\u0000${skillProjectKey}`
+  const skillCatalogLoaded = skillCatalogKey === skillCatalogFor
   // The composer names the skills a turn carries, so the catalog cannot wait
   // for someone to open the Skills surface first.
   const skillsWanted = surface === "skills" || skillProjectKey !== "no-project"
@@ -1575,7 +1579,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (!skillsWanted) return
     if (!connected) {
       setLocalSkillInventory(null)
-      setSkillCatalogLoaded(false)
+      setSkillCatalogKey(null)
       setSkillsLoading(false)
       setSkillInventories(skillMachine ? [{
         state: "unreachable",
@@ -1596,7 +1600,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       ([discovered, inventory]) => {
         if (!active) return
         setSkills(discovered)
-        setSkillCatalogLoaded(true)
+        setSkillCatalogKey(skillCatalogFor)
         if (!inventory) {
           setSkillInventories([])
           return
@@ -1625,6 +1629,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     getSkillInventory,
     handheld,
     listSkills,
+    skillCatalogFor,
     skillMachine,
     skillProjectKey,
     skillsRefresh,

@@ -12,5 +12,8 @@ and Settings asks for neither update status (update.status) nor key status
 loopback to its owner's credential, and Direct API keys says key status is off in a phone or
 tablet tab and names the desktop app. The move dialog no longer asks the daemon for a preview
 (session.transferPreview) as it opens in a phone or tablet tab; it says moving a session is off
-there and offers no Move session. A queued message with chosen skills is released once the skill
-list has answered. Desktop and full-access web tabs are unchanged.
+there and offers no Move session. Skills in a phone or tablet tab lists the catalog but disables
+Install, Trust, Revoke and View SKILL.md, and says why, as it does for the machine comparison. A
+queued message with chosen skills is released once the skill list for the current project and
+branch has answered, so a branch change no longer releases it against the old list. Desktop and
+full-access web tabs are otherwise unchanged.

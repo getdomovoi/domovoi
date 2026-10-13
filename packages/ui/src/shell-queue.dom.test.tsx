@@ -488,3 +488,23 @@ it.each(['phone', 'tablet'] as const)('a %s tab releases a queued explicit skill
   })
   expect(socket.readyState).toBe(socket.OPEN)
 })
+
+// A project or branch change refreshes the catalog. Until the new list
+// answers, the old one says nothing about whether a chosen skill is still in
+// it, so the queue waits, and then holds the message if the skill is gone.
+it('waits for the refreshed catalog when the turn ends in the same snapshot that changes the branch', async () => {
+  const skills = [skill('a', 'alpha'), skill('b', 'beta')]
+  const value = withSkills(running(), skills)
+  const socket = await open(value, false, skills)
+  selectSkill('alpha')
+  queue('alpha only')
+  const moved = idle(value)
+  moved.project = { ...moved.project!, branch: 'other-branch' }
+  await snapshot(socket, moved)
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+
+  await loadCatalog(socket, moved, [skills[1]!])
+  await settle()
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+  expect(screen.getByText(/Held because a skill you chose is no longer/)).toBeTruthy()
+})
