@@ -167,3 +167,15 @@ it("takes a file whose read finishes after a removal made room", async () => {
     { kind: "text", name: "new.txt", mimeType: "text/plain", content: "fresh" },
   ])
 })
+
+// A new draft starts collapsed again: the chips of a sent message must not
+// leave the next one showing everything.
+it("collapses the chips again once the draft is emptied", async () => {
+  const user = userEvent.setup()
+  const attachments = ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"].map((path) => ({ kind: "workspace-file" as const, path }))
+  const { rerender } = render(<AttachmentChips attachments={attachments} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: "+2 more" }))
+  rerender(<AttachmentChips attachments={[]} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  rerender(<AttachmentChips attachments={attachments} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  expect(within(screen.getByRole("region", { name: "Attachments" })).getAllByRole("listitem")).toHaveLength(3)
+})

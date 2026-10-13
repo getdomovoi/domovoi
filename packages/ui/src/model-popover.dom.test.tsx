@@ -259,7 +259,8 @@ it("tags a model that takes no image input, and only that model", async () => {
   await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
   await settle()
 
-  expect(within(screen.getByRole("option", { name: "gpt-5.3-codex, codex" })).getByText("no image input")).toBeTruthy()
+  // The tag is in the option's name too, so a screen reader hears it on focus.
+  expect(within(screen.getByRole("option", { name: "gpt-5.3-codex, codex, no image input" })).getByText("no image input")).toBeTruthy()
   expect(within(screen.getByRole("option", { name: "gpt-5.2, codex" })).queryByText("no image input")).toBeNull()
   expect(within(screen.getByRole("option", { name: "claude-sonnet-4.6, claude-code" })).queryByText("no image input")).toBeNull()
 })

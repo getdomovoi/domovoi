@@ -100,7 +100,7 @@ import { PolicyRefusalCard } from "./policy-refusal-card"
 import { ApprovalCard } from "./approval-card"
 import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
-import { ThreadComposer, type BuildBasisChip } from "./thread-composer"
+import { ThreadComposer, imagesHeldReason, lockedImagesWords, type BuildBasisChip } from "./thread-composer"
 import { sessionPreviewBuildBasis } from "./artifacts"
 import { PreviewVariantCopy } from "./preview-controls"
 import { previewRenderName } from "./preview-renders"
@@ -867,6 +867,18 @@ export function Thread({
     )
     return () => { live = false }
   }, [onListModels, activeProvider])
+  // The session's model's image input, once its harness has answered. A
+  // message queued before the answer, or before a model change, would be
+  // refused at the turn boundary, so it is held whole instead. Nothing holds
+  // on undefined: not known is not no.
+  const activeModelImageInput = providerModels?.provider === activeProvider
+    ? providerModels?.models.find((model) => model.provider === activeProvider && model.id === active?.runtime.model)?.imageInput
+    : undefined
+  useEffect(() => {
+    if (!active || queued?.sessionId !== active.id || queued.state !== "waiting") return
+    if (activeModelImageInput !== false || !queued.attachments?.some(isImageAttachment)) return
+    onQueuedChange(heldAfter(queued, imagesHeldReason(active.runtime.model)))
+  }, [active, activeModelImageInput, onQueuedChange, queued])
   // The editor answers a shortcut as well as its control, because a long prompt
   // usually starts at the keyboard.
   useEffect(() => {
@@ -982,6 +994,9 @@ export function Thread({
     meta: `${previewRenderName(buildBasis)} · ${PreviewVariantCopy.buildsOnThis}`,
     onUnpick: onUnpickBuildBasis,
   } : undefined
+
+  // Images in the draft the session's model reports it cannot take.
+  const lockedImageCount = activeModelImageInput === false ? attachments.filter(isImageAttachment).length : 0
 
   const providerRestartRequired = active.state === "failed" && !active.providerThreadId
   // The worktree of a session nothing has run in yet: no turn is running or
@@ -1672,8 +1687,11 @@ export function Thread({
             buildBasis={buildBasisChip}
             onRemoveAttachment={(index) => setAttachments((current) => current.filter((_, candidate) => candidate !== index))}
             pending={pending}
-            sendDisabled={!connected || !prompt.trim() || providerRestartRequired || emergencyStopPending
-              || (effortModel?.imageInput === false && attachments.some(isImageAttachment))}
+            sendDisabled={!connected || !prompt.trim() || providerRestartRequired || emergencyStopPending || lockedImageCount > 0}
+            imagesBlocked={effortModel?.imageInput === false}
+            {...(lockedImageCount > 0 ? {
+              imagesNote: `${lockedImagesWords(lockedImageCount).lead}${active.runtime.model}${lockedImagesWords(lockedImageCount).tail}`,
+            } : {})}
             onOpenChange={(open) => {
               setPromptEditorOpen(open)
               setEditorPasteNote("")

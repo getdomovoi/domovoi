@@ -60,6 +60,18 @@ type ChipItem = {
 
 const lockedNoticeAction = "rounded-full border border-danger-border px-2.5 py-1 text-[11px] whitespace-nowrap text-danger-foreground disabled:opacity-50"
 
+// J42's sentence around the model id, which the composer sets in mono.
+export function lockedImagesWords(count: number): { lead: string, tail: string } {
+  return count === 1
+    ? { lead: "1 image cannot go to ", tail: ". Remove it or pick another model." }
+    : { lead: `${count} images cannot go to `, tail: ". Remove them or pick another model." }
+}
+
+// The reason a queued message with images is held while the model takes none.
+export function imagesHeldReason(modelId: string): string {
+  return `Held because ${modelId} takes no image input. Change the model, or unqueue it and attach again without the images.`
+}
+
 // What the attach menu's footer says of the model, as the phone says it.
 export function imageInputLine(imageInput: boolean | undefined): string {
   if (imageInput === true) return "takes image input, as its harness reports"
@@ -124,6 +136,8 @@ export function AttachmentChips({
       onRemove: () => onRemove(index),
     }]
   })]
+  // An emptied draft (a send, the last removal) starts the next one collapsed.
+  if (expanded && items.length === 0) setExpanded(false)
   if (items.length === 0) return null
   const hidden = expanded ? 0 : Math.max(0, items.length - visibleAttachmentChips)
   return (
@@ -403,7 +417,7 @@ export function ThreadComposer({
               : turnRunning ? "queued, sends when this turn ends" : "queued"}
           </span>
           {queued.state === "held" ? (
-            <Button variant="ghost" size="sm" disabled={readOnly || !connected || turnRunning || pending || emergencyStopPending || providerRestartRequired} onClick={() => onQueuedChange({ ...queued, state: "waiting" })}>Send</Button>
+            <Button variant="ghost" size="sm" disabled={readOnly || !connected || turnRunning || pending || emergencyStopPending || providerRestartRequired || (imageInput === false && Boolean(queued.attachments?.some(isImageAttachment)))} onClick={() => onQueuedChange({ ...queued, state: "waiting" })}>Send</Button>
           ) : null}
           <Button variant="ghost" size="icon-sm" aria-label="Unqueue the message" className="size-6 flex-none text-faint" disabled={readOnly} onClick={() => onQueuedChange(undefined)}><XIcon className="size-3" /></Button>
         </div>
@@ -422,9 +436,9 @@ export function ThreadComposer({
         <div role="group" aria-label="Images this model cannot take" className="flex items-start gap-2.5 rounded-[calc(var(--radius)-2px)] border border-danger-border bg-danger-background px-[11px] py-[9px]">
           <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-destructive" />
           <span className="min-w-0 flex-1 text-[12px] leading-[1.5] text-danger-foreground">
-            {blockedImages === 1 ? "1 image cannot go to " : `${blockedImages} images cannot go to `}
+            {lockedImagesWords(blockedImages).lead}
             <span className="font-machine text-[11px]">{modelId}</span>
-            {blockedImages === 1 ? ". Remove it or pick another model." : ". Remove them or pick another model."}
+            {lockedImagesWords(blockedImages).tail}
           </span>
           <span className="flex flex-none items-center gap-1.5">
             <button type="button" disabled={readOnly} className={lockedNoticeAction} onClick={() => onAttachmentsChange((current) => current.filter((attachment) => !isImageAttachment(attachment)))}>

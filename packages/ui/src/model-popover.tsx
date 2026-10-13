@@ -233,7 +233,7 @@ export function ModelPopover({
                 <div
                   key={`${row.model.provider}:${row.model.id}`}
                   role="option"
-                  aria-label={`${row.model.id}, ${row.model.provider}`}
+                  aria-label={`${row.model.id}, ${row.model.provider}${row.model.imageInput === false ? ", no image input" : ""}`}
                   aria-selected={row.current}
                   tabIndex={0}
                   onClick={() => pick(row.model)}

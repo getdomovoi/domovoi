@@ -47,6 +47,8 @@ export function PromptEditorDialog({
   draft,
   attachments,
   buildBasis,
+  imagesBlocked = false,
+  imagesNote,
   onRemoveAttachment,
   pending,
   sendDisabled,
@@ -70,6 +72,10 @@ export function PromptEditorDialog({
   attachments: readonly SessionAttachment[]
   // The chosen preview variant the send carries, as the composer shows it.
   buildBasis?: BuildBasisChip | undefined
+  // The session's model takes no image input: its image chips read so, and
+  // the note says what the composer's notice says, since the editor covers it.
+  imagesBlocked?: boolean
+  imagesNote?: string | undefined
   onRemoveAttachment: (index: number) => void
   pending: boolean
   sendDisabled: boolean
@@ -173,7 +179,8 @@ export function PromptEditorDialog({
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col gap-[13px] px-[18px] py-4">
-            <AttachmentChips attachments={attachments} buildBasis={buildBasis} machineName={machineName} onRemove={onRemoveAttachment} pastedAsChips />
+            <AttachmentChips attachments={attachments} buildBasis={buildBasis} imagesBlocked={imagesBlocked} machineName={machineName} onRemove={onRemoveAttachment} pastedAsChips />
+            {imagesNote ? <p role="status" className="m-0 flex-none text-[12px] text-danger-foreground">{imagesNote}</p> : null}
             {/* Focused by definition: a field that exists to be typed in opens
                 with the ring rather than waiting to be clicked. */}
             <Textarea

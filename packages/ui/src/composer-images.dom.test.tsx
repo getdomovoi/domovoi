@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from "vitest"
 
 import { WorkspaceConnectionProvider } from "./connection-status"
 import { emptySessionDraft, sessionDraftStore } from "./session-draft"
+import type { QueuedMessage } from "./turn-queue"
 import { Thread } from "./workspace-shell.js"
 
 afterEach(() => {
@@ -37,12 +38,16 @@ function renderThread({
   prompt = "",
   onSend = vi.fn(async () => {}),
   wrap = (node) => node,
+  queued,
+  onQueuedChange = vi.fn(),
 }: {
   imageInput: boolean | undefined
   draft?: SessionAttachment[]
   prompt?: string
   onSend?: ComponentProps<typeof Thread>["onSend"]
   wrap?: (node: ReactNode) => ReactNode
+  queued?: QueuedMessage
+  onQueuedChange?: (next: QueuedMessage | undefined) => void
 }) {
   sessionDraftStore.write(activeId, { ...emptySessionDraft, prompt, attachments: draft })
   const onListModels = vi.fn(async (provider: string) => provider === "claude-code" ? [sonnet(imageInput)] : [])
@@ -52,7 +57,8 @@ function renderThread({
     <Thread
       snapshot={snapshot}
       connected
-      onQueuedChange={vi.fn()}
+      queued={queued}
+      onQueuedChange={onQueuedChange}
       onResolve={vi.fn(async () => {})}
       onSetRuntime={vi.fn(async () => {})}
       onForkSession={vi.fn(async () => {})}
@@ -84,6 +90,51 @@ it("locks send and says which images cannot go to a model that takes none", asyn
   await user.click(screen.getByRole("textbox", { name: "Message" }))
   await user.keyboard("{Enter}")
   expect(onSend).not.toHaveBeenCalled()
+})
+
+// A message queued before the model's answer arrived, or before a model
+// change, would go out at the turn boundary and be refused there. It is held
+// instead, whole, and its Send stays off while the model takes no images.
+it("holds a queued message with images once the model is known to take none", async () => {
+  const onQueuedChange = vi.fn()
+  const queued: QueuedMessage = { sessionId: activeId, text: "With a screenshot", state: "waiting", attachments: [image] }
+  renderThread({ imageInput: false, queued, onQueuedChange })
+
+  await waitFor(() => expect(onQueuedChange).toHaveBeenCalledWith({
+    ...queued,
+    state: "held",
+    reason: "Held because sonnet-4.6 takes no image input. Change the model, or unqueue it and attach again without the images.",
+  }))
+})
+
+it("keeps a held queued message with images from being sent to that model", async () => {
+  const queued: QueuedMessage = { sessionId: activeId, text: "With a screenshot", state: "held", reason: "Held", attachments: [image] }
+  renderThread({ imageInput: false, queued })
+
+  const row = screen.getByText("With a screenshot").parentElement!
+  await waitFor(() => expect((within(row).getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true))
+})
+
+it("leaves a queued message alone when the model takes images or has not said", async () => {
+  const onQueuedChange = vi.fn()
+  const queued: QueuedMessage = { sessionId: activeId, text: "With a screenshot", state: "waiting", attachments: [image] }
+  renderThread({ imageInput: undefined, queued, onQueuedChange })
+  await screen.findByRole("button", { name: "Attach" })
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  expect(onQueuedChange).not.toHaveBeenCalled()
+})
+
+// The editor covers the composer, so it says the same thing itself.
+it("says in the prompt editor which images cannot go to the model", async () => {
+  const user = userEvent.setup()
+  renderThread({ imageInput: false, draft: [image], prompt: "Look" })
+
+  await waitFor(() => expect(notice()).not.toBeNull())
+  await user.click(screen.getByRole("button", { name: "Expand prompt editor" }))
+  const editor = await screen.findByRole("dialog", { name: "Prompt editor" })
+  expect(within(editor).getByText("1 image cannot go to sonnet-4.6. Remove it or pick another model.")).toBeTruthy()
+  expect(within(within(editor).getByRole("region", { name: "Attachments" })).getByText("no image input")).toBeTruthy()
+  expect((within(editor).getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true)
 })
 
 it("names the count when several images are locked", async () => {
