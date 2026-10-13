@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState, type ClipboardEvent } from "react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 import { XIcon } from "lucide-react"
+import type { SessionAttachment } from "@getdomovoi/protocol"
 
 import { Button } from "./components/ui/button"
 import { Dialog, DialogClose, DialogPortal, DialogTitle } from "./components/ui/dialog"
 import { Textarea } from "./components/ui/textarea"
 import { cn } from "./lib/utils"
+import { AttachmentChips } from "./thread-composer"
 
 export type PromptEditorMode = "prose" | "markdown"
 
@@ -43,6 +45,8 @@ const contextChip = "flex items-center gap-2 rounded-full border px-[13px] py-[7
 export function PromptEditorDialog({
   open,
   draft,
+  attachments,
+  onRemoveAttachment,
   pending,
   sendDisabled,
   onOpenChange,
@@ -60,6 +64,10 @@ export function PromptEditorDialog({
 }: {
   open: boolean
   draft: string
+  // The composer's own draft attachments: the design carries them through,
+  // and a removal here is a removal there.
+  attachments: readonly SessionAttachment[]
+  onRemoveAttachment: (index: number) => void
   pending: boolean
   sendDisabled: boolean
   onOpenChange: (open: boolean) => void
@@ -162,6 +170,7 @@ export function PromptEditorDialog({
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col gap-[13px] px-[18px] py-4">
+            <AttachmentChips attachments={attachments} machineName={machineName} onRemove={onRemoveAttachment} pastedAsChips />
             {/* Focused by definition: a field that exists to be typed in opens
                 with the ring rather than waiting to be clicked. */}
             <Textarea

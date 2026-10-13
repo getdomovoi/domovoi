@@ -1641,6 +1641,8 @@ export function Thread({
           <PromptEditorDialog
             open={promptEditorOpen}
             draft={prompt}
+            attachments={attachments}
+            onRemoveAttachment={(index) => setAttachments((current) => current.filter((_, candidate) => candidate !== index))}
             pending={pending}
             sendDisabled={!connected || !prompt.trim() || providerRestartRequired || emergencyStopPending}
             onOpenChange={(open) => {

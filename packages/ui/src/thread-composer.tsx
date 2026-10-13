@@ -63,15 +63,18 @@ export function AttachmentChips({
   attachments,
   machineName,
   onRemove,
+  pastedAsChips = false,
 }: {
   attachments: readonly SessionAttachment[]
   machineName: string
   // The index into attachments.
   onRemove: (index: number) => void
+  // The editor has no pasted-file card, so a pasted file is a chip there.
+  pastedAsChips?: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
   const items: ChipItem[] = attachments.flatMap((attachment, index) => {
-    if (pastedText(attachment)) return []
+    if (!pastedAsChips && pastedText(attachment)) return []
     const name = attachmentName(attachment)
     return [{
       key: `${name}-${index}`,
