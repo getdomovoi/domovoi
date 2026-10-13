@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useId, useMemo, useRef, useState } from "react"
 import {
   CircleStopIcon,
   DownloadIcon,
@@ -25,6 +25,7 @@ import { ScrollArea } from "./components/ui/scroll-area"
 import { ToggleGroup, ToggleGroupItem } from "./components/ui/toggle-group"
 import type { DomovoiRequestOptions } from "./client"
 import { Deadline } from "./deadline"
+import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab"
 
 const outcomes = ["all", "started", "succeeded", "failed", "denied", "cancelled"] as const
 type OutcomeFilter = (typeof outcomes)[number]
@@ -270,6 +271,12 @@ export function AuditLogView({
   }, [page])
   const [loading, setLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
+  // audit.export is not on phoneAndTabletRpcMethods (handheld-tab.ts).
+  const handheldMachine = useHandheldTabMachine()
+  const exportLocked = handheldMachine !== undefined
+    ? offInHandheldTab(["Export this query"], "export the audit log", handheldMachine)
+    : undefined
+  const exportLockedId = useId()
   const [error, setError] = useState("")
   const requestRef = useRef(0)
   const loadControllerRef = useRef<AbortController | undefined>(undefined)
@@ -349,7 +356,7 @@ export function AuditLogView({
   }
 
   const exportLog = async () => {
-    if (!connected || exporting) return
+    if (!connected || exporting || exportLocked !== undefined) return
     const controller = new AbortController()
     exportControllerRef.current = controller
     setExporting(true)
@@ -423,11 +430,13 @@ export function AuditLogView({
         </section>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="secondary" disabled={!connected} onClick={toggleExport} aria-label={exporting ? "Cancel export" : "Export this query"}>
+          <Button variant="secondary" disabled={!connected || exportLocked !== undefined} onClick={toggleExport} aria-label={exporting ? "Cancel export" : "Export this query"} aria-describedby={exportLocked !== undefined ? exportLockedId : undefined}>
             <DownloadIcon data-icon="inline-start" />{exporting ? "Cancel export" : "Export this query"}
           </Button>
-          <span className="font-machine text-[10.5px] text-faint">{`${auditExportDestination(clientKind)} · ${auditRowsLoaded(page?.entries.length ?? 0)}`}</span>
+          {/* Where an export goes says nothing in a tab that cannot make one. */}
+          <span className="font-machine text-[10.5px] text-faint">{exportLocked !== undefined ? auditRowsLoaded(page?.entries.length ?? 0) : `${auditExportDestination(clientKind)} · ${auditRowsLoaded(page?.entries.length ?? 0)}`}</span>
           {page?.hasMore ? <Button className="ml-auto" variant="outline" size="sm" disabled={loading} onClick={() => void loadOlder()}>{loading ? "Loading" : "Load older"}</Button> : null}
+          {exportLocked !== undefined ? <p id={exportLockedId} className="m-0 basis-full text-[11px] leading-relaxed text-muted-foreground">{exportLocked}</p> : null}
         </div>
 
         <section className="overflow-hidden rounded-xl border bg-card" aria-labelledby="audit-facts-title">
