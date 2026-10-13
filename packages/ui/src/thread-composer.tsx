@@ -628,7 +628,7 @@ export function ThreadComposer({
               {/* When the model's harness reports no image input, images are
                   locked here (the picker offers text files only) and the
                   daemon would refuse one with this code. The source stays
-                  open: a text-only model reads text files like any other. An
+                  open: a model without image input reads text files. An
                   image that gets in anyway is caught by the notice above. */}
               <DropdownMenuItem aria-label="Image or file from this device" className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px]" onSelect={() => attachmentInput.current?.click()}>
                 <span className="mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">PNG</span>
