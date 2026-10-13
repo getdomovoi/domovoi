@@ -1,4 +1,4 @@
-import { createPrivateKey, createPublicKey } from "node:crypto"
+import { createPrivateKey, createPublicKey, sign } from "node:crypto"
 import { once } from "node:events"
 import { mkdtemp, mkdir, readFile, unlink, writeFile } from "node:fs/promises"
 import { createServer } from "node:https"
@@ -6,7 +6,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { createEmptyWorkspace, demoWorkspace, decodeRelayMultiplexedFrame, encodeRelayCarrierControl, encodeRelayMultiplexedFrame, parseRelayCarrierControl, protocolVersion } from "@getdomovoi/protocol"
-import { createRelayClient, relayPublicKeyFromPrivateKey } from "@getdomovoi/protocol/relay-admission"
+import { createRelayClient, relayPublicKeyFromPrivateKey, relaySuccessorSigningBytes } from "@getdomovoi/protocol/relay-admission"
 import { afterEach, expect, it, vi } from "vitest"
 import { WebSocket, WebSocketServer } from "ws"
 
@@ -17,6 +17,8 @@ import { loadOrProvisionRelayChannel, relayProvisioningPath, type ProvisionedRel
 import { DomovoiDaemon, type DaemonServerOptions } from "./server.js"
 import { SqliteWorkspaceStore } from "./store.js"
 import { removeScratchDirectories } from "./test-scratch.js"
+import { openRelayGeneration } from "./relay-generation.js"
+import * as generationModule from "./relay-generation.js"
 import { relayRegistrationBinding } from "./relay-carrier.js"
 
 const publicIdentity = createPublicKey(createPrivateKey({ key: Buffer.from("302e020100300506032b657004220420" + "42".repeat(32), "hex"), format: "der", type: "pkcs8" }))
@@ -28,6 +30,7 @@ afterEach(async () => {
   await Promise.allSettled(handles.splice(0).map((handle) => handle.stop()))
   for (const close of connections.splice(0)) await close()
   await removeScratchDirectories(roots)
+  vi.restoreAllMocks()
 })
 const runtime = (options: DaemonServerOptions): ProductionDaemonRuntime => ({
   host: "127.0.0.1", requestedPort: 0, authToken: options.authToken!,
@@ -176,6 +179,7 @@ it("loads explicit profile registration in the production factory and serves pai
     routeId: Buffer.alloc(32, 9).toString("base64url"), registrationCredential: Buffer.alloc(32, 7).toString("base64url"),
     policy: { connectTimeoutMs: 1000, registrationTimeoutMs: 1000, sendTimeoutMs: 1000, maximumAttempts: 2,
       retryBaseMs: 10, retryMaximumMs: 20, heartbeatIntervalMs: 100, heartbeatTimeoutMs: 1000,
+      receiveWindowMs: 1000, maximumReceivedMessages: 32, maximumReceivedBytes: 131078,
       maximumChannels: 2, maximumQueuedBytes: 131078, maximumQueuedMessages: 16 } }
   await writeFile(join(profile, "relay-carrier.json"), JSON.stringify(config), { mode: 0o600 })
   let store!: SqliteWorkspaceStore
@@ -213,15 +217,17 @@ it("loads explicit profile registration in the production factory and serves pai
   } finally { client.close(); client = undefined; clientKey.fill(0) }
 })
 
-it.each(["missing", "malformed"])("closes the production listener and releases ownership when generation state is %s", async (state) => {
+it.each(["missing", "malformed", "exhausted", "stopped"])("closes the production listener and releases ownership when generation state is %s", async (state) => {
   const homeDirectory = await home()
   const profile = join(homeDirectory, ".domovoi")
   await mkdir(profile, { mode: 0o700 })
-  await writeFile(join(profile, "relay-carrier.json"), JSON.stringify({ version: 1, url: "wss://localhost:1/carrier",
+  const config = { version: 1, url: "wss://localhost:1/carrier",
     routeId: Buffer.alloc(32, 9).toString("base64url"), registrationCredential: Buffer.alloc(32, 7).toString("base64url"),
     policy: { connectTimeoutMs: 1000, registrationTimeoutMs: 1000, sendTimeoutMs: 1000, maximumAttempts: 2,
       retryBaseMs: 10, retryMaximumMs: 20, heartbeatIntervalMs: 100, heartbeatTimeoutMs: 1000,
-      maximumChannels: 2, maximumQueuedBytes: 131078, maximumQueuedMessages: 16 } }), { mode: 0o600 })
+      receiveWindowMs: 1000, maximumReceivedMessages: 32, maximumReceivedBytes: 131078,
+      maximumChannels: 2, maximumQueuedBytes: 131078, maximumQueuedMessages: 16 } }
+  await writeFile(join(profile, "relay-carrier.json"), JSON.stringify(config), { mode: 0o600 })
   if (state === "malformed") await writeFile(join(profile, "relay-generation.json"), "{}", { mode: 0o600 })
   let daemon!: DomovoiDaemon
   const handle = await createProductionDaemonWithDependencies({ homeDirectory, errorSink: () => {},
@@ -232,12 +238,32 @@ it.each(["missing", "malformed"])("closes the production listener and releases o
       daemon = new DomovoiDaemon({ ...options, store }); return daemon
     } })
   handles.push(handle)
-  await expect(handle.start()).rejects.toThrow("generation state")
+  if (state === "exhausted" || state === "stopped") await writeFile(join(profile, "relay-generation.json"), JSON.stringify({ version: 1,
+    binding: relayRegistrationBinding(config, handle.relayIdentity!.machineId), generation: state === "exhausted" ? Number.MAX_SAFE_INTEGER : 0 }), { mode: 0o600 })
+  if (state === "stopped") {
+    let release!: () => void
+    const held = new Promise<void>((resolve) => { release = resolve })
+    const entered = vi.fn()
+    const open = generationModule.openRelayGeneration
+    vi.spyOn(generationModule, "openRelayGeneration").mockImplementation((...args) => {
+      const owner = open(...args)
+      return { ...owner, next: async () => { entered(); await held; return owner.next() } }
+    })
+    const starting = expect(handle.start()).rejects.toThrow(/stopped/)
+    await vi.waitFor(() => expect(entered).toHaveBeenCalledOnce(), { timeout: 1000 })
+    const stopping = handle.stop()
+    release()
+    await starting; await stopping
+  } else await expect(handle.start()).rejects.toThrow(/generation/)
   await vi.waitFor(() => {
     expect(daemon.address).toBeUndefined()
     const lease = claimProfile(homeDirectory)
     lease.release()
   }, { timeout: 2000 })
+  if (state === "exhausted" || state === "stopped") {
+    const owner = openRelayGeneration(join(profile, "relay-generation.json"), relayRegistrationBinding(config, handle.relayIdentity!.machineId))
+    await owner.close()
+  }
 })
 
 it.each(["client", "machine"] as const)("refuses a persisted %s bearer as the registration credential before connecting", async (kind) => {
@@ -252,10 +278,36 @@ it.each(["client", "machine"] as const)("refuses a persisted %s bearer as the re
     generationPath: join(homeDirectory, "relay-generation.json"),
     policy: { connectTimeoutMs: 1000, registrationTimeoutMs: 1000, sendTimeoutMs: 1000, maximumAttempts: 2,
       retryBaseMs: 10, retryMaximumMs: 20, heartbeatIntervalMs: 100, heartbeatTimeoutMs: 1000,
+      receiveWindowMs: 1000, maximumReceivedMessages: 32, maximumReceivedBytes: 131078,
       maximumChannels: 2, maximumQueuedBytes: 131078, maximumQueuedMessages: 16 } }
   await writeFile(relayCarrier.generationPath, JSON.stringify({ version: 1, binding: relayRegistrationBinding(relayCarrier, demoWorkspace.machine.id), generation: 0 }), { mode: 0o600 })
   const daemon = new DomovoiDaemon({ port: 0, store, relayStaticKey: key, relayRecovery: recovery, relayCarrier, errorSink: () => {} })
   try { await expect(daemon.start()).rejects.toThrow("registration credential") }
   finally { await daemon.stop(); key.fill(0) }
   expect(JSON.parse(await readFile(relayCarrier.generationPath, "utf8")).generation).toBe(0)
+})
+
+
+it.each(["identity", "channel", "previous"])("refuses the published %s public key as a registration credential", async (kind) => {
+  const homeDirectory = await home()
+  const store = new SqliteWorkspaceStore(":memory:", createEmptyWorkspace(demoWorkspace.machine))
+  const key = new Uint8Array(32).fill(12)
+  const recovery = { identity: { version: 1 as const, machineId: demoWorkspace.machine.id, identityPublicKey: publicIdentity, generation: 1,
+    channel: { suite: "Noise_IK_25519_ChaChaPoly_SHA256" as const, responderPublicKey: relayPublicKeyFromPrivateKey(key) } } }
+  const previousKey = relayPublicKeyFromPrivateKey(new Uint8Array(32).fill(13))
+  const statement = { ...recovery.identity, generation: 2, previousChannelPublicKey: previousKey }
+  const rotated = { identity: { ...recovery.identity, generation: 2 }, successor: { statement,
+    signature: sign(null, relaySuccessorSigningBytes(statement), createPrivateKey({ key: Buffer.from("302e020100300506032b657004220420" + "42".repeat(32), "hex"), format: "der", type: "pkcs8" })).toString("base64url") } }
+  let daemon: DomovoiDaemon | undefined
+  try {
+    expect(() => { daemon = new DomovoiDaemon({ port: 0, store, relayStaticKey: key, relayRecovery: kind === "previous" ? rotated : recovery,
+      relayCarrier: { url: "wss://localhost:1/carrier", routeId: Buffer.alloc(32, 9).toString("base64url"),
+        registrationCredential: kind === "identity" ? publicIdentity : kind === "previous" ? previousKey : recovery.identity.channel.responderPublicKey,
+        generationPath: join(homeDirectory, "relay-generation.json"),
+        policy: { connectTimeoutMs: 1000, registrationTimeoutMs: 1000, sendTimeoutMs: 1000, maximumAttempts: 2,
+          retryBaseMs: 10, retryMaximumMs: 20, heartbeatIntervalMs: 100, heartbeatTimeoutMs: 1000,
+          receiveWindowMs: 1000, maximumReceivedMessages: 32, maximumReceivedBytes: 131078,
+          maximumChannels: 2, maximumQueuedBytes: 131078, maximumQueuedMessages: 16 } }, errorSink: () => {} })
+    }).toThrow("independent registration credential")
+  } finally { if (daemon) await daemon.stop(); else await store.close(); key.fill(0) }
 })

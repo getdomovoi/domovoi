@@ -42,6 +42,9 @@ trust anchor. Setting `ca` does not disable hostname or expiry verification.
     "retryMaximumMs": 30000,
     "heartbeatIntervalMs": 15000,
     "heartbeatTimeoutMs": 10000,
+    "receiveWindowMs": 1000,
+    "maximumReceivedMessages": 1000,
+    "maximumReceivedBytes": 1048576,
     "maximumChannels": 32,
     "maximumQueuedBytes": 1048576,
     "maximumQueuedMessages": 64
@@ -95,7 +98,8 @@ Keep the parent directory private and trusted. Configuration reads are bounded
 to 64 KiB and generation reads to 2 KiB. Unix file permissions must exclude group
 and other access; Windows mode bits are not an ACL proof. The daemon refuses a
 registration credential equal to its root bearer, channel private key, route ID,
-or any currently active locally paired client or machine bearer. The operator
+public identity key, current or published predecessor channel public key, or any
+currently active locally paired client or machine bearer. The operator
 must also ensure independence from credentials held by other machines or systems.
 
 ## Generations, reconnects and refusal
@@ -126,9 +130,11 @@ generation, relay admission limits or a lost acknowledgment. It does not label
 that ambiguity as a diagnosed account or credential failure.
 
 The daemon logs only a refusal category. Carrier refusal leaves the direct daemon
-available; invalid local configuration or generation storage instead fails startup
-and the production wrapper closes its listener and releases ownership. Changing
-configuration requires a restart. JavaScript credential strings cannot be reliably
+available; invalid local configuration or an initial generation reservation
+failure instead fails startup. The production wrapper closes its listener and
+releases ownership. A later
+reservation failure refuses further relay attempts while direct access remains
+available. Changing configuration requires a restart. JavaScript credential strings cannot be reliably
 wiped from memory.
 
 Channels open only after the matching registration acknowledgment. Each opens
@@ -141,7 +147,21 @@ cannot be recalled; the send completion callback is not a revocation boundary.
 Closed channel IDs discard late frames, while unknown
 or reused IDs refuse the physical carrier. Queue bytes include the in-flight
 message; message count, channel count, fragment count, connection and send
-deadlines are bounded. Heartbeats use that same bounded queue.
+deadlines are bounded. Heartbeat probes and matching replies to server Ping use
+that same bounded queue. The response deadline starts when a probe is handed to
+the socket; its send callback need not complete before a Pong arrives.
+
+The required `receiveWindowMs`, `maximumReceivedMessages` and
+`maximumReceivedBytes` inputs bound aggregate message count and payload bytes per
+monotonic fixed window for this configured relay source, across all logical
+channels and physical reconnects. Binary frames, carrier controls, Ping and Pong
+all consume the budget before application decoding or copying, including late
+closed-channel frames and unsolicited Pong. A limit violation refuses the carrier.
+These are local operator budgets, with no hosted policy defaults. The fixed
+window can admit one budget just before its boundary and another just after it.
+The WebSocket library's independent message/fragment/chunk limits bound framing
+before delivery; application rate accounting does not prevent the library from
+receiving and assembling an individually bounded message.
 
 Tests use isolated profiles, a synthetic TLS certificate with normal validation,
 and real endpoint encryption/admission/RPC. They do not establish hosted relay,

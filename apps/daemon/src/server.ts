@@ -2083,7 +2083,10 @@ export class DomovoiDaemon {
     if (options.relayCarrier) {
       const credential = options.relayCarrier.registrationCredential
       if (!this.#relayRecovery || !this.#relayStaticKey || credential === authToken
-        || credential === options.relayCarrier.routeId || credential === Buffer.from(this.#relayStaticKey).toString("base64url")) {
+        || credential === options.relayCarrier.routeId || credential === Buffer.from(this.#relayStaticKey).toString("base64url")
+        || credential === this.#relayRecovery.identity.identityPublicKey
+        || credential === this.#relayRecovery.identity.channel.responderPublicKey
+        || credential === this.#relayRecovery.successor?.statement.previousChannelPublicKey) {
         throw new Error("Relay carrier requires a provisioned identity and an independent registration credential")
       }
       this.#relayCarrierOptions = structuredClone(options.relayCarrier)
@@ -3205,7 +3208,9 @@ export class DomovoiDaemon {
         openChannel: (options) => this.openRelayChannel(options),
         onStatus: (status) => { if (status.state === "refused") this.#reportError("Relay carrier requires operator attention", status.reason) },
       })
-      this.#relayCarrier.start()
+      await this.#relayCarrier.start()
+      signal?.throwIfAborted()
+      if (this.#stopping || this.#stopped) throw new Error("Daemon stopped during relay startup")
     }
 
     // A dead target must not hold daemon startup hostage. Each frozen source

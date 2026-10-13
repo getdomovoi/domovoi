@@ -27,7 +27,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
 })
 async function fixture(onMessage: (socket: WebSocket, message: RelayCarrierControl) => void, host = "localhost", trust = true, respondPong = true,
-  onStatus?: (status: DaemonRelayCarrierStatus) => void) {
+  onStatus?: (status: DaemonRelayCarrierStatus) => void, policy: Partial<DaemonRelayCarrierOptions["policy"]> = {}) {
   const certificate = await readFile(new URL("../test-fixtures/local-owner-tls/localhost-cert.pem", import.meta.url), "utf8")
   const key = await readFile(new URL("../test-fixtures/local-owner-tls/localhost-key.pem", import.meta.url))
   const server = createServer({ cert: certificate, key })
@@ -54,7 +54,8 @@ async function fixture(onMessage: (socket: WebSocket, message: RelayCarrierContr
     generationPath: join(directory, "relay-generation.json"), ...(trust ? { ca: certificate } : {}),
     policy: { connectTimeoutMs: 500, registrationTimeoutMs: 500, sendTimeoutMs: 500, maximumAttempts: 3,
       retryBaseMs: 10, retryMaximumMs: 20, heartbeatIntervalMs: respondPong ? 1000 : 20, heartbeatTimeoutMs: respondPong ? 1000 : 100,
-      maximumChannels: 2, maximumQueuedBytes: 131078, maximumQueuedMessages: 8 },
+      receiveWindowMs: 1000, maximumReceivedMessages: 32, maximumReceivedBytes: 131078,
+      maximumChannels: 2, maximumQueuedBytes: 131078, maximumQueuedMessages: 8, ...policy },
   }
   const binding = relayRegistrationBinding(options, recovery.identity.machineId)
   await writeFile(options.generationPath, JSON.stringify({ version: 1, binding, generation: 0 }), { mode: 0o600 })
@@ -297,4 +298,116 @@ it("cannot schedule a retry after the status callback stops it", async () => {
   await new Promise<void>((resolve) => setTimeout(resolve, 50))
   expect(f.carrier.status.state).toBe("stopped")
   expect(f.records).toHaveLength(1)
+})
+
+
+it("answers server keepalive pings with matching bounded pongs", async () => {
+  const f = await fixture(acknowledge)
+  f.carrier.start()
+  await vi.waitFor(() => expect(f.carrier.status.state).toBe("registered"), { timeout: 1000 })
+  const pongs: Buffer[] = []
+  f.connections[0]!.on("pong", (bytes) => pongs.push(bytes))
+  f.connections[0]!.ping(Buffer.from("server-probe"))
+  await vi.waitFor(() => expect(pongs).toEqual([Buffer.from("server-probe")]), { timeout: 1000 })
+  expect(f.carrier.status.state).toBe("registered")
+})
+
+it("starts the response deadline only after a queued heartbeat is transmitted", async () => {
+  const f = await fixture(acknowledge, "localhost", true, true, undefined,
+    { heartbeatIntervalMs: 150, heartbeatTimeoutMs: 50, sendTimeoutMs: 1000 })
+  f.carrier.start()
+  await vi.waitFor(() => expect(f.carrier.status.state).toBe("registered"), { timeout: 1000 })
+  const probes = vi.fn()
+  f.connections[0]!.on("ping", probes)
+  send(f.connections[0]!, { kind: "open", carrierVersion: 1, channelId: 1 })
+  await vi.waitFor(() => expect(f.openChannel).toHaveBeenCalledOnce(), { timeout: 1000 })
+  const release = holdFirstBinaryCompletion(f.connections)
+  f.openChannel.mock.calls[0]![0].carrier.send(new Uint8Array([1]))
+  await new Promise<void>((resolve) => setTimeout(resolve, 250))
+  expect(probes).not.toHaveBeenCalled()
+  expect(f.connections).toHaveLength(1)
+  expect(f.carrier.status.state).toBe("registered")
+  await release()
+  await vi.waitFor(() => expect(probes).toHaveBeenCalled(), { timeout: 1000 })
+  await new Promise<void>((resolve) => setTimeout(resolve, 80))
+  expect(f.carrier.status.state).toBe("registered")
+})
+
+it.each(["messages", "bytes"])("bounds aggregate inbound %s including discarded closed-channel frames", async (limit) => {
+  const f = await fixture(acknowledge)
+  f.carrier.start()
+  await vi.waitFor(() => expect(f.carrier.status.state).toBe("registered"), { timeout: 1000 })
+  const socket = f.connections[0]!
+  send(socket, { kind: "open", carrierVersion: 1, channelId: 1 })
+  send(socket, { kind: "close", carrierVersion: 1, channelId: 1 })
+  await vi.waitFor(() => expect(f.close).toHaveBeenCalledOnce(), { timeout: 1000 })
+  for (let index = 0; index < (limit === "messages" ? 100 : 3); index++) {
+    socket.send(encodeRelayMultiplexedFrame(1, new Uint8Array(limit === "messages" ? 1 : 65535)))
+  }
+  await vi.waitFor(() => expect(f.carrier.status).toEqual({ state: "refused", reason: "capacity" }), { timeout: 1000 })
+  expect(f.receive).not.toHaveBeenCalled()
+})
+
+
+it.each(["ping", "pong", "control"])("charges inbound %s traffic against the receive message budget", async (kind) => {
+  const f = await fixture(acknowledge, "localhost", true, true, undefined, { maximumReceivedMessages: 8, maximumQueuedMessages: 64 })
+  await f.carrier.start()
+  await vi.waitFor(() => expect(f.carrier.status.state).toBe("registered"), { timeout: 1000 })
+  const socket = f.connections[0]!
+  send(socket, { kind: "open", carrierVersion: 1, channelId: 1 })
+  await vi.waitFor(() => expect(f.openChannel).toHaveBeenCalledOnce(), { timeout: 1000 })
+  for (let index = 0; index < 9; index++) {
+    if (kind === "ping") socket.ping(Buffer.alloc(0))
+    else if (kind === "pong") socket.pong(Buffer.alloc(0))
+    else send(socket, { kind: "close", carrierVersion: 1, channelId: 1 })
+  }
+  await vi.waitFor(() => expect(f.carrier.status).toEqual({ state: "refused", reason: "capacity" }), { timeout: 1000 })
+})
+
+it("retains the receive budget across physical reconnection", async () => {
+  const f = await fixture(acknowledge, "localhost", true, true, undefined,
+    { maximumReceivedMessages: 5, receiveWindowMs: 10000, heartbeatIntervalMs: 10000 })
+  await f.carrier.start()
+  await vi.waitFor(() => expect(f.carrier.status.state).toBe("registered"), { timeout: 1000 })
+  const first = f.connections[0]!
+  send(first, { kind: "open", carrierVersion: 1, channelId: 1 })
+  first.pong(Buffer.alloc(0)); first.pong(Buffer.alloc(0))
+  send(first, { kind: "close", carrierVersion: 1, channelId: 1 })
+  await vi.waitFor(() => expect(f.close).toHaveBeenCalledOnce(), { timeout: 1000 })
+  first.terminate()
+  await vi.waitFor(() => expect(f.carrier.status).toEqual({ state: "refused", reason: "capacity" }), { timeout: 1000 })
+  expect(f.records).toHaveLength(2)
+})
+
+it("renews the receive allowance after its monotonic window", async () => {
+  const f = await fixture(acknowledge, "localhost", true, true, undefined,
+    { maximumReceivedMessages: 2, receiveWindowMs: 100, heartbeatIntervalMs: 10000 })
+  await f.carrier.start()
+  await vi.waitFor(() => expect(f.carrier.status.state).toBe("registered"), { timeout: 1000 })
+  const socket = f.connections[0]!
+  send(socket, { kind: "open", carrierVersion: 1, channelId: 1 })
+  await vi.waitFor(() => expect(f.openChannel).toHaveBeenCalledOnce(), { timeout: 1000 })
+  await new Promise<void>((resolve) => setTimeout(resolve, 120))
+  socket.send(encodeRelayMultiplexedFrame(1, new Uint8Array([8])))
+  await vi.waitFor(() => expect(f.receive).toHaveBeenCalledWith(new Uint8Array([8])), { timeout: 1000 })
+  expect(f.carrier.status.state).toBe("registered")
+})
+
+it("accepts a matching Pong while the Ping completion callback is still pending", async () => {
+  const f = await fixture(acknowledge, "localhost", true, true, undefined,
+    { heartbeatIntervalMs: 50, heartbeatTimeoutMs: 50, sendTimeoutMs: 1000 })
+  const original = WebSocket.prototype.ping
+  let release: (() => void) | undefined
+  vi.spyOn(WebSocket.prototype, "ping").mockImplementation(function (this: WebSocket, ...args: Parameters<WebSocket["ping"]>) {
+    const [bytes, mask, callback] = args
+    if (!release && !f.connections.includes(this)) {
+      Reflect.apply(original, this, [bytes, mask, (error: Error) => { release = () => callback?.(error) }])
+    } else Reflect.apply(original, this, args)
+  })
+  await f.carrier.start()
+  await vi.waitFor(() => expect(release).toBeDefined(), { timeout: 1000 })
+  await new Promise<void>((resolve) => setTimeout(resolve, 100))
+  expect(f.carrier.status.state).toBe("registered")
+  expect(f.connections).toHaveLength(1)
+  release!()
 })

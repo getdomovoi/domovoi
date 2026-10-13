@@ -16,12 +16,13 @@ export type DaemonRelayCarrierOptions = {
   url: string; routeId: string; registrationCredential: string; generationPath: string; ca?: string
   policy: { connectTimeoutMs: number; registrationTimeoutMs: number; sendTimeoutMs: number; maximumAttempts: number;
     retryBaseMs: number; retryMaximumMs: number; heartbeatIntervalMs: number; heartbeatTimeoutMs: number;
-    maximumChannels: number; maximumQueuedBytes: number; maximumQueuedMessages: number }
+    maximumChannels: number; maximumQueuedBytes: number; maximumQueuedMessages: number;
+    receiveWindowMs: number; maximumReceivedMessages: number; maximumReceivedBytes: number }
 }
 type Refusal = "tls" | "registration" | "protocol" | "capacity" | "generation" | "transport"
 export type DaemonRelayCarrierStatus = { state: "idle" | "connecting" | "registered" | "retrying" | "stopped" }
   | { state: "refused"; reason: Refusal }
-export type DaemonRelayCarrier = { start(): void; stop(): Promise<void>; readonly status: DaemonRelayCarrierStatus }
+export type DaemonRelayCarrier = { start(): Promise<void>; stop(): Promise<void>; readonly status: DaemonRelayCarrierStatus }
 type Endpoint = { recovery: RelayRecoveryResult; onStatus?(status: DaemonRelayCarrierStatus): void
   openChannel(options: { context: RelayAdmissionContext; carrier: RelayCarrier }): Pick<RelayChannel, "receive" | "close" | "closed"> }
 const bounded = (maximum: number) => z.number().int().min(1).max(maximum)
@@ -29,6 +30,7 @@ const policySchema = z.object({
   connectTimeoutMs: bounded(2_147_483_647), registrationTimeoutMs: bounded(2_147_483_647), sendTimeoutMs: bounded(2_147_483_647),
   maximumAttempts: bounded(100), retryBaseMs: bounded(2_147_483_647), retryMaximumMs: bounded(2_147_483_647),
   heartbeatIntervalMs: bounded(2_147_483_647), heartbeatTimeoutMs: bounded(2_147_483_647),
+  receiveWindowMs: bounded(2_147_483_647), maximumReceivedMessages: bounded(65536), maximumReceivedBytes: bounded(64 * 1024 * 1024),
   maximumChannels: bounded(32), maximumQueuedBytes: bounded(16 * 1024 * 1024), maximumQueuedMessages: bounded(1024),
 }).strict().refine((value) => value.retryMaximumMs >= value.retryBaseMs)
 const configurationSchema = z.object({
@@ -77,6 +79,18 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
   let stopped = false, started = false, attempts = 0
   let retry: ReturnType<typeof setTimeout> | undefined
   let dialing = Promise.resolve()
+  let startup: Promise<void> | undefined
+  // One configured relay source, shared across physical retries. Charge before
+  // parsing or copying input, including discarded frames and control traffic.
+  let receiveAt = performance.now(), receivedMessages = 0, receivedBytes = 0
+  function consume(bytes: number): boolean {
+    const now = performance.now()
+    if (!Number.isFinite(now) || now < receiveAt) return false
+    if (now - receiveAt >= policy.receiveWindowMs) { receiveAt = now; receivedMessages = 0; receivedBytes = 0 }
+    if (receivedMessages >= policy.maximumReceivedMessages || bytes > policy.maximumReceivedBytes - receivedBytes) return false
+    receivedMessages++; receivedBytes += bytes
+    return true
+  }
   let retire: (() => void) | undefined
   function report(next: DaemonRelayCarrierStatus) {
     status = next
@@ -91,20 +105,22 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
     if (stopped) return
     const cap = Math.min(policy.retryMaximumMs, policy.retryBaseMs * 2 ** Math.min(attempts - 1, 30))
     // Equal jitter has a positive floor and cannot create a synchronous retry loop.
-    retry = setTimeout(begin, Math.max(1, Math.floor(cap * (0.5 + Math.random() / 2))))
+    retry = setTimeout(() => { void begin() }, Math.max(1, Math.floor(cap * (0.5 + Math.random() / 2))))
     retry.unref()
   }
-  function begin() {
+  function begin(propagate = false): Promise<void> {
     retry = undefined
-    if (stopped) return
-    dialing = dial().catch(() => { if (!stopped) refused("generation") })
+    if (stopped) return Promise.resolve()
+    const attempt = dial()
+    dialing = attempt.catch(() => { if (!stopped) refused("generation") })
+    return propagate ? attempt : dialing
   }
   async function dial() {
     if (stopped) return
     report({ state: "connecting" })
     if (stopped) return
     attempts++
-    const generation = await generations.next()
+    const generation = await generations.next().catch(() => { throw new Error("Relay generation cannot advance") })
     if (stopped) return
     const settings: ClientOptions & { maxFragments: number; maxBufferedChunks: number } = {
       // Keep Node's default certificate and hostname verification intact.
@@ -121,7 +137,7 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
     let heartbeatTimer: ReturnType<typeof setTimeout> | undefined
     let awaitingPong: Uint8Array | undefined
     const channels = new Map<number, ReturnType<Endpoint["openChannel"]>>()
-    const queue: Array<{ bytes: Uint8Array; binary: boolean; ping: boolean; channelId?: number }> = []
+    const queue: Array<{ bytes: Uint8Array; binary: boolean; control?: "ping" | "pong"; channelId?: number }> = []
     let queuedBytes = 0, sending = false
     function fence() {
       if (fenced) return
@@ -157,24 +173,29 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
           if (error) { fail(undefined); return }
           queue.shift(); queuedBytes -= entry.bytes.byteLength; sending = false; pump()
         }
-        if (entry.ping) socket.ping(entry.bytes, true, sent)
+        if (entry.control === "ping") {
+          // Arm before handoff, not enqueue or completion: the peer can answer
+          // while the send callback is still pending.
+          awaitingPong = entry.bytes
+          heartbeatTimer = setTimeout(() => fail(undefined), policy.heartbeatTimeoutMs)
+          heartbeatTimer.unref()
+          socket.ping(entry.bytes, true, sent)
+        } else if (entry.control === "pong") socket.pong(entry.bytes, true, sent)
         else socket.send(entry.bytes, { binary: entry.binary }, sent)
       } catch { fail(undefined) }
     }
-    function enqueue(bytes: Uint8Array, binary: boolean, ping = false, channelId?: number) {
+    function enqueue(bytes: Uint8Array, binary: boolean, control?: "ping" | "pong", channelId?: number) {
       if (fenced) return
       if (queue.length >= policy.maximumQueuedMessages || queuedBytes + bytes.byteLength > policy.maximumQueuedBytes) {
         fail("capacity"); return
       }
-      queue.push({ bytes: Uint8Array.from(bytes), binary, ping, ...(channelId !== undefined ? { channelId } : {}) }); queuedBytes += bytes.byteLength
+      queue.push({ bytes: Uint8Array.from(bytes), binary, ...(control !== undefined ? { control } : {}), ...(channelId !== undefined ? { channelId } : {}) }); queuedBytes += bytes.byteLength
       pump()
     }
     function heartbeat() {
       heartbeatTimer = setTimeout(() => {
-        awaitingPong = randomBytes(8)
-        heartbeatTimer = setTimeout(() => fail(undefined), policy.heartbeatTimeoutMs)
-        heartbeatTimer.unref()
-        enqueue(awaitingPong, true, true)
+        heartbeatTimer = undefined
+        enqueue(randomBytes(8), true, "ping")
       }, policy.heartbeatIntervalMs)
       heartbeatTimer.unref()
     }
@@ -208,15 +229,22 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
     })
     socket.on("close", () => fail(undefined))
     // A peer cannot bypass the bounded application queue with automatic pongs.
-    socket.on("ping", () => fail("protocol"))
+    socket.on("ping", (bytes) => {
+      if (fenced) return
+      if (!consume(bytes.byteLength)) { fail("capacity"); return }
+      enqueue(bytes, true, "pong")
+    })
     socket.on("pong", (bytes) => {
-      if (fenced || !awaitingPong || !bytes.equals(Buffer.from(awaitingPong))) return
+      if (fenced) return
+      if (!consume(bytes.byteLength)) { fail("capacity"); return }
+      if (!awaitingPong || !bytes.equals(Buffer.from(awaitingPong))) return
       clearTimeout(heartbeatTimer); awaitingPong = undefined; heartbeat()
     })
     socket.on("message", (data, binary) => {
       if (fenced) return
       try {
         if (!(data instanceof Buffer)) throw new Error("Unexpected relay frame type")
+        if (!consume(data.byteLength)) { fail("capacity"); return }
         if (binary) {
           if (!registered) throw new Error("Relay registration is not acknowledged")
           const frame = decodeRelayMultiplexedFrame(data)
@@ -239,7 +267,7 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
         const id = control.channelId
         const channel = endpoint.openChannel({ context: { relayProtocol: 1, routeId: options.routeId, channel: recovery.identity.channel }, carrier: {
           get bufferedAmount() { return queuedBytes + socket.bufferedAmount },
-          send: (frame) => { if (!fenced && channels.has(id)) enqueue(encodeRelayMultiplexedFrame(id, frame), true, false, id) },
+          send: (frame) => { if (!fenced && channels.has(id)) enqueue(encodeRelayMultiplexedFrame(id, frame), true, undefined, id) },
           close: () => { if (channels.has(id)) closeChannel(id, true) },
         } })
         if (!channel.closed && !fenced) channels.set(id, channel)
@@ -248,7 +276,7 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
     })
   }
   return {
-    start() { if (started || stopped) return; started = true; begin() },
+    start() { if (started || stopped) return startup ?? Promise.resolve(); started = true; startup = begin(true); return startup },
     async stop() {
       if (!stopped) { stopped = true; clearTimeout(retry); retire?.(); report({ state: "stopped" }) }
       await dialing; await generations.close()
