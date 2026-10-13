@@ -2,6 +2,8 @@ import type { ReplaceDeadline } from "@getdomovoi/credential-store"
 import { DaemonServiceRuntimeMissingError, DaemonServiceUpdateError, type AcquireLocalDaemonOptions, type DaemonServiceInstallResult, type LocalDaemonHandle } from "@getdomovoi/daemon"
 import { describe, expect, it, vi } from "vitest"
 
+import { createDesktopWindowBridge } from "../preload/desktop-bridge.js"
+
 import { DesktopDaemonService } from "./daemon-service.js"
 import { DesktopDaemon } from "./desktop-daemon.js"
 
@@ -336,7 +338,7 @@ describe("DesktopDaemonService", () => {
 
   it("reads the service status and reports an unreadable one as such", async () => {
     const { service } = harness()
-    await expect(service.status()).resolves.toEqual({ installed: true, running: true, detail: "pid 48213" })
+    await expect(service.status()).resolves.toEqual({ installed: true, running: true, detail: "pid 48213", supervisor: {} })
     const broken = harness({ status: vi.fn(async () => { throw new Error("launchctl could not be run") }) })
     await expect(broken.service.status()).resolves.toEqual({ unavailable: "launchctl could not be run" })
   })
@@ -615,6 +617,15 @@ describe("CX-10 status transport", () => {
     { installed: null, running: false, detail: "unknown" },
   ])("preserves exactly the recorded facts: $detail", async (report) => {
     const { service } = harness({ status: async () => report })
-    await expect(service.status()).resolves.toEqual(report)
+    const { installed, running, detail, ...supervisor } = report
+    const expected = { installed, running, detail, supervisor }
+    await expect(service.status()).resolves.toEqual(expected)
+    const bridge = createDesktopWindowBridge({
+      invoke: async (channel) => {
+        expect(channel).toBe("domovoi:daemon-service-status")
+        return service.status()
+      }, send: vi.fn(), on: vi.fn(), removeListener: vi.fn(),
+    }, "win32")
+    await expect(bridge.daemonService!.status()).resolves.toEqual(expected)
   })
 })

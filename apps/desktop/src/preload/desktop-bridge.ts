@@ -141,10 +141,11 @@ function serviceOutcome(value: unknown): DaemonServiceOutcome {
 
 function serviceStatusReport(value: unknown): DaemonServiceStatusReport {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Desktop returned an invalid service status")
-  const result = value as Record<string, unknown>
-  if (serviceText(result.unavailable)) return { unavailable: result.unavailable }
-  if ((result.installed === true || result.installed === false || result.installed === null) && typeof result.running === "boolean" && serviceText(result.detail)) {
-    return { installed: result.installed, running: result.running, detail: result.detail }
+  const { installed, running, detail, unavailable, supervisor } = value as Record<string, unknown>
+  if (serviceText(unavailable)) return { unavailable }
+  if ((installed === true || installed === false || installed === null) && typeof running === "boolean" && serviceText(detail)) {
+    return { installed, running, detail,
+      ...(Object.getPrototypeOf(supervisor ?? 0) === Object.prototype && { supervisor }) }
   }
   throw new Error("Desktop returned an invalid service status")
 }

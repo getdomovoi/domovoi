@@ -1029,3 +1029,75 @@ it("does not call a daemon outside the app the running service while the service
   expect(section.textContent).not.toContain("This app cannot tell whether that daemon is the installed service.")
   expect(section.textContent).toContain("The login service is installed but not running. This daemon was started outside any app and runs until it is stopped.")
 })
+
+// CX-10: the shell's existing read supplies the initial report.
+function supervisorCard(report: NonNullable<Parameters<typeof SettingsShell>[0]["localDaemon"]>["serviceReport"], status = vi.fn()) {
+  return <SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner: "outside", platform: "win32", serviceInstalled: true,
+    serviceReport: report, service: { install: vi.fn(), remove: vi.fn(), status } }} />
+}
+
+it("shows exhausted supervision with its real crash count, reason and terminal recovery", async () => {
+  const status = vi.fn()
+  render(supervisorCard({ installed: true, running: false, detail: "restart limit reached", supervisor: { supervisionFailure: "exhausted", crashCount: 4, lastExit: "code 9" } }, status))
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  expect(await card.findByText("The supervisor gave up after 4 crashes.")).toBeTruthy()
+  expect(card.getByText("The supervisor stopped trying: restart limit reached.")).toBeTruthy()
+  expect(card.getByText("Last exit: code 9")).toBeTruthy()
+  expect(card.getByText("domovoid service install")).toBeTruthy()
+  expect(card.queryByRole("button", { name: /Start it/ })).toBeNull()
+  expect(card.getByText("PID unknown")).toBeTruthy()
+  expect(card.getByText("Uptime unknown")).toBeTruthy()
+  expect(status).not.toHaveBeenCalled()
+})
+
+it("renders supplied pid and uptime, then uses Check again without retaining facts after failure", async () => {
+  vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-12T12:02:00.000Z"))
+  try {
+    const status = vi.fn().mockRejectedValue(new Error("manager unavailable"))
+    const view = render(supervisorCard({ installed: true, running: true, detail: "running", supervisor: { crashCount: 0, pid: 4321, startedAt: "2026-10-12T12:00:00.000Z" } }, status))
+    const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+    expect(await card.findByText("pid 4321")).toBeTruthy()
+    expect(card.getByText("up 2m")).toBeTruthy()
+    expect(status).not.toHaveBeenCalled()
+    await userEvent.setup().click(card.getByRole("button", { name: "Check again" }))
+    // The guarded shell publishes this result; the card does not maintain a
+    // second report that could overwrite a newer install/remove answer.
+    view.rerender(supervisorCard({ unavailable: "manager unavailable" }, status))
+    expect(await card.findByText("manager unavailable")).toBeTruthy()
+    expect(status).toHaveBeenCalledOnce()
+    expect(card.queryByText("pid 4321")).toBeNull()
+    expect(card.queryByText("up 2m")).toBeNull()
+    expect(card.getByText("PID unknown")).toBeTruthy()
+    expect(card.getByText("Uptime unknown")).toBeTruthy()
+  } finally { vi.restoreAllMocks() }
+})
+
+it.each([
+  { installed: true, running: true, detail: "pid 8888, up 3d" },
+  { installed: true, running: false, detail: "unknown" },
+  { unavailable: "cannot read status" },
+])("never manufactures pid, uptime or crash facts from an incomplete report", async (report) => {
+  render(supervisorCard(report))
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  expect(await card.findByText("Supervisor exhaustion unknown")).toBeTruthy()
+  expect(card.getByText("Crash count unknown")).toBeTruthy()
+  expect(card.getByText("Last exit unknown")).toBeTruthy()
+  expect(card.getByText("PID unknown")).toBeTruthy()
+  expect(card.getByText("Uptime unknown")).toBeTruthy()
+  expect(card.queryByText(/pid 8888|up 3d/)).toBeNull()
+})
+
+it.each([
+  { unexpected: true }, { crashCount: "4" }, { pid: 0 }, { pid: 1.5 }, { startedAt: "yesterday" },
+  { lastExit: { code: 9 } }, { supervisionFailure: "probably-exhausted" }, { supervising: "yes" }, { treeUnconfirmed: "no" },
+])("rejects every supervisor fact if one field is extra or mistyped: %s", async (invalid) => {
+  render(supervisorCard({ installed: true, running: true, detail: "running", supervisor: {
+    crashCount: 4, pid: 4321, startedAt: "2026-10-12T12:00:00.000Z", lastExit: "code 9", supervisionFailure: "exhausted", ...invalid,
+  } }))
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  for (const text of ["Supervisor exhaustion unknown", "Crash count unknown", "Last exit unknown", "PID unknown", "Uptime unknown"]) {
+    expect(await card.findByText(text)).toBeTruthy()
+  }
+  expect(card.queryByRole("alert")).toBeNull()
+  expect(card.queryByText("pid 4321")).toBeNull()
+})
