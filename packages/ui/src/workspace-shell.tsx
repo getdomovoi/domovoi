@@ -37,7 +37,7 @@ import {
 } from "./components/ui/alert-dialog"
 import { Button } from "./components/ui/button"
 import { closestComposed, focusedElement, focusEventElement } from "./composed-focus"
-import { WorkspaceConnectionStatus } from "./connection-status"
+import { ShellConnectionStatus, WorkspaceConnectionProvider } from "./connection-status"
 import { shouldCollapseDockForWidth } from "./dock-auto-collapse"
 import {
   ResizableHandle,
@@ -1029,7 +1029,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The release lives here rather than in Thread because a turn ending in A is
   // A's business whether or not A is the session on screen.
   useEffect(() => {
-    if (watching) return
+    if (watching || !connected) return
     for (const message of releasableQueues(snapshot?.sessions ?? [], queues, { busy: emergencyStopPending })) {
       const session = { id: message.sessionId }
       if (releasing.current.has(session.id)) continue
@@ -1078,7 +1078,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           setSettled((count) => count + 1)
         })
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory, settled, watching])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory, settled, watching, connected])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
@@ -1317,7 +1317,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // One dock, rendered either as the pinned panel or inside the floating sheet.
   // Named before the snapshot exists, because the snapshot is what is being
   // waited for. The endpoint is what this client actually knows it is reading.
-  const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
   const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} daemonTimeOffsetMs={(attached ? remote : home).fleetDaemonTimeOffsetMs} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, artifactId) })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={() => snapshot.activeSessionId ? sendMessage(snapshot.activeSessionId, "Looks right, carry on") : Promise.reject(new Error("No session is active"))} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = !dockCollapsed && dockPinned ? "drawer.dock" : "drawer.thread"
   const defaultLayout = layouts[layoutKey]
@@ -1658,19 +1657,24 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
 
   return (
     <SurfaceCodeReload.Provider value={reloadForNewCode}>
+    <WorkspaceConnectionProvider
+      connected={connected}
+      reconnecting={reconnecting}
+      authenticationRequired={authenticationRequired}
+      protocolError={protocolError}
+      connectionError={connectionError}
+      machineName={snapshot?.machine.name}
+      machineId={snapshot?.machine.id}
+      endpoint={localDaemon && !attached ? endpointUrl : undefined}
+      onChangeCredential={attached ? undefined : onChangeCredential}
+      onReconnect={reconnectDaemon}
+    >
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" }))} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={!connected ? "unreachable" : !attached ? machineRoute(endpointUrl) : dialedRoute?.epoch === attachEpoch ? machineRoute(endpointUrl, dialedRoute.kind) : undefined} theme={resolvedTheme} />
-        <WorkspaceConnectionStatus
-          connected={connected}
-          reconnecting={reconnecting}
-          authenticationRequired={authenticationRequired}
-          protocolError={protocolError}
-          connectionError={connectionError}
-          machineName={snapshot?.machine.name}
-          onChangeCredential={attached ? undefined : onChangeCredential}
-          onReconnect={reconnectDaemon}
-        />
+        {/* The thread column draws the lost banner at its own top, as the
+            design does. Without one it spans the window here. */}
+        <ShellConnectionStatus threadColumn={Boolean(snapshot) && surface === "workspace" && !startRefusal} />
         {attached ? <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2 text-sm" role="status">
           <span>{!access ? "Client access is no longer verified for" : connected ? "Using" : "Connecting to"} <span className="font-machine">{fleetMachines(fleet?.entries ?? []).find((machine) => machine.id === attached.machineId)?.label ?? attached.machineId}</span>{access ? " with this app's client credential." : ". Return home and authorize this client again."}</span>
           <Button variant="outline" size="sm" onClick={() => setAttached(null)}>Return to home daemon</Button>
@@ -1959,7 +1963,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         </div> : (
           <main className="flex min-h-0 flex-1 bg-background">
             <h1 className="sr-only">Connecting to the daemon</h1>
-            <ThreadSkeleton reading={readingLabel} />
+            <ThreadSkeleton from={attached?.machineId ?? endpointUrl} />
           </main>
         )}
         {workspaceError || visibleStateRecovery ? (
@@ -2087,6 +2091,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         ) : null}
       </div>
     </TooltipProvider>
+    </WorkspaceConnectionProvider>
     </SurfaceCodeReload.Provider>
   )
 }
