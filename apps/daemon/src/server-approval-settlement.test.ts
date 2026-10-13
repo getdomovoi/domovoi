@@ -3,7 +3,7 @@ import { once } from "node:events"
 import { mkdir, mkdtemp, realpath, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join, relative, resolve, sep } from "node:path"
-import { afterEach, describe, expect, it, vi } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 import { demoWorkspace, executionRecordSchema, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
@@ -24,7 +24,7 @@ import {
   hiddenNameRun,
 } from "./test-hidden-names.js"
 import { removeScratchDirectories } from "./test-scratch.js"
-import { waitForDaemon } from "./test-wait-for.js"
+import { daemonWaitTimeoutMs, waitForDaemon } from "./test-wait-for.js"
 import type { WorkspaceService } from "./workspace.js"
 
 // Every approval the daemon holds, saves or sends is judged the same way: the
@@ -54,10 +54,19 @@ function checkpointingWorkspace(): WorkspaceService {
   }
 }
 
+// One call's budget. An Allow settles its card again first, which may spend
+// the whole real path lookup budget by design, and then saves, copies and
+// sends the snapshot, in-process work timed by the suite's observation budget
+// for this platform. A fixed 4 s left 2 s for that work on every platform. On
+// Windows CI the hidden-file test below took twice as long as on macOS (median
+// 4951 ms against 2397 ms over 100 runs), and twice one approval.resolve
+// there outlived 4 s (CI runs 37097510351 and 38320188619).
+const rpcTimeoutMs = realPathLookupBudgetMs + daemonWaitTimeoutMs(process.platform)
+
 function rpc(socket: WebSocket, method: string, params: Record<string, unknown> = {}) {
   const id = ++requestId
   return new Promise<{ result?: unknown; error?: { code: number; message: string } }>((resolve, reject) => {
-    const timer = setTimeout(() => { cleanup(); reject(new Error(`No response for ${method}`)) }, 4_000)
+    const timer = setTimeout(() => { cleanup(); reject(new Error(`No response for ${method} within ${rpcTimeoutMs}ms`)) }, rpcTimeoutMs)
     const cleanup = () => { clearTimeout(timer); socket.off("message", receive) }
     const receive = (bytes: WebSocket.RawData) => {
       const result = JSON.parse(bytes.toString()) as { id: number; result?: unknown; error?: { code: number; message: string } }
@@ -640,24 +649,34 @@ describe("a card's own text when the card hides a path", () => {
   // real path, on a file card named absolute and relative and on a command
   // blocked on the file, in every copy of the card. The rest of the agent's
   // text stays.
-  it("shows [REDACTED] for a hidden file however the card's text writes it, in every copy", async () => {
-    const { directory, socket, emit, store, notices } = await setup(async (root) => {
-      for (const path of ["src/app", "src/lib", "lib"]) await mkdir(join(root, ...path.split("/")), { recursive: true })
-      await writeFile(join(root, "src", "index.ts"), "export {}\n")
-      for (const file of ["src/.env", "src/app/.env"]) await writeFile(join(root, ...file.split("/")), "TOKEN=1")
-      await symlink(join(root, "src"), join(root, "via"), "junction")
-    }, undefined, { asGiven: true })
-    const real = await realpath(directory)
-    const slashed = (path: string) => path.split(sep).join("/")
-    const controls = cardTextControls
-    const cases = [
+  //
+  // Each file is its own test, on a worktree and daemon the hook makes. As one
+  // test, the 39 cards and their Allows took 2.4 s (median) to 4.2 s (worst) of
+  // the 5 s test budget on macOS CI, and timed out at it under a loaded local
+  // gate run; under background CPU priority its worktree and daemon alone took
+  // up to 4.3 s.
+  describe("a hidden file however the card's text writes it", () => {
+    let fixture: Awaited<ReturnType<typeof setup>>
+    beforeEach(async () => {
+      fixture = await setup(async (root) => {
+        for (const path of ["src/app", "src/lib", "lib"]) await mkdir(join(root, ...path.split("/")), { recursive: true })
+        await writeFile(join(root, "src", "index.ts"), "export {}\n")
+        for (const file of ["src/.env", "src/app/.env"]) await writeFile(join(root, ...file.split("/")), "TOKEN=1")
+        await symlink(join(root, "src"), join(root, "via"), "junction")
+      }, undefined, { asGiven: true })
+    })
+
+    it.each([
       { file: ".env", cwds: [".", "lib", ".."] },
       { file: "src/.env", cwds: [".", "src", "lib", "via"] },
       { file: "src/app/.env", cwds: [".", "src/app", "src/lib", "src", "via/app", "via"] },
-    ]
-    const expected = new Map<number, { label: string; operation: string; command: string }>()
-    let id = 700
-    for (const { file, cwds } of cases) {
+    ])("shows [REDACTED] for $file however the card's text writes it, in every copy", async ({ file, cwds }) => {
+      const { directory, socket, emit, store, notices } = fixture
+      const real = await realpath(directory)
+      const slashed = (path: string) => path.split(sep).join("/")
+      const controls = cardTextControls
+      const expected = new Map<number, { label: string; operation: string; command: string }>()
+      let id = 700
       const given = join(directory, ...file.split("/"))
       const lies = join(real, ...file.split("/"))
       for (const cwd of cwds) {
@@ -681,33 +700,33 @@ describe("a card's own text when the card hides a path", () => {
         emit({ requestId: ++id, command: `cat ${named} src/index.ts`, reason: `Read ${named}; leave ${controls} alone`, cwd: cwdGiven, blockedPath: given })
         expected.set(id, { label: `blocked command on ${file} from ${cwd}`, operation: `Read ${hidden}; leave ${controls} alone`, command: `cat ${hidden} src/index.ts` })
       }
-    }
-    const current = async () => (await rpc(socket, "workspace.get")).result as WorkspaceSnapshot
-    const lastChange = () => (JSON.parse(notices.at(-1)!) as { params: WorkspaceSnapshot }).params
-    await waitForDaemon(async () => expect((await current()).approvals).toHaveLength(expected.size))
-    await waitForDaemon(async () => expect(lastChange().approvals).toHaveLength(expected.size))
+      const current = async () => (await rpc(socket, "workspace.get")).result as WorkspaceSnapshot
+      const lastChange = () => (JSON.parse(notices.at(-1)!) as { params: WorkspaceSnapshot }).params
+      await waitForDaemon(async () => expect((await current()).approvals).toHaveLength(expected.size))
+      await waitForDaemon(async () => expect(lastChange().approvals).toHaveLength(expected.size))
 
-    // Every card whose text differs from what it should show, in one list.
-    const missed = (copy: WorkspaceSnapshot, where: string) => copy.approvals.flatMap((card) => {
-      const text = expected.get(card.providerRequestId!)!
-      return card.operation === text.operation && card.command === text.command && card.risk === "hard-gate"
-        ? []
-        : [`${where}, ${text.label}: ${card.risk} | ${card.operation} | ${card.command}`
-            .split(real).join("<real>").split(directory).join("<worktree>")]
+      // Every card whose text differs from what it should show, in one list.
+      const missed = (copy: WorkspaceSnapshot, where: string) => copy.approvals.flatMap((card) => {
+        const text = expected.get(card.providerRequestId!)!
+        return card.operation === text.operation && card.command === text.command && card.risk === "hard-gate"
+          ? []
+          : [`${where}, ${text.label}: ${card.risk} | ${card.operation} | ${card.command}`
+              .split(real).join("<real>").split(directory).join("<worktree>")]
+      })
+      expect([
+        ...missed(await current(), "workspace.get"),
+        ...missed(lastChange(), "workspace.changed"),
+        ...missed(store.load(), "store.load"),
+      ]).toEqual([])
+
+      for (const card of (await current()).approvals) {
+        expect((await rpc(socket, "approval.resolve", { approvalId: card.id, decision: "allow-once", revision: card.revision, client: "cli" })).error).toBeUndefined()
+      }
+      const operations = [...expected.values()].map((text) => text.operation)
+      const receipts = (copy: WorkspaceSnapshot) => copy.thread.flatMap((item) => item.kind === "receipt" ? [item.operation] : [])
+      expect(receipts(await current())).toEqual(expect.arrayContaining(operations))
+      expect(receipts(store.load())).toEqual(expect.arrayContaining(operations))
     })
-    expect([
-      ...missed(await current(), "workspace.get"),
-      ...missed(lastChange(), "workspace.changed"),
-      ...missed(store.load(), "store.load"),
-    ]).toEqual([])
-
-    for (const card of (await current()).approvals) {
-      expect((await rpc(socket, "approval.resolve", { approvalId: card.id, decision: "allow-once", revision: card.revision, client: "cli" })).error).toBeUndefined()
-    }
-    const operations = [...expected.values()].map((text) => text.operation)
-    const receipts = (copy: WorkspaceSnapshot) => copy.thread.flatMap((item) => item.kind === "receipt" ? [item.operation] : [])
-    expect(receipts(await current())).toEqual(expect.arrayContaining(operations))
-    expect(receipts(store.load())).toEqual(expect.arrayContaining(operations))
   })
 
   // Round 13: a hidden file name that holds a comma stayed in the card's text
