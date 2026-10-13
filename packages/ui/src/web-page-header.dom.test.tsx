@@ -53,15 +53,6 @@ it("draws the reduced mark, eyes and no mouth, as the workspace bar does", () =>
     .toEqual([...reduced.querySelectorAll("path")].map((path) => path.getAttribute("d")))
 })
 
-// Over a mounted session the bar leaves the theme to the session's own bar.
-it("draws no theme toggle and applies no theme when asked not to", () => {
-  const storage = memoryStorage(JSON.stringify({ ...defaultWorkspaceUiState(), theme: "dark" }))
-  render(<WebPageHeader label="What a tab can do" storage={storage} themeToggle={false} />)
-  expect(screen.getByRole("banner").textContent).toContain("What a tab can do")
-  expect(screen.queryByRole("button", { name: /Use (light|dark) theme/ })).toBeNull()
-  expect(document.documentElement.classList.contains("dark")).toBe(false)
-})
-
 // With the system theme, the toggle follows the system's appearance as it
 // changes, so its label names the theme it will switch to.
 it("follows a system appearance change while the theme is system", () => {

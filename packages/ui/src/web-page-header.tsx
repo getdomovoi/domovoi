@@ -12,31 +12,11 @@ type ThemeStorage = Pick<Storage, "getItem" | "setItem">
 // connect page, the daemon credential prompt and the browser limits (Q382 A).
 // Inside the session the web keeps the desktop bar. Its theme toggle keeps the
 // choice in the same store the workspace reads, so the session opens in it.
-//
-// A page drawn over a mounted session (the limits, reopened from the palette)
-// has no toggle and leaves the theme alone: the session holds the theme in its
-// own state, which a toggle here would leave out of step, and its bar has a
-// toggle of its own.
-export function WebPageHeader({ label, storage, themeToggle = true }: {
+export function WebPageHeader({ label, storage }: {
   label: string
   // Where the choice is kept: the workspace's own store by default, or none.
   storage?: ThemeStorage | null
-  themeToggle?: boolean
 }) {
-  return (
-    <header className="flex h-[46px] shrink-0 items-center gap-3 border-b px-3.5">
-      {/* Web v2's markStyle: mark-reduced.svg at 22px, as the workspace bar. */}
-      <DomovoiMark reduced className="size-[22px] shrink-0 text-primary" />
-      <span className="text-[13px] font-semibold tracking-[-0.01em]">Domovoi</span>
-      <span aria-hidden className="h-[18px] w-px bg-border" />
-      <span className="min-w-0 truncate text-[12px] text-muted-foreground">{label}</span>
-      <span className="flex-1" />
-      {themeToggle ? <ThemeToggle storage={storage} /> : null}
-    </header>
-  )
-}
-
-function ThemeToggle({ storage }: { storage: ThemeStorage | null | undefined }) {
   const store = storage === null ? undefined : storage ?? browserWorkspaceUiStorage()
   const [theme, setTheme] = useState<WorkspaceTheme>(() => loadWorkspaceUiState(store).theme)
   useAppearanceTheme(theme)
@@ -61,8 +41,16 @@ function ThemeToggle({ storage }: { storage: ThemeStorage | null | undefined }) 
   }
 
   return (
-    <Button type="button" variant="ghost" size="icon-sm" aria-label={resolved === "dark" ? "Use light theme" : "Use dark theme"} onClick={toggle}>
-      {resolved === "dark" ? <MoonIcon className="size-4" /> : <SunIcon className="size-4" />}
-    </Button>
+    <header className="flex h-[46px] shrink-0 items-center gap-3 border-b px-3.5">
+      {/* Web v2's markStyle: mark-reduced.svg at 22px, as the workspace bar. */}
+      <DomovoiMark reduced className="size-[22px] shrink-0 text-primary" />
+      <span className="text-[13px] font-semibold tracking-[-0.01em]">Domovoi</span>
+      <span aria-hidden className="h-[18px] w-px bg-border" />
+      <span className="min-w-0 truncate text-[12px] text-muted-foreground">{label}</span>
+      <span className="flex-1" />
+      <Button type="button" variant="ghost" size="icon-sm" aria-label={resolved === "dark" ? "Use light theme" : "Use dark theme"} onClick={toggle}>
+        {resolved === "dark" ? <MoonIcon className="size-4" /> : <SunIcon className="size-4" />}
+      </Button>
+    </header>
   )
 }

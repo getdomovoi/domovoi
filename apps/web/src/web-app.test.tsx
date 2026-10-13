@@ -710,60 +710,56 @@ describe("limits from the workspace", () => {
       )
     })
   }
-  const pressCtrlK = () => act(async () => {
-    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))
+  // The dialog is drawn in a portal on the document, outside the container.
+  const limitsDialog = () => document.querySelector<HTMLElement>("[role='dialog']")
+  const dialogButton = (name: string) => {
+    const found = [...(limitsDialog()?.querySelectorAll("button") ?? [])].find((candidate) => candidate.textContent?.trim() === name)
+    if (!found) throw new Error(`No dialog button named ${name}`)
+    return found
+  }
+  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+  // Q99 A: inside a session the limits are a dialog over the live session,
+  // which stays on screen and keeps what it holds.
+  it("opens the limits as a dialog over the live session and goes back to it as it was", async () => {
+    await drawSession()
+    await act(async () => { button("Count").click() })
+    const opener = button("Limits")
+    await act(async () => { opener.click() })
+
+    expect(limitsDialog()?.textContent).toContain("What a browser tab can and cannot do")
+    expect(limitsDialog()?.querySelector("[aria-label='Browser limits']")).not.toBeNull()
+    expect(container.querySelector("header")).toBeNull()
+    expect(opener.closest("[hidden]")).toBeNull()
+    expect(() => dialogButton("Continue to the session")).toThrow()
+
+    await act(async () => { dialogButton("Back").click() })
+    await settle()
+    expect(limitsDialog()).toBeNull()
+    expect(text()).toContain("Workspace open, count 1")
+    expect(document.activeElement).toBe(opener)
   })
 
-  // The hidden session must not act on keys meant for the page over it: its
-  // palette would open through a portal and run a command unseen.
-  it("holds the session's shortcuts while the limits page is over it", async () => {
+  // The session's own window shortcuts are its business while the dialog is
+  // up, as with any of its dialogs; the limits add no key handling.
+  it("leaves the session's shortcuts to it while the dialog is open", async () => {
     shortcut.mockClear()
     await drawSession()
-    await pressCtrlK()
-    expect(shortcut).toHaveBeenCalledOnce()
     await act(async () => { button("Limits").click() })
-    await pressCtrlK()
+    await act(async () => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))
+    })
     expect(shortcut).toHaveBeenCalledOnce()
-    await act(async () => { button("Back").click() })
-    await pressCtrlK()
-    expect(shortcut).toHaveBeenCalledTimes(2)
-  })
-
-  // The session keeps the theme it loaded, so a toggle on the page over it
-  // would leave the two out of step; the session's own bar has the toggle.
-  it("draws the bar over the session without a theme toggle", async () => {
-    await drawSession()
-    await act(async () => { button("Limits").click() })
-    const bar = container.querySelector("header")
-    expect(bar?.textContent).toContain("What a tab can do")
-    expect([...bar!.querySelectorAll("button")].some((b) => /theme/.test(b.getAttribute("aria-label") ?? ""))).toBe(false)
   })
 
   it("closes the limits when the session ends under them", async () => {
     await drawSession()
     await act(async () => { button("Limits").click() })
     await act(async () => { changeCredential!() })
-    expect(container.querySelector("[aria-label='Browser limits']")).toBeNull()
+    await settle()
+    expect(limitsDialog()).toBeNull()
     expect(text()).toContain("Connect this browser to")
-  })
-
-  it("opens the limits over the session and goes back to it as it was", async () => {
-    await drawSession()
-    await act(async () => { button("Count").click() })
-    const opener = button("Limits")
-    await act(async () => { opener.click() })
-
-    const limits = container.querySelector("[aria-label='Browser limits']")
-    expect(limits).not.toBeNull()
-    expect(container.querySelector("header")?.textContent).toContain("What a tab can do")
-    expect(opener.closest("[hidden]")).not.toBeNull()
-    expect(() => button("Continue to the session")).toThrow()
-
-    await act(async () => { button("Back").click() })
     expect(container.querySelector("[aria-label='Browser limits']")).toBeNull()
-    expect(opener.closest("[hidden]")).toBeNull()
-    expect(text()).toContain("Workspace open, count 1")
-    expect(document.activeElement).toBe(opener)
   })
 })
 
