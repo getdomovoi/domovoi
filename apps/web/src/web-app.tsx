@@ -29,7 +29,9 @@ export type WebAppProps = {
   codeFromUrl?: string | undefined
   createClient: PairingClientFactory
   labelSuffix: () => string
-  workspace: (session: { token: string, deviceId: string, onSignedOut: (result: unknown) => void, onChangeCredential: () => void }) => ReactNode
+  // onOpenLimits reopens the limits page over the session (Q367 A), handed
+  // the control to give focus back to on the way out.
+  workspace: (session: { token: string, deviceId: string, onSignedOut: (result: unknown) => void, onChangeCredential: () => void, onOpenLimits: (opener: HTMLElement | null) => void }) => ReactNode
 }
 
 const pairedBeforeKey = "domovoi.paired-before"
@@ -80,8 +82,9 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
   // of it. A tab that cannot keep session storage sees them every time,
   // which is itself one of the rows.
   const [limitsSeen, setLimitsSeen] = useState(() => browserLimitsSeen(storage))
-  // The same limits, asked for from the connect page before this tab pairs.
-  // Read there, they count as stated, so pairing goes on to the session.
+  // The same limits, asked for from the connect page before this tab pairs,
+  // or from the workspace's palette after. Read before pairing, they count
+  // as stated, so pairing goes on to the session.
   const [limitsOpen, setLimitsOpen] = useState(false)
   // The link that opened the limits gets focus back once the connect page is
   // shown again, so the way back does not drop focus to the document body.
@@ -214,20 +217,36 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
       onContinue={() => setLimitsSeen(true)}
     /></PreSessionPage>
   }
-  return workspace({
-    token: session.token,
-    deviceId: session.deviceId,
-    onSignedOut: (result) => {
-      clearConfirmedDaemonSession(storage, result)
-      setOutcome(undefined)
-      setPath("code")
-      setSession(undefined)
-    },
-    onChangeCredential: () => {
-      clearDaemonSession(storage)
-      setOutcome(undefined)
-      setPath("code")
-      setSession(undefined)
-    },
-  })
+  // Reopened from the workspace (Q367 A), the limits page draws over the
+  // session, which stays mounted under it: its connection, thread and drafts
+  // are as they were on the way back. The wrapper adds no box of its own.
+  return <>
+    {limitsOpen ? <PreSessionPage label={limitsLabel}><BrowserLimitsPanel
+      rows={browserLimits(environment, rpcUrl, markBrowserLimitsSeen(storage))}
+      continueLabel="Back"
+      onContinue={() => setLimitsOpen(false)}
+    /></PreSessionPage> : null}
+    <div hidden={limitsOpen} className="contents">
+      {workspace({
+        token: session.token,
+        deviceId: session.deviceId,
+        onSignedOut: (result) => {
+          clearConfirmedDaemonSession(storage, result)
+          setOutcome(undefined)
+          setPath("code")
+          setSession(undefined)
+        },
+        onChangeCredential: () => {
+          clearDaemonSession(storage)
+          setOutcome(undefined)
+          setPath("code")
+          setSession(undefined)
+        },
+        onOpenLimits: (opener) => {
+          limitsOpener.current = opener
+          setLimitsOpen(true)
+        },
+      })}
+    </div>
+  </>
 }

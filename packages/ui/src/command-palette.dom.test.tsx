@@ -167,6 +167,33 @@ describe("workspace command palette keyboard path", () => {
     expect(await screen.findByRole("heading", { name: "Phone and tablet" })).toBeTruthy()
   })
 
+  // Q367 A: the web hands the shell a way back to its limits page, and the
+  // palette opens it with the control that opened the palette, so focus can
+  // go back there. A shell given no way has no entry.
+  it("opens the browser limits page from the palette, naming the palette's opener", async () => {
+    const user = userEvent.setup()
+    const opened: (HTMLElement | null)[] = []
+    const { unmount } = render(<WorkspaceShell clientKind="web" onOpenBrowserLimits={(opener) => opened.push(opener)} />)
+    await act(async () => {
+      completeHandshake(harness.socket(0), workspaceSnapshot())
+    })
+
+    const trigger = screen.getByRole<HTMLButtonElement>("button", { name: "Open command palette" })
+    trigger.focus()
+    await openPalette(user)
+    await user.type(screen.getByRole("combobox"), "what a browser tab")
+    await user.keyboard("{Enter}")
+    expect(opened).toEqual([trigger])
+    unmount()
+
+    render(<WorkspaceShell clientKind="web" />)
+    await act(async () => {
+      completeHandshake(harness.socket(1), workspaceSnapshot())
+    })
+    await openPalette(user)
+    expect(screen.queryByRole("option", { name: /^What a browser tab can and cannot do/u })).toBeNull()
+  })
+
   it("opens the machine menu on the active session to move it", async () => {
     const user = userEvent.setup()
     render(<WorkspaceShell />)

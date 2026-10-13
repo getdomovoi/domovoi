@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act } from "react"
+import { act, useState } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -653,6 +653,57 @@ describe("WebApp", () => {
     await act(async () => { button("Change credential").click() })
     expect(text()).toContain("Connect this browser to")
     expect(storage.getItem("domovoi.daemon-session")).toBeNull()
+  })
+})
+
+// Q367 A: the workspace reopens the limits page. The session stays mounted
+// under it, so nothing the workspace holds is lost on the way back, and focus
+// returns to the control that opened it.
+describe("limits from the workspace", () => {
+  function Workspace({ onOpenLimits }: { onOpenLimits: (opener: HTMLElement | null) => void }) {
+    const [count, setCount] = useState(0)
+    return (
+      <main>
+        <p>Workspace open, count {count}</p>
+        <button type="button" onClick={() => setCount((value) => value + 1)}>Count</button>
+        <button type="button" onClick={(event) => onOpenLimits(event.currentTarget)}>Limits</button>
+      </main>
+    )
+  }
+
+  it("opens the limits over the session and goes back to it as it was", async () => {
+    const storage = memoryStorage()
+    storage.setItem("domovoi.daemon-session", JSON.stringify({ deviceId, token: deviceToken }))
+    storage.setItem("domovoi.web.limitsSeen", "1")
+    await act(async () => {
+      root.render(
+        <WebApp
+          rpcUrl={rpcUrl}
+          pageOrigin={loopbackPage}
+          clientKind="web"
+          environment={environment}
+          storage={storage}
+          createClient={vi.fn()}
+          labelSuffix={() => "1234"}
+          workspace={({ onOpenLimits }) => <Workspace onOpenLimits={onOpenLimits} />}
+        />,
+      )
+    })
+    await act(async () => { button("Count").click() })
+    const opener = button("Limits")
+    await act(async () => { opener.click() })
+
+    const limits = container.querySelector("[aria-label='Browser limits']")
+    expect(limits).not.toBeNull()
+    expect(container.querySelector("header")?.textContent).toContain("What a tab can do")
+    expect(opener.closest("[hidden]")).not.toBeNull()
+    expect(() => button("Continue to the session")).toThrow()
+
+    await act(async () => { button("Back").click() })
+    expect(container.querySelector("[aria-label='Browser limits']")).toBeNull()
+    expect(opener.closest("[hidden]")).toBeNull()
+    expect(text()).toContain("Workspace open, count 1")
+    expect(document.activeElement).toBe(opener)
   })
 })
 

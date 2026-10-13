@@ -212,6 +212,9 @@ export type WorkspaceShellProps = {
   onChangeCredential?: () => void
   currentDeviceId?: string
   onSignedOut?: (result: { revoked: true }) => void
+  // Q367 A: the web's limits page, opened from the palette and handed the
+  // control that opened the palette, so focus can go back to it.
+  onOpenBrowserLimits?: ((opener: HTMLElement | null) => void) | undefined
   // Where this client keeps each daemon's relay identity pin. Absent means no
   // pin is kept and none is reconciled; the web passes localStorage.
   relayPinStorage?: RelayPinStorage
@@ -288,7 +291,7 @@ type StartScope = {
   focusFrom: { trigger: Element | null; within: Element | null }
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, currentDeviceId, onSignedOut, relayPinStorage }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, currentDeviceId, onSignedOut, onOpenBrowserLimits, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
   // J24: whether the login service is installed, from the desktop's own
   // status read. A daemon outside the app is drawn as the service only when
@@ -1232,6 +1235,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     } : {}),
     // The pairing card is in the desktop's own settings, for its own daemon.
     ...(clientKind === "desktop" && !attached ? { pairDevice: () => setSurface("providers") } : {}),
+    ...(onOpenBrowserLimits ? { openBrowserLimits: () => onOpenBrowserLimits(commandPaletteFocusRef.current) } : {}),
     shortcutsBound: workspaceShortcutsBound,
     // Cmd+Enter on a machine starts a session there: attach to that daemon,
     // then open the launcher on it. The intent names the machine, and the

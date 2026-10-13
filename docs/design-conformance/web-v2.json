@@ -303,12 +303,13 @@
         {
           "absent": "workspace: (session: { token: string, deviceId: string, onSignedOut: (result: unknown) => void, onChangeCredential: () => void }) => ReactNode",
           "in": "apps/web/src/web-app.tsx"
-        }
+        },
+        "onOpenBrowserLimits={onOpenLimits}",
+        "{ id: \"browser-limits\", label: \"What a browser tab can and cannot do\""
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the panel reports real browser state, and before pairing the connect page's link opens it with a way back. One part of Q367 A (2026-10-02) is not built: nothing in the workspace reopens the page. Neither the palette nor Settings has an entry for it, and WebApp hands the workspace its token, deviceId, onSignedOut and onChangeCredential, but no callback to open the limits page, so once a tab is in its session it cannot get back to the page. The evidence holds that hand-off: its signature in web-app.tsx changes when the workspace is given a way to open the page. 2026-10-13 (CX-4): refreshed the signature evidence because self-sign-out added deviceId and onSignedOut. Neither workspace callback opens browser limits, so this entry remains partial."
-      }
+      "notes": [
+        "2026-10-13 (SL-6w, W7): the second half of Q367 A. WebApp hands the workspace onOpenLimits, the web entry passes it to WorkspaceShell as onOpenBrowserLimits, and the palette lists What a browser tab can and cannot do under Navigate (web only; the desktop supplies no way to open it). The page draws over the session, which stays mounted under it, with Back, and focus returns to the control that opened the palette. Before pairing the connect page's link still opens it with Back to pairing, or Back once the tab is paired. Pinned in apps/web/src/web-app.test.tsx, command-palette.test.tsx and command-palette.dom.test.tsx."
+      ]
     },
     {
       "id": "limits.tier-note",
