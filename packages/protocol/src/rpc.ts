@@ -1822,6 +1822,10 @@ export const rpcMethods = {
 
 export type RpcMethod = keyof typeof rpcMethods
 
+// A watching credential may relinquish its own access, but gains no other control rights.
+export const watchingClientControlMethodSchema = z.literal("device.revokeCurrent" satisfies RpcMethod)
+export const watchingClientControlMethod = watchingClientControlMethodSchema.value
+
 // Every notification the daemon sends, with the schema of its params. The
 // daemon checks each payload against this map before it sends, and the wire
 // record fingerprints the same map.

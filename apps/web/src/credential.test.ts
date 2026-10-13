@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest"
 import {
   browserDeviceLabel,
   clearDaemonSession,
+  clearConfirmedDaemonSession,
   daemonSessionFrom,
   forgetSupersededCredential,
   isDaemonCredential,
@@ -116,5 +117,20 @@ describe("browser daemon session", () => {
     expect(isDaemonCredential(token)).toBe(true)
     expect(isDaemonCredential(`${token}x`)).toBe(false)
     expect(isDaemonCredential("")).toBe(false)
+  })
+})
+
+describe("confirmed browser sign-out", () => {
+  it.each([undefined, null, {}, { revoked: false }, { revoked: true, extra: true }])("preserves credentials for an unknown or failed result %j", (result) => {
+    const storage = new MemoryStorage()
+    saveDaemonSession(storage, { deviceId, token })
+    expect(() => clearConfirmedDaemonSession(storage, result)).toThrow()
+    expect(loadDaemonSession(storage)).toEqual({ deviceId, token })
+  })
+  it("clears the credential only for a validated success", () => {
+    const storage = new MemoryStorage()
+    saveDaemonSession(storage, { deviceId, token })
+    clearConfirmedDaemonSession(storage, { revoked: true })
+    expect(loadDaemonSession(storage)).toBeUndefined()
   })
 })

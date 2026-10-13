@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
-import { demoWorkspace, fleetSnapshotOverflowErrorCode, localOwnerRequiredErrorCode, maximumFleetEntries, protocolVersion, sessionTransferContractVersion, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, rpcMethods, rpcMethodAuthorizations, type RpcMethod, fleetSnapshotOverflowErrorCode, localOwnerRequiredErrorCode, maximumFleetEntries, protocolVersion, sessionTransferContractVersion, type SystemEmergencyStoppedNotification, type WorkspaceDelta, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { DaemonRpcError, DomovoiClient, DomovoiConnectTimeoutError, DomovoiRpcTimeoutError, ProjectSwitchConfirmationError } from "./client"
 import { Deadline } from "./deadline"
@@ -93,6 +93,31 @@ class ManualScheduler {
 }
 
 describe("DomovoiClient", () => {
+  it("lets a watching credential revoke itself and refuses every other control method", async () => {
+    const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
+    const connecting = client.connect()
+    const socket = FakeWebSocket.instances[0]!
+    socket.open()
+    socket.receive({ jsonrpc: "2.0", id: 1, result: demoWorkspace })
+    await connecting
+    client.setClientAccess("watching")
+    const sentBefore = socket.sent.length
+    for (const method of Object.keys(rpcMethods) as RpcMethod[]) {
+      if (rpcMethodAuthorizations[method] !== "control" || method === "device.revokeCurrent") continue
+      await expect(client.request(method, {} as never), method)
+        .rejects.toThrow("Watching clients cannot change workspace state")
+    }
+    expect(socket.sent).toHaveLength(sentBefore)
+    const pending = client.request("device.revokeCurrent", {})
+    void pending.catch(() => undefined)
+    expect(socket.sent).toHaveLength(sentBefore + 1)
+    const request = JSON.parse(socket.sent.at(-1)!) as { id: number }
+    expect(request).toEqual({ jsonrpc: "2.0", id: request.id, method: "device.revokeCurrent", params: {} })
+    socket.receive({ jsonrpc: "2.0", id: request.id, result: { revoked: true } })
+    await expect(pending).resolves.toEqual({ revoked: true })
+    client.disconnect()
+  })
+
   it("preserves typed project switch confirmation data", async () => {
     const client = new DomovoiClient("ws://127.0.0.1:47831/rpc", "web", { budgets })
     const connecting = client.connect()

@@ -671,12 +671,9 @@
         "return binding.kind === \"client\" ? \"Unpair\" : \"Revoke\""
       ],
       "notes": [
-        "2026-10-11 (SL-4, Q378 A): client rows say Unpair, with Unpair device in the confirmation and an Unpaired chip; machine bindings and legacy unbound credentials keep Revoke. The rows sit in one card under its heading and note (the column names are kept for a screen reader only), each row's consequence is a standing line under it on every pointer, and the rotated credential is an info-tinted panel led by Shown once. Domovoi keeps a digest, not the secret. (the daemon stores a sha256 of the token, device-registry.ts). The row keeps the kind icon and word, and the paired and last seen dates, where the frame draws a status dot and one meta line."
-      ],
-      "partial": {
-        "since": "2026-10-11",
-        "reason": "Sign this device out on a web tab's own row, with its self-row highlight, waits for CX-4 (client self-revocation, Q52 A): device.revokeCurrent is machine-only by contract and device.revoke requires the daemon credential, so a web tab cannot revoke itself, and PairedDeviceSummary carries no flag that names the caller's own row"
-      }
+        "2026-10-11 (SL-4, Q378 A): client rows say Unpair, with Unpair device in the confirmation and an Unpaired chip; machine bindings and legacy unbound credentials keep Revoke. The rows sit in one card under its heading and note (the column names are kept for a screen reader only), each row's consequence is a standing line under it on every pointer, and the rotated credential is an info-tinted panel led by Shown once. Domovoi keeps a digest, not the secret. (the daemon stores a sha256 of the token, device-registry.ts). The row keeps the kind icon and word, and the paired and last seen dates, where the frame draws a status dot and one meta line.",
+        "CX-4: the browser session identifies its own paired-device row, highlighted with the accent surface and Sign this device out. Confirmation explains pairing again. Only a validated revokeCurrent success clears the tab credential; an unconfirmed response keeps it and explains how to check. A phone or tablet browser shows only its own identity and action because its credential cannot list other devices. Desktop management stays unchanged."
+      ]
     },
     {
       "id": "settings.providers",

@@ -43,6 +43,7 @@ function pairedResult() {
 
 let container: HTMLDivElement
 let root: Root
+let signedOut: ((result: unknown) => void) | undefined
 
 beforeEach(() => {
   container = document.createElement("div")
@@ -68,12 +69,15 @@ function draw(storage: Storage, createClient: PairingClientFactory, extra: Parti
         storage={storage}
         createClient={createClient}
         labelSuffix={() => "1234"}
-        workspace={({ token, onChangeCredential }) => (
+        workspace={({ token, onChangeCredential, onSignedOut }) => {
+          signedOut = onSignedOut
+          return (
           <main>
             <p>Workspace open with {token === deviceToken ? "the device credential" : "another credential"}</p>
             <button type="button" onClick={onChangeCredential}>Change credential</button>
           </main>
-        )}
+          )
+        }}
       />,
     )
   })
@@ -625,5 +629,28 @@ describe("WebApp", () => {
     await act(async () => { button("Change credential").click() })
     expect(text()).toContain("Connect this browser to")
     expect(storage.getItem("domovoi.daemon-session")).toBeNull()
+  })
+})
+
+describe("confirmed sign-out callback", () => {
+  it("clears storage and returns to pairing after confirmed self-revocation", async () => {
+    const storage = memoryStorage()
+    storage.setItem("domovoi.daemon-session", JSON.stringify({ deviceId, token: deviceToken }))
+    storage.setItem("domovoi.web.limitsSeen", "1")
+    await draw(storage, vi.fn())
+    expect(text()).toContain("Workspace open")
+    await act(async () => { signedOut!({ revoked: true }) })
+    expect(storage.getItem("domovoi.daemon-session")).toBeNull()
+    expect(text()).toContain("Connect this browser to")
+  })
+
+  it.each([undefined, { revoked: false }, { revoked: true, extra: true }])("keeps the session on an unconfirmed result %j", async (result) => {
+    const storage = memoryStorage()
+    storage.setItem("domovoi.daemon-session", JSON.stringify({ deviceId, token: deviceToken }))
+    storage.setItem("domovoi.web.limitsSeen", "1")
+    await draw(storage, vi.fn())
+    expect(() => signedOut!(result)).toThrow()
+    expect(storage.getItem("domovoi.daemon-session")).toContain(deviceToken)
+    expect(text()).toContain("Workspace open")
   })
 })

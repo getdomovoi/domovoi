@@ -63,6 +63,7 @@ import {
   protocolVersionMismatchErrorCode,
   type ProtocolMismatch,
   rpcMethodAuthorizations,
+  watchingClientControlMethod,
   rpcMethods,
   rpcRequestSchema,
   sessionHistoryCategorySchema,
@@ -6305,7 +6306,7 @@ export class DomovoiDaemon {
       handheld?.binding.kind === "client"
       && handheld.binding.clientAccess === "watching"
       && rpcMethodAuthorizations[method] === "control"
-      && method !== "device.revokeCurrent"
+      && method !== watchingClientControlMethod
     ) {
       this.#error(socket, request.id, daemonAuthenticationErrorCode, "Watching-only credentials may only observe")
       return

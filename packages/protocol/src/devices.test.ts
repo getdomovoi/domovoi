@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest"
-import { phoneAndTabletRpcMethods, rpcMethods, rpcMethodAuthorizations } from "./rpc.js"
+import { phoneAndTabletRpcMethods, rpcMethods, rpcMethodAuthorizations, watchingClientControlMethod, watchingClientControlMethodSchema } from "./rpc.js"
 import { protocolVersion } from "./schema.js"
 
 import {
@@ -436,6 +436,20 @@ describe("self-revocation RPC", () => {
     expect(result.safeParse({ revoked: true }).success).toBe(true)
     for (const value of [{ revoked: false }, {}, { revoked: true, deviceId: device.id }, null]) {
       expect(result.safeParse(value).success).toBe(false)
+    }
+  })
+})
+
+describe("watching client control exception", () => {
+  it("admits only self-revocation without reclassifying it", () => {
+    expect(watchingClientControlMethod).toBe("device.revokeCurrent")
+    expect(rpcMethodAuthorizations[watchingClientControlMethod]).toBe("control")
+    for (const method of Object.keys(rpcMethods)) {
+      expect(watchingClientControlMethodSchema.safeParse(method).success, method)
+        .toBe(method === "device.revokeCurrent")
+    }
+    for (const invalid of [undefined, null, {}, "device.unknown"]) {
+      expect(watchingClientControlMethodSchema.safeParse(invalid).success).toBe(false)
     }
   })
 })
