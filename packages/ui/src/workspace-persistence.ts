@@ -29,7 +29,7 @@ const layoutKeys = new Set(["drawer.dock", "drawer.thread"])
 const panelIds = new Set(["thread", "dock"])
 
 export type WorkspaceUiState = {
-  version: 5
+  version: 6
   dockCollapsed: boolean
   // v2 opens the machine surfaces as a sheet over the thread. Pinning turns
   // that sheet into the panel beside it, which is what dockCollapsed already
@@ -43,7 +43,22 @@ export type WorkspaceUiState = {
   windowDecoration: WorkspaceWindowDecoration
   notifications: NotificationPreferences
   layouts: Record<string, Record<string, number>>
+  // The preview each session's sends carry as the build basis, by session id.
+  // A session with no entry has none chosen.
   previewBuildBasis: Record<string, string>
+}
+
+// Choosing a basis for one session (Build on this) or clearing it (Unpick),
+// leaving every other session's choice as it was.
+export function withPreviewBuildBasis(
+  current: Readonly<Record<string, string>>,
+  sessionId: string,
+  artifactId: string | undefined,
+): Record<string, string> {
+  const next = { ...current }
+  if (artifactId === undefined) delete next[sessionId]
+  else next[sessionId] = artifactId
+  return next
 }
 
 export type WorkspaceUiDaemonTruth = {
@@ -54,7 +69,7 @@ export type WorkspaceUiDaemonTruth = {
 
 export function defaultWorkspaceUiState(): WorkspaceUiState {
   return {
-    version: 5,
+    version: 6,
     dockCollapsed: true,
     dockPinned: false,
     surface: "workspace",
@@ -118,7 +133,7 @@ function parseLayouts(value: unknown): WorkspaceUiState["layouts"] | undefined {
 }
 
 export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefined {
-  if (!isRecord(value) || ![1, 2, 3, 4, 5].includes(value.version as number)) return undefined
+  if (!isRecord(value) || ![1, 2, 3, 4, 5, 6].includes(value.version as number)) return undefined
   // sidebarCollapsed was required until v5. It described a panel that no longer
   // exists, so it is neither read nor demanded now.
   if (typeof value.dockCollapsed !== "boolean") return undefined
@@ -127,10 +142,13 @@ export function parseWorkspaceUiState(value: unknown): WorkspaceUiState | undefi
   }
   if (!isId(value.projectId) || !isId(value.sessionId)) return undefined
   const layouts = parseLayouts(value.layouts)
-  const previewBuildBasis = parseIdMap(value.previewBuildBasis)
+  // Before v6 the chosen basis was a viewer bookmark no send carried. Every
+  // send carries it now, so a choice stored then is not read as one made for
+  // the agent to hear.
+  const previewBuildBasis = value.version === 6 ? parseIdMap(value.previewBuildBasis) : {}
   if (!layouts || !previewBuildBasis) return undefined
   return {
-    version: 5,
+    version: 6,
     dockCollapsed: value.dockCollapsed,
     // Absent in every state written before v2, and false is the v2 default.
     dockPinned: value.dockPinned === true,

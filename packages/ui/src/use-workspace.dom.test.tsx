@@ -161,6 +161,46 @@ describe("useWorkspace connection lifecycle", () => {
     await expect(other).resolves.toBeUndefined()
   })
 
+  // Q342 A rides on the comment send: the build basis the person chose for a
+  // session goes with that session's message, and only while it still names
+  // one of that session's previews. A basis the daemon would refuse is left
+  // out rather than refusing the whole message.
+  it("carries the chosen build basis with the review, and only a preview of that session", async () => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    const base = workspaceSnapshot()
+    const snapshot = workspaceSnapshot({
+      artifacts: [
+        ...base.artifacts,
+        { ...base.artifacts.find((artifact) => artifact.id === "artifact-preview")!, id: "preview-elsewhere", sessionId: "session-onboarding" },
+      ],
+    })
+    await drive(() => completeHandshake(socket, snapshot))
+
+    const chosen = view.result.current.sendMessage("session-billing", "Build it", undefined, undefined, "artifact-preview")
+    expect(sentRequests(socket, "session.send")[0]?.params).toEqual({
+      sessionId: "session-billing",
+      prompt: "Build it",
+      client: "web",
+      review: {
+        annotationIds: ["annotation-migration-machine", "annotation-replay-copy"],
+        buildBasis: { artifactId: "artifact-preview" },
+      },
+    })
+    await drive(() => respond(socket, "session.send", snapshot))
+    await expect(chosen).resolves.toBeUndefined()
+
+    for (const [index, stale] of ["gone", "preview-elsewhere", "artifact-plan"].entries()) {
+      const sending = view.result.current.sendMessage("session-billing", "Again", undefined, undefined, stale)
+      expect(sentRequests(socket, "session.send")[index + 1]?.params).toMatchObject({
+        review: { annotationIds: ["annotation-migration-machine", "annotation-replay-copy"] },
+      })
+      expect((sentRequests(socket, "session.send")[index + 1]?.params as { review: object }).review).not.toHaveProperty("buildBasis")
+      await drive(() => respond(socket, "session.send", snapshot))
+      await expect(sending).resolves.toBeUndefined()
+    }
+  })
+
   // Codex review of PR #717: with more open comments than a message carries,
   // the send names the newest up to the limit and counts the rest, so the
   // daemon records them as the turn's limit omission instead of losing them.

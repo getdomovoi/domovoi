@@ -36,21 +36,9 @@ import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import {
   Card,
-  CardAction,
   CardContent,
-  CardDescription,
   CardFooter,
-  CardHeader,
-  CardTitle,
 } from "./components/ui/card"
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "./components/ui/dialog"
 import {
   Empty,
   EmptyDescription,
@@ -75,15 +63,17 @@ import {
   previewResolveAnchorMessages,
   previewSelectionFor,
 } from "./preview-bridge"
-import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantsForActiveSession, reviewLayoutFor } from "./artifacts"
+import { latestArtifactForActiveSession, previewControlLayoutFor, previewStageGridColumns, previewStageObservationKey, previewStagesForReview, previewToolbarLayoutFor, previewVariantWindowForActiveSession, reviewLayoutFor, sessionPreviewBuildBasis } from "./artifacts"
 import { PreviewThumbnailLifecycle, previewThumbnailObjectUrl, previewThumbnailRect } from "./preview-thumbnails"
 import {
   PreviewAnnotateButton,
   PreviewCopy,
+  PreviewDraftCopy,
   PreviewGrantChip,
   PreviewOverflowMenu,
   PreviewRenderedList,
   PreviewVariantChips,
+  PreviewVariantCopy,
   PreviewWidthToggle,
   previewWidthPixels,
   type PreviewWidth,
@@ -223,7 +213,8 @@ export function ArtifactDock({
   defaultTab: "changes" | "preview"
   previewRefusal?: string | undefined
   buildBasisId?: string | undefined
-  onBuildBasisChange?: ((artifactId: string) => void) | undefined
+  // Build on this passes the variant on screen, Unpick passes undefined.
+  onBuildBasisChange?: ((artifactId: string | undefined) => void) | undefined
   onEditPlan?: ((edit: {
     basedOnStructureRevision: number
     baseSteps: { id: string, text: string }[]
@@ -290,22 +281,30 @@ export function ArtifactDock({
   )
   const previewCandidate = latestArtifactForActiveSession(snapshot, "preview")
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | undefined>(previewCandidate?.id)
-  const [localBuildBasisId, setLocalBuildBasisId] = useState<string | undefined>(previewCandidate?.id)
-  const resolvedBuildBasisId = buildBasisId ?? localBuildBasisId
-  const previewVariants = useMemo(
-    () => previewVariantsForActiveSession(snapshot, selectedPreviewId),
+  // The shell keeps the choice when it passes onBuildBasisChange; a dock on
+  // its own keeps it here, starting from the one it was given. Nothing is
+  // chosen until the person chooses: the chosen basis rides every send of the
+  // session (Q342 A), so it never defaults to the newest variant.
+  const [localBuildBasisId, setLocalBuildBasisId] = useState<string | undefined>(buildBasisId)
+  const resolvedBuildBasisId = onBuildBasisChange ? buildBasisId : localBuildBasisId
+  const chooseBuildBasis = (artifactId: string | undefined) => {
+    setLocalBuildBasisId(artifactId)
+    onBuildBasisChange?.(artifactId)
+  }
+  const previewWindow = useMemo(
+    () => previewVariantWindowForActiveSession(snapshot, selectedPreviewId),
     [selectedPreviewId, snapshot],
   )
+  const previewVariants = previewWindow.variants
   const renderedPreviews = useMemo(() => renderedPreviewsForActiveSession(snapshot), [snapshot])
   const preview = previewVariants.find((artifact) => artifact.id === selectedPreviewId) ?? previewVariants.at(-1)
   // The basis may sit in another render than the one on screen, now that the
   // list opens any of them; it is named there, never swapped for a variant of
-  // the render on screen.
-  const buildBasis = snapshot.artifacts.find((artifact) =>
-    artifact.id === resolvedBuildBasisId
-    && artifact.sessionId === snapshot.activeSessionId
-    && artifact.type === "preview",
-  ) ?? previewVariants.at(-1)
+  // the render on screen. An id that no longer names a preview of the session
+  // is none chosen, which is also what the send makes of it.
+  const buildBasis = snapshot.activeSessionId
+    ? sessionPreviewBuildBasis(snapshot, snapshot.activeSessionId, resolvedBuildBasisId)
+    : undefined
   const buildBasisElsewhere = buildBasis !== undefined && !previewVariants.some((artifact) => artifact.id === buildBasis.id)
   const annotations = useMemo(() => annotationsForActiveSession(snapshot), [snapshot])
   // Comments belong to the artifact they were left on. The preview shows the
@@ -705,20 +704,47 @@ export function ArtifactDock({
     setComment("")
     setAnnotationError("")
   }
-  // The foot under the page, in the dock and in fullscreen alike. It shows
-  // whenever there is a choice of basis: variants on screen, or other renders
-  // in the session (a lone render can be the basis too).
-  const variantFoot = preview && (previewVariants.length > 1 || renderedPreviews.length > 1) ? (
+  // The foot under the page, in the dock and in fullscreen alike (D22). It
+  // shows under any preview: the session's only render can be the basis too,
+  // and a chosen basis rides every send, so its state and Unpick stay on
+  // screen. The state line says what the next send carries: this variant,
+  // another, or none. The notes under the page compare the choice with the
+  // others, so they show only when there are others (another variant in the
+  // group, on any page of it, or another render).
+  const basisChoiceShown = preview !== undefined
+  const basisAlternatives = previewWindow.total > 1 || renderedPreviews.length > 1
+  const viewingBasis = preview !== undefined && preview.id === buildBasis?.id
+  const variantState = !buildBasis
+    ? PreviewVariantCopy.noneChosen(previewWindow.total)
+    : viewingBasis
+      ? PreviewVariantCopy.buildsOnThis
+      : PreviewVariantCopy.buildsOn(`${buildBasis.variant?.label ?? buildBasis.title}${buildBasisElsewhere ? ` in ${previewRenderName(buildBasis)}` : ""}`)
+  const variantFoot = preview && basisChoiceShown ? (
     <div className="flex min-h-[46px] flex-none flex-wrap items-center gap-3 border-t px-[13px] py-2">
-      {previewVariants.length > 1 ? <PreviewVariantChips variants={previewVariants} selectedArtifactId={preview.id} onSelect={setSelectedPreviewId} /> : null}
-      <span className="font-machine text-[10.5px] text-muted-foreground">Viewing · {preview.variant?.label ?? preview.title}</span>
-      <span className="font-machine text-[10.5px] text-faint">Build basis · {buildBasis?.variant?.label ?? buildBasis?.title}{buildBasis && buildBasisElsewhere ? ` in ${previewRenderName(buildBasis)}` : ""}</span>
+      {previewWindow.total > 1 ? (
+        <PreviewVariantChips
+          variants={previewVariants}
+          selectedArtifactId={preview.id}
+          chosenArtifactId={buildBasis?.id}
+          onSelect={setSelectedPreviewId}
+          pages={{
+            start: previewWindow.start,
+            total: previewWindow.total,
+            previousArtifactId: previewWindow.previousPageArtifactId,
+            nextArtifactId: previewWindow.nextPageArtifactId,
+          }}
+        />
+      ) : null}
+      <span className={cn("text-[11px]", buildBasis ? "text-muted-foreground" : "text-faint")}>{variantState}</span>
       <span className="flex-1" />
-      {preview.id === buildBasis?.id ? <Badge variant="success">Chosen build basis</Badge> : (
-        <Button size="sm" onClick={() => {
-          setLocalBuildBasisId(preview.id)
-          onBuildBasisChange?.(preview.id)
-        }}>Use {preview.variant?.label ?? preview.title} as build basis</Button>
+      {readOnly ? null : viewingBasis ? (
+        <Button size="sm" variant="outline" className="min-h-11 rounded-full text-muted-foreground" onClick={() => chooseBuildBasis(undefined)}>
+          {PreviewVariantCopy.unpick}
+        </Button>
+      ) : (
+        <Button size="sm" className="min-h-11 rounded-full" onClick={() => chooseBuildBasis(preview.id)}>
+          {PreviewVariantCopy.buildOnThis}
+        </Button>
       )}
     </div>
   ) : null
@@ -869,6 +895,31 @@ export function ArtifactDock({
               <EmptyHeader><EmptyMedia variant="icon"><CodeXmlIcon /></EmptyMedia><EmptyTitle>No preview yet</EmptyTitle><EmptyDescription>HTML artifacts created by the agent appear here.</EmptyDescription></EmptyHeader>
             </Empty>
           )}
+          {basisChoiceShown && basisAlternatives && !previewRefusal ? (
+            <p className="mx-auto mt-3 mb-0 max-w-[640px] text-[11px] leading-normal text-muted-foreground">
+              {buildBasis ? PreviewVariantCopy.chosenNote : PreviewVariantCopy.noneNote}
+            </p>
+          ) : null}
+          {/* The design drafts a comment in a card under the page, not in a
+              dialog over it. In fullscreen the comments column has its own. */}
+          {!readOnly && selection && !fullscreen && !previewRefusal ? (
+            <PreviewDraftCard
+              id="preview-annotation"
+              className="mx-auto mt-3.5 max-w-[640px]"
+              pill={PreviewDraftCopy.pill}
+              note={PreviewDraftCopy.note}
+              anchor={selection.label}
+              value={comment}
+              placeholder={AnnotationDraftCopy.placeholder}
+              pending={annotationPending}
+              error={annotationError}
+              submitLabel={PreviewDraftCopy.post}
+              cancelLabel={AnnotationDraftCopy.cancel}
+              onChange={setComment}
+              onPost={() => void saveAnnotation()}
+              onCancel={discardSelection}
+            />
+          ) : null}
           {/* v2 draws the comments on a variant under the preview frame, not
               as a tab of their own; the count names how many are still open. */}
           <section aria-label="Comments on this preview" className="mx-auto mt-4 flex max-w-[640px] flex-col gap-2">
@@ -1059,59 +1110,6 @@ export function ArtifactDock({
           />
         )}
       />
-      <Dialog
-        // In fullscreen the draft is the comments column's card instead.
-        open={!readOnly && selection !== null && !fullscreen}
-        onOpenChange={(open) => {
-          if (open || annotationPending) return
-          discardSelection()
-        }}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Annotate preview</DialogTitle>
-            <DialogDescription className="break-words">
-              {selection?.label ?? "Selected preview element"}
-            </DialogDescription>
-          </DialogHeader>
-          {annotationError ? (
-            <Alert variant="destructive" aria-live="polite">
-              <CircleStopIcon />
-              <AlertTitle>Annotation failed</AlertTitle>
-              <AlertDescription>{annotationError}</AlertDescription>
-            </Alert>
-          ) : null}
-          <FieldGroup>
-            <Field>
-              <FieldLabel htmlFor="preview-annotation">Comment</FieldLabel>
-              <Textarea
-                id="preview-annotation"
-                value={comment}
-                rows={4}
-                autoFocus
-                disabled={annotationPending}
-                placeholder={AnnotationDraftCopy.placeholder}
-                onChange={(event) => setComment(event.target.value)}
-              />
-            </Field>
-          </FieldGroup>
-          <DialogFooter>
-            <Button
-              variant="outline"
-              disabled={annotationPending}
-              onClick={() => setSelection(null)}
-            >
-              {AnnotationDraftCopy.cancel}
-            </Button>
-            <Button
-              disabled={!comment.trim() || annotationPending}
-              onClick={() => void saveAnnotation()}
-            >
-              {annotationPending ? "Posting" : AnnotationDraftCopy.submit}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </aside>
     </TooltipProvider>
   )
@@ -1179,39 +1177,44 @@ export function AnnotationComments({
               <AlertDescription>{error}</AlertDescription>
             </Alert>
           ) : null}
-          {annotations.map((annotation) => {
+          {annotations.map((annotation, index) => {
             const pending = pendingId === annotation.id
             const isReplying = replyingTo === annotation.id
-            const anchorResolution = anchorResolutions.get(annotation.id)
+            // Three states, not two: the page said the anchor holds, said it
+            // no longer resolves, or has not answered (no frame loaded, or a
+            // comment on another artifact). Only the first is drawn attached.
+            const resolution = anchorResolutions.get(annotation.id)
+            const anchorState = resolution === undefined ? "unknown" : resolution === "unresolved" ? "unavailable" : "holds"
+            const anchorLabel = annotation.anchor.cssSelector
+              ?? (annotation.anchor.textQuote ? undefined : "Visual selection")
             return (
-              <Card key={annotation.id} size="sm">
-                <CardHeader>
-                  <CardTitle className="min-w-0 break-words text-[12px] leading-relaxed">{annotation.body}</CardTitle>
-                  <CardDescription className="font-machine text-mono-xs">
-                    {annotation.origin} · {annotation.variantId ?? annotation.artifactId}
-                    {annotation.statusChangedBy ? ` · ${annotation.status} by ${annotation.statusChangedBy}` : ""}
-                  </CardDescription>
-                  <CardAction>
-                    <Badge variant={annotation.status === "open" ? "warning" : "success"}>{annotation.status}</Badge>
-                  </CardAction>
-                </CardHeader>
-                <CardContent className="flex flex-col gap-2">
-                  <div className="break-words rounded-md border bg-code px-2.5 py-2 font-machine text-mono-xs leading-relaxed text-muted-foreground">
-                    {annotation.anchor.textQuote
-                      ? `“${annotation.anchor.textQuote}”`
-                      : annotation.anchor.cssSelector ?? "Visual selection"}
-                    {anchorResolution ? (
-                      <Badge
-                        variant={anchorResolution === "unresolved" ? "destructive" : "outline"}
-                        className="ml-2"
-                      >
-                        {anchorResolution === "selector" ? "selector anchor" : null}
-                        {anchorResolution === "text-quote" ? "text anchor" : null}
-                        {anchorResolution === "bounding-box" ? "visual anchor" : null}
-                        {anchorResolution === "unresolved" ? "anchor unavailable" : null}
-                      </Badge>
-                    ) : null}
-                  </div>
+              <Card key={annotation.id} size="sm" role="article" className={cn("gap-0 py-0", anchorState === "unavailable" && "border-danger-border")}>
+                {/* The list sits in a scroll area whose content box grows to
+                    its content's min-content width, so nothing here may be
+                    nowrap: a long selector breaks and clamps instead of
+                    pushing the chips and actions out of the column. */}
+                <div className="flex flex-wrap items-center gap-[9px] border-b px-3 py-[9px]">
+                  <span
+                    data-anchor={anchorState}
+                    className={cn(
+                      "flex size-5 flex-none items-center justify-center rounded-full font-machine text-mono-xs",
+                      anchorState === "holds" ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
+                    )}
+                  >
+                    {index + 1}
+                  </span>
+                  <span title={anchorLabel} className="line-clamp-2 min-w-0 flex-1 basis-24 font-machine text-mono-xs break-all text-strong">{anchorLabel}</span>
+                  {anchorState === "holds" ? <Badge variant="secondary">anchor holds</Badge> : null}
+                  {anchorState === "unavailable" ? <Badge variant="destructive">anchor unavailable</Badge> : null}
+                  <Badge variant={annotation.status === "open" ? "warning" : "success"}>{annotation.status}</Badge>
+                </div>
+                {annotation.anchor.textQuote ? (
+                  <span className="block border-l-2 border-primary bg-primary/10 px-[11px] py-[7px] font-machine text-mono-xs leading-normal [overflow-wrap:anywhere] text-strong">
+                    {annotation.anchor.textQuote}
+                  </span>
+                ) : null}
+                <CardContent className="flex flex-col gap-2 px-3 py-2.5">
+                  <p className="m-0 min-w-0 break-words text-[12.5px] leading-relaxed text-foreground">{annotation.body}</p>
                   {annotation.visualContext ? (
                     <p className="m-0 font-machine text-mono-xs text-faint">
                       {annotation.visualContext.status === "available"
@@ -1226,8 +1229,13 @@ export function AnnotationComments({
                     </div>
                   ))}
                 </CardContent>
-                {!readOnly ? <CardFooter className="flex-col items-stretch gap-2">
+                <CardFooter className="flex-col items-stretch gap-2 border-t px-3 py-[9px]">
                   <div className="flex flex-wrap items-center gap-2">
+                    <span className="min-w-0 flex-1 font-machine text-mono-xs text-faint">
+                      {annotation.origin} · {annotation.variantId ?? annotation.artifactId}
+                      {annotation.statusChangedBy ? ` · ${annotation.status} by ${annotation.statusChangedBy}` : ""}
+                    </span>
+                    {!readOnly ? <>
                     <Button
                       variant="outline"
                       size="xs"
@@ -1246,10 +1254,11 @@ export function AnnotationComments({
                       disabled={pendingId !== null}
                       onClick={() => void setStatus(annotation)}
                     >
-                      {pending ? "Saving" : annotation.status === "open" ? "Resolve" : "Reopen"}
+                      {pending ? "Saving" : annotation.status === "open" ? "Mark resolved" : "Reopen"}
                     </Button>
+                    </> : null}
                   </div>
-                  {isReplying ? (
+                  {!readOnly && isReplying ? (
                     <FieldGroup>
                       <Field>
                         <FieldLabel htmlFor={`${idPrefix}-${annotation.id}`}>Reply</FieldLabel>
@@ -1271,7 +1280,7 @@ export function AnnotationComments({
                       </Button>
                     </FieldGroup>
                   ) : null}
-                </CardFooter> : null}
+                </CardFooter>
               </Card>
             )
           })}

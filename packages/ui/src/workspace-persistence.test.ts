@@ -6,6 +6,7 @@ import {
   parseWorkspaceUiState,
   reconcileWorkspaceUiState,
   saveWorkspaceUiState,
+  withPreviewBuildBasis,
   type WorkspaceUiState,
 } from "./workspace-persistence"
 
@@ -26,7 +27,7 @@ describe("workspace UI persistence", () => {
   it("round-trips only versioned non-secret navigation and layout state", () => {
     const storage = memoryStorage()
     const state = {
-      version: 5,
+      version: 6,
       dockCollapsed: false,
       dockPinned: true,
       surface: "skills",
@@ -50,7 +51,7 @@ describe("workspace UI persistence", () => {
     const raw = storage.getItem("domovoi.workspace-ui")!
     expect(raw).not.toContain("must-not-persist")
     expect(loadWorkspaceUiState(storage)).toEqual({
-      version: 5,
+      version: 6,
       dockCollapsed: false,
       dockPinned: true,
       surface: "workspace",
@@ -126,7 +127,7 @@ describe("workspace UI persistence", () => {
       layouts: {},
     })
     expect(loadWorkspaceUiState(memoryStorage(versionOne))).toMatchObject({
-      version: 5,
+      version: 6,
       surface: "workspace",
       externalEditor: "system",
       theme: "system",
@@ -240,8 +241,30 @@ it("keeps every notification kind on when upgrading a version 3 state", () => {
     layouts: {},
   })
 
-  expect(parsed?.version).toBe(5)
+  expect(parsed?.version).toBe(6)
   expect(parsed?.notifications).toEqual({ completion: true, failure: true, approvalNeeded: true })
+})
+
+// Before version 6 a chosen basis was a viewer bookmark that no send carried.
+// From 6 every send carries it, so an older choice is not taken as one the
+// person made for the agent to hear.
+it("drops a build basis stored before sends carried it", () => {
+  const parsed = parseWorkspaceUiState({
+    ...defaultWorkspaceUiState(),
+    version: 5,
+    previewBuildBasis: { "session-1": "preview-b" },
+  })
+
+  expect(parsed?.version).toBe(6)
+  expect(parsed?.previewBuildBasis).toEqual({})
+})
+
+it("sets and clears one session's build basis, leaving the others", () => {
+  const chosen = withPreviewBuildBasis({ "session-2": "preview-x" }, "session-1", "preview-b")
+  expect(chosen).toEqual({ "session-1": "preview-b", "session-2": "preview-x" })
+  const unpicked = withPreviewBuildBasis(chosen, "session-1", undefined)
+  expect(unpicked).toEqual({ "session-2": "preview-x" })
+  expect(Object.hasOwn(unpicked, "session-1")).toBe(false)
 })
 
 it("round-trips a stored notification preference", () => {
