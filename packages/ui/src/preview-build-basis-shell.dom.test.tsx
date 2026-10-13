@@ -160,6 +160,9 @@ describe("with variant B chosen through Build on this", () => {
     expect(sentRequests(socket, "session.send")).toHaveLength(2)
     expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ sessionId, prompt: "Then the empty state" })
     expect(lastReview(socket)).toMatchObject({ buildBasis: { artifactId: "variant-b" } })
+    // Its answer does not clear the choice.
+    await answerLastSend(socket, value)
+    await sendFromThread("After the queue")
   })
 
   it("carries the chosen variant on the plan's carry on", async () => {
@@ -169,6 +172,9 @@ describe("with variant B chosen through Build on this", () => {
     expect(sentRequests(socket, "session.send")).toHaveLength(2)
     expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ sessionId, prompt: "Looks right, carry on" })
     expect(lastReview(socket)).toMatchObject({ buildBasis: { artifactId: "variant-b" } })
+    // Its answer does not clear the choice.
+    await answerLastSend(socket, value)
+    await sendFromThread("After carry on")
   })
 
   it("keeps the choice across sends until Unpick, then sends none", async () => {
