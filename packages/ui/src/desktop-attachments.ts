@@ -1,9 +1,11 @@
 import {
+  canonicalBase64DecodedByteLength,
   maximumImageUploadBytes,
   maximumSessionAttachments,
   maximumSessionPromptCharacters,
   maximumTextAttachmentBytes,
   sessionAttachmentSchema,
+  type ImageUpload,
   type SessionAttachment,
   type TextAttachment,
 } from "@getdomovoi/protocol"
@@ -41,10 +43,12 @@ export async function attachmentFromBrowserFile(file: File): Promise<SessionAtta
   })
 }
 
+const terminalOutputName = "terminal-output.txt"
+
 export function terminalOutputAttachment(content: string): SessionAttachment {
   return sessionAttachmentSchema.parse({
     kind: "text",
-    name: "terminal-output.txt",
+    name: terminalOutputName,
     mimeType: "text/plain",
     content,
   })
@@ -59,13 +63,33 @@ export function attachmentName(attachment: SessionAttachment): string {
   return attachment.mimeType === "image/png" ? "image.png" : "image.jpg"
 }
 
-export function attachmentMeta(attachment: SessionAttachment): string {
-  if ("kind" in attachment) {
-    if (attachment.kind === "workspace-file") return "read from worktree"
-    const lines = attachment.content.split(/\r?\n/u).length
-    return `${new TextEncoder().encode(attachment.content).byteLength} bytes · ${lines} lines`
-  }
-  return `${attachment.width}×${attachment.height}`
+export function isImageAttachment(attachment: SessionAttachment): attachment is ImageUpload {
+  return !("kind" in attachment)
+}
+
+// The design's per-kind badge: a worktree file by its extension (TS for the
+// design's .ts), terminal output LOG, other text TXT, an image by its type.
+// A path with no short extension says FILE rather than guess at a directory.
+export function attachmentMark(attachment: SessionAttachment): string {
+  if (isImageAttachment(attachment)) return attachment.mimeType === "image/png" ? "PNG" : "JPG"
+  if (attachment.kind === "text") return attachment.name === terminalOutputName ? "LOG" : "TXT"
+  return /\.([a-z0-9]{1,4})$/iu.exec(attachment.path)?.[1]?.toUpperCase() ?? "FILE"
+}
+
+function byteSize(bytes: number): string {
+  if (bytes < 1000) return `${bytes} B`
+  if (bytes < 1_000_000) return `${(bytes / 1000).toFixed(1)} kB`
+  return `${(bytes / 1_000_000).toFixed(1)} MB`
+}
+
+// A worktree path is read where it is, on the machine. Text and images from
+// this device are copied there with the message, so they carry their size.
+export function attachmentMeta(attachment: SessionAttachment, machineName: string): string {
+  if (!isImageAttachment(attachment) && attachment.kind === "workspace-file") return `on ${machineName}`
+  const bytes = isImageAttachment(attachment)
+    ? canonicalBase64DecodedByteLength(attachment.data) ?? 0
+    : new TextEncoder().encode(attachment.content).byteLength
+  return `${byteSize(bytes)} · sent to ${machineName}`
 }
 
 const pastedTextName = /^pasted-text-(\d+)\.txt$/u

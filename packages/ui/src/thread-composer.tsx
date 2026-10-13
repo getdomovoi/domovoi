@@ -25,6 +25,7 @@ import { composerPlaceholder, composerPlatform, sendHint } from "./composer-keys
 import { slashArgument, slashCommands, type SlashCommand, type SlashIntentContext } from "./composer-slash"
 import {
   attachmentFromBrowserFile,
+  attachmentMark,
   attachmentMeta,
   attachmentName,
   desktopAttachmentLimit,
@@ -42,6 +43,79 @@ import { EffortChip, ModeChip } from "./mode-chip.js"
 import { ModelPopover } from "./model-popover.js"
 import { deliveryLabel, type FailedAttempt, type QueuedMessage } from "./turn-queue"
 import { UsageChip } from "./usage-chip.js"
+
+type ChipItem = {
+  key: string
+  mark: string
+  name: string
+  meta: string
+  blocked: boolean
+  removeLabel: string
+  onRemove: () => void
+}
+
+// The design shows three chips and a dashed "+N more" after them. A pasted
+// file is drawn as its own card, not as a chip. The prompt editor draws the
+// same chips, so the draft looks the same in both.
+export const visibleAttachmentChips = 3
+
+export function AttachmentChips({
+  attachments,
+  machineName,
+  onRemove,
+}: {
+  attachments: readonly SessionAttachment[]
+  machineName: string
+  // The index into attachments.
+  onRemove: (index: number) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const items: ChipItem[] = attachments.flatMap((attachment, index) => {
+    if (pastedText(attachment)) return []
+    const name = attachmentName(attachment)
+    return [{
+      key: `${name}-${index}`,
+      mark: attachmentMark(attachment),
+      name,
+      meta: attachmentMeta(attachment, machineName),
+      blocked: false,
+      removeLabel: `Remove ${name}`,
+      onRemove: () => onRemove(index),
+    }]
+  })
+  if (items.length === 0) return null
+  const hidden = expanded ? 0 : Math.max(0, items.length - visibleAttachmentChips)
+  return (
+    <div role="region" aria-label="Attachments" className="flex min-w-0 items-center gap-[7px]">
+      <ul className={cn("m-0 flex min-w-0 list-none items-center gap-[7px] p-0", expanded ? "flex-wrap" : "overflow-hidden")}>
+        {items.slice(0, items.length - hidden).map((item) => (
+          <li
+            key={item.key}
+            className={cn(
+              "flex min-w-0 max-w-[300px] items-center gap-[7px] rounded-full border px-2.5 py-[5px]",
+              item.blocked ? "border-danger-border bg-danger-background" : "bg-background",
+            )}
+          >
+            <span className="rounded bg-muted px-[5px] py-0.5 font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">{item.mark}</span>
+            <span className="min-w-0 truncate font-machine text-[10.5px] text-strong">{item.name}</span>
+            <span className={cn("min-w-0 truncate text-[10.5px]", item.blocked ? "shrink-0 text-danger-dim" : "text-faint")}>{item.meta}</span>
+            <Button variant="ghost" size="icon-sm" className="size-5 flex-none text-faint" aria-label={item.removeLabel} onClick={item.onRemove}><XIcon className="size-3" /></Button>
+          </li>
+        ))}
+      </ul>
+      {hidden > 0 ? (
+        <button
+          type="button"
+          aria-expanded={false}
+          onClick={() => setExpanded(true)}
+          className="flex-none rounded-full border border-dashed px-2.5 py-[5px] text-[10.5px] whitespace-nowrap text-muted-foreground"
+        >
+          {`+${hidden} more`}
+        </button>
+      ) : null}
+    </div>
+  )
+}
 
 // The composer card under the thread: notices, the queue, attachments, the
 // field and its slash list, and the action row. Thread owns the draft and the
@@ -278,22 +352,11 @@ export function ThreadComposer({
           <Button variant="ghost" size="icon-sm" aria-label="Unqueue the message" className="size-6 flex-none text-faint" disabled={readOnly} onClick={() => onQueuedChange(undefined)}><XIcon className="size-3" /></Button>
         </div>
       ) : null}
-      {attachments.some((attachment) => !pastedText(attachment)) ? (
-        <div role="region" className="flex min-w-0 items-center gap-[7px] overflow-hidden" aria-label="Attachments">
-          {attachments.map((attachment, index) => {
-            // A pasted file is drawn as its own card below the chips.
-            if (pastedText(attachment)) return null
-            return (
-              <div key={`${attachmentName(attachment)}-${index}`} className="flex min-w-0 max-w-[260px] items-center gap-[7px] rounded-md border bg-background px-2 py-1">
-                <span className="font-machine text-[10.5px] text-primary">{"kind" in attachment && attachment.kind === "text" ? "TXT" : "FILE"}</span>
-                <span className="min-w-0 truncate font-machine text-[10.5px] text-strong">{attachmentName(attachment)}</span>
-                <span className="font-machine text-[10px] text-faint">{attachmentMeta(attachment)}</span>
-                <Button variant="ghost" size="icon-sm" className="size-5 flex-none text-faint" aria-label={`Remove ${attachmentName(attachment)}`} onClick={() => onAttachmentsChange((current) => current.filter((_, candidate) => candidate !== index))}><XIcon className="size-3" /></Button>
-              </div>
-            )
-          })}
-        </div>
-      ) : null}
+      <AttachmentChips
+        attachments={attachments}
+        machineName={machineName}
+        onRemove={(index) => onAttachmentsChange((current) => current.filter((_, candidate) => candidate !== index))}
+      />
       {attachments.some((attachment) => !pastedText(attachment) && Boolean(inlineTextPreview(attachment))) ? (
         <p className="m-0 text-[10.5px] leading-[1.45] text-warning">Too long to send inline. The prompt carries the first 40 lines, the agent reads the rest on request.</p>
       ) : null}

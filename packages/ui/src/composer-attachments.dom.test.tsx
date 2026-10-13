@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event"
 import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { AttachmentChips } from "./thread-composer.js"
 import { Thread } from "./workspace-shell.js"
 
 afterEach(cleanup)
@@ -62,6 +63,41 @@ it("offers every signed attachment source", async () => {
   expect(device.textContent).toContain(`copied to ${demoWorkspace.machine.name}`)
   expect(within(terminal).getByText("LOG")).toBeTruthy()
   expect(terminal.textContent).toContain("kept as a file in the session")
+})
+
+it("draws each attachment as a pill with its kind and where it is read from", async () => {
+  const user = userEvent.setup()
+  renderThread()
+  await user.click(screen.getByRole("button", { name: "Attach" }))
+  await user.click(screen.getByRole("menuitem", { name: "File in this repo" }))
+  await user.type(screen.getByRole("textbox", { name: "File in this repo" }), "src/thread.tsx")
+  await user.click(screen.getByText("Attach"))
+  await user.upload(screen.getByLabelText("Choose an image or file"), new File(["hello"], "notes.txt", { type: "text/plain" }))
+
+  const region = screen.getByRole("region", { name: "Attachments" })
+  await within(region).findByText("notes.txt")
+  const [repo, device] = within(region).getAllByRole("listitem")
+  expect(repo?.className).toContain("rounded-full")
+  expect(within(repo!).getByText("TSX").className).toContain("bg-muted")
+  expect(within(repo!).getByText(`on ${demoWorkspace.machine.name}`)).toBeTruthy()
+  expect(within(device!).getByText("TXT")).toBeTruthy()
+  expect(within(device!).getByText(`5 B · sent to ${demoWorkspace.machine.name}`)).toBeTruthy()
+})
+
+it("shows three chips and a more count that opens the rest", async () => {
+  const user = userEvent.setup()
+  const attachments = ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"].map((path) => ({ kind: "workspace-file" as const, path }))
+  const onRemove = vi.fn()
+  render(<AttachmentChips attachments={attachments} machineName="mac-mini-m4" onRemove={onRemove} />)
+
+  const region = screen.getByRole("region", { name: "Attachments" })
+  expect(within(region).getAllByRole("listitem")).toHaveLength(3)
+  const more = within(region).getByRole("button", { name: "+2 more" })
+  expect(more.getAttribute("aria-expanded")).toBe("false")
+  await user.click(more)
+  expect(within(region).getAllByRole("listitem")).toHaveLength(5)
+  await user.click(within(region).getByRole("button", { name: "Remove e.ts" }))
+  expect(onRemove).toHaveBeenCalledWith(4)
 })
 
 it("renders attachments as removable compact chips", async () => {
