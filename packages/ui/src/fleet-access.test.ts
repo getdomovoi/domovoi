@@ -19,6 +19,20 @@ describe("admitted client route", () => {
       expect(result.url).toBe("wss://studio.example/rpc")
       expect(result.token).toBe("client-only")
       expect(result.createSocket).toBeTypeOf("function")
+      expect(result.routeKind).toBe("lan")
+    } finally { deadline.clear() }
+  })
+
+  // The chip names the route this client was given, not the fleet's stored
+  // connection, which keeps direct after an SSH forward succeeds.
+  it("says which transport kind the route resolved to", async () => {
+    const deadline = Deadline.start(1_000)
+    const route = vi.fn(async () => ({ outcome: "ready" as const, machineId,
+      transport: { kind: "ssh" as const, endpoint: "ws://127.0.0.1:52011/rpc", authenticated: true as const, configured: true } }))
+    try {
+      const result = await prepareFleetEndpoint({ machineId, credential: "client-only", homeUrl: "ws://localhost:47831/rpc",
+        kind: "web", route, deadline })
+      expect(result).toMatchObject({ url: "ws://127.0.0.1:52011/rpc", token: "client-only", routeKind: "ssh" })
     } finally { deadline.clear() }
   })
 

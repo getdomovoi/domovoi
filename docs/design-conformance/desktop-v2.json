@@ -162,14 +162,13 @@
         {
           "absent": "attached ? \"remote\" : \"local\"",
           "in": "packages/ui/src/workspace-shell.tsx"
-        }
+        },
+        "machineTransport={!connected ? \"unreachable\" : !attached ? machineRoute(endpointUrl)",
+        "if (isTailnetHost(name)) return \"tailnet\""
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the chip, its dot and the offline danger state are drawn; the transport word is not the drawn route. The design names the route (loopback, tailnet, domovoi cloud); workspace-shell passes local, remote or unreachable, so a desktop on its own daemon reads local where the design says loopback and a tailnet route reads remote. The fleet entry's connection and transports already name the route. The domovoi cloud state is the relay (M2)"
-      },
       "notes": [
-        "2026-10-01 (S3.10 slice 1): offline now turns the chip itself to danger border and background (machineChipStyle), not only its dot."
+        "2026-10-01 (S3.10 slice 1): offline now turns the chip itself to danger border and background (machineChipStyle), not only its dot.",
+        "2026-10-11 (SL-1, D1): the chip names the route of the endpoint the client dialed (packages/ui/src/route-word.ts): loopback, tailnet (a ts.net name or a Tailscale address only), direct for any other TLS host, plaintext for a non-loopback endpoint without TLS (the daemon refuses one), and ssh or wsl for an attached machine reached through a forwarded loopback port. For an attached machine the word follows the transport kind its route resolved to in the current attach (fleet-access.ts; a resolution abandoned by a return home is dropped), not the fleet entry's stored connection, and no word is drawn before that route has connected. A desktop on its own daemon reads loopback, not local. The domovoi cloud state is the relay (M2) and is not drawn. Pinned in packages/ui/src/route-word.test.ts and app-bar-route.dom.test.tsx."
       ]
     },
     {
@@ -244,10 +243,9 @@
           "in": "packages/ui/src/app-bar.tsx"
         }
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the toggle and its tooltips are built; it is disabled while the client is watching, though the theme is a client preference that never reaches the daemon, where the design keeps it live. Q362 A (2026-10-02) unlocks client-only preferences (theme, Appearance and Notifications)"
-      }
+      "notes": [
+        "2026-10-11 (SL-1, D2 titlebar half): the toggle stays live while watching (Q362 A); the theme is a client preference that never reaches the daemon. Pinned in packages/ui/src/app-bar-route.dom.test.tsx. Settings Appearance and Notifications are the settings half."
+      ]
     },
     {
       "id": "titlebar.window-controls",
@@ -284,12 +282,20 @@
       ],
       "evidence": [
         "aria-label={`Actions for",
-        "re:note: `running \\$\\{"
+        "`running ${elapsed(session.activeTurnStartedAt, now)}`",
+        "`failed ${elapsed(session.updatedAt, now)} ago`",
+        "`idle ${elapsed(session.updatedAt, now)}`",
+        "data-session-meta=\"\" className=\"mt-[3px] font-machine text-[10.5px] text-faint\"",
+        "entry.meaning === \"idle\" && \"opacity-55\"",
+        "re:`review \\$\\{"
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "rows draw a dot, the title and a note, with the row menu; the design's meta is not drawn. Notes are bare words (running, waiting on you, failed, idle) with no duration or count where the design draws running 12m, review 7 files, failed 1h ago and idle 2d; the meta is sans 11.5px muted with the dot inline before it, where the design has the dot as a left column and the meta in mono faint; quiet rows are at .70 opacity, not .55. Q364 A (2026-10-02) keeps the drawer to this machine for M1 with the machine name in the meta"
-      }
+        "since": "2026-10-11",
+        "reason": "rows draw the dot as a left column, the title, and the meta in mono faint: the machine name (Q364 A), the state and how long (running 12m from the turn start the daemon sends, activeTurnStartedAt; failed 1h ago and idle 2d from the session's last change); quiet rows are at .55. Two gaps remain. The design's review 7 files state, a finished turn whose changes wait for review, has no client fact: nothing records whether a session's changes were reviewed. The dot is the status atom's 5px inline size where the design draws 6px"
+      },
+      "notes": [
+        "2026-10-11 (SL-1, D3): was a dot, the title and a bare note at .70. A running session whose turn start the daemon does not send (its ledger has no record) says running with no duration rather than guess one. Pinned in packages/ui/src/sessions-drawer.dom.test.tsx."
+      ]
     },
     {
       "id": "drawer.row-menu",
@@ -661,11 +667,15 @@
         "Copy once",
         "Each daemon keeps its own list",
         "Sign this device out",
-        "Shown once. Domovoi keeps a digest, not the secret."
+        "Shown once. Domovoi keeps a digest, not the secret.",
+        "return binding.kind === \"client\" ? \"Unpair\" : \"Revoke\""
+      ],
+      "notes": [
+        "2026-10-11 (SL-4, Q378 A): client rows say Unpair, with Unpair device in the confirmation and an Unpaired chip; machine bindings and legacy unbound credentials keep Revoke. The rows sit in one card under its heading and note (the column names are kept for a screen reader only), each row's consequence is a standing line under it on every pointer, and the rotated credential is an info-tinted panel led by Shown once. Domovoi keeps a digest, not the secret. (the daemon stores a sha256 of the token, device-registry.ts). The row keeps the kind icon and word, and the paired and last seen dates, where the frame draws a status dot and one meta line."
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "rows rename, rotate and revoke; they are not the drawn rows. Every row says Revoke where the design says Unpair, and Sign this device out on a web tab's own row (Q378 A, 2026-10-02: Unpair for client rows, Sign this device out for a tab's own row, Revoke kept for machine bindings). Sign this device out has no path today: Q378 named device.revokeCurrent, but that method is machine-only by contract and the daemon refuses any caller without a machine-paired credential, and device.revoke requires the daemon credential, so a web tab cannot revoke itself. It needs a client self-revocation method (protocol and daemon); the per-row notes are tooltips only, there is no self-row highlight, the layout is a five-column table where the design has card rows, and the rotated secret panel is accent, not info-tinted, without the Shown once line"
+        "since": "2026-10-11",
+        "reason": "Sign this device out on a web tab's own row, with its self-row highlight, waits for CX-4 (client self-revocation, Q52 A): device.revokeCurrent is machine-only by contract and device.revoke requires the daemon credential, so a web tab cannot revoke itself, and PairedDeviceSummary carries no flag that names the caller's own row"
       }
     },
     {
@@ -733,14 +743,19 @@
       ],
       "evidence": [
         "A gate is waiting on you",
+        "Always on. This is the one thing that blocks work.",
+        "if (kind === \"approval-needed\") return true",
         "Every tool call"
       ],
       "presence": [
         "<NotificationSettings"
       ],
+      "notes": [
+        "2026-10-11 (SL-4, Q363 A, Q56 A): A gate is waiting on you is the first row, drawn on and locked, on the desktop and in a browser; a stored approvals-off preference from an older build reads as on (notification-preferences.ts). The desktop card says This desktop only. A waiting gate always notifies, and the rest is yours.; a browser says This browser only. Q362 A: the panel stays live while the window watches."
+      ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "a notification settings panel exists with three switchable rows; the design draws five rows under This desktop only, with the gate row locked on. Approvals can be switched off today; Q363 A (2026-10-02) locks A gate is waiting on you on, desktop only. A run failed or a machine went unreachable and Changes are waiting for review can come from the snapshot and fleet health; Every tool call needs the tool events the thread already receives"
+        "since": "2026-10-11",
+        "reason": "one drawn row is built as drawn, the locked gate row. The panel also keeps two switchable rows of its own, Completions and Failures, which are not the frame's A session finished its plan row: those notifications carry neither a file count nor a suite result. Q55 A (2026-10-11) leaves A run failed or a machine went unreachable (fleet health), Changes are waiting for review, and Every tool call (tool events) after M1 under Q47 A: each needs a new notification kind in the tracker, the desktop main allow-list and the browser platform"
       }
     },
     {
@@ -752,19 +767,20 @@
         "These live on their own screens."
       ],
       "evidence": [
-        "<span>Machines and daemons</span>",
-        "<span>Skills</span>",
-        "<span>Audit log</span>",
-        "<span>Permissions and rules</span>",
-        "<span>Checkpoints</span>"
+        "{ label: \"Machines and daemons\"",
+        "{ label: \"Permissions and rules\", note: \"What you have already allowed, and what a rule can never cover.\"",
+        "{ label: \"Skills\"",
+        "{ label: \"Checkpoints\"",
+        "{ label: \"Audit log\"",
+        "onOpenPermissions={() => openSheetTab(\"rules\")}",
+        "onOpenCheckpoints={openCheckpoints}"
       ],
       "presence": [
         "id=\"settings-elsewhere\""
       ],
-      "partial": {
-        "since": "2026-09-23",
-        "reason": "Machines and daemons, Skills and Audit log are links in Elsewhere; Permissions and rules is an inline settings section, not a link, and Checkpoints has no link"
-      }
+      "notes": [
+        "2026-10-11 (SL-4, Q57 B): the five links in the frame's order, each with a note and a chevron. Permissions and rules and Checkpoints open the sheet's Rules and Checkpoints tabs, one click from Settings, as the frame's settingsLinks do (tab: rules, tab: checkpoints). Checkpoints' note says a reset is worktree-only and the thread keeps its turns (Q341 A), where the frame says the thread reverts too. The inline Permissions and rules section stays as an addition to the frame: it holds the retired rules the Rules tab points to, the coverage notes, and every project's rules, none of which the Rules tab shows. Not drawn: the shortcut column, whose one entry is Machines and daemons' mod+shift+M; the app binds it (workspace-commands.ts, surface-fleet) and shows it in the palette, not in this row."
+      ]
     },
     {
       "id": "settings.appearance",
@@ -991,30 +1007,27 @@
       "where": "top of the conversation: repo · branch · worktree, then the clock (started, running or stalled)",
       "evidence": [
         "function ThreadStartLine(",
-        "re:\\bstalled at"
+        "turn={headerTurn(active, snapshot.turns)}",
+        "`${started} · running ${formatTurnDuration(clock.elapsedMs)}`",
+        "`${started} · stalled at ${clockTime.format(clock.lostAt)}`",
+        "`${started} · stopped ${clockTime.format(clock.stoppedAt)}`"
       ],
-      "presence": [
-        "function ThreadStartLine("
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "ThreadStartLine draws repo, branch and worktree, then started HH:MM, and carries no controls; the gap is the clock. The design draws started 14:02 · 4m 18s when done, started 14:02 · running 1m 09s while working and started 13:41 · stalled at 14:06 when the daemon is lost. The clock is client work: session.history entries carry turn (sessionTurnSchema) with startedAt and completedAt, and usage-chip.tsx already reads the latest turn through latestTurnFromHistory. Q401 (2026-10-02) settles it: durations are client work from session.history today, and from the snapshot's derived turns once the fix/v2-protocol branch lands (a turn ended by a restart has no completedAt, so it shows no duration)"
-      }
+      "notes": [
+        "Re-derived 2026-10-12 (SL-2, D4) from the vendored file at the digest above; the live design was not read (DesignSync not authorized that session). Built: the line's clock describes the session's latest turn from the snapshot's turns (ruling Q401), through turn-clock.ts. started 14:02 · running 1m 09s ticks each second while the session runs the turn; started 14:02 · 4m 18s once it completed, from the turn's own start and end on the daemon's clock; started 14:02 · stopped 14:03 for a failed or interrupted turn with an end; started 13:41 · stalled at 14:06 when the daemon is lost while the turn ran, at the moment this thread saw the connection drop. While the session runs a turn the clock reads the session's activeTurnStartedAt, else the ledger's latest turn if it is pending, else the start alone. With no timing the line keeps started HH:MM from the first row. Limit: the running count is the daemon's start against this client's clock, held at zero rather than negative; a client whose clock differs from the daemon's (a browser on another device, an attached machine) is off by that difference, because the thread is given no daemon clock offset yet (the fleet's daemonTime offset is wired in workspace-shell.tsx, outside this change)."
+      ]
     },
     {
       "id": "conversation.user-turn",
       "name": "User message",
       "where": "right-aligned card",
       "evidence": [
-        "data-testid=\"user-turn\""
+        "data-testid=\"user-turn\" className={userTurn}",
+        "max-w-[74%] self-end rounded-[14px_14px_4px_14px] bg-accent px-[15px] py-[11px]",
+        "[&>div:first-child]:text-[13.5px] [&>div:first-child]:leading-[1.6]"
       ],
-      "presence": [
-        "item.kind === \"user\""
-      ],
-      "partial": {
-        "since": "2026-09-18",
-        "reason": "exists; arrangement not measured"
-      }
+      "notes": [
+        "Measured 2026-10-12 (SL-2, D8) against the vendored file at the digest above; the live design was not read. The design draws a right-aligned card at most 74% of the column, padding 11px 15px, radius 14px 14px 4px 14px, background accent, no border, 13.5px/1.6. thread.tsx drew it at 82% on card with a border, 12px corners and 13px/1.625; it now draws the design's measures. The prompt delivery note under the text keeps its own size."
+      ]
     },
     {
       "id": "conversation.assistant-prose",
@@ -1024,20 +1037,20 @@
         "working: caret",
         "done"
       ],
-      "presence": [
-        "<MarkdownQuickView source={stripPlanTags(item.body)} />"
-      ],
       "evidence": [
         "<MarkdownQuickView source={stripPlanTags(item.body)} />",
         {
-          "absent": "<DomovoiMark reduced className=\"size-4\" /></span><MarkdownQuickView",
+          "absent": "<DomovoiMark",
           "in": "packages/ui/src/thread.tsx"
-        }
+        },
+        "[&>div]:text-[13.5px] [&>div]:leading-[1.65]",
+        "[&>div>:last-child]:after:w-[1.5px]",
+        "[&>div>:last-child]:after:bg-primary",
+        "className={cn(assistantProse, item.id === workingProse && workingCaret)}"
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the prose renders as markdown (the earlier evidence matched only that call); it is not the drawn prose. thread.tsx puts a 24px DomovoiMark avatar box before it, which the design does not draw; there is no working caret (the design draws a 1.5px primary blinking caret after the last prose while working); the type is 13px/1.625 against 13.5px/1.65"
-      }
+      "notes": [
+        "Re-derived 2026-10-12 (SL-2, D5) from the vendored file at the digest above; the live design was not read. Built: no avatar box, the column's full width, 13.5px/1.65 with text-wrap pretty, and while the session runs a turn the latest prose (said after the latest message) carries a 1.5px by 15px primary caret 3px after its last block, blinking at 1.1s steps(1) as the composer's caret does, still under reduced motion. While the daemon is lost the caret is not drawn, as the design's offline state draws none. The caret is a pseudo-element after the markdown's last block, so after a list or code block it follows that block rather than a line of text."
+      ]
     },
     {
       "id": "conversation.plan-link",
@@ -1047,13 +1060,14 @@
         "Read it →"
       ],
       "evidence": [
-        "Wrote a",
-        "Read it"
+        "Wrote a {plan.steps.length} step plan",
+        "Read it <span aria-hidden>→</span>",
+        "function PlanLinkRow(",
+        "<PlanLinkRow plan={sessionPlan} onOpenPlanPreview={onOpenPlanPreview} />"
       ],
-      "missing": {
-        "since": "2026-09-23",
-        "reason": "no plan link row under the prose; the earlier presence string matched the credential prompt's Read it from, not this element"
-      }
+      "notes": [
+        "Built 2026-10-12 (SL-2, D6) from the vendored file at the digest above; the live design was not read. The row reads the session's working plan, which the snapshot already carries: list icon, Wrote a N step plan, the time the plan was made, and Read it →, a button that opens the Plan preview dock tab through the thread's onOpenPlanPreview (not drawn where nothing can open it). A plan with no steps draws no row. Two differences, both from what the client holds: the working plan names no message or turn, so the row sits after the last message or prose made at or before the plan (Q65 A); and updatedAt also moves when a step's status changes, so a plan whose steps were rewritten says revised with no time (Q66 A)."
+      ]
     },
     {
       "id": "conversation.activity-row",
@@ -1066,16 +1080,20 @@
         "a step with a log open"
       ],
       "evidence": [
-        "Worked for",
-        "show the steps"
+        "`Worked for ${timing.duration}, show the steps`",
+        "if (timing?.kind === \"stopped\") return \"Stopped\"",
+        "timing={activityTiming({",
+        "turn: row.turnId && lastActivityOfTurn.get(row.turnId) === row.id ? turnsById.get(row.turnId) : undefined,",
+        "<StatusDot meaning={stepMeaning(item, running)} label={item.name} size=\"inline\" />",
+        "working: \"bg-primary\"",
+        {
+          "absent": "\"Output\"",
+          "in": "packages/ui/src/turn-activity.tsx"
+        }
       ],
-      "presence": [
-        "turn-activity"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "activity groups exist and read N tool calls[, N failed]; the design's Working, Worked for 4m 18s, show the steps and Stopped labels are not drawn, step dots show online or offline only where the design colours them by outcome, and Output is a text button where the design toggles the whole row. Worked for N is client work: session.history entries carry turn (sessionTurnSchema) with startedAt and completedAt, which usage-chip.tsx already reads through latestTurnFromHistory. Q401 (2026-10-02): durations are client work from session.history today, and from the snapshot's derived turns once the fix/v2-protocol branch lands (a turn ended by a restart has no completedAt)"
-      }
+      "notes": [
+        "Re-derived 2026-10-12 (SL-2, D7) from the vendored file at the digest above; the live design was not read. Built: the label is Working while the row's turn runs, Worked for 4m 18s, show the steps (Worked for 4m 18s once open) from the turn's start and end in the snapshot's turns, and Stopped for a failed or interrupted turn. Only a turn's last activity row says it; an earlier row of the same turn, and a row whose turn has no timing, keeps N tool calls[, N failed]. A run of calls that crosses into another turn is two rows. Step dots take their outcome's colour as the design does: completed success, failed destructive, declined warning, running primary (StatusDot's working meaning), and a call left running in a row that no longer runs muted as no result. As in the design's offline state, while the daemon is lost no row says Working or sweeps, and a call last seen running is muted. A step with a log is one button (aria-expanded, chevron) that opens its log; the Output link is gone. The dot is StatusDot's 5px inline size against the design's 6px, and a step's meta is its status word rather than the design's ok · 41ms, which the wire does not carry."
+      ]
     },
     {
       "id": "conversation.file-chips",
@@ -1126,15 +1144,15 @@
         "is held by another git process. Nothing ran. Decide again."
       ],
       "evidence": [
-        "Could not take a checkpoint"
+        "Could not take a checkpoint",
+        "is held by another git process",
+        "approvalCheckpointRefusalSchema.safeParse(refusal.data)",
+        "export const approvalCheckpointErrorCode = -32023",
+        "data: cause.data, arrivedAt: latestApprovalsKey.current"
       ],
-      "presence": [
-        "refusal={cardShowsRefusal ? approvalRefusal?.message : undefined}"
-      ],
-      "partial": {
-        "since": "2026-10-06",
-        "reason": "since 5ee18251 (J34) the daemon takes a checkpoint before every human allow and, when it cannot, refuses the resolve with Domovoi could not take a checkpoint, so the command did not run; decide again. The gate card shows that refusal inside the card in the daemon's words (thread.tsx cardShowsRefusal), in the design's danger block with its dot (S3.10h). The drawn lead, Could not take a checkpoint: <lock path> is held by another git process. Nothing ran. Decide again., needs the daemon to answer with a typed refusal code and the cause instead of internalError (Codex follow-up); the client does not parse the daemon's sentence"
-      }
+      "notes": [
+        "Built 2026-10-10 (T22, S3.10h, #743, #758). approval.resolve answers a checkpoint it could not take with approvalCheckpointErrorCode (-32023) and an approvalCheckpointRefusalSchema as the error's data: its cause, one of lock-held (with the lock path Git reported, sent only when Git's own lock sentence names it, the file is there when the daemon looks, it lies in the worktree's own Git directory or common directory, and the inventory redactor leaves it unchanged; a filter can print the same sentence, so the sentence alone names nothing), submodule-changes, repository-config, repository-config-unreadable, git-unavailable (a GitNotFoundError or a Git too old or of unknown version anywhere in the error's causes, or the spawn's ENOENT for git), timed-out, git-failed or unknown. Thread keeps the data beside the message and the card reads it by the schema (approval-card.tsx DecisionRefusal), drawing Could not take a checkpoint: <cause>. Nothing ran. Decide again. in the danger block; data it cannot read falls back to the daemon's words. Three differences from the drawing: the lock path is the absolute path Git printed, not the drawn .git/index.lock, and a checkpoint stages into a temporary index, so a held .git/index.lock alone does not stop it; the lock it meets is the checkpoint ref's or that temporary index's. The line adds or was left by one that stopped after is held by another git process, because Git reports a lock file that exists and cannot say whether a running Git holds it. For repository-config, repository-config-unreadable and git-unavailable the daemon's sentence follows the line, since it names the setting, what Git stopped on, or what to install"
+      ]
     },
     {
       "id": "conversation.policy-refusal",
@@ -1572,17 +1590,14 @@
       ],
       "evidence": [
         "RENDERED THIS SESSION",
+        "renderedPreviewsForActiveSession",
         "authorized · ",
-        "Add a comment"
-      ],
-      "presence": [
-        "Preview device width",
-        "Comments on this preview"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "preview with widths and comments exists. The RENDERED THIS SESSION list is missing, and that is functional: previewVariantsForActiveSession anchors on the latest preview, so a preview rendered earlier in the session outside that variant group cannot be opened anywhere in the dock. The toolbar is not the design's: no authorize chip, widths 390, 768 and 1440 (default 768) where the design has sm, md and lg (default lg), Annotate where the design says Add a comment, and no hints under the frame. Q379 A (2026-10-02) keeps automatic authorization and draws the chip as authorized · <time> left from expiresAt, re-authorizing on expiry, so authorize to view is not drawn; Q380 A keeps Print view, Download safe copy, Compare, the filmstrip, the Live badge and the safe-copies line behind one overflow control"
-      }
+        "usePreviewGrant",
+        "Add a comment",
+        "Click an element",
+        "label: \"lg\"",
+        "More preview actions"
+      ]
     },
     {
       "id": "dock.running-apps",
@@ -1890,6 +1905,8 @@
       "evidence": [
         "Transfer checks",
         "Not sent either way",
+        "Pick a reachable machine",
+        "the session is already here",
         {
           "absent": "check.ready).length} warnings</span>",
           "in": "packages/ui/src/transfer-session-dialog.tsx"
@@ -1902,7 +1919,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the phase shows the already-chosen target and two client-derived checks with no values; the design draws a TARGET list of every machine with reachability (unreachable ones disabled), seven daemon-checked rows with values (repository present, common base, provider auth there, toolchain, clean checkout, payload size, unversioned files), a holdback toggle and the estimate clone and worktree setup, about 20s. The summary reads n pass · m warnings, so it says 1 warnings and 0 warnings where the design says 6 pass · 1 warning (client-only). Five of the rows, the holdback and the estimate need protocol: sessionTransferPreviewSchema carries project ids and commits only"
+        "reason": "Updated 2026-10-11 (D24, client half). The dialog draws the TARGET list from the fleet the thread passes it (targetChoice): every machine with a health dot, the source as the session is already here, a reachable machine as reachable over its route (tailnet, loopback, or a direct route to its host), and a machine transferPreflight refuses disabled with the reason (daemon unreachable, cannot accept a session now; now rather than the design's yet, because Domovoi never queues a move). Picking a reachable row changes the target, and the confirm reads Pick a reachable machine when the chosen one cannot take the session. The summary reads n pass, or n pass · m blocking: every check this client draws stops the move, so none is a warning. Still missing because the wire does not carry them (CX-9): the seven daemon-checked rows with values (repository present, common base, provider auth there, toolchain, clean checkout, payload size, unversioned files), the holdback toggle and its file count, the estimate clone and worktree setup, about 20s, and which agents each target has installed (the design's claude-code and codex installed; FleetMachine carries health, route and capabilities only). sessionTransferPreviewSchema carries project ids and commits only. The design's 6 pass · 1 warning waits for daemon rows that can warn without blocking"
       }
     },
     {
@@ -1952,16 +1969,19 @@
       ],
       "presence": [
         "Exit fullscreen",
-        "setFullscreen(false)"
+        "<PreviewFullscreen",
+        "fullscreenFrameRef"
       ],
       "evidence": [
         "Exit fullscreen",
-        "setFullscreen(false)",
-        "Comments on variant"
+        "<PreviewFullscreen",
+        "<PreviewDraftCard",
+        "Build on this",
+        "Comments reach the agent only when you send them."
       ],
       "partial": {
-        "since": "2026-10-02",
-        "reason": "fullscreen is a dialog with the title, path · read-only · width line, the frame and an outline Exit fullscreen (the earlier evidence proved only the exit). The design draws a full surface with sm, md and lg widths, the esc hint, variant chips with state text and Build on this at the foot, and a 340px Comments on variant column with an annotate toggle, the explicit send and a draft with Post and Cancel. Annotating is impossible in fullscreen because the picker binds only to the dock frame. All client-only except the explicit send (Q348 A, protocol)"
+        "since": "2026-10-11",
+        "reason": "SL-3a (D23) built the full surface: title, path · read-only, sm md lg widths, Exit fullscreen with the esc hint, the page with its hint, the variant chips at the foot and a 340px Comments on <variant> column with the annotate toggle and an inline draft with Post and Cancel. Annotating works in fullscreen: the bridge talks to the fullscreen frame while it is open. What is left belongs to D22 (SL-3b) and is shared with the dock: the foot still offers Use X as build basis where the design says Build on this or Unpick with a state line, and the column has no explicit send to the agent (Q348 A)"
       }
     },
     {
@@ -2030,10 +2050,13 @@
         "<Dot meaning={answerMeaning[answer.state]} />",
         "{answer.state === \"asking\" ? <Sweep /> : null}",
         "switching to {machine.label}",
-        "export function remoteSessionMeta("
+        "export function remoteSessionMeta(",
+        "meta: started ? `running ${runFor(started, now)}` : \"running\"",
+        "remoteSessionMeta(match.session, now + answer.clockOffsetMs)"
       ],
       "notes": [
-        "2026-10-06 (S3.10 slice o): built as drawn in the grouped layout (paletteSessions A): the notice is the design's (a dot and one sentence on the card's ground, Search only what answered, then Add it back once the machine is left out), each machine header has its answer dot and the asking sweep, a picked row shows switching to <machine> until the window has arrived there and asked for the session (activation then runs as a drawer click does, with its own errors in the shell), and row meta is the session's state and age. Ruled differences are in humanRead palette.other-machines, 2026-10-06."
+        "2026-10-06 (S3.10 slice o): built as drawn in the grouped layout (paletteSessions A): the notice is the design's (a dot and one sentence on the card's ground, Search only what answered, then Add it back once the machine is left out), each machine header has its answer dot and the asking sweep, a picked row shows switching to <machine> until the window has arrived there and asked for the session (activation then runs as a drawer click does, with its own errors in the shell), and row meta is the session's state and age. Ruled differences are in humanRead palette.other-machines, 2026-10-06.",
+        "2026-10-10 (task 30, ruling Q390): a running row draws the design's running 41m. Protocol 0.8.0 carries the active turn's start on the session summary (activeTurnStartedAt, from the daemon's usage ledger, the start the thread's header clock reads) and the answering daemon's clock on each session.search reply (daemonTime, the fleet's #781 pattern). The palette ages a machine's rows by the offset of that machine's own reply, so a skewed clock on one machine cannot shift another's rows; a reply without daemonTime falls back to this window's clock. The duration reads under 1m, then minutes, hours and minutes, days and hours. A session marked active with no turn, or a turn the ledger has no start for, still reads running alone. Ages and durations are read when the palette renders and do not tick while it stays open."
       ]
     },
     {
@@ -2268,7 +2291,7 @@
     {
       "id": "conversation.policy-refusal",
       "since": "2026-10-08",
-      "note": "Built against its evidence, not as drawn. Needs protocol and stays a Codex follow-up: the step n of N meta (a plan step's blocker names only an approval), the Target it saw row, and tone-coded alternatives (the wire carries one remedy string, so the list has one neutral row). The drawn Recorded as refusal, actor daemon row is not drawn: the audit records provider.policy-refused with a provider actor."
+      "note": "Built against its evidence, not as drawn. Needs protocol and stays a Codex follow-up: the step n of N meta (a plan step's blocker names only an approval), the Target it saw row, and tone-coded alternatives (the wire carries one remedy string, so the list has one neutral row). The drawn Recorded as refusal, actor daemon row is not drawn: the audit records provider.policy-refused with a provider actor. Rechecked 2026-10-10 (T22): the daemon still has neither. The only policy refusal is Ask mode's (permission-policy.ts permissionPolicyRefusalFor), which has one remedy and no second alternative to tone; a provider's policy-refused event carries the command and a reason sentence, and Claude's adapter folds the path it read outside the worktree into that sentence, so no target reaches the daemon as data. Both stay follow-ups: Target it saw needs the adapters to report the target as a field, and the alternatives need a rule source with more than one remedy."
     },
     {
       "id": "conversation.receipt",
@@ -2283,7 +2306,7 @@
     {
       "id": "titlebar.theme",
       "since": "2026-10-02",
-      "note": "Open gap, no ruling: the aria-label says Use light theme while the tooltip says Light appearance. The watching lock is the partial entry's gap (Q362 A)."
+      "note": "Open gap, no ruling: the aria-label says Use light theme while the tooltip says Light appearance. The watching lock was lifted on 2026-10-11 (Q362 A)."
     },
     {
       "id": "drawer.row",
@@ -2333,12 +2356,12 @@
     {
       "id": "palette.other-machines",
       "since": "2026-10-06",
-      "note": "Ruled and chosen differences. A running session's meta is running with no duration (Q390 A: no turn start on the wire until protocol 0.8.0); a session stopped at a gate reads waiting even with its turn in flight, and every row but running reads its state and age from updatedAt (failed 1h ago). A switch the target refuses (authentication or protocol) closes the palette so the shell's banner shows why. A machine with no match says no matches, not no matches in N sessions: session.search returns no count. The asking dot is the status atom's blue because the atom has no primary meaning; the sweep and the word asking carry it. A machine left out stays out for later queries until Add it back, which asks it again for the current query; both notice actions are disabled while a picked row switches the window, when nothing can be asked. The States design's second sentence (This is not the same as having no results) is not drawn in the palette, as Desktop V2 draws it. Merged layout B (machine chips, Matches join this list as each machine answers) is not built."
+      "note": "Ruled and chosen differences. A running session's meta is running and how long its turn has run, read on the answering machine's clock (task 30, 2026-10-10; before that Q390 A drew running alone); with no turn start on the wire it is running alone; a session stopped at a gate reads waiting even with its turn in flight, and every row but running reads its state and age from updatedAt (failed 1h ago). A switch the target refuses (authentication or protocol) closes the palette so the shell's banner shows why. A machine with no match says no matches, not no matches in N sessions: session.search returns no count. The asking dot is the status atom's blue because the atom has no primary meaning; the sweep and the word asking carry it. A machine left out stays out for later queries until Add it back, which asks it again for the current query; both notice actions are disabled while a picked row switches the window, when nothing can be asked. The States design's second sentence (This is not the same as having no results) is not drawn in the palette, as Desktop V2 draws it. Merged layout B (machine chips, Matches join this list as each machine answers) is not built."
     },
     {
       "id": "dock.preview",
-      "since": "2026-10-02",
-      "note": "Q379 A: the preview authorizes on open, so the drawn authorize to view click is not built; the chip shows authorized and the time left. Q380 A: Print view, Download safe copy, Compare, the filmstrip, the Live badge and the safe-copies line are shipped features the design does not draw; they stay behind one overflow control in the design's toolbar."
+      "since": "2026-10-11",
+      "note": "Q379 A: the preview authorizes on open, so the drawn authorize to view click is not built; the chip shows authorized and the time left. The daemon's grant lasts 60 seconds, not the drawn nine minutes, so the chip reads seconds; the client renews it five seconds before expiry while the preview is on screen, without reloading the page shown, and a frame mounted later loads the fresh grant. Q380 A: Print view, Download safe copy, Compare, the filmstrip (Variant thumbnails), the Live note and the safe-copies line are shipped features the design does not draw; they stay behind one overflow control (More preview actions) in the design's toolbar. RENDERED THIS SESSION rows (D20, 2026-10-11) keep the order the daemon first saw each render, one row per variant group; the wire carries no render time, so the meta names the directory and the revision or variant count where the design draws design-studio · 14:09. The list is a 216px column at a dock width of 48rem and up and stacks above the page below that, where a single render leaves it out. The hint under the frame is drawn in annotate mode only; the idle hint (Plus adds a comment, a number opens one) describes the comment pins of D22."
     },
     {
       "id": "dock.plan-doc",

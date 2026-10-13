@@ -138,7 +138,6 @@ const migrationNote =
 // The handoff's Fleet idioms: eyebrow labels at 9px and .1em in --faint, values
 // under them in the machine face at 11.5px.
 const eyebrow = "text-eyebrow text-faint uppercase"
-const panelEyebrow = "text-[9.5px] tracking-[.1em] text-faint uppercase"
 const monoValue = "font-machine text-[11.5px]"
 
 // The handoff's secondary control: a bordered ghost, 7px 11px, 11px in
@@ -214,6 +213,16 @@ function heldWord(binding: DeviceCredentialBinding): string {
   return binding.kind === "client" ? clientWord[binding.client].toLowerCase() : "device"
 }
 
+// Q378 A: a person's client is unpaired; a machine binding, and a legacy
+// credential that is bound to nothing, is revoked.
+function removalWord(binding: DeviceCredentialBinding): "Unpair" | "Revoke" {
+  return binding.kind === "client" ? "Unpair" : "Revoke"
+}
+
+function removedWord(binding: DeviceCredentialBinding): "unpaired" | "revoked" {
+  return binding.kind === "client" ? "unpaired" : "revoked"
+}
+
 // The one sentence an operator needs before the confirmation opens, not after.
 // A person's device and a fleet machine lose different things.
 function revokeConsequence(binding: DeviceCredentialBinding): string {
@@ -228,6 +237,41 @@ function rotationInstruction(binding: DeviceCredentialBinding): string {
     return "Nobody has to be at that machine. Save it on the machine itself. It is shown once, the old credential no longer works, and sessions already running there are untouched."
   }
   return `Enter it on that ${heldWord(binding)}. It is shown once, and the old credential no longer works.`
+}
+
+// The daemon takes device.rename, device.rotate and device.revoke only from a
+// connection holding its own credential, and answers a device credential by
+// closing the connection (server.ts). A browser tab always holds a device
+// credential: a pasted daemon credential is spent once to mint one. The
+// desktop app on the machine connects with the daemon's own credential. The
+// line follows Settings' form for a locked control: what is off, then why.
+function lockedInBrowserTab(binding: DeviceCredentialBinding, machine: string): string {
+  return `Rename, Rotate and ${removalWord(binding)} are off in a browser tab: they need the daemon's own credential. Use the desktop app on ${machine}.`
+}
+
+// fleet.enroll and fleet.forget the same way: the daemon refuses both from any
+// device credential (server.ts) with the authentication error, on which the
+// client closes its connection (client.ts).
+function fleetLockedInBrowserTab(controls: readonly string[], machine: string): string {
+  const many = controls.length > 1
+  return `${controls.join(" and ")} ${many ? "are" : "is"} off in a browser tab: ${many ? "they need" : "it needs"} the daemon's own credential. Use the desktop app on ${machine}.`
+}
+
+// A phone or tablet credential reaches only phoneAndTabletRpcMethods. The
+// daemon refuses anything else with the authentication error, and the client
+// then closes its connection. fleet.clientRoute, the
+// home daemon's lookup of a way to another machine, is not on it, so a
+// handheld tab cannot authorize itself there. The desktop app on the home
+// machine can authorize itself.
+function authorizeLockedInHandheldTab(home: string): string {
+  return `Authorize this client is off in a phone or tablet tab: the daemon does not look up a route to another machine for a phone or tablet credential. Use the desktop app on ${home}.`
+}
+
+// terminal.create is not on phoneAndTabletRpcMethods either: a handheld may
+// read a shell (terminal.watch) but never opens or types into one. Terminal
+// here opens a writable pane, which starts with terminal.create.
+function terminalLockedInHandheldTab(machine: string): string {
+  return `Terminal is off in a phone or tablet tab: the daemon does not open a shell for a phone or tablet credential. Use the desktop app on ${machine}.`
 }
 
 const timestamp = new Intl.DateTimeFormat("en-GB", {
@@ -404,6 +448,9 @@ function MachineCard({
   clientAccess,
   onAuthorize,
   onRemoveAccess,
+  forgetLockedBy,
+  authorizeLocked,
+  terminalLocked,
 }: {
   machine: FleetMachine
   facts: MachineFacts
@@ -420,9 +467,17 @@ function MachineCard({
   clientAccess?: FleetAccessState | undefined
   onAuthorize?: ((machine: FleetMachine) => void) | undefined
   onRemoveAccess?: ((machine: FleetMachine) => void) | undefined
+  // Controls this tab cannot use, because the daemon refuses their request
+  // for its credential and the refusal drops the connection. Forget's reason is one line for the whole view, named
+  // by its id; the others are this card's own line.
+  forgetLockedBy?: string | undefined
+  authorizeLocked?: string | undefined
+  terminalLocked?: string | undefined
 }) {
   const [stalledOpen, setStalledOpen] = useState(false)
   const stalledId = useId()
+  const authorizeReasonId = useId()
+  const terminalReasonId = useId()
   const note = healthNote[machine.health]?.(machine.label)
   const admitted = clientAccess?.state === "admitted"
   const attachment = machineAttachment(machine, admitted)
@@ -433,6 +488,9 @@ function MachineCard({
   const showsTerminal = onOpenTerminal && machine.capabilities.includes("terminals")
   const unreachable = machine.health === "unreachable"
   const credentialMissing = !machine.self && !admitted
+  const authorizeReason = credentialMissing && onAuthorize ? authorizeLocked : undefined
+  const terminalReason = showsTerminal ? terminalLocked : undefined
+  const forgetLocked = forgetLockedBy !== undefined
   const tone = healthVariant[machine.health]
   return (
     <div
@@ -458,17 +516,23 @@ function MachineCard({
         </span>
       </div>
       <MachineFactRows machine={machine} facts={facts} now={now} />
-      {note || credentialMissing || clientAccess?.state === "refused" || admitted || (!attachment.selectable && !credentialMissing && (onUse || showsTerminal)) ? (
+      {note || credentialMissing || clientAccess?.state === "refused" || admitted || terminalReason !== undefined || (!attachment.selectable && !credentialMissing && (onUse || showsTerminal)) ? (
         <div className="flex flex-col gap-1.5 px-[15px] pt-2.5">
           {note ? <p className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">{note}</p> : null}
           {credentialMissing ? (
             <p className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">
               This app holds no client credential for {machine.label}, so its agents and sessions are unknown here.
-              Authorize this client to read them, open its sessions or open a terminal there. Machine pairing alone does not grant client access.
+              {authorizeReason === undefined ? " Authorize this client to read them, open its sessions or open a terminal there. Machine pairing alone does not grant client access." : null}
             </p>
+          ) : null}
+          {authorizeReason !== undefined ? (
+            <p id={authorizeReasonId} className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-faint">{authorizeReason}</p>
           ) : null}
           {!attachment.selectable && !credentialMissing && (onUse || showsTerminal) ? (
             <p className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">{attachment.reason}</p>
+          ) : null}
+          {terminalReason !== undefined ? (
+            <p id={terminalReasonId} className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-faint">{terminalReason}</p>
           ) : null}
           {admitted ? <p className="m-0 font-machine text-[11px] text-success">Client credential verified</p> : null}
           {clientAccess?.state === "refused" ? <p role="status" className="m-0 text-[11px] leading-relaxed text-destructive">{clientAccess.message}</p> : null}
@@ -500,8 +564,9 @@ function MachineCard({
           </Button>
         ) : null}
         {credentialMissing && onAuthorize ? (
-          <Button variant="outline" className={secondaryControl} disabled={!connected || clientAccess?.state === "checking"}
-            aria-label={`Authorize this client for ${machine.label}`} onClick={() => onAuthorize(machine)}>
+          <Button variant="outline" className={secondaryControl} disabled={authorizeReason !== undefined || !connected || clientAccess?.state === "checking"}
+            aria-label={`Authorize this client for ${machine.label}`} aria-describedby={authorizeReason !== undefined ? authorizeReasonId : undefined}
+            onClick={() => { if (authorizeReason === undefined) onAuthorize(machine) }}>
             {clientAccess?.state === "checking" ? "Verifying client access" : "Authorize this client"}
           </Button>
         ) : null}
@@ -512,14 +577,22 @@ function MachineCard({
         ) : null}
         <span className="flex-1" />
         {showsTerminal ? (
-          <Button variant="ghost" className={quietControl} disabled={!canOpenTerminal} aria-label={`Terminal on ${machine.label}`} onClick={() => onOpenTerminal(machine.id)}>
+          <Button variant="ghost" className={quietControl} disabled={terminalReason !== undefined || !canOpenTerminal} aria-label={`Terminal on ${machine.label}`}
+            aria-describedby={terminalReason !== undefined ? terminalReasonId : undefined}
+            onClick={() => { if (terminalReason === undefined) onOpenTerminal(machine.id) }}>
             Terminal
           </Button>
         ) : null}
         {admitted && onRemoveAccess ? (
           <Button variant="ghost" className={quietControl} onClick={() => onRemoveAccess(machine)}>Remove local access</Button>
         ) : null}
-        {onForget && !machine.self ? (
+        {onForget && !machine.self && forgetLocked ? (
+          // The consequence is for a Forget this tab can press; the view's
+          // reason line says why this one cannot.
+          <Button variant="ghost" className={destructiveControl} disabled aria-label={`Forget ${machine.label}`} aria-describedby={forgetLockedBy}>
+            Forget
+          </Button>
+        ) : onForget && !machine.self ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -538,7 +611,7 @@ function MachineCard({
           </Tooltip>
         ) : null}
       </div>
-      {onForget && !machine.self ? (
+      {onForget && !machine.self && !forgetLocked ? (
         <p className={`${coarseFallback} m-0 max-w-[68ch] px-[15px] pb-3 text-[11px] leading-relaxed text-muted-foreground`}>
           {forgetConsequence}
         </p>
@@ -609,11 +682,13 @@ function StatusChip({ tone, children }: { tone: "warning" | "destructive"; child
   )
 }
 
-const headCell = `border-b py-2 pr-3 text-left align-bottom font-normal ${eyebrow}`
+const headCell = `py-2 pr-3 text-left align-bottom font-normal ${eyebrow}`
 
+// The Desktop V2 frame draws the rows in one card with no column header row;
+// the column names stay for a screen reader.
 function DeviceTableHead() {
   return (
-    <thead>
+    <thead className="sr-only">
       <tr>
         <th scope="col" className={`${headCell} w-[14%]`}>Kind</th>
         <th scope="col" className={headCell}>Device</th>
@@ -628,32 +703,33 @@ function DeviceTableHead() {
 function LoadingRow({ wide }: { wide: boolean }) {
   return (
     <tr aria-hidden="true">
-      <td className="border-b py-2.5 pr-3 align-top">
+      <td className={`${rowCell} pr-3 pl-[15px] align-top`}>
         <span className="block h-3 w-16 rounded-sm bg-muted" />
         <span className="mt-1.5 block h-3 w-24 rounded-sm bg-muted/60" />
       </td>
-      <td className="border-b py-2.5 pr-3 align-top">
+      <td className={`${rowCell} pr-3 align-top`}>
         <span className={`block h-3 rounded-sm bg-muted ${wide ? "w-56" : "w-32"}`} />
       </td>
-      <td className="border-b py-2.5 pr-3 align-top">
+      <td className={`${rowCell} pr-3 align-top`}>
         <span className="block h-3 w-20 rounded-sm bg-muted/60" />
       </td>
-      <td className="border-b py-2.5 pr-3 align-top">
+      <td className={`${rowCell} pr-3 align-top`}>
         <span className="block h-3 w-20 rounded-sm bg-muted/60" />
       </td>
-      <td className="border-b py-2.5 align-top">
+      <td className={`${rowCell} pr-[15px] align-top`}>
         <span className="block h-8 w-40 rounded-sm bg-muted/60" />
       </td>
     </tr>
   )
 }
 
-const rowCell = "border-b py-2.5"
+// Rows of one card, each set off by a rule above it, 15px in from the card.
+const rowCell = "border-t py-2.5"
 
 function KindCell({ binding, dimmed }: { binding: DeviceCredentialBinding; dimmed: boolean }) {
   const Icon = kindIcon(binding)
   return (
-    <td className={`${rowCell} pr-3 align-top ${dimmed ? "opacity-55" : ""}`}>
+    <td className={`${rowCell} pr-3 pl-[15px] align-top ${dimmed ? "opacity-55" : ""}`}>
       <span className="flex items-center gap-1.5 leading-none">
         <Icon aria-hidden="true" className="size-4 text-muted-foreground" />
         <span className="text-[12px] font-medium text-foreground">{kindWord(binding)}</span>
@@ -785,7 +861,7 @@ function LabelCell({
       )}
       {revoked && !revokedByUpgrade ? (
         <span className="mt-2 block">
-          <StatusChip tone="destructive">Revoked</StatusChip>
+          <StatusChip tone="destructive">{device.binding.kind === "client" ? "Unpaired" : "Revoked"}</StatusChip>
         </span>
       ) : null}
       {revokedByUpgrade ? (
@@ -819,6 +895,7 @@ function LabelCell({
 function DeviceRow({
   device,
   disabled,
+  lockedReason,
   undoable,
   onRotate,
   onRevoke,
@@ -827,6 +904,9 @@ function DeviceRow({
 }: {
   device: PairedDeviceSummary
   disabled: boolean
+  // Set where this client can never press the row's controls; it replaces the
+  // consequence line, which describes a control this client cannot reach.
+  lockedReason: string | undefined
   undoable: boolean
   onRotate: () => void
   onRevoke: () => void
@@ -835,31 +915,36 @@ function DeviceRow({
 }) {
   const revoked = device.revokedAt !== undefined
   const isMachine = device.binding.kind === "machine"
+  const locked = disabled || lockedReason !== undefined
   return (
     <tr>
       <KindCell binding={device.binding} dimmed={revoked} />
       <LabelCell
         device={device}
-        disabled={disabled}
+        disabled={locked}
         undoable={undoable}
         onRename={onRename}
         onUndo={onUndoRename}
       />
       <td className={`${rowCell} pr-3 align-top ${monoValue} text-muted-foreground`} title={device.pairedAt}>
-        {when(device.pairedAt)}
+        {/* The header row is for a screen reader only, so each date says
+            what it is, as the frame's meta line does. */}
+        {`paired ${when(device.pairedAt)}`}
       </td>
       <td
         className={`${rowCell} pr-3 align-top ${monoValue} text-muted-foreground`}
         title={revoked ? device.revokedAt : device.lastSeenAt}
       >
-        {revoked ? `revoked ${when(device.revokedAt)}` : when(device.lastSeenAt)}
+        {revoked
+          ? `${removedWord(device.binding)} ${when(device.revokedAt)}`
+          : device.lastSeenAt === undefined ? "never seen" : `last seen ${when(device.lastSeenAt)}`}
       </td>
-      <td className={`${rowCell} align-top`}>
+      <td className={`${rowCell} pr-[15px] align-top`}>
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
             className={secondaryControl}
-            disabled={disabled || revoked}
+            disabled={locked || revoked}
             aria-label={
               isMachine
                 ? `Rotate the credential ${device.label} uses`
@@ -870,36 +955,22 @@ function DeviceRow({
             Rotate
           </Button>
           <span className="flex-1" />
-          {revoked ? (
-            <Button
-              variant="ghost"
-              className={destructiveControl}
-              disabled
-              aria-label={`Revoke ${device.label}`}
-            >
-              Revoke
-            </Button>
-          ) : (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  className={destructiveControl}
-                  disabled={disabled}
-                  aria-label={`Revoke ${device.label}`}
-                  onClick={onRevoke}
-                >
-                  Revoke
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="left" className="max-w-[38ch] text-[11.5px] leading-relaxed">
-                {revokeConsequence(device.binding)}
-              </TooltipContent>
-            </Tooltip>
-          )}
+          <Button
+            variant="ghost"
+            className={destructiveControl}
+            disabled={locked || revoked}
+            aria-label={`${removalWord(device.binding)} ${device.label}`}
+            {...(revoked ? {} : { onClick: onRevoke })}
+          >
+            {removalWord(device.binding)}
+          </Button>
         </div>
-        {revoked ? null : (
-          <p className={`${coarseFallback} mt-2 max-w-[38ch] text-[11px] leading-relaxed text-muted-foreground`}>
+        {/* The Desktop V2 frame draws the consequence as a standing line
+            under each row, read before the confirmation opens. */}
+        {lockedReason !== undefined ? (
+          <p className="mt-2 max-w-[38ch] text-[11px] leading-relaxed text-faint">{lockedReason}</p>
+        ) : revoked ? null : (
+          <p className="mt-2 max-w-[38ch] text-[11px] leading-relaxed text-muted-foreground">
             {revokeConsequence(device.binding)}
           </p>
         )}
@@ -929,25 +1000,24 @@ function CredentialPanel({ token }: { token: string }) {
   }
 
   return (
-    <div className="mt-3 rounded-xl border border-border bg-accent px-[15px] py-[14px]">
-      <div className={panelEyebrow}>New credential, shown once</div>
-      <div className="mt-2.5 flex flex-wrap items-center gap-3">
+    <div className="mt-2.5">
+      <div className="flex flex-wrap items-center gap-2.5">
         <span
-          className={`flex-1 font-machine text-[15px] tracking-[.1em] ${
-            revealed ? "break-all text-primary" : "text-faint"
+          className={`min-w-0 flex-1 rounded-sm bg-code px-3 py-2.5 font-machine text-[11.5px] text-info-foreground ${
+            revealed ? "break-all" : ""
           }`}
         >
           {revealed ? token : <span aria-hidden="true">{maskedRun}</span>}
           {revealed ? null : <span className="sr-only">Credential hidden</span>}
         </span>
         <div className="flex items-center gap-2">
-          <Button className={primaryControl} onClick={() => void copy()}>
+          <Button className={`${primaryControl} bg-info-foreground text-info-background hover:bg-info-foreground/90`} onClick={() => void copy()}>
             {copied ? <CheckIcon aria-hidden="true" /> : <CopyIcon aria-hidden="true" />}
             {copied ? "Copied" : "Copy once"}
           </Button>
           <Button
             variant="outline"
-            className={`${secondaryControl} px-[9px]`}
+            className={`${secondaryControl} border-info-border px-[9px] text-info-dim`}
             aria-pressed={revealed}
             aria-label={revealed ? "Hide the credential" : "Show the credential"}
             onClick={() => setRevealed(!revealed)}
@@ -956,7 +1026,7 @@ function CredentialPanel({ token }: { token: string }) {
           </Button>
         </div>
       </div>
-      <p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+      <p className="mt-2 text-[11px] leading-relaxed text-info-dim">
         {copyFailed
           ? "This browser refused the clipboard. Reveal it and copy it by hand."
           : copied
@@ -969,18 +1039,21 @@ function CredentialPanel({ token }: { token: string }) {
 
 // The receipt is one live region, so a rotation announces itself and a copy
 // confirmation is announced through the same region rather than a nested one.
+// The Desktop V2 frame draws it info-tinted under its row, led by what
+// Domovoi keeps (the daemon stores a sha256 digest of the credential).
 function RotationReceipt({ device, token, onDone }: { device: PairedDeviceSummary; token: string; onDone: () => void }) {
   return (
     <tr>
-      <td colSpan={5} className="border-b py-2.5">
-        <div role="status" className="rounded-xl border border-border bg-card px-[15px] py-[14px]">
-          <div className="text-[13.5px] font-medium">New credential for {device.label}</div>
-          <p className="mt-1.5 max-w-[72ch] text-[11.5px] leading-[1.6] text-muted-foreground">
+      <td colSpan={5} className="p-0">
+        <div role="status" className="border-t border-info-border bg-info-background px-[15px] py-3 text-info-foreground">
+          <div className="text-[12.5px] font-medium">New credential for {device.label}</div>
+          <p className="mt-1 max-w-[72ch] text-[12px] leading-[1.55]">Shown once. Domovoi keeps a digest, not the secret.</p>
+          <p className="mt-1 max-w-[72ch] text-[11.5px] leading-[1.55] text-info-dim">
             {rotationInstruction(device.binding)}
           </p>
           <CredentialPanel token={token} />
-          <div className="mt-3 flex justify-end">
-            <Button variant="outline" size="sm" onClick={onDone}>Done</Button>
+          <div className="mt-2.5 flex justify-end">
+            <Button variant="outline" size="sm" className="border-info-border bg-transparent text-info-dim" onClick={onDone}>Done</Button>
           </div>
         </div>
       </td>
@@ -1001,13 +1074,14 @@ function RevokeConfirmation({
 }) {
   const binding = device?.binding
   const isMachine = binding?.kind === "machine"
+  const word = binding ? removalWord(binding) : "Revoke"
   return (
     <AlertDialog open={device !== null} onOpenChange={(next) => { if (!next) onClose() }}>
       <AlertDialogContent>
         <AlertDialogHeader>
           <div className="flex w-full items-center gap-2.5">
             <AlertDialogTitle className="min-w-0 flex-1 break-words text-[13.5px]">
-              Revoke {device?.label}
+              {word} {device?.label}
             </AlertDialogTitle>
             {binding?.kind === "machine" ? (
               <Badge variant="machine" className="shrink-0" title={binding.machineId}>
@@ -1053,7 +1127,7 @@ function RevokeConfirmation({
               if (device) onConfirm(device)
             }}
           >
-            {isMachine ? "Revoke machine" : "Revoke device"}
+            {isMachine ? "Revoke machine" : `${word} device`}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -1216,6 +1290,7 @@ export function FleetView({
     if (removedAccess && clientAccess[removedAccess.machineId]?.state === "admitted") setRemovedAccess(null)
   }, [clientAccess, removedAccess])
   const pairedDevicesHeadingId = useId()
+  const fleetLockId = useId()
   const [devices, setDevices] = useState<PairedDeviceSummary[] | null>(null)
   const [devicesError, setDevicesError] = useState("")
   const [actionError, setActionError] = useState("")
@@ -1250,10 +1325,15 @@ export function FleetView({
     }
   }, [onListDevices])
 
+  // The web app greets as phone or tablet on a handheld browser, and the
+  // daemon answers device.list from that credential by closing the
+  // connection (phoneAndTabletRpcMethods), so such a tab never asks.
+  const handheld = clientKind === "phone" || clientKind === "tablet"
+
   useEffect(() => {
-    if (!connected) return
+    if (!connected || handheld) return
     void loadDevices()
-  }, [connected, loadDevices])
+  }, [connected, handheld, loadDevices])
 
   const replaceDevice = (device: PairedDeviceSummary) => {
     setDevices((current) => current
@@ -1261,15 +1341,26 @@ export function FleetView({
       : current)
   }
 
+  // A browser tab never sends a request the daemon answers by closing it.
+  // Only the desktop app is not one: the web app greets as web, phone or
+  // tablet by the browser it runs in (apps/web client-kind.ts).
+  const browserTab = clientKind !== "desktop"
+  const managesDevices = !readOnly && !browserTab
+  const homeLabel = devicesMachineLabel ?? "this machine"
+  const lockedFleetControls = [...(onPairMachine ? ["Pair a machine"] : []), ...(onForgetMachine ? ["Forget"] : [])]
+  const fleetLocked = browserTab && !readOnly && lockedFleetControls.length > 0
+    ? fleetLockedInBrowserTab(lockedFleetControls, homeLabel)
+    : undefined
+
   const revokeDevice = async (device: PairedDeviceSummary) => {
-    if (readOnly) return
+    if (!managesDevices) return
     setPendingDeviceId(device.id)
     setActionError("")
     try {
       const result = await onRevokeDevice({ deviceId: device.id })
       replaceDevice(result.device)
     } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : "That device could not be revoked")
+      setActionError(cause instanceof Error ? cause.message : `That device could not be ${removedWord(device.binding)}`)
     } finally {
       setPendingDeviceId("")
       setRevoking(null)
@@ -1277,7 +1368,7 @@ export function FleetView({
   }
 
   const renameDevice = async (device: PairedDeviceSummary, label: string) => {
-    if (readOnly) return
+    if (!managesDevices) return
     setPendingDeviceId(device.id)
     setActionError("")
     try {
@@ -1298,7 +1389,7 @@ export function FleetView({
   // renamed the row in between, the daemon refuses and sends the row as it
   // stands, which replaces the stale one here instead of being overwritten.
   const undoRename = async () => {
-    if (readOnly || !undo) return
+    if (!managesDevices || !undo) return
     setPendingDeviceId(undo.deviceId)
     setActionError("")
     try {
@@ -1320,7 +1411,7 @@ export function FleetView({
   }
 
   const forgetMachine = async (machine: FleetMachine) => {
-    if (readOnly || !onForgetMachine) return
+    if (readOnly || browserTab || !onForgetMachine) return
     setForgetPending(true)
     setForgetNotice(null)
     try {
@@ -1338,7 +1429,7 @@ export function FleetView({
   }
 
   const rotateDevice = async (device: PairedDeviceSummary) => {
-    if (readOnly) return
+    if (!managesDevices) return
     setPendingDeviceId(device.id)
     setActionError("")
     setReceipt(null)
@@ -1365,16 +1456,22 @@ export function FleetView({
               </p>
             </div>
             {onPairMachine ? (
-              <Button variant="outline" disabled={readOnly} onClick={() => { if (!readOnly) setPairing(true) }}>
+              <Button variant="outline" disabled={readOnly || browserTab} aria-describedby={fleetLocked !== undefined ? fleetLockId : undefined}
+                onClick={() => { if (!readOnly && !browserTab) setPairing(true) }}>
                 <PlusIcon data-icon="inline-start" />
                 Pair a machine
               </Button>
             ) : null}
           </div>
+          {fleetLocked !== undefined ? (
+            <p id={fleetLockId} className="mb-0 mt-2 max-w-[72ch] text-[11px] leading-relaxed text-faint">{fleetLocked}</p>
+          ) : null}
 
           <section className="mt-[22px] flex flex-col gap-3.5" aria-label="Machines">
             {removedAccess ? <Alert><AlertTitle>Local client access removed</AlertTitle><AlertDescription>
-              This app no longer holds the credential for {removedAccess.label}. Revoke this device in {removedAccess.label}'s Devices list to end its authority there.
+              {/* Q378 A: a client binding there, so its control is Unpair, in
+                  the one app holding that daemon's own credential. */}
+              This app no longer holds the credential for {removedAccess.label}. To end its authority there, unpair this device in the desktop app on {removedAccess.label}, under Machines.
             </AlertDescription></Alert> : null}
             {fleetOverflow ? <FleetOverflowAlert overflow={fleetOverflow} /> : null}
             {forgetNotice?.outcome === "refused" ? (
@@ -1405,15 +1502,20 @@ export function FleetView({
                     live={readings[machine.id]?.live === true}
                     connected={connected}
                     clientAccess={clientAccess[machine.id]}
-                    {...(onAuthorizeClient && !readOnly ? { onAuthorize: setAuthorizing } : {})}
+                    {...(onAuthorizeClient && !readOnly ? { onAuthorize: (target: FleetMachine) => { if (!handheld) setAuthorizing(target) } } : {})}
                     {...(onRemoveClientAccess && !readOnly ? { onRemoveAccess: (target: FleetMachine) => {
                       onRemoveClientAccess(target.id)
                       setRemovedAccess({ machineId: target.id, label: target.label })
                     } } : {})}
                     {...(onUseMachine && !readOnly ? { onUse: onUseMachine } : {})}
                     {...(onMoveSessionHere && !readOnly ? { onMoveSessionHere } : {})}
-                    {...(onOpenMachineTerminal && !readOnly ? { onOpenTerminal: onOpenMachineTerminal } : {})}
-                    {...(onForgetMachine && !readOnly ? { onForget: (target: FleetMachine) => setForgetting(target) } : {})}
+                    {...(onOpenMachineTerminal && !readOnly ? { onOpenTerminal: (machineId: string) => { if (!handheld) onOpenMachineTerminal(machineId) } } : {})}
+                    {...(onForgetMachine && !readOnly ? { onForget: (target: FleetMachine) => { if (!browserTab) setForgetting(target) } } : {})}
+                    {...(fleetLocked !== undefined && onForgetMachine ? { forgetLockedBy: fleetLockId } : {})}
+                    {...(handheld ? {
+                      authorizeLocked: authorizeLockedInHandheldTab(homeLabel),
+                      terminalLocked: terminalLockedInHandheldTab(machine.label),
+                    } : {})}
                   />
                 )))}
               </div>
@@ -1429,14 +1531,19 @@ export function FleetView({
             ) : null}
           </section>
 
+          {/* The Desktop V2 frame: one card, its heading and note on the first
+              row, then a row per device. */}
           <section className="mt-7" aria-labelledby={pairedDevicesHeadingId}>
-            <h2 id={pairedDevicesHeadingId} className="m-0 text-[13.5px] font-medium">Devices paired with {devicesMachineLabel ?? "this machine"}</h2>
-            <p className="mt-1.5 max-w-[620px] text-[12.5px] leading-[1.6] text-muted-foreground">
-              Each daemon keeps its own list. Pair a new one from Settings.
-            </p>
+          <div className="overflow-hidden rounded-xl border bg-card">
+            <div className="flex flex-wrap items-baseline gap-x-2.5 gap-y-1 px-[15px] py-[11px]">
+              <h2 id={pairedDevicesHeadingId} className="m-0 text-[12.5px] font-medium">Devices paired with {devicesMachineLabel ?? "this machine"}</h2>
+              <p className="m-0 text-[11px] text-muted-foreground">
+                Each daemon keeps its own list. Pair a new one from Settings.
+              </p>
+            </div>
 
             {actionError ? (
-              <Alert variant="destructive" className="mt-4">
+              <Alert variant="destructive" className="mx-[15px] mb-3 w-auto">
                 <CircleStopIcon />
                 <AlertTitle>Device action failed</AlertTitle>
                 <AlertDescription>{actionError}</AlertDescription>
@@ -1444,7 +1551,7 @@ export function FleetView({
             ) : null}
 
             {devicesError ? (
-              <Alert variant="destructive" className="mt-4">
+              <Alert variant="destructive" className="mx-[15px] mb-3 w-auto">
                 <CircleStopIcon />
                 <AlertTitle>Could not read paired devices</AlertTitle>
                 <AlertDescription className="flex flex-wrap items-center gap-3">
@@ -1457,7 +1564,7 @@ export function FleetView({
             ) : null}
 
             {!connected ? (
-              <Alert variant="destructive" className="mt-4">
+              <Alert variant="destructive" className="mx-[15px] mb-3 w-auto">
                 <CircleStopIcon />
                 <AlertTitle>Paired devices unavailable</AlertTitle>
                 <AlertDescription>Paired devices are unavailable while this daemon is unreachable.</AlertDescription>
@@ -1465,7 +1572,7 @@ export function FleetView({
             ) : null}
 
             {devices && devices.length > 0 ? (
-              <table className="mt-4 w-full border-collapse">
+              <table className="w-full border-collapse">
                 <caption className="sr-only">Devices paired with this machine</caption>
                 <DeviceTableHead />
                 <tbody>
@@ -1475,6 +1582,7 @@ export function FleetView({
                         key={paired.id}
                         device={paired}
                          disabled={readOnly || !connected || pendingDeviceId === paired.id}
+                        lockedReason={browserTab ? lockedInBrowserTab(paired.binding, devicesMachineLabel ?? "this machine") : undefined}
                         undoable={undo?.deviceId === paired.id}
                         onRotate={() => void rotateDevice(paired)}
                         onRevoke={() => setRevoking(paired)}
@@ -1493,7 +1601,7 @@ export function FleetView({
             ) : null}
 
             {devices && devices.length === 0 ? (
-              <Empty className="mt-4 min-h-40 border">
+              <Empty className="min-h-40 rounded-none border-t">
                 <EmptyHeader>
                   <EmptyMedia variant="icon"><ServerIcon /></EmptyMedia>
                   <EmptyTitle>No device is paired with this machine</EmptyTitle>
@@ -1505,9 +1613,15 @@ export function FleetView({
               </Empty>
             ) : null}
 
-            {connected && !devices && !devicesError ? (
+            {connected && handheld ? (
+              <p className="m-0 px-[15px] pb-3 text-[11px] leading-relaxed text-faint">
+                {`Paired devices are off in a phone or tablet tab: the daemon does not list them for a phone or tablet credential. Use the desktop app on ${devicesMachineLabel ?? "this machine"}.`}
+              </p>
+            ) : null}
+
+            {connected && !handheld && !devices && !devicesError ? (
               <>
-                <table className="mt-4 w-full animate-pulse border-collapse">
+                <table className="w-full animate-pulse border-collapse">
                   <caption className="sr-only">Devices paired with this machine</caption>
                   <DeviceTableHead />
                   <tbody>
@@ -1516,32 +1630,33 @@ export function FleetView({
                     <LoadingRow wide={false} />
                   </tbody>
                 </table>
-                <p role="status" className="mt-3 font-machine text-[11.5px] text-faint">
+                <p role="status" className="m-0 border-t px-[15px] py-2.5 font-machine text-[11.5px] text-faint">
                   Loading paired devices
                 </p>
               </>
             ) : null}
+          </div>
           </section>
         </main>
       </ScrollArea>
 
       <RevokeConfirmation
-        device={readOnly ? null : revoking}
+        device={managesDevices ? revoking : null}
         busy={pendingDeviceId !== ""}
         onConfirm={(device) => void revokeDevice(device)}
         onClose={() => setRevoking(null)}
       />
-      {!readOnly && authorizing && onAuthorizeClient ? <AuthorizeClientDialog key={authorizing.id} machine={authorizing} kind={clientKind}
+      {!readOnly && !handheld && authorizing && onAuthorizeClient ? <AuthorizeClientDialog key={authorizing.id} machine={authorizing} kind={clientKind}
         onAuthorize={onAuthorizeClient} onClose={() => setAuthorizing(null)} /> : null}
 
       <ForgetConfirmation
-        machine={readOnly ? null : forgetting}
+        machine={readOnly || browserTab ? null : forgetting}
         busy={forgetPending}
         onConfirm={(machine) => void forgetMachine(machine)}
         onClose={() => setForgetting(null)}
       />
 
-      {onPairMachine && !readOnly ? (
+      {onPairMachine && !readOnly && !browserTab ? (
         <PairMachineDialog
           open={pairing}
           onOpenChange={setPairing}

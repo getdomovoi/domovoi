@@ -5,6 +5,7 @@ import {
   maximumSessionAttachments,
   sessionAttachmentRefusalSchema,
   type ImageUpload,
+  type ProviderModel,
 } from "@getdomovoi/protocol"
 
 // What the phone holds for one queued image: the wire shape plus what the
@@ -76,6 +77,26 @@ export function attachmentSummary(queue: readonly Attachment[], machine: string)
   const total = queue.reduce((sum, item) => sum + item.bytes, 0)
   return `${megabytes(total)} uploads to ${machine} when you send, and is not kept on this phone. `
     + `Images only, up to ${megabytes(maximumImageUploadBytes)} and ${maximumImageUploadDimension} px each. Anything larger is refused rather than resized.`
+}
+
+// Phone v2 frames 13, 13b and 14b: the model the session uses and whether
+// its harness reports image input, from runtime.models. Undefined is not
+// known (not read yet, not answered, or not reported), which is not no: only
+// false locks the image sources and the send.
+export type ModelImages = { model: string, imageInput: boolean | undefined }
+
+export function modelImages(
+  models: readonly ProviderModel[] | undefined,
+  runtime: { provider: string, model: string },
+): ModelImages {
+  const found = models?.find((candidate) => candidate.provider === runtime.provider && candidate.id === runtime.model)
+  return { model: runtime.model, imageInput: found?.imageInput }
+}
+
+export function modelImagesLine(imageInput: boolean | undefined): string {
+  if (imageInput === true) return "takes image input, as its harness reports"
+  if (imageInput === false) return "takes no image input, as its harness reports"
+  return "image input not known"
 }
 
 // The daemon's own refusal, read off the error it answered with. Named

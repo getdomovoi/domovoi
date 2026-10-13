@@ -142,11 +142,14 @@ it("can prove the exact previous generation during rollback before a replacement
 })
 
 it("retires a claimable lease with no launch record after a prelaunch failure", async () => {
-  const f = fixture(), deadline = OperationDeadline.start(2000)
+  const f = fixture()
   rmSync(windowsSupervisorRecordPath(f.home))
   const lease = claimExclusiveFileLease(join(f.home, ".domovoi", "windows-supervisor-lease.sqlite"), () => new Error("busy"))
   lease.release()
   vi.mocked(queryWindowsProcess).mockReturnValue({ bootId: f.record.loop.bootId, identity: f.record.loop })
+  // Start the stop's budget after setup. On a stalled Windows runner the
+  // deadline once expired before the stop's first deadline check.
+  const deadline = OperationDeadline.start(2000)
   try {
     expect(await stopWindowsSupervisor(f.path, deadline)).toMatchObject({ state: "stopped", attempts: [], reason: "deliberate-stop" })
     expect(readSupervisorStopRequest(f.home)?.registrationId).toBe(f.record.registrationId)

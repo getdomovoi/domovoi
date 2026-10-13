@@ -58,8 +58,11 @@ export function AuthorizeClientDialog({ machine, kind, onAuthorize, onClose }: {
           </Field>
         </FieldGroup>
         <p className="text-sm text-muted-foreground">
-          Kept only in this app's memory. Closing the app or removing local access does not revoke it.
-          Revoke this device in {machine.label}'s Devices list to end its authority.
+          {/* Q378 A: this credential is a client binding on that machine, so its
+              row there says Unpair, and only that machine's desktop app holds
+              the daemon credential that may press it. */}
+          Kept only in this app's memory. Closing the app or removing local access does not unpair this device.
+          To end its authority, unpair it in the desktop app on {machine.label}, under Machines.
         </p>
         {error ? <Alert variant="destructive"><AlertTitle>Client access refused</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
         <DialogFooter>

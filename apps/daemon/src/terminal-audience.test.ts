@@ -9,9 +9,11 @@ import { SqliteWorkspaceStore } from "./store.js"
 import type { TerminalProcess } from "./terminal.js"
 import { waitForDaemon } from "./test-wait-for.js"
 
-// Terminals are a desktop and web surface, and the pairing card tells a phone
-// that terminal output is not on it. What a terminal prints goes to the
-// connections that opened or claimed it, and to no phone or tablet credential.
+// Terminals are opened and claimed from desktop and web. The pairing card
+// grants a phone or tablet terminal output only as a reader, after it asks to
+// watch (terminal.watch). What a terminal prints goes to the connections that
+// opened or claimed it, and to no phone or tablet credential that has not
+// asked to watch it.
 
 const daemons: DomovoiDaemon[] = []
 const sockets: WebSocket[] = []
@@ -56,7 +58,7 @@ function terminalMethods(connection: Connection): string[] {
 }
 
 describe("terminal notifications", () => {
-  it("reach only the connections that opened or claimed the terminal, never a phone or tablet", async () => {
+  it("reach only the connections that opened or claimed the terminal, never a phone or tablet that is not watching", async () => {
     let print: (data: string) => void = () => {}
     const process = {
       process: "bash",

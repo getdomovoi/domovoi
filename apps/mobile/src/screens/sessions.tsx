@@ -12,7 +12,7 @@ import type { ConnectionNotice } from "../connection-notice"
 import { sessionsGateReach } from "../gate-reach"
 import { cn } from "../lib/cn"
 import { machineRows, type MachineRow } from "../machine-rows"
-import { elapsedLabel, sessionGroups, sessionsHeaderLine, waitingCount, type SessionRow } from "../session-rows"
+import { elapsedLabel, sessionGroups, sessionsHeaderLine, waitingCount, type SessionGroupId, type SessionRow } from "../session-rows"
 import { useTheme } from "../theme/theme-provider"
 
 const dotColour: Record<SessionRow["dot"], string> = {
@@ -21,25 +21,44 @@ const dotColour: Record<SessionRow["dot"], string> = {
   quiet: "bg-faint",
 }
 
-// Keyed by the row's own type rather than restating its two values. A third
-// kind of attention already failed at the indexed lookup below; keying the
-// table moves that failure to this declaration, where the omission is.
-const attentionColour: Record<NonNullable<SessionRow["attention"]>, string> = {
-  approval: "text-warning",
-  preview: "text-primary",
+// Frame 01 tints each group's count with the group's state: amber for what
+// wants you, green for what runs, muted for the rest.
+type GroupTone = "warning" | "success" | "muted"
+
+const countTone: Record<GroupTone, { box: string, label: string }> = {
+  warning: { box: "bg-warning/15", label: "text-warning" },
+  success: { box: "bg-success/15", label: "text-success" },
+  muted: { box: "bg-muted", label: "text-muted-foreground" },
+}
+
+const groupTone: Record<SessionGroupId | "unreachable", GroupTone> = {
+  "needs-you": "warning",
+  running: "success",
+  quiet: "muted",
+  unreachable: "muted",
 }
 
 // A heading is a label and a count, the way the design draws it. The count is
 // the group's own size, so a heading never says more than the cards under it.
-function GroupHeading({ label, count }: { label: string, count: number }) {
+function GroupHeading({ id, label, count }: { id: SessionGroupId | "unreachable", label: string, count: number }) {
+  const tone = countTone[groupTone[id]]
   return (
     <View className="mt-1 flex-row items-center px-1">
       <Text className="flex-1 font-sans-medium text-label uppercase tracking-[0.08em] text-faint">
         {label}
       </Text>
-      <Text variant="machine" className="text-faint">{count}</Text>
+      <View testID={`group-count-${id}`} className={cn("min-w-[20px] items-center rounded-full px-2 py-0.5", tone.box)}>
+        <Text variant="machine" className={tone.label}>{count}</Text>
+      </View>
     </View>
   )
+}
+
+// Frame 01 draws what a session wants from you as a small pill on the card:
+// gate for an approval in amber. A preview keeps the primary colour it had.
+const attentionPill: Record<NonNullable<SessionRow["attention"]>, { text: string, box: string, label: string }> = {
+  approval: { text: "gate", box: "bg-warning/15", label: "text-warning" },
+  preview: { text: "preview", box: "bg-primary/15", label: "text-primary" },
 }
 
 // When a machine was last heard from, in the design's words (frame 10).
@@ -60,7 +79,7 @@ function UnreachableMachines({ fleet, now }: { fleet: FleetEntry[], now: number 
   if (silent.length === 0) return null
   return (
     <View className="gap-[9px]">
-      <GroupHeading label="UNREACHABLE" count={silent.length} />
+      <GroupHeading id="unreachable" label="UNREACHABLE" count={silent.length} />
       {silent.map((machine) => (
         <Card key={machine.id} className="flex-row items-center gap-2.5 opacity-55">
           <View className="h-[7px] w-[7px] rounded-full bg-faint" />
@@ -79,8 +98,8 @@ function UnreachableMachines({ fleet, now }: { fleet: FleetEntry[], now: number 
 // phone talks to. Idleness is vouched for only for that machine, because
 // fleet.list carries no other machine's sessions. While a connection notice is
 // up, what was read may no longer hold, so the count goes and the sentence
-// speaks of the last read.
-function idleSentence(machine: string, fleet: FleetEntry[] | undefined, stale: boolean): string {
+// speaks of the last read. The tablet's empty thread pane says the same.
+export function idleSentence(machine: string, fleet: FleetEntry[] | undefined, stale: boolean): string {
   if (stale) return `${machine} had no work in flight when last read.`
   const answering = fleet
     ? fleet.filter((entry) => entry.kind === "machine" && entry.machine.health === "healthy").length
@@ -145,28 +164,28 @@ function SessionCard({ row, approvalId, now, onOpen, onOpenApproval }: {
   onOpen: (id: string) => void
   onOpenApproval: (id: string) => void
 }) {
+  const pill = row.attention ? attentionPill[row.attention] : undefined
   return (
     <PressableCard
       onPress={() => approvalId ? onOpenApproval(approvalId) : onOpen(row.id)}
       accessibilityLabel={row.title}
+      // Frame 01: a card that needs you sits on the warning ground.
+      className={cn(row.attention === "approval" && "border-warn-border bg-warn-bg")}
     >
       <View className="flex-row items-start gap-2.5">
         <View className={cn("mt-[5px] h-[7px] w-[7px] rounded-full", dotColour[row.dot])} />
         <Text variant="title" className="flex-1">{row.title}</Text>
+        {pill ? (
+          <View className={cn("rounded-full px-2 py-0.5", pill.box)}>
+            <Text variant="machine" className={pill.label}>{pill.text}</Text>
+          </View>
+        ) : null}
       </View>
       {/* Indented past the dot and its gap, so the facts hang under the title
           rather than under the state light. */}
       <View className="mt-2 flex-row flex-wrap items-center gap-[5px] pl-[17px]">
         <Badge label={row.runtime} />
         <Badge label={row.mode} tone="outline" />
-        {row.attention ? (
-          <Text className={cn(
-            "ml-auto font-sans-medium text-label uppercase tracking-[0.06em]",
-            attentionColour[row.attention],
-          )}>
-            {row.attention}
-          </Text>
-        ) : null}
       </View>
       <Text variant="machine" className="mt-[5px] pl-[17px] text-faint">
         {[row.machine, row.waitingSince ? elapsedLabel(row.waitingSince, now) : undefined]
@@ -226,11 +245,15 @@ export function SessionsScreen({
         <View className="flex-1">
           <View className="flex-row items-center gap-[11px]">
             <Mark size={24} />
-            <Text variant="heading">Sessions</Text>
+            <Text variant="heading" className="flex-1">Sessions</Text>
+            {/* Frame 01: how many sessions need you is the header's pill. */}
+            {needed > 0 ? (
+              <View testID="needs-you-pill" className="rounded-full bg-warn-bg px-2.5 py-1">
+                <Text className="font-sans-medium text-[11.5px] text-warn-fg">{`${needed} need you`}</Text>
+              </View>
+            ) : null}
           </View>
-          <Text variant="meta" className="mt-[3px]">
-            {needed > 0 ? `${needed} need you · ${countLabel}` : countLabel}
-          </Text>
+          <Text variant="meta" className="mt-[3px]">{countLabel}</Text>
         </View>
       </View>
 
@@ -270,7 +293,7 @@ export function SessionsScreen({
 
         {groups.map((group) => (
           <View key={group.id} className="gap-[9px]">
-            <GroupHeading label={group.label} count={group.rows.length} />
+            <GroupHeading id={group.id} label={group.label} count={group.rows.length} />
             {group.rows.map((row) => (
               <SessionCard
                 key={row.id}

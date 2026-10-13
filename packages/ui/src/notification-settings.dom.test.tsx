@@ -18,8 +18,9 @@ function capabilities(overrides: Partial<WorkspaceClientCapabilities> = {}): Wor
   }
 }
 
+// The kinds a person can switch off. The gate row is never one of them (Q363 A).
 function switches() {
-  return ["Completions", "Failures", "Approvals needed"].map((label) =>
+  return ["Completions", "Failures"].map((label) =>
     screen.getByRole("switch", { name: label }),
   )
 }
@@ -82,4 +83,43 @@ it("offers the install prompt only where the browser has one", async () => {
 
   expect(screen.queryByRole("button", { name: "Install Domovoi" })).toBeNull()
   expect(screen.getByText("Use the browser's own install menu item.")).toBeTruthy()
+})
+
+it("keeps the gate notification on, whatever the person presses (Q363 A)", async () => {
+  const onChange = vi.fn()
+  render(<NotificationSettings preferences={defaultNotificationPreferences()} onChange={onChange} />)
+
+  const gate = screen.getByRole("switch", { name: "A gate is waiting on you" })
+  expect(gate.getAttribute("aria-checked")).toBe("true")
+  expect(gate.getAttribute("disabled")).toBe("")
+  expect(screen.getByText("Always on. This is the one thing that blocks work.")).toBeTruthy()
+  expect(screen.getAllByRole("switch")[0]).toBe(gate)
+
+  await userEvent.click(gate)
+  expect(onChange).not.toHaveBeenCalled()
+})
+
+it("says on the desktop that the choices stay on this desktop", () => {
+  render(<NotificationSettings preferences={defaultNotificationPreferences()} onChange={vi.fn()} />)
+
+  expect(screen.getByText(/This desktop only\. A waiting gate always notifies, and the rest is yours\./u)).toBeTruthy()
+})
+
+it("locks the gate notification on in a browser too (Q56 A)", () => {
+  render(<NotificationSettings preferences={defaultNotificationPreferences()} onChange={vi.fn()} client={capabilities()} />)
+
+  const gate = screen.getByRole("switch", { name: "A gate is waiting on you" })
+  expect(gate.getAttribute("aria-checked")).toBe("true")
+  expect(gate.getAttribute("disabled")).toBe("")
+  expect(screen.queryByText(/This desktop only/u)).toBeNull()
+  expect(screen.getByText(/This browser only\. A waiting gate always notifies, and the rest is yours\./u)).toBeTruthy()
+})
+
+it("switches a kind the person may turn off, and keeps the gate on in the record", async () => {
+  const onChange = vi.fn()
+  render(<NotificationSettings preferences={defaultNotificationPreferences()} onChange={onChange} />)
+
+  await userEvent.click(screen.getByRole("switch", { name: "Failures" }))
+
+  expect(onChange).toHaveBeenCalledWith({ completion: true, failure: false, approvalNeeded: true })
 })

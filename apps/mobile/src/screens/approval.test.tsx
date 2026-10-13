@@ -74,6 +74,19 @@ describe("ApprovalScreen", () => {
     expect(screen.queryByRole("button", { name: "Always allow this" })).toBeNull()
   })
 
+  // A connection that drops while an answer is out leaves the phone
+  // watching, and the answer may or may not have landed. The screen still
+  // says so: it is the one fact about the gate the person cannot see
+  // elsewhere.
+  it("keeps an unconfirmed answer's sentence on a gate that is now only watched", async () => {
+    const unconfirmed = "The daemon went away before it confirmed. The gate may or may not have been answered; when the connection returns, this screen shows which."
+    await draw({ watching: true, problem: unconfirmed })
+
+    expect(screen.getByRole("alert")).toHaveTextContent(unconfirmed)
+    expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeOnTheScreen()
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull()
+  })
+
   it("shows every fact of the request without a tap", async () => {
     const { approval: request } = await draw()
 

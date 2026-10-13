@@ -109,7 +109,7 @@ describe("the dock's tab list", () => {
     expect(within(comments).queryByText("Tighten the header on A.")).toBeNull()
     expect(within(comments).queryByText("Run the migration on staging first.")).toBeNull()
 
-    await user.click(screen.getByRole("button", { name: /Variant A/ }))
+    await user.click(screen.getByRole("radio", { name: "Variant A" }))
     await settle()
     comments = screen.getByRole("region", { name: "Comments on this preview" })
     expect(within(comments).getByText(/COMMENTS ON VARIANT A/)).toBeTruthy()

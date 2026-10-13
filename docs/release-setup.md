@@ -86,7 +86,8 @@ same protected environment as subsequent OIDC releases. [npm trust prerequisites
    cannot substitute one if OIDC is not configured.
 9. **Check the result before removing bootstrap access.** Verify all four registry versions,
    their `alpha` dist-tags, and the provenance source commit/run. Verify the canonical tag
-   names the same commit and the release has four tarballs, four SBOMs and `SHA256SUMS`.
+   names the same commit and the release has four tarballs, four SBOMs, the web app's
+   `domovoi-web-<version>.tar.gz` and `SHA256SUMS`.
    Test the bootstrap installer against that version. The first successful hosted run, not
    the local tests of this code, establishes that account admission and provenance work.
 10. **Configure ordinary trusted publishing for each package.** On npm, each package's Settings,

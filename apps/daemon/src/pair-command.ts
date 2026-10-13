@@ -98,7 +98,10 @@ export async function runPairCommand(
     if (address.loopback) {
       dependencies.stdout(`This daemon answers on ${address.url}, which only this machine can reach. ${client.data === "web" ? "A browser on another device" : "A phone on your network"} needs the daemon on an address it can dial.\n`)
     }
-    dependencies.stdout("The device appears in this daemon's Devices list once it pairs. Revoke it there when it is no longer needed.\n")
+    // Every binding this command issues is a client, whose control is Unpair
+    // (Q378 A). Only a connection with this daemon's own credential may use
+    // it, which is the desktop app on this machine.
+    dependencies.stdout("Once it pairs, the device is listed in the desktop app on this machine, under Machines. Unpair it there when it is no longer needed.\n")
     return 0
   }
   if (args.length > 1) {

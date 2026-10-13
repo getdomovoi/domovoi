@@ -231,11 +231,11 @@ describe("pair", () => {
     const store = memoryStore()
     const daemon = fakeDaemon({ helloRejects: `refused ${token}` })
     await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store, connect: daemon.connect }))
-      .rejects.toThrow(/^The daemon refused the credential this code minted, so nothing was kept\. Revoke "my shell" on the machine, then show a code for the cli\.$/)
+      .rejects.toThrow(/^The daemon refused the credential this code minted, so nothing was kept\. Unpair "my shell" in the desktop app on the machine, under Machines, then show a code for the cli\.$/)
     expect(store.saved).toEqual([])
     const worded = fakeDaemon({ helloRejects: "Unknown or revoked device credential" })
     await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store, connect: worded.connect }))
-      .rejects.toThrow(/^The daemon refused the credential this code minted \(Unknown or revoked device credential\), so nothing was kept\. Revoke "my shell" on the machine/)
+      .rejects.toThrow(/^The daemon refused the credential this code minted \(Unknown or revoked device credential\), so nothing was kept\. Unpair "my shell" in the desktop app on the machine, under Machines/)
   })
 
   it("passes a daemon lost before the proving hello through as unreachable, not as a refusal", async () => {
@@ -255,10 +255,10 @@ describe("pair", () => {
     expect(daemon.closed()).toBe(1)
   })
 
-  it("says when the credential worked but could not be kept, and names the device to revoke", async () => {
+  it("says when the credential worked but could not be kept, and names the device to unpair", async () => {
     const daemon = fakeDaemon()
     await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store: memoryStore(true), connect: daemon.connect }))
-      .rejects.toThrow(/^The credential works but could not be stored \(disk full\), so nothing was kept\. Revoke "my shell" on the machine, then show a code for the cli\.$/)
+      .rejects.toThrow(/^The credential works but could not be stored \(disk full\), so nothing was kept\. Unpair "my shell" in the desktop app on the machine, under Machines, then show a code for the cli\.$/)
   })
 
   it("keeps a same-machine pin that needs recovery when pairing again, and recovers rather than re-enrols", async () => {
@@ -313,11 +313,11 @@ describe("pair", () => {
 
     const refused = fakeDaemon({ helloRejects: `revoked${hostile}` })
     await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: `my shell${hostile}`, store: memoryStore(), connect: refused.connect }))
-      .rejects.toThrow(new PairingError(`The daemon refused the credential this code minted (revoked${shown}), so nothing was kept. Revoke "my shell${shown}" on the machine, then show a code for the cli.`))
+      .rejects.toThrow(new PairingError(`The daemon refused the credential this code minted (revoked${shown}), so nothing was kept. Unpair "my shell${shown}" in the desktop app on the machine, under Machines, then show a code for the cli.`))
 
     const full: CredentialStore & { saved: PairedDaemon[] } = { ...memoryStore(), update: async () => { throw new Error(`disk full${hostile}`) } }
     await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store: full, connect: fakeDaemon().connect }))
-      .rejects.toThrow(new PairingError(`The credential works but could not be stored (disk full${shown}), so nothing was kept. Revoke "my shell" on the machine, then show a code for the cli.`))
+      .rejects.toThrow(new PairingError(`The credential works but could not be stored (disk full${shown}), so nothing was kept. Unpair "my shell" in the desktop app on the machine, under Machines, then show a code for the cli.`))
 
     const lost = fakeDaemon({ recoveryThrows: new Error(`reset${hostile}`) })
     await expect(pairWithDaemon({ endpoint: "ws://127.0.0.1:47831/rpc", credential: token, label: "my shell", store: memoryStore(), connect: lost.connect }))
@@ -328,7 +328,15 @@ describe("pair", () => {
       token,
     } })
     await expect(redeemPairingCode({ endpoint: "ws://127.0.0.1:47831/rpc", code, label: "my shell", open: other.open }))
-      .rejects.toThrow(new PairingError(`This code was issued for a phone, so nothing was kept. Revoke "my shell${shown}" on the machine, then show a code for the cli.`))
+      .rejects.toThrow(new PairingError(`This code was issued for a phone, so nothing was kept. Unpair "my shell${shown}" in the desktop app on the machine, under Machines, then show a code for the cli.`))
+
+    // Q378 A: a machine binding's row keeps Revoke.
+    const machine = fakeRedeemer({ result: {
+      device: { id: deviceId, label: "build box", pairedAt: "2026-10-03T10:00:00Z", binding: { kind: "machine", machineId } },
+      token,
+    } })
+    await expect(redeemPairingCode({ endpoint: "ws://127.0.0.1:47831/rpc", code, label: "my shell", open: machine.open }))
+      .rejects.toThrow(new PairingError("This code was issued for a machine, so nothing was kept. Revoke \"build box\" in the desktop app on the machine, under Machines, then show a code for the cli."))
 
     const refusing = fakeRedeemer({ refuse: new DaemonRefusedError(`Pairing was refused${hostile}`, -32001) })
     await expect(redeemPairingCode({ endpoint: "ws://127.0.0.1:47831/rpc", code, label: "my shell", open: refusing.open }))

@@ -1,17 +1,23 @@
+// Q363 A: a waiting gate always notifies, so approvalNeeded is not a choice.
+// It stays in the record, always true, so a record an older build wrote and
+// one this build writes have the same shape.
 export type NotificationPreferences = {
   completion: boolean
   failure: boolean
-  approvalNeeded: boolean
+  approvalNeeded: true
 }
 
-export type NotificationPreferenceKey = keyof NotificationPreferences
+// The kinds a person can switch off.
+export type NotificationPreferenceKey = "completion" | "failure"
 
-const preferenceKeys: readonly NotificationPreferenceKey[] = ["completion", "failure", "approvalNeeded"]
+const preferenceKeys: readonly NotificationPreferenceKey[] = ["completion", "failure"]
 
 export function defaultNotificationPreferences(): NotificationPreferences {
   return { completion: true, failure: true, approvalNeeded: true }
 }
 
+// A stored approvalNeeded, false included, is ignored: an older build let a
+// person switch approvals off, and that choice no longer exists.
 export function parseNotificationPreferences(value: unknown): NotificationPreferences | undefined {
   if (typeof value !== "object" || value === null) return undefined
   const record = value as Record<string, unknown>
@@ -28,6 +34,6 @@ export function notificationPreferenceFor(
   preferences: NotificationPreferences,
   kind: "completion" | "failure" | "approval-needed",
 ): boolean {
-  if (kind === "approval-needed") return preferences.approvalNeeded
+  if (kind === "approval-needed") return true
   return preferences[kind]
 }
