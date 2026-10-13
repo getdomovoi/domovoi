@@ -15,6 +15,7 @@ import { groupSessions, type GroupedSession, type SessionGroupId } from "./sessi
 import { cn } from "./lib/utils"
 import { dockSideBySideMinimumWidth } from "./dock-auto-collapse"
 import { titlebarTipClassName } from "./titlebar-tip"
+import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab"
 
 // v2 takes the sessions list out of the permanent sidebar and puts it behind a
 // button in the top bar. When open it is a column beside the thread at the
@@ -155,6 +156,11 @@ export function SessionsDrawerColumn({
   const [collapsed, setCollapsed] = useState<ReadonlySet<SessionGroupId>>(new Set())
   const archivedNoteId = useId()
   const now = useDrawerClock(open)
+  // session.archive is not on phoneAndTabletRpcMethods (handheld-tab.ts).
+  const handheldMachine = useHandheldTabMachine()
+  const archiveLocked = handheldMachine !== undefined
+    ? offInHandheldTab(["Archive session"], "archive a session", handheldMachine)
+    : undefined
   if (!open) return null
   const groups = groupSessions(snapshot)
   const machine = snapshot.machine.name
@@ -260,7 +266,14 @@ export function SessionsDrawerColumn({
                               )}
                               <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("fork", entry.id)}><GitForkIcon />Fork from a checkpoint</DropdownMenuItem>
                               <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("move", entry.id)}><MonitorIcon />Move to another machine</DropdownMenuItem>
-                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("archive", entry.id)}><ArchiveIcon />Archive session</DropdownMenuItem>
+                              <DropdownMenuItem
+                                disabled={entry.archiving || archiveLocked !== undefined}
+                                aria-describedby={archiveLocked !== undefined ? `${archivedNoteId}-locked-${entry.id}` : undefined}
+                                onSelect={() => { if (archiveLocked === undefined) onAction("archive", entry.id) }}
+                              ><ArchiveIcon />Archive session</DropdownMenuItem>
+                              {archiveLocked !== undefined ? (
+                                <p id={`${archivedNoteId}-locked-${entry.id}`} className="m-0 px-2 py-1.5 text-[11px] leading-[1.5] text-muted-foreground">{archiveLocked}</p>
+                              ) : null}
                             </>
                           )}
                         </DropdownMenuContent>

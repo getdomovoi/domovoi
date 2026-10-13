@@ -130,6 +130,9 @@ export type FailedAttempt = {
   answered: boolean
   reason: string
   skillIds?: readonly string[]
+  // Kept so queueing it again sends what the person attached; a refusal
+  // must not drop their files or images.
+  attachments?: readonly SessionAttachment[]
 }
 
 // Only an error the daemon raises before it starts work proves the turn never
@@ -162,6 +165,7 @@ export function failedAttempt(
     answered,
     reason,
     ...(message.skillIds ? { skillIds: message.skillIds } : {}),
+    ...(message.attachments ? { attachments: message.attachments } : {}),
   }
 }
 

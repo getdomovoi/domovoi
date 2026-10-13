@@ -75,6 +75,7 @@ import { ThreadFileChips } from "./thread-file-chips"
 import { TurnActivity } from "./turn-activity"
 import { activityTiming, headerClockText, latestSessionTurn, turnClock, type TurnTiming } from "./turn-clock"
 import { CheckpointRestore, checkpointRestoreBlocked } from "./checkpoint-actions.js"
+import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab.js"
 import {
   heldAfter,
   submitFromComposer,
@@ -100,8 +101,12 @@ import { PolicyRefusalCard } from "./policy-refusal-card"
 import { ApprovalCard } from "./approval-card"
 import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
-import { ThreadComposer } from "./thread-composer"
-import { attachmentName, desktopAttachmentLimit, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
+import { ThreadComposer, imagesHeldReason, lockedImagesWords, type BuildBasisChip } from "./thread-composer"
+import { nextCatalogReadTicket } from "./model-popover"
+import { sessionPreviewBuildBasis } from "./artifacts"
+import { PreviewVariantCopy } from "./preview-controls"
+import { previewRenderName } from "./preview-renders"
+import { attachmentName, desktopAttachmentLimit, desktopInlineLineLimit, isImageAttachment, pasteOutcome, pathMark } from "./desktop-attachments"
 import { composerInbox } from "./composer-inbox"
 import { loadingLineRef, startOpenerRef } from "./start-handoff"
 
@@ -235,11 +240,15 @@ export const CheckpointThreadItem = memo(function CheckpointThreadItem({
   disabled: boolean
   onRestore: (checkpointId: string) => void
 }) {
+  // checkpoint.restore is not on phoneAndTabletRpcMethods. A phone or tablet
+  // tab draws no restore on the chip (Q88); the Checkpoints and History tabs
+  // keep the control, disabled, with the reason.
+  const handheld = useHandheldTabMachine() !== undefined
   return (
     <div className="flex min-w-0 max-w-full flex-col items-center gap-1 self-center">
       <div className="flex max-w-full items-center gap-1 rounded-full border bg-card py-1 pr-1 pl-3 font-machine text-mono-xs text-faint">
         <span className="min-w-0 wrap-anywhere">Checkpoint · {item.label}</span>
-        {item.commit ? (
+        {item.commit && !handheld ? (
           <CheckpointRestore checkpointId={item.id} label={item.label} disabled={disabled} onRestore={onRestore} />
         ) : null}
       </div>
@@ -467,12 +476,20 @@ export function SessionReadOnlyNotice({
   pending: boolean
   onRelease: (offer: SessionRecoveryOffer) => void
 }) {
+  const handheldMachine = useHandheldTabMachine()
+  const lockedId = `session-release-locked-${session.id}`
   const notice = readOnlySessionNotice(session, otherLabel)
   if (!notice) return null
   // Only one of these can apply: a frozen move the daemon gave up on, or a
   // conflict. Both end in a confirmation the operator has to make in words.
   const offer = sessionRecoveryOffer(session, otherLabel) ?? sessionConflictOffer(session, otherLabel)
   const destructive = session.state === "ownership-conflict"
+  const offerLabel = offer?.kind === "keep-target" ? "Settle this" : "Release this session"
+  // session.transferResolveConflict and session.transferRecoverSource are not
+  // on phoneAndTabletRpcMethods (handheld-tab.ts).
+  const locked = offer && handheldMachine !== undefined
+    ? offInHandheldTab([offerLabel], "settle a move", handheldMachine)
+    : undefined
 
   return (
     <Alert variant={destructive ? "destructive" : "default"} className="mx-auto max-w-[var(--shell-thread)]">
@@ -483,8 +500,8 @@ export function SessionReadOnlyNotice({
         {offer ? (
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="outline" size="sm" disabled={disabled || pending}>
-                {offer.kind === "keep-target" ? "Settle this" : "Release this session"}
+              <Button variant="outline" size="sm" disabled={disabled || pending || locked !== undefined} aria-describedby={locked !== undefined ? lockedId : undefined}>
+                {offerLabel}
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent>
@@ -494,13 +511,14 @@ export function SessionReadOnlyNotice({
               </AlertDialogHeader>
               <AlertDialogFooter>
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction variant="destructive" onClick={() => onRelease(offer)}>
+                <AlertDialogAction variant="destructive" onClick={() => { if (locked === undefined) onRelease(offer) }}>
                   {offer.confirmLabel}
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
         ) : null}
+        {locked !== undefined ? <p id={lockedId} className="m-0 text-[12px] leading-relaxed">{locked}</p> : null}
       </AlertDescription>
     </Alert>
   )
@@ -527,6 +545,7 @@ export function Thread({
   onListModels,
   onNewSession,
   onSend,
+  onCheckpoint,
   onRestoreCheckpoint,
   restoreBusy = false,
   pendingTransferTargetId = null,
@@ -550,6 +569,8 @@ export function Thread({
   skillNames,
   skillCatalog,
   surface = "desktop",
+  buildBasisId,
+  onUnpickBuildBasis,
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
@@ -590,7 +611,9 @@ export function Thread({
     skillSelection?: TurnSkillSelection,
     attachments?: SessionAttachment[],
   ) => Promise<void>
-  onCheckpoint: (sessionId: string) => Promise<void>
+  // checkpoint.create, as the Checkpoints tab takes one; /checkpoint passes
+  // the label typed after it.
+  onCheckpoint: (sessionId: string, label?: string) => Promise<void>
   onRestoreCheckpoint: (sessionId: string, checkpointId: string) => Promise<void>
   // Set while a restore started anywhere in the shell is still running.
   restoreBusy?: boolean
@@ -633,6 +656,11 @@ export function Thread({
   skillNames?: Record<string, string> | undefined
   skillCatalog?: readonly SkillSummary[] | undefined
   surface?: "desktop" | "web" | undefined
+  // The preview this session's sends carry as their build basis (Q342 A),
+  // as the shell holds it, and Unpick. The composer shows it so nothing
+  // rides a send that the person cannot see.
+  buildBasisId?: string | undefined
+  onUnpickBuildBasis?: (() => void) | undefined
 }) {
   const watching = clientAccess === "watching"
   // The shell's connection, for the offline Reconnect action. A thread drawn
@@ -813,6 +841,9 @@ export function Thread({
   const [effortDropped, setEffortDropped] = useState<{ sessionId: string, from: string, to: string }>()
   const [restartPending, setRestartPending] = useState(false)
   const [restartError, setRestartError] = useState("")
+  // session.restartProviderThread is not on phoneAndTabletRpcMethods
+  // (handheld-tab.ts), so a phone or tablet tab cannot retry the provider.
+  const handheldMachine = useHandheldTabMachine()
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
   const readOnly = archiveReadOnly || watching
   // The design follows the latest decision with what to do next. Its move
@@ -845,15 +876,38 @@ export function Thread({
   // Held with the provider it answered for, so a re-read keeps the chip up and
   // a provider change drops it until the new harness answers.
   const [providerModels, setProviderModels] = useState<{ provider: string, models: ProviderModel[] }>()
+  // This read and the model menu's (onModelsRead below) each take a ticket
+  // when they start. Only an answer from a read that started later than the
+  // one applied replaces it, so an older read settling late never undoes an
+  // image lock or brings back stale effort levels.
+  const appliedCatalogTicket = useRef(0)
   useEffect(() => {
     if (!activeProvider) return
     let live = true
+    const ticket = nextCatalogReadTicket()
+    const apply = (next: { provider: string, models: ProviderModel[] } | undefined) => {
+      if (!live || ticket <= appliedCatalogTicket.current) return
+      appliedCatalogTicket.current = ticket
+      setProviderModels(next)
+    }
     void onListModels(activeProvider).then(
-      (models) => { if (live) setProviderModels({ provider: activeProvider, models }) },
-      () => { if (live) setProviderModels(undefined) },
+      (models) => apply({ provider: activeProvider, models }),
+      () => apply(undefined),
     )
     return () => { live = false }
   }, [onListModels, activeProvider])
+  // The session's model's image input, once its harness has answered. A
+  // message queued before the answer, or before a model change, would be
+  // refused at the turn boundary, so it is held whole instead. Nothing holds
+  // on undefined: not known is not no.
+  const activeModelImageInput = providerModels?.provider === activeProvider
+    ? providerModels?.models.find((model) => model.provider === activeProvider && model.id === active?.runtime.model)?.imageInput
+    : undefined
+  useEffect(() => {
+    if (!active || queued?.sessionId !== active.id || queued.state !== "waiting") return
+    if (activeModelImageInput !== false || !queued.attachments?.some(isImageAttachment)) return
+    onQueuedChange(heldAfter(queued, imagesHeldReason(active.runtime.model)))
+  }, [active, activeModelImageInput, onQueuedChange, queued])
   // The editor answers a shortcut as well as its control, because a long prompt
   // usually starts at the keyboard.
   useEffect(() => {
@@ -960,6 +1014,19 @@ export function Thread({
     machines,
   }
 
+  // The rule the send uses (use-workspace.ts): a basis that no longer names a
+  // preview of this session is not sent, so it is not shown either.
+  const buildBasis = sessionPreviewBuildBasis(snapshot, active.id, buildBasisId)
+  const buildBasisChip: BuildBasisChip | undefined = buildBasis && onUnpickBuildBasis ? {
+    mark: pathMark(buildBasis.path),
+    name: buildBasis.variant?.label ?? buildBasis.title,
+    meta: `${previewRenderName(buildBasis)} · ${PreviewVariantCopy.buildsOnThis}`,
+    onUnpick: onUnpickBuildBasis,
+  } : undefined
+
+  // Images in the draft the session's model reports it cannot take.
+  const lockedImageCount = activeModelImageInput === false ? attachments.filter(isImageAttachment).length : 0
+
   const providerRestartRequired = active.state === "failed" && !active.providerThreadId
   // The worktree of a session nothing has run in yet: no turn is running or
   // being sent, it has a worktree to be ready, and its thread holds only what
@@ -1059,6 +1126,9 @@ export function Thread({
     // controls are off, and this covers a key press that reaches the field.
     if (!connected || pending || providerRestartRequired || emergencyStopPending || readOnly) return
     let submittedText = prompt
+    // The model's harness reports no image input: an image would be refused,
+    // and queueing it would only move the refusal. The composer says so.
+    const imagesLocked = effortModel?.imageInput === false && attachmentsRef.current.some(isImageAttachment)
     if (prompt.trimStart().startsWith("/")) {
       const intent = slashIntent(prompt, slashContext)
       if (intent.kind === "invalid") {
@@ -1091,6 +1161,24 @@ export function Thread({
           setPrompt("")
           await restoreCheckpoint(intent.checkpointId)
           return
+        case "checkpoint": {
+          // Allowed while a turn runs (#825): it is not a message, so it is
+          // never queued behind the turn.
+          const command = prompt
+          setPending(true)
+          setPrompt("")
+          try {
+            if (intent.label === undefined) await onCheckpoint(active.id)
+            else await onCheckpoint(active.id, intent.label)
+          } catch (cause) {
+            setSendError(cause instanceof Error ? cause.message : "The checkpoint was not taken")
+            // The command comes back, but never over something typed since.
+            setPrompt((current) => current.length > 0 ? current : command)
+          } finally {
+            setPending(false)
+          }
+          return
+        }
         case "skill":
           setSkillSelection(new Set([intent.skillId]))
           setPrompt("")
@@ -1104,6 +1192,8 @@ export function Thread({
           break
       }
     }
+    // A slash command that sends nothing still runs; a message waits.
+    if (imagesLocked) return
     const outcome = submitFromComposer({
       text: submittedText,
       turnRunning: Boolean(active.activeTurnId),
@@ -1348,6 +1438,7 @@ export function Thread({
               ]}
               retrying={restartPending}
               retryDisabled={watching || !connected || onRestartProviderThread === undefined}
+              retryLocked={handheldMachine !== undefined ? offInHandheldTab(["Try again"], "restart a provider", handheldMachine) : undefined}
               retryError={restartError}
               onRetry={() => void restartProvider()}
             />
@@ -1547,6 +1638,16 @@ export function Thread({
           onFork={forkRuntime}
           effortModel={effortModel}
           effortDropped={effortDroppedHere}
+          imageInput={effortModel?.imageInput}
+          buildBasis={buildBasisChip}
+          onModelsRead={(provider, models, ticket) => {
+            // The menu's answer for this session's harness replaces an older
+            // read's, so a failed first read or a changed answer does not
+            // leave images unlocked.
+            if (provider !== active.runtime.provider || ticket <= appliedCatalogTicket.current) return
+            appliedCatalogTicket.current = ticket
+            setProviderModels({ provider, models })
+          }}
           onOpenSheet={onOpenSheet}
           onOpenPromptEditor={() => setPromptEditorOpen(true)}
           usage={usage}
@@ -1620,8 +1721,15 @@ export function Thread({
           <PromptEditorDialog
             open={promptEditorOpen}
             draft={prompt}
+            attachments={attachments}
+            buildBasis={buildBasisChip}
+            onRemoveAttachment={(index) => setAttachments((current) => current.filter((_, candidate) => candidate !== index))}
             pending={pending}
-            sendDisabled={!connected || !prompt.trim() || providerRestartRequired || emergencyStopPending}
+            sendDisabled={!connected || !prompt.trim() || providerRestartRequired || emergencyStopPending || lockedImageCount > 0}
+            imagesBlocked={effortModel?.imageInput === false}
+            {...(lockedImageCount > 0 ? {
+              imagesNote: `${lockedImagesWords(lockedImageCount).lead}${active.runtime.model}${lockedImagesWords(lockedImageCount).tail}`,
+            } : {})}
             onOpenChange={(open) => {
               setPromptEditorOpen(open)
               setEditorPasteNote("")

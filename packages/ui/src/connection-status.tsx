@@ -25,6 +25,12 @@ export type WorkspaceConnection = {
   // a network, where a link can die silently and the socket report the close
   // minutes later.
   lastHeardAt?: Date | undefined
+  // The daemon is the desktop app's own, on this computer, dialled on
+  // loopback: the one rule that also decides whether last heard is known.
+  // Whatever goes to it does not leave this computer. False for an attached
+  // machine and for every browser tab, whose loopback address may be the
+  // local end of an SSH forward.
+  onThisComputer?: boolean | undefined
 }
 
 const ConnectionContext = createContext<WorkspaceConnection | null>(null)
@@ -35,7 +41,10 @@ export function useWorkspaceConnection(): WorkspaceConnection | null {
 
 type Link = { connected: boolean, machineId: string | undefined, endpoint: string | undefined, lastHeardAt?: Date }
 
-function loopback(endpoint: string | undefined): boolean {
+// The provider's endpoint is set only for the desktop app's own daemon (see
+// WorkspaceConnectionProvider), so a loopback endpoint here means this
+// computer. Exported so no surface writes a second copy of the rule.
+export function ownDaemonOnThisComputer(endpoint: string | undefined): boolean {
   if (endpoint === undefined) return false
   try {
     const host = new URL(endpoint).hostname
@@ -65,11 +74,15 @@ export function WorkspaceConnectionProvider({ children, machineId, endpoint, ...
     // and with it the id, so the time does not follow the switch.
     const same = machineId !== undefined && machineId === link.machineId && endpoint === link.endpoint
     const lastHeardAt = state.connected || !same ? undefined
-      : link.connected ? (loopback(endpoint) ? new Date() : undefined)
+      : link.connected ? (ownDaemonOnThisComputer(endpoint) ? new Date() : undefined)
         : link.lastHeardAt
     setLink({ connected: state.connected, machineId, endpoint, ...(lastHeardAt ? { lastHeardAt } : {}) })
   }
-  const value: WorkspaceConnection = { ...state, ...(link.lastHeardAt ? { lastHeardAt: link.lastHeardAt } : {}) }
+  const value: WorkspaceConnection = {
+    ...state,
+    onThisComputer: ownDaemonOnThisComputer(endpoint),
+    ...(link.lastHeardAt ? { lastHeardAt: link.lastHeardAt } : {}),
+  }
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>
 }
 

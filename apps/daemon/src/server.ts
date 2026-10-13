@@ -154,6 +154,7 @@ import {
 } from "@getdomovoi/protocol"
 import { localOwnerProof, type LocalOwnerIdentity, type LocalOwnerSecret } from "./local-owner-proof.js"
 import { DaemonUpdates, type DaemonUpdateOptions } from "./update-dispatch.js"
+import { UpdateScheduler } from "./update-scheduler.js"
 import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket, protocolMismatchRefusal } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
@@ -2016,6 +2017,7 @@ export class DomovoiDaemon {
   #tls: TlsMaterial | undefined
   #localOwner: DaemonServerOptions["localOwner"]
   #updates: DaemonUpdates
+  #updateScheduler: UpdateScheduler | undefined
   #advertiseHost: string | undefined
   #tailnetHost: string | undefined
   #wsl: MachineWslFacts | undefined
@@ -2100,6 +2102,7 @@ export class DomovoiDaemon {
     this.#tls = options.tls
     this.#localOwner = options.localOwner
     this.#updates = new DaemonUpdates(options.updates)
+    this.#updateScheduler = options.updates ? new UpdateScheduler(options.updates, this.#updates) : undefined
     this.#advertiseHost = options.advertiseHost
     this.#tailnetHost = options.tailnetHost
     this.#wsl = options.wsl
@@ -3220,6 +3223,9 @@ export class DomovoiDaemon {
     this.#fleetEnrollment.start()
     if (this.#providerProbe) this.#queueProviderRefresh(true)
 
+    signal?.throwIfAborted()
+    if (this.#stopping || this.#stopped) throw new Error("Daemon stopped during startup")
+    this.#updateScheduler?.start()
     return this.address!
   }
 
@@ -3503,6 +3509,7 @@ export class DomovoiDaemon {
     this.#stopping = true
     this.#runtimeDiscoveryAbort.abort(new Error("Daemon stopping"))
     const fleetStopped = this.#fleetEnrollment.stop()
+    const schedulerStopped = this.#updateScheduler?.stop()
     const updatesStopped = this.#updates.stop()
     const relayStopped = this.#relayCarrier?.stop()
     if (this.#transferReconciliationTimer) {
@@ -3511,7 +3518,7 @@ export class DomovoiDaemon {
     }
     this.#closeArtifactWatchers()
     for (const unsubscribe of this.#unsubscribeAgents.splice(0)) unsubscribe()
-    const stopping = this.#finishStop(Promise.all([fleetStopped, updatesStopped, relayStopped]).then(() => {}))
+    const stopping = this.#finishStop(Promise.all([fleetStopped, schedulerStopped, updatesStopped, relayStopped]).then(() => {}))
     this.#stopPromise = stopping
     return stopping
   }

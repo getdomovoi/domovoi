@@ -228,3 +228,47 @@ it("locks the chip while a runtime update is pending", () => {
   render(popover({ pending: true }))
   expect((screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }) as HTMLButtonElement).disabled).toBe(true)
 })
+
+// The design's 360px menu groups rows under headers. What pays for a model
+// (subscription, key or local) is not on the wire, so the rows group by the
+// harness that reported them, the design's other grouping.
+it("groups the rows under a header per harness in a 360px menu", async () => {
+  const user = userEvent.setup()
+  render(popover())
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
+  await settle()
+
+  const list = screen.getByRole("listbox", { name: "Models" })
+  expect(list.closest("[class*='w-[360px]']")).not.toBeNull()
+  const groups = within(list).getAllByRole("group")
+  expect(groups.map((group) => group.getAttribute("aria-label"))).toEqual(["claude-code", "codex"])
+  expect(within(groups[0]!).getByText("CLAUDE-CODE")).toBeTruthy()
+  expect(within(groups[0]!).getAllByRole("option")).toHaveLength(2)
+  expect(within(groups[1]!).getAllByRole("option")).toHaveLength(1)
+})
+
+// J42: a model whose harness reports no image input says so on its row.
+// Not reported is not no, so that row carries no tag.
+it("tags a model that takes no image input, and only that model", async () => {
+  const user = userEvent.setup()
+  const tagged: Record<string, ProviderModel[]> = {
+    "claude-code": [{ ...model("claude-code", "claude-sonnet-4.6", "", true), imageInput: true }],
+    codex: [{ ...model("codex", "gpt-5.3-codex", ""), imageInput: false }, model("codex", "gpt-5.2", "")],
+  }
+  render(popover({ onListModels: vi.fn(async (provider: string) => tagged[provider] ?? []) }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
+  await settle()
+
+  // The tag is in the option's name too, so a screen reader hears it on focus.
+  expect(within(screen.getByRole("option", { name: "gpt-5.3-codex, codex, no image input" })).getByText("no image input")).toBeTruthy()
+  expect(within(screen.getByRole("option", { name: "gpt-5.2, codex" })).queryByText("no image input")).toBeNull()
+  expect(within(screen.getByRole("option", { name: "claude-sonnet-4.6, claude-code" })).queryByText("no image input")).toBeNull()
+})
+
+it("opens when the composer asks it to", async () => {
+  const { rerender } = render(popover({ openRequest: 0 }))
+  expect(screen.queryByRole("listbox", { name: "Models" })).toBeNull()
+  rerender(popover({ openRequest: 1 }))
+  await settle()
+  expect(screen.getByRole("listbox", { name: "Models" })).toBeTruthy()
+})

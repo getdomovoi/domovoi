@@ -16,6 +16,7 @@ import {
 import type { ChangedFileEvidence, FileEvidenceAssociation, SessionEvidence } from "@getdomovoi/protocol"
 
 import { coverageLabel, revertPrompt, type RevertPrompt } from "./file-evidence-copy"
+import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Badge } from "./components/ui/badge"
@@ -390,6 +391,7 @@ export function SessionEvidenceContent({
   loading,
   onRefresh,
   onRevertFile,
+  revertLocked,
   onOpenInEditor,
 }: {
   connected: boolean
@@ -398,6 +400,8 @@ export function SessionEvidenceContent({
   loading: boolean
   onRefresh: () => void
   onRevertFile?: (path: string, expectedBaseCommit?: string) => Promise<void>
+  // Why this client draws no Revert, said once above the files.
+  revertLocked?: string | undefined
   // The desktop opens the worktree in the person's editor; a browser has none.
   onOpenInEditor?: (() => void) | undefined
 }) {
@@ -511,6 +515,9 @@ export function SessionEvidenceContent({
                 <Separator />
                 {revertDone ? (
                   <p role="status" className="m-0 border-b px-3 py-2 text-[11px] leading-normal text-muted-foreground">{revertDone}</p>
+                ) : null}
+                {revertLocked !== undefined && evidence.workspace.files.length ? (
+                  <p className="m-0 border-b px-3 py-2 text-[11px] leading-normal text-muted-foreground">{revertLocked}</p>
                 ) : null}
                 {evidence.workspace.files.length ? evidence.workspace.files.map((file) => (
                   <FileEvidenceRow
@@ -690,6 +697,7 @@ export function SessionEvidencePanel({
   onOpenInEditor?: (() => void) | undefined
 }) {
   const generation = useRef(0)
+  const handheldMachine = useHandheldTabMachine()
   const [state, setState] = useState<EvidenceState>({ loading: false, error: "" })
   const refresh = useCallback(() => {
     const request = ++generation.current
@@ -758,7 +766,13 @@ export function SessionEvidencePanel({
       loading={visible.loading}
       onRefresh={refresh}
       onOpenInEditor={onOpenInEditor}
-      {...(onRevertFile && !readOnly
+      // session.revertFile is not on phoneAndTabletRpcMethods
+      // (handheld-tab.ts). A phone or tablet tab draws no Revert, as a
+      // read-only one does, and says why.
+      {...(onRevertFile && !readOnly && handheldMachine !== undefined
+        ? { revertLocked: offInHandheldTab(["Reverting a file"], "revert a file", handheldMachine) }
+        : {})}
+      {...(onRevertFile && !readOnly && handheldMachine === undefined
         ? {
           onRevertFile: async (path: string, expectedBaseCommit?: string) => {
             // Dropping this here would silently disarm the stale-confirmation

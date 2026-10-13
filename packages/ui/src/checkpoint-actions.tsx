@@ -22,6 +22,7 @@ export function CheckpointRestore({
   onRestore,
   triggerLabel = "Restore worktree",
   triggerVariant = "ghost",
+  describedBy,
 }: {
   checkpointId: string
   label: string
@@ -31,11 +32,13 @@ export function CheckpointRestore({
   // and "Reset" on the session start. One dialog, the trigger names its place.
   triggerLabel?: string
   triggerVariant?: "ghost" | "outline"
+  // The id of a line that says why the trigger is disabled.
+  describedBy?: string | undefined
 }) {
   return (
     <AlertDialog>
       <AlertDialogTrigger asChild>
-        <Button variant={triggerVariant} size="sm" disabled={disabled} className="h-6 rounded-full px-2 text-micro">
+        <Button variant={triggerVariant} size="sm" disabled={disabled} aria-describedby={describedBy} className="h-6 rounded-full px-2 text-micro">
           {triggerLabel}
         </Button>
       </AlertDialogTrigger>
