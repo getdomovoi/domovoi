@@ -28,7 +28,7 @@ function fixture(existing = true) {
   const path = join(profile, "service-operation-lease.sqlite")
   const effects = {
     ...nodeServiceEffects({ userHomeDirectory: home }),
-    capture: vi.fn(async () => ({ code: 0, stdout: "active" })),
+    capture: vi.fn(async () => ({ code: 0, stdout: "ActiveState=active\n" })),
     exists: vi.fn(async () => existing),
     supervisorStatus: vi.fn(async () => undefined),
   }
@@ -82,7 +82,7 @@ describe("read-only service status leases", () => {
     const pending = serviceStatus(f.target, { ...f.effects, capture: async () => {
       entered.resolve()
       await resume.promise
-      return { code: 0, stdout: "active" }
+      return { code: 0, stdout: "ActiveState=active\n" }
     } })
     try {
       await entered.promise
@@ -100,7 +100,7 @@ describe("read-only service status leases", () => {
     const pending = serviceStatus(f.target, { ...f.effects, capture: async () => {
       entered.resolve()
       await resume.promise
-      return { code: 0, stdout: "active" }
+      return { code: 0, stdout: "ActiveState=active\n" }
     } })
     try {
       await entered.promise
@@ -127,7 +127,7 @@ describe("read-only service status leases", () => {
       capture: async () => {
         entered.resolve()
         await resume.promise
-        return { code: 0, stdout: "active" }
+        return { code: 0, stdout: "ActiveState=active\n" }
       },
     }
     const pending = serviceStatus(f.target, effects)

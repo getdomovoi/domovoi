@@ -717,14 +717,32 @@ it("names the Linux unit the installer writes and no lingering it does not turn 
   expect(section.textContent).not.toContain("loginctl")
 })
 
-// Native Windows runs the logon task unsupervised; only the WSL task has the
-// crash supervisor, so nothing restarts a crashed daemon before the next sign-in.
-it("names the Windows logon task the installer registers and says nothing restarts it", () => {
-  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Connected to the installed Domovoi service", detail: "The daemon runs outside this app and keeps running after it quits.", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "win32" }} />)
+it.each([
+  ["legacy", "Nothing restarts it until you next sign in."],
+  ["supervised", "The supervisor retries after a crash and stops after 4 crashes."],
+  [undefined, "The logon task starts it when you sign in. Crash recovery depends on the installed task kind."],
+] as const)("uses the verified Windows task kind %s for crash policy", (windowsTaskKind, copy) => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner: "outside", serviceInstalled: true, serviceRunning: true, platform: "win32",
+    serviceReport: { installed: true, running: true, detail: "", supervisor: windowsTaskKind === undefined ? {} : { windowsTaskKind, pid: 4321 } },
+  }} />)
   const section = screen.getByRole("region", { name: "Daemon on this machine" })
   expect(section.textContent).toContain('Task Scheduler task "Domovoi daemon"')
-  expect(section.textContent).toContain("Nothing restarts it until you next sign in.")
-  expect(section.textContent).not.toContain("restarts it up to")
+  expect(section.textContent).toContain(copy)
+  if (windowsTaskKind !== "legacy") expect(section.textContent).not.toContain("Nothing restarts it")
+  if (windowsTaskKind !== undefined) expect(within(section).getByText("PID 4321")).toBeTruthy()
+})
+
+it.each([0, 1, 7])("renders %s systemd automatic restarts separately from crashes and preserves other facts", (restartCount) => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner: "outside", platform: "linux", serviceInstalled: true,
+    serviceCheckedAt: Date.parse("2026-10-12T12:02:00.000Z"), serviceReport: { installed: true, running: true, detail: "active",
+      supervisor: { restartCount, pid: 4321, startedAt: "2026-10-12T12:00:00.000Z", lastExit: "code 9" } },
+  }} />)
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  expect(card.getByText(`${restartCount} automatic ${restartCount === 1 ? "restart" : "restarts"} since its last start that was not automatic, or its last counter reset`)).toBeTruthy()
+  expect(card.getByText("PID 4321")).toBeTruthy()
+  expect(card.getByText("up 2m at last check")).toBeTruthy()
+  expect(card.getByText("Last exit: code 9")).toBeTruthy()
+  expect(card.queryByText(/\d+ crashes|Crash count unknown/)).toBeNull()
 })
 
 // A daemon this app did not start may be the service or a domovoid run by
@@ -1118,7 +1136,7 @@ it.each([
 })
 
 it.each([
-  { unexpected: true }, { crashCount: "4" }, { pid: 0 }, { pid: 1.5 }, { startedAt: "yesterday" },
+  { unexpected: true }, { restartCount: "7" }, { restartCount: -1 }, { restartCount: 1.5 }, { restartCount: 4294967296 }, { restartCount: 7 }, { windowsTaskKind: "unknown" }, { windowsTaskKind: 1 }, { crashCount: 5 }, { crashCount: "4" }, { pid: 0 }, { pid: 1.5 }, { startedAt: "yesterday" },
   { lastExit: { code: 9 } }, { supervisionFailure: "probably-exhausted" }, { supervising: "yes" }, { treeUnconfirmed: "no" },
 ])("rejects every supervisor fact if one field is extra or mistyped: %s", async (invalid) => {
   render(supervisorCard({ installed: true, running: true, detail: "running", supervisor: {

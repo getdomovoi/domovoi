@@ -8,13 +8,19 @@ import type { DaemonServiceOutcome } from "./desktop-platform.js"
 
 // J24 (2026-09-23). What each platform's login service is. The names come from
 // the daemon's installer through login-service; this window only names them.
-// Native Windows runs the logon task without the crash supervisor, which only
-// the WSL task has (Phase 1 decided to supervise it like WSL).
+// Windows registrations can be legacy or supervised. Missing kind is unknown.
 export const loginServices = {
   darwin: { kind: "LaunchAgent", manager: "launchd", definition: `~/${loginServiceHomePaths.darwin}`, removeLabel: "Unload and delete the LaunchAgent", crash: "launchd starts it again." },
   linux: { kind: "systemd user unit", manager: "systemd", definition: `~/${loginServiceHomePaths.linux}`, removeLabel: "Stop, disable and delete the user unit", crash: "systemd starts it again." },
-  win32: { kind: "logon task", manager: "Task Scheduler", definition: `Task Scheduler task "${loginServiceTaskName}"`, removeLabel: "Delete the logon task", crash: "Nothing restarts it until you next sign in." },
+  win32: { kind: "logon task", manager: "Task Scheduler", definition: `Task Scheduler task "${loginServiceTaskName}"`, removeLabel: "Delete the logon task", crash: "The logon task starts it when you sign in. Crash recovery depends on the installed task kind." },
 } as const
+
+// Q94: only the verified installed action can select a Windows crash policy.
+export function windowsCrashPolicy(kind: "legacy" | "supervised" | undefined): string {
+  return kind === "legacy" ? "Nothing restarts it until you next sign in."
+    : kind === "supervised" ? "The supervisor retries after a crash and stops after 4 crashes."
+      : loginServices.win32.crash
+}
 
 export type LoginServicePlatform = keyof typeof loginServices
 

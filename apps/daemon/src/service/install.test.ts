@@ -594,7 +594,7 @@ describe("serviceStatus", () => {
   afterEach(() => { vi.unstubAllEnvs() })
 
   it("reports a loaded systemd unit as installed and running", async () => {
-    const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "active\n" })) })
+    const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "ActiveState=active\n" })) })
     await expect(serviceStatus({ platform: "linux", home: "/home/dl" }, dependencies)).resolves.toEqual({
       installed: true,
       running: true,
@@ -603,7 +603,7 @@ describe("serviceStatus", () => {
   })
 
   it("separates an installed unit from a running one", async () => {
-    const dependencies = effects({ capture: vi.fn(async () => ({ code: 3, stdout: "inactive\n" })) })
+    const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "ActiveState=inactive\n" })) })
     await expect(serviceStatus({ platform: "linux", home: "/home/dl" }, dependencies)).resolves.toMatchObject({
       installed: true,
       running: false,
@@ -678,6 +678,7 @@ describe("serviceStatus", () => {
       installed: true,
       running: true,
       detail: "legacy Windows logon task; no crash supervision or job-object tree evidence",
+      windowsTaskKind: "legacy",
     })
     // The ownership read, then the state read; neither is schtasks text.
     expect(dependencies.capture).toHaveBeenCalledTimes(2)
@@ -742,7 +743,7 @@ describe("the CLI and a same-named job with no Domovoi file", () => {
 
   it("remove asks no manager to stop a job when Domovoi's unit is not there", async () => {
     for (const target of [darwin, linux]) {
-      const dependencies = command({ ...target, exists: vi.fn(async () => false), capture: vi.fn(async () => ({ code: 0, stdout: "active\n" })) })
+      const dependencies = command({ ...target, exists: vi.fn(async () => false), capture: vi.fn(async () => ({ code: 0, stdout: "ActiveState=active\n" })) })
       expect(await runServiceCommand(["service", "remove"], dependencies)).toBe(0)
       expect(dependencies.run).not.toHaveBeenCalled()
     }
@@ -1155,7 +1156,7 @@ describe("CX-10 native service facts", () => {
   })
 
   it.each(["active", "failed", "unknown"])("keeps systemd %s facts unknown beyond its status read", async (state) => {
-    const dependencies = effects({ capture: vi.fn(async () => ({ code: state === "active" ? 0 : 3, stdout: state })) })
+    const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: `ActiveState=${state}\n` })) })
     const status = await serviceStatus({ platform: "linux", home: "/home/dl" }, dependencies)
     expect(status.running).toBe(state === "active")
     for (const key of ["crashCount", "startedAt", "pid", "lastExit", "supervisionFailure"]) expect(status).not.toHaveProperty(key)
