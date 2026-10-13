@@ -161,3 +161,29 @@ it("closes on the scrim but not on the card", async () => {
   await settle()
   expect(screen.queryByRole("dialog", { name: "Prompt editor" })).toBeNull()
 })
+
+// The design: attachments carry through from the composer. The editor draws
+// the draft's chips, a pasted file among them, and a removal in either place
+// is the same draft's.
+it("keeps the composer's attachments and removes them from the same draft", async () => {
+  const user = userEvent.setup()
+  await start()
+
+  await user.upload(screen.getByLabelText("Choose an image or file"), new File(["hello"], "notes.txt", { type: "text/plain" }))
+  await screen.findByRole("button", { name: "Remove notes.txt" })
+  const editor = await openEditor(user)
+
+  const chips = within(editor).getByRole("region", { name: "Attachments" })
+  expect(within(chips).getByText("notes.txt")).toBeTruthy()
+  const field = within(editor).getByRole("textbox", { name: "Prompt editor message" })
+  await user.click(field)
+  await user.paste(Array.from({ length: 41 }, (_, index) => `line ${index + 1}`).join("\n"))
+  expect(within(chips).getByText("pasted-text-1.txt")).toBeTruthy()
+
+  await user.click(within(chips).getByRole("button", { name: "Remove notes.txt" }))
+  await user.click(within(editor).getByRole("button", { name: "Keep as draft" }))
+  await settle()
+
+  expect(screen.queryByRole("button", { name: "Remove notes.txt" })).toBeNull()
+  expect(screen.getByText("pasted-text-1.txt")).toBeTruthy()
+})
