@@ -239,6 +239,41 @@ function rotationInstruction(binding: DeviceCredentialBinding): string {
   return `Enter it on that ${heldWord(binding)}. It is shown once, and the old credential no longer works.`
 }
 
+// The daemon takes device.rename, device.rotate and device.revoke only from a
+// connection holding its own credential, and answers a device credential by
+// closing the connection (server.ts). A browser tab always holds a device
+// credential: a pasted daemon credential is spent once to mint one. The
+// desktop app on the machine connects with the daemon's own credential. The
+// line follows Settings' form for a locked control: what is off, then why.
+function lockedInBrowserTab(binding: DeviceCredentialBinding, machine: string): string {
+  return `Rename, Rotate and ${removalWord(binding)} are off in a browser tab: they need the daemon's own credential. Use the desktop app on ${machine}.`
+}
+
+// fleet.enroll and fleet.forget the same way: the daemon refuses both from any
+// device credential (server.ts) with the authentication error, on which the
+// client closes its connection (client.ts).
+function fleetLockedInBrowserTab(controls: readonly string[], machine: string): string {
+  const many = controls.length > 1
+  return `${controls.join(" and ")} ${many ? "are" : "is"} off in a browser tab: ${many ? "they need" : "it needs"} the daemon's own credential. Use the desktop app on ${machine}.`
+}
+
+// A phone or tablet credential reaches only phoneAndTabletRpcMethods. The
+// daemon refuses anything else with the authentication error, and the client
+// then closes its connection. fleet.clientRoute, the
+// home daemon's lookup of a way to another machine, is not on it, so a
+// handheld tab cannot authorize itself there. The desktop app on the home
+// machine can authorize itself.
+function authorizeLockedInHandheldTab(home: string): string {
+  return `Authorize this client is off in a phone or tablet tab: the daemon does not look up a route to another machine for a phone or tablet credential. Use the desktop app on ${home}.`
+}
+
+// terminal.create is not on phoneAndTabletRpcMethods either: a handheld may
+// read a shell (terminal.watch) but never opens or types into one. Terminal
+// here opens a writable pane, which starts with terminal.create.
+function terminalLockedInHandheldTab(machine: string): string {
+  return `Terminal is off in a phone or tablet tab: the daemon does not open a shell for a phone or tablet credential. Use the desktop app on ${machine}.`
+}
+
 const timestamp = new Intl.DateTimeFormat("en-GB", {
   day: "2-digit",
   month: "short",
@@ -413,6 +448,9 @@ function MachineCard({
   clientAccess,
   onAuthorize,
   onRemoveAccess,
+  forgetLockedBy,
+  authorizeLocked,
+  terminalLocked,
 }: {
   machine: FleetMachine
   facts: MachineFacts
@@ -429,9 +467,17 @@ function MachineCard({
   clientAccess?: FleetAccessState | undefined
   onAuthorize?: ((machine: FleetMachine) => void) | undefined
   onRemoveAccess?: ((machine: FleetMachine) => void) | undefined
+  // Controls this tab cannot use, because the daemon refuses their request
+  // for its credential and the refusal drops the connection. Forget's reason is one line for the whole view, named
+  // by its id; the others are this card's own line.
+  forgetLockedBy?: string | undefined
+  authorizeLocked?: string | undefined
+  terminalLocked?: string | undefined
 }) {
   const [stalledOpen, setStalledOpen] = useState(false)
   const stalledId = useId()
+  const authorizeReasonId = useId()
+  const terminalReasonId = useId()
   const note = healthNote[machine.health]?.(machine.label)
   const admitted = clientAccess?.state === "admitted"
   const attachment = machineAttachment(machine, admitted)
@@ -442,6 +488,9 @@ function MachineCard({
   const showsTerminal = onOpenTerminal && machine.capabilities.includes("terminals")
   const unreachable = machine.health === "unreachable"
   const credentialMissing = !machine.self && !admitted
+  const authorizeReason = credentialMissing && onAuthorize ? authorizeLocked : undefined
+  const terminalReason = showsTerminal ? terminalLocked : undefined
+  const forgetLocked = forgetLockedBy !== undefined
   const tone = healthVariant[machine.health]
   return (
     <div
@@ -467,17 +516,23 @@ function MachineCard({
         </span>
       </div>
       <MachineFactRows machine={machine} facts={facts} now={now} />
-      {note || credentialMissing || clientAccess?.state === "refused" || admitted || (!attachment.selectable && !credentialMissing && (onUse || showsTerminal)) ? (
+      {note || credentialMissing || clientAccess?.state === "refused" || admitted || terminalReason !== undefined || (!attachment.selectable && !credentialMissing && (onUse || showsTerminal)) ? (
         <div className="flex flex-col gap-1.5 px-[15px] pt-2.5">
           {note ? <p className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">{note}</p> : null}
           {credentialMissing ? (
             <p className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">
               This app holds no client credential for {machine.label}, so its agents and sessions are unknown here.
-              Authorize this client to read them, open its sessions or open a terminal there. Machine pairing alone does not grant client access.
+              {authorizeReason === undefined ? " Authorize this client to read them, open its sessions or open a terminal there. Machine pairing alone does not grant client access." : null}
             </p>
+          ) : null}
+          {authorizeReason !== undefined ? (
+            <p id={authorizeReasonId} className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-faint">{authorizeReason}</p>
           ) : null}
           {!attachment.selectable && !credentialMissing && (onUse || showsTerminal) ? (
             <p className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-muted-foreground">{attachment.reason}</p>
+          ) : null}
+          {terminalReason !== undefined ? (
+            <p id={terminalReasonId} className="m-0 max-w-[68ch] text-[11px] leading-relaxed text-faint">{terminalReason}</p>
           ) : null}
           {admitted ? <p className="m-0 font-machine text-[11px] text-success">Client credential verified</p> : null}
           {clientAccess?.state === "refused" ? <p role="status" className="m-0 text-[11px] leading-relaxed text-destructive">{clientAccess.message}</p> : null}
@@ -509,8 +564,9 @@ function MachineCard({
           </Button>
         ) : null}
         {credentialMissing && onAuthorize ? (
-          <Button variant="outline" className={secondaryControl} disabled={!connected || clientAccess?.state === "checking"}
-            aria-label={`Authorize this client for ${machine.label}`} onClick={() => onAuthorize(machine)}>
+          <Button variant="outline" className={secondaryControl} disabled={authorizeReason !== undefined || !connected || clientAccess?.state === "checking"}
+            aria-label={`Authorize this client for ${machine.label}`} aria-describedby={authorizeReason !== undefined ? authorizeReasonId : undefined}
+            onClick={() => { if (authorizeReason === undefined) onAuthorize(machine) }}>
             {clientAccess?.state === "checking" ? "Verifying client access" : "Authorize this client"}
           </Button>
         ) : null}
@@ -521,14 +577,22 @@ function MachineCard({
         ) : null}
         <span className="flex-1" />
         {showsTerminal ? (
-          <Button variant="ghost" className={quietControl} disabled={!canOpenTerminal} aria-label={`Terminal on ${machine.label}`} onClick={() => onOpenTerminal(machine.id)}>
+          <Button variant="ghost" className={quietControl} disabled={terminalReason !== undefined || !canOpenTerminal} aria-label={`Terminal on ${machine.label}`}
+            aria-describedby={terminalReason !== undefined ? terminalReasonId : undefined}
+            onClick={() => { if (terminalReason === undefined) onOpenTerminal(machine.id) }}>
             Terminal
           </Button>
         ) : null}
         {admitted && onRemoveAccess ? (
           <Button variant="ghost" className={quietControl} onClick={() => onRemoveAccess(machine)}>Remove local access</Button>
         ) : null}
-        {onForget && !machine.self ? (
+        {onForget && !machine.self && forgetLocked ? (
+          // The consequence is for a Forget this tab can press; the view's
+          // reason line says why this one cannot.
+          <Button variant="ghost" className={destructiveControl} disabled aria-label={`Forget ${machine.label}`} aria-describedby={forgetLockedBy}>
+            Forget
+          </Button>
+        ) : onForget && !machine.self ? (
           <Tooltip>
             <TooltipTrigger asChild>
               <Button
@@ -547,7 +611,7 @@ function MachineCard({
           </Tooltip>
         ) : null}
       </div>
-      {onForget && !machine.self ? (
+      {onForget && !machine.self && !forgetLocked ? (
         <p className={`${coarseFallback} m-0 max-w-[68ch] px-[15px] pb-3 text-[11px] leading-relaxed text-muted-foreground`}>
           {forgetConsequence}
         </p>
@@ -831,6 +895,7 @@ function LabelCell({
 function DeviceRow({
   device,
   disabled,
+  lockedReason,
   undoable,
   onRotate,
   onRevoke,
@@ -839,6 +904,9 @@ function DeviceRow({
 }: {
   device: PairedDeviceSummary
   disabled: boolean
+  // Set where this client can never press the row's controls; it replaces the
+  // consequence line, which describes a control this client cannot reach.
+  lockedReason: string | undefined
   undoable: boolean
   onRotate: () => void
   onRevoke: () => void
@@ -847,12 +915,13 @@ function DeviceRow({
 }) {
   const revoked = device.revokedAt !== undefined
   const isMachine = device.binding.kind === "machine"
+  const locked = disabled || lockedReason !== undefined
   return (
     <tr>
       <KindCell binding={device.binding} dimmed={revoked} />
       <LabelCell
         device={device}
-        disabled={disabled}
+        disabled={locked}
         undoable={undoable}
         onRename={onRename}
         onUndo={onUndoRename}
@@ -875,7 +944,7 @@ function DeviceRow({
           <Button
             variant="outline"
             className={secondaryControl}
-            disabled={disabled || revoked}
+            disabled={locked || revoked}
             aria-label={
               isMachine
                 ? `Rotate the credential ${device.label} uses`
@@ -889,7 +958,7 @@ function DeviceRow({
           <Button
             variant="ghost"
             className={destructiveControl}
-            disabled={disabled || revoked}
+            disabled={locked || revoked}
             aria-label={`${removalWord(device.binding)} ${device.label}`}
             {...(revoked ? {} : { onClick: onRevoke })}
           >
@@ -898,7 +967,9 @@ function DeviceRow({
         </div>
         {/* The Desktop V2 frame draws the consequence as a standing line
             under each row, read before the confirmation opens. */}
-        {revoked ? null : (
+        {lockedReason !== undefined ? (
+          <p className="mt-2 max-w-[38ch] text-[11px] leading-relaxed text-faint">{lockedReason}</p>
+        ) : revoked ? null : (
           <p className="mt-2 max-w-[38ch] text-[11px] leading-relaxed text-muted-foreground">
             {revokeConsequence(device.binding)}
           </p>
@@ -1219,6 +1290,7 @@ export function FleetView({
     if (removedAccess && clientAccess[removedAccess.machineId]?.state === "admitted") setRemovedAccess(null)
   }, [clientAccess, removedAccess])
   const pairedDevicesHeadingId = useId()
+  const fleetLockId = useId()
   const [devices, setDevices] = useState<PairedDeviceSummary[] | null>(null)
   const [devicesError, setDevicesError] = useState("")
   const [actionError, setActionError] = useState("")
@@ -1253,10 +1325,15 @@ export function FleetView({
     }
   }, [onListDevices])
 
+  // The web app greets as phone or tablet on a handheld browser, and the
+  // daemon answers device.list from that credential by closing the
+  // connection (phoneAndTabletRpcMethods), so such a tab never asks.
+  const handheld = clientKind === "phone" || clientKind === "tablet"
+
   useEffect(() => {
-    if (!connected) return
+    if (!connected || handheld) return
     void loadDevices()
-  }, [connected, loadDevices])
+  }, [connected, handheld, loadDevices])
 
   const replaceDevice = (device: PairedDeviceSummary) => {
     setDevices((current) => current
@@ -1264,15 +1341,26 @@ export function FleetView({
       : current)
   }
 
+  // A browser tab never sends a request the daemon answers by closing it.
+  // Only the desktop app is not one: the web app greets as web, phone or
+  // tablet by the browser it runs in (apps/web client-kind.ts).
+  const browserTab = clientKind !== "desktop"
+  const managesDevices = !readOnly && !browserTab
+  const homeLabel = devicesMachineLabel ?? "this machine"
+  const lockedFleetControls = [...(onPairMachine ? ["Pair a machine"] : []), ...(onForgetMachine ? ["Forget"] : [])]
+  const fleetLocked = browserTab && !readOnly && lockedFleetControls.length > 0
+    ? fleetLockedInBrowserTab(lockedFleetControls, homeLabel)
+    : undefined
+
   const revokeDevice = async (device: PairedDeviceSummary) => {
-    if (readOnly) return
+    if (!managesDevices) return
     setPendingDeviceId(device.id)
     setActionError("")
     try {
       const result = await onRevokeDevice({ deviceId: device.id })
       replaceDevice(result.device)
     } catch (cause) {
-      setActionError(cause instanceof Error ? cause.message : "That device could not be revoked")
+      setActionError(cause instanceof Error ? cause.message : `That device could not be ${removedWord(device.binding)}`)
     } finally {
       setPendingDeviceId("")
       setRevoking(null)
@@ -1280,7 +1368,7 @@ export function FleetView({
   }
 
   const renameDevice = async (device: PairedDeviceSummary, label: string) => {
-    if (readOnly) return
+    if (!managesDevices) return
     setPendingDeviceId(device.id)
     setActionError("")
     try {
@@ -1301,7 +1389,7 @@ export function FleetView({
   // renamed the row in between, the daemon refuses and sends the row as it
   // stands, which replaces the stale one here instead of being overwritten.
   const undoRename = async () => {
-    if (readOnly || !undo) return
+    if (!managesDevices || !undo) return
     setPendingDeviceId(undo.deviceId)
     setActionError("")
     try {
@@ -1323,7 +1411,7 @@ export function FleetView({
   }
 
   const forgetMachine = async (machine: FleetMachine) => {
-    if (readOnly || !onForgetMachine) return
+    if (readOnly || browserTab || !onForgetMachine) return
     setForgetPending(true)
     setForgetNotice(null)
     try {
@@ -1341,7 +1429,7 @@ export function FleetView({
   }
 
   const rotateDevice = async (device: PairedDeviceSummary) => {
-    if (readOnly) return
+    if (!managesDevices) return
     setPendingDeviceId(device.id)
     setActionError("")
     setReceipt(null)
@@ -1368,16 +1456,22 @@ export function FleetView({
               </p>
             </div>
             {onPairMachine ? (
-              <Button variant="outline" disabled={readOnly} onClick={() => { if (!readOnly) setPairing(true) }}>
+              <Button variant="outline" disabled={readOnly || browserTab} aria-describedby={fleetLocked !== undefined ? fleetLockId : undefined}
+                onClick={() => { if (!readOnly && !browserTab) setPairing(true) }}>
                 <PlusIcon data-icon="inline-start" />
                 Pair a machine
               </Button>
             ) : null}
           </div>
+          {fleetLocked !== undefined ? (
+            <p id={fleetLockId} className="mb-0 mt-2 max-w-[72ch] text-[11px] leading-relaxed text-faint">{fleetLocked}</p>
+          ) : null}
 
           <section className="mt-[22px] flex flex-col gap-3.5" aria-label="Machines">
             {removedAccess ? <Alert><AlertTitle>Local client access removed</AlertTitle><AlertDescription>
-              This app no longer holds the credential for {removedAccess.label}. Revoke this device in {removedAccess.label}'s Devices list to end its authority there.
+              {/* Q378 A: a client binding there, so its control is Unpair, in
+                  the one app holding that daemon's own credential. */}
+              This app no longer holds the credential for {removedAccess.label}. To end its authority there, unpair this device in the desktop app on {removedAccess.label}, under Machines.
             </AlertDescription></Alert> : null}
             {fleetOverflow ? <FleetOverflowAlert overflow={fleetOverflow} /> : null}
             {forgetNotice?.outcome === "refused" ? (
@@ -1408,15 +1502,20 @@ export function FleetView({
                     live={readings[machine.id]?.live === true}
                     connected={connected}
                     clientAccess={clientAccess[machine.id]}
-                    {...(onAuthorizeClient && !readOnly ? { onAuthorize: setAuthorizing } : {})}
+                    {...(onAuthorizeClient && !readOnly ? { onAuthorize: (target: FleetMachine) => { if (!handheld) setAuthorizing(target) } } : {})}
                     {...(onRemoveClientAccess && !readOnly ? { onRemoveAccess: (target: FleetMachine) => {
                       onRemoveClientAccess(target.id)
                       setRemovedAccess({ machineId: target.id, label: target.label })
                     } } : {})}
                     {...(onUseMachine && !readOnly ? { onUse: onUseMachine } : {})}
                     {...(onMoveSessionHere && !readOnly ? { onMoveSessionHere } : {})}
-                    {...(onOpenMachineTerminal && !readOnly ? { onOpenTerminal: onOpenMachineTerminal } : {})}
-                    {...(onForgetMachine && !readOnly ? { onForget: (target: FleetMachine) => setForgetting(target) } : {})}
+                    {...(onOpenMachineTerminal && !readOnly ? { onOpenTerminal: (machineId: string) => { if (!handheld) onOpenMachineTerminal(machineId) } } : {})}
+                    {...(onForgetMachine && !readOnly ? { onForget: (target: FleetMachine) => { if (!browserTab) setForgetting(target) } } : {})}
+                    {...(fleetLocked !== undefined && onForgetMachine ? { forgetLockedBy: fleetLockId } : {})}
+                    {...(handheld ? {
+                      authorizeLocked: authorizeLockedInHandheldTab(homeLabel),
+                      terminalLocked: terminalLockedInHandheldTab(machine.label),
+                    } : {})}
                   />
                 )))}
               </div>
@@ -1483,6 +1582,7 @@ export function FleetView({
                         key={paired.id}
                         device={paired}
                          disabled={readOnly || !connected || pendingDeviceId === paired.id}
+                        lockedReason={browserTab ? lockedInBrowserTab(paired.binding, devicesMachineLabel ?? "this machine") : undefined}
                         undoable={undo?.deviceId === paired.id}
                         onRotate={() => void rotateDevice(paired)}
                         onRevoke={() => setRevoking(paired)}
@@ -1513,7 +1613,13 @@ export function FleetView({
               </Empty>
             ) : null}
 
-            {connected && !devices && !devicesError ? (
+            {connected && handheld ? (
+              <p className="m-0 px-[15px] pb-3 text-[11px] leading-relaxed text-faint">
+                {`Paired devices are off in a phone or tablet tab: the daemon does not list them for a phone or tablet credential. Use the desktop app on ${devicesMachineLabel ?? "this machine"}.`}
+              </p>
+            ) : null}
+
+            {connected && !handheld && !devices && !devicesError ? (
               <>
                 <table className="w-full animate-pulse border-collapse">
                   <caption className="sr-only">Devices paired with this machine</caption>
@@ -1535,22 +1641,22 @@ export function FleetView({
       </ScrollArea>
 
       <RevokeConfirmation
-        device={readOnly ? null : revoking}
+        device={managesDevices ? revoking : null}
         busy={pendingDeviceId !== ""}
         onConfirm={(device) => void revokeDevice(device)}
         onClose={() => setRevoking(null)}
       />
-      {!readOnly && authorizing && onAuthorizeClient ? <AuthorizeClientDialog key={authorizing.id} machine={authorizing} kind={clientKind}
+      {!readOnly && !handheld && authorizing && onAuthorizeClient ? <AuthorizeClientDialog key={authorizing.id} machine={authorizing} kind={clientKind}
         onAuthorize={onAuthorizeClient} onClose={() => setAuthorizing(null)} /> : null}
 
       <ForgetConfirmation
-        machine={readOnly ? null : forgetting}
+        machine={readOnly || browserTab ? null : forgetting}
         busy={forgetPending}
         onConfirm={(machine) => void forgetMachine(machine)}
         onClose={() => setForgetting(null)}
       />
 
-      {onPairMachine && !readOnly ? (
+      {onPairMachine && !readOnly && !browserTab ? (
         <PairMachineDialog
           open={pairing}
           onOpenChange={setPairing}

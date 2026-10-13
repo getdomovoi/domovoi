@@ -74,7 +74,7 @@ import { promptProblem, recordedBuildBasis, sendReadinessOverSocket, sessionDeta
 import { queuedCancelParams, sendDelivery } from "./session-delivery"
 import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
-import { TabletShell } from "./tablet-shell"
+import { TabletShell, type GateProblem } from "./tablet-shell"
 import { useTheme } from "./theme/theme-provider"
 import {
   missingSkillProblem,
@@ -121,7 +121,11 @@ export function App() {
     else next.delete(sessionId)
     return next
   })
-  const [decideProblem, setDecideProblem] = useState("")
+  // Why the daemon did not take the last answer, with the gate it answered:
+  // the tablet shows a gate per session, and one gate's refusal must not
+  // appear on another's card.
+  const [decideProblem, setDecideProblem] = useState<GateProblem | undefined>(undefined)
+  const decideProblemFor = (approvalId: string) => decideProblem?.approvalId === approvalId ? decideProblem.text : ""
   // Frames 13 and 14: what the next turn carries besides words. Held here
   // and sent with the turn; nothing is kept once the send is answered.
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -167,6 +171,9 @@ export function App() {
   // state has re-rendered anything. The latch is read and set synchronously, so
   // the second tap has nothing left to do.
   const inFlightSend = useRef(false)
+  // The same latch for an answer to a gate: two taps on Allow once land
+  // before the deciding state has disabled anything.
+  const inFlightDecide = useRef(false)
   // Undefined is "the person has not chosen", which leaves the project's own
   // skills alone. An empty set is a deliberate "no skills this turn". The two
   // are different requests and the daemon treats them differently.
@@ -656,8 +663,10 @@ export function App() {
     decision: ApprovalDecision,
     explanation?: string,
   ) => {
+    if (inFlightDecide.current) return
+    inFlightDecide.current = true
     setDeciding(true)
-    setDecideProblem("")
+    setDecideProblem(undefined)
     try {
       await mutate("approval.resolve", {
         approvalId: approval.id,
@@ -670,8 +679,9 @@ export function App() {
     } catch (cause) {
       // The gate is still waiting on the machine; a client that could not
       // answer it has not changed it. The screen stays and says why.
-      setDecideProblem(decisionProblem(cause))
+      setDecideProblem({ approvalId: approval.id, text: decisionProblem(cause) })
     } finally {
+      inFlightDecide.current = false
       setDeciding(false)
     }
   }
@@ -914,6 +924,7 @@ export function App() {
             <DenyExplainScreen
               approval={openApproval}
               pending={deciding}
+              problem={decideProblemFor(openApproval.id)}
               onSend={(explanation) => void decide(explanation ? "deny-explain" : "deny", explanation)}
               onBack={() => setExplaining(false)}
             />
@@ -925,7 +936,7 @@ export function App() {
               viewer={{ client, deviceId }}
               pending={deciding}
               notice={notice}
-              problem={decideProblem}
+              problem={decideProblemFor(openApproval.id)}
               onDecide={(decision) => void decide(decision)}
               onDenyExplain={() => setExplaining(true)}
               onBack={() => setOpenApprovalId(undefined)}
@@ -1010,6 +1021,9 @@ export function App() {
             draft={draft}
             access={clientAccess}
             sending={sending || deciding}
+            deciding={deciding}
+            decideProblem={decideProblem}
+            sendProblems={sendProblems}
             onSelectSession={(sessionId) => {
               setOpenSessionId(sessionId)
               setOpenApprovalId(undefined)

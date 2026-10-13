@@ -98,8 +98,8 @@ function UnreachableMachines({ fleet, now }: { fleet: FleetEntry[], now: number 
 // phone talks to. Idleness is vouched for only for that machine, because
 // fleet.list carries no other machine's sessions. While a connection notice is
 // up, what was read may no longer hold, so the count goes and the sentence
-// speaks of the last read.
-function idleSentence(machine: string, fleet: FleetEntry[] | undefined, stale: boolean): string {
+// speaks of the last read. The tablet's empty thread pane says the same.
+export function idleSentence(machine: string, fleet: FleetEntry[] | undefined, stale: boolean): string {
   if (stale) return `${machine} had no work in flight when last read.`
   const answering = fleet
     ? fleet.filter((entry) => entry.kind === "machine" && entry.machine.health === "healthy").length

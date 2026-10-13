@@ -22,23 +22,28 @@ import { useTheme } from "../theme/theme-provider"
 export function DenyExplainScreen({
   approval,
   pending,
+  problem = "",
   onSend,
   onBack,
 }: {
   approval: ApprovalRequest
   pending: boolean
+  // Why the daemon did not take the last denial, in decisionProblem's words.
+  // The gate is still waiting, so the screen and the reason written stay.
+  problem?: string
   onSend: (explanation?: string) => void
   onBack: () => void
 }) {
   const [explanation, setExplanation] = useState("")
-  const [problem, setProblem] = useState("")
+  // What is wrong with the reason as written, found before anything is sent.
+  const [draftProblem, setDraftProblem] = useState("")
   const { palette } = useTheme()
   const [footprint, setFootprint] = useState(0)
 
   const send = () => {
     const refusal = explanationProblem(explanation)
     if (refusal) {
-      setProblem(refusal)
+      setDraftProblem(refusal)
       return
     }
     onSend(explanation.trim())
@@ -46,7 +51,7 @@ export function DenyExplainScreen({
 
   const write = (next: string) => {
     setExplanation(next)
-    if (problem) setProblem("")
+    if (draftProblem) setDraftProblem("")
   }
 
   return (
@@ -106,7 +111,7 @@ export function DenyExplainScreen({
             />
           </Card>
 
-          {problem ? <Text className="text-[11px] text-destructive">{problem}</Text> : null}
+          {draftProblem ? <Text className="text-[11px] text-destructive">{draftProblem}</Text> : null}
 
           <View className="flex-row flex-wrap gap-1.5">
             {denyReasons.map((reason) => {
@@ -147,6 +152,9 @@ export function DenyExplainScreen({
       </BlurBackdrop>
 
       <FloatingBar shape="decision" padding="stack" lifted onFootprint={setFootprint}>
+        {problem ? (
+          <Text accessibilityRole="alert" className="px-1 text-[12px] leading-[18px] text-warn-fg">{problem}</Text>
+        ) : null}
         <Button
           title="Send denial"
           variant="deny"

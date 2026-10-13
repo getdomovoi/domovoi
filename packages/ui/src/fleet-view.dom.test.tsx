@@ -3,7 +3,7 @@ import userEvent from "@testing-library/user-event"
 import { StrictMode } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary, type ProviderRuntime } from "@getdomovoi/protocol"
+import { deviceLabelMismatchErrorCode, fleetForgetRefusalSchema, maximumFleetEntries, type ClientKind, type FleetEntry, type FleetSnapshotOverflow, type FleetForgetResult, type FleetMachine, type PairedDeviceSummary, type ProviderRuntime } from "@getdomovoi/protocol"
 
 import { DaemonRpcError } from "./client.js"
 import { useReadOnVisit, type FleetAccessState, type HeldReading, type MachineReading } from "./fleet-access-session.js"
@@ -63,7 +63,10 @@ it("shows client authorization next to disabled remote controls and names its au
   expect(dialog.textContent).toContain("domovoid pair --client desktop prints a one-time pairing code, which this field does not take.")
   expect(dialog.textContent).not.toContain("--label")
   expect(dialog.textContent).toContain("session sends, approvals and terminals")
-  expect(dialog.textContent).toContain("Devices list")
+  // Q378 A: this app's credential is a client binding on studio, so its row
+  // there says Unpair, and only studio's own desktop app can press it.
+  expect(dialog.textContent).toContain("Closing the app or removing local access does not unpair this device. To end its authority, unpair it in the desktop app on studio, under Machines.")
+  expect(dialog.textContent).not.toMatch(/revoke/iu)
   expect(within(dialog).getByLabelText("Client credential").getAttribute("type")).toBe("password")
 })
 
@@ -535,6 +538,8 @@ function renderFleet(overrides: {
   readings?: Readonly<Record<string, HeldReading>>
   onReadMachine?: (machineId: string, signal: AbortSignal) => Promise<void>
   providers?: ProviderRuntime[]
+  clientKind?: ClientKind
+  authorizes?: boolean
 } = {}) {
   const devices = overrides.devices ?? [device]
   const onListDevices = vi.fn(overrides.onListDevices ?? (() => Promise.resolve({ devices })))
@@ -567,6 +572,7 @@ function renderFleet(overrides: {
   const onUseMachine = vi.fn()
   const onOpenMachineTerminal = vi.fn()
   const onMoveSessionHere = vi.fn(overrides.onMoveSessionHere)
+  const onAuthorizeClient = vi.fn((_machineId: string, _credential: string, _signal: AbortSignal) => Promise.resolve())
   const user = userEvent.setup()
   render(
     <TooltipProvider>
@@ -587,16 +593,137 @@ function renderFleet(overrides: {
         onUseMachine={onUseMachine}
         onOpenMachineTerminal={onOpenMachineTerminal}
         onMoveSessionHere={onMoveSessionHere}
+        {...(overrides.authorizes ? { onAuthorizeClient } : {})}
         {...(overrides.clientAccess ? { clientAccess: overrides.clientAccess } : {})}
         {...(overrides.readOnly !== undefined ? { readOnly: overrides.readOnly } : {})}
         {...(overrides.readings ? { readings: overrides.readings } : {})}
         {...(overrides.onReadMachine ? { onReadMachine: overrides.onReadMachine } : {})}
+        {...(overrides.clientKind ? { clientKind: overrides.clientKind } : {})}
         providers={overrides.providers ?? [claude]}
       />
     </TooltipProvider>,
   )
-  return { user, onListDevices, onRevokeDevice, onRotateDevice, onRenameDevice, onPairMachine, onForgetMachine, onUseMachine, onOpenMachineTerminal, onMoveSessionHere }
+  return { user, onListDevices, onRevokeDevice, onRotateDevice, onRenameDevice, onPairMachine, onForgetMachine, onUseMachine, onOpenMachineTerminal, onMoveSessionHere, onAuthorizeClient }
 }
+
+// The daemon takes device.rename, device.rotate and device.revoke only with its
+// own credential, and refuses a device credential by closing the connection. A
+// browser tab always holds a device credential, so it offers none of the three
+// and says why beside each row, as Settings states its other locked controls.
+it("locks Rename, Rotate and Unpair in a browser tab and says why beside each row", async () => {
+  const { user, onRevokeDevice, onRotateDevice, onRenameDevice } = renderFleet({ clientKind: "web", devices: [device, runner] })
+  const client = await screen.findByRole("row", { name: /studio-ipad/ })
+  const machine = screen.getByRole("row", { name: /beelink-ser8/ })
+
+  for (const [row, label, word] of [[client, "studio-ipad", "Unpair"], [machine, "beelink-ser8", "Revoke"]] as const) {
+    const controls = [
+      within(row).getByRole("button", { name: `Rename ${label}` }),
+      within(row).getByRole("button", { name: new RegExp(`^Rotate the credential (on )?${label}( uses)?$`, "u") }),
+      within(row).getByRole("button", { name: `${word} ${label}` }),
+    ]
+    for (const control of controls) {
+      expect(control).toHaveProperty("disabled", true)
+      await user.click(control)
+    }
+    expect(row.textContent).toContain(`Rename, Rotate and ${word} are off in a browser tab: they need the daemon's own credential. Use the desktop app on workshop.`)
+  }
+  // The consequence lines are for a control this tab can press; here it cannot.
+  expect(screen.queryByText(clientConsequence)).toBeNull()
+  expect(screen.queryByText(machineConsequence)).toBeNull()
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  expect(onRenameDevice).not.toHaveBeenCalled()
+  expect(onRotateDevice).not.toHaveBeenCalled()
+  expect(onRevokeDevice).not.toHaveBeenCalled()
+})
+
+// On a handheld browser the web app greets as phone or tablet, and the daemon
+// answers device.list from such a credential by closing the connection
+// (phoneAndTabletRpcMethods). The tab never asks, and says so where the list
+// would be.
+it.each(["phone", "tablet"] as const)("never lists paired devices in a %s tab, and says why", async (clientKind) => {
+  const { onListDevices } = renderFleet({ clientKind, devices: [device, runner] })
+  await act(async () => { await Promise.resolve() })
+
+  expect(onListDevices).not.toHaveBeenCalled()
+  expect(screen.getByText("Paired devices are off in a phone or tablet tab: the daemon does not list them for a phone or tablet credential. Use the desktop app on workshop.")).toBeTruthy()
+  expect(screen.queryByText("Loading paired devices")).toBeNull()
+  expect(screen.queryByRole("row", { name: /studio-ipad/ })).toBeNull()
+})
+
+it("keeps Rename, Rotate and Unpair live in the desktop app", async () => {
+  renderFleet({ clientKind: "desktop" })
+  const row = await screen.findByRole("row", { name: /studio-ipad/ })
+  expect(within(row).getByRole("button", { name: "Rename studio-ipad" })).toHaveProperty("disabled", false)
+  expect(within(row).getByRole("button", { name: "Rotate the credential on studio-ipad" })).toHaveProperty("disabled", false)
+  expect(within(row).getByRole("button", { name: "Unpair studio-ipad" })).toHaveProperty("disabled", false)
+  expect(row.textContent).not.toContain("are off in a browser tab")
+  expect(row.textContent).toContain(clientConsequence)
+})
+
+// fleet.enroll and fleet.forget, like the device methods, need the daemon's own
+// credential. The daemon refuses them from a device credential, which is all a
+// browser tab holds, and the client closes its connection on that refusal.
+const pairAndForgetLocked = "Pair a machine and Forget are off in a browser tab: they need the daemon's own credential. Use the desktop app on workshop."
+
+it.each(["web", "phone", "tablet"] as const)("locks Pair a machine and Forget in a %s tab and says why", async (clientKind) => {
+  const { user, onPairMachine, onForgetMachine } = renderFleet({ clientKind })
+  const pair = screen.getByRole("button", { name: "Pair a machine" })
+  const forget = within(screen.getByRole("group", { name: "studio" })).getByRole("button", { name: "Forget studio" })
+
+  for (const control of [pair, forget]) {
+    expect(control).toHaveProperty("disabled", true)
+    await user.click(control)
+  }
+  expect(screen.getByText(pairAndForgetLocked)).toBeTruthy()
+  expect(forget.getAttribute("aria-describedby")).toBe(screen.getByText(pairAndForgetLocked).id)
+  // The consequence line is for a Forget this tab can press; here it cannot.
+  expect(screen.queryByText(/^Deletes the credential this machine holds for it/u)).toBeNull()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(screen.queryByRole("alertdialog")).toBeNull()
+  expect(onPairMachine).not.toHaveBeenCalled()
+  expect(onForgetMachine).not.toHaveBeenCalled()
+})
+
+// A phone or tablet credential reaches only phoneAndTabletRpcMethods. Neither
+// fleet.clientRoute (how a client finds its way to another machine) nor
+// terminal.create is on it; the daemon refuses either, and the client then
+// closes its connection.
+it.each(["phone", "tablet"] as const)("locks Authorize this client and Terminal in a %s tab and says why", async (clientKind) => {
+  const { user, onAuthorizeClient, onOpenMachineTerminal } = renderFleet({ clientKind, authorizes: true })
+  const studioCard = within(screen.getByRole("group", { name: "studio" }))
+  const workshopCard = within(screen.getByRole("group", { name: "workshop" }))
+  const authorize = studioCard.getByRole("button", { name: "Authorize this client for studio" })
+  const terminal = workshopCard.getByRole("button", { name: "Terminal on workshop" })
+
+  for (const control of [authorize, terminal]) {
+    expect(control).toHaveProperty("disabled", true)
+    await user.click(control)
+  }
+  expect(studioCard.getByText("Authorize this client is off in a phone or tablet tab: the daemon does not look up a route to another machine for a phone or tablet credential. Use the desktop app on workshop.")).toBeTruthy()
+  expect(studioCard.queryByText(/Authorize this client to read them/u)).toBeNull()
+  expect(workshopCard.getByText("Terminal is off in a phone or tablet tab: the daemon does not open a shell for a phone or tablet credential. Use the desktop app on workshop.")).toBeTruthy()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(onAuthorizeClient).not.toHaveBeenCalled()
+  expect(onOpenMachineTerminal).not.toHaveBeenCalled()
+})
+
+// The daemon sends fleet.clientRoute and opens a shell for a web credential, so
+// a web tab keeps both.
+it("keeps Authorize this client and Terminal live in a web tab", () => {
+  renderFleet({ clientKind: "web", authorizes: true })
+  expect(screen.getByRole("button", { name: "Authorize this client for studio" })).toHaveProperty("disabled", false)
+  expect(screen.getByRole("button", { name: "Terminal on workshop" })).toHaveProperty("disabled", false)
+  expect(screen.queryByText(/off in a phone or tablet tab/u)).toBeNull()
+})
+
+it("keeps Pair a machine, Forget, Authorize this client and Terminal live in the desktop app", () => {
+  renderFleet({ clientKind: "desktop", authorizes: true })
+  for (const name of ["Pair a machine", "Forget studio", "Authorize this client for studio", "Terminal on workshop"]) {
+    expect(screen.getByRole("button", { name })).toHaveProperty("disabled", false)
+  }
+  expect(screen.queryByText(pairAndForgetLocked)).toBeNull()
+  expect(screen.queryByText(/off in a (browser|phone or tablet) tab/u)).toBeNull()
+})
 
 it("renders the v2 Machines hierarchy without a settings rail", () => {
   renderFleet()
@@ -753,6 +880,16 @@ it("tells one upgrade story for either credential migration", async () => {
     "This pairing predates bound credentials. Pair this device again to restore it.",
   )
   expect(explanations[1]).toBe(explanations[0])
+})
+
+it("says a client could not be unpaired when the failure carries no reason", async () => {
+  const { user } = renderFleet({ onRevokeDevice: () => Promise.reject("socket closed") })
+  await screen.findByRole("row", { name: /studio-ipad/ })
+
+  await user.click(screen.getByRole("button", { name: "Unpair studio-ipad" }))
+  await user.click(await screen.findByRole("button", { name: "Unpair device" }))
+
+  expect((await screen.findByText("Device action failed")).parentElement?.textContent).toContain("That device could not be unpaired")
 })
 
 it("keeps the device when the confirmation is cancelled", async () => {

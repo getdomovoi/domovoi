@@ -260,6 +260,35 @@ describe("App", () => {
     expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeOnTheScreen()
   })
 
+  // The connection drops before the daemon confirms. The phone is then
+  // watching, and the gate must still say the answer may have landed.
+  it("says an Allow lost to a dropped connection may or may not have landed", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Allow once" }))
+    expect(socket.requests("approval.resolve")).toHaveLength(1)
+    await act(async () => { socket.close() })
+    await settle()
+
+    expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeOnTheScreen()
+    expect(screen.getByRole("alert")).toHaveTextContent("The daemon went away before it confirmed. The gate may or may not have been answered; when the connection returns, this screen shows which.")
+  })
+
+  // A refusal says the gate is still waiting. A drop after it does not
+  // change that, so the watching phone keeps the daemon's words.
+  it("keeps a refused Allow's sentence after the connection drops", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Allow once" }))
+    await act(async () => { socket.refuse("approval.resolve", -32603, "The approval store is unavailable") })
+    await settle()
+    await act(async () => { socket.close() })
+    await settle()
+
+    expect(screen.getByText("Watching only. A device paired with full access answers this gate.")).toBeOnTheScreen()
+    expect(screen.getByRole("alert")).toHaveTextContent("The daemon refused: The approval store is unavailable. The gate is still waiting.")
+  })
+
   // Ruling Q356 A: Tell the agent on a policy refusal sends the refusal's
   // remedy to the session as a steer, through the same session.send a typed
   // message uses. Like a typed message it names the session's open comments
@@ -748,6 +777,111 @@ describe("App", () => {
     expect(screen.queryByText(`acme-api on ${self.name}`)).toBeNull()
     expect(screen.getByText(`Reading the agents' files on ${self.name}.`)).toBeOnTheScreen()
     expect(socket.requests("tool.inventory")).toHaveLength(1)
+  })
+
+  // A refused deny on the reason screen is not silent: the gate is still
+  // waiting, and the screen keeps the reason written and says why.
+  it("keeps the reason screen with the daemon's refusal when a deny is refused", async () => {
+    const { socket } = await openApp(workspace())
+    await fireEvent.press(screen.getByRole("button", { name: billing.title }))
+    await fireEvent.press(screen.getByRole("button", { name: "Deny" }))
+    await fireEvent.changeText(screen.getByLabelText("Reason sent to the agent"), "Use staging first")
+    await fireEvent.press(screen.getByRole("button", { name: "Send denial" }))
+    await act(async () => { socket.refuse("approval.resolve", -32603, "The approval store is unavailable") })
+    await settle()
+
+    expect(screen.getByRole("alert")).toHaveTextContent("The daemon refused: The approval store is unavailable. The gate is still waiting.")
+    expect(screen.getByDisplayValue("Use staging first")).toBeOnTheScreen()
+  })
+
+  // Q338 A: at tablet widths App draws TabletShell, and a gate answered or a
+  // message sent there must not fail silently or go twice.
+  describe("at tablet width", () => {
+    let dimensions: { mockRestore: () => void } | undefined
+    beforeEach(() => {
+      const native = jest.requireActual<typeof import("react-native")>("react-native")
+      dimensions = jest.spyOn(native, "useWindowDimensions").mockReturnValue({ width: 1024, height: 768, scale: 2, fontScale: 1 })
+    })
+    afterEach(() => { dimensions?.mockRestore() })
+
+    it("sends one answer for a double tap on Allow once", async () => {
+      const { socket } = await openApp(workspace())
+      expect(screen.getByTestId("tablet-thread")).toBeOnTheScreen()
+      const allow = screen.getByRole("button", { name: "Allow once" })
+      await act(async () => {
+        fireEvent.press(allow)
+        fireEvent.press(allow)
+      })
+      await settle()
+
+      expect(socket.requests("approval.resolve")).toHaveLength(1)
+      expect(screen.getByRole("button", { name: "Allow once" })).toBeDisabled()
+    })
+
+    it("shows why the daemon refused an Allow on the gate card", async () => {
+      const { socket } = await openApp(workspace())
+      await fireEvent.press(screen.getByRole("button", { name: "Allow once" }))
+      await act(async () => { socket.refuse("approval.resolve", -32603, "The approval store is unavailable") })
+      await settle()
+
+      expect(screen.getByRole("alert")).toHaveTextContent("The daemon refused: The approval store is unavailable. The gate is still waiting.")
+      expect(screen.getByRole("button", { name: "Allow once" })).toBeEnabled()
+    })
+
+    // The connection drops before the daemon confirms. The tablet is then
+    // watching, and the card must still say the answer may have landed.
+    it("says an Allow lost to a dropped connection may or may not have landed", async () => {
+      const { socket } = await openApp(workspace())
+      await fireEvent.press(screen.getByRole("button", { name: "Allow once" }))
+      expect(socket.requests("approval.resolve")).toHaveLength(1)
+      await act(async () => { socket.close() })
+      await settle()
+
+      expect(screen.getByRole("alert")).toHaveTextContent("The daemon went away before it confirmed. The gate may or may not have been answered; when the connection returns, this screen shows which.")
+    })
+
+    // A refusal belongs to the gate it answered. Another session's gate is a
+    // different question and opens without it.
+    it("does not show one gate's refusal on another session's gate", async () => {
+      const raised = workspace()
+      raised.approvals.push({ ...approval, id: "approval-audit", sessionId: audit.id })
+      const { socket } = await openApp(raised)
+      await fireEvent.press(screen.getByRole("button", { name: "Allow once" }))
+      await act(async () => { socket.refuse("approval.resolve", -32603, "The approval store is unavailable") })
+      await settle()
+      expect(screen.getByRole("alert")).toBeOnTheScreen()
+
+      await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+      expect(screen.getByRole("button", { name: "Allow once" })).toBeOnTheScreen()
+      expect(screen.queryByRole("alert")).toBeNull()
+    })
+
+    it("shows why a send failed beside the tablet composer", async () => {
+      const snapshot = workspace()
+      snapshot.approvals = []
+      const session = snapshot.sessions.find((candidate) => candidate.id === billing.id)!
+      session.workspacePath = "/worktrees/billing"
+      session.providerThreadId = "provider-thread-billing"
+      const { socket } = await openApp(snapshot)
+      await fireEvent.changeText(screen.getByLabelText("Tablet reply"), "Check the lockfile too")
+      await fireEvent.press(screen.getByRole("button", { name: "Send message" }))
+      await act(async () => { socket.refuse("session.send", -32603, "The billing session refused the send") })
+      await settle()
+
+      expect(screen.getByRole("alert")).toHaveTextContent("The billing session refused the send")
+    })
+
+    it("keeps the reason screen with the daemon's refusal when a deny is refused", async () => {
+      const { socket } = await openApp(workspace())
+      await fireEvent.press(screen.getByRole("button", { name: "Deny" }))
+      await fireEvent.changeText(screen.getByLabelText("Reason sent to the agent"), "Use staging first")
+      await fireEvent.press(screen.getByRole("button", { name: "Send denial" }))
+      await act(async () => { socket.refuse("approval.resolve", -32603, "The approval store is unavailable") })
+      await settle()
+
+      expect(screen.getByRole("alert")).toHaveTextContent("The daemon refused: The approval store is unavailable. The gate is still waiting.")
+      expect(screen.getByDisplayValue("Use staging first")).toBeOnTheScreen()
+    })
   })
 
   // Phone v2 frame 04: the phone lists the open session's terminals, watches

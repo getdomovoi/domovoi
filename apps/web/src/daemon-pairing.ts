@@ -117,15 +117,17 @@ export class DeviceKindMismatchError extends Error {
 }
 
 // The daemon enrolled the device before this page saw its kind, so the card
-// names it for revoking. Only the machine's desktop app revokes a device.
+// names it for removal. Only the machine's desktop app removes a device, and
+// its row says Unpair for a client and Revoke for anything else (Q378 A).
 function kindMismatchOutcome(cause: DeviceKindMismatchError, host: string, label: string | undefined): Omit<PairingOutcome, "action"> {
   const expected = kindNames[cause.expected]
+  const removal = cause.bound ? "unpair" : "revoke"
   return {
     tone: "danger",
     pill: "not kept",
     title: cause.bound ? `This code is for ${kindNames[cause.bound].device}` : "This code is not for a browser",
     mono: `pair.refused · kind_mismatch · code ${cause.bound ?? "none"}, browser ${cause.expected}`,
-    body: `This browser counts as ${expected.device}. On ${host}, show a ${expected.code} under Settings, Phone and tablet. The code was used, so in the desktop app on ${host}, under Machines, revoke ${label ?? "this browser's device"}.`,
+    body: `This browser counts as ${expected.device}. On ${host}, show a ${expected.code} under Settings, Phone and tablet. The code was used, so in the desktop app on ${host}, under Machines, ${removal} ${label ?? "this browser's device"}.`,
   }
 }
 
@@ -165,7 +167,7 @@ export function pairingOutcomeFor(cause: unknown, host: string, label?: string):
       return { tone: "danger", pill: "refused", title: `This page and the daemon on ${host} speak different protocol versions`, mono, body: "The daemon did not say which one is older, so this page cannot say which to update." }
     }
     if (cause.code === devicePairingLimitErrorCode) {
-      return { tone: "danger", pill: "refused", title: `${host} has no room for another device`, mono: "pair.refused · device_limit", body: "Unpair a device on the machine, under Machines, then show another code." }
+      return { tone: "danger", pill: "refused", title: `${host} has no room for another device`, mono: "pair.refused · device_limit", body: `In the desktop app on ${host}, under Machines, unpair a device or revoke a machine, then show another code.` }
     }
     if (cause.code === daemonAuthenticationErrorCode && cause.message === codeRefusalMessage) {
       return { tone: "plain", pill: "refused", title: "That code was refused", mono: "pair.refused · works once · 180s", body: `It may have expired or been used already. Show another on ${host}, under Settings, Phone and tablet.` }
@@ -178,11 +180,11 @@ export function pairingOutcomeFor(cause: unknown, host: string, label?: string):
   // Both of these come after the daemon answered with a credential or
   // something like one, so the code is spent and a device may be enrolled.
   // Only the machine's own desktop app manages devices (a device credential
-  // is refused), and its control is Revoke, so the card says where and names
+  // is refused), and its control is Unpair, so the card says where and names
   // the device by the label this page sent.
   const device = label ?? "this browser's device"
   const pairedAs = label ? ` as ${label}` : ""
-  const where = `the desktop app on ${host}, under Machines, revoke ${device}.`
+  const where = `the desktop app on ${host}, under Machines, unpair ${device}.`
   if (cause instanceof BrowserCapabilityError) {
     return { tone: "danger", pill: "not kept", title: "This tab cannot keep the credential", mono: `pair.paired · ${cause.reason}`, body: `${cause.message} The daemon paired this browser${pairedAs}. In ${where}` }
   }
@@ -192,7 +194,7 @@ export function pairingOutcomeFor(cause: unknown, host: string, label?: string):
   if (cause instanceof PairingTransportError) {
     return { tone: "plain", pill: "unconfirmed", title: `${host} did not answer, so pairing is unconfirmed`, mono: `pair · no reply · ${host}`, body: "The daemon may have stopped or left the tailnet. If the machine lists this browser under Machines, it paired." }
   }
-  return { tone: "plain", pill: "unconfirmed", title: `Pairing with ${host} did not finish`, mono: "pair · unconfirmed", body: `If ${host} lists ${device} under Machines, it paired. Before you pair again, revoke it there, in the desktop app on ${host}.` }
+  return { tone: "plain", pill: "unconfirmed", title: `Pairing with ${host} did not finish`, mono: "pair · unconfirmed", body: `If ${host} lists ${device} under Machines, it paired. Before you pair again, unpair it there, in the desktop app on ${host}.` }
 }
 
 // What cures a refusal. A page older than the daemon needs a reload. A daemon

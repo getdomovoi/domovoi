@@ -33,8 +33,10 @@ it("keeps output behind a second click, so one failure does not flood the thread
   render(<TurnActivity items={items} running={false} />)
   await user.click(screen.getByRole("button", { name: /2 tool calls/ }))
   expect(screen.queryByText(/expected 1 got 2/)).toBeNull()
-  await user.click(screen.getByRole("button", { name: "Output" }))
+  // D7: the design toggles the whole step row, not an Output link inside it.
+  await user.click(screen.getByRole("button", { name: /pnpm vitest run replay/ }))
   expect(screen.getByText(/expected 1 got 2/)).toBeTruthy()
+  expect(screen.queryByRole("button", { name: "Output" })).toBeNull()
 })
 
 it("moves only while the turn is running", () => {

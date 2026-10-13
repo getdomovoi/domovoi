@@ -39,7 +39,10 @@ function refusal(error: { code: number, message: string, data?: unknown }): stri
     return `${versions}. Update whichever of the two is older. The code was not used, so it still works until it expires.`
   }
   if (error.code === devicePairingLimitErrorCode) {
-    return "The machine has too many paired devices. Revoke one on the machine, then show a fresh code and scan again."
+    // Machine bindings count toward the limit too. Q378 A: a client's control
+    // is Unpair and a machine's is Revoke, and only the machine's desktop app
+    // may use either.
+    return "The machine has too many paired devices. In the desktop app on the machine, under Machines, unpair a device or revoke a machine, then show a fresh code and scan again."
   }
   // The daemon refuses every bad code the same way on purpose, so this
   // says what to do rather than guessing which part was wrong.
@@ -134,7 +137,7 @@ export function redeemPairingCode(
       const client = binding.client
       if (client !== "phone" && client !== "tablet") {
         settle(() => reject(new PairingRefusedError(
-          `This code was issued for ${otherKinds[client]}, so this app did not keep it. Revoke "${parsed.data.device.label}" on the machine, then show a code for a phone or tablet.`,
+          `This code was issued for ${otherKinds[client]}, so this app did not keep it. In the desktop app on the machine, under Machines, unpair "${parsed.data.device.label}", then show a code for a phone or tablet.`,
         )))
         return
       }

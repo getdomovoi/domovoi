@@ -1,6 +1,7 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
+import { protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
 
 import type { DesktopWindowBridge } from "./desktop-platform"
 import { terminalIdForSession } from "./terminal-id"
@@ -9,6 +10,7 @@ import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
   completeHandshake,
   installFakeWebSocket,
+  respond,
   sentRequests,
   workspaceSnapshot,
   type FakeWebSocketHarness,
@@ -62,6 +64,162 @@ describe("the audit log's export line", () => {
 
     expect(screen.getByText(/^saves to this device · /u)).toBeTruthy()
     expect(screen.queryByText(/writes a file on this machine/u)).toBeNull()
+  })
+})
+
+// A browser tab holds a device credential, and the daemon refuses
+// device.rename, device.rotate and device.revoke from one by closing the
+// connection. The tab lists its daemon's devices but never sends those three.
+describe("paired devices in a browser tab", () => {
+  it("a web tab lists them and never sends a rename, rotation or unpairing", async () => {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind: "web" })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+    await waitFor(() => expect(sentRequests(socket, "device.list")).not.toHaveLength(0))
+    await act(async () => {
+      respond(socket, "device.list", { devices: [{
+        id: `device-${"d".repeat(32)}`,
+        label: "kitchen-phone",
+        pairedAt: "2026-10-01T09:00:00.000Z",
+        binding: { kind: "client", client: "phone", clientAccess: "full" },
+      }] })
+    })
+    const row = await screen.findByRole("row", { name: /kitchen-phone/u })
+
+    for (const name of ["Rename kitchen-phone", "Rotate the credential on kitchen-phone", "Unpair kitchen-phone"]) {
+      const control = within(row).getByRole("button", { name })
+      expect(control).toHaveProperty("disabled", true)
+      await user.click(control)
+    }
+    await settle()
+
+    expect(row.textContent).toContain(`Rename, Rotate and Unpair are off in a browser tab: they need the daemon's own credential. Use the desktop app on ${snapshot.machine.name}.`)
+    expect(sentRequests(socket, "device.rename")).toEqual([])
+    expect(sentRequests(socket, "device.rotate")).toEqual([])
+    expect(sentRequests(socket, "device.revoke")).toEqual([])
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  // On a handheld browser the web app greets as phone or tablet, and the
+  // daemon refuses device.list from that credential too (phoneAndTabletRpcMethods).
+  it.each(["phone", "tablet"] as const)("a %s tab sends no device request at all", async (clientKind) => {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+    await screen.findByText(`Paired devices are off in a phone or tablet tab: the daemon does not list them for a phone or tablet credential. Use the desktop app on ${snapshot.machine.name}.`)
+    await settle()
+
+    for (const method of ["device.list", "device.rename", "device.rotate", "device.revoke"] as const) {
+      expect(sentRequests(socket, method)).toEqual([])
+    }
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+})
+
+// Machines in a tab whose credential the daemon refuses fleet.enroll,
+// fleet.forget, fleet.clientRoute or terminal.create for. The daemon answers
+// each with the authentication error, on which the client closes its
+// connection, so the tab never sends one.
+describe("Machines in a browser tab", () => {
+  const observedAt = "2026-10-01T09:00:00.000Z"
+  const fleetMachine = (overrides: Partial<FleetMachine> & Pick<FleetMachine, "id" | "label" | "self">): FleetMachine => ({
+    platform: "linux", arch: "x64", version: "0.0.1", protocolVersion,
+    connection: "direct", health: "healthy", capabilities: ["sessions", "terminals"],
+    heartbeat: { state: "online", lastSeenAt: observedAt },
+    transports: [{ kind: "local", endpoint: "ws://127.0.0.1:49812/rpc", authenticated: true }],
+    verifiedRoute: { endpoint: "ws://127.0.0.1:49812/rpc", lastAuthenticatedAt: observedAt },
+    ...overrides,
+  })
+
+  async function openMachines(clientKind: "web" | "phone" | "tablet") {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    await act(async () => {
+      respond(socket, "fleet.list", { entries: [
+        { kind: "machine", machine: (({ verifiedRoute: _route, ...self }) => self)(fleetMachine({ id: snapshot.machine.id, label: snapshot.machine.name, self: true, connection: "local" })) },
+        { kind: "machine", machine: fleetMachine({ id: `machine-${"b".repeat(32)}`, label: "Studio", self: false }) },
+      ] })
+    })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+    await screen.findByRole("group", { name: "Studio" })
+    return { snapshot, socket, user }
+  }
+
+  it.each(["web", "phone", "tablet"] as const)("a %s tab never sends fleet.enroll or fleet.forget", async (clientKind) => {
+    const { snapshot, socket, user } = await openMachines(clientKind)
+    const pair = screen.getByRole("button", { name: "Pair a machine" })
+    const forget = within(screen.getByRole("group", { name: "Studio" })).getByRole("button", { name: "Forget Studio" })
+
+    for (const control of [pair, forget]) {
+      expect(control).toHaveProperty("disabled", true)
+      await user.click(control)
+    }
+    await settle()
+
+    expect(screen.getByText(`Pair a machine and Forget are off in a browser tab: they need the daemon's own credential. Use the desktop app on ${snapshot.machine.name}.`)).toBeTruthy()
+    expect(sentRequests(socket, "fleet.enroll")).toEqual([])
+    expect(sentRequests(socket, "fleet.forget")).toEqual([])
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab never sends fleet.clientRoute or terminal.create", async (clientKind) => {
+    const { snapshot, socket, user } = await openMachines(clientKind)
+    const authorize = within(screen.getByRole("group", { name: "Studio" })).getByRole("button", { name: "Authorize this client for Studio" })
+    const terminal = within(screen.getByRole("group", { name: snapshot.machine.name })).getByRole("button", { name: `Terminal on ${snapshot.machine.name}` })
+
+    for (const control of [authorize, terminal]) {
+      expect(control).toHaveProperty("disabled", true)
+      await user.click(control)
+    }
+    await settle()
+
+    expect(screen.queryByRole("dialog")).toBeNull()
+    expect(sentRequests(socket, "fleet.clientRoute")).toEqual([])
+    expect(sentRequests(socket, "terminal.create")).toEqual([])
+    expect(harness.sockets).toHaveLength(1)
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  // The machine menu the sessions drawer opens offers Pair a machine too, and
+  // that sends fleet.enroll on the same home connection.
+  async function openMachineMenu(clientKind: "desktop" | "web" | "phone" | "tablet") {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: /^Sessions \d/u }))
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    await user.click(screen.getByRole("button", { name: `Actions for ${active.title}` }))
+    await user.click(screen.getByRole("menuitem", { name: "Move to another machine" }))
+    await settle()
+    const menu = await screen.findByRole("menu")
+    return { socket, menu }
+  }
+
+  it.each(["web", "phone", "tablet"] as const)("a %s tab's machine menu offers no Pair a machine and sends no fleet.enroll", async (clientKind) => {
+    const { socket, menu } = await openMachineMenu(clientKind)
+    expect(menu.textContent).toContain("Machines")
+    expect(within(menu).queryByRole("menuitem", { name: "+ Pair a machine" })).toBeNull()
+    await settle()
+    expect(sentRequests(socket, "fleet.enroll")).toEqual([])
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  it("the desktop app's machine menu still offers Pair a machine", async () => {
+    const { menu } = await openMachineMenu("desktop")
+    expect(within(menu).getByRole("menuitem", { name: "+ Pair a machine" })).toBeTruthy()
+  })
+
+  // The daemon routes a web credential and opens a shell for it.
+  it("a web tab keeps Authorize this client and Terminal", async () => {
+    const { snapshot } = await openMachines("web")
+    expect(within(screen.getByRole("group", { name: "Studio" })).getByRole("button", { name: "Authorize this client for Studio" })).toHaveProperty("disabled", false)
+    expect(within(screen.getByRole("group", { name: snapshot.machine.name })).getByRole("button", { name: `Terminal on ${snapshot.machine.name}` })).toHaveProperty("disabled", false)
   })
 })
 
