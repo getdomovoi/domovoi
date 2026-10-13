@@ -4,6 +4,10 @@ import { createHash, randomUUID } from "node:crypto"
 import { join } from "node:path"
 import { z } from "zod"
 import { publishFileDurably } from "@getdomovoi/credential-store"
+import { updateVersionSchema } from "@getdomovoi/protocol"
+import { realpathSync } from "node:fs"
+import { resolve } from "node:path"
+import { readLocalProfileFile } from "./local-owner-record.js"
 
 import { assertProfileLeaseHeld, type ProfileLease } from "./profile-lease.js"
 import { install as shippedBootstrapInstall } from "./bootstrap-install.js"
@@ -172,4 +176,86 @@ export async function stageVerifiedUpdate(options: {
     throw new Error("Bootstrap staged bytes that did not match the verified update target")
   }
   return result
+}
+
+const digestSchema = z.string().regex(/^[a-f0-9]{64}$/)
+export const activationRuntimeSchema = z.object({
+  version: updateVersionSchema,
+  sha256: digestSchema,
+  sourceCommit: z.string().regex(/^[a-f0-9]{40}$/),
+  runtimeLockDigest: z.string().regex(/^sha256:[a-f0-9]{64}$/),
+  receiptDigest: digestSchema,
+  path: z.string().min(1).max(4096),
+}).strict()
+export type ActivationRuntime = z.infer<typeof activationRuntimeSchema>
+
+export const activationJournalSchema = z.object({
+  format: z.literal(1), id: z.uuid(), generation: z.string().min(1).max(128),
+  previousRevision: z.uuid(), rollbackRevision: z.uuid(),
+  phase: z.enum(["prepared", "starting", "rollback", "restarting", "committed", "rolled-back"]),
+  previous: activationRuntimeSchema, target: activationRuntimeSchema,
+}).strict().refine((value) => value.previous.version !== value.target.version,
+  "Activation requires distinct immutable versions")
+export type ActivationJournal = z.infer<typeof activationJournalSchema>
+const maximumActivationJournalBytes = 16 * 1024
+const activationJournalPath = (home: ProfileLocation) => join(profileDirectory(home), "update-activation.json")
+
+/** The caller holds the idle fence as well as the profile lease until this settles. */
+export async function persistActivationJournal(
+  home: ProfileLocation, lease: ProfileLease, journal: ActivationJournal,
+): Promise<void> {
+  assertProfileLeaseHeld(lease)
+  const text = `${JSON.stringify(activationJournalSchema.parse(journal))}\n`
+  if (Buffer.byteLength(text) > maximumActivationJournalBytes) throw new Error("Activation journal exceeds its limit")
+  const path = activationJournalPath(home)
+  const temporary = `${path}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporary, text, { mode: 0o600, flag: "wx", flush: true })
+    assertProfileLeaseHeld(lease)
+    await publishFileDurably(temporary, path)
+  } finally {
+    await rm(temporary, { force: true })
+  }
+}
+
+export function readActivationJournal(home: ProfileLocation): ActivationJournal | undefined {
+  try {
+    return activationJournalSchema.parse(JSON.parse(readLocalProfileFile(
+      activationJournalPath(home), maximumActivationJournalBytes,
+    )))
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined
+    throw new Error("Activation journal is invalid or inaccessible", { cause: error })
+  }
+}
+
+/** Bind a signed target to the installer's immutable receipt and actual lock bytes.
+ * This does not replace full installed-file verification or D9 provenance evidence.
+ * Call only under a held fence whose adapter prevents changes to these runtime bytes.
+ */
+export function readActivationRuntime(runtimeRoot: string, target: VerifiedUpdateTarget): ActivationRuntime {
+  const root = realpathSync(runtimeRoot)
+  const release = join(root, `v${updateVersionSchema.parse(target.version)}`)
+  const receiptPath = join(release, "runtime.json")
+  const text = readLocalProfileFile(receiptPath, 16 * 1024)
+  const receipt = z.object({
+    format: z.literal(1), version: updateVersionSchema, sha256: digestSchema,
+    lockSha256: digestSchema, directory: z.string().regex(/^\.runtime-[A-Za-z0-9_-]+\/package$/),
+  }).strict().parse(JSON.parse(text))
+  const runtime = resolve(release, receipt.directory)
+  const lockPath = join(runtime, "runtime", "lock.json")
+  for (const path of [release, receiptPath, runtime, lockPath]) {
+    if (realpathSync(path) !== path) throw new Error("Activation runtime must not contain links")
+  }
+  const lock = readLocalProfileFile(lockPath, 1024 * 1024, false)
+  if (receipt.version !== target.version || receipt.sha256 !== target.sha256
+    || `sha256:${receipt.lockSha256}` !== target.runtimeLockDigest
+    || createHash("sha256").update(lock).digest("hex") !== receipt.lockSha256) {
+    throw new Error("Activation runtime does not match the signed target")
+  }
+  return activationRuntimeSchema.parse({
+    version: target.version, sha256: target.sha256, sourceCommit: target.sourceCommit,
+    runtimeLockDigest: target.runtimeLockDigest,
+    receiptDigest: createHash("sha256").update(text).digest("hex"), path: runtime,
+  })
 }

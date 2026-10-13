@@ -6,7 +6,7 @@ import { BrowserLimitsPanel, DaemonCredentialPrompt, WebConnectPage, WebPageHead
 import { browserLimits } from "./browser-limits"
 import { browserLimitsSeen, markBrowserLimitsSeen } from "./browser-limits-seen"
 import type { BrowserPlatformEnvironment } from "./browser-platform"
-import { browserDeviceLabel, clearDaemonSession, loadDaemonSession, saveDaemonSession, type DaemonSession } from "./credential"
+import { browserDeviceLabel, clearConfirmedDaemonSession, clearDaemonSession, loadDaemonSession, saveDaemonSession, type DaemonSession } from "./credential"
 import { codeNameFor, isLoopbackPageOrigin, pairBrowserDevice, pairingNextStep, pairingOutcomeFor, redeemBrowserCode, type PairingClientFactory } from "./daemon-pairing"
 
 export type WebAppProps = {
@@ -28,7 +28,7 @@ export type WebAppProps = {
   codeFromUrl?: string | undefined
   createClient: PairingClientFactory
   labelSuffix: () => string
-  workspace: (session: { token: string, onChangeCredential: () => void }) => ReactNode
+  workspace: (session: { token: string, deviceId: string, onSignedOut: (result: unknown) => void, onChangeCredential: () => void }) => ReactNode
 }
 
 const pairedBeforeKey = "domovoi.paired-before"
@@ -212,6 +212,13 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
   }
   return workspace({
     token: session.token,
+    deviceId: session.deviceId,
+    onSignedOut: (result) => {
+      clearConfirmedDaemonSession(storage, result)
+      setOutcome(undefined)
+      setPath("code")
+      setSession(undefined)
+    },
     onChangeCredential: () => {
       clearDaemonSession(storage)
       setOutcome(undefined)

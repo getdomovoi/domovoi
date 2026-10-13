@@ -9,6 +9,10 @@ import {
   approvalCheckpointErrorCode,
   buildVersion,
   maximumRpcMessageBytes,
+  maximumMidTurnCheckpointTurnIdLength,
+  maximumMidTurnCheckpointPaths,
+  maximumMidTurnCheckpointPathLength,
+  maximumMidTurnCheckpointPathsBytes,
   type ApprovalCheckpointRefusal,
   type SessionAttachmentRefusal,
   type SessionReviewRefusal,
@@ -59,6 +63,7 @@ import {
   protocolVersionMismatchErrorCode,
   type ProtocolMismatch,
   rpcMethodAuthorizations,
+  watchingClientControlMethod,
   rpcMethods,
   rpcRequestSchema,
   sessionHistoryCategorySchema,
@@ -353,7 +358,7 @@ import {
   WorkingPlanMutationError,
   type ProviderTaskLink,
 } from "./working-plan.js"
-import { redactDeviceLabel } from "./workspace-redaction.js"
+import { checkpointPathIsSafe, redactDeviceLabel } from "./workspace-redaction.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -1231,6 +1236,7 @@ export function sessionHistoryEntries(
         category: "checkpoints",
         label: item.label,
         ...(item.reason ? { reason: item.reason } : {}),
+        ...(item.midTurn ? { midTurn: item.midTurn } : {}),
         ...(item.commit ? { commit: item.commit } : {}),
       })
     } else if (item.kind === "user") {
@@ -6300,6 +6306,7 @@ export class DomovoiDaemon {
       handheld?.binding.kind === "client"
       && handheld.binding.clientAccess === "watching"
       && rpcMethodAuthorizations[method] === "control"
+      && method !== watchingClientControlMethod
     ) {
       this.#error(socket, request.id, daemonAuthenticationErrorCode, "Watching-only credentials may only observe")
       return
@@ -6755,22 +6762,28 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result })
         return
       }
-      if (method === "fleet.heartbeat" || method === "device.revokeCurrent") {
+      if (method === "fleet.heartbeat") {
         const credential = this.#deviceCredentials.get(socket)?.verified
         if (authenticatedActor?.kind !== "machine" || credential?.binding.kind !== "machine") {
           this.#error(socket, request.id, daemonAuthenticationErrorCode, "This method requires a machine-paired credential")
           return
         }
-        if (method === "fleet.heartbeat") {
-          this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: this.#machineDescriptor() })
-        } else {
-          this.#store.devices!.revoke(credential.device.id)
-          this.#amendPendingAudit(socket, request.id, { target: credential.device.id })
-          // The response precedes the close frame so the source can distinguish
-          // confirmed revocation from an ambiguous disconnected socket.
-          this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: { revoked: true } })
-          this.#disconnectInactiveDevices()
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: this.#machineDescriptor() })
+        return
+      }
+      if (method === "device.revokeCurrent") {
+        const credential = this.#deviceCredentials.get(socket)?.verified
+        if (!credential) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, "This method requires a paired credential")
+          return
         }
+        // No caller-supplied identity can select the target of self-revocation.
+        this.#store.devices!.revoke(credential.device.id)
+        this.#amendPendingAudit(socket, request.id, { target: credential.device.id })
+        // The response precedes the close frame so the source can distinguish
+        // confirmed revocation from an ambiguous disconnected socket.
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: { revoked: true } })
+        this.#disconnectInactiveDevices()
         return
       }
       if (method === "system.emergencyStop") {
@@ -10816,18 +10829,25 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Session has no worktree")
           return
         }
-        if (session.activeTurnId) {
+        // Capture before awaiting: the turn may finish while files are staged.
+        const providerTurnId = session.activeTurnId
+        const turnLink = providerTurnId && session.providerThreadId
+          ? this.#turnLink(session.id, session.runtime.provider, session.providerThreadId, providerTurnId)
+          : {}
+        if (providerTurnId && !this.#workspaceService.snapshot) {
           this.#error(
             socket,
             request.id,
             invalidParams,
-            "Stop the active turn before creating a checkpoint",
+            "This workspace cannot take a checkpoint while the agent runs",
           )
           return
         }
         const label = params.label ?? "manual"
         const checkpoint = await this.#withAbortTimeout(
-          (signal) => this.#workspaceService.checkpoint(session.workspacePath!, label, signal),
+          (signal) => providerTurnId
+            ? this.#workspaceService.snapshot!(session.workspacePath!, label, signal)
+            : this.#workspaceService.checkpoint(session.workspacePath!, label, signal),
           this.#agentTimeoutMs,
           "Checkpoint timed out",
         )
@@ -10840,11 +10860,34 @@ export class DomovoiDaemon {
         }
         currentSession.changedFiles = checkpoint.changedFiles.length
         currentSession.updatedAt = new Date().toISOString()
+        // Bound canonical state before persistence and broadcast. Omit overlong
+        // paths instead of shortening them into names that refer to other files.
+        const changedPaths = providerTurnId && checkpoint.matched !== true
+          ? [...new Set(checkpoint.unstablePaths ?? [])].sort()
+          : []
+        const displayedChangedPaths: string[] = []
+        for (const path of changedPaths) {
+          if (path.length === 0 || path.length > maximumMidTurnCheckpointPathLength || !checkpointPathIsSafe(path)) continue
+          if (displayedChangedPaths.length >= maximumMidTurnCheckpointPaths
+            || Buffer.byteLength(JSON.stringify([...displayedChangedPaths, path]), "utf8") > maximumMidTurnCheckpointPathsBytes) break
+          displayedChangedPaths.push(path)
+        }
         this.#snapshot.thread.push({
           id: `checkpoint-${randomUUID()}`,
           sessionId: currentSession.id,
           kind: "checkpoint",
           reason: "manual",
+          ...(providerTurnId ? {
+            ...turnLink,
+            midTurn: {
+              ...(providerTurnId.length <= maximumMidTurnCheckpointTurnIdLength
+                ? { providerTurnId }
+                : { providerTurnIdSha256: createHash("sha256").update(providerTurnId).digest("hex") }),
+              stability: checkpoint.matched === true ? "matched" as const : "unstable" as const,
+              changedPaths: displayedChangedPaths,
+              changedPathCount: changedPaths.length,
+            },
+          } : {}),
           label: `${checkpoint.commit.slice(0, 8)} · ${label}`,
           commit: checkpoint.commit,
           createdAt: currentSession.updatedAt,

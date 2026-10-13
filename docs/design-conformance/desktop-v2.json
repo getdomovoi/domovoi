@@ -587,7 +587,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the section draws the real ownership state and the per-platform facts, and Install and Remove now run through windowBridge.daemonService (the earlier ND9 lock is gone). Left: the supervisor gave-up banner with Start it again, pid and uptime, and the Check again and Start it status actions, which need the supervisor state over the desktop bridge (DaemonServiceStatusReport carries installed, running and detail only, while the supervisor record has exhausted with restart-limit; it exhausts at 4 crashes, so the copy must take the real count, not the drawn 5); and the drawn card arrangement (header row, service sub-card, WHAT IT WROTE rows, footer). The TailnetReach row is built as the card's footer row since 2026-10-02 (settings-shell.tsx, read in tailnet-reach-v2.json)"
+        "reason": "The card carries supervisor facts through the existing guarded status read and validates the complete group in Settings. It shows exhaustion with the recorded crash count, last exit, a live daemon pid and uptime where supplied, explicit unknown facts otherwise, and Check again. Q80 applies domovoid service install as terminal recovery because no dedicated desktop start path can restart an unreachable daemon. Left: the drawn card arrangement (header row, service sub-card, WHAT IT WROTE rows, footer). The TailnetReach row remains the card footer."
       }
     },
     {
@@ -671,12 +671,9 @@
         "return binding.kind === \"client\" ? \"Unpair\" : \"Revoke\""
       ],
       "notes": [
-        "2026-10-11 (SL-4, Q378 A): client rows say Unpair, with Unpair device in the confirmation and an Unpaired chip; machine bindings and legacy unbound credentials keep Revoke. The rows sit in one card under its heading and note (the column names are kept for a screen reader only), each row's consequence is a standing line under it on every pointer, and the rotated credential is an info-tinted panel led by Shown once. Domovoi keeps a digest, not the secret. (the daemon stores a sha256 of the token, device-registry.ts). The row keeps the kind icon and word, and the paired and last seen dates, where the frame draws a status dot and one meta line."
-      ],
-      "partial": {
-        "since": "2026-10-11",
-        "reason": "Sign this device out on a web tab's own row, with its self-row highlight, waits for CX-4 (client self-revocation, Q52 A): device.revokeCurrent is machine-only by contract and device.revoke requires the daemon credential, so a web tab cannot revoke itself, and PairedDeviceSummary carries no flag that names the caller's own row"
-      }
+        "2026-10-11 (SL-4, Q378 A): client rows say Unpair, with Unpair device in the confirmation and an Unpaired chip; machine bindings and legacy unbound credentials keep Revoke. The rows sit in one card under its heading and note (the column names are kept for a screen reader only), each row's consequence is a standing line under it on every pointer, and the rotated credential is an info-tinted panel led by Shown once. Domovoi keeps a digest, not the secret. (the daemon stores a sha256 of the token, device-registry.ts). The row keeps the kind icon and word, and the paired and last seen dates, where the frame draws a status dot and one meta line.",
+        "CX-4: the browser session identifies its own paired-device row, highlighted with the accent surface and Sign this device out. Confirmation explains pairing again. Only a validated revokeCurrent success clears the tab credential; an unconfirmed response keeps it and explains how to check. A phone or tablet browser shows only its own identity and action because its credential cannot list other devices. Desktop management stays unchanged."
+      ]
     },
     {
       "id": "settings.providers",
@@ -1770,7 +1767,7 @@
       ],
       "partial": {
         "since": "2026-09-23",
-        "reason": "Take a checkpoint and Take checkpoint work between turns; the mid-turn take (design: taken at the next tool boundary) is not drawn because checkpoint.create refuses during a turn. That is a daemon change only: the J34 silent snapshot already works mid-turn, so the RPC can stay as it is"
+        "reason": "Q72/Q73: Take works during a turn through snapshot(), without moving HEAD, the branch or the shared index. Consecutive staging trees are compared with bounded retries, not deferred to the next tool boundary. The row records the running turn and, when no pair matches, the changed paths. Copy states that matching passes do not guarantee one point in time and a change that reverts between passes is missed. Restore, revert and fork remain gated during a turn."
       }
     },
     {

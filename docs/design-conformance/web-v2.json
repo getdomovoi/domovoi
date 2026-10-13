@@ -299,13 +299,13 @@
           "in": "apps/web/src/web-app.tsx"
         },
         {
-          "absent": "workspace: (session: { token: string, onChangeCredential: () => void }) => ReactNode",
+          "absent": "workspace: (session: { token: string, deviceId: string, onSignedOut: (result: unknown) => void, onChangeCredential: () => void }) => ReactNode",
           "in": "apps/web/src/web-app.tsx"
         }
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the panel reports real browser state, and before pairing the connect page's link opens it with a way back. One part of Q367 A (2026-10-02) is not built: nothing in the workspace reopens the page. Neither the palette nor Settings has an entry for it, and WebApp hands the workspace only its token and onChangeCredential, so once a tab is in its session it cannot get back to the page. The evidence holds that hand-off: its signature in web-app.tsx changes when the workspace is given a way to open the page"
+        "reason": "the panel reports real browser state, and before pairing the connect page's link opens it with a way back. One part of Q367 A (2026-10-02) is not built: nothing in the workspace reopens the page. Neither the palette nor Settings has an entry for it, and WebApp hands the workspace its token, deviceId, onSignedOut and onChangeCredential, but no callback to open the limits page, so once a tab is in its session it cannot get back to the page. The evidence holds that hand-off: its signature in web-app.tsx changes when the workspace is given a way to open the page. 2026-10-13 (CX-4): refreshed the signature evidence because self-sign-out added deviceId and onSignedOut. Neither workspace callback opens browser limits, so this entry remains partial."
       }
     },
     {

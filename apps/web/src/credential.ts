@@ -1,4 +1,4 @@
-import { credentialSchema, deviceIdSchema, devicePairResultSchema, type ClientKind } from "@getdomovoi/protocol"
+import { rpcMethods, credentialSchema, deviceIdSchema, devicePairResultSchema, type ClientKind } from "@getdomovoi/protocol"
 
 import { BrowserCapabilityError } from "./platform-refusals"
 
@@ -82,4 +82,10 @@ export function clearDaemonSession(storage: CredentialStorage): void {
   } catch {
     throw new BrowserCapabilityError("credentials-unavailable")
   }
+}
+
+// A disconnect or an unrecognized reply is not evidence of revocation.
+export function clearConfirmedDaemonSession(storage: CredentialStorage, result: unknown): void {
+  rpcMethods["device.revokeCurrent"].result.parse(result)
+  clearDaemonSession(storage)
 }

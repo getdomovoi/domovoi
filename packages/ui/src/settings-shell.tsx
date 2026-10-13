@@ -52,6 +52,9 @@ export type LocalDaemonDescription = {
   // daemon outside the app drawn as the running service (security review
   // round 9): a daemon answering is not proof the service runs.
   serviceRunning?: boolean | undefined
+  serviceReport?: DaemonServiceStatusReport | undefined
+  // Captured with the guarded status read, never when Settings mounts.
+  serviceCheckedAt?: number | undefined
   // The daemon version the service answered with, and this app's, so an app
   // update that left the service on its old runtime is said (ruled 2026-09-23).
   serviceVersion?: string | undefined
@@ -213,6 +216,35 @@ function RemoveServiceDialog({ open, platform, onOpenChange, onConfirm }: {
   )
 }
 
+type SupervisorFacts = {
+  crashCount?: number
+  lastExit?: string
+  pid?: number
+  startedAt?: string
+  supervisionFailure?: "exhausted" | "observation-failure" | "configuration-missing"
+  supervising?: boolean
+  treeUnconfirmed?: boolean
+}
+
+// Like the tailnet card, accept the complete schema or display no facts.
+// Preload only checks plain-object transport to stay within its byte budget.
+function parseSupervisorFacts(value: unknown): SupervisorFacts | undefined {
+  if (!value || Object.getPrototypeOf(value) !== Object.prototype) return undefined
+  const integer = (entry: unknown, min: number, max: number) => typeof entry === "number" && Number.isInteger(entry) && entry >= min && entry <= max
+  const schema: Record<keyof SupervisorFacts, (entry: unknown) => boolean> = {
+    crashCount: (entry) => integer(entry, 0, 4),
+    pid: (entry) => integer(entry, 1, 2_147_483_647),
+    lastExit: (entry) => typeof entry === "string" && /^(?:code -?[0-9]{1,16}|signal SIG[A-Z0-9]{1,24}|launch failure [A-Z0-9_-]{1,64})$/u.test(entry),
+    startedAt: (entry) => typeof entry === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(entry)
+      && Number.isFinite(Date.parse(entry)) && new Date(entry).toISOString() === entry,
+    supervisionFailure: (entry) => entry === "exhausted" || entry === "observation-failure" || entry === "configuration-missing",
+    supervising: (entry) => typeof entry === "boolean",
+    treeUnconfirmed: (entry) => typeof entry === "boolean",
+  }
+  if (!Object.entries(value).every(([key, entry]) => Object.hasOwn(schema, key) && schema[key as keyof SupervisorFacts](entry))) return undefined
+  return value as SupervisorFacts
+}
+
 // `footer` is the design's last row of the card: About this build.
 function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> }; footer?: ReactNode }) {
   const service = loginServices[daemon.platform]
@@ -223,6 +255,23 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
   const [confirmingRemove, setConfirmingRemove] = useState(false)
   const live = daemon.service
   const busy = phase.kind === "installing" || phase.kind === "removing"
+  const [checking, setChecking] = useState(false)
+  const checkedAt = daemon.serviceCheckedAt
+  const check = async () => {
+    if (!live?.status) return
+    setChecking(true)
+    // The shell records failures under the same generation guard as success.
+    try { await live.status().catch(() => {}) } finally { setChecking(false) }
+  }
+  const report = checking ? undefined : daemon.serviceReport
+  const observed = report && "installed" in report ? report : undefined
+  const supervisor = parseSupervisorFacts(observed?.supervisor)
+  const hasService = observed?.installed === true || (observed?.installed === null && supervisor !== undefined && Object.keys(supervisor).length > 0)
+  const crashes = supervisor?.crashCount === undefined ? "Crash count unknown" : `${supervisor.crashCount} ${supervisor.crashCount === 1 ? "crash" : "crashes"}`
+  const exhausted = hasService && supervisor?.supervisionFailure === "exhausted"
+  const birth = observed?.running && supervisor?.startedAt ? Date.parse(supervisor.startedAt) : NaN
+  const minutes = Number.isFinite(birth) && checkedAt !== undefined && Number.isFinite(checkedAt) && birth <= checkedAt ? Math.floor((checkedAt - birth) / 60_000) : undefined
+  const uptime = minutes === undefined ? "Uptime unknown" : minutes < 60 ? `up ${minutes}m` : `up ${Math.floor(minutes / 60)}h ${minutes % 60}m`
   const run = async (action: "install" | "remove") => {
     if (!live) return
     setPhase({ kind: action === "install" ? "installing" : "removing" })
@@ -285,8 +334,8 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
     : installed
       ? "Install is off: the service is already installed."
       : unknown ? "Install and Remove are off: this app did not start that daemon." : "Remove is off: nothing is installed."
-  const installLocked = !live || installed || unknown || busy || updating || Boolean(live.refusal)
-  const removeLocked = !live || !installed || busy || updating || Boolean(live.refusal)
+  const installLocked = !live || installed || unknown || busy || updating || checking || Boolean(live.refusal)
+  const removeLocked = !live || !installed || busy || updating || checking || Boolean(live.refusal)
   // Review P3-8: a confirmation that Remove locking closed stays closed when
   // the lock lifts; the person asks again.
   useEffect(() => {
@@ -308,10 +357,33 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           {phase.kind === "installing" ? "Installing" : phase.kind === "removing" ? "Removing" : state.label}
         </span>
       </div>
+      {report || live?.status ? <>
+        {exhausted ? <div role="alert" className="flex flex-col gap-1.5 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground">
+          <span className="font-medium">{supervisor.crashCount === undefined ? "The supervisor gave up. Crash count unknown." : `The supervisor gave up after ${crashes}.`}</span>
+          <span>The supervisor stopped trying: restart limit reached.</span>
+          <span>{daemon.owner === "outside" ? "Stop the daemon running outside this app before running the command." : `Quit ${daemon.owner === "app" ? "this" : "the other"} Domovoi app to stop its daemon and sessions before running the command.`}</span>
+          <span>To reinstall and start the service, run this in a terminal.</span>
+          <span className="font-machine text-[11px]">{printed("domovoid service install")}</span>
+        </div> : null}
+        {report && "unavailable" in report ? <p className="m-0 text-[11.5px] text-muted-foreground">{report.unavailable}</p> : null}
+        {supervisor?.supervisionFailure && !exhausted ? <p className="m-0 text-[11.5px] text-muted-foreground">{observed?.detail}</p> : null}
+        <div aria-live="polite" aria-busy={checking} className="flex flex-wrap items-center gap-x-3 gap-y-1 font-machine text-[11px] text-muted-foreground">
+          {checking ? <span>Checking status</span> : hasService ? <>
+            {observed?.running ? <>
+              <span>{supervisor?.pid !== undefined ? `PID ${supervisor.pid}` : "PID unknown"}</span>
+              <span>{uptime}{minutes === undefined ? "" : " at last check"}</span>
+            </> : null}
+            <span>{crashes}</span>
+            <span>{supervisor?.lastExit ? `Last exit: ${supervisor.lastExit}` : "Last exit unknown"}</span>
+            {supervisor?.supervisionFailure === undefined && supervisor?.crashCount === undefined ? <span>Supervisor exhaustion unknown</span> : null}
+          </> : null}
+        </div>
+        {live?.status ? <div><Button type="button" variant="outline" size="sm" disabled={checking || busy || updating} onClick={() => void check()}>Check again</Button></div> : null}
+      </> : null}
       {serviceBehind ? (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">
           <p className="m-0 min-w-0 flex-1">{`The login service runs Domovoi ${daemon.serviceVersion}. This app is ${daemon.appVersion}.`}</p>
-          {live?.update ? <Button type="button" variant="outline" size="sm" disabled={busy || updating || Boolean(live.refusal)} onClick={() => void update()}>Update the service</Button> : null}
+          {live?.update ? <Button type="button" variant="outline" size="sm" disabled={busy || updating || checking || Boolean(live.refusal)} onClick={() => void update()}>Update the service</Button> : null}
         </div>
       ) : null}
       {phase.kind === "update-failed" ? (

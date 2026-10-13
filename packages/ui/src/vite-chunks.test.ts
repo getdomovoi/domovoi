@@ -20,6 +20,8 @@ describe("vendorChunkFor", () => {
   it.each([
     "/repo/node_modules/.pnpm/qrcode-generator@2/node_modules/qrcode-generator/dist/qrcode.mjs",
     "/repo/node_modules/.pnpm/cmdk@1/node_modules/cmdk/dist/index.mjs",
+    "/repo/node_modules/.pnpm/@noble+curves@2/node_modules/@noble/curves/ed25519.js",
+    "/repo/node_modules/.pnpm/@noble+hashes@2/node_modules/@noble/hashes/sha2.js",
   ])("leaves %s with the lazily loaded surface that imports it", (moduleId) => {
     expect(vendorChunkFor(moduleId)).toBeUndefined()
   })

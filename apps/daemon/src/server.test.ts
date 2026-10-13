@@ -1,6 +1,6 @@
 import { asyncTestCredentials } from "./test-machine-credentials.js"
 import { waitForDaemon } from "./test-wait-for.js"
-import { access, chmod, link, mkdir, mkdtemp, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises"
+import { access, readFile, chmod, link, mkdir, mkdtemp, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises"
 import { removeScratchDirectories } from "./test-scratch.js"
 import { terminalRedactionCarryCharacters } from "./secret-redaction.js"
 import { execFileSync } from "node:child_process"
@@ -22,6 +22,8 @@ import {
   devicePairingLimitErrorCode,
   machineIdSchema,
   maximumEffectiveClientThreadItems,
+  maximumSessionHistoryPageItems,
+  maximumRpcMessageBytes,
   maximumTerminalOutputChunkCharacters,
   maximumWorkspaceDeltaChunkLength,
   maximumWorkspaceDeltaOperations,
@@ -86,6 +88,7 @@ import {
 } from "./skill-signing.js"
 import { FileSkillCatalog, SkillNotFoundError, type SkillCatalog } from "./skills.js"
 import {
+  GitWorkspaceService,
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
   RepositoryFilterRefusedError,
@@ -328,6 +331,116 @@ afterEach(async () => {
 })
 
 describe("DomovoiDaemon", () => {
+  it.each([
+    { name: "quiet", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
+    { name: "oversized active turn id", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
+    { name: "sensitive paths", racing: false, reportedPaths: ["NPM_TOKEN=synthetic-checkpoint-fixture", ".env", ".ssh/id_rsa", "safe.txt"], expectedPaths: ["safe.txt"], total: 4 },
+    { name: "long active turn id", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
+    { name: "over serialized path budget", racing: false,
+      reportedPaths: Array.from({ length: 50 }, (_, index) => String(index).padStart(2, "0") + "x".repeat(4094)),
+      expectedPaths: Array.from({ length: 3 }, (_, index) => String(index).padStart(2, "0") + "x".repeat(4094)), total: 50 },
+    { name: "over UTF-8 path budget", racing: false,
+      reportedPaths: Array.from({ length: 50 }, (_, index) => String(index).padStart(2, "0") + "漢".repeat(4094)),
+      expectedPaths: ["00" + "漢".repeat(4094)], total: 50 },
+    { name: "over escaped path budget", racing: false, reportedPaths: ["\u0001".repeat(3000)], expectedPaths: [], total: 1 },
+    { name: "snapshot unavailable", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
+    { name: "racing", racing: true, reportedPaths: undefined, expectedPaths: ["file.txt"], total: 1 },
+    { name: "over path count cap", racing: false,
+      reportedPaths: Array.from({ length: 55 }, (_, index) => `file-${String(54 - index).padStart(2, "0")}.txt`),
+      expectedPaths: Array.from({ length: 50 }, (_, index) => `file-${String(index).padStart(2, "0")}.txt`), total: 55 },
+    { name: "over path length cap", racing: false, reportedPaths: ["z.txt", "x".repeat(4097), "a.txt", "a.txt"], expectedPaths: ["a.txt", "z.txt"], total: 3 },
+    { name: "unmatched without named paths", racing: false, reportedPaths: [], expectedPaths: [], total: 0 },
+  ])("takes a mid-turn snapshot without moving HEAD or the shared index: $name", async ({ name, racing, reportedPaths, expectedPaths, total }) => {
+    const path = await mkdtemp(join(tmpdir(), "domovoi-mid-turn-"))
+    scratchDirectories.push(path)
+    const git = (...args: string[]) => execFileSync("git", ["-C", path, ...args], { encoding: "utf8" }).trim()
+    git("init", "--initial-branch=main")
+    await writeFile(join(path, "file.txt"), "base\n")
+    git("add", "--all")
+    git("-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "commit", "-m", "initial")
+    await writeFile(join(path, "file.txt"), "staged\n")
+    git("add", "--all")
+    await writeFile(join(path, "file.txt"), "working\n")
+    const before = { head: git("rev-parse", "HEAD"), branch: git("symbolic-ref", "HEAD"), index: await readFile(join(path, ".git", "index")) }
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    snapshot.sessions = [session]
+    snapshot.activeSessionId = session.id
+    snapshot.approvals = []
+    session.workspacePath = path
+    const providerTurnId = name === "oversized active turn id" ? "t".repeat(65 * 1024) : name === "long active turn id" ? "turn-" + "😀".repeat(2_000) : "capture-turn"
+    session.activeTurnId = providerTurnId
+    session.state = "active"
+    const activateTurns = deferLiveTurns(snapshot)
+    let pass = 0
+    const workspaceService = new GitWorkspaceService(join(path, "unused"), {
+      afterCheckpointStaging: async () => {
+        pass += 1
+        if (racing) await writeFile(join(path, "file.txt"), `racing ${pass}\n`)
+      },
+    })
+    if (reportedPaths) vi.spyOn(workspaceService, "snapshot").mockResolvedValue({
+      commit: before.head, changedFiles: [], matched: false, unstablePaths: reportedPaths,
+    })
+    if (name === "snapshot unavailable") Object.defineProperty(workspaceService, "snapshot", { value: undefined })
+    const checkpoint = vi.spyOn(workspaceService, "checkpoint")
+    const save = vi.fn((_snapshot: WorkspaceSnapshot) => {})
+    const daemon = new DomovoiDaemon({
+      port: 0, agents: {}, workspaceService,
+      store: { load: () => snapshot, save, close: vi.fn() },
+    })
+    running.push(daemon)
+    const address = await daemon.start()
+    activateTurns()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => { socket.once("open", resolve); socket.once("error", reject) })
+    let id = 0
+    const rpc = (method: string, params: object) => new Promise<Record<string, unknown>>((resolve) => {
+      const requestId = ++id
+      const receive = (data: WebSocket.RawData) => {
+        const message = JSON.parse(data.toString()) as Record<string, unknown>
+        if (message.id !== requestId) return
+        socket.off("message", receive)
+        resolve(message)
+      }
+      socket.on("message", receive)
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id: requestId, method, params }))
+    })
+    const result = await rpc("checkpoint.create", { sessionId: session.id, label: "capture", client: "desktop" })
+    if (name === "snapshot unavailable") {
+      expect(result).toMatchObject({ error: { code: -32602, message: "This workspace cannot take a checkpoint while the agent runs" } })
+      expect(checkpoint).not.toHaveBeenCalled()
+      socket.close()
+      return
+    }
+    expect(result).not.toHaveProperty("error")
+    const view = workspaceSnapshotSchema.parse(result.result)
+    const item = view.thread.find((item) => item.kind === "checkpoint" && item.label.endsWith(" · capture"))!
+    expect(item).toMatchObject({
+      kind: "checkpoint", reason: "manual",
+      midTurn: { ...(providerTurnId.length > 1024 ? { providerTurnIdSha256: createHash("sha256").update(providerTurnId).digest("hex") } : { providerTurnId }), stability: racing || reportedPaths ? "unstable" : "matched", changedPaths: expectedPaths, changedPathCount: total },
+    })
+    if (providerTurnId.length > 1024) expect(item).not.toHaveProperty("midTurn.providerTurnId")
+    const persisted = workspaceSnapshotSchema.parse(save.mock.lastCall?.[0])
+    expect(persisted.thread.find((saved) => saved.id === item.id)).toEqual(item)
+    const history = await rpc("session.history", { sessionId: session.id, categories: ["checkpoints"] })
+    expect(history).toMatchObject({
+      result: { items: expect.arrayContaining([expect.objectContaining({ sourceId: item.id, midTurn: item.kind === "checkpoint" ? item.midTurn : undefined })]) },
+    })
+    const page = sessionHistoryPageSchema.parse(history.result)
+    const entry = page.items.find((entry) => entry.sourceId === item.id)!
+    // Even a full page or retained thread of these captures leaves room in the
+    // RPC envelope. Count JSON escapes and UTF-8, not only String.length.
+    expect(Buffer.byteLength(JSON.stringify({ ...history, result: { ...page, items: Array(maximumSessionHistoryPageItems).fill(entry) } }))).toBeLessThan(maximumRpcMessageBytes)
+    expect(Buffer.byteLength(JSON.stringify({ ...result, result: { ...view, thread: Array(maximumEffectiveClientThreadItems).fill(item) } }))).toBeLessThan(maximumRpcMessageBytes)
+    expect(checkpoint).not.toHaveBeenCalled()
+    expect({ head: git("rev-parse", "HEAD"), branch: git("symbolic-ref", "HEAD"), index: await readFile(join(path, ".git", "index")) }).toEqual(before)
+    expect(await rpc("checkpoint.restore", { sessionId: session.id, checkpointId: item.id, client: "desktop" })).toMatchObject({
+      error: { code: -32602, message: "Stop the active turn before restoring a checkpoint" },
+    })
+    socket.close()
+  })
+
   it.each(["x", "n".repeat(42), "n".repeat(44)])(
     "refuses a daemon credential without 256 bits: %s",
     (authToken) => {
@@ -9514,7 +9627,7 @@ describe("DomovoiDaemon", () => {
         restoredCommit: "b".repeat(40),
         recoveryCommit: "c".repeat(40),
       })),
-      snapshot: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: ["src/app.ts"] })),
+      snapshot: vi.fn(async () => ({ commit: "d".repeat(40), changedFiles: ["src/app.ts"], matched: true })),
     } satisfies WorkspaceService
     const initialSnapshot = createEmptyWorkspace({
       id: `machine-${"8".repeat(32)}`,
@@ -9806,10 +9919,18 @@ describe("DomovoiDaemon", () => {
       label: "while-agent-is-running",
       client: "desktop",
     })
+    const midTurn = { providerTurnId: "provider-turn-1", stability: "matched", changedPaths: [], changedPathCount: 0 }
     expect(activeCheckpoint).toMatchObject({
-      error: { code: -32602, message: "Stop the active turn before creating a checkpoint" },
+      result: { thread: expect.arrayContaining([expect.objectContaining({
+        kind: "checkpoint", reason: "manual", commit: "d".repeat(40), midTurn,
+      })]) },
     })
     expect(workspaceService.checkpoint).not.toHaveBeenCalled()
+    expect(workspaceService.snapshot).toHaveBeenCalledTimes(2)
+    const activeHistory = await rpc("session.history", { sessionId, categories: ["checkpoints"] })
+    expect(activeHistory).toMatchObject({ result: { items: expect.arrayContaining([
+      expect.objectContaining({ category: "checkpoints", midTurn }),
+    ]) } })
 
     const activeRestore = await rpc("checkpoint.restore", {
       sessionId,
@@ -9912,9 +10033,11 @@ describe("DomovoiDaemon", () => {
         ]),
       },
     })
-    const checkpointId = workspaceSnapshotSchema.parse(checkpointed.result).thread.find(
-      (item) => item.kind === "checkpoint" && item.reason === "manual",
-    )!.id
+    const idleCheckpoint = workspaceSnapshotSchema.parse(checkpointed.result).thread.find(
+      (item) => item.kind === "checkpoint" && item.reason === "manual" && item.label.includes("after-tests"),
+    )!
+    expect(idleCheckpoint).not.toHaveProperty("midTurn")
+    const checkpointId = idleCheckpoint.id
 
     const unknownRestore = await rpc("checkpoint.restore", {
       sessionId,

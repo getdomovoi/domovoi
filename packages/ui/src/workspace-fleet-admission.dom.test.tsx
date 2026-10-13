@@ -223,3 +223,36 @@ it("renders refusal and leaves Use disabled when the credential is a daemon root
   expect(screen.getByRole("button", { name: openStudio }).hasAttribute("disabled")).toBe(true)
   expect(screen.queryByText("Client credential verified")).toBeNull()
 })
+
+it.each(["success", "lost", "invalid"])("routes current-device sign-out through the home credential: %s", async (outcome) => {
+  const user = userEvent.setup()
+  const onSignedOut = vi.fn()
+  render(<WorkspaceShell currentDeviceId={deviceId} onSignedOut={onSignedOut} />)
+  const home = sockets.socket(0)
+  await act(async () => { completeHandshake(home) })
+  await settle()
+  await act(async () => { respond(home, "fleet.list", { entries: [] }) })
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+  await settle()
+  await act(async () => { respond(home, "device.list", { devices: [{
+    id: deviceId, label: "This tab", pairedAt: observedAt,
+    binding: { kind: "client", client: "web", clientAccess: "full" },
+  }] }) })
+  await user.click(await screen.findByRole("button", { name: "Sign this device out" }))
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Sign this device out" }))
+  expect(onSignedOut).not.toHaveBeenCalled()
+  expect(sentRequests(home, "device.revokeCurrent")).toHaveLength(1)
+  expect(sentRequests(home, "device.revokeCurrent")[0]?.params).toEqual({})
+  await act(async () => {
+    if (outcome === "success") respond(home, "device.revokeCurrent", { revoked: true })
+    else if (outcome === "lost") home.drop(1008)
+    else home.receive({ jsonrpc: "2.0", id: sentRequests(home, "device.revokeCurrent")[0]!.id, result: { revoked: false } })
+  })
+  await settle()
+  if (outcome === "success") expect(onSignedOut).toHaveBeenCalledExactlyOnceWith({ revoked: true })
+  else {
+    expect(onSignedOut).not.toHaveBeenCalled()
+    expect(await screen.findByText(/This device may have signed out/)).toBeTruthy()
+  }
+})

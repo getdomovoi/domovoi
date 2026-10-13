@@ -5,7 +5,7 @@ import type { ProviderRuntime, Runtime, SystemEmergencyStopResult, ThreadItem } 
 
 import { demoWorkspace, maximumEffectiveClientThreadItems, providerFailureSchema } from "@getdomovoi/protocol"
 
-import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointBlockedReason, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, PreviewVariantThumbnail, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
+import { activeThreadKey, AnnotationComments, AppBar, archiveSessionDescription, ArtifactDock, artifactAuthorizationKey, capturePreviewThumbnailState, checkpointRestoreBlocked, CheckpointRestoreAction, CheckpointThreadItem, forkProviderChoice, forkSessionBlockedReason, HistoryPanel, openProviderChoice, providerHandoffChoices, PreviewVariantThumbnail, renderedThreadForActiveSession, sessionIsArchiveReadOnly, skillInventoryRefreshKey, skillProjectRefreshKey, Thread } from "./workspace-shell"
 import { ProviderReadinessList } from "./launcher-dialog"
 import { buildWorkspaceCommands } from "./workspace-commands"
 import { PreviewThumbnailLifecycle } from "./preview-thumbnails"
@@ -438,15 +438,6 @@ describe("HistoryPanel", () => {
       "Annotations",
       "Tests",
     ]) expect(markup).toContain(`>${label}</button>`)
-  })
-})
-
-describe("checkpointBlockedReason", () => {
-  it("explains why manual checkpoints are unavailable during an active turn", () => {
-    expect(checkpointBlockedReason("turn-active")).toBe(
-      "Stop the active turn before creating a checkpoint",
-    )
-    expect(checkpointBlockedReason(undefined)).toBeUndefined()
   })
 })
 
