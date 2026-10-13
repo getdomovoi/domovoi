@@ -738,7 +738,7 @@ it.each([0, 1, 7])("renders %s systemd automatic restarts separately from crashe
       supervisor: { restartCount, pid: 4321, startedAt: "2026-10-12T12:00:00.000Z", lastExit: "code 9" } },
   }} />)
   const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
-  expect(card.getByText(`${restartCount} automatic ${restartCount === 1 ? "restart" : "restarts"} since the last start by sign-in, install or hand, or the last counter reset`)).toBeTruthy()
+  expect(card.getByText(`${restartCount} automatic ${restartCount === 1 ? "restart" : "restarts"} since its last start that was not automatic, or its last counter reset`)).toBeTruthy()
   expect(card.getByText("PID 4321")).toBeTruthy()
   expect(card.getByText("up 2m at last check")).toBeTruthy()
   expect(card.getByText("Last exit: code 9")).toBeTruthy()

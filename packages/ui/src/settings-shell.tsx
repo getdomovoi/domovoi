@@ -397,7 +397,7 @@ function DaemonSection({ daemon, footer, buildStatus, buildSettled, onUpdated }:
               <span>{uptime}{minutes === undefined ? "" : " at last check"}</span>
             </> : null}
             <span>{supervisor?.restartCount !== undefined
-              ? `${supervisor.restartCount} automatic ${supervisor.restartCount === 1 ? "restart" : "restarts"} since the last start by sign-in, install or hand, or the last counter reset`
+              ? `${supervisor.restartCount} automatic ${supervisor.restartCount === 1 ? "restart" : "restarts"} since its last start that was not automatic, or its last counter reset`
               : daemon.platform === "linux" && supervisor?.crashCount === undefined ? "Automatic restart count unknown" : crashes}</span>
             <span>{supervisor?.lastExit ? `Last exit: ${supervisor.lastExit}` : "Last exit unknown"}</span>
             {supervisor?.supervisionFailure === undefined && supervisor?.crashCount === undefined ? <span>Supervisor exhaustion unknown</span> : null}
