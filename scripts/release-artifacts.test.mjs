@@ -8,7 +8,7 @@ import { dirname, join } from "node:path"
 import test from "node:test"
 import { promisify } from "node:util"
 import { fileURLToPath } from "node:url"
-import { gunzipSync } from "node:zlib"
+import { gzipSync, gunzipSync } from "node:zlib"
 
 import { buildReleaseArtifacts, checksumManifest, sbomComponents, sbomDocument } from "./release-artifacts.mjs"
 import * as release from "./release-artifacts.mjs"
@@ -403,6 +403,11 @@ test("the real release SBOM covers every packed runtime coordinate, not just thi
   const sha512 = async (file) => createHash("sha512").update(await readFile(file)).digest("hex")
   const credentialStoreArchive = join(output, `getdomovoi-credential-store-${manifest.version}.tgz`)
   const cliArchive = join(output, `getdomovoi-cli-${manifest.version}.tgz`)
+  const cliManifest = JSON.parse((await promisify(execFile)("tar", ["-xOf", cliArchive, "package/package.json"], {
+    timeout: 10_000, killSignal: "SIGKILL", maxBuffer: 1024 * 1024,
+  })).stdout)
+  assert.deepEqual(Object.keys(cliManifest.dependencies), Object.keys(cliManifest.dependencies).sort(),
+    "the production builder canonicalizes the packed CLI dependency map before hashing")
   for (const archiveFile of [credentialStoreArchive, cliArchive]) {
     const inventory = JSON.parse(await readFile(archiveFile.replace(/\.tgz$/, ".sbom.json"), "utf8"))
     validateCycloneDx(inventory)
@@ -459,4 +464,72 @@ test("the real release SBOM covers every packed runtime coordinate, not just thi
     assert.match(section, /SIL OPEN FONT LICENSE Version 1\.1 - 26 February 2007[\s\S]*OTHER DEALINGS IN THE\s+FONT SOFTWARE\./u)
   }
   t.diagnostic(`SBOM covers all ${expected.size} locked runtime components, including non-host packages and first-party protocol`)
+})
+
+
+function cliArchiveFixture(reverse = false) {
+  const links = [["@getdomovoi/credential-store", "1.2.3"], ["@getdomovoi/daemon", "1.2.3"], ["@getdomovoi/protocol", "1.2.3"]]
+  const manifest = { name: "@getdomovoi/cli", version: "1.2.3", bin: { domovoi: "./dist/index.js" },
+    exports: { ".": { node: "./node.js", default: "./fallback.js" } },
+    imports: { "#runtime": { development: "./development.js", default: "./production.js" } },
+    dependencies: Object.fromEntries(reverse ? [...links].reverse() : links),
+    optionalDependencies: Object.fromEntries(reverse ? [["z", "2"], ["a", "1"]] : [["a", "1"], ["z", "2"]]) }
+  const tar = gunzipSync(release.webArchive([
+    { path: "package/package.json", bytes: JSON.stringify(manifest, null, 2) + "\n" },
+    { path: "package/dist/index.js", bytes: "#!/usr/bin/env node\nconsole.log(\"fixture\")\n" },
+  ]))
+  const binOffset = tar.indexOf(Buffer.from("package/dist/index.js"))
+  tar.write("0000755\u0000", binOffset + 100, 8)
+  cliHeaderChecksum(tar, binOffset)
+  return { tar, binOffset, archive: gzipSync(tar), manifest }
+}
+
+function cliHeaderChecksum(tar, offset) {
+  tar.fill(" ", offset + 148, offset + 156)
+  const sum = tar.subarray(offset, offset + 512).reduce((total, byte) => total + byte, 0)
+  tar.write(sum.toString(8).padStart(6, "0") + "\u0000 ", offset + 148, 8)
+}
+
+test("CLI dependency ordering is deterministic without changing condition precedence or executable bytes", () => {
+  assert.equal(typeof release.canonicalizeCliArchive, "function")
+  const first = cliArchiveFixture()
+  const second = cliArchiveFixture(true)
+  assert.notDeepEqual(first.archive, second.archive, "the fixture reproduces workspace dependency key reordering")
+  const canonical = release.canonicalizeCliArchive(first.archive)
+  assert.deepEqual(canonical, release.canonicalizeCliArchive(second.archive))
+  const output = gunzipSync(canonical)
+  assert.deepEqual(output.subarray(first.binOffset, first.binOffset + 1024), first.tar.subarray(first.binOffset, first.binOffset + 1024), "preserve the complete executable header, mode and payload")
+  const offset = output.indexOf(Buffer.from("package/package.json"))
+  const size = Number.parseInt(output.subarray(offset + 124, offset + 136).toString().replaceAll("\u0000", "").trim(), 8)
+  const manifest = JSON.parse(output.subarray(offset + 512, offset + 512 + size))
+  assert.deepEqual(manifest, first.manifest)
+  assert.deepEqual(Object.keys(manifest.exports["."]), ["node", "default"])
+  assert.deepEqual(Object.keys(manifest.imports["#runtime"]), ["development", "default"])
+  assert.deepEqual(Object.keys(manifest.dependencies), ["@getdomovoi/credential-store", "@getdomovoi/daemon", "@getdomovoi/protocol"])
+})
+
+for (const mutation of ["checksum", "link", "path", "format", "truncated"]) {
+  test(`CLI canonicalization refuses ${mutation} without trusting unsupported tar input`, () => {
+    assert.equal(typeof release.canonicalizeCliArchive, "function")
+    const { tar, binOffset } = cliArchiveFixture()
+    if (mutation === "checksum") tar[binOffset + 100] ^= 1
+    if (mutation === "link") tar.write("2", binOffset + 156)
+    if (mutation === "path") { tar.fill(0, binOffset, binOffset + 100); tar.write("../escape", binOffset) }
+    if (mutation === "format") tar.write("other", binOffset + 257)
+    if (mutation !== "checksum") cliHeaderChecksum(tar, binOffset)
+    const archive = gzipSync(mutation === "truncated" ? tar.subarray(0, tar.length - 1024) : tar)
+    assert.throws(() => release.canonicalizeCliArchive(archive))
+  })
+}
+
+
+test("CLI canonicalization rejects duplicate manifests and oversized declared entries", () => {
+  const { tar, binOffset } = cliArchiveFixture()
+  const offset = tar.indexOf(Buffer.from("package/package.json"))
+  const duplicate = Buffer.concat([tar.subarray(0, tar.length - 1024), tar.subarray(offset)])
+  assert.throws(() => release.canonicalizeCliArchive(gzipSync(duplicate)), /Duplicate/)
+  const oversized = Buffer.from(tar)
+  oversized.write("77777777777\0", binOffset + 124, 12)
+  cliHeaderChecksum(oversized, binOffset)
+  assert.throws(() => release.canonicalizeCliArchive(gzipSync(oversized)), /Truncated|invalid/)
 })

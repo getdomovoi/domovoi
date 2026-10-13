@@ -27,6 +27,15 @@ type Catalog =
   | { status: "ready", models: ProviderModel[] }
   | { status: "unavailable", note: string }
 
+// Every catalog read takes a ticket when it starts, here or in the thread,
+// so a read that started earlier never overwrites one that started later,
+// whichever answers first.
+let catalogReadTickets = 0
+export function nextCatalogReadTicket(): number {
+  catalogReadTickets += 1
+  return catalogReadTickets
+}
+
 export function modelCountText(matches: number, total: number, harnesses: number): string {
   return `${matches} of ${total} · ${harnesses} ${harnesses === 1 ? "harness" : "harnesses"} reported`
 }
@@ -49,7 +58,14 @@ export function ModelPopover({
   onDiscoverRuntime,
   onChange,
   onFork,
+  openRequest,
+  onCatalog,
 }: {
+  // Each catalog a harness answers with, so the composer locks images on the
+  // same answer this menu shows, with the ticket its read took on starting.
+  onCatalog?: ((provider: string, models: ProviderModel[], ticket: number) => void) | undefined
+  // Bumped by the composer's Change model, which opens this menu.
+  openRequest?: number | undefined
   runtime: Runtime
   providers: readonly ProviderRuntime[]
   machineName: string
@@ -63,6 +79,11 @@ export function ModelPopover({
   onFork: (runtime: Runtime, checkpointId: string, requestId: string) => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
+  const [seenOpenRequest, setSeenOpenRequest] = useState(openRequest)
+  if (openRequest !== seenOpenRequest) {
+    setSeenOpenRequest(openRequest)
+    if (!pending) setOpen(true)
+  }
   const [query, setQuery] = useState("")
   const [harness, setHarness] = useState<string>()
   const [catalogs, setCatalogs] = useState<Record<string, Catalog>>({})
@@ -75,6 +96,8 @@ export function ModelPopover({
   // catalogs each time something unrelated in the workspace moves.
   const providersRef = useRef(providers)
   providersRef.current = providers
+  const onCatalogRef = useRef(onCatalog)
+  onCatalogRef.current = onCatalog
 
   // A harness that did not report is absent, not dimmed. The fleet's
   // dim-and-keep rule is about machines, which you paired and still own when
@@ -93,8 +116,12 @@ export function ModelPopover({
     const current = ++generation.current
     const targets = providersRef.current.filter((provider) => provider.sessionCapable && (every || providerCanStartSession(provider)))
     setCatalogs(Object.fromEntries(targets.map((provider) => [provider.id, { status: "loading" }])))
-    return Promise.all(targets.map((provider) => read(provider.id).then(
-      (catalog) => { if (generation.current === current) setCatalogs((previous) => ({ ...previous, [provider.id]: catalog })) },
+    return Promise.all(targets.map((provider) => ({ provider, ticket: nextCatalogReadTicket() })).map(({ provider, ticket }) => read(provider.id).then(
+      (catalog) => {
+        if (generation.current !== current) return
+        setCatalogs((previous) => ({ ...previous, [provider.id]: catalog }))
+        if (catalog.status === "ready") onCatalogRef.current?.(provider.id, catalog.models, ticket)
+      },
       (cause: unknown) => {
         if (generation.current !== current) return
         const note = cause instanceof Error ? cause.message : "Models could not be loaded"
@@ -145,6 +172,13 @@ export function ModelPopover({
     return text.toLowerCase().includes(needle)
   })
   const matches = shown.filter((row) => row.kind === "model").length
+  // The design groups by what pays for a model, subscription and local apart
+  // from API keys. Nothing on the wire says that yet (CX-8), so the rows go
+  // under the harness that reported them, the design's other grouping.
+  const groups = listed.flatMap((provider) => {
+    const groupRows = shown.filter((row) => (row.kind === "model" ? row.model.provider : row.provider) === provider.id)
+    return groupRows.length > 0 ? [{ provider: provider.id, rows: groupRows }] : []
+  })
   const loading = listed.some((provider) => catalogs[provider.id]?.status === "loading")
 
   const pick = (model: ProviderModel) => {
@@ -174,7 +208,7 @@ export function ModelPopover({
         label="Models on this machine"
         trigger={trigger}
         placement="above"
-        className="w-[330px] p-0"
+        className="w-[360px] p-0"
       >
         <div className="flex items-center gap-2 border-b px-3 py-2">
           <SearchIcon className="size-3.5 shrink-0 text-faint" />
@@ -211,41 +245,49 @@ export function ModelPopover({
         ) : null}
         <div role="listbox" aria-label="Models" className="max-h-[268px] overflow-y-auto">
           {loading ? <p role="status" className="m-0 px-3 py-2 font-machine text-mono-xs text-faint">Reading what each harness reports</p> : null}
-          {shown.map((row) => row.kind === "model" ? (
-            <div
-              key={`${row.model.provider}:${row.model.id}`}
-              role="option"
-              aria-label={`${row.model.id}, ${row.model.provider}`}
-              aria-selected={row.current}
-              tabIndex={0}
-              onClick={() => pick(row.model)}
-              onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); pick(row.model) } }}
-              className={cn("flex cursor-pointer items-start gap-2.5 border-t px-3 py-2.5", row.current && "bg-accent")}
-            >
-              <StatusDot meaning="online" label={`${providerDisplayName(row.model.provider)} reports this model`} size="inline" labelHidden className="mt-1" />
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-baseline gap-2">
-                  <span className="text-[12.5px] text-foreground">{modelDisplayName(row.model.id, row.model.provider)}</span>
-                  <span className="font-machine text-[10px] text-faint">{row.model.id}</span>
+          {groups.map((group) => (
+            <div key={group.provider} role="group" aria-label={group.provider}>
+              <div aria-hidden className="border-t bg-background px-3 pt-[9px] pb-[7px] text-[10.5px] font-medium tracking-[.13em] text-faint">{group.provider.toUpperCase()}</div>
+              {group.rows.map((row) => row.kind === "model" ? (
+                <div
+                  key={`${row.model.provider}:${row.model.id}`}
+                  role="option"
+                  aria-label={`${row.model.id}, ${row.model.provider}${row.model.imageInput === false ? ", no image input" : ""}`}
+                  aria-selected={row.current}
+                  tabIndex={0}
+                  onClick={() => pick(row.model)}
+                  onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); pick(row.model) } }}
+                  className={cn("flex cursor-pointer items-start gap-2.5 border-t px-3 py-2.5", row.current && "bg-accent")}
+                >
+                  <StatusDot meaning="online" label={`${providerDisplayName(row.model.provider)} reports this model`} size="inline" labelHidden className="mt-1" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-baseline gap-2">
+                      <span className="font-machine text-[12px] text-foreground">{modelDisplayName(row.model.id, row.model.provider)}</span>
+                      <span className="font-machine text-[10px] text-faint">{row.model.id}</span>
+                      {/* J42. Only a reported false is tagged: not reported
+                          is not known, and is not no. */}
+                      {row.model.imageInput === false ? <span className="text-[10.5px] text-faint">no image input</span> : null}
+                    </div>
+                    {row.model.description ? <p className="m-0 mt-0.5 text-[11px] leading-snug text-muted-foreground">{row.model.description}</p> : null}
+                  </div>
+                  <CheckIcon className={cn("size-3.5 self-center", row.current ? "text-primary" : "text-transparent")} />
                 </div>
-                {row.model.description ? <p className="m-0 mt-0.5 text-[11px] leading-snug text-muted-foreground">{row.model.description}</p> : null}
-              </div>
-              <CheckIcon className={cn("size-3.5 self-center", row.current ? "text-primary" : "text-transparent")} />
-            </div>
-          ) : (
-            <div
-              key={`harness:${row.provider}`}
-              role="option"
-              aria-label={row.provider}
-              aria-selected={false}
-              aria-disabled="true"
-              className="flex items-start gap-2.5 border-t px-3 py-2.5 opacity-50"
-            >
-              <StatusDot meaning="offline" label={`${row.provider} cannot run here`} size="inline" labelHidden className="mt-1" />
-              <div className="min-w-0 flex-1">
-                <span className="font-machine text-[12px] text-foreground">{row.provider}</span>
-                <p className="m-0 mt-0.5 text-[11px] leading-snug text-muted-foreground">{row.note}</p>
-              </div>
+              ) : (
+                <div
+                  key={`harness:${row.provider}`}
+                  role="option"
+                  aria-label={row.provider}
+                  aria-selected={false}
+                  aria-disabled="true"
+                  className="flex items-start gap-2.5 border-t px-3 py-2.5 opacity-50"
+                >
+                  <StatusDot meaning="offline" label={`${row.provider} cannot run here`} size="inline" labelHidden className="mt-1" />
+                  <div className="min-w-0 flex-1">
+                    <span className="font-machine text-[12px] text-foreground">{row.provider}</span>
+                    <p className="m-0 mt-0.5 text-[11px] leading-snug text-muted-foreground">{row.note}</p>
+                  </div>
+                </div>
+              ))}
             </div>
           ))}
         </div>

@@ -13,6 +13,7 @@ export default defineConfig({
     "workspace-redaction": "src/workspace-redaction.ts",
     "machine-keyring-worker": "src/machine-keyring-worker.ts",
     "bootstrap-install": "src/bootstrap-install.ts",
+    "update-verification": "src/update-verification.ts",
   },
   format: ["esm"],
   platform: "node",

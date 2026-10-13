@@ -1,4 +1,5 @@
 import { CircleStopIcon } from "lucide-react"
+import { useId } from "react"
 
 import { Button } from "./components/ui/button"
 
@@ -8,6 +9,7 @@ export function FailedReadState({
   facts,
   retrying,
   retryDisabled = false,
+  retryLocked,
   retryError,
   onRetry,
   onOpenMachine,
@@ -18,6 +20,8 @@ export function FailedReadState({
   facts: readonly string[]
   retrying: boolean
   retryDisabled?: boolean | undefined
+  // Why this client cannot try again at all, said under the button.
+  retryLocked?: string | undefined
   retryError?: string | undefined
   onRetry: () => void
   onOpenMachine?: (() => void) | undefined
@@ -25,6 +29,7 @@ export function FailedReadState({
   // files before it stops, so the surface makes no such claim by default.
   nothingWritten?: boolean | undefined
 }) {
+  const lockedId = useId()
   return (
     <section aria-label="Could not read this session" className="mx-auto flex w-full max-w-[620px] flex-col gap-4">
       <div className="overflow-hidden rounded-xl border border-danger-border bg-danger-background">
@@ -58,10 +63,11 @@ export function FailedReadState({
         </div>
       ) : null}
       <div className="flex items-center gap-2">
-        <Button disabled={retrying || retryDisabled} onClick={onRetry}>{retrying ? "Trying again…" : "Try again"}</Button>
+        <Button disabled={retrying || retryDisabled || retryLocked !== undefined} aria-describedby={retryLocked !== undefined ? lockedId : undefined} onClick={() => { if (retryLocked === undefined) onRetry() }}>{retrying ? "Trying again…" : "Try again"}</Button>
         {onOpenMachine ? <Button variant="outline" onClick={onOpenMachine}>Open the machine</Button> : null}
         {nothingWritten ? <span className="ml-auto font-machine text-[10.5px] text-faint">nothing was written, nothing was lost</span> : null}
       </div>
+      {retryLocked !== undefined ? <p id={lockedId} className="m-0 text-[12px] leading-relaxed text-muted-foreground">{retryLocked}</p> : null}
     </section>
   )
 }

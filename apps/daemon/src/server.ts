@@ -154,6 +154,7 @@ import {
 } from "@getdomovoi/protocol"
 import { localOwnerProof, type LocalOwnerIdentity, type LocalOwnerSecret } from "./local-owner-proof.js"
 import { DaemonUpdates, type DaemonUpdateOptions } from "./update-dispatch.js"
+import { UpdateScheduler } from "./update-scheduler.js"
 import { defaultMachineCallTimeoutMs, defaultMachineHandshakeTimeoutMs, MachinePairingRequiredError, openMachineSocket, protocolMismatchRefusal } from "./machine-socket.js"
 import { FileTransferTransactions } from "./transfer-transactions.js"
 import type { DetectedTransferConflict } from "./transfer-conflicts.js"
@@ -337,6 +338,7 @@ import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import { PairingClaimAdmission } from "./pairing-admission.js"
 import { DaemonRelaySocket, maximumDaemonRelayChannels } from "./relay-admission.js"
+import { createDaemonRelayCarrier, type DaemonRelayCarrier, type DaemonRelayCarrierOptions } from "./relay-carrier.js"
 import { relayIdentityPublicKeyIsValid, relayPublicKeyFromPrivateKey, verifyRelayChannelSuccessor, type RelayCarrier, type RelayChannel } from "@getdomovoi/protocol/relay-admission"
 import { relayRecoveryParamsSchema, relayRecoveryResultSchema, type RelayAdmissionContext, type RelayRecoveryResult } from "@getdomovoi/protocol"
 import { resolveFleetClientRoute } from "./fleet-client-route.js"
@@ -1611,6 +1613,7 @@ export type DaemonServerOptions = {
   // Supplied from endpoint-owned custody. No generated per-process fallback.
   relayStaticKey?: Uint8Array
   relayRecovery?: RelayRecoveryResult
+  relayCarrier?: DaemonRelayCarrierOptions
   allowRemoteTransport?: boolean
   authTimeoutMs?: number
   terminalReapGraceMs?: number
@@ -1789,6 +1792,8 @@ export class DomovoiDaemon {
   #relaySockets = new Set<DaemonRelaySocket>()
   #relayStaticKey: Uint8Array | undefined
   #relayRecovery: RelayRecoveryResult | undefined
+  #relayCarrierOptions: DaemonRelayCarrierOptions | undefined
+  #relayCarrier: DaemonRelayCarrier | undefined
   // Independent of code-claim attempts, with the same bounded source/listener budgets.
   #relayRecoveryAdmission = new PairingClaimAdmission()
   #snapshot: WorkspaceSnapshot
@@ -2012,6 +2017,7 @@ export class DomovoiDaemon {
   #tls: TlsMaterial | undefined
   #localOwner: DaemonServerOptions["localOwner"]
   #updates: DaemonUpdates
+  #updateScheduler: UpdateScheduler | undefined
   #advertiseHost: string | undefined
   #tailnetHost: string | undefined
   #wsl: MachineWslFacts | undefined
@@ -2076,6 +2082,17 @@ export class DomovoiDaemon {
     if (!credentialSchema.safeParse(authToken).success) {
       throw new Error("Daemon credential must be a 43-character base64url value")
     }
+    if (options.relayCarrier) {
+      const credential = options.relayCarrier.registrationCredential
+      if (!this.#relayRecovery || !this.#relayStaticKey || credential === authToken
+        || credential === options.relayCarrier.routeId || credential === Buffer.from(this.#relayStaticKey).toString("base64url")
+        || credential === this.#relayRecovery.identity.identityPublicKey
+        || credential === this.#relayRecovery.identity.channel.responderPublicKey
+        || credential === this.#relayRecovery.successor?.statement.previousChannelPublicKey) {
+        throw new Error("Relay carrier requires a provisioned identity and an independent registration credential")
+      }
+      this.#relayCarrierOptions = structuredClone(options.relayCarrier)
+    }
     this.host = options.host ?? "127.0.0.1"
     this.requestedPort = options.port ?? 47831
     this.#modelCacheTtlMs = Math.max(0, options.modelCacheTtlMs ?? 60_000)
@@ -2085,6 +2102,7 @@ export class DomovoiDaemon {
     this.#tls = options.tls
     this.#localOwner = options.localOwner
     this.#updates = new DaemonUpdates(options.updates)
+    this.#updateScheduler = options.updates ? new UpdateScheduler(options.updates, this.#updates) : undefined
     this.#advertiseHost = options.advertiseHost
     this.#tailnetHost = options.tailnetHost
     this.#wsl = options.wsl
@@ -3182,6 +3200,22 @@ export class DomovoiDaemon {
     // the desktop and the CLI attach on loopback, which already answers.
     await this.#openTailnetListener(this.address!.port)
 
+    if (this.#relayCarrierOptions) {
+      signal?.throwIfAborted()
+      if (this.#stopping || this.#stopped) throw new Error("Daemon stopped during relay startup")
+      if (this.#store.devices?.verify(this.#relayCarrierOptions.registrationCredential)) {
+        throw new Error("Relay registration credential must differ from every paired client or machine bearer")
+      }
+      this.#relayCarrier = createDaemonRelayCarrier(this.#relayCarrierOptions, {
+        recovery: this.relayRecovery({ machineId: this.#snapshot.machine.id }, "outbound-carrier"),
+        openChannel: (options) => this.openRelayChannel(options),
+        onStatus: (status) => { if (status.state === "refused") this.#reportError("Relay carrier requires operator attention", status.reason) },
+      })
+      await this.#relayCarrier.start()
+      signal?.throwIfAborted()
+      if (this.#stopping || this.#stopped) throw new Error("Daemon stopped during relay startup")
+    }
+
     // A dead target must not hold daemon startup hostage. Each frozen source
     // remains read-only while its own resource queue reconciles in background.
     this.#scheduleSessionTransferRecovery()
@@ -3189,6 +3223,9 @@ export class DomovoiDaemon {
     this.#fleetEnrollment.start()
     if (this.#providerProbe) this.#queueProviderRefresh(true)
 
+    signal?.throwIfAborted()
+    if (this.#stopping || this.#stopped) throw new Error("Daemon stopped during startup")
+    this.#updateScheduler?.start()
     return this.address!
   }
 
@@ -3472,14 +3509,16 @@ export class DomovoiDaemon {
     this.#stopping = true
     this.#runtimeDiscoveryAbort.abort(new Error("Daemon stopping"))
     const fleetStopped = this.#fleetEnrollment.stop()
+    const schedulerStopped = this.#updateScheduler?.stop()
     const updatesStopped = this.#updates.stop()
+    const relayStopped = this.#relayCarrier?.stop()
     if (this.#transferReconciliationTimer) {
       clearTimeout(this.#transferReconciliationTimer)
       this.#transferReconciliationTimer = undefined
     }
     this.#closeArtifactWatchers()
     for (const unsubscribe of this.#unsubscribeAgents.splice(0)) unsubscribe()
-    const stopping = this.#finishStop(Promise.all([fleetStopped, updatesStopped]).then(() => {}))
+    const stopping = this.#finishStop(Promise.all([fleetStopped, schedulerStopped, updatesStopped, relayStopped]).then(() => {}))
     this.#stopPromise = stopping
     return stopping
   }

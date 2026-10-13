@@ -1,11 +1,13 @@
 import { copyFile, lstat, mkdir, readFile, writeFile } from "node:fs/promises"
-import { dirname, join, resolve } from "node:path"
+import { constants } from "node:fs"
+import { basename, dirname, join, resolve } from "node:path"
 import { pathToFileURL } from "node:url"
 import { isDeepStrictEqual } from "node:util"
 
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
 import { bootstrapPlan, expectedChecksum } from "./bootstrap-plan.mjs"
 import { publishablePackages, webArchiveName } from "./release-artifacts.mjs"
+import { verifyReleaseReproducibility } from "./release-reproducibility.mjs"
 import { evaluatePublishOrder } from "./publish-order.mjs"
 import { hashRuntimeFile } from "./runtime-verification.mjs"
 import { collectWorkspacePackages, evaluateVersionLockstep } from "./version-lockstep.mjs"
@@ -61,6 +63,8 @@ async function describeRelease(root, directory, commit, deadline) {
   files.push({ name: web, sha256: webSha256 })
   if (sums.trim().split(/\r?\n/u).length !== files.length) throw new Error("SHA256SUMS must name exactly this release's archives, SBOMs and web app")
   files.push({ name: "SHA256SUMS", sha256: await hashRuntimeFile(join(directory, "SHA256SUMS"), "sha256", deadline) })
+  await verifyReleaseReproducibility({ root, directory, commit, version, deadline })
+  files.push({ name: "reproducibility.json", sha256: await hashRuntimeFile(join(directory, "reproducibility.json"), "sha256", deadline) })
   return { schemaVersion: 1, commit, version, gitTag: `v${version}`, prerelease: Boolean(prerelease), npmTag, packages, files }
 }
 
@@ -127,6 +131,63 @@ export async function verifyRelease({ root = process.cwd(), directory = join(roo
       }
     }
     return release
+  })
+}
+
+// Candidate preparation is deliberately separate from prepare/verify and their
+// live publishing CLI. No candidate, receipt or caller boolean grants trust.
+export async function prepareDistributionInventory({ root = process.cwd(), directory = join(root, "release"),
+  commit, channel, preparedDmgs = [], stagingDirectory, timeoutMs = 60_000 } = {}) {
+  if (typeof stagingDirectory !== "string" || !stagingDirectory || !Array.isArray(preparedDmgs) || preparedDmgs.length > 2) {
+    throw new Error("Distribution needs a new explicit staging directory and at most two prepared DMGs")
+  }
+  return withReleaseDeadline(timeoutMs, async (deadline) => {
+    const { releaseInventorySchema } = await import("../packages/protocol/dist/index.js")
+    const release = await deadline.run(() => verifyRelease({ root, directory, commit, timeoutMs }))
+    const files = []
+    const sources = new Map()
+    const inspect = async (path) => {
+      const stat = await deadline.run(() => lstat(path))
+      // This is a preparation resource cap, not a native packaging assertion.
+      if (!stat.isFile() || stat.size < 1 || stat.size > 2_147_483_648) throw new Error("Distribution artifact is not a bounded regular file")
+      return { length: stat.size, sha256: await hashRuntimeFile(path, "sha256", deadline, 2_147_483_648) }
+    }
+    for (const file of release.files) {
+      const path = join(directory, file.name)
+      const identity = await inspect(path)
+      if (identity.sha256 !== file.sha256) throw new Error("Core artifact changed during distribution preparation")
+      const pkg = release.packages.find((entry) => entry.archive === file.name || entry.sbom === file.name)
+      const kind = pkg ? (pkg.archive === file.name ? "npm" : "sbom")
+        : file.name === "SHA256SUMS" ? "checksums" : file.name === "reproducibility.json" ? "reproducibility" : "web"
+      files.push({ name: file.name, ...identity, kind, ...(pkg ? { packageName: pkg.name } : {}) })
+      sources.set(file.name, path)
+    }
+    for (const input of preparedDmgs) {
+      if (!input || typeof input !== "object" || typeof input.path !== "string"
+        || input.version !== release.version || input.sourceCommit !== commit || basename(input.path) !== input.name) {
+        throw new Error("Prepared DMG identity does not match this release")
+      }
+      const { path, version: _version, sourceCommit: _commit, ...file } = input
+      const identity = await inspect(path)
+      if (identity.length !== file.length || identity.sha256 !== file.sha256) throw new Error("Prepared DMG bytes do not match their identity")
+      files.push(file)
+      sources.set(file.name, path)
+    }
+    const inventory = releaseInventorySchema.parse({ schemaVersion: 2, version: release.version,
+      channel, commit, gitTag: release.gitTag, files })
+    const staging = resolve(stagingDirectory)
+    await deadline.run(() => mkdir(staging, { mode: 0o700 }))
+    // On failure retain this owned directory for inspection. An uncancellable
+    // copy may finish after a deadline; deleting its destination would race it.
+    for (const file of inventory.files) {
+      const destination = join(staging, file.name)
+      await deadline.run(() => copyFile(sources.get(file.name), destination, constants.COPYFILE_EXCL))
+      const identity = await inspect(destination)
+      if (identity.length !== file.length || identity.sha256 !== file.sha256) throw new Error("Staged distribution bytes changed during copying")
+    }
+    await deadline.run(() => writeFile(join(staging, "release.json"), `${JSON.stringify(inventory, null, 2)}\n`,
+      { flag: "wx", mode: 0o600, signal: deadline.signal }))
+    return inventory
   })
 }
 

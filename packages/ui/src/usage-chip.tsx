@@ -167,6 +167,18 @@ function providerWindowRows(usage: SessionUsage): UsageChipRow[] {
   }))
 }
 
+// The note under USAGE, one per state the design draws. The api state (a
+// price, the key's owner billed) waits on the wire saying what pays for a
+// runtime (CX-8), so a client tells apart only a reported window, drawn as the
+// ring, and none. The ring's note does not say why there is no price, since
+// nothing on the wire says this is a subscription.
+export function usageConnectionNote(usage: SessionUsage | null | undefined): string {
+  const windows = usage?.providerLimits?.windows ?? []
+  if (windows.length === 0) return "No window reported, so no dial. The chip falls back to tokens alone."
+  const lead = "The provider reported its usage window, so the chip carries the window rather than a price."
+  return windows.length > 1 ? `${lead} Two windows run at once and the ring shows the tighter one.` : lead
+}
+
 // The newest history entry is not always a turn: a system receipt such as
 // "Worktree restored" is a message with no turn behind it. The walk reads a
 // few bounded pages back from the end until it meets an entry that carries a
@@ -278,6 +290,7 @@ export function UsageChip({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" side="top" className="w-[320px] p-0">
         <DropdownMenuLabel className="border-b px-3 py-2 text-eyebrow font-medium tracking-[.13em] text-faint">USAGE</DropdownMenuLabel>
+        <p data-testid="usage-connection-note" className="m-0 border-b px-3 py-2 text-[11px] leading-[1.5] text-muted-foreground">{usageConnectionNote(usage)}</p>
         <div data-testid="usage-rows">
           {rows.map((row, index) => (
             <div key={row.label} data-testid="usage-row" className={index ? "border-t px-3 py-2.5" : "px-3 py-2.5"}>

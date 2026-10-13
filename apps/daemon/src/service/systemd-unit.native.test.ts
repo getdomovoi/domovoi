@@ -131,7 +131,7 @@ it.runIf(managerRunning)("restarts a crashed unit and leaves a stopped one stopp
     // The daemon's own status reports the replacement, so a caller asking
     // after a crash is told the service is up rather than told nothing.
     expect(await withinServiceDeadline(deadline, () => serviceStatus({ platform: "linux", home }, effects)))
-      .toMatchObject({ installed: true, running: true })
+      .toMatchObject({ installed: true, running: true, pid: restarted, restartCount: 1 })
 
     // First negative: a deliberate stop is a job, not a failure, and a
     // supervisor that fights the operator over it is its own bug.

@@ -4,7 +4,7 @@ import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { basename, dirname, join, posix, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
-import { gzipSync } from "node:zlib"
+import { gzipSync, gunzipSync } from "node:zlib"
 
 import { bootstrapDeadline } from "./bootstrap-deadline.mjs"
 import { validateCycloneDx } from "./cyclonedx-validation.mjs"
@@ -357,6 +357,78 @@ export function sha256File(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex")
 }
 
+// pnpm 11.5.3 appends rewritten workspace dependencies in varying key order.
+// Only the CLI has multiple workspace links in one dependency map. Keep its
+// maps ordered without reordering conditional exports/imports or touching the
+// protocol archive that the daemon embeds and pins by exact integrity.
+export function canonicalizeCliArchive(archive) {
+  const maximum = 64 * 1024 * 1024
+  if (!Buffer.isBuffer(archive) || archive.length > maximum) throw new Error("CLI archive exceeds its byte bound")
+  const tar = gunzipSync(archive, { maxOutputLength: maximum })
+  if (tar.length % 512 !== 0) throw new Error("Truncated CLI tar archive")
+  const octal = (header, start, length) => {
+    const value = header.subarray(start, start + length).toString("ascii").replaceAll("\0", "").trim()
+    if (!/^[0-7]+$/u.test(value)) throw new Error("Unsupported CLI tar numeric field")
+    return Number.parseInt(value, 8)
+  }
+  const headerChecksum = (header) => {
+    header.fill(" ", 148, 156)
+    return header.reduce((sum, byte) => sum + byte, 0)
+  }
+  const blocks = []
+  const paths = new Set()
+  let offset = 0
+  let manifestFound = false
+  let terminated = false
+  while (offset < tar.length) {
+    const original = tar.subarray(offset, offset + 512)
+    if (original.every((byte) => byte === 0)) {
+      if (offset + 1024 > tar.length || tar.subarray(offset).some((byte) => byte !== 0)) throw new Error("Invalid CLI tar terminator")
+      blocks.push(tar.subarray(offset))
+      terminated = true
+      break
+    }
+    if (original.subarray(257, 265).toString("ascii") !== "ustar\0" + "00") throw new Error("Unsupported CLI tar format")
+    const header = Buffer.from(original)
+    if (octal(original, 148, 8) !== headerChecksum(header)) throw new Error("Invalid CLI tar checksum")
+    const field = (start, length) => original.subarray(start, start + length).toString("utf8").split("\0", 1)[0]
+    const prefix = field(345, 155)
+    const path = `${prefix ? `${prefix}/` : ""}${field(0, 100)}`
+    const type = original[156]
+    const directory = type === 53
+    const normalized = directory ? path.replace(/\/$/u, "") : path
+    if ((type !== 0 && type !== 48 && !directory) || !/^package(?:\/[A-Za-z0-9@._-]+)+\/?$/u.test(path) && !(directory && path === "package/")) {
+      throw new Error("Unsupported CLI tar entry")
+    }
+    if (normalized.split("/").some((part) => part === "." || part === "..")) throw new Error("Unsafe CLI tar path")
+    if (paths.has(normalized) || paths.size >= 10_000) throw new Error("Duplicate or excessive CLI tar entries")
+    paths.add(normalized)
+    const size = octal(original, 124, 12)
+    const end = offset + 512 + Math.ceil(size / 512) * 512
+    if (size > maximum || end > tar.length || directory && size !== 0) throw new Error("Truncated or invalid CLI tar entry")
+    if (path === "package/package.json") {
+      if (directory || manifestFound) throw new Error("Invalid CLI package manifest entry")
+      const manifest = JSON.parse(tar.subarray(offset + 512, offset + 512 + size))
+      if (manifest.name !== "@getdomovoi/cli") throw new Error("CLI archive has a different package identity")
+      for (const key of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
+        if (manifest[key] === undefined) continue
+        if (!manifest[key] || typeof manifest[key] !== "object" || Array.isArray(manifest[key])) throw new Error("Invalid CLI dependency map")
+        manifest[key] = Object.fromEntries(Object.entries(manifest[key]).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0))
+      }
+      const bytes = Buffer.from(`${JSON.stringify(manifest, null, 2)}\n`)
+      octalField(header, 124, 12, bytes.length)
+      header.write(`${headerChecksum(header).toString(8).padStart(6, "0")}\0 `, 148, 8, "ascii")
+      blocks.push(header, bytes, Buffer.alloc((512 - bytes.length % 512) % 512))
+      manifestFound = true
+    } else blocks.push(tar.subarray(offset, end))
+    offset = end
+  }
+  if (!terminated || !manifestFound) throw new Error("CLI archive is missing its manifest or terminator")
+  const result = gzipSync(Buffer.concat(blocks), { level: 9 })
+  result[9] = 255
+  return result
+}
+
 export async function buildReleaseArtifacts(root = repositoryRoot, destination = join(root, "release"), { timeoutMs = 300_000 } = {}) {
   const deadline = bootstrapDeadline(timeoutMs, `Release artifacts exceeded ${timeoutMs} ms`)
   try {
@@ -384,6 +456,11 @@ async function buildWithinDeadline(root, destination, deadline) {
 
     const { manifest } = await inspectArchive(archive, { deadline })
     if (manifest.name !== selector) throw new Error(`Packed artifact identity differs from ${selector}`)
+    if (selector === "@getdomovoi/cli") {
+      deadline.check()
+      writeFileSync(archive, canonicalizeCliArchive(readFileSync(archive)))
+      deadline.check()
+    }
     artifacts.set(selector, { archive, manifest })
   }
 
