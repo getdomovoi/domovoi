@@ -141,6 +141,7 @@ import { launcherContentClassName, launcherTitle, type LauncherMode } from "./la
 import { ProjectSwitchConfirmationDialog } from "./project-switch-confirmation"
 import { AppBar, useUsageToday } from "./app-bar"
 import { ArchiveConfirmBody, Thread, archiveSessionDescription, freshStartPanel, moveDialog } from "./thread"
+import { HandheldTabMachine, offInHandheldTab } from "./handheld-tab"
 
 export { CheckpointThreadItem, SessionReadOnlyNotice, SessionRow, type SessionTransferReceipt, Thread, archiveSessionDescription, providerFailureActionCopy, sessionStatusMeaning, sessionTransferReceiptText } from "./thread"
 
@@ -434,7 +435,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }, [attached, homeVersion, handheld, updateStatus, openReleasePage])
   const {
     activateSession,
-    archiveSession,
+    archiveSession: archiveWorkspaceSession,
     authorizeArtifact,
     claimTerminal,
     closeTerminal,
@@ -442,7 +443,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     connectionId,
     clientAccess: workspaceAccess,
     stateRecovery,
-    createCheckpoint,
+    createCheckpoint: createWorkspaceCheckpoint,
     createAnnotation,
     createSession,
     emergencyStop,
@@ -457,12 +458,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     trustRepository,
     createTerminal,
     listModels,
-    revokeApprovalRule,
+    revokeApprovalRule: revokeWorkspaceRule,
     listHardGates,
     discoverRuntime,
     listProviderSecrets,
     listSkills,
-    exportAudit,
+    exportAudit: exportWorkspaceAudit,
     loadSessionHistory,
     loadSessionEvidence,
     openProject,
@@ -471,11 +472,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     readSkill,
     refreshProviders,
     reconnect,
-    restoreCheckpoint,
-    revertSessionFile,
+    restoreCheckpoint: restoreWorkspaceCheckpoint,
+    revertSessionFile: revertWorkspaceFile,
     editPlan,
     discardPlanEdit,
-    restartProviderThread,
+    restartProviderThread: restartWorkspaceProvider,
     resizeTerminal,
     resolveApproval,
     replyToAnnotation,
@@ -493,7 +494,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     terminalClientId,
     transferSession,
     previewTransfer: previewWorkspaceTransfer,
-    releaseSession,
+    releaseSession: releaseWorkspaceSession,
     releaseTerminal,
     listTerminals,
     unwatchTerminal,
@@ -511,6 +512,21 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const previewTransfer = useCallback<typeof previewWorkspaceTransfer>((...args) => handheld
     ? Promise.reject(new Error(`Moving a session is off in a phone or tablet tab: the daemon does not preview or make a move for a phone or tablet credential. Use the desktop app on ${handheldMachineName}.`))
     : previewWorkspaceTransfer(...args), [handheld, handheldMachineName, previewWorkspaceTransfer])
+  // None of these is on phoneAndTabletRpcMethods either. A phone or tablet
+  // tab locks the controls that send them, each with its reason
+  // (handheld-tab.ts), and the handlers refuse there too, so a path that still
+  // reaches one, such as /revert in the composer, gets the reason instead of
+  // a request that drops the tab.
+  const refusedInHandheldTab = <A extends unknown[], R>(run: (...args: A) => Promise<R>, action: string, refused: string): ((...args: A) => Promise<R>) =>
+    handheld ? () => Promise.reject(new Error(offInHandheldTab([action], refused, handheldMachineName ?? "this machine"))) : run
+  const createCheckpoint = refusedInHandheldTab(createWorkspaceCheckpoint, "Taking a checkpoint", "take a checkpoint")
+  const restoreCheckpoint = refusedInHandheldTab(restoreWorkspaceCheckpoint, "Restoring a checkpoint", "restore a checkpoint")
+  const revertSessionFile = refusedInHandheldTab(revertWorkspaceFile, "Reverting a file", "revert a file")
+  const revokeApprovalRule = refusedInHandheldTab(revokeWorkspaceRule, "Revoking a rule", "revoke a rule")
+  const archiveSession = refusedInHandheldTab(archiveWorkspaceSession, "Archiving a session", "archive a session")
+  const exportAudit = refusedInHandheldTab(exportWorkspaceAudit, "Exporting the audit log", "export the audit log")
+  const restartProviderThread = refusedInHandheldTab(restartWorkspaceProvider, "Restarting the provider", "restart a provider")
+  const releaseSession = refusedInHandheldTab(releaseWorkspaceSession, "Settling a move", "settle a move")
   const watching = workspaceAccess === "watching"
   const terminalControls = useMemo<TerminalControls>(() => ({
     clientId: terminalClientId,
@@ -1211,7 +1227,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     activateSession: openSessionInWorkspace,
     selectMachine: switchMachine,
     openCheckpoints,
-    ...(!watching && snapshot && activeSession(snapshot) ? {
+    // A phone or tablet tab cannot take one (checkpoint.create is not on
+    // phoneAndTabletRpcMethods); the Checkpoints tab says why.
+    ...(!watching && !handheld && snapshot && activeSession(snapshot) ? {
       takeCheckpoint: takeActiveCheckpoint,
     } : {}),
     // Desktop V2's session commands open views the shell already has. The
@@ -1695,6 +1713,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
 
   return (
     <SurfaceCodeReload.Provider value={reloadForNewCode}>
+    <HandheldTabMachine.Provider value={handheld ? handheldMachineName ?? "this machine" : undefined}>
     <WorkspaceConnectionProvider
       connected={connected}
       reconnecting={reconnecting}
@@ -2132,6 +2151,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       </div>
     </TooltipProvider>
     </WorkspaceConnectionProvider>
+    </HandheldTabMachine.Provider>
     </SurfaceCodeReload.Provider>
   )
 }

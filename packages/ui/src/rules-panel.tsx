@@ -1,7 +1,8 @@
 import type { ApprovalRule, HardGateCategory } from "@getdomovoi/protocol"
-import { useEffect, useState } from "react"
+import { useEffect, useId, useState } from "react"
 
 import { ScrollArea } from "./components/ui/scroll-area"
+import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab"
 import { cn } from "./lib/utils"
 
 // v2's Rules tab: what you have already allowed, scoped to a repository and a
@@ -58,6 +59,12 @@ export function RulesPanel({
   const [errors, setErrors] = useState<Record<string, string>>({})
   const active = rules.filter((rule): rule is ActiveRule => rule.status === "active")
   const retired = rules.length - active.length
+  // approvalRule.revoke is not on phoneAndTabletRpcMethods (handheld-tab.ts).
+  const handheldMachine = useHandheldTabMachine()
+  const locked = handheldMachine !== undefined && active.length > 0
+    ? offInHandheldTab(["Revoke"], "revoke a rule", handheldMachine)
+    : undefined
+  const lockedId = useId()
 
   useEffect(() => {
     let live = true
@@ -70,6 +77,7 @@ export function RulesPanel({
 
   const settle = (ruleId: string) => setPending((current) => { const next = new Set(current); next.delete(ruleId); return next })
   const revoke = (ruleId: string) => {
+    if (locked !== undefined) return
     setPending((current) => new Set(current).add(ruleId))
     setErrors((current) => ({ ...current, [ruleId]: "" }))
     onRevoke(ruleId).then(
@@ -85,6 +93,7 @@ export function RulesPanel({
     <ScrollArea className="h-full">
       <div className="flex flex-col gap-3 p-3">
         <p className="m-0 text-[12px] leading-relaxed text-muted-foreground">{rulesIntro}</p>
+        {locked !== undefined ? <p id={lockedId} className="m-0 text-[11px] leading-relaxed text-muted-foreground">{locked}</p> : null}
         {active.length === 0 ? (
           <p className="m-0 rounded-xl border bg-card px-3 py-4 text-[12px] leading-relaxed text-muted-foreground">
             No standing rules for this project. Answering a gate with Always adds one here.
@@ -101,8 +110,9 @@ export function RulesPanel({
                   <span className="shrink-0 font-machine text-mono-xs text-faint">{ruleUsedLabel(rule.useCount)}</span>
                   <button
                     type="button"
-                    disabled={readOnly || pending.has(rule.id)}
+                    disabled={readOnly || locked !== undefined || pending.has(rule.id)}
                     {...(readOnly ? { title: "This session is read-only here, so its rules cannot be changed from this view." } : {})}
+                    aria-describedby={locked !== undefined ? lockedId : undefined}
                     onClick={() => revoke(rule.id)}
                     className="shrink-0 rounded-full border px-2.5 py-1 text-[11px] text-muted-foreground hover:border-danger-border hover:bg-danger-background hover:text-danger-foreground disabled:cursor-not-allowed disabled:opacity-45"
                   >
