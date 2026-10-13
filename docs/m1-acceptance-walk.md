@@ -150,7 +150,9 @@ pages, not from a run. Record what each OS showed, word for word where you can, 
    result. It uses the existing in-place update, including its active-work and profile refusals.
    Equal commits show no replacement action. If either commit is unknown, Settings shows
    "Build comparison is unavailable because this app's or the service's commit is unknown."
-   and offers no replacement; record that reason and the missing commit in the notes.
+   and offers no replacement. Record that reason and the "About this build" label in the notes.
+   A commit in that label means the app commit is missing. No commit in that label means the
+   service commit is missing; the app commit may also be missing.
    Differing versions keep the existing behavior: "Update the service" appears only when the
    service's version is older than the app's. After a successful replacement or update, compare
    "About this build" with the app commit recorded for this step and the service commit from
