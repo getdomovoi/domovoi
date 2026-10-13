@@ -281,6 +281,7 @@ import {
   fileTargetChanged,
   fileTargetHasOtherNames,
   fileTargetIdentity,
+  unreadableFileTargetIdentity,
   type FileTargetIdentity,
 } from "./followed-path.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
@@ -11532,7 +11533,8 @@ export class DomovoiDaemon {
         risk: (execution) => policy(execution).risk,
       }
       // Read the held identity before resolving the request, with both using
-      // one budget. Unknown identity must seal the card, never fall through
+      // one budget. A swap after this reading shows as a change when the card
+      // is answered. Unknown identity must seal the card, never fall through
       // to automatic approval or a standing rule with an unjudged target.
       const controller = new AbortController()
       const deadline = OperationDeadline.start(realPathLookupBudgetMs, { signal: controller.signal })
@@ -11546,6 +11548,7 @@ export class DomovoiDaemon {
       } catch {
         // Seal through the existing settlement path even if the read failed
         // before expiry. A late read has no continuation that publishes state.
+        identity = unreadableFileTargetIdentity
         controller.abort()
         settlement = await settleApproval(input, deadline)
       } finally {

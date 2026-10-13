@@ -301,14 +301,23 @@ describe("approval settlement", () => {
     }
   })
 
-  it.each(["resolve", "reject", "quick", "failure"] as const)("bounds card-raise identity reads: %s", async (outcome) => {
+  it.each(["resolve", "reject", "quick", "failure", "ordinary-timeout", "ordinary-failure"] as const)("bounds card-raise identity reads: %s", async (outcome) => {
+    const ordinary = outcome.startsWith("ordinary-")
     const { directory, socket, emit, card, agent, snapshot, notices, errorSink } = await setup(async (root) => {
       await symlink(join(root, ".env"), join(root, "secret-alias"))
-    }, undefined, { live: true })
+    }, async (root) => {
+      if (!ordinary) return []
+      const execution = await resolveExecution({ workspaceRoot: root, cwd: root, command: "Edit", filePath: "notes.txt" })
+      if (execution.state !== "resolved") throw new Error("Fixture edit was not resolved")
+      return [{
+        id: "rule-edit", projectId: demoWorkspace.project!.id, operation: "Edit notes.txt", command: "Edit",
+        status: "active", execution, createdBy: "desktop", createdAt: "2026-09-01T00:00:00.000Z", useCount: 0,
+      }]
+    }, { live: true })
     const identity = await followedPath.fileTargetIdentity(directory, "notes.txt")
     // A blocked path deliberately makes file-tool execution unresolved. Keep
     // the quick case an ordinary, fully resolvable edit.
-    const request = outcome === "quick"
+    const request = outcome === "quick" || ordinary
       ? { command: "Edit", path: "notes.txt", reason: "Edit notes.txt" }
       : { command: "Edit", path: "secret-alias", reason: "Edit secret-alias; .env; blocked-target", blockedPath: "blocked-target" }
     snapshot.sessions[0]!.runtime.auto = outcome !== "quick"
@@ -333,12 +342,12 @@ describe("approval settlement", () => {
     }))
     // Observe publication directly. The fake scheduler alone drives expiry;
     // no sleep or polling interval advances the test.
-    let published!: (approval: Approval) => void
-    const publication = new Promise<Approval>((resolve) => { published = resolve })
+    let published!: (approval: Approval | undefined) => void
+    const publication = new Promise<Approval | undefined>((resolve) => { published = resolve })
     const receive = (bytes: WebSocket.RawData) => {
       const message = JSON.parse(bytes.toString()) as { method?: string; params?: WorkspaceSnapshot }
       const approval = message.params?.approvals?.find((candidate) => candidate.providerRequestId === 34)
-      if (message.method === "workspace.changed" && approval) published(approval)
+      if (message.method === "workspace.changed") published(approval)
     }
     socket.on("message", receive)
     try {
@@ -350,12 +359,16 @@ describe("approval settlement", () => {
       expect(snapshot.approvals).toEqual([])
       expect(agent.resolveApproval).not.toHaveBeenCalled()
       if (outcome === "quick") finish(identity)
-      else if (outcome === "failure") fail(new Error("Filesystem lookup failed"))
+      else if (outcome === "failure" || outcome === "ordinary-failure") fail(new Error("Filesystem lookup failed"))
       else {
         now += 1
         timers.get(1)!()
       }
       const raised = await publication
+      expect(agent.resolveApproval).not.toHaveBeenCalled()
+      if (ordinary) expect(snapshot.approvalRules).toMatchObject([{ id: "rule-edit", useCount: 0 }])
+      expect(raised).toBeDefined()
+      if (!raised) throw new Error("Unknown identity must raise a sealed card")
       expect(timers.size).toBe(0)
       expect(deadlines).toHaveBeenCalledTimes(1)
       if (outcome === "quick") {
@@ -372,7 +385,7 @@ describe("approval settlement", () => {
         // None of these names has been judged safe, including the ordinary
         // spelling that could resolve into a credential store.
         expect(JSON.stringify(raised)).not.toContain(directory)
-        expect(JSON.stringify(raised)).not.toMatch(/secret-alias|\.env|blocked-target/)
+        expect(JSON.stringify(raised)).not.toMatch(/notes\.txt|secret-alias|\.env|blocked-target/)
         const expired = startDeadline(realPathLookupBudgetMs, { signal: AbortSignal.abort() })
         const expected = await settleApproval(heldSettlementInput(raised, { workspace: directory, cwd: directory, ...request }, undefined, "resolve", () => "normal"), expired)
         expired.clear()
@@ -386,6 +399,26 @@ describe("approval settlement", () => {
       expect(notices).toHaveLength(beforeLate)
       expect(agent.resolveApproval).not.toHaveBeenCalled()
       expect(errorSink).not.toHaveBeenCalled()
+      if (outcome === "ordinary-timeout") {
+        deadlines.mockRestore()
+        const changed = vi.spyOn(followedPath, "fileTargetChanged")
+        const answer = await rpc(socket, "approval.resolve", { approvalId: raised.id, revision: raised.revision, decision: "allow-once", client: "cli" })
+        expect(answer).toMatchObject({ error: { message: "The file target changed; review the updated approval before allowing it" } })
+        expect(await card(34)).toMatchObject({ id: raised.id, revision: raised.revision + 1, execution: { state: "resolved" } })
+        expect(agent.resolveApproval).not.toHaveBeenCalled()
+        // The target rule itself must reject the unknown baseline, even if
+        // card text and execution happen to compare equal in another case.
+        expect(changed).toHaveBeenCalledWith({
+          entry: { kind: "unreadable", dev: "", ino: "", nlink: "" },
+          target: { kind: "unreadable", dev: "", ino: "", nlink: "" },
+          realPath: undefined, walkedPath: undefined,
+        }, identity)
+        expect(changed.mock.results[0]?.value).toBe(true)
+        const revised = (await card(34))!
+        expect((await rpc(socket, "approval.resolve", { approvalId: revised.id, revision: revised.revision, decision: "allow-once", client: "cli" })).error).toBeUndefined()
+        expect(changed.mock.results[1]?.value).toBe(false)
+        expect(agent.resolveApproval).toHaveBeenCalledWith(34, "allow-once")
+      }
     } finally {
       finish(identity)
       socket.off("message", receive)
