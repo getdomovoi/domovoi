@@ -58,7 +58,9 @@ export type DaemonServiceOutcome =
   | { ok: false; reason: "update-failed"; message: string }
 
 export type DaemonServiceStatusReport =
-  | { installed: boolean | null; running: boolean; detail: string }
+  // Preload transports this group only as a plain object. Settings validates
+  // its complete shape before displaying any supervisor fact.
+  | { installed: boolean | null; running: boolean; detail: string; supervisor?: unknown }
   | { unavailable: string }
 
 export type DesktopWindowBridge = {

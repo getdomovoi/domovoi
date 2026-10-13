@@ -131,7 +131,3 @@ export function CheckpointRestoreAction({
 export function checkpointRestoreBlocked(pending: boolean, archiveReadOnly: boolean): boolean {
   return pending || archiveReadOnly
 }
-
-export function checkpointBlockedReason(activeTurnId: string | undefined): string | undefined {
-  return activeTurnId ? "Stop the active turn before creating a checkpoint" : undefined
-}

@@ -68,7 +68,7 @@ import { gitFilterRefusalFrom } from "./session-refusal"
 import { DialogLoading, lazyDialog, lazySurface, prefetchWhenIdle, SurfaceCodeReload, useDrawnOnceOpen } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
-import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
+import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { latestTurnFromHistory } from "./usage-chip.js"
 import {
   failedAttempt,
@@ -210,6 +210,8 @@ export type WorkspaceShellProps = {
   windowBridge?: DesktopWindowBridge
   platform?: WorkspacePlatform
   onChangeCredential?: () => void
+  currentDeviceId?: string
+  onSignedOut?: (result: { revoked: true }) => void
   // Where this client keeps each daemon's relay identity pin. Absent means no
   // pin is kept and none is reconciled; the web passes localStorage.
   relayPinStorage?: RelayPinStorage
@@ -237,7 +239,7 @@ export function skillProjectRefreshKey(snapshot: WorkspaceSnapshot | null): stri
 
 export { providerHandoffChoices, openProviderChoice, forkProviderChoice, type ProviderChoice } from "./provider-choice-dialog.js"
 
-export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked }
+export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointRestoreBlocked }
 
 
 // Whether a service read shows the change the action set out to make, in
@@ -286,15 +288,16 @@ type StartScope = {
   focusFrom: { trigger: Element | null; within: Element | null }
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, currentDeviceId, onSignedOut, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
   // J24: whether the login service is installed, from the desktop's own
   // status read. A daemon outside the app is drawn as the service only when
   // this says so; an unreadable or unverified status leaves it unnamed.
-  const [serviceInstalled, setServiceInstalled] = useState<boolean | undefined>(undefined)
-  // Whether the service itself runs, from the same read (security review
-  // round 9). Unknown whenever the installed fact is unknown.
-  const [serviceRunning, setServiceRunning] = useState<boolean | undefined>(undefined)
+  // Keep evidence and its observation time atomic across late reads and mounts.
+  const [[serviceReport, serviceCheckedAt], setServiceReport] = useState<readonly [report: DaemonServiceStatusReport, checkedAt: number] | readonly []>([])
+  const readService = serviceReport && "installed" in serviceReport && serviceReport.installed !== null ? serviceReport : undefined
+  const serviceInstalled = readService?.installed ?? undefined
+  const serviceRunning = readService?.running
   // Reads are numbered and only the newest one's answer is kept, so a read
   // that started before an install or a removal cannot answer after the read
   // that followed it and put the old fact back (security review round 4).
@@ -306,20 +309,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     try {
       const status = await service.status()
       if (generation === serviceStatusGeneration.current) {
-        const read = "installed" in status && status.installed !== null ? status : undefined
-        setServiceInstalled(read ? read.installed ?? undefined : undefined)
-        setServiceRunning(read?.running)
+        setServiceReport([status, Date.now()])
       }
       return status
     } catch (cause) {
       if (generation === serviceStatusGeneration.current) {
-        setServiceInstalled(undefined)
-        setServiceRunning(undefined)
+        setServiceReport([{ unavailable: cause instanceof Error ? cause.message : "The desktop did not answer." }, Date.now()])
       }
       throw cause
     }
   }, [windowBridge])
-  useEffect(() => { void readServiceStatus().catch(() => {}) }, [readServiceStatus])
+  // First-run installs publish service facts without replacing the bridge.
+  useEffect(() => { void readServiceStatus().catch(() => {}) }, [readServiceStatus, localDaemon?.serviceInstalled, localDaemon?.serviceRunning])
   // An install or a removal, then a status read. The desktop is told the
   // daemon changed, so it resolves its daemon again, whenever the change may
   // have moved who holds it: a success; a service installed but not attached;
@@ -391,6 +392,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         .then((endpoint) => { if (attachEpochRef.current === attachEpoch) setDialedRoute({ epoch: attachEpoch, kind: endpoint.routeKind }); return endpoint }),
     } : { state: "disabled" }, relayPinStorage)
   const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, tailnetStatus, revokeDevice, rotateDevice, renameDevice } = home
+  const signOutCurrentDevice = async () => {
+    const result = await home.revokeCurrentDevice()
+    onSignedOut?.(result)
+  }
   // The machine menu's Pair a machine sends fleet.enroll to the home daemon.
   // The daemon refuses it from a device credential, all a browser tab holds,
   // and the client closes its connection on that refusal; so only the desktop
@@ -1187,7 +1192,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     openCheckpoints,
     ...(!watching && snapshot && activeSession(snapshot) ? {
       takeCheckpoint: takeActiveCheckpoint,
-      checkpointBlocked: Boolean(activeSession(snapshot)?.activeTurnId),
     } : {}),
     // Desktop V2's session commands open views the shell already has. The
     // sheet tabs carry their own read-only and blocked states, so opening one
@@ -1726,6 +1730,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
               ...(localDaemon.serviceInstalled === undefined && serviceInstalled !== undefined ? { serviceInstalled } : {}),
               ...(localDaemon.serviceRunning === undefined && serviceRunning !== undefined ? { serviceRunning } : {}),
+              serviceReport, serviceCheckedAt,
               ...(localDaemon.owner === "outside" ? { serviceVersion: snapshot.machine.version, appVersion: clientVersion } : {}),
               ...(windowBridge?.daemonService && !watching ? { service: {
                 install: () => changeService("install", () => windowBridge.daemonService!.install()),
@@ -1858,6 +1863,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onOpenSkills={() => setSurface("skills")}
             onListDevices={listDevices}
             onRevokeDevice={revokeDevice}
+            {...(currentDeviceId && onSignedOut ? { currentDeviceId, onSignOut: signOutCurrentDevice } : {})}
             onRotateDevice={rotateDevice}
             onRenameDevice={renameDevice}
             // fleet.enroll and fleet.forget need the daemon's own credential,

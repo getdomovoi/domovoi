@@ -56,7 +56,9 @@ export type DaemonServiceOutcome =
 
 export type ServiceReadBack = { installed: boolean | null; running: boolean }
 
-export type DaemonServiceStatusReport = DaemonServiceStatus | { unavailable: string }
+export type DaemonServiceStatusReport =
+  | (Pick<DaemonServiceStatus, "installed" | "running" | "detail"> & { supervisor?: Omit<DaemonServiceStatus, "installed" | "running" | "detail"> })
+  | { unavailable: string }
 
 export type ServiceHandoffFence = { refusal: string } | { release: () => void }
 
@@ -135,7 +137,8 @@ export class DesktopDaemonService {
 
   async status(): Promise<DaemonServiceStatusReport> {
     try {
-      return await this.deps.status()
+      const { installed, running, detail, ...supervisor } = await this.deps.status()
+      return { installed, running, detail, supervisor }
     } catch (cause) {
       return { unavailable: message(cause) }
     }

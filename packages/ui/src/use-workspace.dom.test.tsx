@@ -762,3 +762,31 @@ describe("useWorkspace attached machine admission", () => {
     expect(view.result.current.snapshot?.machine.name).toBe("changed during readmission")
   })
 })
+
+describe("useWorkspace self-revocation", () => {
+  it.each(["full", "watching"] as const)("sends one target-free request with %s access and validates success", async (clientAccess) => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket, { ...workspaceSnapshot(), clientAccess }))
+    const pending = view.result.current.revokeCurrentDevice()
+    void pending.catch(() => undefined)
+    expect(sentRequests(socket, "device.revokeCurrent")).toHaveLength(1)
+    expect(sentRequests(socket, "device.revokeCurrent")[0]?.params).toEqual({})
+    await drive(() => respond(socket, "device.revokeCurrent", { revoked: true }))
+    await expect(pending).resolves.toEqual({ revoked: true })
+  })
+
+  it.each(["refused", "lost", "invalid"])("does not confirm a %s result", async (outcome) => {
+    const view = mountWorkspace()
+    const socket = harness.socket(0)
+    await drive(() => completeHandshake(socket))
+    const pending = view.result.current.revokeCurrentDevice()
+    const checked = expect(pending).rejects.toThrow()
+    await drive(() => {
+      if (outcome === "refused") fail(socket, "device.revokeCurrent", { code: -32603, message: "Storage failed" })
+      else if (outcome === "lost") socket.close()
+      else socket.receive({ jsonrpc: "2.0", id: sentRequests(socket, "device.revokeCurrent")[0]!.id, result: { revoked: false } })
+    })
+    await checked
+  })
+})

@@ -67,6 +67,10 @@ export type SessionBranchFacts = {
 export type Checkpoint = {
   commit: string
   changedFiles: string[]
+  // snapshot only: true when two consecutive staging passes matched.
+  matched?: boolean
+  // snapshot only: absent when two consecutive staging passes matched.
+  unstablePaths?: string[]
 }
 
 export type RestoreResult = {
@@ -1958,11 +1962,11 @@ export class GitWorkspaceService implements WorkspaceService {
   // temporary index. HEAD, the branch, the shared index and every file stay as
   // they were, so an agent mid-turn sees nothing. The temporary index starts as
   // a copy of the shared one, so files tracked despite an ignore rule stay in.
-  async snapshot(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint> {
+  async snapshot(worktreePath: string, label: string, signal?: AbortSignal): Promise<Checkpoint & { matched: boolean }> {
     return this.#isolated(worktreePath, worktreePath, signal, (isolated) => this.#snapshot(worktreePath, label, isolated, signal))
   }
 
-  async #snapshot(worktreePath: string, label: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<Checkpoint> {
+  async #snapshot(worktreePath: string, label: string, isolated: IsolatedGit, signal?: AbortSignal): Promise<Checkpoint & { matched: boolean }> {
     const head = await currentHead(worktreePath, signal)
     if (head !== undefined) await isolated.setHead(head)
     if (await submoduleHasLocalChanges(worktreePath, signal)) throw new SubmoduleChangesRefusedError()
@@ -1976,12 +1980,34 @@ export class GitWorkspaceService implements WorkspaceService {
         await copyFile(sharedIndex, temporaryIndex)
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error
-        if (head !== undefined) await isolated.run(["read-tree", head], { index: temporaryIndex, signal })
+        await isolated.run(["read-tree", head ?? "--empty"], { index: temporaryIndex, signal })
       }
-      // Every command that reads or writes the temporary index runs in the
+      const seedIndex = await readFile(temporaryIndex)
+      // Every Git command that reads or writes the temporary index runs in the
       // isolated directory: writing an index can run a clean filter.
-      await isolated.run(["add", "--all"], { index: temporaryIndex, signal })
-      await this.#afterCheckpointStaging?.()
+      let tree = ""
+      let matched = false
+      const changedDuringCapture = new Set<string>()
+      // Bound the observation window. A matching pair is not an atomic
+      // filesystem snapshot: a write that reverts between passes is missed.
+      // Reset the same temporary index to its original tracked set on retry.
+      // Otherwise an early untracked addition stays tracked when a later pass
+      // should exclude it under newly written ignore rules.
+      for (let pass = 0; pass < 4; pass += 1) {
+        if (pass > 0) await writeFile(temporaryIndex, seedIndex)
+        await isolated.run(["add", "--all"], { index: temporaryIndex, signal })
+        await this.#afterCheckpointStaging?.()
+        const nextTree = (await isolated.run(["write-tree"], { index: temporaryIndex, signal })).trim()
+        if (tree === nextTree) {
+          matched = true
+          break
+        }
+        if (tree) {
+          const differences = await isolated.run(["diff-tree", "--no-commit-id", "--no-renames", "--name-only", "-r", "-z", tree, nextTree, "--"], { signal })
+          for (const path of differences.split("\0").filter(Boolean)) changedDuringCapture.add(path)
+        }
+        tree = nextTree
+      }
       // Against the HEAD captured above, not whatever HEAD is now: the agent may
       // commit meanwhile, and the snapshot's parent is the captured one.
       const names = await isolated.run(head === undefined
@@ -1990,7 +2016,6 @@ export class GitWorkspaceService implements WorkspaceService {
       const changedFiles = names.split("\0").filter(Boolean)
       let commit = head
       if (commit === undefined || changedFiles.length > 0) {
-        const tree = (await isolated.run(["write-tree"], { index: temporaryIndex, signal })).trim()
         commit = await git(worktreePath, [
           "-c",
           "user.name=Domovoi",
@@ -2007,7 +2032,7 @@ export class GitWorkspaceService implements WorkspaceService {
         ], signal)
       }
       await git(worktreePath, ["update-ref", checkpointRef(commit), commit], signal)
-      return { commit, changedFiles }
+      return { commit, changedFiles, matched, ...(!matched ? { unstablePaths: [...changedDuringCapture].sort() } : {}) }
     } catch (error) {
       if (isolated.indexLocksLeft.includes(`${temporaryIndex}.lock`) && error instanceof Error) {
         error.message = `${error.message} Domovoi left the temporary index ${temporaryIndex} in place with it.`

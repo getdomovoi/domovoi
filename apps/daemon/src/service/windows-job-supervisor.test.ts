@@ -239,3 +239,37 @@ it("preserves the deadline error when a stop-request sharing retry expires", asy
     expect(write).toHaveBeenCalledTimes(1)
   } finally { deadline.clear() }
 })
+
+// CX-10: carry recorded daemon facts, never the supervisor/helper identity.
+it("carries exhausted Windows history without a live pid or uptime", async () => {
+  const f = fixture()
+  const record = await superviseWindows(input(), f.effects)
+  expect(windowsSupervisorStatus(record, loop.bootId, false)).toMatchObject({
+    supervisionFailure: "exhausted", crashCount: 4, lastExit: "code 9",
+  })
+  expect(windowsSupervisorStatus(record, loop.bootId, false)).not.toHaveProperty("pid")
+  expect(windowsSupervisorStatus(record, loop.bootId, false)).not.toHaveProperty("startedAt")
+})
+
+it("carries only a live Windows child's pid and recorded creation time", async () => {
+  const f = fixture([0])
+  await superviseWindows(input(), f.effects)
+  const running = f.records.find((record) => record.state === "running")!
+  running.attempts[0]!.child!.start = "134389584000000000"
+  expect(windowsSupervisorStatus(running, loop.bootId, true, true)).toMatchObject({
+    running: true, crashCount: 0, pid: 201, startedAt: "2026-11-12T12:00:00.000Z",
+  })
+  expect(windowsSupervisorStatus(running, loop.bootId, true, true)).not.toHaveProperty("lastExit")
+  for (const status of [windowsSupervisorStatus(running, loop.bootId, true, false), windowsSupervisorStatus(running, "windows-boot:43", false, false)]) {
+    expect(status).not.toHaveProperty("pid")
+    expect(status).not.toHaveProperty("startedAt")
+  }
+})
+
+it("leaves invalid Windows creation timestamps unknown", async () => {
+  const f = fixture([0])
+  await superviseWindows(input(), f.effects)
+  const running = f.records.find((record) => record.state === "running")!
+  running.attempts[0]!.child!.start = "999999999999999999999999"
+  expect(windowsSupervisorStatus(running, loop.bootId, true, true)).not.toHaveProperty("startedAt")
+})

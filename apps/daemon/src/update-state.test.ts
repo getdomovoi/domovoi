@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto"
 import { execFile as execFileCallback } from "node:child_process"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm, writeFile, symlink, chmod } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
@@ -8,7 +8,8 @@ import { promisify } from "node:util"
 import { describe, expect, it } from "vitest"
 
 import { claimProfile } from "./profile-lease.js"
-import { bootstrapInstall, persistTrustedUpdateMetadata, readTrustedUpdateMetadata, stageVerifiedUpdate } from "./update-state.js"
+import { bootstrapInstall, persistTrustedUpdateMetadata, readTrustedUpdateMetadata, stageVerifiedUpdate,
+  readActivationRuntime, readActivationJournal, persistActivationJournal, type ActivationJournal } from "./update-state.js"
 
 const execFile = promisify(execFileCallback)
 const archiveVersion = "1.2.3"
@@ -24,6 +25,84 @@ const metadata = {
 }
 
 describe("daemon update state", () => {
+  async function activationFixture() {
+    const home = await mkdtemp(join(tmpdir(), "domovoi-activation-receipt-"))
+    const lease = claimProfile(home)
+    const root = join(home, "runtimes")
+    const release = join(root, "v1.2.3")
+    const runtime = join(release, ".runtime-fixture", "package")
+    await mkdir(join(runtime, "runtime"), { recursive: true, mode: 0o700 })
+    const lock = Buffer.from('{"lockfileVersion":3}\n')
+    const lockSha256 = sha256(lock)
+    const target = {
+      name: "getdomovoi-daemon-1.2.3.tgz", version: "1.2.3", channel: "stable" as const,
+      sha256: "a".repeat(64), sourceCommit: "b".repeat(40), runtimeLockDigest: `sha256:${lockSha256}`,
+    }
+    const receipt = { format: 1, version: target.version, sha256: target.sha256, lockSha256, directory: ".runtime-fixture/package" }
+    const receiptPath = join(release, "runtime.json")
+    await writeFile(receiptPath, JSON.stringify(receipt), { mode: 0o600 })
+    // Real bootstrap archives retain ordinary read modes inside the private tree.
+    const lockPath = join(runtime, "runtime", "lock.json")
+    await writeFile(lockPath, lock, { mode: 0o644 })
+    await chmod(lockPath, 0o644)
+    return { home, lease, root, release, runtime, receipt, receiptPath, lockPath, target,
+      cleanup: async () => { lease.release(); await rm(home, { recursive: true, force: true }) } }
+  }
+
+  it("binds the signed target to the private receipt and a normal 0644 runtime lock", async () => {
+    const f = await activationFixture()
+    try {
+      const runtime = readActivationRuntime(f.root, f.target)
+      expect(runtime).toMatchObject({ version: f.target.version, sha256: f.target.sha256,
+        sourceCommit: f.target.sourceCommit, runtimeLockDigest: f.target.runtimeLockDigest })
+      expect(runtime.path).toMatch(/\.runtime-fixture[/\\]package$/)
+      expect(runtime.receiptDigest).toBe(sha256(await readFile(f.receiptPath)))
+      expect(f.receipt).not.toHaveProperty("sourceCommit")
+    } finally { await f.cleanup() }
+  })
+
+  it.each(["version", "sha256", "lockSha256", "directory"] as const)("rejects a mismatched receipt %s without authorizing activation", async (field) => {
+    const f = await activationFixture()
+    try {
+      await writeFile(f.receiptPath, JSON.stringify({ ...f.receipt, [field]: field === "version" ? "1.2.4" : field === "directory" ? "../../foreign" : "c".repeat(64) }))
+      expect(() => readActivationRuntime(f.root, f.target)).toThrow()
+    } finally { await f.cleanup() }
+  })
+
+  it("rejects changed lock bytes and a runtime directory link", async () => {
+    const f = await activationFixture()
+    try {
+      await writeFile(f.lockPath, "changed")
+      expect(() => readActivationRuntime(f.root, f.target)).toThrow(/signed target/)
+      const linked = join(f.release, ".runtime-linked")
+      await symlink(join(f.release, ".runtime-fixture"), linked, "junction")
+      await writeFile(f.receiptPath, JSON.stringify({ ...f.receipt, directory: ".runtime-linked/package" }))
+      expect(() => readActivationRuntime(f.root, f.target)).toThrow(/links/)
+    } finally { await f.cleanup() }
+  })
+
+  it("persists a strict bounded crash journal under the profile lease and preserves trust", async () => {
+    const f = await activationFixture()
+    try {
+      const target = readActivationRuntime(f.root, f.target)
+      const journal: ActivationJournal = { format: 1, id: "12345678-1234-4234-8234-123456789abc", generation: "generation-1",
+        previousRevision: "12345678-1234-4234-8234-123456789abd", rollbackRevision: "12345678-1234-4234-8234-123456789abe",
+        phase: "prepared", previous: { ...target, version: "1.2.2" }, target }
+      expect(readActivationJournal(f.home)).toBeUndefined()
+      await persistTrustedUpdateMetadata(f.home, f.lease, metadata)
+      await persistActivationJournal(f.home, f.lease, journal)
+      expect(readActivationJournal(f.home)).toEqual(journal)
+      await expect(persistActivationJournal(f.home, f.lease, { ...journal, generation: "x".repeat(129) })).rejects.toThrow()
+      expect(readActivationJournal(f.home)).toEqual(journal)
+      expect(await readTrustedUpdateMetadata(f.home)).toEqual(metadata)
+      f.lease.release()
+      await expect(persistActivationJournal(f.home, f.lease, { ...journal, phase: "starting" })).rejects.toThrow(/lease/)
+      expect(readActivationJournal(f.home)).toEqual(journal)
+      await writeFile(join(f.home, ".domovoi", "update-activation.json"), "x".repeat(16 * 1024 + 1))
+      expect(() => readActivationJournal(f.home)).toThrow(/invalid or inaccessible/)
+    } finally { await f.cleanup() }
+  })
+
   it("refuses stored documents whose bytes do not match their trust record", async () => {
     const home = await mkdtemp(join(tmpdir(), "domovoi-update-document-test-"))
     const lease = claimProfile(home)

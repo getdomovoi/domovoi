@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 import { WebSocket } from "ws"
 import {
   createEmptyWorkspace, daemonAuthenticationErrorCode, demoWorkspace, deviceClaimResultSchema,
-  fleetMachineDescriptorSchema, protocolVersion, protocolVersionMismatchErrorCode,
+  fleetMachineDescriptorSchema, protocolVersion, protocolVersionMismatchErrorCode, rpcMethodAuthorizations, rpcMethods, type RpcMethod,
 } from "@getdomovoi/protocol"
 
 import { DomovoiDaemon } from "./server.js"
@@ -202,6 +202,52 @@ describe("live machine admission", () => {
     expect(store.auditLog.query({ limit: 100 }).entries).toContainEqual(expect.objectContaining({
       action: "device.revokeCurrent", actor: { kind: "machine", machineId: peerId }, target: paired.device.id,
     }))
+  })
+
+  it.each(["web", "phone", "tablet"] as const)("lets a %s credential revoke only itself at either access level", async (client) => {
+    for (const clientAccess of ["full", "watching"] as const) {
+      const { daemon, store, url } = await target()
+      const paired = store.devices.pair({ label: "This browser", binding: { kind: "client", client, clientAccess } })
+      const other = store.devices.pair({ label: "Other browser", binding: { kind: "client", client } })
+      const socket = await open(url)
+      const sibling = await open(url)
+      const unaffected = await open(url)
+      for (const [connection, token] of [[socket, paired.token], [sibling, paired.token], [unaffected, other.token]] as const) {
+        expect((await call(connection, "system.hello", {
+          client, clientVersion: "0.0.1", protocolVersion, authToken: token,
+        })).error).toBeUndefined()
+      }
+      // The exception admits only this method, before strict parameter parsing.
+      if (clientAccess === "watching") {
+        for (const method of Object.keys(rpcMethods) as RpcMethod[]) {
+          if (rpcMethodAuthorizations[method] !== "control" || method === "device.revokeCurrent") continue
+          expect((await call(socket, method)).error, method).toMatchObject({
+            code: daemonAuthenticationErrorCode, message: "Watching-only credentials may only observe",
+          })
+        }
+      }
+      expect((await call(socket, "device.revokeCurrent", { deviceId: other.device.id })).error?.code).toBe(-32602)
+      expect(store.devices.isActive(paired.token)).toBe(true)
+      expect(store.devices.isActive(other.token)).toBe(true)
+      const closed = [once(socket, "close"), once(sibling, "close")]
+      expect((await call(socket, "device.revokeCurrent")).result).toEqual({ revoked: true })
+      // Retry immediately, without waiting for close frames to arrive.
+      const retry = await open(url)
+      expect((await call(retry, "system.hello", {
+        client, clientVersion: "0.0.1", protocolVersion, authToken: paired.token,
+      })).error?.code).toBe(daemonAuthenticationErrorCode)
+      await Promise.all(closed)
+      expect(store.devices.isActive(paired.token)).toBe(false)
+      expect(store.devices.isActive(other.token)).toBe(true)
+      expect((await call(unaffected, "device.current")).result).toMatchObject({ deviceId: other.device.id })
+      expect(store.auditLog.query({ limit: 100 }).entries).toContainEqual(expect.objectContaining({
+        action: "device.revokeCurrent", outcome: "succeeded", target: paired.device.id,
+        actor: expect.objectContaining({ kind: "client", client, clientId: paired.device.id }),
+      }))
+      const owner = await open(url)
+      await hello(owner, daemon.authToken, "cli")
+      expect((await call(owner, "device.revokeCurrent")).error?.code).toBe(daemonAuthenticationErrorCode)
+    }
   })
 
   it("disconnects the previous machine bearer when a new code replaces its authority", async () => {

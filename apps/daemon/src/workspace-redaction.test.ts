@@ -2,7 +2,7 @@ import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
 import { countWork } from "./test-work.js"
-import { createWorkspaceRedactor, redactWorkspaceCopies } from "./workspace-redaction.js"
+import { createWorkspaceRedactor, redactThreadCopies, redactWorkspaceCopies } from "./workspace-redaction.js"
 
 const createdAt = "2026-09-29T12:00:00.000Z"
 const secrets = /(?:reply|tool|output|streamed|approval)-secret-\d+/u
@@ -145,4 +145,27 @@ describe("the deciding device's label on a receipt", () => {
     expect(written.device?.label.length).toBeLessThanOrEqual(128)
     expect(JSON.stringify(written)).not.toContain("hunter2")
   })
+})
+
+
+it("omits sensitive checkpoint paths from persisted and transferred thread copies", () => {
+  const snapshot = structuredClone(demoWorkspace)
+  const item = {
+    id: "checkpoint-paths", sessionId: snapshot.sessions[0]!.id, kind: "checkpoint" as const,
+    label: "capture", createdAt,
+    midTurn: {
+      providerTurnId: "turn", stability: "unstable" as const,
+      changedPaths: ["NPM_TOKEN=synthetic-checkpoint-fixture", ".env", ".ssh/id_rsa", "safe.txt"], changedPathCount: 7,
+    },
+  }
+  snapshot.thread = [item]
+  const expected = { ...item, midTurn: { ...item.midTurn, changedPaths: ["safe.txt"] } }
+  expect(redactWorkspaceCopies(snapshot).thread).toEqual([expected])
+  const redact = createWorkspaceRedactor()
+  expect(redact(snapshot).thread).toEqual([expected])
+  expect(redactThreadCopies(snapshot.thread)).toEqual([expected])
+  item.midTurn.changedPaths.push("password=another-synthetic-fixture")
+  item.midTurn.changedPathCount += 1
+  expect(redact(snapshot).thread[0]).toMatchObject({ midTurn: { changedPaths: ["safe.txt"], changedPathCount: 8 } })
+  expect(item.midTurn.changedPaths).toHaveLength(5)
 })
