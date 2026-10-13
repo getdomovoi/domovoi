@@ -5,6 +5,7 @@ import { z } from "zod"
 import {
   buildVersion, updateChannelSchema, updateRootMetadataSchema, updateSnapshotMetadataSchema,
   updateStatusSchema, updateTargetsMetadataSchema, updateTimestampMetadataSchema,
+  updateTargetSchema,
   type UpdateActivateParams, type UpdateCheckParams, type UpdateStatus,
 } from "@getdomovoi/protocol"
 
@@ -200,7 +201,7 @@ export class DaemonUpdates {
         }
         const selected = selectUpdateTarget(targets, this.#status.channel, buildVersion)
         if (selected) {
-          const entry = targets.signed.targets[selected.name]!
+          const entry = updateTargetSchema.parse(targets.signed.targets[selected.name])
           if (selected.name !== `getdomovoi-daemon-${selected.version}.tgz`) {
             throw new UpdateRefusal({ reason: "target-mismatch", message: "The signed target name does not match its version." })
           }
