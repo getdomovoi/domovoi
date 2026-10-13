@@ -301,6 +301,98 @@ describe("approval settlement", () => {
     }
   })
 
+  it.each(["resolve", "reject", "quick", "failure"] as const)("bounds card-raise identity reads: %s", async (outcome) => {
+    const { directory, socket, emit, card, agent, snapshot, notices, errorSink } = await setup(async (root) => {
+      await symlink(join(root, ".env"), join(root, "secret-alias"))
+    }, undefined, { live: true })
+    const identity = await followedPath.fileTargetIdentity(directory, "notes.txt")
+    // A blocked path deliberately makes file-tool execution unresolved. Keep
+    // the quick case an ordinary, fully resolvable edit.
+    const request = outcome === "quick"
+      ? { command: "Edit", path: "notes.txt", reason: "Edit notes.txt" }
+      : { command: "Edit", path: "secret-alias", reason: "Edit secret-alias; .env; blocked-target", blockedPath: "blocked-target" }
+    snapshot.sessions[0]!.runtime.auto = outcome !== "quick"
+    let finish!: (value: followedPath.FileTargetIdentity) => void
+    let fail!: (error: Error) => void
+    let entered!: () => void
+    const reading = new Promise<void>((resolve) => { entered = resolve })
+    vi.spyOn(followedPath, "fileTargetIdentity").mockImplementationOnce(() => {
+      entered()
+      return new Promise((resolve, reject) => { finish = resolve; fail = reject })
+    })
+    let now = 0
+    const timers = new Map<number, () => void>()
+    const startDeadline = OperationDeadline.start.bind(OperationDeadline)
+    const deadlines = vi.spyOn(OperationDeadline, "start").mockImplementation((budget, options) => startDeadline(budget, {
+      ...options,
+      now: () => now,
+      scheduler: {
+        setTimeout: (callback, delay) => { expect(delay).toBe(realPathLookupBudgetMs); timers.set(1, callback); return 1 },
+        clearTimeout: (handle) => { timers.delete(handle as number) },
+      },
+    }))
+    // Observe publication directly. The fake scheduler alone drives expiry;
+    // no sleep or polling interval advances the test.
+    let published!: (approval: Approval) => void
+    const publication = new Promise<Approval>((resolve) => { published = resolve })
+    const receive = (bytes: WebSocket.RawData) => {
+      const message = JSON.parse(bytes.toString()) as { method?: string; params?: WorkspaceSnapshot }
+      const approval = message.params?.approvals?.find((candidate) => candidate.providerRequestId === 34)
+      if (message.method === "workspace.changed" && approval) published(approval)
+    }
+    socket.on("message", receive)
+    try {
+      emit({ requestId: 34, ...request })
+      await reading
+      expect(deadlines).toHaveBeenCalledTimes(1)
+      expect(deadlines.mock.calls[0]?.[0]).toBe(realPathLookupBudgetMs)
+      now = realPathLookupBudgetMs - 1
+      expect(snapshot.approvals).toEqual([])
+      expect(agent.resolveApproval).not.toHaveBeenCalled()
+      if (outcome === "quick") finish(identity)
+      else if (outcome === "failure") fail(new Error("Filesystem lookup failed"))
+      else {
+        now += 1
+        timers.get(1)!()
+      }
+      const raised = await publication
+      expect(timers.size).toBe(0)
+      expect(deadlines).toHaveBeenCalledTimes(1)
+      if (outcome === "quick") {
+        expect(raised).toMatchObject({ risk: "normal", command: "Edit", operation: request.reason, execution: { state: "resolved" } })
+        expect(raised.affects).toContain("notes.txt")
+      } else {
+        expect(raised).toMatchObject({
+          revision: 0,
+          risk: "hard-gate",
+          directory: "[REDACTED] in the session worktree",
+          affects: "The file [REDACTED] in the session worktree.",
+          execution: { state: "unresolved", reason: "sensitive-content" },
+        })
+        // None of these names has been judged safe, including the ordinary
+        // spelling that could resolve into a credential store.
+        expect(JSON.stringify(raised)).not.toContain(directory)
+        expect(JSON.stringify(raised)).not.toMatch(/secret-alias|\.env|blocked-target/)
+        const expired = startDeadline(realPathLookupBudgetMs, { signal: AbortSignal.abort() })
+        const expected = await settleApproval(heldSettlementInput(raised, { workspace: directory, cwd: directory, ...request }, undefined, "resolve", () => "normal"), expired)
+        expired.clear()
+        expect(raised).toEqual(expected.approval)
+      }
+      const beforeLate = notices.length
+      if (outcome === "reject") fail(new Error("Late filesystem failure"))
+      else finish(identity)
+      // The RPC is an event-loop barrier after the late promise callbacks.
+      expect(await card(34)).toEqual(raised)
+      expect(notices).toHaveLength(beforeLate)
+      expect(agent.resolveApproval).not.toHaveBeenCalled()
+      expect(errorSink).not.toHaveBeenCalled()
+    } finally {
+      finish(identity)
+      socket.off("message", receive)
+      deadlines.mockRestore()
+    }
+  })
+
   it.each(["resolve", "reject"] as const)("bounds a stalled Allow identity read and ignores its late %s", async (late) => {
     const { directory, socket, emit, card, agent } = await setup(undefined, undefined, { live: true })
     const request = { workspace: directory, cwd: directory, command: "Edit", path: "notes.txt", reason: "Edit notes.txt; blocked-target", blockedPath: "blocked-target" }
