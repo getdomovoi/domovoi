@@ -20,3 +20,6 @@ a chip in the composer and the prompt editor, and Unpick on the chip clears it.
 
 The model menu groups models by harness and tags a model that takes no image input. The usage
 popover says why it draws a ring or no dial.
+
+A queued message with images for a model that takes none is held whole instead of being sent to
+be refused, and a send that failed keeps its attachments, so queueing it again sends them too.
