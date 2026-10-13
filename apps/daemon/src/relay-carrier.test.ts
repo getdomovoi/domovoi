@@ -411,3 +411,33 @@ it("accepts a matching Pong while the Ping completion callback is still pending"
   expect(f.connections).toHaveLength(1)
   release!()
 })
+
+
+it.each([
+  "INVALID_CA", "PATH_LENGTH_EXCEEDED", "INVALID_PURPOSE", "UNABLE_TO_GET_CRL",
+  "CRL_NOT_YET_VALID", "CRL_HAS_EXPIRED", "HOSTNAME_MISMATCH", "CRL_SIGNATURE_FAILURE",
+  "ERROR_IN_CRL_LAST_UPDATE_FIELD", "ERROR_IN_CRL_NEXT_UPDATE_FIELD", "UNABLE_TO_DECRYPT_CRL_SIGNATURE",
+  "UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY",
+])("refuses certificate verification error %s after one durable reservation without retry", async (code) => {
+  const f = await fixture(acknowledge, "localhost", false)
+  const original = WebSocket.prototype.emit
+  const failures = vi.fn()
+  // Exercise a real rejected TLS handshake, varying only the library's error
+  // code. No certificate bypass or synthetic successful upgrade is involved.
+  vi.spyOn(WebSocket.prototype, "emit").mockImplementation(function (this: WebSocket, event: string | symbol, ...args: unknown[]) {
+    if (event === "error" && !f.connections.includes(this) && args[0] instanceof Error) {
+      failures()
+      args[0] = Object.assign(new Error("Fixture certificate verification failure"), { code })
+    }
+    return Reflect.apply(original, this, [event, ...args])
+  })
+  await f.carrier.start()
+  await vi.waitFor(() => expect(f.carrier.status).toEqual({ state: "refused", reason: "tls" }), { timeout: 1000 })
+  // Later than the maximum retry delay: refusal must not reserve or dial again.
+  await new Promise<void>((resolve) => setTimeout(resolve, 50))
+  expect(f.carrier.status).toEqual({ state: "refused", reason: "tls" })
+  expect(failures).toHaveBeenCalledOnce()
+  expect(JSON.parse(await readFile(f.options.generationPath, "utf8")).generation).toBe(1)
+  expect(f.records).toEqual([])
+  expect(f.connections).toEqual([])
+})

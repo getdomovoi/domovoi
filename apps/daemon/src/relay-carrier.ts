@@ -223,7 +223,9 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
     socket.on("unexpected-response", (_request, response) => { response.destroy(); fail("registration") })
     socket.on("error", (error: Error & { code?: string }) => {
       const code = error.code ?? ""
-      if (/CERT|TLS|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO/.test(code)) fail("tls")
+      // Node/OpenSSL certificate validation includes CRL, name, purpose and
+      // issuer-key errors whose codes contain neither CERT nor TLS.
+      if (/CERT|TLS|SELF_SIGNED|UNABLE_TO_VERIFY|DEPTH_ZERO|CRL|INVALID_CA|INVALID_PURPOSE|PATH_LENGTH_EXCEEDED|HOSTNAME_MISMATCH|UNABLE_TO_DECODE_ISSUER_PUBLIC_KEY/.test(code)) fail("tls")
       else if (code.startsWith("WS_ERR")) fail("protocol")
       else fail(undefined)
     })
