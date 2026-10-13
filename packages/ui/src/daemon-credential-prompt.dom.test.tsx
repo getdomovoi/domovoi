@@ -16,6 +16,13 @@ describe("DaemonCredentialPrompt interaction", () => {
     expect(document.activeElement).toBe(field())
   })
 
+  // The Web v2 bar above the prompt carries the mark, so the prompt draws
+  // none of its own (web-v2 appbar).
+  it("draws no mark of its own under the bar", () => {
+    const { container } = render(<DaemonCredentialPrompt onSubmit={vi.fn()} />)
+    expect(container.querySelector("svg path[fill-rule='evenodd']")).toBeNull()
+  })
+
   it("keeps submission blocked while the credential is blank", async () => {
     const user = userEvent.setup()
     const onSubmit = vi.fn()

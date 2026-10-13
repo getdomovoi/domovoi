@@ -27,6 +27,13 @@ describe("BrowserLimitsPanel", () => {
     expect(items[1]!.getAttribute("data-tone")).toBe("refused")
   })
 
+  // The Web v2 bar above the page carries the mark, so the page draws none
+  // of its own (web-v2 appbar).
+  it("draws no mark of its own under the bar", () => {
+    const { container } = render(<BrowserLimitsPanel rows={rows} onContinue={vi.fn()} />)
+    expect(container.querySelector("svg path[fill-rule='evenodd']")).toBeNull()
+  })
+
   it("continues into the session on the one button", async () => {
     const user = userEvent.setup()
     const onContinue = vi.fn()

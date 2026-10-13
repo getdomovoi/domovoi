@@ -18,7 +18,6 @@ import {
   FieldLabel,
 } from "./components/ui/field"
 import { Input } from "./components/ui/input"
-import { DomovoiMark } from "./domovoi-mark"
 
 export function DaemonCredentialPrompt({
   onSubmit,
@@ -41,10 +40,8 @@ export function DaemonCredentialPrompt({
     // Full height comes from the page around it, under the Web v2 bar.
     <main className="flex min-h-0 flex-1 items-center justify-center bg-background p-6 text-foreground">
       <Card className="w-full max-w-md">
+        {/* The Web v2 bar above carries the mark, so the card draws none. */}
         <CardHeader>
-          <div className="mb-2 flex size-9 items-center justify-center rounded-md bg-accent text-primary">
-            <DomovoiMark reduced className="size-5" />
-          </div>
           <CardTitle asChild><h1>Connect to this daemon</h1></CardTitle>
           <CardDescription>
             Enter the credential owned by the machine running Domovoi.

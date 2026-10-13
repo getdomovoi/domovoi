@@ -2,6 +2,7 @@ import { act, cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it } from "vitest"
 
+import { DomovoiMark } from "./domovoi-mark.js"
 import { WebPageHeader } from "./web-page-header.js"
 import { defaultWorkspaceUiState, workspaceUiStorageKey } from "./workspace-persistence.js"
 
@@ -39,6 +40,17 @@ it("draws the mark, Domovoi, the page label and a theme toggle that keeps its ch
   expect(document.documentElement.classList.contains("light")).toBe(true)
   expect(JSON.parse(storage.getItem(workspaceUiStorageKey) ?? "{}")).toMatchObject({ theme: "light" })
   expect(screen.getByRole("button", { name: "Use dark theme" })).toBeTruthy()
+})
+
+// Web v2's markStyle draws mark-reduced.svg at 22px, eyes and no mouth, as the
+// workspace bar does; the full mark is the larger one on the error pages.
+it("draws the reduced mark, eyes and no mouth, as the workspace bar does", () => {
+  render(<WebPageHeader label="Connect this browser" storage={memoryStorage()} />)
+  const { container: reduced } = render(<DomovoiMark reduced />)
+  const drawn = screen.getByRole("banner").querySelector("svg")
+  expect(drawn?.getAttribute("class")).toContain("size-[22px]")
+  expect([...drawn!.querySelectorAll("path")].map((path) => path.getAttribute("d")))
+    .toEqual([...reduced.querySelectorAll("path")].map((path) => path.getAttribute("d")))
 })
 
 // With the system theme, the toggle follows the system's appearance as it

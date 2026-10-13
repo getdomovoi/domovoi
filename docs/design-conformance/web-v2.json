@@ -51,14 +51,15 @@
         {
           "absent": "<DomovoiMark reduced className=\"size-5\" />",
           "in": "packages/ui/src/browser-limits-panel.tsx"
+        },
+        {
+          "absent": "<DomovoiMark reduced className=\"size-5\" />",
+          "in": "packages/ui/src/daemon-credential-prompt.tsx"
         }
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the pre-session pages draw the Web v2 bar now (WebPageHeader: mark, Domovoi, the page's label, the theme toggle), and inside the workspace the web keeps the desktop v2 bar (Q382 A). Two marks are still not as drawn. The bar draws the full mark, mouth included, where the design's markStyle draws mark-reduced.svg at 22px, as the workspace bar does; the evidence holds that as no unreduced DomovoiMark in web-page-header.tsx. BrowserLimitsPanel and DaemonCredentialPrompt still put their own 20px mark tile above the heading, under the bar, so the mark shows twice; the design's limits page draws the mark only in the bar, and the evidence holds the tile's absence from browser-limits-panel.tsx. The route chip is appbar.route-chip"
-      },
       "notes": [
-        "2026-10-01 (S3.10 slice 1): the shared app bar draws the mark at 22px, which the Web v2 markStyle also draws."
+        "2026-10-01 (S3.10 slice 1): the shared app bar draws the mark at 22px, which the Web v2 markStyle also draws.",
+        "2026-10-13 (SL-6w, W9): WebPageHeader draws mark-reduced at 22px, eyes and no mouth, as the workspace bar does, and BrowserLimitsPanel and DaemonCredentialPrompt dropped their own 20px mark tile, so the pre-session pages draw the mark once, in the bar. Inside the workspace the web keeps the desktop v2 bar (Q382 A). The route chip is appbar.route-chip. Pinned in web-page-header.dom.test.tsx, browser-limits-panel.dom.test.tsx and daemon-credential-prompt.dom.test.tsx."
       ]
     },
     {
