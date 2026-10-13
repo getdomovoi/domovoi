@@ -334,8 +334,8 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
     : installed
       ? "Install is off: the service is already installed."
       : unknown ? "Install and Remove are off: this app did not start that daemon." : "Remove is off: nothing is installed."
-  const installLocked = !live || installed || unknown || busy || updating || Boolean(live.refusal)
-  const removeLocked = !live || !installed || busy || updating || Boolean(live.refusal)
+  const installLocked = !live || installed || unknown || busy || updating || checking || Boolean(live.refusal)
+  const removeLocked = !live || !installed || busy || updating || checking || Boolean(live.refusal)
   // Review P3-8: a confirmation that Remove locking closed stays closed when
   // the lock lifts; the person asks again.
   useEffect(() => {
@@ -383,7 +383,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
       {serviceBehind ? (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">
           <p className="m-0 min-w-0 flex-1">{`The login service runs Domovoi ${daemon.serviceVersion}. This app is ${daemon.appVersion}.`}</p>
-          {live?.update ? <Button type="button" variant="outline" size="sm" disabled={busy || updating || Boolean(live.refusal)} onClick={() => void update()}>Update the service</Button> : null}
+          {live?.update ? <Button type="button" variant="outline" size="sm" disabled={busy || updating || checking || Boolean(live.refusal)} onClick={() => void update()}>Update the service</Button> : null}
         </div>
       ) : null}
       {phase.kind === "update-failed" ? (

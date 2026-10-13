@@ -451,18 +451,16 @@ it.each(["install", "remove"] as const)("preserves %s sequencing and the newest 
   expect(status).toHaveBeenCalledTimes(3)
 })
 
-it("keeps new supervisor facts when an older Check again rejects after an install", async () => {
-  const oldCheck = deferred<Status>()
+it("keeps new supervisor facts when an older initial status read rejects after an install", async () => {
+  const oldRead = deferred<Status>()
   const windowBridge = bridge(vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true })))
   windowBridge.daemonService!.status = vi.fn()
-    .mockResolvedValueOnce({ installed: false, running: false, detail: "not installed" })
-    .mockImplementationOnce(() => oldCheck.promise)
+    .mockImplementationOnce(() => oldRead.promise)
     .mockResolvedValue({ installed: true, running: true, detail: "running", supervisor: { pid: 4321 } })
   const { user, section } = await openDaemonSection(windowBridge, inApp)
-  await user.click(within(section()).getByRole("button", { name: "Check again" }))
   await user.click(within(section()).getByRole("button", { name: "Install" }))
   await within(section()).findByText("Installed. Quitting this app now leaves the daemon and its sessions running.")
-  await act(async () => { oldCheck.reject(new Error("old status failed")) })
+  await act(async () => { oldRead.reject(new Error("old status failed")) })
   expect(await within(section()).findByText("PID 4321")).toBeTruthy()
   expect(within(section()).queryByText("old status failed")).toBeNull()
 })

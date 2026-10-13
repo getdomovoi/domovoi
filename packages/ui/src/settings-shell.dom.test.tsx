@@ -1073,6 +1073,38 @@ it("renders supplied pid and uptime, then uses Check again without retaining fac
 })
 
 it.each([
+  ["Install", false], ["Install", true],
+  ["Remove", false], ["Remove", true],
+  ["Update the service", false], ["Update the service", true],
+] as const)("locks %s until a pending status read settles (reject: %s)", async (action, rejects) => {
+  const installed = action !== "Install"
+  const report = { installed, running: installed, detail: "read back" }
+  let resolve!: (value: typeof report) => void
+  let reject!: (cause: Error) => void
+  const pending = new Promise<typeof report>((yes, no) => { resolve = yes; reject = no })
+  const install = vi.fn(), remove = vi.fn(), update = vi.fn()
+  const user = userEvent.setup()
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner: installed ? "outside" : "app", platform: "win32",
+    serviceInstalled: installed, serviceRunning: installed, serviceVersion: "0.9.2", appVersion: "0.10.0", serviceReport: report,
+    service: { install, remove, update, status: () => pending },
+  }} />)
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  const button = card.getByRole("button", { name: action })
+  expect(button.hasAttribute("disabled")).toBe(false)
+  await user.click(card.getByRole("button", { name: "Check again" }))
+  try {
+    expect(button.hasAttribute("disabled")).toBe(true)
+    await user.click(button)
+    expect(install).not.toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
+  } finally {
+    await act(async () => { if (rejects) reject(new Error("Status unavailable")); else resolve(report) })
+  }
+  expect(button.hasAttribute("disabled")).toBe(false)
+})
+
+it.each([
   { installed: true, running: true, detail: "pid 8888, up 3d" },
 ])("never manufactures pid, uptime or crash facts from an incomplete report", async (report) => {
   render(supervisorCard(report))
