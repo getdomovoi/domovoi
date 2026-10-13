@@ -229,6 +229,14 @@ describe("WebApp", () => {
     expect(text()).toContain(line)
   })
 
+  // An address the page cannot read names no route rather than guessing one.
+  it("names no route on the accepted line when the address does not parse", async () => {
+    await draw(memoryStorage(), vi.fn(() => pairingClient("pairs")), { rpcUrl: "not a url" })
+    await submitCode("hearth-quiet-ember-42")
+    const mono = [...container.querySelectorAll("span")].find((span) => span.textContent?.endsWith("· this tab only"))
+    expect(mono?.textContent).toBe("credential cccccccc · this tab only")
+  })
+
   // W6: the page compares its own origin with the socket it dials, and says
   // what that shows about where the page came from.
   it("says the page came from the daemon when the daemon served it", async () => {
