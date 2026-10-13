@@ -1,12 +1,12 @@
 import { demoWorkspace, type ProviderModel, type SessionAttachment } from "@getdomovoi/protocol"
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react"
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import type { ComponentProps, ReactNode } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
 import { WorkspaceConnectionProvider } from "./connection-status"
 import { emptySessionDraft, sessionDraftStore } from "./session-draft"
-import type { QueuedMessage } from "./turn-queue"
+import { failedAttempt, type QueuedMessage } from "./turn-queue"
 import { Thread } from "./workspace-shell.js"
 
 afterEach(() => {
@@ -172,6 +172,77 @@ it("locks on the model menu's fresh answer when the first read failed", async ()
   await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/u }))
 
   await waitFor(() => expect(notice()).not.toBeNull())
+  expect(send().disabled).toBe(true)
+})
+
+// A release the daemon refused (an image for a model that takes none, among
+// others) leaves a failed row. The row keeps the message's attachments, so
+// queueing it again after a model change sends what the person attached.
+it("keeps a failed send's attachments and queues them again", async () => {
+  const user = userEvent.setup()
+  const attempt = failedAttempt("attempt-1", { sessionId: activeId, text: "With a screenshot", state: "waiting", attachments: [image] }, {
+    refused: true, answered: true, reason: "1 image cannot go to sonnet-4.6",
+  })
+  expect(attempt.attachments).toEqual([image])
+  const onQueuedChange = vi.fn()
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals = []
+  render(
+    <Thread
+      snapshot={snapshot}
+      connected
+      failures={[attempt]}
+      onQueuedChange={onQueuedChange}
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [sonnet(true)])}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />,
+  )
+
+  await user.click(screen.getByRole("button", { name: "Queue again" }))
+  expect(onQueuedChange).toHaveBeenCalledWith({ sessionId: activeId, text: "With a screenshot", state: "waiting", attachments: [image] })
+})
+
+// The menu's answer is newer than a read still pending from mount; the late
+// read does not undo the lock the menu's answer set.
+it("keeps the menu's answer when an older read settles after it", async () => {
+  const user = userEvent.setup()
+  sessionDraftStore.write(activeId, { ...emptySessionDraft, prompt: "Look", attachments: [image] })
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals = []
+  snapshot.machine.providers = [{ id: "claude-code", command: "claude", status: "ready", sessionCapable: true }]
+  let settleFirst: (models: ProviderModel[]) => void = () => {}
+  const onListModels = vi.fn()
+    .mockImplementationOnce(() => new Promise<ProviderModel[]>((resolve) => { settleFirst = resolve }))
+    .mockResolvedValue([sonnet(false)])
+  render(
+    <Thread
+      snapshot={snapshot}
+      connected
+      onQueuedChange={vi.fn()}
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={onListModels}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />,
+  )
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/u }))
+  await waitFor(() => expect(notice()).not.toBeNull())
+
+  await act(async () => { settleFirst([sonnet(true)]) })
+
+  expect(notice()).not.toBeNull()
   expect(send().disabled).toBe(true)
 })
 

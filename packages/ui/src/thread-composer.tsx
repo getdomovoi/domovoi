@@ -136,8 +136,9 @@ export function AttachmentChips({
       onRemove: () => onRemove(index),
     }]
   })]
-  // An emptied draft (a send, the last removal) starts the next one collapsed.
-  if (expanded && items.length === 0) setExpanded(false)
+  // An emptied draft (a send, the last removal) starts the next one
+  // collapsed. The variant chip outlives sends, so it does not count.
+  if (expanded && items.length === basisItems.length) setExpanded(false)
   if (items.length === 0) return null
   const hidden = expanded ? 0 : Math.max(0, items.length - visibleAttachmentChips)
   return (
@@ -394,6 +395,7 @@ export function ThreadComposer({
                 text: attempt.text,
                 state: "waiting",
                 ...(attempt.skillIds ? { skillIds: attempt.skillIds } : {}),
+                ...(attempt.attachments ? { attachments: attempt.attachments } : {}),
               })
               onDismissFailure?.(attempt.id)
             }}

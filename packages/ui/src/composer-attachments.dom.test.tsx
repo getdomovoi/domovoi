@@ -179,3 +179,16 @@ it("collapses the chips again once the draft is emptied", async () => {
   rerender(<AttachmentChips attachments={attachments} machineName="mac-mini-m4" onRemove={vi.fn()} />)
   expect(within(screen.getByRole("region", { name: "Attachments" })).getAllByRole("listitem")).toHaveLength(3)
 })
+
+// The chosen variant's chip stays across sends; the attachments emptying is
+// what starts the next draft collapsed.
+it("collapses again when the attachments empty even with the variant chip shown", async () => {
+  const user = userEvent.setup()
+  const basis = { mark: "HTML", name: "Variant B", meta: "replay", onUnpick: vi.fn() }
+  const attachments = ["a.ts", "b.ts", "c.ts", "d.ts"].map((path) => ({ kind: "workspace-file" as const, path }))
+  const { rerender } = render(<AttachmentChips attachments={attachments} buildBasis={basis} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: "+2 more" }))
+  rerender(<AttachmentChips attachments={[]} buildBasis={basis} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  rerender(<AttachmentChips attachments={attachments} buildBasis={basis} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  expect(within(screen.getByRole("region", { name: "Attachments" })).getAllByRole("listitem")).toHaveLength(3)
+})

@@ -858,12 +858,18 @@ export function Thread({
   // Held with the provider it answered for, so a re-read keeps the chip up and
   // a provider change drops it until the new harness answers.
   const [providerModels, setProviderModels] = useState<{ provider: string, models: ProviderModel[] }>()
+  // Every catalog write takes a ticket: the model menu's answer (onModelsRead
+  // below) is newer than a read still pending from here, so that read is
+  // dropped when it settles rather than undoing an image lock.
+  const modelsReadTicket = useRef(0)
   useEffect(() => {
     if (!activeProvider) return
     let live = true
+    const ticket = ++modelsReadTicket.current
+    const current = () => live && modelsReadTicket.current === ticket
     void onListModels(activeProvider).then(
-      (models) => { if (live) setProviderModels({ provider: activeProvider, models }) },
-      () => { if (live) setProviderModels(undefined) },
+      (models) => { if (current()) setProviderModels({ provider: activeProvider, models }) },
+      () => { if (current()) setProviderModels(undefined) },
     )
     return () => { live = false }
   }, [onListModels, activeProvider])
@@ -1614,7 +1620,9 @@ export function Thread({
             // The menu's newer answer for this session's harness replaces the
             // one read at mount, so a failed first read or a changed answer
             // does not leave images unlocked.
-            if (provider === active.runtime.provider) setProviderModels({ provider, models })
+            if (provider !== active.runtime.provider) return
+            modelsReadTicket.current += 1
+            setProviderModels({ provider, models })
           }}
           onOpenSheet={onOpenSheet}
           onOpenPromptEditor={() => setPromptEditorOpen(true)}
