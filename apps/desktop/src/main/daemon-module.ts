@@ -40,6 +40,7 @@ export const daemonModuleExports = [
   // Q408 A: the runtime copy under the profile, shared with the CLI.
   "prepareDaemonRuntime",
   "nodeRuntimeFileSystem",
+  "builtSourceCommit",
 ] as const
 
 export type DaemonModule = Pick<typeof Daemon, (typeof daemonModuleExports)[number]>

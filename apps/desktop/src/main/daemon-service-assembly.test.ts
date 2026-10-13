@@ -1,11 +1,13 @@
 import { nodeRuntimeFileSystem, prepareDaemonRuntime } from "@getdomovoi/daemon"
-import { mkdir, mkdtemp, readdir, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { pathToFileURL } from "node:url"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { createDesktopDaemonService } from "./daemon-service-assembly.js"
+import { daemonModuleExports, loadDaemonModule } from "./daemon-module.js"
 import type { DaemonModule } from "./daemon-module.js"
 import type { DesktopDaemon } from "./desktop-daemon.js"
 
@@ -37,11 +39,12 @@ describe("the login service assembled for this app's profile", () => {
   function daemonModule() {
     const installed = { kind: "file" as const, path: "/p", configurationPath: "/c" }
     return {
+      builtSourceCommit: vi.fn((): string | undefined => undefined),
       serviceProfileMismatch: vi.fn(() => undefined),
       readLocalServiceHandoffRefusal: vi.fn(async () => undefined),
       holdServiceHandoffFence: vi.fn(async () => ({ release: () => {} })),
       installDaemonService: vi.fn(async (options: { releaseInAppDaemon?: () => Promise<void> }) => { await options.releaseInAppDaemon?.(); return installed }),
-      updateDaemonService: vi.fn(async () => installed),
+      updateDaemonService: vi.fn(async (_options: { runtime: { daemonEntryPath: string }; staged: { publish: () => Promise<unknown> } }) => installed),
       removeDaemonService: vi.fn(async () => ({ kind: "file" as const, path: "/p", profileRecovery: "not-needed" as const })),
       readDaemonServiceStatus: vi.fn(async () => ({ installed: true, running: true, detail: "" })),
       readDaemonServiceRuntimeCopy: vi.fn(async () => ({ installed: false as const })),
@@ -64,6 +67,31 @@ describe("the login service assembled for this app's profile", () => {
       restart: async () => attached,
     } as unknown as DesktopDaemon
   }
+
+  it("reports the commit from the shipped runtime that the update copies", async () => {
+    const { resourcesPath, home, profile } = await scratch()
+    const commit = "a".repeat(40)
+    const publicPath = join(resourcesPath, "daemon-runtime", "daemon", "dist", "public.js")
+    await writeFile(publicPath, `export function builtSourceCommit() { return "${commit}" }`)
+    const dependencies = daemonModule()
+    dependencies.updateDaemonService.mockImplementation(async (options) => {
+      await options.staged.publish()
+      return { kind: "file", path: "/p", configurationPath: "/c" }
+    })
+    const importer = vi.fn(async (specifier: string) => ({
+      ...Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()])),
+      ...dependencies,
+      ...await import(/* @vite-ignore */ specifier),
+    }))
+    const loaded = await loadDaemonModule({ isPackaged: true, resourcesPath }, importer)
+    expect(importer).toHaveBeenCalledWith(pathToFileURL(publicPath).href)
+    const service = createDesktopDaemonService(desktopDaemon(), { resourcesPath, version: "0.0.1", home, environment: { DOMOVOI_PROFILE_DIR: profile } }, loaded.module)
+    await expect(service.status()).resolves.toMatchObject({ supervisor: { appSourceCommit: commit } })
+    await expect(service.update()).resolves.toMatchObject({ ok: true })
+    const options = dependencies.updateDaemonService.mock.calls[0]![0]
+    const copied = join(dirname(options.runtime.daemonEntryPath), "public.js")
+    expect(await readFile(copied, "utf8")).toBe(await readFile(publicPath, "utf8"))
+  })
 
   // Review of 049b1383 (P2-3): with the tailnet switch on, a login service
   // installed afterwards keeps the tailnet listener the in-app daemon had.
