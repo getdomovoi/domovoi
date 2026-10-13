@@ -54,6 +54,15 @@ export const midTurnCheckpointSchema = z.object({
 })
 export type MidTurnCheckpoint = z.infer<typeof midTurnCheckpointSchema>
 
+// Only an approval snapshot can exist without a known active provider turn.
+export function checkpointCaptureHasRequiredTurn(entry: {
+  reason?: CheckpointReason | undefined
+  midTurn?: MidTurnCheckpoint | undefined
+}): boolean {
+  return entry.midTurn === undefined || entry.reason === "before-approved-command"
+    || entry.midTurn.providerTurnId !== undefined || entry.midTurn.providerTurnIdSha256 !== undefined
+}
+
 
 // Wall-clock time from the approval request to its resolution. This is consent
 // latency, never the execution duration of the approved operation.

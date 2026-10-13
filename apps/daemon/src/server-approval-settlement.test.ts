@@ -8,7 +8,7 @@ import { WebSocket } from "ws"
 import { demoWorkspace, executionRecordSchema, protocolVersion, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { unrestrictedApprovalScope } from "./approval-facts.js"
-import { savedSettlementInput, settleApproval } from "./approval-settlement.js"
+import { heldSettlementInput, savedSettlementInput, settleApproval } from "./approval-settlement.js"
 import type { AgentAdapter, AgentEvent } from "./codex.js"
 import { realPathLookupBudgetMs } from "./credential-stores.js"
 import { fileScopedTools, resolveCommandExecution, resolveExecution } from "./execution-resolution.js"
@@ -303,7 +303,8 @@ describe("approval settlement", () => {
 
   it.each(["resolve", "reject"] as const)("bounds a stalled Allow identity read and ignores its late %s", async (late) => {
     const { directory, socket, emit, card, agent } = await setup(undefined, undefined, { live: true })
-    emit({ requestId: 33, command: "Edit", path: "notes.txt" })
+    const request = { workspace: directory, cwd: directory, command: "Edit", path: "notes.txt", reason: "Edit notes.txt; blocked-target", blockedPath: "blocked-target" }
+    emit({ requestId: 33, ...request })
     const waiting = await waitForDaemon(async () => {
       const found = await card(33)
       expect(found).toMatchObject({ risk: "normal" })
@@ -345,6 +346,12 @@ describe("approval settlement", () => {
         affects: "The file [REDACTED] in the session worktree.",
         execution: { state: "unresolved", reason: "sensitive-content" },
       })
+      // Identity expiry must use exactly the same held-request sealing as
+      // settlement expiry, including request-only blocked path spellings.
+      const expired = startDeadline(realPathLookupBudgetMs, { signal: AbortSignal.abort() })
+      const expected = await settleApproval(heldSettlementInput(waiting, request, undefined, "resolve", () => "normal"), expired)
+      expired.clear()
+      expect(sealed).toEqual({ ...expected.approval, revision: waiting.revision + 1 })
       if (late === "resolve") finish(identity)
       else fail(new Error("Late filesystem failure"))
       expect(await card(33)).toEqual(sealed)
