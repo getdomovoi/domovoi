@@ -59,7 +59,7 @@ import { Deadline } from "./deadline"
 import { advancePendingElsewhere, freshRefusal, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
 import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
-import { type ProviderSecretStatus } from "./provider-settings"
+import type { ProviderSecretStatus } from "./provider-settings"
 import type { LocalDaemonDescription } from "./settings-shell"
 import type { SkillsSurfaceTab } from "./skills-surface"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
@@ -81,11 +81,8 @@ import {
   type SessionQueues,
 } from "./turn-queue"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
-import {
-  DesktopFirstRunDialog,
-  desktopFirstRunAvailable,
-  firstRunDefaultProvider,
-} from "./desktop-first-run"
+import { DesktopFirstRunDialog } from "./desktop-first-run-lazy"
+import { desktopFirstRunAvailable, firstRunDefaultProvider } from "./desktop-first-run-rules"
 import {
   browserDesktopFirstRunStorage,
   completeDesktopFirstRun,
