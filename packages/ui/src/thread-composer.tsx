@@ -139,7 +139,8 @@ export function AttachmentChips({
           >
             <span className="rounded bg-muted px-[5px] py-0.5 font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">{item.mark}</span>
             <span className="min-w-0 truncate font-machine text-[10.5px] text-strong">{item.name}</span>
-            <span className={cn("min-w-0 truncate text-[10.5px]", item.blocked ? "shrink-0 text-danger-dim" : "text-faint")}>{item.meta}</span>
+            {/* The meta gives way first, so a long one never hides the name. */}
+            <span className={cn("min-w-0 truncate text-[10.5px]", item.blocked ? "shrink-0 text-danger-dim" : "shrink-[100] text-faint")}>{item.meta}</span>
             <Button variant="ghost" size="icon-sm" className="size-5 flex-none text-faint" aria-label={item.removeLabel} onClick={item.onRemove}><XIcon className="size-3" /></Button>
           </li>
         ))}
