@@ -53,6 +53,8 @@ export type LocalDaemonDescription = {
   // round 9): a daemon answering is not proof the service runs.
   serviceRunning?: boolean | undefined
   serviceReport?: DaemonServiceStatusReport | undefined
+  // Captured with the guarded status read, never when Settings mounts.
+  serviceCheckedAt?: number | undefined
   // The daemon version the service answered with, and this app's, so an app
   // update that left the service on its old runtime is said (ruled 2026-09-23).
   serviceVersion?: string | undefined
@@ -254,10 +256,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
   const live = daemon.service
   const busy = phase.kind === "installing" || phase.kind === "removing"
   const [checking, setChecking] = useState(false)
-  const [checkedAt, setCheckedAt] = useState(Date.now)
-  // The report comes from the shell's one generation-guarded read. This
-  // effect records its observation time and never invokes the desktop.
-  useEffect(() => { setCheckedAt(Date.now()) }, [daemon.serviceReport])
+  const checkedAt = daemon.serviceCheckedAt
   const check = async () => {
     if (!live?.status) return
     setChecking(true)
@@ -271,7 +270,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
   const crashes = supervisor?.crashCount === undefined ? "Crash count unknown" : `${supervisor.crashCount} ${supervisor.crashCount === 1 ? "crash" : "crashes"}`
   const exhausted = hasService && supervisor?.supervisionFailure === "exhausted"
   const birth = observed?.running && supervisor?.startedAt ? Date.parse(supervisor.startedAt) : NaN
-  const minutes = Number.isFinite(birth) && birth <= checkedAt ? Math.floor((checkedAt - birth) / 60_000) : undefined
+  const minutes = Number.isFinite(birth) && checkedAt !== undefined && Number.isFinite(checkedAt) && birth <= checkedAt ? Math.floor((checkedAt - birth) / 60_000) : undefined
   const uptime = minutes === undefined ? "Uptime unknown" : minutes < 60 ? `up ${minutes}m` : `up ${Math.floor(minutes / 60)}h ${minutes % 60}m`
   const run = async (action: "install" | "remove") => {
     if (!live) return
@@ -358,10 +357,11 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
           {phase.kind === "installing" ? "Installing" : phase.kind === "removing" ? "Removing" : state.label}
         </span>
       </div>
-      {live?.status ? <>
+      {report || live?.status ? <>
         {exhausted ? <div role="alert" className="flex flex-col gap-1.5 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground">
           <span className="font-medium">{supervisor.crashCount === undefined ? "The supervisor gave up. Crash count unknown." : `The supervisor gave up after ${crashes}.`}</span>
           <span>The supervisor stopped trying: restart limit reached.</span>
+          {daemon.owner !== "outside" ? <span>{`Quit ${daemon.owner === "app" ? "this" : "the other"} Domovoi app to stop its daemon and sessions before running the command.`}</span> : null}
           <span>To reinstall and start the service, run this in a terminal.</span>
           <span className="font-machine text-[11px]">{printed("domovoid service install")}</span>
         </div> : null}
@@ -378,7 +378,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
             {supervisor?.supervisionFailure === undefined && supervisor?.crashCount === undefined ? <span>Supervisor exhaustion unknown</span> : null}
           </> : null}
         </div>
-        <div><Button type="button" variant="outline" size="sm" disabled={checking || busy || updating} onClick={() => void check()}>Check again</Button></div>
+        {live?.status ? <div><Button type="button" variant="outline" size="sm" disabled={checking || busy || updating} onClick={() => void check()}>Check again</Button></div> : null}
       </> : null}
       {serviceBehind ? (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">

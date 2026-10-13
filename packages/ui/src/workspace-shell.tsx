@@ -296,7 +296,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // J24: whether the login service is installed, from the desktop's own
   // status read. A daemon outside the app is drawn as the service only when
   // this says so; an unreadable or unverified status leaves it unnamed.
-  const [serviceReport, setServiceReport] = useState<DaemonServiceStatusReport>()
+  // Keep evidence and its observation time atomic across late reads and mounts.
+  const [[serviceReport, serviceCheckedAt], setServiceReport] = useState<readonly [report: DaemonServiceStatusReport, checkedAt: number] | readonly []>([])
   const readService = serviceReport && "installed" in serviceReport && serviceReport.installed !== null ? serviceReport : undefined
   const serviceInstalled = readService?.installed ?? undefined
   const serviceRunning = readService?.running
@@ -311,17 +312,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     try {
       const status = await service.status()
       if (generation === serviceStatusGeneration.current) {
-        setServiceReport(status)
+        setServiceReport([status, Date.now()])
       }
       return status
     } catch (cause) {
       if (generation === serviceStatusGeneration.current) {
-        setServiceReport({ unavailable: cause instanceof Error ? cause.message : "The desktop did not answer." })
+        setServiceReport([{ unavailable: cause instanceof Error ? cause.message : "The desktop did not answer." }, Date.now()])
       }
       throw cause
     }
   }, [windowBridge])
-  useEffect(() => { void readServiceStatus().catch(() => {}) }, [readServiceStatus])
+  // First-run installs publish service facts without replacing the bridge.
+  useEffect(() => { void readServiceStatus().catch(() => {}) }, [readServiceStatus, localDaemon?.serviceInstalled, localDaemon?.serviceRunning])
   // An install or a removal, then a status read. The desktop is told the
   // daemon changed, so it resolves its daemon again, whenever the change may
   // have moved who holds it: a success; a service installed but not attached;
@@ -1731,7 +1733,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
               ...(localDaemon.serviceInstalled === undefined && serviceInstalled !== undefined ? { serviceInstalled } : {}),
               ...(localDaemon.serviceRunning === undefined && serviceRunning !== undefined ? { serviceRunning } : {}),
-              serviceReport,
+              serviceReport, serviceCheckedAt,
               ...(localDaemon.owner === "outside" ? { serviceVersion: snapshot.machine.version, appVersion: clientVersion } : {}),
               ...(windowBridge?.daemonService && !watching ? { service: {
                 install: () => changeService("install", () => windowBridge.daemonService!.install()),

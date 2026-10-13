@@ -267,7 +267,7 @@ function deferred<T>() {
 }
 type Status = { installed: boolean | null; running: boolean; detail: string; supervisor?: unknown }
 const quietWorkspace = () => workspaceSnapshot({ approvals: [], sessions: demoWorkspace.sessions.map((session) => { const { activeTurnId: _turn, ...rest } = session; return { ...rest, state: "idle" as const } }) })
-type LocalDaemon = { title: string; detail: string; owner: "app" | "outside"; serviceInstalled?: boolean }
+type LocalDaemon = { title: string; detail: string; owner: "app" | "outside"; serviceInstalled?: boolean; serviceRunning?: boolean }
 const inApp: LocalDaemon = { title: "Running Domovoi inside this app", detail: "", owner: "app" }
 const outside: LocalDaemon = { title: "Connected to a daemon outside this app", detail: "", owner: "outside" }
 
@@ -465,4 +465,41 @@ it("keeps new supervisor facts when an older Check again rejects after an instal
   await act(async () => { oldCheck.reject(new Error("old status failed")) })
   expect(await within(section()).findByText("PID 4321")).toBeTruthy()
   expect(within(section()).queryByText("old status failed")).toBeNull()
+})
+
+
+it.each([false, true])("refreshes supervisor facts when first-run service facts change with the same bridge (installed %s)", async (installed) => {
+  const windowBridge = bridge(vi.fn())
+  const status = vi.fn()
+    .mockResolvedValueOnce({ installed, running: false, detail: "before setup" })
+    .mockResolvedValue({ installed: true, running: true, detail: "after setup", supervisor: { pid: 4321, crashCount: 0 } })
+  windowBridge.daemonService!.status = status
+  const { section, moveTo } = await openDaemonSection(windowBridge, { ...inApp, serviceInstalled: installed, serviceRunning: false })
+  expect(status).toHaveBeenCalledOnce()
+  moveTo({ ...outside, serviceInstalled: true, serviceRunning: true })
+  expect(await within(section()).findByText("PID 4321")).toBeTruthy()
+  expect(within(section()).getByText("0 crashes")).toBeTruthy()
+  expect(status).toHaveBeenCalledTimes(2)
+})
+
+it("keeps the actual status-read time when Settings mounts later and timestamps Check again", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-12T12:02:00.000Z"))
+  try {
+    const windowBridge = bridge(vi.fn())
+    const status = vi.fn().mockResolvedValue({ installed: true, running: true, detail: "running", supervisor: { pid: 4321, startedAt: "2026-10-12T12:00:00.000Z" } })
+    windowBridge.daemonService!.status = status
+    render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={outside} />)
+    await act(async () => { completeHandshake(harness.socket(0), quietWorkspace()) })
+    await settle()
+    const user = userEvent.setup()
+    await skipFirstRun(user)
+    expect(status).toHaveBeenCalledOnce()
+    clock.mockReturnValue(Date.parse("2026-10-12T13:02:00.000Z"))
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    const card = within(await screen.findByRole("region", { name: "Daemon on this machine" }))
+    expect(card.getByText("up 2m at last check")).toBeTruthy()
+    await user.click(card.getByRole("button", { name: "Check again" }))
+    expect(await card.findByText("up 1h 2m at last check")).toBeTruthy()
+    expect(status).toHaveBeenCalledTimes(2)
+  } finally { vi.restoreAllMocks() }
 })

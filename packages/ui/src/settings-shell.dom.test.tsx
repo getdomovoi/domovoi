@@ -1031,9 +1031,9 @@ it("does not call a daemon outside the app the running service while the service
 })
 
 // CX-10: the shell's existing read supplies the initial report.
-function supervisorCard(report: NonNullable<Parameters<typeof SettingsShell>[0]["localDaemon"]>["serviceReport"], status = vi.fn()) {
+function supervisorCard(report: NonNullable<Parameters<typeof SettingsShell>[0]["localDaemon"]>["serviceReport"], status = vi.fn(), checkedAt = Date.now()) {
   return <SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner: "outside", platform: "win32", serviceInstalled: true,
-    serviceReport: report, service: { install: vi.fn(), remove: vi.fn(), status } }} />
+    serviceReport: report, serviceCheckedAt: checkedAt, service: { install: vi.fn(), remove: vi.fn(), status } }} />
 }
 
 it("shows exhausted supervision with its real crash count, reason and terminal recovery", async () => {
@@ -1145,9 +1145,35 @@ it("labels uptime as the last check reading after time passes, and refreshes on 
     const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
     expect(card.getByText("up 5m at last check")).toBeTruthy()
     clock.mockReturnValue(Date.parse("2026-10-12T13:05:00.000Z"))
-    view.rerender(supervisorCard(report))
+    view.rerender(supervisorCard(report, vi.fn(), Date.parse("2026-10-12T12:05:00.000Z")))
     expect(card.getByText("up 5m at last check")).toBeTruthy()
     view.rerender(supervisorCard({ ...report }))
     expect(card.getByText("up 1h 5m at last check")).toBeTruthy()
   } finally { vi.restoreAllMocks() }
+})
+
+
+it.each([
+  { installed: true, running: false, detail: "restart limit reached", supervisor: { supervisionFailure: "exhausted", crashCount: 4, lastExit: "code 9" } },
+  { unavailable: "Service manager unavailable" },
+])("shows supplied service evidence in a watching card without mutation methods", (report) => {
+  render(<SettingsShell {...shellProps()} readOnly localDaemon={{ title: "Local daemon", detail: "", owner: "outside", platform: "win32", serviceReport: report }} />)
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  if ("unavailable" in report) expect(card.getByText("Service manager unavailable")).toBeTruthy()
+  else {
+    expect(card.getByText("The supervisor gave up after 4 crashes.")).toBeTruthy()
+    expect(card.getByText("4 crashes")).toBeTruthy()
+    expect(card.getByText("Last exit: code 9")).toBeTruthy()
+  }
+  expect(card.queryByRole("button", { name: "Check again" })).toBeNull()
+})
+
+it.each(["app", "other-app"] as const)("names the owning app and session consequence before terminal recovery: %s", (owner) => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner, platform: "win32", serviceInstalled: true,
+    serviceReport: { installed: true, running: false, detail: "restart limit reached", supervisor: { supervisionFailure: "exhausted", crashCount: 4 } },
+    service: { install: vi.fn(), remove: vi.fn(), status: vi.fn() },
+  }} />)
+  const alert = within(screen.getByRole("region", { name: "Daemon on this machine" })).getByRole("alert")
+  expect(alert.textContent).toContain(owner === "app" ? "Quit this Domovoi app to stop its daemon and sessions before running the command." : "Quit the other Domovoi app to stop its daemon and sessions before running the command.")
+  expect(alert.textContent).toContain("domovoid service install")
 })
