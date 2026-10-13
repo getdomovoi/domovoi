@@ -1610,6 +1610,12 @@ export function Thread({
           effortDropped={effortDroppedHere}
           imageInput={effortModel?.imageInput}
           buildBasis={buildBasisChip}
+          onModelsRead={(provider, models) => {
+            // The menu's newer answer for this session's harness replaces the
+            // one read at mount, so a failed first read or a changed answer
+            // does not leave images unlocked.
+            if (provider === active.runtime.provider) setProviderModels({ provider, models })
+          }}
           onOpenSheet={onOpenSheet}
           onOpenPromptEditor={() => setPromptEditorOpen(true)}
           usage={usage}

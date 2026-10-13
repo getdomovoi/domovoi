@@ -50,7 +50,11 @@ export function ModelPopover({
   onChange,
   onFork,
   openRequest,
+  onCatalog,
 }: {
+  // Each catalog a harness answers with, so the composer locks images on the
+  // same answer this menu shows.
+  onCatalog?: ((provider: string, models: ProviderModel[]) => void) | undefined
   // Bumped by the composer's Change model, which opens this menu.
   openRequest?: number | undefined
   runtime: Runtime
@@ -83,6 +87,8 @@ export function ModelPopover({
   // catalogs each time something unrelated in the workspace moves.
   const providersRef = useRef(providers)
   providersRef.current = providers
+  const onCatalogRef = useRef(onCatalog)
+  onCatalogRef.current = onCatalog
 
   // A harness that did not report is absent, not dimmed. The fleet's
   // dim-and-keep rule is about machines, which you paired and still own when
@@ -102,7 +108,11 @@ export function ModelPopover({
     const targets = providersRef.current.filter((provider) => provider.sessionCapable && (every || providerCanStartSession(provider)))
     setCatalogs(Object.fromEntries(targets.map((provider) => [provider.id, { status: "loading" }])))
     return Promise.all(targets.map((provider) => read(provider.id).then(
-      (catalog) => { if (generation.current === current) setCatalogs((previous) => ({ ...previous, [provider.id]: catalog })) },
+      (catalog) => {
+        if (generation.current !== current) return
+        setCatalogs((previous) => ({ ...previous, [provider.id]: catalog }))
+        if (catalog.status === "ready") onCatalogRef.current?.(provider.id, catalog.models)
+      },
       (cause: unknown) => {
         if (generation.current !== current) return
         const note = cause instanceof Error ? cause.message : "Models could not be loaded"

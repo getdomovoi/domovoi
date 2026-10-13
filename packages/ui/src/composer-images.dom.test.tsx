@@ -137,6 +137,44 @@ it("says in the prompt editor which images cannot go to the model", async () => 
   expect((within(editor).getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true)
 })
 
+// The model menu reads the catalog afresh each time it opens. What it reads
+// about the session's model is what the composer locks on, so a first read
+// that failed, or an answer that has since changed, does not leave images
+// sendable.
+it("locks on the model menu's fresh answer when the first read failed", async () => {
+  const user = userEvent.setup()
+  sessionDraftStore.write(activeId, { ...emptySessionDraft, prompt: "Look", attachments: [image] })
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals = []
+  snapshot.machine.providers = [{ id: "claude-code", command: "claude", status: "ready", sessionCapable: true }]
+  const onListModels = vi.fn()
+    .mockRejectedValueOnce(new Error("not yet"))
+    .mockResolvedValue([sonnet(false)])
+  render(
+    <Thread
+      snapshot={snapshot}
+      connected
+      onQueuedChange={vi.fn()}
+      onResolve={vi.fn(async () => {})}
+      onSetRuntime={vi.fn(async () => {})}
+      onForkSession={vi.fn(async () => {})}
+      onListModels={onListModels}
+      onNewSession={vi.fn()}
+      onSend={vi.fn(async () => {})}
+      onCheckpoint={vi.fn(async () => {})}
+      onRestoreCheckpoint={vi.fn(async () => {})}
+      onPauseSession={vi.fn(async () => {})}
+    />,
+  )
+  await waitFor(() => expect(onListModels).toHaveBeenCalledTimes(1))
+  expect(notice()).toBeNull()
+
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/u }))
+
+  await waitFor(() => expect(notice()).not.toBeNull())
+  expect(send().disabled).toBe(true)
+})
+
 it("names the count when several images are locked", async () => {
   renderThread({ imageInput: false, draft: [image, image], prompt: "Both" })
 

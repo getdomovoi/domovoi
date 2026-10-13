@@ -214,6 +214,7 @@ export function ThreadComposer({
   effortDropped,
   imageInput,
   buildBasis,
+  onModelsRead,
   onOpenSheet,
   onOpenPromptEditor,
   usage,
@@ -271,6 +272,8 @@ export function ThreadComposer({
   imageInput: boolean | undefined
   // The chosen preview variant, drawn as the first chip (task 83).
   buildBasis?: BuildBasisChip | undefined
+  // A catalog the model menu read, so imageInput follows its latest answer.
+  onModelsRead?: ((provider: string, models: ProviderModel[]) => void) | undefined
   onOpenSheet?: (() => void) | undefined
   onOpenPromptEditor: () => void
   usage: SessionUsage | null
@@ -681,6 +684,7 @@ export function ThreadComposer({
             onChange={onRuntimeChange}
             onFork={onFork}
             openRequest={modelMenuRequest}
+            onCatalog={onModelsRead}
           />
           {/* v2's mode chip sits beside the model, and the effort chip
               after it. */}
