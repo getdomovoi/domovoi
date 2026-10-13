@@ -41,10 +41,10 @@ const limitsLabel = "What a tab can do"
 
 // The pages before a session draw the Web v2 bar, with its theme toggle
 // (Q382 A). Inside the session the workspace keeps the desktop bar.
-function PreSessionPage({ label, children }: { label: string; children: ReactNode }) {
+function PreSessionPage({ label, themeToggle = true, children }: { label: string; themeToggle?: boolean; children: ReactNode }) {
   return (
     <div className="flex min-h-dvh flex-col bg-background text-foreground">
-      <WebPageHeader label={label} />
+      <WebPageHeader label={label} themeToggle={themeToggle} />
       {children}
     </div>
   )
@@ -102,6 +102,18 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
     const target = opener.isConnected ? opener : connectPage.current?.querySelector<HTMLElement>("[data-limits-link]")
     target?.focus()
   }, [limitsOpen])
+  // Over a session, the session stays mounted under the limits page, and its
+  // shortcuts listen on the window. Keys go no further than the window while
+  // the page is up, so the hidden palette cannot open and run a command
+  // unseen. The page itself needs no key handlers: its buttons act on click,
+  // which a key's default action still produces.
+  const limitsOverSession = Boolean(session) && limitsSeen && limitsOpen
+  useEffect(() => {
+    if (!limitsOverSession) return
+    const hold = (event: KeyboardEvent) => event.stopPropagation()
+    globalThis.addEventListener("keydown", hold, { capture: true })
+    return () => globalThis.removeEventListener("keydown", hold, { capture: true })
+  }, [limitsOverSession])
   const { host, secure } = hostOf(rpcUrl)
   const route = routeOfEndpoint(rpcUrl)
   const credentialOffered = isLoopbackPageOrigin(pageOrigin)
@@ -220,8 +232,17 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
   // Reopened from the workspace (Q367 A), the limits page draws over the
   // session, which stays mounted under it: its connection, thread and drafts
   // are as they were on the way back. The wrapper adds no box of its own.
+  // A session that ends under the limits page takes the page with it, so the
+  // tab lands on pairing rather than on limits it did not ask for.
+  const leaveSession = () => {
+    limitsOpener.current = null
+    setLimitsOpen(false)
+    setOutcome(undefined)
+    setPath("code")
+    setSession(undefined)
+  }
   return <>
-    {limitsOpen ? <PreSessionPage label={limitsLabel}><BrowserLimitsPanel
+    {limitsOpen ? <PreSessionPage label={limitsLabel} themeToggle={false}><BrowserLimitsPanel
       rows={browserLimits(environment, rpcUrl, markBrowserLimitsSeen(storage))}
       continueLabel="Back"
       onContinue={() => setLimitsOpen(false)}
@@ -232,15 +253,11 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
         deviceId: session.deviceId,
         onSignedOut: (result) => {
           clearConfirmedDaemonSession(storage, result)
-          setOutcome(undefined)
-          setPath("code")
-          setSession(undefined)
+          leaveSession()
         },
         onChangeCredential: () => {
           clearDaemonSession(storage)
-          setOutcome(undefined)
-          setPath("code")
-          setSession(undefined)
+          leaveSession()
         },
         onOpenLimits: (opener) => {
           limitsOpener.current = opener

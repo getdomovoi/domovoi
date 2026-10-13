@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { act, useState } from "react"
+import { act, useEffect, useState } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -668,22 +668,31 @@ describe("WebApp", () => {
 // under it, so nothing the workspace holds is lost on the way back, and focus
 // returns to the control that opened it.
 describe("limits from the workspace", () => {
-  function Workspace({ onOpenLimits }: { onOpenLimits: (opener: HTMLElement | null) => void }) {
+  // The shell binds its shortcuts on the window, as this stand-in does.
+  const shortcut = vi.fn()
+  function Workspace({ onOpenLimits, onChangeCredential }: { onOpenLimits: (opener: HTMLElement | null) => void; onChangeCredential: () => void }) {
     const [count, setCount] = useState(0)
+    useEffect(() => {
+      const onKeyDown = (event: KeyboardEvent) => { if (event.key === "k" && event.ctrlKey) shortcut() }
+      globalThis.addEventListener("keydown", onKeyDown)
+      return () => globalThis.removeEventListener("keydown", onKeyDown)
+    }, [])
     return (
       <main>
         <p>Workspace open, count {count}</p>
         <button type="button" onClick={() => setCount((value) => value + 1)}>Count</button>
         <button type="button" onClick={(event) => onOpenLimits(event.currentTarget)}>Limits</button>
+        <button type="button" onClick={onChangeCredential}>Change credential</button>
       </main>
     )
   }
 
-  it("opens the limits over the session and goes back to it as it was", async () => {
+  let changeCredential: (() => void) | undefined
+  function drawSession() {
     const storage = memoryStorage()
     storage.setItem("domovoi.daemon-session", JSON.stringify({ deviceId, token: deviceToken }))
     storage.setItem("domovoi.web.limitsSeen", "1")
-    await act(async () => {
+    return act(async () => {
       root.render(
         <WebApp
           rpcUrl={rpcUrl}
@@ -693,10 +702,53 @@ describe("limits from the workspace", () => {
           storage={storage}
           createClient={vi.fn()}
           labelSuffix={() => "1234"}
-          workspace={({ onOpenLimits }) => <Workspace onOpenLimits={onOpenLimits} />}
+          workspace={({ onOpenLimits, onChangeCredential }) => {
+            changeCredential = onChangeCredential
+            return <Workspace onOpenLimits={onOpenLimits} onChangeCredential={onChangeCredential} />
+          }}
         />,
       )
     })
+  }
+  const pressCtrlK = () => act(async () => {
+    document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))
+  })
+
+  // The hidden session must not act on keys meant for the page over it: its
+  // palette would open through a portal and run a command unseen.
+  it("holds the session's shortcuts while the limits page is over it", async () => {
+    shortcut.mockClear()
+    await drawSession()
+    await pressCtrlK()
+    expect(shortcut).toHaveBeenCalledOnce()
+    await act(async () => { button("Limits").click() })
+    await pressCtrlK()
+    expect(shortcut).toHaveBeenCalledOnce()
+    await act(async () => { button("Back").click() })
+    await pressCtrlK()
+    expect(shortcut).toHaveBeenCalledTimes(2)
+  })
+
+  // The session keeps the theme it loaded, so a toggle on the page over it
+  // would leave the two out of step; the session's own bar has the toggle.
+  it("draws the bar over the session without a theme toggle", async () => {
+    await drawSession()
+    await act(async () => { button("Limits").click() })
+    const bar = container.querySelector("header")
+    expect(bar?.textContent).toContain("What a tab can do")
+    expect([...bar!.querySelectorAll("button")].some((b) => /theme/.test(b.getAttribute("aria-label") ?? ""))).toBe(false)
+  })
+
+  it("closes the limits when the session ends under them", async () => {
+    await drawSession()
+    await act(async () => { button("Limits").click() })
+    await act(async () => { changeCredential!() })
+    expect(container.querySelector("[aria-label='Browser limits']")).toBeNull()
+    expect(text()).toContain("Connect this browser to")
+  })
+
+  it("opens the limits over the session and goes back to it as it was", async () => {
+    await drawSession()
     await act(async () => { button("Count").click() })
     const opener = button("Limits")
     await act(async () => { opener.click() })

@@ -40,6 +40,7 @@
       "evidence": [
         "<DomovoiMark reduced className=\"size-[22px] shrink-0 text-primary\"",
         "Use dark theme",
+        "re:<DomovoiMark reduced className=\"size-\\[22px\\] shrink-0 text-primary\" />\\n\\s*<span className=\"text-\\[13px\\] font-semibold tracking-\\[-0\\.01em\\]\">Domovoi</span>",
         {
           "absent": "<DomovoiMark reduced className=\"size-5 text-primary\" />",
           "in": "packages/ui/src/web-connect-page.tsx"
@@ -308,7 +309,7 @@
         "{ id: \"browser-limits\", label: \"What a browser tab can and cannot do\""
       ],
       "notes": [
-        "2026-10-13 (SL-6w, W7): the second half of Q367 A. WebApp hands the workspace onOpenLimits, the web entry passes it to WorkspaceShell as onOpenBrowserLimits, and the palette lists What a browser tab can and cannot do under Navigate (web only; the desktop supplies no way to open it). The page draws over the session, which stays mounted under it, with Back, and focus returns to the control that opened the palette. Before pairing the connect page's link still opens it with Back to pairing, or Back once the tab is paired. Pinned in apps/web/src/web-app.test.tsx, command-palette.test.tsx and command-palette.dom.test.tsx."
+        "2026-10-13 (SL-6w, W7): the second half of Q367 A. WebApp hands the workspace onOpenLimits, the web entry passes it to WorkspaceShell as onOpenBrowserLimits, and the palette lists What a browser tab can and cannot do under Navigate (web only; the desktop supplies no way to open it). The page draws over the session, which stays mounted under it, with Back, and focus returns to the control that opened the palette. While it is up, keys stop at the window so the hidden session's shortcuts do not act, and its bar draws no theme toggle because the session holds the theme in its own state and its own bar has the toggle; a session that ends under the page closes it. Before pairing the connect page's link still opens it with Back to pairing, or Back once the tab is paired. Pinned in apps/web/src/web-app.test.tsx, command-palette.test.tsx and command-palette.dom.test.tsx."
       ]
     },
     {
