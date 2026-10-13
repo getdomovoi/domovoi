@@ -281,6 +281,7 @@ import {
   fileTargetChanged,
   fileTargetHasOtherNames,
   fileTargetIdentity,
+  unreadableFileTargetIdentity,
   type FileTargetIdentity,
 } from "./followed-path.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
@@ -11494,12 +11495,6 @@ export class DomovoiDaemon {
         blockedPath: event.blockedPath,
         tool: event.tool ?? (toolServer === undefined ? undefined : command ?? toolServer.name),
       }
-      // A file tool's card is held with what was at its file, read before the
-      // request is resolved, so a swap after this reading shows as a change
-      // when the card is answered.
-      const identity = heldFileTool(request)
-        ? await fileTargetIdentity(request.workspace, request.path!, request.cwd ?? request.workspace)
-        : undefined
       const policy = (execution: ExecutionResolution) => permissionDecisionFor({
         runtime: session.runtime,
         ...(command ? { command } : {}),
@@ -11513,7 +11508,7 @@ export class DomovoiDaemon {
       const origin = eventTurnId !== undefined
         && turnOrigin?.identity === providerTurnIdentity(provider, threadId, eventTurnId)
         ? turnOrigin.origin : undefined
-      const settlement = await settleApproval({
+      const input: Parameters<typeof settleApproval>[0] = {
         approval: {
           ...(origin === undefined ? {} : { origin }),
           id: `approval-${randomUUID()}`,
@@ -11536,7 +11531,29 @@ export class DomovoiDaemon {
         scope: this.#approvalScope(session.runtime),
         execution: "resolve",
         risk: (execution) => policy(execution).risk,
-      })
+      }
+      // Read the held identity before resolving the request, with both using
+      // one budget. A swap after this reading shows as a change when the card
+      // is answered. Unknown identity must seal the card, never fall through
+      // to automatic approval or a standing rule with an unjudged target.
+      const controller = new AbortController()
+      const deadline = OperationDeadline.start(realPathLookupBudgetMs, { signal: controller.signal })
+      let identity: FileTargetIdentity | undefined
+      let settlement: Settlement
+      try {
+        identity = heldFileTool(request)
+          ? await beforeDeadline(fileTargetIdentity(request.workspace, request.path!, request.cwd ?? request.workspace), deadline)
+          : undefined
+        settlement = await settleApproval(input, deadline)
+      } catch {
+        // Seal through the existing settlement path even if the read failed
+        // before expiry. A late read has no continuation that publishes state.
+        identity = unreadableFileTargetIdentity
+        controller.abort()
+        settlement = await settleApproval(input, deadline)
+      } finally {
+        deadline.clear()
+      }
       // Past the last await of card construction: the file's identity and the
       // settlement (execution resolution and every path on the card, judged on
       // disk). From here the request is denied, allowed by policy, or put up
