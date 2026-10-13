@@ -1,14 +1,15 @@
 import { useId, useRef, useState, type ClipboardEvent, type Dispatch, type ReactNode, type SetStateAction } from "react"
-import { ArrowUpIcon, Maximize2Icon, PaperclipIcon, SquareIcon, TerminalIcon, XIcon } from "lucide-react"
-import type {
-  ProviderModel,
-  ProviderRuntime,
-  Runtime,
-  RuntimeDiscoverResult,
-  SessionAttachment,
-  SessionTurn,
-  SessionUsage,
-  UsageWindow,
+import { ArrowUpIcon, LockIcon, Maximize2Icon, PaperclipIcon, SquareIcon, TerminalIcon, XIcon } from "lucide-react"
+import {
+  modelImageInputRefusalCode,
+  type ProviderModel,
+  type ProviderRuntime,
+  type Runtime,
+  type RuntimeDiscoverResult,
+  type SessionAttachment,
+  type SessionTurn,
+  type SessionUsage,
+  type UsageWindow,
 } from "@getdomovoi/protocol"
 
 import { Button } from "./components/ui/button"
@@ -22,6 +23,7 @@ import { Input } from "./components/ui/input"
 import { Textarea } from "./components/ui/textarea"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./components/ui/tooltip"
 import { composerPlaceholder, composerPlatform, sendHint } from "./composer-keys"
+import { useWorkspaceConnection } from "./connection-status"
 import { slashArgument, slashCommands, type SlashCommand, type SlashIntentContext } from "./composer-slash"
 import {
   attachmentFromBrowserFile,
@@ -30,6 +32,7 @@ import {
   attachmentName,
   desktopAttachmentLimit,
   inlineTextPreview,
+  isImageAttachment,
   pasteOutcome,
   type PasteOutcome,
   pastedText,
@@ -54,6 +57,15 @@ type ChipItem = {
   onRemove: () => void
 }
 
+const lockedNoticeAction = "rounded-full border border-danger-border px-2.5 py-1 text-[11px] whitespace-nowrap text-danger-foreground disabled:opacity-50"
+
+// What the attach menu's footer says of the model, as the phone says it.
+export function imageInputLine(imageInput: boolean | undefined): string {
+  if (imageInput === true) return "takes image input, as its harness reports"
+  if (imageInput === false) return "takes no image input, as its harness reports"
+  return "image input not known"
+}
+
 // The design shows three chips and a dashed "+N more" after them. A pasted
 // file is drawn as its own card, not as a chip. The prompt editor draws the
 // same chips, so the draft looks the same in both.
@@ -64,6 +76,7 @@ export function AttachmentChips({
   machineName,
   onRemove,
   pastedAsChips = false,
+  imagesBlocked = false,
 }: {
   attachments: readonly SessionAttachment[]
   machineName: string
@@ -71,17 +84,20 @@ export function AttachmentChips({
   onRemove: (index: number) => void
   // The editor has no pasted-file card, so a pasted file is a chip there.
   pastedAsChips?: boolean
+  // The session's model reported it takes no image input.
+  imagesBlocked?: boolean
 }) {
   const [expanded, setExpanded] = useState(false)
   const items: ChipItem[] = attachments.flatMap((attachment, index) => {
     if (!pastedAsChips && pastedText(attachment)) return []
     const name = attachmentName(attachment)
+    const blocked = imagesBlocked && isImageAttachment(attachment)
     return [{
       key: `${name}-${index}`,
       mark: attachmentMark(attachment),
       name,
-      meta: attachmentMeta(attachment, machineName),
-      blocked: false,
+      meta: blocked ? "no image input" : attachmentMeta(attachment, machineName),
+      blocked,
       removeLabel: `Remove ${name}`,
       onRemove: () => onRemove(index),
     }]
@@ -159,6 +175,7 @@ export function ThreadComposer({
   onFork,
   effortModel,
   effortDropped,
+  imageInput,
   onOpenSheet,
   onOpenPromptEditor,
   usage,
@@ -210,6 +227,10 @@ export function ThreadComposer({
   onFork: (runtime: Runtime, checkpointId: string, requestId: string) => Promise<void>
   effortModel: ProviderModel | undefined
   effortDropped: { from: string, to: string, toDefault: boolean } | undefined
+  // ProviderModel.imageInput of the session's model, as its harness reports.
+  // Undefined is not known (not read yet, or not reported), which is not no:
+  // only false locks images.
+  imageInput: boolean | undefined
   onOpenSheet?: (() => void) | undefined
   onOpenPromptEditor: () => void
   usage: SessionUsage | null
@@ -228,6 +249,12 @@ export function ThreadComposer({
   const slashListId = useId()
   const slashQuery = prompt.split(/\s/u, 1)[0] ?? ""
   const paletteShortcut = composerPlatform() === "darwin" ? "⌘K" : "Ctrl+K"
+  const onThisComputer = useWorkspaceConnection()?.onThisComputer === true
+  // Bumped by Change model in the images notice, to open the model menu.
+  const [modelMenuRequest, setModelMenuRequest] = useState(0)
+  const imageCount = attachments.filter(isImageAttachment).length
+  const blockedImages = imageInput === false ? imageCount : 0
+  const modelId = runtime.model
 
   // A file or clipboard read awaits before it adds, so the draft may have
   // grown or shrunk since this render. The limit is checked only against the
@@ -358,8 +385,33 @@ export function ThreadComposer({
       <AttachmentChips
         attachments={attachments}
         machineName={machineName}
+        imagesBlocked={imageInput === false}
         onRemove={(index) => onAttachmentsChange((current) => current.filter((_, candidate) => candidate !== index))}
       />
+      {/* J42: the model's harness reports no image input, so the daemon
+          would refuse the message. Send stays off until the images go or
+          the model changes. Offline the card says nothing live. */}
+      {blockedImages > 0 && connected ? (
+        <div role="group" aria-label="Images this model cannot take" className="flex items-start gap-2.5 rounded-[calc(var(--radius)-2px)] border border-danger-border bg-danger-background px-[11px] py-[9px]">
+          <span aria-hidden className="mt-1.5 size-1.5 shrink-0 rounded-full bg-destructive" />
+          <span className="min-w-0 flex-1 text-[12px] leading-[1.5] text-danger-foreground">
+            {blockedImages === 1 ? "1 image cannot go to " : `${blockedImages} images cannot go to `}
+            <span className="font-machine text-[11px]">{modelId}</span>
+            {blockedImages === 1 ? ". Remove it or pick another model." : ". Remove them or pick another model."}
+          </span>
+          <span className="flex flex-none items-center gap-1.5">
+            <button type="button" disabled={readOnly} className={lockedNoticeAction} onClick={() => onAttachmentsChange((current) => current.filter((attachment) => !isImageAttachment(attachment)))}>
+              {blockedImages === 1 ? "Remove image" : `Remove ${blockedImages} images`}
+            </button>
+            <button type="button" disabled={readOnly || runtimePending} className={lockedNoticeAction} onClick={() => setModelMenuRequest((count) => count + 1)}>Change model</button>
+          </span>
+        </div>
+      ) : null}
+      {/* Not knowing is not no: the send goes, and the line says what
+          happens if the model turns out to take none. The phone's words. */}
+      {imageInput === undefined && imageCount > 0 && connected ? (
+        <p className="m-0 text-[11px] text-muted-foreground">{`Domovoi does not know whether ${modelId} takes image input. If it does not, the machine refuses the send and nothing is sent.`}</p>
+      ) : null}
       {attachments.some((attachment) => !pastedText(attachment) && Boolean(inlineTextPreview(attachment))) ? (
         <p className="m-0 text-[10.5px] leading-[1.45] text-warning">Too long to send inline. The prompt carries the first 40 lines, the agent reads the rest on request.</p>
       ) : null}
@@ -527,11 +579,29 @@ export function ThreadComposer({
                   <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">Anything else on that machine, including files outside the project. Reading outside the project asks first.</span>
                 </span>
               </DropdownMenuItem>
-              <DropdownMenuItem aria-label="Image or file from this device" className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px]" onSelect={() => attachmentInput.current?.click()}>
-                <span className="mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">FILE</span>
+              {/* Locked, as the design's default draws it, when the model's
+                  harness reports no image input. The daemon would refuse an
+                  image with this code. */}
+              <DropdownMenuItem aria-label="Image or file from this device" disabled={imageInput === false} className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px] data-disabled:opacity-100" onSelect={() => attachmentInput.current?.click()}>
+                <span className={cn("mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground", imageInput === false && "opacity-55")}>PNG</span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[12.5px] text-foreground">Image or file from this device</span>
-                  <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">The selected file is copied to {machineName} with the next message.</span>
+                  <span className={cn("block text-[12.5px]", imageInput === false ? "text-muted-foreground" : "text-foreground")}>Image or file from this device</span>
+                  {/* Only the desktop app's own daemon is on this computer;
+                      a browser's loopback address may be an SSH forward. */}
+                  <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">
+                    {onThisComputer
+                      ? `It is copied to ${machineName}. That is this computer, so nothing leaves it.`
+                      : `The selected file is copied to ${machineName} with the next message.`}
+                  </span>
+                  {imageInput === false ? (
+                    <span className="mt-[7px] flex items-start gap-[7px]">
+                      <LockIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
+                      <span className="flex min-w-0 flex-col gap-0.5">
+                        <span className="text-[11px] leading-[1.45] text-foreground">Locked for this model.</span>
+                        <span className="font-machine text-[10.5px] text-faint">{`refused by ${machineName} · ${modelImageInputRefusalCode}`}</span>
+                      </span>
+                    </span>
+                  ) : null}
                 </span>
               </DropdownMenuItem>
               <DropdownMenuItem aria-label="Paste terminal output" className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px]" onSelect={() => void attachClipboardOutput()}>
@@ -541,6 +611,13 @@ export function ThreadComposer({
                   <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">Pasted text, kept as a file in the session rather than inline in the message.</span>
                 </span>
               </DropdownMenuItem>
+              {/* The design's footer names the model the message goes to and
+                  whether it takes images. Harness marks are not vendored
+                  (Q388 A), so the id stands alone. */}
+              <div role="group" aria-label="The model this message goes to" className="flex items-center gap-2 border-t bg-background px-[13px] py-[9px]">
+                <span className="font-machine text-[10.5px] text-strong">{modelId}</span>
+                <span className="text-[11px] text-muted-foreground">{imageInputLine(imageInput)}</span>
+              </div>
             </DropdownMenuContent>
           </DropdownMenu>
           {/* v2's model chip follows the attachment control and opens the flat,
@@ -562,6 +639,7 @@ export function ThreadComposer({
             onDiscoverRuntime={onDiscoverRuntime}
             onChange={onRuntimeChange}
             onFork={onFork}
+            openRequest={modelMenuRequest}
           />
           {/* v2's mode chip sits beside the model, and the effort chip
               after it. */}
@@ -641,7 +719,7 @@ export function ThreadComposer({
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
-          ) : null}<Button size="icon-sm" className="rounded-full" aria-label="Send message" disabled={readOnly || !prompt.trim() || pending || !connected || providerRestartRequired || emergencyStopPending} onClick={onSubmit}><ArrowUpIcon /></Button></div>
+          ) : null}<Button size="icon-sm" className="rounded-full" aria-label="Send message" disabled={readOnly || !prompt.trim() || pending || !connected || providerRestartRequired || emergencyStopPending || blockedImages > 0} onClick={onSubmit}><ArrowUpIcon /></Button></div>
       </div>
       {children}
     </div>

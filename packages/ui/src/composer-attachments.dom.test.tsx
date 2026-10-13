@@ -59,7 +59,7 @@ it("offers every signed attachment source", async () => {
   expect(repo.textContent).toContain("Nothing is copied")
   expect(within(machine).getByText("DIR")).toBeTruthy()
   expect(machine.textContent).toContain("Reading outside the project asks first")
-  expect(within(device).getByText("FILE")).toBeTruthy()
+  expect(within(device).getByText("PNG")).toBeTruthy()
   expect(device.textContent).toContain(`copied to ${demoWorkspace.machine.name}`)
   expect(within(terminal).getByText("LOG")).toBeTruthy()
   expect(terminal.textContent).toContain("kept as a file in the session")

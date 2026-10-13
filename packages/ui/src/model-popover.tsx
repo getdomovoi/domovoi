@@ -49,7 +49,10 @@ export function ModelPopover({
   onDiscoverRuntime,
   onChange,
   onFork,
+  openRequest,
 }: {
+  // Bumped by the composer's Change model, which opens this menu.
+  openRequest?: number | undefined
   runtime: Runtime
   providers: readonly ProviderRuntime[]
   machineName: string
@@ -63,6 +66,11 @@ export function ModelPopover({
   onFork: (runtime: Runtime, checkpointId: string, requestId: string) => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
+  const [seenOpenRequest, setSeenOpenRequest] = useState(openRequest)
+  if (openRequest !== seenOpenRequest) {
+    setSeenOpenRequest(openRequest)
+    if (!pending) setOpen(true)
+  }
   const [query, setQuery] = useState("")
   const [harness, setHarness] = useState<string>()
   const [catalogs, setCatalogs] = useState<Record<string, Catalog>>({})

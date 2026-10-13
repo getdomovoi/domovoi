@@ -101,7 +101,7 @@ import { ApprovalCard } from "./approval-card"
 import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
 import { ThreadComposer } from "./thread-composer"
-import { attachmentName, desktopAttachmentLimit, desktopInlineLineLimit, pasteOutcome } from "./desktop-attachments"
+import { attachmentName, desktopAttachmentLimit, desktopInlineLineLimit, isImageAttachment, pasteOutcome } from "./desktop-attachments"
 import { composerInbox } from "./composer-inbox"
 import { loadingLineRef, startOpenerRef } from "./start-handoff"
 
@@ -1062,6 +1062,9 @@ export function Thread({
     // controls are off, and this covers a key press that reaches the field.
     if (!connected || pending || providerRestartRequired || emergencyStopPending || readOnly) return
     let submittedText = prompt
+    // The model's harness reports no image input: an image would be refused,
+    // and queueing it would only move the refusal. The composer says so.
+    const imagesLocked = effortModel?.imageInput === false && attachmentsRef.current.some(isImageAttachment)
     if (prompt.trimStart().startsWith("/")) {
       const intent = slashIntent(prompt, slashContext)
       if (intent.kind === "invalid") {
@@ -1125,6 +1128,8 @@ export function Thread({
           break
       }
     }
+    // A slash command that sends nothing still runs; a message waits.
+    if (imagesLocked) return
     const outcome = submitFromComposer({
       text: submittedText,
       turnRunning: Boolean(active.activeTurnId),
@@ -1568,6 +1573,7 @@ export function Thread({
           onFork={forkRuntime}
           effortModel={effortModel}
           effortDropped={effortDroppedHere}
+          imageInput={effortModel?.imageInput}
           onOpenSheet={onOpenSheet}
           onOpenPromptEditor={() => setPromptEditorOpen(true)}
           usage={usage}
@@ -1644,7 +1650,8 @@ export function Thread({
             attachments={attachments}
             onRemoveAttachment={(index) => setAttachments((current) => current.filter((_, candidate) => candidate !== index))}
             pending={pending}
-            sendDisabled={!connected || !prompt.trim() || providerRestartRequired || emergencyStopPending}
+            sendDisabled={!connected || !prompt.trim() || providerRestartRequired || emergencyStopPending
+              || (effortModel?.imageInput === false && attachments.some(isImageAttachment))}
             onOpenChange={(open) => {
               setPromptEditorOpen(open)
               setEditorPasteNote("")
