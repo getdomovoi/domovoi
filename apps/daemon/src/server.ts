@@ -13,6 +13,7 @@ import {
   maximumMidTurnCheckpointPaths,
   maximumMidTurnCheckpointPathLength,
   maximumMidTurnCheckpointPathsBytes,
+  type MidTurnCheckpoint,
   type ApprovalCheckpointRefusal,
   type SessionAttachmentRefusal,
   type SessionReviewRefusal,
@@ -9223,8 +9224,10 @@ export class DomovoiDaemon {
         // mid-turn, so the checkpoint is a snapshot that leaves HEAD, the
         // index and the files alone (ruled B the same day).
         const allows = params.decision === "allow-once" || params.decision === "always-project"
-        let approvedCheckpoint: { id: string, commit: string } | undefined
+        let approvedCheckpoint: { id: string, commit: string, midTurn: MidTurnCheckpoint } | undefined
         if (allows && session?.workspacePath) {
+          // The turn can end while the snapshot is being staged.
+          const providerTurnId = session.activeTurnId
           const worktree = session.workspacePath
           try {
             const taken = await this.#withAbortTimeout(
@@ -9235,7 +9238,27 @@ export class DomovoiDaemon {
               this.#agentTimeoutMs,
               "Approval checkpoint timed out",
             )
-            approvedCheckpoint = { id: `checkpoint-${randomUUID()}`, commit: taken.commit }
+            // Keep the same canonical bounds and secret-path policy as a
+            // manual mid-turn capture, including the count of omitted paths.
+            const changedPaths = taken.matched === true ? [] : [...new Set(taken.unstablePaths ?? [])].sort()
+            const displayedChangedPaths: string[] = []
+            for (const path of changedPaths) {
+              if (path.length === 0 || path.length > maximumMidTurnCheckpointPathLength || !checkpointPathIsSafe(path)) continue
+              if (displayedChangedPaths.length >= maximumMidTurnCheckpointPaths
+                || Buffer.byteLength(JSON.stringify([...displayedChangedPaths, path]), "utf8") > maximumMidTurnCheckpointPathsBytes) break
+              displayedChangedPaths.push(path)
+            }
+            approvedCheckpoint = {
+              id: `checkpoint-${randomUUID()}`, commit: taken.commit,
+              midTurn: {
+                ...(providerTurnId ? (providerTurnId.length <= maximumMidTurnCheckpointTurnIdLength
+                  ? { providerTurnId }
+                  : { providerTurnIdSha256: createHash("sha256").update(providerTurnId).digest("hex") }) : {}),
+                stability: taken.matched === true ? "matched" : "unstable",
+                changedPaths: displayedChangedPaths,
+                changedPathCount: changedPaths.length,
+              },
+            }
           } catch (error) {
             this.#reportError("Domovoi could not take a checkpoint before an approved command", error)
             // Typed, so a client draws the cause without reading the sentence.
@@ -9303,6 +9326,7 @@ export class DomovoiDaemon {
             reason: "before-approved-command",
             label: `${approvedCheckpoint.commit.slice(0, 8)} · before an approved command`,
             commit: approvedCheckpoint.commit,
+            midTurn: approvedCheckpoint.midTurn,
             createdAt: decidedAt,
           })
         }
