@@ -496,7 +496,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     subscribeTerminal,
     terminalClientId,
     transferSession,
-    previewTransfer,
+    previewTransfer: previewWorkspaceTransfer,
     releaseSession,
     releaseTerminal,
     listTerminals,
@@ -507,6 +507,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     protocolError,
     reconnecting,
   } = attached ? remote : home
+  // The move dialog asks for session.transferPreview as it opens, and neither
+  // it nor session.transfer is on phoneAndTabletRpcMethods. A handheld answers
+  // the preview here with the reason, which the dialog shows; without a
+  // preview it offers no Move session, so session.transfer is never sent.
+  const handheldMachineName = snapshot?.machine.name
+  const previewTransfer = useCallback<typeof previewWorkspaceTransfer>((...args) => handheld
+    ? Promise.reject(new Error(`Moving a session is off in a phone or tablet tab: the daemon does not preview or make a move for a phone or tablet credential. Use the desktop app on ${handheldMachineName ?? "this machine"}.`))
+    : previewWorkspaceTransfer(...args), [handheld, handheldMachineName, previewWorkspaceTransfer])
   const watching = workspaceAccess === "watching"
   const terminalControls = useMemo<TerminalControls>(() => ({
     clientId: terminalClientId,

@@ -10,5 +10,7 @@ the project's skills (skill.list) without reading the machine's skill inventory 
 and Settings asks for neither update status (update.status) nor key status
 (provider.secret.list). About this build says the daemon answers update status only over
 loopback to its owner's credential, and Direct API keys says key status is off in a phone or
-tablet tab and names the desktop app. A queued message with chosen skills is released once the
-skill list has answered. Desktop and full-access web tabs are unchanged.
+tablet tab and names the desktop app. The move dialog no longer asks the daemon for a preview
+(session.transferPreview) as it opens in a phone or tablet tab; it says moving a session is off
+there and offers no Move session. A queued message with chosen skills is released once the skill
+list has answered. Desktop and full-access web tabs are unchanged.
