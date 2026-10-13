@@ -281,14 +281,15 @@ it.each(["matched", "unstable"] as const)("shows mid-turn capture facts and limi
   render(panel(vi.fn(async () => result), { onTakeCheckpoint: vi.fn(), restoreBlocked: true }))
   await settle()
   const row = within(screen.getByTestId("checkpoint-row"))
-  expect(row.getByText(/Taken mid-turn while the agent was running/).textContent).toContain("provider-turn-42")
+  expect(row.getByText(/Taken mid-turn while the agent was running/)).toBeTruthy()
+  expect(row.getByText("Turn: provider-turn-42.")).toBeTruthy()
   expect(row.getByText(/A change that reverts between passes is missed/)).toBeTruthy()
   if (stability === "unstable") {
-    expect(row.getByText("Files changed while it was taken:")).toBeTruthy()
+    expect(row.getByText(/Files changed while it was taken\./)).toBeTruthy()
     expect(row.getByText("src/a.ts")).toBeTruthy()
     expect(row.getByText("src/b.ts")).toBeTruthy()
   } else {
-    expect(row.getByText("Two staging passes matched.")).toBeTruthy()
+    expect(row.getByText(/Two staging passes matched\./)).toBeTruthy()
   }
   expect(screen.getByRole("button", { name: "Take a checkpoint" }).hasAttribute("disabled")).toBe(false)
 })
@@ -313,5 +314,5 @@ it("labels a large turn ID digest explicitly", async () => {
     providerTurnIdSha256: "a".repeat(64), stability: "matched", changedPaths: [], changedPathCount: 0,
   } }] }))))
   await settle()
-  expect(screen.getByText(`Taken mid-turn while the agent was running. Turn ID SHA-256: ${"a".repeat(64)}.`)).toBeTruthy()
+  expect(screen.getByText(`Turn ID SHA-256: ${"a".repeat(64)}.`)).toBeTruthy()
 })

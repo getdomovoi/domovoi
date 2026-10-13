@@ -5,7 +5,7 @@ import { dateTimeSchema, offsetDateTimeSchema, utf16MaxLength } from "./validati
 import { executionResolutionSchema, resolvedExecutionSchema } from "./execution.js"
 import { maximumImageUploadBytes, maximumImageUploadDimension, maximumSessionAttachments, maximumTextAttachmentBytes } from "./image-upload.js"
 import { providerPromptDeliverySchema } from "./prompt-delivery.js"
-import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, midTurnCheckpointSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, checkpointCaptureHasRequiredTurn, midTurnCheckpointSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
 
 import {
@@ -676,6 +676,9 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     label: z.string(),
     commit: commitShaSchema.optional(),
     createdAt: dateTimeSchema,
+  }).refine(checkpointCaptureHasRequiredTurn, {
+    path: ["midTurn", "providerTurnId"],
+    message: "Only an approval capture may omit its provider turn identity",
   }),
   z.object({
     id: z.string(),
