@@ -26,9 +26,9 @@ The release path already supplies useful integrity evidence:
   after verification.
 
 Checksums fetched beside an archive authenticate nothing. The bootstrap command
-therefore still needs a digest obtained elsewhere. No signed update metadata,
-version discovery, rollback protection, automatic activation, or reproducible
-second build exists.
+therefore still needs a digest obtained elsewhere. Signed metadata discovery, verification, rollback refusal, and staging are
+implemented. The production trust ceremony, automatic activation, and reproducible
+second-build proof remain required.
 
 ## Threats the design must answer
 
@@ -67,13 +67,53 @@ signature composition. Selecting a library version must verify its declared
 engine floor against Domovoi's `>=22.13.0` floor and record the exact package
 version used for that decision.
 
-The first discovery implementation records a temporary deviation from this
-library requirement. It uses a small Ed25519 verifier and TUF-shaped parser while
-the dependency choice is reviewed. Adoption must check the declared library
-floor against Node `>=22.13.0`; the current focused tests cover root thresholds,
-expiry, and target rollback refusal. Chain binding is enforced by the verifier
-and requires the served metadata bytes. This
-deviation must be removed or explicitly accepted before S1.4 activation ships.
+The verifier now pins `tuf-js` **5.0.1**, `@tufjs/models` **4.1.1**, and
+`@tufjs/canonical-json` **2.0.0**. The published npm engine ranges checked on
+2026-10-11 are `^20.17.0 || >=22.9.0` for the client and models, and
+`^16.14.0 || >=18.0.0` for canonical JSON. They include Domovoi's Node 22.13.0
+floor. The latest client, 6.0.0, requires `^22.22.2 || ^24.15.0 || >=26.0.0`;
+it cannot replace this pin without a reviewed runtime-floor change. The client
+5.0.1 source revision is `55ca08b173592593db22a220ba38a1394bd488ac`.
+Upstream publishes a conformance harness result, but it does not certify this
+exact integration or promise long-term security maintenance of older majors.
+Dependency updates must recheck both engine compatibility and security fixes.
+
+The client's `Updater` performs sequential root rotation, threshold verification,
+role ordering, expiration, and version/hash/length bindings. Domovoi applies its
+strict metadata schemas and release-target policy, disables delegated target
+search, and limits a refresh to 32 root rotations, one MiB per metadata object,
+a 30-second total fetch deadline, and a 10-second stream inactivity deadline.
+Consistent-snapshot repositories use version-prefixed snapshot and targets files.
+Only 403/404 for the next numbered root mean that rotation is complete. Other
+HTTP failures and all redirects refuse the check.
+
+The library's ordinary cache writes go to a private temporary directory. Before
+each subsequent fetch, and after refresh succeeds or fails, accepted role bytes
+are persisted with their versions and digests through the existing atomic,
+flushed profile write under the held lease. Verified trust survives a later
+metadata or staging failure. Pending activation authority is still withheld
+until staging and final persistence succeed. Versions and same-version bytes
+remain monotonic within each online trust epoch. When an accepted root changes
+timestamp or snapshot authority, the client atomically clears cached online
+metadata and its version/digest floors, as required for fast-forward attack
+recovery by [TUF section 5.3.11](https://theupdateframework.github.io/specification/v1.0.36/#update-root).
+A targets-only authority change clears the extra local targets floor; the TUF
+snapshot bindings still apply. Root refreshes with unchanged online authority
+retain every rollback floor. The local same-version/different-bytes refusal
+remains stricter than the library's timestamp-cache reuse policy.
+If authority rotates at the last allowed root in a refresh, the verified reset
+is persisted and that check reports an actionable retry refusal. The next check
+starts from the durable root and cleared cache; it cannot retain the library's
+already-loaded pre-rotation timestamp floor.
+
+Metadata uses standard TUF hexadecimal Ed25519 public keys and signatures.
+The earlier base64 encoding is not silently transcoded: changing signed root
+bytes would invalidate its signature. Existing experimental base64 policies,
+or version/digest-only state without the trusted role bytes, require a secure
+reinstallation with an independently verified standard TUF root. This migration
+does not create a root ceremony or permit a new trust anchor from the download
+host. The handwritten-verifier deviation is removed; activation and the
+reproducibility and native-platform acceptance gates remain open.
 
 Maintainer decisions:
 
@@ -288,6 +328,8 @@ References:
 
 - [The Update Framework specification](https://theupdateframework.github.io/specification/latest/)
 - [TUF JavaScript implementation](https://github.com/theupdateframework/tuf-js)
+- [Pinned TUF client source](https://github.com/theupdateframework/tuf-js/tree/55ca08b173592593db22a220ba38a1394bd488ac/packages/client)
+- [TUF client conformance results](https://theupdateframework.github.io/tuf-conformance/)
 - [GitHub artifact attestations](https://docs.github.com/en/actions/concepts/security/artifact-attestations)
 - [GitHub offline attestation verification](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/verify-attestations-offline)
 - [npm package provenance](https://docs.npmjs.com/generating-provenance-statements/)

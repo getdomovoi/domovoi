@@ -610,7 +610,7 @@ describe("archived annotation controls", () => {
       />,
     )
 
-    expect(markup).toContain("text anchor")
+    expect(markup).toContain("anchor holds")
     expect(markup).toContain("anchor unavailable")
     expect(markup).toContain("visual context · 320×120 · revision 3")
   })
@@ -638,7 +638,7 @@ describe("archived annotation controls", () => {
 
     expect(markup).toContain(annotations[0]!.body)
     expect(markup).not.toContain(">Reply</button>")
-    expect(markup).not.toContain(">Resolve</button>")
+    expect(markup).not.toContain(">Mark resolved</button>")
     expect(sessionIsArchiveReadOnly({ ...archived, state: "archiving" })).toBe(true)
     expect(sessionIsArchiveReadOnly({ ...archived, state: "idle" })).toBe(false)
 
@@ -677,7 +677,10 @@ describe("archived annotation controls", () => {
     )
     expect(dock).not.toContain("Add a comment")
     expect(dock).toContain("Variant A")
-    expect(dock).toContain("Viewing · Variant A")
+    // The state line reads; choosing a basis is a send-side change a
+    // read-only viewer cannot make.
+    expect(dock).toContain("none chosen, both stay alive")
+    expect(dock).not.toContain("Build on this")
     expect(dock).toContain("390 pixel preview")
     // Q380 A: Print view, Download safe copy and Compare stay for a read-only
     // viewer, behind the toolbar's overflow control (closed in static markup).

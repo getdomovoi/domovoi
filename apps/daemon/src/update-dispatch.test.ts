@@ -24,13 +24,13 @@ afterEach(async () => {
   await removeScratchDirectories(homes)
 })
 
-function signedRepository(options: { version?: number; targetVersion?: string; expires?: string; targetName?: string; minimumUpdaterVersion?: string } = {}) {
+function signedRepository(options: { version?: number; keyid?: string; targetVersion?: string; expires?: string; targetName?: string; minimumUpdaterVersion?: string } = {}) {
   const pair = generateKeyPairSync("ed25519")
-  const keyid = "a".repeat(64)
-  const envelope = (signed: Record<string, unknown>) => ({ signed, signatures: [{ keyid, sig: sign(null, Buffer.from(canonicalUpdateJson(signed)), pair.privateKey).toString("base64") }] })
+  const keyid = options.keyid ?? "a".repeat(64)
+  const envelope = (signed: Record<string, unknown>) => ({ signed, signatures: [{ keyid, sig: sign(null, Buffer.from(canonicalUpdateJson(signed)), pair.privateKey).toString("hex") }] })
   const common = { spec_version: "1.0.31", version: options.version ?? 1, expires: options.expires ?? "2099-01-01T00:00:00.000Z" }
   const root = envelope({ ...common, _type: "root", consistent_snapshot: true,
-    keys: { [keyid]: { keytype: "ed25519", scheme: "ed25519", keyval: { public: pair.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("base64") } } },
+    keys: { [keyid]: { keytype: "ed25519", scheme: "ed25519", keyval: { public: pair.publicKey.export({ format: "der", type: "spki" }).subarray(-32).toString("hex") } } },
     roles: Object.fromEntries(["root", "targets", "snapshot", "timestamp"].map((role) => [role, { keyids: [keyid], threshold: 1 }])),
   })
   const version = options.targetVersion ?? "1.2.3"
@@ -48,8 +48,13 @@ function signedRepository(options: { version?: number; targetVersion?: string; e
   const snapshot = envelope({ ...common, _type: "snapshot", meta: { "targets.json": binding(targets) } })
   const timestamp = envelope({ ...common, _type: "timestamp", meta: { "snapshot.json": binding(snapshot) } })
   const documents: Record<string, unknown> = { "root.json": root, "timestamp.json": timestamp, "snapshot.json": snapshot, "targets.json": targets }
-  const fetcher = vi.fn(async (input: string | URL | Request) => new Response(JSON.stringify(documents[new URL(String(input)).pathname.split("/").at(-1)!])))
-  return { root, documents, fetcher }
+  const roots: Record<string, unknown> = {}
+  const fetcher = vi.fn(async (input: string | URL | Request) => {
+    const filename = new URL(String(input)).pathname.split("/").at(-1)!
+    if (filename.endsWith("root.json")) return roots[filename] ? new Response(JSON.stringify(roots[filename])) : new Response(null, { status: 404 })
+    return new Response(JSON.stringify(documents[filename.replace(/^\d+\./, "")]))
+  })
+  return { root, documents, roots, fetcher, signMetadata: envelope, rotateRoot: (version: number) => envelope({ ...root.signed, version }) }
 }
 
 async function setup(repository = signedRepository(), automaticChecks = false) {
@@ -100,7 +105,7 @@ describe("daemon update operation", () => {
 
   it.each(["expired", "signature", "replay", "target-mismatch"] as const)("uses typed %s independent of verifier wording", async (reason) => {
     const { updates } = await setup()
-    vi.spyOn(verification, "verifyUpdateChain").mockImplementationOnce(() => {
+    vi.spyOn(verification, "fetchUpdateMetadata").mockImplementationOnce(async () => {
       throw new verification.UpdateVerificationError(reason, "changed human wording")
     })
     expect(await updates.check()).toMatchObject({ state: "failed", refusal: { reason } })
@@ -143,10 +148,10 @@ describe("daemon update operation", () => {
     }
   })
 
-  it("fetches, verifies, stages then persists, and refuses activation with policy", async () => {
+  it("persists verified trust before staging and refuses activation with policy", async () => {
     const { updates, install, homeDirectory, repository } = await setup()
     install.mockImplementationOnce(async (options) => {
-      expect(await readTrustedUpdateMetadata(homeDirectory)).toMatchObject({ targetsVersion: 0 })
+      expect(await readTrustedUpdateMetadata(homeDirectory)).toMatchObject({ targetsVersion: 1 })
       return { version: options.version, sha256: options.expectedSha256, path: join(options.destination, "v1.2.3") }
     })
     const result = updateStatusSchema.parse(await updates.check())
@@ -187,7 +192,7 @@ describe("daemon update operation", () => {
     expect(install).toHaveBeenCalledTimes(1)
   })
 
-  it.each(["root", "timestamp", "snapshot", "targets"] as const)("reads persisted %s versions on restart and refuses replay before installing", async (role) => {
+  it.each(["root", "timestamp", "snapshot", "targets"] as const)("refuses inconsistent persisted %s trust before installing after restart", async (role) => {
     const { updates, options, install, homeDirectory, lease } = await setup()
     await updates.check()
     const trusted = await readTrustedUpdateMetadata(homeDirectory)
@@ -196,7 +201,7 @@ describe("daemon update operation", () => {
     const restarted = new DaemonUpdates(options)
     expect(restarted.status().state).toBe("idle")
     expect(restarted.activate()).toMatchObject({ refusal: { reason: "policy" } })
-    expect(await restarted.check()).toMatchObject({ state: "failed", refusal: { reason: "replay" } })
+    expect(await restarted.check()).toMatchObject({ state: "failed", refusal: { reason: "policy" } })
     expect(install).not.toHaveBeenCalled()
   })
 
@@ -205,13 +210,48 @@ describe("daemon update operation", () => {
     await updates.check()
     const trusted = await readTrustedUpdateMetadata(homeDirectory)
     repository.fetcher.mockImplementation(async (input) => {
-      const name = new URL(String(input)).pathname.split("/").at(-1)!
-      return new Response(`${JSON.stringify(repository.documents[name])}${name === "root.json" ? "\n" : ""}`)
+      const filename = new URL(String(input)).pathname.split("/").at(-1)!
+      if (filename.endsWith("root.json")) return new Response(null, { status: 404 })
+      const name = filename.replace(/^\d+\./, "")
+      return new Response(`${JSON.stringify(repository.documents[name])}${name === "timestamp.json" ? "\n" : ""}`)
     })
     install.mockClear()
     expect(await new DaemonUpdates(options).check()).toMatchObject({ refusal: { reason: "replay" } })
     expect(install).not.toHaveBeenCalled()
     expect(await readTrustedUpdateMetadata(homeDirectory)).toEqual(trusted)
+  })
+
+  it("stages on the first successful check after an online-key rotation resets metadata versions", async () => {
+    const { updates, options, repository, policy, install, homeDirectory } = await setup(signedRepository({ version: 2 }))
+    expect(await updates.check()).toMatchObject({ state: "pending", pendingVersion: "1.2.3" })
+    const replacement = signedRepository({ keyid: "b".repeat(64), targetVersion: "1.2.4" })
+    const replacementRoot = storedUpdatePolicySchema.shape.trustedRoot.parse(replacement.root)
+    repository.roots["3.root.json"] = repository.signMetadata({ ...policy.trustedRoot.signed, version: 3,
+      keys: { ...policy.trustedRoot.signed.keys, ...replacementRoot.signed.keys },
+      roles: { ...policy.trustedRoot.signed.roles,
+        timestamp: replacementRoot.signed.roles.timestamp,
+        snapshot: replacementRoot.signed.roles.snapshot,
+        targets: replacementRoot.signed.roles.targets,
+      },
+    })
+    for (const role of ["timestamp", "snapshot", "targets"]) repository.documents[`${role}.json`] = replacement.documents[`${role}.json`]
+    install.mockClear()
+    const result = await new DaemonUpdates(options).check()
+    expect(result.refusal).toBeUndefined()
+    expect(result).toMatchObject({ state: "pending", pendingVersion: "1.2.4" })
+    expect(install).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ version: "1.2.4" }))
+    expect(await readTrustedUpdateMetadata(homeDirectory)).toMatchObject({ rootVersion: 3, timestampVersion: 1, snapshotVersion: 1, targetsVersion: 1 })
+  })
+
+  it("refuses lower metadata versions without an online authority change before staging", async () => {
+    const { updates, options, repository, install } = await setup(signedRepository({ version: 2 }))
+    await updates.check()
+    repository.roots["3.root.json"] = repository.rotateRoot(3)
+    const timestamp = repository.documents["timestamp.json"] as { signed: Record<string, unknown> }
+    repository.documents["timestamp.json"] = repository.signMetadata({ ...timestamp.signed, version: 1 })
+    install.mockClear()
+    expect(await new DaemonUpdates(options).check()).toMatchObject({ state: "failed", refusal: { reason: "replay" } })
+    expect(install).not.toHaveBeenCalled()
   })
 
   it("persists a verified no-update result without installing", async () => {
@@ -225,11 +265,11 @@ describe("daemon update operation", () => {
     { repository: () => signedRepository({ expires: "2000-01-01T00:00:00.000Z" }), reason: "expired" },
     { repository: () => signedRepository({ targetName: "getdomovoi-daemon-9.0.0.tgz" }), reason: "target-mismatch" },
     { repository: () => signedRepository({ minimumUpdaterVersion: "9.0.0" }), reason: "policy" },
-  ])("refuses $reason without staging or persisting", async ({ repository, reason }) => {
+  ])("refuses $reason without staging while retaining accepted trust", async ({ repository, reason }) => {
     const { updates, install, homeDirectory } = await setup(repository())
     expect(await updates.check()).toMatchObject({ state: "failed", refusal: { reason } })
     expect(install).not.toHaveBeenCalled()
-    expect(await readTrustedUpdateMetadata(homeDirectory)).toMatchObject({ targetsVersion: 0 })
+    expect(await readTrustedUpdateMetadata(homeDirectory)).toMatchObject({ targetsVersion: reason === "expired" ? 0 : 1 })
   })
 
   it("refuses invalid signatures and malformed metadata without leaking downloaded text", async () => {
@@ -243,13 +283,13 @@ describe("daemon update operation", () => {
     expect(install).not.toHaveBeenCalled()
   })
 
-  it("does not persist or keep a pending target after a failed install", async () => {
+  it("retains verified trust but no pending authority after a failed install", async () => {
     const { updates, install, homeDirectory } = await setup()
     install.mockRejectedValue(new Error("https://secret:password@example.test/"))
     const result = await updates.check()
     expect(result).toMatchObject({ state: "failed", refusal: { reason: "target-mismatch" } })
     expect(JSON.stringify(result)).not.toContain("password")
-    expect(await readTrustedUpdateMetadata(homeDirectory)).toMatchObject({ targetsVersion: 0 })
+    expect(await readTrustedUpdateMetadata(homeDirectory)).toMatchObject({ targetsVersion: 1 })
     expect(updates.activate()).toMatchObject({ refusal: { reason: "policy" } })
   })
 
@@ -269,8 +309,34 @@ describe("daemon update operation", () => {
       return { version: options.version, sha256: options.expectedSha256, path: "staged" }
     })
     expect(await updates.check()).toMatchObject({ state: "failed", refusal: { reason: "policy" } })
-    expect(await readTrustedUpdateMetadata(homeDirectory)).toMatchObject({ targetsVersion: 0 })
+    expect(await readTrustedUpdateMetadata(homeDirectory)).toMatchObject({ targetsVersion: 1 })
     expect(updates.activate()).toMatchObject({ refusal: { reason: "policy" } })
+  })
+
+  it("resumes a durably accepted root after a later failed refresh and restart", async () => {
+    const { updates, options, repository, homeDirectory } = await setup()
+    repository.roots["2.root.json"] = repository.rotateRoot(2)
+    const timestamp = repository.documents["timestamp.json"]
+    repository.documents["timestamp.json"] = { invalid: true }
+    expect(await updates.check()).toMatchObject({ refusal: { reason: "malformed-metadata" } })
+    expect(await readTrustedUpdateMetadata(homeDirectory)).toMatchObject({ rootVersion: 2, timestampVersion: 0 })
+    repository.documents["timestamp.json"] = timestamp
+    repository.fetcher.mockClear()
+    expect(await new DaemonUpdates(options).check()).toMatchObject({ state: "pending" })
+    expect(new URL(String(repository.fetcher.mock.calls[0]![0])).pathname).toBe("/metadata/3.root.json")
+  })
+
+  it("refuses legacy digest-only state without fetching or staging", async () => {
+    const { updates, options, homeDirectory, repository, install } = await setup()
+    await updates.check()
+    const legacy = await readTrustedUpdateMetadata(homeDirectory)
+    delete legacy.documents
+    await writeFile(join(homeDirectory, ".domovoi", "update-metadata.json"), JSON.stringify(legacy))
+    repository.fetcher.mockClear()
+    install.mockClear()
+    expect(await new DaemonUpdates(options).check()).toMatchObject({ refusal: { reason: "policy" } })
+    expect(repository.fetcher).not.toHaveBeenCalled()
+    expect(install).not.toHaveBeenCalled()
   })
 
   it("refuses unavailable network, malformed policy and corrupt trusted state", async () => {
