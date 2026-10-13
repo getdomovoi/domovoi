@@ -523,6 +523,8 @@ const machineConsequence =
 function renderFleet(overrides: {
   entries?: FleetEntry[]
   currentMachineId?: string
+  currentDeviceId?: string
+  onSignOut?: () => Promise<void>
   devicesMachineLabel?: string
   fleetOverflow?: FleetSnapshotOverflow
   devices?: PairedDeviceSummary[]
@@ -586,6 +588,8 @@ function renderFleet(overrides: {
         onOpenSkills={() => {}}
         onListDevices={onListDevices as never}
         onRevokeDevice={onRevokeDevice as never}
+        {...(overrides.currentDeviceId ? { currentDeviceId: overrides.currentDeviceId } : {})}
+        {...(overrides.onSignOut ? { onSignOut: overrides.onSignOut } : {})}
         onRotateDevice={onRotateDevice as never}
         onRenameDevice={onRenameDevice as never}
         onPairMachine={onPairMachine}
@@ -1606,4 +1610,37 @@ it("names the daemon that answers the device list while another machine is in us
   expect(within(section).queryByRole("heading", { name: `Devices paired with ${studio.label}` })).toBeNull()
   expect(await within(section).findByText(device.label)).toBeTruthy()
   expect(onListDevices).toHaveBeenCalled()
+})
+
+it.each(["web", "phone", "tablet"] as const)("confirms sign-out only for the current %s browser, including watching access", async (clientKind) => {
+  let finish: (() => void) | undefined
+  const onSignOut = vi.fn(() => new Promise<void>((resolve) => { finish = resolve }))
+  const { user, onRevokeDevice } = renderFleet({ clientKind, readOnly: true, currentDeviceId: device.id, onSignOut, devices: [device, runner] })
+  const action = await screen.findByRole("button", { name: "Sign this device out" })
+  expect(screen.getAllByRole("button", { name: "Sign this device out" })).toHaveLength(1)
+  await user.click(action)
+  const dialog = screen.getByRole("alertdialog")
+  expect(dialog.textContent).toContain("This tab loses access to this machine and must be paired again")
+  expect(onSignOut).not.toHaveBeenCalled()
+  await user.click(within(dialog).getByRole("button", { name: "Keep device" }))
+  expect(onSignOut).not.toHaveBeenCalled()
+  await user.click(action)
+  await user.dblClick(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Sign this device out" }))
+  expect(onSignOut).toHaveBeenCalledTimes(1)
+  expect(onSignOut).toHaveBeenCalledWith()
+  expect(onRevokeDevice).not.toHaveBeenCalled()
+  await act(async () => { finish?.() })
+})
+
+it.each(["desktop", "web"] as const)("offers no self sign-out in %s without a matching current browser row", async (clientKind) => {
+  renderFleet({ clientKind, currentDeviceId: clientKind === "desktop" ? device.id : runner.id, devices: [device], onSignOut: vi.fn() })
+  await screen.findByRole("row", { name: /studio-ipad/ })
+  expect(screen.queryByRole("button", { name: "Sign this device out" })).toBeNull()
+})
+
+it("keeps an ambiguous sign-out visible with instructions to check", async () => {
+  const { user } = renderFleet({ clientKind: "web", currentDeviceId: device.id, onSignOut: () => Promise.reject(new Error("socket closed")) })
+  await user.click(await screen.findByRole("button", { name: "Sign this device out" }))
+  await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Sign this device out" }))
+  expect((await screen.findByText(/This device may have signed out/)).textContent).toContain("Reconnect to check. If access is refused, pair this tab again from Settings on the machine.")
 })

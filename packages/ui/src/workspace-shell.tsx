@@ -37,7 +37,7 @@ import {
 } from "./components/ui/alert-dialog"
 import { Button } from "./components/ui/button"
 import { closestComposed, focusedElement, focusEventElement } from "./composed-focus"
-import { WorkspaceConnectionStatus } from "./connection-status"
+import { ShellConnectionStatus, WorkspaceConnectionProvider } from "./connection-status"
 import { shouldCollapseDockForWidth } from "./dock-auto-collapse"
 import {
   ResizableHandle,
@@ -59,7 +59,7 @@ import { Deadline } from "./deadline"
 import { advancePendingElsewhere, freshRefusal, paletteSearchTargets, type PendingElsewhere } from "./palette-search-targets"
 import { collectFleetInventories } from "./fleet-inventories"
 import { sessionUsageFetchKey, usageWindowFetchKey } from "./session-usage"
-import { type ProviderSecretStatus } from "./provider-settings"
+import type { ProviderSecretStatus } from "./provider-settings"
 import type { LocalDaemonDescription } from "./settings-shell"
 import type { SkillsSurfaceTab } from "./skills-surface"
 import type { ToolInventoryLoad } from "./tool-inventory-view"
@@ -81,11 +81,8 @@ import {
   type SessionQueues,
 } from "./turn-queue"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
-import {
-  DesktopFirstRunDialog,
-  desktopFirstRunAvailable,
-  firstRunDefaultProvider,
-} from "./desktop-first-run"
+import { DesktopFirstRunDialog } from "./desktop-first-run-lazy"
+import { desktopFirstRunAvailable, firstRunDefaultProvider } from "./desktop-first-run-rules"
 import {
   browserDesktopFirstRunStorage,
   completeDesktopFirstRun,
@@ -213,6 +210,8 @@ export type WorkspaceShellProps = {
   windowBridge?: DesktopWindowBridge
   platform?: WorkspacePlatform
   onChangeCredential?: () => void
+  currentDeviceId?: string
+  onSignedOut?: (result: { revoked: true }) => void
   // Where this client keeps each daemon's relay identity pin. Absent means no
   // pin is kept and none is reconciled; the web passes localStorage.
   relayPinStorage?: RelayPinStorage
@@ -289,15 +288,16 @@ type StartScope = {
   focusFrom: { trigger: Element | null; within: Element | null }
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, currentDeviceId, onSignedOut, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
   // J24: whether the login service is installed, from the desktop's own
   // status read. A daemon outside the app is drawn as the service only when
   // this says so; an unreadable or unverified status leaves it unnamed.
-  const [serviceInstalled, setServiceInstalled] = useState<boolean | undefined>(undefined)
-  // Whether the service itself runs, from the same read (security review
-  // round 9). Unknown whenever the installed fact is unknown.
-  const [serviceRunning, setServiceRunning] = useState<boolean | undefined>(undefined)
+  // Keep evidence and its observation time atomic across late reads and mounts.
+  const [[serviceReport, serviceCheckedAt], setServiceReport] = useState<readonly [report: DaemonServiceStatusReport, checkedAt: number] | readonly []>([])
+  const readService = serviceReport && "installed" in serviceReport && serviceReport.installed !== null ? serviceReport : undefined
+  const serviceInstalled = readService?.installed ?? undefined
+  const serviceRunning = readService?.running
   // Reads are numbered and only the newest one's answer is kept, so a read
   // that started before an install or a removal cannot answer after the read
   // that followed it and put the old fact back (security review round 4).
@@ -309,20 +309,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     try {
       const status = await service.status()
       if (generation === serviceStatusGeneration.current) {
-        const read = "installed" in status && status.installed !== null ? status : undefined
-        setServiceInstalled(read ? read.installed ?? undefined : undefined)
-        setServiceRunning(read?.running)
+        setServiceReport([status, Date.now()])
       }
       return status
     } catch (cause) {
       if (generation === serviceStatusGeneration.current) {
-        setServiceInstalled(undefined)
-        setServiceRunning(undefined)
+        setServiceReport([{ unavailable: cause instanceof Error ? cause.message : "The desktop did not answer." }, Date.now()])
       }
       throw cause
     }
   }, [windowBridge])
-  useEffect(() => { void readServiceStatus().catch(() => {}) }, [readServiceStatus])
+  // First-run installs publish service facts without replacing the bridge.
+  useEffect(() => { void readServiceStatus().catch(() => {}) }, [readServiceStatus, localDaemon?.serviceInstalled, localDaemon?.serviceRunning])
   // An install or a removal, then a status read. The desktop is told the
   // daemon changed, so it resolves its daemon again, whenever the change may
   // have moved who holds it: a success; a service installed but not attached;
@@ -394,6 +392,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         .then((endpoint) => { if (attachEpochRef.current === attachEpoch) setDialedRoute({ epoch: attachEpoch, kind: endpoint.routeKind }); return endpoint }),
     } : { state: "disabled" }, relayPinStorage)
   const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, tailnetStatus, revokeDevice, rotateDevice, renameDevice } = home
+  const signOutCurrentDevice = async () => {
+    const result = await home.revokeCurrentDevice()
+    onSignedOut?.(result)
+  }
   // The machine menu's Pair a machine sends fleet.enroll to the home daemon.
   // The daemon refuses it from a device credential, all a browser tab holds,
   // and the client closes its connection on that refusal; so only the desktop
@@ -1027,7 +1029,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The release lives here rather than in Thread because a turn ending in A is
   // A's business whether or not A is the session on screen.
   useEffect(() => {
-    if (watching) return
+    if (watching || !connected) return
     for (const message of releasableQueues(snapshot?.sessions ?? [], queues, { busy: emergencyStopPending })) {
       const session = { id: message.sessionId }
       if (releasing.current.has(session.id)) continue
@@ -1076,7 +1078,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           setSettled((count) => count + 1)
         })
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory, settled, watching])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory, settled, watching, connected])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
@@ -1315,7 +1317,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // One dock, rendered either as the pinned panel or inside the floating sheet.
   // Named before the snapshot exists, because the snapshot is what is being
   // waited for. The endpoint is what this client actually knows it is reading.
-  const readingLabel = `reading ${attached?.machineId ?? endpointUrl}`
   const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} daemonTimeOffsetMs={(attached ? remote : home).fleetDaemonTimeOffsetMs} clientAccess={workspaceAccess} clientKind={clientKind} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, artifactId) })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={() => snapshot.activeSessionId ? sendMessage(snapshot.activeSessionId, "Looks right, carry on") : Promise.reject(new Error("No session is active"))} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = !dockCollapsed && dockPinned ? "drawer.dock" : "drawer.thread"
   const defaultLayout = layouts[layoutKey]
@@ -1656,19 +1657,24 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
 
   return (
     <SurfaceCodeReload.Provider value={reloadForNewCode}>
+    <WorkspaceConnectionProvider
+      connected={connected}
+      reconnecting={reconnecting}
+      authenticationRequired={authenticationRequired}
+      protocolError={protocolError}
+      connectionError={connectionError}
+      machineName={snapshot?.machine.name}
+      machineId={snapshot?.machine.id}
+      endpoint={localDaemon && !attached ? endpointUrl : undefined}
+      onChangeCredential={attached ? undefined : onChangeCredential}
+      onReconnect={reconnectDaemon}
+    >
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" }))} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={!connected ? "unreachable" : !attached ? machineRoute(endpointUrl) : dialedRoute?.epoch === attachEpoch ? machineRoute(endpointUrl, dialedRoute.kind) : undefined} theme={resolvedTheme} />
-        <WorkspaceConnectionStatus
-          connected={connected}
-          reconnecting={reconnecting}
-          authenticationRequired={authenticationRequired}
-          protocolError={protocolError}
-          connectionError={connectionError}
-          machineName={snapshot?.machine.name}
-          onChangeCredential={attached ? undefined : onChangeCredential}
-          onReconnect={reconnectDaemon}
-        />
+        {/* The thread column draws the lost banner at its own top, as the
+            design does. Without one it spans the window here. */}
+        <ShellConnectionStatus threadColumn={Boolean(snapshot) && surface === "workspace" && !startRefusal} />
         {attached ? <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2 text-sm" role="status">
           <span>{!access ? "Client access is no longer verified for" : connected ? "Using" : "Connecting to"} <span className="font-machine">{fleetMachines(fleet?.entries ?? []).find((machine) => machine.id === attached.machineId)?.label ?? attached.machineId}</span>{access ? " with this app's client credential." : ". Return home and authorize this client again."}</span>
           <Button variant="outline" size="sm" onClick={() => setAttached(null)}>Return to home daemon</Button>
@@ -1728,6 +1734,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               ...(windowBridge && !localDaemon.platform ? { platform: windowBridge.platform } : {}),
               ...(localDaemon.serviceInstalled === undefined && serviceInstalled !== undefined ? { serviceInstalled } : {}),
               ...(localDaemon.serviceRunning === undefined && serviceRunning !== undefined ? { serviceRunning } : {}),
+              serviceReport, serviceCheckedAt,
               ...(localDaemon.owner === "outside" ? { serviceVersion: snapshot.machine.version, appVersion: clientVersion } : {}),
               ...(windowBridge?.daemonService && !watching ? { service: {
                 install: () => changeService("install", () => windowBridge.daemonService!.install()),
@@ -1860,6 +1867,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onOpenSkills={() => setSurface("skills")}
             onListDevices={listDevices}
             onRevokeDevice={revokeDevice}
+            {...(currentDeviceId && onSignedOut ? { currentDeviceId, onSignOut: signOutCurrentDevice } : {})}
             onRotateDevice={rotateDevice}
             onRenameDevice={renameDevice}
             // fleet.enroll and fleet.forget need the daemon's own credential,
@@ -1955,7 +1963,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         </div> : (
           <main className="flex min-h-0 flex-1 bg-background">
             <h1 className="sr-only">Connecting to the daemon</h1>
-            <ThreadSkeleton reading={readingLabel} />
+            <ThreadSkeleton from={attached?.machineId ?? endpointUrl} />
           </main>
         )}
         {workspaceError || visibleStateRecovery ? (
@@ -2083,6 +2091,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         ) : null}
       </div>
     </TooltipProvider>
+    </WorkspaceConnectionProvider>
     </SurfaceCodeReload.Provider>
   )
 }

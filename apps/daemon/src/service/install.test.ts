@@ -1143,3 +1143,45 @@ describe("Windows COM registration data and transport", () => {
     }
   })
 })
+
+describe("CX-10 native service facts", () => {
+  it.each(["running", "not running", "spawn scheduled"])("reads launchd %s without inventing exhaustion or uptime", async (state) => {
+    const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: `gui/501/sh.domovoi.domovoid = {\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = ${state}\n\tpid = 4321\n\truns = 5\n\tlast exit code = 9\n}\n` })) })
+    const status = await serviceStatus(darwin, dependencies)
+    expect(status).toMatchObject({ running: state === "running", lastExit: "code 9" })
+    if (state === "running") expect(status).toHaveProperty("pid", 4321)
+    else expect(status).not.toHaveProperty("pid")
+    for (const key of ["crashCount", "startedAt", "supervisionFailure"]) expect(status).not.toHaveProperty(key)
+  })
+
+  it.each(["active", "failed", "unknown"])("keeps systemd %s facts unknown beyond its status read", async (state) => {
+    const dependencies = effects({ capture: vi.fn(async () => ({ code: state === "active" ? 0 : 3, stdout: state })) })
+    const status = await serviceStatus({ platform: "linux", home: "/home/dl" }, dependencies)
+    expect(status.running).toBe(state === "active")
+    for (const key of ["crashCount", "startedAt", "pid", "lastExit", "supervisionFailure"]) expect(status).not.toHaveProperty(key)
+  })
+})
+
+it.each([
+  "\t\tpid = 99\n\t\tlast exit code = 9\n",
+  "\tpid = 4\n\tpid = 5\n\tlast exit code = 9\n\tlast exit code = 0\n",
+  "\tpid = 0\n\tlast exit code = unreadable\n",
+])("keeps absent or ambiguous launchd fields unknown: %s", async (fields) => {
+  const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: `job = {\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = running\n${fields}}` })) })
+  const status = await serviceStatus(darwin, dependencies)
+  expect(status).not.toHaveProperty("pid")
+  expect(status).not.toHaveProperty("lastExit")
+})
+
+it("does not borrow pid or last exit from a foreign launchd plist", async () => {
+  const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "job = {\n\tpath = /other.plist\n\tstate = running\n\tpid = 99\n\tlast exit code = 9\n}" })) })
+  const status = await serviceStatus(darwin, dependencies)
+  expect(status.running).toBe(false)
+  expect(status).not.toHaveProperty("pid")
+  expect(status).not.toHaveProperty("lastExit")
+})
+
+it("reads the numeric part of a named launchd exit code", async () => {
+  const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "job = {\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\n\tstate = not running\n\tlast exit code = 75: EX_TEMPFAIL\n}" })) })
+  expect(await serviceStatus(darwin, dependencies)).toHaveProperty("lastExit", "code 75")
+})

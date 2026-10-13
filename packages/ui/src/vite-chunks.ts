@@ -25,6 +25,7 @@ export function vendorChunkFor(moduleId: string): string | undefined {
   return "vendor"
 }
 
-// The pairing card's QR code draws only in Settings, and cmdk only in the
-// command palette.
-const lazySurfacePackages = new Set(["qrcode-generator", "cmdk"])
+// The pairing card's QR code draws only in Settings, cmdk only in the command
+// palette, and the curve and hash libraries run only when a distrusted relay
+// pin is recovered (relay-pin.ts).
+const lazySurfacePackages = new Set(["qrcode-generator", "cmdk", "@noble/curves", "@noble/hashes"])

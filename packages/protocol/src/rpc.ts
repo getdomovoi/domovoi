@@ -1652,7 +1652,7 @@ export const rpcMethods = {
     params: deviceRevokeParamsSchema,
     result: z.object({ device: pairedDeviceSchema }).strict(),
   },
-  // Machine-only: revokes the current verified device, never a supplied id.
+  // Revokes only the current verified paired credential, never a supplied id.
   "device.revokeCurrent": {
     params: deviceListParamsSchema,
     result: z.object({ revoked: z.literal(true) }).strict(),
@@ -1821,6 +1821,10 @@ export const rpcMethods = {
 } as const
 
 export type RpcMethod = keyof typeof rpcMethods
+
+// A watching credential may relinquish its own access, but gains no other control rights.
+export const watchingClientControlMethodSchema = z.literal("device.revokeCurrent" satisfies RpcMethod)
+export const watchingClientControlMethod = watchingClientControlMethodSchema.value
 
 // Every notification the daemon sends, with the schema of its params. The
 // daemon checks each payload against this map before it sends, and the wire
@@ -2077,6 +2081,8 @@ export function isRefusedWithoutPersistence(method: RpcMethod): boolean {
 // Release stays out too: a handheld can neither create nor claim a terminal,
 // so it never holds the claim to release.
 export const phoneAndTabletRpcMethods = new Set<RpcMethod>([
+  // Withdraw only this credential, including watching-only pairings.
+  "device.revokeCurrent",
   // Watch.
   "system.hello",
   "terminal.list",

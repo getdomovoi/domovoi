@@ -56,6 +56,7 @@ import { Badge } from "./components/ui/badge"
 import { Button } from "./components/ui/button"
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./components/ui/empty"
 import { ScrollArea } from "./components/ui/scroll-area"
+import { ThreadConnectionBanner, useWorkspaceConnection } from "./connection-status"
 import { sessionDraftStore } from "./session-draft"
 import { useThreadFollow } from "./thread-follow"
 import { MachineSwitcher } from "./machine-switcher.js"
@@ -630,6 +631,9 @@ export function Thread({
   surface?: "desktop" | "web" | undefined
 }) {
   const watching = clientAccess === "watching"
+  // The shell's connection, for the offline Reconnect action. A thread drawn
+  // without the shell has none and draws no action.
+  const connection = useWorkspaceConnection()
   // When this thread saw the daemon go, for the header's "stalled at". Set only
   // on a change it saw: a thread that opens disconnected does not know when
   // the daemon went, and says stalled with no time (turn-clock.ts).
@@ -876,7 +880,8 @@ export function Thread({
   if (!active) {
     const hasProject = snapshot.project !== null
     return (
-      <main className="flex h-full min-w-0 bg-background">
+      <main className="flex h-full min-w-0 flex-col bg-background">
+        <ThreadConnectionBanner />
         <Empty>
           <EmptyHeader>
             <EmptyMedia variant="icon">{hasProject ? <BotIcon /> : <FolderOpenIcon />}</EmptyMedia>
@@ -1046,7 +1051,9 @@ export function Thread({
   // and never a reason to cancel it. One queued message, replaced rather than
   // stacked, and it leaves at the next turn boundary.
   const submitPrompt = async () => {
-    if (pending || providerRestartRequired || emergencyStopPending || readOnly) return
+    // Offline nothing leaves the composer, not even into the queue: the
+    // controls are off, and this covers a key press that reaches the field.
+    if (!connected || pending || providerRestartRequired || emergencyStopPending || readOnly) return
     let submittedText = prompt
     if (prompt.trimStart().startsWith("/")) {
       const intent = slashIntent(prompt, slashContext)
@@ -1293,6 +1300,9 @@ export function Thread({
 
   return (
     <main className="flex h-full min-w-0 flex-col bg-background">
+      {/* The design draws the lost-daemon banner here, at the top of the
+          thread column, above the session notices. */}
+      <ThreadConnectionBanner />
       {/* Shown once the stopped turn has ended, where the design draws its
           session notice: a strip above the thread. */}
       {stoppedPause && !active.activeTurnId ? <StoppedSessionNotice at={stoppedPause.at} fromThisClient={stoppedPause.fromThisClient} /> : null}
@@ -1448,6 +1458,16 @@ export function Thread({
             </Alert>
           ) : null}
           {approval && !archiveReadOnly ? <ApprovalCard key={approval.id} deciding={resolvingApprovalId !== null} surface={surface} approval={approval} watching={watching} connected={connected} refusal={cardShowsRefusal && approvalRefusal ? { message: approvalRefusal.message, code: approvalRefusal.code, data: approvalRefusal.data } : undefined} connectionId={connectionId} plans={snapshot.workingPlans} onResolve={(decision, explanation) => resolveCurrentApproval(approval, decision, explanation)} /> : null}
+          {/* Offline, the receipt's review and move give way to this: both
+              read the worktree, which only exists on that machine. */}
+          {!connected && connection ? (
+            <div data-testid="thread-offline-actions" className="flex flex-wrap items-center gap-2.5">
+              <Button onClick={connection.onReconnect}>Reconnect to {snapshot.machine.name}</Button>
+              <span className="text-[11.5px] text-muted-foreground">
+                Reviewing and moving this session both need the daemon, since the worktree only exists on that machine.
+              </span>
+            </div>
+          ) : null}
         </div>
       </ScrollArea>
       {followPill ? (
@@ -1597,7 +1617,7 @@ export function Thread({
             open={promptEditorOpen}
             draft={prompt}
             pending={pending}
-            sendDisabled={!prompt.trim() || providerRestartRequired || emergencyStopPending}
+            sendDisabled={!connected || !prompt.trim() || providerRestartRequired || emergencyStopPending}
             onOpenChange={(open) => {
               setPromptEditorOpen(open)
               setEditorPasteNote("")
