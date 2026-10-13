@@ -183,6 +183,10 @@ it("hands the browser limits no route while an attach resolves, then the attache
 
   await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
   await settle()
+  // The route answered, but the attached daemon has not: still no route.
+  await openLimits()
+  expect(limitsRoutes).toEqual([undefined, undefined])
+
   const remote = harness.socket(2)
   await act(async () => { completeHandshake(remote, target) })
   await settle()
@@ -190,7 +194,7 @@ it("hands the browser limits no route while an attach resolves, then the attache
   await settle()
   expect(screen.getByRole("button", { name: "Machines: Studio" }).textContent).toMatch(/Studiotailnet$/u)
   await openLimits()
-  expect(limitsRoutes).toEqual([undefined, "tailnet"])
+  expect(limitsRoutes).toEqual([undefined, undefined, "tailnet"])
 }, 15_000)
 
 // A route resolution abandoned by a return home can land after the machine

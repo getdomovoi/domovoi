@@ -1240,7 +1240,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     } : {}),
     // The pairing card is in the desktop's own settings, for its own daemon.
     ...(clientKind === "desktop" && !attached ? { pairDevice: () => setSurface("providers") } : {}),
-    ...(onOpenBrowserLimits ? { openBrowserLimits: () => onOpenBrowserLimits(commandPaletteFocusRef.current, chipRoute) } : {}),
+    ...(onOpenBrowserLimits ? { openBrowserLimits: () => onOpenBrowserLimits(commandPaletteFocusRef.current, connected ? chipRoute : undefined) } : {}),
     shortcutsBound: workspaceShortcutsBound,
     // Cmd+Enter on a machine starts a session there: attach to that daemon,
     // then open the launcher on it. The intent names the machine, and the
