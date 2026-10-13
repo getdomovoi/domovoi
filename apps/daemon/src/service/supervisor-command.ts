@@ -57,7 +57,7 @@ function boundRecord(path: string): SupervisorRecord | undefined {
 }
 
 function lastExit(record: SupervisorRecord): string {
-  const exit = record.attempts.at(-1)?.exit
+  const exit = record.attempts.findLast((attempt) => attempt.exit !== null)?.exit
   if (!exit) return "no completed child exit recorded"
   const value = exit.errorCode !== null ? `launch failure ${exit.errorCode}`
     : exit.signal !== null ? `signal ${exit.signal}` : `code ${exit.code}`
@@ -131,7 +131,10 @@ export function readGuestSupervisorStatus(home: string, alive = guestProcessAliv
     : record.state === "exhausted" ? "exhausted" : record.state === "failed" ? "observation-failure" : undefined
   const detail = configuration ? observed : `service configuration missing; guest evidence is not bound to an installed service; ${observed}`
   // A guest record cannot establish whether the Windows registration exists.
-  return { installed: null, running, detail, ...(supervisionFailure === undefined ? {} : { supervisionFailure }) }
+  return { installed: null, running, detail, crashCount: record.crashes,
+    ...(record.attempts.some((attempt) => attempt.exit !== null) ? { lastExit: lastExit(record) } : {}),
+    ...(running && activeChild?.child ? { pid: activeChild.child.pid } : {}),
+    ...(supervisionFailure === undefined ? {} : { supervisionFailure }) }
 }
 
 export async function stopGuestSupervisor(path: string, deadline: OperationDeadline, effects: {

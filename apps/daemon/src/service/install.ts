@@ -101,6 +101,12 @@ export type ServiceStatus = {
   installed: boolean | null
   running: boolean
   detail: string
+  // Optional facts from the manager or validated supervision record. Missing
+  // means unknown. Never derive daemon identity/time from its supervisor.
+  crashCount?: number
+  lastExit?: string
+  pid?: number
+  startedAt?: string
   supervising?: boolean
   treeUnconfirmed?: boolean
   supervisionFailure?: "exhausted" | "observation-failure" | "configuration-missing"
@@ -1509,9 +1515,21 @@ async function statusWithDeadline(
       // A job loaded from another plist is not this agent: it is not loaded.
       if (launchdJobPath(printed.stdout) !== path) state = undefined
     }
+    // Only the owned job's top-level fields count. Runs are not crashes,
+    // and launchctl does not supply a daemon birth timestamp in this read.
+    const field = (key: string): number | undefined => {
+      if (state === undefined) return undefined
+      const matches = [...printed.stdout.matchAll(new RegExp(`^\\t${key} = (-?[0-9]+)\\r?$`, "gm"))]
+      const value = Number(matches[0]?.[1])
+      return matches.length === 1 && Number.isSafeInteger(value) ? value : undefined
+    }
+    const pid = state === "running" ? field("pid") : undefined
+    const exit = field("last exit code")
     return {
       installed,
       running: state === "running",
+      ...(pid !== undefined && pid > 0 && pid <= 2_147_483_647 ? { pid } : {}),
+      ...(exit === undefined ? {} : { lastExit: `code ${exit}` }),
       detail: installed
         ? `${path} is ${state === undefined ? "not loaded" : `loaded (${state})`}`
         : `no launch agent at ${path}`,

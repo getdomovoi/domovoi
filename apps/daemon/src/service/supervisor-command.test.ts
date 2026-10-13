@@ -442,3 +442,25 @@ it.runIf(process.platform === "linux")("a corrupt stop request stops the real ch
     await completed
   }
 }, realBudget + 5_000)
+
+it("carries guest exhaustion facts but not historical pid or intent time", () => {
+  const f = fixture()
+  exhaust(f.record)
+  writeSupervisorRecord(f.home, f.record)
+  const status = readGuestSupervisorStatus(f.home, () => false)
+  expect(status).toMatchObject({ crashCount: 4, lastExit: "last exit code 127 at 2026-09-12T12:00:01.000Z", supervisionFailure: "exhausted" })
+  expect(status).not.toHaveProperty("pid")
+  expect(status).not.toHaveProperty("startedAt")
+})
+
+it("carries the live guest child pid but keeps boot-relative uptime unknown", () => {
+  const f = fixture()
+  f.record.state = "running"; f.record.crashes = 0
+  f.record.attempts[0]!.exit = null; f.record.attempts[0]!.backoffMs = 0
+  writeSupervisorRecord(f.home, f.record)
+  const status = readGuestSupervisorStatus(f.home, () => true)
+  expect(status).toMatchObject({ running: true, crashCount: 0, pid: 101 })
+  expect(status).not.toHaveProperty("startedAt")
+  expect(status).not.toHaveProperty("lastExit")
+  expect(readGuestSupervisorStatus(f.home, () => false)).not.toHaveProperty("pid")
+})
