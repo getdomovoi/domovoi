@@ -361,7 +361,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
         {exhausted ? <div role="alert" className="flex flex-col gap-1.5 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground">
           <span className="font-medium">{supervisor.crashCount === undefined ? "The supervisor gave up. Crash count unknown." : `The supervisor gave up after ${crashes}.`}</span>
           <span>The supervisor stopped trying: restart limit reached.</span>
-          {daemon.owner !== "outside" ? <span>{`Quit ${daemon.owner === "app" ? "this" : "the other"} Domovoi app to stop its daemon and sessions before running the command.`}</span> : null}
+          <span>{daemon.owner === "outside" ? "Stop the daemon running outside this app before running the command." : `Quit ${daemon.owner === "app" ? "this" : "the other"} Domovoi app to stop its daemon and sessions before running the command.`}</span>
           <span>To reinstall and start the service, run this in a terminal.</span>
           <span className="font-machine text-[11px]">{printed("domovoid service install")}</span>
         </div> : null}

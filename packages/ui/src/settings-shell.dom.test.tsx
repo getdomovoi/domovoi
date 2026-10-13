@@ -1168,12 +1168,16 @@ it.each([
   expect(card.queryByRole("button", { name: "Check again" })).toBeNull()
 })
 
-it.each(["app", "other-app"] as const)("names the owning app and session consequence before terminal recovery: %s", (owner) => {
+it.each([
+  ["app", "Quit this Domovoi app to stop its daemon and sessions before running the command."],
+  ["other-app", "Quit the other Domovoi app to stop its daemon and sessions before running the command."],
+  ["outside", "Stop the daemon running outside this app before running the command."],
+] as const)("names the owner prerequisite before terminal recovery: %s", (owner, prerequisite) => {
   render(<SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner, platform: "win32", serviceInstalled: true,
     serviceReport: { installed: true, running: false, detail: "restart limit reached", supervisor: { supervisionFailure: "exhausted", crashCount: 4 } },
     service: { install: vi.fn(), remove: vi.fn(), status: vi.fn() },
   }} />)
   const alert = within(screen.getByRole("region", { name: "Daemon on this machine" })).getByRole("alert")
-  expect(alert.textContent).toContain(owner === "app" ? "Quit this Domovoi app to stop its daemon and sessions before running the command." : "Quit the other Domovoi app to stop its daemon and sessions before running the command.")
+  expect(alert.textContent).toContain(prerequisite)
   expect(alert.textContent).toContain("domovoid service install")
 })
