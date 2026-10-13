@@ -740,6 +740,30 @@ describe("limits from the workspace", () => {
     expect(document.activeElement).toBe(opener)
   })
 
+  // Chosen again from the palette while it is open, the dialog keeps the
+  // control that first opened it, not one inside the dialog.
+  it("keeps the first opener when the limits are asked for again while open", async () => {
+    let open: ((opener: HTMLElement | null) => void) | undefined
+    const storage = memoryStorage()
+    storage.setItem("domovoi.daemon-session", JSON.stringify({ deviceId, token: deviceToken }))
+    storage.setItem("domovoi.web.limitsSeen", "1")
+    await act(async () => {
+      root.render(
+        <WebApp rpcUrl={rpcUrl} pageOrigin={loopbackPage} clientKind="web" environment={environment} storage={storage} createClient={vi.fn()} labelSuffix={() => "1234"}
+          workspace={({ onOpenLimits }) => { open = onOpenLimits; return <button type="button">First opener</button> }} />,
+      )
+    })
+    const first = button("First opener")
+    await act(async () => { open!(first) })
+    await settle()
+    await act(async () => { open!(dialogButton("Back")) })
+    await settle()
+    await act(async () => { dialogButton("Back").click() })
+    await settle()
+    expect(limitsDialog()).toBeNull()
+    expect(document.activeElement).toBe(first)
+  })
+
   // The session's own window shortcuts are its business while the dialog is
   // up, as with any of its dialogs; the limits add no key handling.
   it("leaves the session's shortcuts to it while the dialog is open", async () => {

@@ -241,7 +241,9 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
         clearDaemonSession(storage)
         leaveSession()
       },
-      onOpenLimits: (opener) => setSessionLimits({ open: true, opener }),
+      // Asked for again while open (the palette over the dialog), the dialog
+      // keeps the control that first opened it: the new opener is inside it.
+      onOpenLimits: (opener) => setSessionLimits((current) => current.open ? current : { open: true, opener }),
     })}
     <BrowserLimitsPanel
       rows={browserLimits(environment, rpcUrl, markBrowserLimitsSeen(storage))}
