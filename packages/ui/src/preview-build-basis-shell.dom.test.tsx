@@ -132,37 +132,48 @@ describe("with variant B chosen through Build on this", () => {
     expect(screen.getByText("the agent builds on this one")).toBeTruthy()
   })
 
-  it("carries the chosen variant on the thread send", async () => {
-    type("Build the replay table")
-    expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ sessionId, prompt: "Build the replay table" })
+  // One thread send, answered: exactly one more request, carrying the choice.
+  async function sendFromThread(prompt: string) {
+    const before = sentRequests(socket, "session.send").length
+    type(prompt)
+    expect(sentRequests(socket, "session.send")).toHaveLength(before + 1)
+    expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ sessionId, prompt })
     expect(lastReview(socket)).toEqual({ annotationIds: [], buildBasis: { artifactId: "variant-b" } })
+    await answerLastSend(socket, value)
+  }
+
+  it("carries the chosen variant on every thread send", async () => {
+    await sendFromThread("Build the replay table")
+    await sendFromThread("And the header")
   })
 
   it("carries the chosen variant on a queued send when it is released", async () => {
+    await sendFromThread("Build the replay table")
     // A message queued while the agent works is released when it stops, and
     // carries the choice too.
     await act(async () => notify(socket, "workspace.changed", running(value)))
     await settle()
     type("Then the empty state")
-    expect(sentRequests(socket, "session.send")).toHaveLength(0)
+    expect(sentRequests(socket, "session.send")).toHaveLength(1)
     await act(async () => notify(socket, "workspace.changed", value))
     await settle()
-    expect(sentRequests(socket, "session.send")).toHaveLength(1)
+    expect(sentRequests(socket, "session.send")).toHaveLength(2)
     expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ sessionId, prompt: "Then the empty state" })
     expect(lastReview(socket)).toMatchObject({ buildBasis: { artifactId: "variant-b" } })
   })
 
   it("carries the chosen variant on the plan's carry on", async () => {
+    await sendFromThread("Build the replay table")
     await openSheetTab("Plan preview")
     await userEvent.setup().click(screen.getByRole("button", { name: "Looks right, carry on" }))
+    expect(sentRequests(socket, "session.send")).toHaveLength(2)
     expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ sessionId, prompt: "Looks right, carry on" })
     expect(lastReview(socket)).toMatchObject({ buildBasis: { artifactId: "variant-b" } })
   })
 
   it("keeps the choice across sends until Unpick, then sends none", async () => {
-    type("Build the replay table")
-    expect(lastReview(socket)).toMatchObject({ buildBasis: { artifactId: "variant-b" } })
-    await answerLastSend(socket, value)
+    await sendFromThread("Build the replay table")
+    await sendFromThread("And the header")
 
     await openSheetTab("Plan preview")
     await openSheetTab("Preview")
