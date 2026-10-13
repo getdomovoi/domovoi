@@ -1,3 +1,4 @@
+export { builtSourceCommit } from "./source-commit.js"
 export {
   createProductionDaemon,
   type ProductionDaemonCredential,

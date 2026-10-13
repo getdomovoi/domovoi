@@ -48,7 +48,7 @@ assert.deepEqual(Object.keys(publicApi).sort(), [
   "DaemonServiceHandoffError", "DaemonServiceRuntimeMissingError", "DaemonServiceUpdateError", "LaunchdJobNotDomovoiError",
   "SystemdPathCharacterError",
   "WindowsTaskArgumentVariableError", "WindowsTaskNotDomovoiError", "WindowsTaskPathError", "WindowsTaskPercentSignError",
-  "acquireLocalDaemon", "adoptRelayProfileSuccessor", "captureInheritedCredentials", "createProductionDaemon", "holdServiceHandoffFence",
+  "acquireLocalDaemon", "adoptRelayProfileSuccessor", "builtSourceCommit", "captureInheritedCredentials", "createProductionDaemon", "holdServiceHandoffFence",
   // Q408 A: nodeRuntimeFileSystem and prepareDaemonRuntime make the runtime
   // copy under the profile, which the desktop makes through the daemon it
   // loads (apps/desktop/src/main/daemon-module.ts).
@@ -138,6 +138,7 @@ const distSources = readdirSync(distDirectory).filter((name) => name.endsWith(".
 assert.ok(distSources.length > 0, "The daemon dist must contain JavaScript")
 for (const source of distSources) assert.ok(!source.includes("__BUILD_SOURCE_COMMIT__"), "The source commit define must be replaced")
 const expectedCommit = readSourceCommit(fileURLToPath(new URL("../../", import.meta.url)))
+assert.equal(publicApi.builtSourceCommit(), expectedCommit, "The public metadata reader must identify the built runtime")
 if (expectedCommit) {
   assert.ok(distSources.some((source) => source.includes(JSON.stringify(expectedCommit))), "The daemon dist must contain its build commit")
 }
