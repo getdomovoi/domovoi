@@ -59,6 +59,29 @@ test("a stable release becomes latest only after its assets are complete", async
   assert.deepEqual(writes.at(-1), { path: "/releases/12", method: "PATCH", body: { draft: false, make_latest: "true" } })
 })
 
+test("fixture-only distribution assets remain draft until every inventory, TUF and DMG digest matches", async (t) => {
+  const { publishCanonicalRelease } = await import("./release-github.mjs")
+  // Exercise the existing generic ports only. This is not a new production
+  // publication path or evidence that these synthetic documents are trusted.
+  const files = ["release.json", "1.root.json", "timestamp.json", "1.snapshot.json", "1.targets.json",
+    "domovoi-desktop-0.1.0-alpha.0-arm64.dmg", "domovoi-desktop-0.1.0-alpha.0-x64.dmg"]
+    .map((name, index) => ({ name, sha256: String(index + 1).repeat(64) }))
+  const candidate = { ...release, files: [...release.files, ...files] }
+  const { writes, ports } = fixture(t)
+  await publishCanonicalRelease(candidate, ports)
+  assert.deepEqual(writes.filter((write) => write.upload).map((write) => write.upload), candidate.files.map((file) => file.name))
+  assert.equal(writes.at(-1).body.draft, false)
+  const refused = fixture(t)
+  const request = refused.ports.request
+  refused.ports.request = async (...args) => {
+    const result = await request(...args)
+    return args[0] === "/releases/12" && args[1] === undefined
+      ? { ...result, assets: result.assets.filter((asset) => asset.name !== "release.json") } : result
+  }
+  await assert.rejects(publishCanonicalRelease(candidate, refused.ports), /release.json.*not verified/)
+  assert.equal(refused.writes.some((write) => write.method === "PATCH"), false)
+})
+
 for (const broken of [
   () => undefined,
   (pkg) => ({ name: pkg.name, version: pkg.version, dist: { integrity: "different" } }),
