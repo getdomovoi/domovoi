@@ -18,7 +18,7 @@ import { AppearanceSettings, ExternalEditorSettings, ProviderSettings, type Mach
 import type { WorkspaceTheme } from "./appearance.js"
 import { DaemonRpcError } from "./client.js"
 import type { DaemonServiceOutcome, DaemonServiceStatusReport, DesktopExternalEditor, WorkspaceWindowDecoration } from "./desktop-platform.js"
-import { failedStill, loginServices, readBackFact, type FailedServiceOutcome } from "./login-service-copy.js"
+import { failedStill, loginServices, readBackFact, windowsCrashPolicy, type FailedServiceOutcome } from "./login-service-copy.js"
 import { CommandLinksRow, useCommandLinkView } from "./command-links.js"
 import { printedCommand } from "./printed-command.js"
 import { NotificationSettings } from "./notification-settings.js"
@@ -221,6 +221,8 @@ function RemoveServiceDialog({ open, platform, onOpenChange, onConfirm }: {
 
 type SupervisorFacts = {
   crashCount?: number
+  restartCount?: number
+  windowsTaskKind?: "legacy" | "supervised"
   lastExit?: string
   pid?: number
   startedAt?: string
@@ -236,6 +238,8 @@ function parseSupervisorFacts(value: unknown): SupervisorFacts | undefined {
   const integer = (entry: unknown, min: number, max: number) => typeof entry === "number" && Number.isInteger(entry) && entry >= min && entry <= max
   const schema: Record<keyof SupervisorFacts, (entry: unknown) => boolean> = {
     crashCount: (entry) => integer(entry, 0, 4),
+    restartCount: (entry) => integer(entry, 0, 4_294_967_295),
+    windowsTaskKind: (entry) => entry === "legacy" || entry === "supervised",
     pid: (entry) => integer(entry, 1, 2_147_483_647),
     lastExit: (entry) => typeof entry === "string" && /^(?:code -?[0-9]{1,16}|signal SIG[A-Z0-9]{1,24}|launch failure [A-Z0-9_-]{1,64})$/u.test(entry),
     startedAt: (entry) => typeof entry === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(entry)
@@ -245,6 +249,7 @@ function parseSupervisorFacts(value: unknown): SupervisorFacts | undefined {
     treeUnconfirmed: (entry) => typeof entry === "boolean",
   }
   if (!Object.entries(value).every(([key, entry]) => Object.hasOwn(schema, key) && schema[key as keyof SupervisorFacts](entry))) return undefined
+  if (Object.hasOwn(value, "restartCount") && (Object.hasOwn(value, "crashCount") || Object.hasOwn(value, "windowsTaskKind"))) return undefined
   return value as SupervisorFacts
 }
 
@@ -344,7 +349,7 @@ function DaemonSection({ daemon, footer, buildStatus, buildSettled, onUpdated }:
   const facts = [
     { label: "Service", value: service.definition, note: `A ${service.kind}, for your user only.`, item: installed ? "written" : "will write" },
     { label: "Record", value: "~/.domovoi/service.json", note: "What Domovoi installed, so removing undoes exactly that.", item: installed ? "written" : "will write" },
-    ...(on ? [{ label: "After a crash", value: "", note: service.crash, item: "" }] : []),
+    ...(on ? [{ label: "After a crash", value: "", note: daemon.platform === "win32" ? windowsCrashPolicy(supervisor?.windowsTaskKind) : service.crash, item: "" }] : []),
   ]
   const command = printed(unknown ? "domovoid service status" : installed ? "domovoid service remove" : "domovoid service install")
   const lockReason = busy
@@ -391,7 +396,9 @@ function DaemonSection({ daemon, footer, buildStatus, buildSettled, onUpdated }:
               <span>{supervisor?.pid !== undefined ? `PID ${supervisor.pid}` : "PID unknown"}</span>
               <span>{uptime}{minutes === undefined ? "" : " at last check"}</span>
             </> : null}
-            <span>{crashes}</span>
+            <span>{supervisor?.restartCount !== undefined
+              ? `${supervisor.restartCount} automatic ${supervisor.restartCount === 1 ? "restart" : "restarts"} since its last start that was not automatic, or its last counter reset`
+              : daemon.platform === "linux" && supervisor?.crashCount === undefined ? "Automatic restart count unknown" : crashes}</span>
             <span>{supervisor?.lastExit ? `Last exit: ${supervisor.lastExit}` : "Last exit unknown"}</span>
             {supervisor?.supervisionFailure === undefined && supervisor?.crashCount === undefined ? <span>Supervisor exhaustion unknown</span> : null}
           </> : null}

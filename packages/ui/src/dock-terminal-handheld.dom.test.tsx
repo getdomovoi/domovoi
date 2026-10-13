@@ -5,17 +5,20 @@ import { demoWorkspace, type ClientKind } from "@getdomovoi/protocol"
 
 import { TooltipProvider } from "./components/ui/tooltip"
 import { ArtifactDock } from "./artifact-dock"
+import { HandheldTabMachine } from "./handheld-tab"
 
 // The pane's chunk never arrives here, so the dock shows its loading state
 // for as long as the test looks.
 vi.mock("./terminal-pane", () => new Promise(() => {}))
 
+// The shell provides the machine of a phone or tablet tab, and nothing in a
+// desktop or web tab.
 function renderDock(clientKind: ClientKind) {
   render(
     <TooltipProvider>
+      <HandheldTabMachine.Provider value={clientKind === "phone" || clientKind === "tablet" ? demoWorkspace.machine.name : undefined}>
       <ArtifactDock
         snapshot={demoWorkspace}
-        clientKind={clientKind}
         onCollapse={() => {}}
         defaultTab="changes"
         rpcUrl="ws://127.0.0.1:47831/rpc"
@@ -29,6 +32,7 @@ function renderDock(clientKind: ClientKind) {
         onLoadSessionEvidence={async () => { throw new Error("not used") }}
         onRevertSessionFile={async () => {}}
       />
+      </HandheldTabMachine.Provider>
     </TooltipProvider>,
   )
 }

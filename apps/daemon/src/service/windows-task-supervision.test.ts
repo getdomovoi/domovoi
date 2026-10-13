@@ -318,3 +318,21 @@ function registeredAction(args: string[]): { path: string; arguments: string } |
   const path = value("Path"), arguments_ = value("Arguments")
   return path === undefined || arguments_ === undefined ? undefined : { path, arguments: arguments_ }
 }
+
+it.each(["--service-config", "--service-supervise"])("reports verified Windows task kind for %s", async (flag) => {
+  const f = fixture()
+  f.task.flag = flag
+  expect(await serviceStatus(target, f.effects)).toHaveProperty("windowsTaskKind", flag === "--service-config" ? "legacy" : "supervised")
+})
+
+it("reports the supervised kind even before its first recorded start", async () => {
+  const f = fixture()
+  f.effects.supervisorStatus = async () => undefined
+  expect(await serviceStatus(target, f.effects)).toMatchObject({ windowsTaskKind: "supervised", supervisionFailure: "observation-failure" })
+})
+
+it("does not infer installed Windows kind from a stale supervision record", async () => {
+  const f = fixture()
+  f.task.exists = false
+  expect(await serviceStatus(target, f.effects)).not.toHaveProperty("windowsTaskKind")
+})

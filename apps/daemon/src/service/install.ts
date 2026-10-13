@@ -17,6 +17,7 @@ import { readServiceRemovalSnapshot, serviceRemovalReceipt, serviceRemovalRecove
 import { assertServiceProfile, createServiceConfiguration, registeredWithoutConfiguration, ServiceProfileUnknownError, parseServiceConfiguration, serializeServiceConfiguration, serviceConfigurationPath, type ServiceConfiguration, type ServiceRuntimeRecord } from "./configuration.js"
 import { readLocalProfileFile } from "../local-owner-record.js"
 import { withinServiceDeadline } from "./deadline.js"
+import { systemdStatusFacts, systemdStatusProperties } from "./systemd-status.js"
 import { claimServiceOperation, claimServiceStatusRead } from "./operation-lease.js"
 import { launchdPlist, launchdPlistProgram, systemdUnit, systemdUnitProgram } from "./units.js"
 import { isRecordedServiceProgram } from "./restore-target.js"
@@ -104,6 +105,8 @@ export type ServiceStatus = {
   // Optional facts from the manager or validated supervision record. Missing
   // means unknown. Never derive daemon identity/time from its supervisor.
   crashCount?: number
+  restartCount?: number
+  windowsTaskKind?: "legacy" | "supervised"
   lastExit?: string
   pid?: number
   startedAt?: string
@@ -1480,14 +1483,12 @@ async function statusWithDeadline(
     // persistent unit directory, and a transient unit cannot take a name
     // that has a unit file.
     if (!installed) return { installed, running: false, detail: `no service file at ${path}` }
-    const active = await withinServiceDeadline(deadline, () => effects.capture("systemctl", ["--user", "is-active", unitFile], deadline))
-    if (![0, 3, 4].includes(active.code)) throw captureFailure("systemctl", active)
-    const state = active.stdout.trim() === "" ? "unknown" : active.stdout.trim()
-    return {
-      installed,
-      running: active.code === 0,
-      detail: installed ? `${path} is ${state}` : `no service file at ${path}`,
-    }
+    const shown = await withinServiceDeadline(deadline, () => effects.capture("systemctl", [
+      "--user", "show", unitFile, ...systemdStatusProperties.map((name) => `--property=${name}`),
+    ], deadline))
+    if (shown.code !== 0) throw captureFailure("systemctl", shown)
+    const { state, ...facts } = systemdStatusFacts(shown.stdout)
+    return { installed, ...facts, detail: `${path} is ${state}` }
   }
 
   if (target.platform === "darwin") {
@@ -1542,15 +1543,16 @@ async function statusWithDeadline(
     if (owner === "other") return { installed: false, running: false, detail: `a task named ${displayName} exists, but Domovoi did not register it` }
     const state = await readWindowsTaskState(displayName, effects, deadline)
     const installed = state !== "missing"
-    if (owner === "domovoi") return { installed, running: state === "4", detail: "legacy Windows logon task; no crash supervision or job-object tree evidence" }
+    if (owner === "domovoi") return { installed, running: state === "4", ...(installed ? { windowsTaskKind: "legacy" as const } : {}), detail: "legacy Windows logon task; no crash supervision or job-object tree evidence" }
+    const kind = owner === "supervised" && installed ? { windowsTaskKind: "supervised" as const } : {}
     if (!effects.supervisorStatus) {
       if (!installed) return { installed: false, running: false, detail: `no logon task named ${displayName}` }
       throw new Error("Windows supervisor status is unavailable")
     }
     const supervisor = await withinServiceDeadline(deadline, () => effects.supervisorStatus!(home, deadline))
-    if (!supervisor) return { installed, running: false, detail: installed ? "Windows supervisor has no recorded start; tree evidence unavailable" : `no logon task named ${displayName}`,
+    if (!supervisor) return { installed, ...kind, running: false, detail: installed ? "Windows supervisor has no recorded start; tree evidence unavailable" : `no logon task named ${displayName}`,
       ...(installed ? { supervisionFailure: "observation-failure" as const } : {}) }
-    return { ...supervisor, installed, detail: `${installed ? "logon task registered" : "logon task missing"}; ${supervisor.detail}` }
+    return { ...supervisor, installed, ...kind, detail: `${installed ? "logon task registered" : "logon task missing"}; ${supervisor.detail}` }
   }
 
   throw new Error(`${target.platform} has no service manager this knows how to report on`)

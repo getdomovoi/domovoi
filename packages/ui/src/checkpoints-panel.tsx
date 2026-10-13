@@ -1,6 +1,6 @@
 import type { RpcParams, SessionHistoryEntry, SessionHistoryPage, WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { CircleStopIcon, GitCommitHorizontalIcon } from "lucide-react"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
 import { Button } from "./components/ui/button"
@@ -8,6 +8,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle } from "./
 import { Input } from "./components/ui/input"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { CheckpointFork, CheckpointRestore } from "./checkpoint-actions.js"
+import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab.js"
 import { SessionHistoryRequestController, latestSessionHistoryRequest, mergeOlderHistory, sessionHistoryEntryOutcome } from "./session-history.js"
 import { StatusDot } from "./status-dot.js"
 
@@ -72,16 +73,19 @@ export function checkpointMeta(entry: CheckpointEntry): string {
 // saved row beside its restore decision.
 function TakeCheckpoint({
   blockedReason,
+  lockedBy,
   onTake,
 }: {
   blockedReason?: string | undefined
+  // The id of the panel's line saying why this tab cannot take one.
+  lockedBy?: string | undefined
   onTake: (label: string | undefined) => Promise<void>
 }) {
   const [open, setOpen] = useState(false)
   const [label, setLabel] = useState("")
   const [pending, setPending] = useState(false)
   const [error, setError] = useState("")
-  const blocked = Boolean(blockedReason)
+  const blocked = Boolean(blockedReason) || lockedBy !== undefined
   const takeButton = useRef<HTMLButtonElement>(null)
   const wasOpen = useRef(false)
 
@@ -112,7 +116,8 @@ function TakeCheckpoint({
         size="sm"
         className="shrink-0 rounded-full"
         disabled={blocked || open}
-        onClick={() => setOpen(true)}
+        aria-describedby={lockedBy}
+        onClick={() => { if (!blocked) setOpen(true) }}
       >
         <GitCommitHorizontalIcon data-icon="inline-start" />
         Take a checkpoint
@@ -222,6 +227,19 @@ export function CheckpointsPanel({
   const entries = (page?.items ?? [])
     .filter((entry): entry is CheckpointEntry => entry.category === "checkpoints")
     .reverse()
+  // checkpoint.create and checkpoint.restore are not on
+  // phoneAndTabletRpcMethods (handheld-tab.ts). Fork is: session.fork.
+  const handheldMachine = useHandheldTabMachine()
+  const restorable = onRestoreCheckpoint ? entries.filter((entry) => entry.commit) : []
+  const lockedControls = [
+    ...(onTakeCheckpoint ? ["Take a checkpoint"] : []),
+    ...(restorable.some((entry) => entry.reason !== "session-start") ? ["Revert"] : []),
+    ...(restorable.some((entry) => entry.reason === "session-start") ? ["Reset"] : []),
+  ]
+  const locked = handheldMachine !== undefined && lockedControls.length > 0
+    ? offInHandheldTab(lockedControls, "take or restore a checkpoint", handheldMachine)
+    : undefined
+  const lockedId = useId()
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -229,8 +247,9 @@ export function CheckpointsPanel({
         <div data-testid="checkpoints-content" className="flex w-0 min-w-full flex-col gap-2 p-3">
           <div className="flex flex-wrap items-start gap-3">
             <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground">{checkpointsIntro}</p>
-            {onTakeCheckpoint ? <TakeCheckpoint blockedReason={takeBlockedReason} onTake={onTakeCheckpoint} /> : null}
+            {onTakeCheckpoint ? <TakeCheckpoint blockedReason={takeBlockedReason} lockedBy={locked !== undefined ? lockedId : undefined} onTake={onTakeCheckpoint} /> : null}
           </div>
+          {locked !== undefined ? <p id={lockedId} className="m-0 text-[11px] leading-relaxed text-muted-foreground">{locked}</p> : null}
           {entries.map((entry) => {
             const outcome = sessionHistoryEntryOutcome(entry)
             const sessionStart = entry.reason === "session-start"
@@ -251,7 +270,7 @@ export function CheckpointsPanel({
                   <CheckpointFork checkpointId={entry.sourceId} label={entry.label} disabled={restoreBlocked} onFork={onForkCheckpoint} triggerLabel="Fork" triggerVariant="outline" />
                 ) : null}
                 {entry.commit && onRestoreCheckpoint ? (
-                  <CheckpointRestore checkpointId={entry.sourceId} label={entry.label} disabled={restoreBlocked} onRestore={onRestoreCheckpoint} triggerLabel={sessionStart ? "Reset" : "Revert"} triggerVariant="outline" />
+                  <CheckpointRestore checkpointId={entry.sourceId} label={entry.label} disabled={restoreBlocked || locked !== undefined} describedBy={locked !== undefined ? lockedId : undefined} onRestore={onRestoreCheckpoint} triggerLabel={sessionStart ? "Reset" : "Revert"} triggerVariant="outline" />
                 ) : null}
                 {entry.midTurn ? (
                   <div className="basis-full min-w-0 text-[11px] leading-normal text-muted-foreground">

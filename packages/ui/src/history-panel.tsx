@@ -1,5 +1,5 @@
 import { CheckpointCaptureLine } from "./checkpoints-panel.js"
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { CircleStopIcon, HistoryIcon, SearchIcon } from "lucide-react"
 import { annotationsOverLimitLine, type RpcParams, type SessionHistoryCategory, type SessionHistoryPage } from "@getdomovoi/protocol"
 import { Alert, AlertDescription, AlertTitle } from "./components/ui/alert"
@@ -15,6 +15,7 @@ import {
 } from "./components/ui/empty"
 import { ScrollArea } from "./components/ui/scroll-area"
 import { CheckpointFork, CheckpointRestore } from "./checkpoint-actions.js"
+import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab.js"
 import type { SessionHistoryFocus } from "./session-history"
 import { StatusDot } from "./status-dot"
 import {
@@ -170,6 +171,14 @@ export function HistoryPanel({
   // first, so the whole list turns round here: an older page lands under the
   // rows already drawn, and Load older stays under the oldest one.
   const entries = page ? [...page.items].reverse() : []
+  // checkpoint.restore is not on phoneAndTabletRpcMethods (handheld-tab.ts);
+  // session.fork is, so Fork from here stays.
+  const handheldMachine = useHandheldTabMachine()
+  const restoreLocked = handheldMachine !== undefined && onRestoreCheckpoint
+    && entries.some((entry) => entry.category === "checkpoints" && entry.commit)
+    ? offInHandheldTab(["Restore worktree"], "restore a checkpoint", handheldMachine)
+    : undefined
+  const restoreLockedId = useId()
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -224,6 +233,7 @@ export function HistoryPanel({
           {/* Past the retained budget the newest rows are the ones let go, and
               they sat at the top, so the way back to them sits there too. */}
           {historyWindowed ? <Button className="mb-3 self-center" variant="ghost" size="sm" disabled={loading} onClick={backToLatest}>Back to latest</Button> : null}
+          {restoreLocked !== undefined ? <p id={restoreLockedId} className="m-0 mb-3 text-[11px] leading-relaxed text-muted-foreground">{restoreLocked}</p> : null}
           {entries.length ? (
           <div data-testid="history-rows" className="rounded-xl border">
           {entries.map((entry) => {
@@ -275,7 +285,8 @@ export function HistoryPanel({
                           // by the checkpoint id it kept in sourceId.
                           checkpointId={entry.sourceId}
                           label={entry.label}
-                          disabled={restoreBlocked}
+                          disabled={restoreBlocked || restoreLocked !== undefined}
+                          describedBy={restoreLocked !== undefined ? restoreLockedId : undefined}
                           onRestore={onRestoreCheckpoint}
                         />
                       ) : null}
