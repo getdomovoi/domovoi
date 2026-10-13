@@ -108,3 +108,29 @@ it("draws no ring and no separator while no provider window is reported", () => 
   expect(chip.textContent).not.toContain("·")
   expect(screen.queryByRole("img", { name: /percent of the/ })).toBeNull()
 })
+
+// The design draws one connection note under USAGE per state. The api state
+// needs the payer on the wire (CX-8); the two a client can tell apart are a
+// reported window (the ring) and none (tokens alone).
+const connectionNote = () => screen.getByTestId("usage-connection-note").textContent
+
+it("says why there is no dial when no window is reported", async () => {
+  render(<UsageChip usage={usage} today={null} />)
+  await userEvent.setup().click(screen.getByRole("button", { name: "Usage" }))
+  expect(connectionNote()).toBe("No window reported, so no dial. The chip falls back to tokens alone.")
+})
+
+it("says the ring carries the window, and which one when two run", async () => {
+  const windows = [
+    { kind: "primary" as const, usedPercent: 68, windowDurationMinutes: 300 },
+    { kind: "secondary" as const, usedPercent: 82, windowDurationMinutes: 10_080 },
+  ]
+  const { unmount } = render(<UsageChip usage={{ ...usage, providerLimits: { provider: "codex", windows } }} today={null} />)
+  await userEvent.setup().click(screen.getByRole("button", { name: "Usage" }))
+  expect(connectionNote()).toBe("The provider reported its usage window, so the chip carries the window rather than a price. Two windows run at once and the ring shows the tighter one.")
+  unmount()
+
+  render(<UsageChip usage={{ ...usage, providerLimits: { provider: "codex", windows: windows.slice(0, 1) } }} today={null} />)
+  await userEvent.setup().click(screen.getByRole("button", { name: "Usage" }))
+  expect(connectionNote()).toBe("The provider reported its usage window, so the chip carries the window rather than a price.")
+})
