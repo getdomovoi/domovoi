@@ -1852,6 +1852,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
               loading: skillsLoading,
               error: skillsError,
               readOnly: watching,
+              handheldMachine: handheld ? snapshot.machine.name : undefined,
               onOpenAudit: () => setSurface("audit"),
               onReadSkill: readSkill,
               requestedSkillId,

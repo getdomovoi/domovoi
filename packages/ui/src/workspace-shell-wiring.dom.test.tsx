@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { daemonAuthenticationErrorCode, phoneAndTabletRpcMethods, protocolVersion, rpcMethodAuthorizations, type FleetMachine, type RpcMethod } from "@getdomovoi/protocol"
+import { daemonAuthenticationErrorCode, phoneAndTabletRpcMethods, protocolVersion, rpcMethodAuthorizations, skillSummarySchema, type FleetMachine, type RpcMethod } from "@getdomovoi/protocol"
 
 import type { DesktopWindowBridge } from "./desktop-platform"
 import { terminalIdForSession } from "./terminal-id"
@@ -492,5 +492,66 @@ describe("requests a tab sends on its own", () => {
     expect(sentRequests(socket, "update.status")).toHaveLength(1)
     expect(sentRequests(socket, "provider.secret.list")).toHaveLength(1)
     expect(screen.queryByText(/Key status is off/u)).toBeNull()
+  })
+})
+
+// Skills in a phone or tablet tab lists the catalog (skill.list), which the
+// composer needs. Reading a SKILL.md, trusting, revoking, installing and the
+// machine comparison use skill.read, skill.setEnabled, skill.review,
+// skill.installPreview, skill.install and skill.inventory, none of which is
+// on phoneAndTabletRpcMethods; the daemon answers each with the
+// authentication error, on which the client closes its connection.
+describe("Skills in a phone or tablet tab", () => {
+  const listed = skillSummarySchema.parse({
+    id: `skill-${"a".repeat(12)}`, name: "alpha", description: "alpha instructions", path: "/skills/alpha/SKILL.md",
+    scope: "user", source: "agents", manifest: { version: 1, capabilities: ["filesystem.read"] },
+    contentDigest: `sha256:${"a".repeat(64)}`, signature: { state: "unsigned" }, trust: { state: "untrusted", reason: "unsigned" },
+  })
+
+  async function openSkills(clientKind: "web" | "phone" | "tablet") {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    await act(async () => {
+      respond(socket, "skill.list", [listed])
+      const { id, name, platform, arch, version } = snapshot.machine
+      if (clientKind === "web") respond(socket, "skill.inventory", { machine: { id, name, platform, arch, version }, skills: [] })
+    })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /^Skills/u }))
+    await screen.findByRole("heading", { level: 1, name: "Skills on this machine" })
+    await settle()
+    return { snapshot, socket, user }
+  }
+
+  it.each(["phone", "tablet"] as const)("a %s tab locks the skill actions, says why, and sends none of them", async (clientKind) => {
+    const { snapshot, socket, user } = await openSkills(clientKind)
+    const controls = [
+      screen.getByRole("button", { name: /Install from a path/u }),
+      screen.getByRole("button", { name: /View SKILL\.md/u }),
+      screen.getByRole("button", { name: `Trust it for ${snapshot.project!.name}` }),
+    ]
+    for (const control of controls) {
+      expect(control).toHaveProperty("disabled", true)
+      await user.click(control)
+    }
+    await settle()
+
+    expect(screen.getByText(`Install, Trust, Revoke and View SKILL.md are off in a phone or tablet tab: the daemon does not let a phone or tablet credential read or change a skill. Use the desktop app on ${snapshot.machine.name}.`)).toBeTruthy()
+    // Under Inventories from your other machines and on the selected skill.
+    expect(screen.getAllByText(`Machine comparison is off in a phone or tablet tab: the daemon does not report skill inventories to a phone or tablet credential. Use the desktop app on ${snapshot.machine.name}.`)).toHaveLength(2)
+    expect(screen.queryByText("Unknown until this machine inventory is fetched.")).toBeNull()
+    expect(screen.queryByText("No other paired machine reports the skills capability.")).toBeNull()
+    for (const method of ["skill.read", "skill.setEnabled", "skill.review", "skill.installPreview", "skill.install", "skill.inventory"] as const) {
+      expect(sentRequests(socket, method), method).toEqual([])
+    }
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  it("a web tab keeps them", async () => {
+    await openSkills("web")
+    expect(screen.getByRole("button", { name: /Install from a path/u })).toHaveProperty("disabled", false)
+    expect(screen.getByRole("button", { name: /View SKILL\.md/u })).toHaveProperty("disabled", false)
+    expect(screen.queryByText(/are off in a phone or tablet tab/u)).toBeNull()
   })
 })
