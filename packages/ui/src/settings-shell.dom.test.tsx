@@ -1105,6 +1105,7 @@ it.each([
   { installed: false, running: false, detail: "not installed" },
   { installed: false, running: false, detail: "not installed", supervisor: { crashCount: 1 } },
   { installed: null, running: false, detail: "unknown" },
+  { installed: null, running: false, detail: "unknown", supervisor: {} },
   { installed: null, running: false, detail: "invalid", supervisor: { crashCount: "1" } },
   { unavailable: "cannot read status" },
   undefined,

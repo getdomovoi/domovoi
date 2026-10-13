@@ -267,7 +267,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
   const report = checking ? undefined : daemon.serviceReport
   const observed = report && "installed" in report ? report : undefined
   const supervisor = parseSupervisorFacts(observed?.supervisor)
-  const hasService = observed?.installed === true || (observed?.installed === null && supervisor !== undefined)
+  const hasService = observed?.installed === true || (observed?.installed === null && supervisor !== undefined && Object.keys(supervisor).length > 0)
   const crashes = supervisor?.crashCount === undefined ? "Crash count unknown" : `${supervisor.crashCount} ${supervisor.crashCount === 1 ? "crash" : "crashes"}`
   const exhausted = hasService && supervisor?.supervisionFailure === "exhausted"
   const birth = observed?.running && supervisor?.startedAt ? Date.parse(supervisor.startedAt) : NaN
