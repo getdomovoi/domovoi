@@ -1,7 +1,10 @@
+import type { ProviderModel, SessionAttachment } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
 import {
+  carriesImages,
   heldAfter,
+  imageRelease,
   heldAfterStop,
   holdAllAfterStop,
   releasableQueues,
@@ -56,5 +59,45 @@ describe("what may leave the queue", () => {
     const queues: SessionQueues = { a: waiting("a") }
     expect(releasableQueues([{ id: "a", activeTurnId: "turn-1" }], queues, { busy: false })).toEqual([])
     expect(releasableQueues([{ id: "a" }], queues, { busy: true })).toEqual([])
+  })
+})
+
+describe("images and a model that takes none", () => {
+  const image: SessionAttachment = { mimeType: "image/png", width: 2, height: 2, data: "iVBORw0KGgo=" }
+  const notes: SessionAttachment = { kind: "workspace-file", path: "src/notes.ts" }
+  const runtime = { provider: "claude-code", model: "sonnet-4.6" }
+  function model(id: string, imageInput: boolean | undefined, provider = "claude-code"): ProviderModel {
+    return {
+      provider, id, displayName: id, description: "", supportedReasoningEfforts: [], isDefault: false,
+      ...(imageInput === undefined ? {} : { imageInput }),
+    }
+  }
+  const withImage: QueuedMessage = { ...waiting("a"), attachments: [notes, image] }
+
+  it("counts images, not text files, as what a model may refuse", () => {
+    expect(carriesImages(withImage)).toBe(true)
+    expect(carriesImages({ ...waiting("a"), attachments: [notes] })).toBe(false)
+    expect(carriesImages(waiting("a"))).toBe(false)
+  })
+
+  it("releases a message without images whatever the catalog says", () => {
+    expect(imageRelease(waiting("a"), runtime, undefined)).toBe("release")
+    expect(imageRelease({ ...waiting("a"), attachments: [notes] }, runtime, { state: "read", models: [model("sonnet-4.6", false)] })).toBe("release")
+  })
+
+  it("waits for a catalog read that has not answered", () => {
+    expect(imageRelease(withImage, runtime, undefined)).toBe("wait")
+  })
+
+  it("holds only when the session's own model says it takes no images", () => {
+    expect(imageRelease(withImage, runtime, { state: "read", models: [model("sonnet-4.6", false)] })).toBe("hold")
+    expect(imageRelease(withImage, runtime, { state: "read", models: [model("sonnet-4.6", true)] })).toBe("release")
+    expect(imageRelease(withImage, runtime, { state: "read", models: [model("opus-4.6", false)] })).toBe("release")
+    expect(imageRelease(withImage, runtime, { state: "read", models: [model("sonnet-4.6", false, "codex")] })).toBe("release")
+  })
+
+  it("does not hold on what is not known", () => {
+    expect(imageRelease(withImage, runtime, { state: "read", models: [model("sonnet-4.6", undefined)] })).toBe("release")
+    expect(imageRelease(withImage, runtime, { state: "failed" })).toBe("release")
   })
 })

@@ -1,4 +1,6 @@
-import type { SessionAttachment } from "@getdomovoi/protocol"
+import type { ProviderModel, SessionAttachment } from "@getdomovoi/protocol"
+
+import { isImageAttachment } from "./desktop-attachments"
 
 // Sending while a turn is running queues the message. It never cancels the
 // turn: the agent is mid-flight on a worktree, and a client keystroke is not a
@@ -115,6 +117,35 @@ export function releasableQueues(
     ready.push(queued!)
   }
   return ready
+}
+
+// Images only: a model that takes no image input still takes text files.
+export function carriesImages(queued: QueuedMessage): boolean {
+  return Boolean(queued.attachments?.some(isImageAttachment))
+}
+
+// What the release has read of one provider's model catalog. No entry means
+// the read is still out; a failed read answered nothing.
+export type CatalogRead =
+  | { state: "read"; models: readonly ProviderModel[] }
+  | { state: "failed" }
+
+// Whether a releasable message may go to the session's model. The daemon
+// refuses images for a model whose harness reports no image input, so that
+// message is held rather than sent into a refusal. Waiting on an unanswered
+// read is not holding: the message stays waiting and goes once the catalog
+// answers. Nothing holds on what is not known, a failed read or a model that
+// has not said, which is #846's rule in the composer.
+export function imageRelease(
+  queued: QueuedMessage,
+  runtime: { provider: string, model: string },
+  read: CatalogRead | undefined,
+): "release" | "wait" | "hold" {
+  if (!carriesImages(queued)) return "release"
+  if (!read) return "wait"
+  if (read.state === "failed") return "release"
+  const model = read.models.find((candidate) => candidate.provider === runtime.provider && candidate.id === runtime.model)
+  return model?.imageInput === false ? "hold" : "release"
 }
 
 // A send that did not come back with a result. The distinction matters: the

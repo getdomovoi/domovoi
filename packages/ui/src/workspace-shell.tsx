@@ -71,15 +71,19 @@ import { MachineSheet } from "./machine-sheet"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { latestTurnFromHistory } from "./usage-chip.js"
 import {
+  carriesImages,
   failedAttempt,
   heldAfter,
   holdAllAfterStop,
+  imageRelease,
   provesNothingRan,
   releasableQueues,
   setQueue,
+  type CatalogRead,
   type FailedAttempt,
   type SessionQueues,
 } from "./turn-queue"
+import { imagesHeldReason } from "./thread-composer"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import { DesktopFirstRunDialog } from "./desktop-first-run-lazy"
 import { desktopFirstRunAvailable, firstRunDefaultProvider } from "./desktop-first-run-rules"
@@ -348,6 +352,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // queued in A must leave at A's next turn boundary whether or not anyone is
   // looking at A.
   const [queues, setQueues] = useState<SessionQueues>({})
+  // Each provider's model catalog as the release last read it. Thread's hold
+  // on images a model cannot take reaches only the session on screen, and
+  // only from the commit after its read answers, so the release reads for
+  // itself. Kept only while a waiting message with images needs it.
+  const [queueCatalogs, setQueueCatalogs] = useState<Readonly<Record<string, CatalogRead>>>({})
+  const queueCatalogTickets = useRef(new Map<string, number>())
+  const nextQueueCatalogTicket = useRef(0)
   // Every send that did not come back, kept by identity. One slot per session
   // was still one slot: a second refusal would erase the first receipt and the
   // reason with it.
@@ -1063,6 +1074,44 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setQueues(holdAllAfterStop)
   }, [emergencyStopPending])
 
+  // The providers whose sessions have a message with images waiting, as one
+  // key so the read below runs only when that set changes.
+  const imageQueueProviders = useMemo(() => {
+    const providers = new Set<string>()
+    for (const session of snapshot?.sessions ?? []) {
+      const queued = queues[session.id]
+      if (queued?.state === "waiting" && carriesImages(queued)) providers.add(session.runtime.provider)
+    }
+    return [...providers].sort().join("\n")
+  }, [snapshot, queues])
+  // One read per provider while it is needed. A provider no longer needed is
+  // dropped, answer and all, so the next message with images reads afresh
+  // rather than trusting a catalog from before a model or harness change. The
+  // ticket keeps a dropped read's late answer out.
+  useEffect(() => {
+    const needed = new Set(connected && !watching && imageQueueProviders ? imageQueueProviders.split("\n") : [])
+    const tickets = queueCatalogTickets.current
+    for (const provider of [...tickets.keys()]) if (!needed.has(provider)) tickets.delete(provider)
+    setQueueCatalogs((current) => {
+      const kept = Object.fromEntries(Object.entries(current).filter(([provider]) => needed.has(provider)))
+      return Object.keys(kept).length === Object.keys(current).length ? current : kept
+    })
+    for (const provider of needed) {
+      if (tickets.has(provider)) continue
+      nextQueueCatalogTicket.current += 1
+      const ticket = nextQueueCatalogTicket.current
+      tickets.set(provider, ticket)
+      const settle = (read: CatalogRead) => {
+        if (tickets.get(provider) !== ticket) return
+        setQueueCatalogs((current) => ({ ...current, [provider]: read }))
+      }
+      void listModels(provider).then(
+        (models) => settle({ state: "read", models }),
+        () => settle({ state: "failed" }),
+      )
+    }
+  }, [imageQueueProviders, connected, watching, listModels])
+
   // The release lives here rather than in Thread because a turn ending in A is
   // A's business whether or not A is the session on screen.
   useEffect(() => {
@@ -1086,6 +1135,16 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           message,
           `Held because ${missing.length === 1 ? "a skill" : `${missing.length} skills`} you chose is no longer in this project's catalog.`,
         )))
+        continue
+      }
+      // The daemon refuses images for a model whose harness reports none, so
+      // the message is held with Thread's notice rather than sent into that
+      // refusal. Until this provider's catalog answers, it waits.
+      const runtime = snapshot?.sessions.find((candidate) => candidate.id === session.id)?.runtime
+      const images = runtime ? imageRelease(message, runtime, queueCatalogs[runtime.provider]) : "release"
+      if (images === "wait") continue
+      if (images === "hold") {
+        setQueues((current) => setQueue(current, session.id, heldAfter(message, imagesHeldReason(runtime!.model))))
         continue
       }
       releasing.current.add(session.id)
@@ -1115,7 +1174,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           setSettled((count) => count + 1)
         })
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, settled, watching, connected])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, settled, watching, connected, queueCatalogs])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
