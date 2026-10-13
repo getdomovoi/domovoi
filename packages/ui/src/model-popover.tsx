@@ -27,6 +27,15 @@ type Catalog =
   | { status: "ready", models: ProviderModel[] }
   | { status: "unavailable", note: string }
 
+// Every catalog read takes a ticket when it starts, here or in the thread,
+// so a read that started earlier never overwrites one that started later,
+// whichever answers first.
+let catalogReadTickets = 0
+export function nextCatalogReadTicket(): number {
+  catalogReadTickets += 1
+  return catalogReadTickets
+}
+
 export function modelCountText(matches: number, total: number, harnesses: number): string {
   return `${matches} of ${total} · ${harnesses} ${harnesses === 1 ? "harness" : "harnesses"} reported`
 }
@@ -53,8 +62,8 @@ export function ModelPopover({
   onCatalog,
 }: {
   // Each catalog a harness answers with, so the composer locks images on the
-  // same answer this menu shows.
-  onCatalog?: ((provider: string, models: ProviderModel[]) => void) | undefined
+  // same answer this menu shows, with the ticket its read took on starting.
+  onCatalog?: ((provider: string, models: ProviderModel[], ticket: number) => void) | undefined
   // Bumped by the composer's Change model, which opens this menu.
   openRequest?: number | undefined
   runtime: Runtime
@@ -107,11 +116,11 @@ export function ModelPopover({
     const current = ++generation.current
     const targets = providersRef.current.filter((provider) => provider.sessionCapable && (every || providerCanStartSession(provider)))
     setCatalogs(Object.fromEntries(targets.map((provider) => [provider.id, { status: "loading" }])))
-    return Promise.all(targets.map((provider) => read(provider.id).then(
+    return Promise.all(targets.map((provider) => ({ provider, ticket: nextCatalogReadTicket() })).map(({ provider, ticket }) => read(provider.id).then(
       (catalog) => {
         if (generation.current !== current) return
         setCatalogs((previous) => ({ ...previous, [provider.id]: catalog }))
-        if (catalog.status === "ready") onCatalogRef.current?.(provider.id, catalog.models)
+        if (catalog.status === "ready") onCatalogRef.current?.(provider.id, catalog.models, ticket)
       },
       (cause: unknown) => {
         if (generation.current !== current) return

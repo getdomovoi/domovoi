@@ -274,7 +274,7 @@ export function ThreadComposer({
   // The chosen preview variant, drawn as the first chip (task 83).
   buildBasis?: BuildBasisChip | undefined
   // A catalog the model menu read, so imageInput follows its latest answer.
-  onModelsRead?: ((provider: string, models: ProviderModel[]) => void) | undefined
+  onModelsRead?: ((provider: string, models: ProviderModel[], ticket: number) => void) | undefined
   onOpenSheet?: (() => void) | undefined
   onOpenPromptEditor: () => void
   usage: SessionUsage | null

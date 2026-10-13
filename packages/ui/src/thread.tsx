@@ -102,6 +102,7 @@ import { ApprovalCard } from "./approval-card"
 import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
 import { ThreadComposer, imagesHeldReason, lockedImagesWords, type BuildBasisChip } from "./thread-composer"
+import { nextCatalogReadTicket } from "./model-popover"
 import { sessionPreviewBuildBasis } from "./artifacts"
 import { PreviewVariantCopy } from "./preview-controls"
 import { previewRenderName } from "./preview-renders"
@@ -875,18 +876,23 @@ export function Thread({
   // Held with the provider it answered for, so a re-read keeps the chip up and
   // a provider change drops it until the new harness answers.
   const [providerModels, setProviderModels] = useState<{ provider: string, models: ProviderModel[] }>()
-  // Every catalog write takes a ticket: the model menu's answer (onModelsRead
-  // below) is newer than a read still pending from here, so that read is
-  // dropped when it settles rather than undoing an image lock.
-  const modelsReadTicket = useRef(0)
+  // This read and the model menu's (onModelsRead below) each take a ticket
+  // when they start. Only an answer from a read that started later than the
+  // one applied replaces it, so an older read settling late never undoes an
+  // image lock or brings back stale effort levels.
+  const appliedCatalogTicket = useRef(0)
   useEffect(() => {
     if (!activeProvider) return
     let live = true
-    const ticket = ++modelsReadTicket.current
-    const current = () => live && modelsReadTicket.current === ticket
+    const ticket = nextCatalogReadTicket()
+    const apply = (next: { provider: string, models: ProviderModel[] } | undefined) => {
+      if (!live || ticket <= appliedCatalogTicket.current) return
+      appliedCatalogTicket.current = ticket
+      setProviderModels(next)
+    }
     void onListModels(activeProvider).then(
-      (models) => { if (current()) setProviderModels({ provider: activeProvider, models }) },
-      () => { if (current()) setProviderModels(undefined) },
+      (models) => apply({ provider: activeProvider, models }),
+      () => apply(undefined),
     )
     return () => { live = false }
   }, [onListModels, activeProvider])
@@ -1634,12 +1640,12 @@ export function Thread({
           effortDropped={effortDroppedHere}
           imageInput={effortModel?.imageInput}
           buildBasis={buildBasisChip}
-          onModelsRead={(provider, models) => {
-            // The menu's newer answer for this session's harness replaces the
-            // one read at mount, so a failed first read or a changed answer
-            // does not leave images unlocked.
-            if (provider !== active.runtime.provider) return
-            modelsReadTicket.current += 1
+          onModelsRead={(provider, models, ticket) => {
+            // The menu's answer for this session's harness replaces an older
+            // read's, so a failed first read or a changed answer does not
+            // leave images unlocked.
+            if (provider !== active.runtime.provider || ticket <= appliedCatalogTicket.current) return
+            appliedCatalogTicket.current = ticket
             setProviderModels({ provider, models })
           }}
           onOpenSheet={onOpenSheet}

@@ -246,6 +246,56 @@ it("keeps the menu's answer when an older read settles after it", async () => {
   expect(send().disabled).toBe(true)
 })
 
+// Reads are ordered by when they started, not when they answer: a menu read
+// for codex started before the session moved to codex is older than the
+// thread's read on the move, and does not replace it when it answers last.
+it("keeps a newer read's answer over a menu read that started before a harness change", async () => {
+  const user = userEvent.setup()
+  sessionDraftStore.write(activeId, { ...emptySessionDraft, prompt: "Look", attachments: [image] })
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.approvals = []
+  snapshot.machine.providers = [
+    { id: "claude-code", command: "claude", status: "ready", sessionCapable: true },
+    { id: "codex", command: "codex", status: "ready", sessionCapable: true },
+  ]
+  const codex = (imageInput: boolean): ProviderModel => ({ ...sonnet(imageInput), provider: "codex", id: "gpt-5.3-codex" })
+  let menuCodex: (models: ProviderModel[]) => void = () => {}
+  let codexReads = 0
+  const onListModels = vi.fn((provider: string) => {
+    if (provider === "claude-code") return Promise.resolve([sonnet(true)])
+    codexReads += 1
+    // The first codex read is the menu's, left pending; the next is the thread's.
+    return codexReads === 1
+      ? new Promise<ProviderModel[]>((resolve) => { menuCodex = resolve })
+      : Promise.resolve([codex(false)])
+  })
+  const props = {
+    connected: true,
+    onQueuedChange: vi.fn(),
+    onResolve: vi.fn(async () => {}),
+    onSetRuntime: vi.fn(async () => {}),
+    onForkSession: vi.fn(async () => {}),
+    onListModels,
+    onNewSession: vi.fn(),
+    onSend: vi.fn(async () => {}),
+    onCheckpoint: vi.fn(async () => {}),
+    onRestoreCheckpoint: vi.fn(async () => {}),
+    onPauseSession: vi.fn(async () => {}),
+  }
+  const { rerender } = render(<Thread snapshot={snapshot} {...props} />)
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/u }))
+  await waitFor(() => expect(codexReads).toBe(1))
+
+  const moved = structuredClone(snapshot)
+  moved.sessions.find((session) => session.id === activeId)!.runtime = { ...moved.sessions.find((session) => session.id === activeId)!.runtime, provider: "codex", model: "gpt-5.3-codex" }
+  rerender(<Thread snapshot={moved} {...props} />)
+  await waitFor(() => expect(notice()).not.toBeNull())
+
+  await act(async () => { menuCodex([codex(true)]) })
+
+  expect(notice()).not.toBeNull()
+})
+
 it("names the count when several images are locked", async () => {
   renderThread({ imageInput: false, draft: [image, image], prompt: "Both" })
 
