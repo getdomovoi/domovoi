@@ -326,8 +326,8 @@ function DaemonSection({ daemon, footer, buildStatus, onUpdated }: { buildStatus
   const on = daemon.owner === "outside" && installed && daemon.serviceRunning === true
   const unknown = daemon.owner === "outside" && !on
   const serviceBehind = on && phase.kind !== "updated" && daemon.serviceVersion !== undefined && daemon.appVersion !== undefined && olderRelease(daemon.serviceVersion, daemon.appVersion)
-  const sameVersion = on && phase.kind !== "updated" && daemon.serviceVersion !== undefined && daemon.serviceVersion === daemon.appVersion
-  const replaceBuild = sameVersion && appCommit !== undefined && serviceCommit !== undefined && appCommit !== serviceCommit
+  const sameVersion = on && daemon.serviceVersion !== undefined && daemon.serviceVersion === daemon.appVersion
+  const replaceBuild = sameVersion && phase.kind !== "updated" && appCommit !== undefined && serviceCommit !== undefined && appCommit !== serviceCommit
   const unknownBuild = sameVersion && (appCommit === undefined || serviceCommit === undefined)
   const updating = phase.kind === "updating"
   const state = on
@@ -579,8 +579,7 @@ function pendingUpdateLine(status: UpdateStatus): string | undefined {
   return undefined
 }
 
-// On its own, About is a card. Inside the daemon card it is that card's last
-// row, set off by a rule, as the design draws it.
+// Share one guarded read between build comparison and the About row.
 function useBuildStatus(about: AboutBuild | undefined, revision: number) {
   const [status, setStatus] = useState<UpdateStatus | undefined>(undefined)
   // Q169: the daemon answers update status only to its owner on a direct
@@ -600,19 +599,30 @@ function useBuildStatus(about: AboutBuild | undefined, revision: number) {
     }
     setStatus(undefined)
     let active = true
-    onUpdateStatus().then(
-      (next) => { if (active) { setStatus(next); setOwnerOnly(false) } },
-      (cause: unknown) => {
-        if (!active) return
-        setStatus(undefined)
-        setOwnerOnly(cause instanceof DaemonRpcError && cause.code === localOwnerRequiredErrorCode)
-      },
-    )
-    return () => { active = false }
+    let retry: ReturnType<typeof setTimeout> | undefined
+    // The desktop reconnects asynchronously after update succeeds. Retry
+    // failed post-update reads for up to ten seconds; ordinary status reads
+    // and owner-only refusals never poll. Closing Settings cancels the retry.
+    const retryUntil = Date.now() + (revision > 0 ? 10_000 : 0)
+    const read = () => {
+      onUpdateStatus().then(
+        (next) => { if (active) { setStatus(next); setOwnerOnly(false) } },
+        (cause: unknown) => {
+          if (!active) return
+          setStatus(undefined)
+          const denied = cause instanceof DaemonRpcError && cause.code === localOwnerRequiredErrorCode
+          setOwnerOnly(denied)
+          if (!denied && Date.now() < retryUntil) retry = setTimeout(read, 250)
+        },
+      )
+    }
+    read()
+    return () => { active = false; clearTimeout(retry) }
   }, [onUpdateStatus, revision])
   return { status, ownerOnly }
 }
 
+// On its own, About is a card; inside the daemon card it is the last row.
 function AboutBuildSection({ about, inCard = false, build }: { about: AboutBuild; inCard?: boolean; build: ReturnType<typeof useBuildStatus> }) {
   const { status, ownerOnly } = build
   const commit = status?.currentSourceCommit?.slice(0, 7)

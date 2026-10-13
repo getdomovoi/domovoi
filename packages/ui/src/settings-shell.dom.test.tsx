@@ -1314,3 +1314,50 @@ it("does not compare a commit from a different daemon version read", async () =>
   await act(async () => {})
   expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
 })
+
+it("rereads the replacement commit after the desktop reconnects", async () => {
+  const props = sameVersionSettings()
+  render(<SettingsShell {...props} />)
+  const action = await screen.findByRole("button", { name: replaceBuildLabel })
+  props.about.onUpdateStatus.mockRejectedValueOnce(new Error("Daemon connection is not open"))
+    .mockResolvedValue({ channel: "stable", state: "idle", currentVersion: "0.0.1", currentSourceCommit: appBuildCommit })
+  await userEvent.setup().click(action)
+  expect(await screen.findByText("domovoid 0.0.1 · aaaaaaa")).toBeTruthy()
+})
+
+it("bounds post-update reconnect retries and explains an unreadable commit", async () => {
+  const props = sameVersionSettings()
+  const view = render(<SettingsShell {...props} />)
+  const action = await screen.findByRole("button", { name: replaceBuildLabel })
+  props.about.onUpdateStatus.mockRejectedValue(new Error("Daemon connection is not open"))
+  vi.useFakeTimers()
+  try {
+    await act(async () => { fireEvent.click(action) })
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    const attempts = props.about.onUpdateStatus.mock.calls.length
+    expect(attempts).toBeGreaterThan(2)
+    expect(screen.getByText(unknownBuildReason)).toBeTruthy()
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(props.about.onUpdateStatus).toHaveBeenCalledTimes(attempts)
+    view.unmount()
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(props.about.onUpdateStatus).toHaveBeenCalledTimes(attempts)
+  } finally { vi.useRealTimers() }
+})
+
+
+it.each(["closed", "owner-only"])("does not retry post-update status when %s", async (mode) => {
+  const props = sameVersionSettings()
+  const view = render(<SettingsShell {...props} />)
+  const action = await screen.findByRole("button", { name: replaceBuildLabel })
+  props.about.onUpdateStatus.mockRejectedValue(mode === "owner-only"
+    ? new DaemonRpcError(localOwnerRequiredErrorCode, "Owner only") : new Error("Disconnected"))
+  vi.useFakeTimers()
+  try {
+    await act(async () => { fireEvent.click(action) })
+    if (mode === "closed") view.unmount()
+    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(props.about.onUpdateStatus).toHaveBeenCalledTimes(2)
+    view.unmount()
+  } finally { vi.useRealTimers() }
+})
