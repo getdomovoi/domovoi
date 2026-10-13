@@ -777,16 +777,51 @@ describe("controls a phone or tablet tab presses", () => {
     expectNothingRefused(socket)
   })
 
-  // A provider that stopped answering leaves the session failed with no
-  // provider thread; Try again restarts it with session.restartProviderThread.
-  it.each(["phone", "tablet"] as const)("a %s tab locks the provider's Try again and says why", async (clientKind) => {
+  // The active session, changed. A provider that stopped answering leaves it
+  // failed with no provider thread, and Try again restarts it with
+  // session.restartProviderThread. Another machine also claiming it offers
+  // Settle this (session.transferResolveConflict); a move the daemon gave up
+  // on offers Release this session (session.transferRecoverSource).
+  function withActive(change: (session: Hello["sessions"][number]) => Record<string, unknown>): Hello {
     const base = workspaceSnapshot()
-    const snapshot = workspaceSnapshot({
+    return workspaceSnapshot({
       approvals: [],
-      sessions: base.sessions.map((session) => session.id === base.activeSessionId
-        ? (({ providerThreadId: _thread, activeTurnId: _turn, ...rest }) => ({ ...rest, state: "failed" as const }))(session)
-        : session),
+      sessions: base.sessions.map((session) => session.id === base.activeSessionId ? change(session) : session),
     } as Partial<Hello>)
+  }
+  const failedProvider = () => withActive(({ providerThreadId: _thread, activeTurnId: _turn, ...rest }) => ({ ...rest, state: "failed" }))
+  const contested = () => withActive(({ activeTurnId: _turn, providerThreadId: _thread, ...rest }) => ({
+    ...rest,
+    state: "ownership-conflict",
+    workspacePath: "/worktrees/session",
+    ownershipGeneration: 3,
+    ownershipConflict: {
+      kind: "target-session-detected", transferId: `transfer-${"a".repeat(32)}`, otherMachineId: `machine-${"b".repeat(32)}`,
+      otherGeneration: 4, detectedAt: "2026-09-04T11:00:00.000Z", recoveryAction: "keep-target-session",
+      reason: "target-session-newer", manifestDigest: `sha256:${"f".repeat(64)}`,
+    },
+  }))
+  const stranded = () => withActive(({ activeTurnId: _turn, providerThreadId: _thread, ...rest }) => ({
+    ...rest,
+    state: "transferring",
+    workspacePath: "/worktrees/session",
+    ownershipGeneration: 1,
+    transfer: {
+      phase: "transferring", transferId: `transfer-${"a".repeat(32)}`, targetMachineId: `machine-${"b".repeat(32)}`,
+      intentDigest: `sha256:${"c".repeat(64)}`, nextGeneration: 2, startedAt: "2026-09-04T09:00:00.000Z",
+      resumeState: "failed", method: "git-bundle", requestedBy: { client: "desktop" },
+      package: {
+        state: "staged", manifestDigest: `sha256:${"d".repeat(64)}`,
+        reconciliation: {
+          state: "ownership-unconfirmed", reason: "target-unreachable", firstFailedAt: "2026-09-04T09:00:00.000Z",
+          lastFailedAt: "2026-09-04T11:00:00.000Z", attemptCount: 7, recoveryAction: "confirm-source-recovery",
+        },
+      },
+    },
+  }))
+
+  it.each(["phone", "tablet"] as const)("a %s tab locks the provider's Try again and says why", async (clientKind) => {
+    const snapshot = failedProvider()
     const socket = await openWorkspace(snapshot, { clientKind })
 
     await pressAll(userEvent.setup(), [screen.getByRole("button", { name: "Try again" })])
@@ -796,43 +831,50 @@ describe("controls a phone or tablet tab presses", () => {
     expectNothingRefused(socket)
   })
 
-  // Another machine also claims the session; settling it sends
-  // session.transferResolveConflict.
-  it.each(["phone", "tablet"] as const)("a %s tab locks Settle this on a contested session and says why", async (clientKind) => {
-    const base = workspaceSnapshot()
-    const snapshot = workspaceSnapshot({
-      approvals: [],
-      sessions: base.sessions.map((session) => session.id === base.activeSessionId
-        ? (({ activeTurnId: _turn, providerThreadId: _thread, ...rest }) => ({
-          ...rest,
-          state: "ownership-conflict" as const,
-          workspacePath: "/worktrees/session",
-          ownershipGeneration: 3,
-          ownershipConflict: {
-            kind: "target-session-detected" as const, transferId: `transfer-${"a".repeat(32)}`, otherMachineId: `machine-${"b".repeat(32)}`,
-            otherGeneration: 4, detectedAt: "2026-09-04T11:00:00.000Z", recoveryAction: "keep-target-session" as const,
-            reason: "target-session-newer" as const, manifestDigest: `sha256:${"f".repeat(64)}`,
-          },
-        }))(session)
-        : session),
-    } as Partial<Hello>)
+  it.each([
+    ["phone", "Settle this", contested],
+    ["tablet", "Settle this", contested],
+    ["phone", "Release this session", stranded],
+    ["tablet", "Release this session", stranded],
+  ] as const)("a %s tab locks %s on a move and says why", async (clientKind, control, build) => {
+    const snapshot = build()
     const socket = await openWorkspace(snapshot, { clientKind })
 
-    await pressAll(userEvent.setup(), [screen.getByRole("button", { name: "Settle this" })])
+    await pressAll(userEvent.setup(), [screen.getByRole("button", { name: control })])
     await act(async () => { answer(socket, handheldRefuses) })
 
-    expect(screen.getByText(off("Settle this is", "settle a move", snapshot.machine.name))).toBeTruthy()
+    expect(screen.getByText(off(`${control} is`, "settle a move", snapshot.machine.name))).toBeTruthy()
     expect(screen.queryByRole("alertdialog")).toBeNull()
     expectNothingRefused(socket)
   })
 
+  it.each(["desktop", "web"] as const)("a %s tab keeps Try again, Settle this and Release this session live", async (clientKind) => {
+    for (const [control, build] of [["Try again", failedProvider], ["Settle this", contested], ["Release this session", stranded]] as const) {
+      await openWorkspace(build(), { clientKind })
+      const skip = screen.queryByRole("button", { name: "Skip for now" })
+      if (skip) { await userEvent.setup().click(skip); await settle() }
+      expect(screen.getByRole("button", { name: control }), control).toHaveProperty("disabled", false)
+      expect(screen.queryByText(/off in a phone or tablet tab/u)).toBeNull()
+      cleanup()
+      harness.uninstall()
+      harness = installFakeWebSocket()
+    }
+  })
+
   // The desktop app and a full-access web tab keep every one of them.
   it.each(["desktop", "web"] as const)("a %s tab keeps them live with no reason line", async (clientKind) => {
-    const socket = await openWorkspace(withRule(), { clientKind })
+    const snapshot = withRule()
+    const socket = await openWorkspace(snapshot, { clientKind })
     const user = userEvent.setup()
     const skip = screen.queryByRole("button", { name: "Skip for now" })
     if (skip) { await user.click(skip); await settle() }
     expect(screen.getByRole("button", { name: "Restore worktree" })).toHaveProperty("disabled", false)
+    const drawer = screen.queryByRole("button", { name: /^Sessions \d/u })
+    if (drawer) await user.click(drawer)
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    await user.click(screen.getByRole("button", { name: `Actions for ${active.title}` }))
+    expect((await screen.findByRole("menuitem", { name: "Archive session" })).getAttribute("aria-disabled")).toBeNull()
+    await user.keyboard("{Escape}")
 
     await openTab(socket, () => false, "Checkpoints")
     const checkpoints = await screen.findByTestId("checkpoints-content")
@@ -847,7 +889,12 @@ describe("controls a phone or tablet tab presses", () => {
     await user.click(within(screen.getAllByTestId("rule-row")[0]!).getByRole("button", { name: "Revoke" }))
     await settle()
     expect(sentRequests(socket, "approvalRule.revoke")).toHaveLength(1)
+    expect(screen.queryByText(/off in a phone or tablet tab/u)).toBeNull()
 
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /Audit log/u }))
+    await screen.findByRole("heading", { level: 1, name: "Audit log" })
+    expect(screen.getByRole("button", { name: "Export this query" })).toHaveProperty("disabled", false)
     expect(screen.queryByText(/off in a phone or tablet tab/u)).toBeNull()
   })
 })
