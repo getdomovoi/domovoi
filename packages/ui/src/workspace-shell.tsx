@@ -213,6 +213,8 @@ export type WorkspaceShellProps = {
   windowBridge?: DesktopWindowBridge
   platform?: WorkspacePlatform
   onChangeCredential?: () => void
+  currentDeviceId?: string
+  onSignedOut?: (result: { revoked: true }) => void
   // Where this client keeps each daemon's relay identity pin. Absent means no
   // pin is kept and none is reconciled; the web passes localStorage.
   relayPinStorage?: RelayPinStorage
@@ -289,7 +291,7 @@ type StartScope = {
   focusFrom: { trigger: Element | null; within: Element | null }
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, relayPinStorage }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, currentDeviceId, onSignedOut, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
   // J24: whether the login service is installed, from the desktop's own
   // status read. A daemon outside the app is drawn as the service only when
@@ -394,6 +396,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         .then((endpoint) => { if (attachEpochRef.current === attachEpoch) setDialedRoute({ epoch: attachEpoch, kind: endpoint.routeKind }); return endpoint }),
     } : { state: "disabled" }, relayPinStorage)
   const { fleet, fleetOverflow, forgetMachine, pairMachine, listDevices, issueDeviceCode, updateStatus, tailnetStatus, revokeDevice, rotateDevice, renameDevice } = home
+  const signOutCurrentDevice = async () => {
+    const result = await home.revokeCurrentDevice()
+    onSignedOut?.(result)
+  }
   // The machine menu's Pair a machine sends fleet.enroll to the home daemon.
   // The daemon refuses it from a device credential, all a browser tab holds,
   // and the client closes its connection on that refusal; so only the desktop
@@ -1860,6 +1866,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onOpenSkills={() => setSurface("skills")}
             onListDevices={listDevices}
             onRevokeDevice={revokeDevice}
+            {...(currentDeviceId && onSignedOut ? { currentDeviceId, onSignOut: signOutCurrentDevice } : {})}
             onRotateDevice={rotateDevice}
             onRenameDevice={renameDevice}
             // fleet.enroll and fleet.forget need the daemon's own credential,

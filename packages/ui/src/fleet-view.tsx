@@ -901,6 +901,8 @@ function DeviceRow({
   onRevoke,
   onRename,
   onUndoRename,
+  onSignOut,
+  signOutDisabled,
 }: {
   device: PairedDeviceSummary
   disabled: boolean
@@ -912,12 +914,14 @@ function DeviceRow({
   onRevoke: () => void
   onRename: (label: string) => Promise<void>
   onUndoRename: () => void
+  onSignOut?: (() => void) | undefined
+  signOutDisabled?: boolean
 }) {
   const revoked = device.revokedAt !== undefined
   const isMachine = device.binding.kind === "machine"
   const locked = disabled || lockedReason !== undefined
   return (
-    <tr>
+    <tr className={onSignOut ? "bg-accent" : undefined}>
       <KindCell binding={device.binding} dimmed={revoked} />
       <LabelCell
         device={device}
@@ -958,16 +962,18 @@ function DeviceRow({
           <Button
             variant="ghost"
             className={destructiveControl}
-            disabled={locked || revoked}
-            aria-label={`${removalWord(device.binding)} ${device.label}`}
-            {...(revoked ? {} : { onClick: onRevoke })}
+            disabled={onSignOut ? signOutDisabled || revoked : locked || revoked}
+            aria-label={onSignOut ? "Sign this device out" : `${removalWord(device.binding)} ${device.label}`}
+            {...(revoked ? {} : { onClick: onSignOut ?? onRevoke })}
           >
-            {removalWord(device.binding)}
+            {onSignOut ? "Sign this device out" : removalWord(device.binding)}
           </Button>
         </div>
         {/* The Desktop V2 frame draws the consequence as a standing line
             under each row, read before the confirmation opens. */}
-        {lockedReason !== undefined ? (
+        {onSignOut ? (
+          <p className="mt-2 max-w-[38ch] text-[11px] leading-relaxed text-muted-foreground">Revokes this client and closes its socket.</p>
+        ) : lockedReason !== undefined ? (
           <p className="mt-2 max-w-[38ch] text-[11px] leading-relaxed text-faint">{lockedReason}</p>
         ) : revoked ? null : (
           <p className="mt-2 max-w-[38ch] text-[11px] leading-relaxed text-muted-foreground">
@@ -1235,6 +1241,8 @@ export function FleetView({
   providers,
   onListDevices,
   onRevokeDevice,
+  currentDeviceId,
+  onSignOut,
   onRotateDevice,
   onRenameDevice,
   onPairMachine,
@@ -1250,6 +1258,8 @@ export function FleetView({
   readings = {},
   onReadMachine,
 }: {
+  currentDeviceId?: string
+  onSignOut?: () => Promise<void>
   connected: boolean
   entries: FleetEntry[]
   daemonTimeOffsetMs?: number
@@ -1284,6 +1294,26 @@ export function FleetView({
   onRemoveClientAccess?: (machineId: string) => void
   readOnly?: boolean
 }) {
+  const [signOutOpen, setSignOutOpen] = useState(false)
+  const [signOutPending, setSignOutPending] = useState(false)
+  const signingOut = useRef(false)
+  const [signOutError, setSignOutError] = useState("")
+  const signOut = async () => {
+    if (!onSignOut || signingOut.current) return
+    signingOut.current = true
+    setSignOutPending(true)
+    setSignOutError("")
+    try {
+      await onSignOut()
+      setSignOutOpen(false)
+    } catch {
+      setSignOutError("Sign-out was not confirmed. This device may have signed out. Reconnect to check. If access is refused, pair this tab again from Settings on the machine.")
+      setSignOutOpen(false)
+    } finally {
+      signingOut.current = false
+      setSignOutPending(false)
+    }
+  }
   const [authorizing, setAuthorizing] = useState<FleetMachine | null>(null)
   const [removedAccess, setRemovedAccess] = useState<{ machineId: string; label: string } | null>(null)
   useEffect(() => {
@@ -1542,6 +1572,14 @@ export function FleetView({
               </p>
             </div>
 
+            {signOutError ? (
+              <Alert variant="destructive" className="mx-[15px] mb-3 w-auto">
+                <CircleStopIcon />
+                <AlertTitle>Sign-out not confirmed</AlertTitle>
+                <AlertDescription>{signOutError}</AlertDescription>
+              </Alert>
+            ) : null}
+
             {actionError ? (
               <Alert variant="destructive" className="mx-[15px] mb-3 w-auto">
                 <CircleStopIcon />
@@ -1581,6 +1619,9 @@ export function FleetView({
                       <DeviceRow
                         key={paired.id}
                         device={paired}
+                        {...(browserTab && paired.id === currentDeviceId && paired.binding.kind === "client" && onSignOut ? {
+                          onSignOut: () => setSignOutOpen(true), signOutDisabled: !connected || signOutPending,
+                        } : {})}
                          disabled={readOnly || !connected || pendingDeviceId === paired.id}
                         lockedReason={browserTab ? lockedInBrowserTab(paired.binding, devicesMachineLabel ?? "this machine") : undefined}
                         undoable={undo?.deviceId === paired.id}
@@ -1613,6 +1654,19 @@ export function FleetView({
               </Empty>
             ) : null}
 
+            {handheld && currentDeviceId && onSignOut ? (
+              <div className="flex flex-wrap items-center gap-3 border-t bg-accent px-[15px] py-[11px]">
+                <div className="min-w-0 flex-1">
+                  <p className="m-0 text-[12.5px] font-medium">This browser</p>
+                  <p className="m-0 break-all font-machine text-[11px] text-muted-foreground">{currentDeviceId}</p>
+                  <p className="m-0 text-[11px] text-muted-foreground">Revokes this client and closes its socket.</p>
+                </div>
+                <Button variant="ghost" className={destructiveControl} disabled={!connected || signOutPending} onClick={() => setSignOutOpen(true)}>
+                  Sign this device out
+                </Button>
+              </div>
+            ) : null}
+
             {connected && handheld ? (
               <p className="m-0 px-[15px] pb-3 text-[11px] leading-relaxed text-faint">
                 {`Paired devices are off in a phone or tablet tab: the daemon does not list them for a phone or tablet credential. Use the desktop app on ${devicesMachineLabel ?? "this machine"}.`}
@@ -1639,6 +1693,24 @@ export function FleetView({
           </section>
         </main>
       </ScrollArea>
+
+      <AlertDialog open={signOutOpen} onOpenChange={(open) => { if (!signOutPending) setSignOutOpen(open) }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Sign this device out</AlertDialogTitle>
+            <AlertDialogDescription>
+              This tab loses access to this machine and must be paired again. Sessions already on the machine keep running.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={signOutPending}>Keep device</AlertDialogCancel>
+            <AlertDialogAction className={dangerControl} disabled={signOutPending || !connected} onClick={(event) => {
+              event.preventDefault()
+              void signOut()
+            }}>Sign this device out</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <RevokeConfirmation
         device={managesDevices ? revoking : null}

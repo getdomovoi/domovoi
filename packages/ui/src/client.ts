@@ -6,6 +6,7 @@ import {
   protocolVersion,
   rpcNotificationSchema,
   rpcMethodAuthorizations,
+  watchingClientControlMethod,
   rpcMethods,
   rpcResponseSchema,
   artifactAuthorizeResultSchema,
@@ -508,7 +509,11 @@ export class DomovoiClient extends EventTarget {
     parseOrOptions?: ((value: unknown) => T) | DomovoiRequestOptions,
     requestOptions: DomovoiRequestOptions = {},
   ): Promise<T> {
-    if (this.#clientAccess === "watching" && rpcMethodAuthorizations[method] === "control") {
+    if (
+      this.#clientAccess === "watching"
+      && rpcMethodAuthorizations[method] === "control"
+      && method !== watchingClientControlMethod
+    ) {
       return Promise.reject(new Error("Watching clients cannot change workspace state"))
     }
     const id = ++this.#requestId
