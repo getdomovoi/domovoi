@@ -13,6 +13,19 @@ import { StatusDot } from "./status-dot.js"
 
 type CheckpointEntry = Extract<SessionHistoryEntry, { category: "checkpoints" }>
 
+export function CheckpointCaptureLine({ entry }: { entry: Pick<CheckpointEntry, "midTurn" | "reason"> }) {
+  if (!entry.midTurn) return null
+  const origin = entry.reason === "before-approved-command"
+    ? "Taken before an approved command."
+    : entry.midTurn.providerTurnId !== undefined || entry.midTurn.providerTurnIdSha256 !== undefined
+      ? "Taken mid-turn while the agent was running."
+      : "Checkpoint capture."
+  const stability = entry.midTurn.stability === "matched"
+    ? "Two staging passes matched."
+    : entry.midTurn.changedPathCount > 0 ? "Files changed while it was taken." : "Capture was unstable."
+  return <p className="wrap-anywhere text-[11px] leading-normal text-muted-foreground">{origin} {stability}</p>
+}
+
 // The v2 design gives checkpoints a pane of their own beside History. Its
 // intro promises a checkpoint before every approved write and a revert that
 // rewinds the thread with the worktree. Q341 A keeps revert worktree-only, so
@@ -244,20 +257,22 @@ export function CheckpointsPanel({
                 ) : null}
                 {entry.midTurn ? (
                   <div className="basis-full min-w-0 text-[11px] leading-normal text-muted-foreground">
-                    <p className="wrap-anywhere">Taken mid-turn while the agent was running. {entry.midTurn.providerTurnId !== undefined
-                      ? <>Turn: {entry.midTurn.providerTurnId}.</>
-                      : <>Turn ID SHA-256: {entry.midTurn.providerTurnIdSha256}.</>}</p>
-                    {entry.midTurn.stability === "unstable" ? (
+                    <CheckpointCaptureLine entry={entry} />
+                    {entry.midTurn.providerTurnId !== undefined ? <p className="wrap-anywhere">Turn: {entry.midTurn.providerTurnId}.</p>
+                      : entry.midTurn.providerTurnIdSha256 !== undefined ? <p className="wrap-anywhere">Turn ID SHA-256: {entry.midTurn.providerTurnIdSha256}.</p> : null}
+                    {entry.midTurn.stability === "unstable" && entry.midTurn.changedPathCount > 0 ? (
                       <>
-                        <p>Files changed while it was taken:</p>
-                        <ul className="list-inside list-disc font-machine">
-                          {entry.midTurn.changedPaths.map((path, index) => <li key={index} className="whitespace-pre-wrap wrap-anywhere">{path}</li>)}
-                        </ul>
+                        {entry.midTurn.changedPaths.length > 0 ? <>
+                          <p>Changed paths:</p>
+                          <ul className="list-inside list-disc font-machine">
+                            {entry.midTurn.changedPaths.map((path, index) => <li key={index} className="whitespace-pre-wrap wrap-anywhere">{path}</li>)}
+                          </ul>
+                        </> : null}
                         {entry.midTurn.changedPathCount > entry.midTurn.changedPaths.length ? (
                           <p>{entry.midTurn.changedPathCount - entry.midTurn.changedPaths.length} more changed {entry.midTurn.changedPathCount - entry.midTurn.changedPaths.length === 1 ? "path" : "paths"} not shown.</p>
                         ) : null}
                       </>
-                    ) : <p>Two staging passes matched.</p>}
+                    ) : null}
                     <p>Matching passes do not guarantee a single point in time. A change that reverts between passes is missed.</p>
                   </div>
                 ) : null}

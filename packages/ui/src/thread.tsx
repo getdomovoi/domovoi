@@ -1,3 +1,4 @@
+import { CheckpointCaptureLine } from "./checkpoints-panel.js"
 import { Fragment, lazy, memo, Suspense, useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from "react"
 import {
   ArchiveIcon,
@@ -234,11 +235,14 @@ export const CheckpointThreadItem = memo(function CheckpointThreadItem({
   onRestore: (checkpointId: string) => void
 }) {
   return (
-    <div className="flex items-center gap-1 self-center rounded-full border bg-card py-1 pr-1 pl-3 font-machine text-mono-xs text-faint">
-      <span>Checkpoint · {item.label}</span>
-      {item.commit ? (
-        <CheckpointRestore checkpointId={item.id} label={item.label} disabled={disabled} onRestore={onRestore} />
-      ) : null}
+    <div className="flex min-w-0 max-w-full flex-col items-center gap-1 self-center">
+      <div className="flex max-w-full items-center gap-1 rounded-full border bg-card py-1 pr-1 pl-3 font-machine text-mono-xs text-faint">
+        <span className="min-w-0 wrap-anywhere">Checkpoint · {item.label}</span>
+        {item.commit ? (
+          <CheckpointRestore checkpointId={item.id} label={item.label} disabled={disabled} onRestore={onRestore} />
+        ) : null}
+      </div>
+      <CheckpointCaptureLine entry={item} />
     </div>
   )
 })
