@@ -245,8 +245,12 @@ function parseSupervisorFacts(value: unknown): SupervisorFacts | undefined {
   return value as SupervisorFacts
 }
 
+function knownSourceCommit(value: unknown): string | undefined {
+  return typeof value === "string" && /^[a-f0-9]{40}$/u.test(value) ? value : undefined
+}
+
 // `footer` is the design's last row of the card: About this build.
-function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> }; footer?: ReactNode }) {
+function DaemonSection({ daemon, footer, buildStatus, onUpdated }: { buildStatus: UpdateStatus | undefined; onUpdated: () => void; daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> }; footer?: ReactNode }) {
   const service = loginServices[daemon.platform]
   // Q336 A: every printed command names what runs on this machine.
   const links = useCommandLinkView()
@@ -265,7 +269,14 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
   }
   const report = checking ? undefined : daemon.serviceReport
   const observed = report && "installed" in report ? report : undefined
-  const supervisor = parseSupervisorFacts(observed?.supervisor)
+  // appSourceCommit is transport metadata, not a supervisor fact. Strip it
+  // before the strict supervisor parser so it cannot imply a service exists.
+  const transport = observed?.supervisor
+  const { appSourceCommit, ...supervisorReport } = transport && Object.getPrototypeOf(transport) === Object.prototype
+    ? transport as Record<string, unknown> : {}
+  const appCommit = knownSourceCommit(appSourceCommit)
+  const serviceCommit = buildStatus?.currentVersion === daemon.serviceVersion ? knownSourceCommit(buildStatus?.currentSourceCommit) : undefined
+  const supervisor = parseSupervisorFacts(supervisorReport)
   const hasService = observed?.installed === true || (observed?.installed === null && supervisor !== undefined && Object.keys(supervisor).length > 0)
   const crashes = supervisor?.crashCount === undefined ? "Crash count unknown" : `${supervisor.crashCount} ${supervisor.crashCount === 1 ? "crash" : "crashes"}`
   const exhausted = hasService && supervisor?.supervisionFailure === "exhausted"
@@ -297,7 +308,7 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
     setPhase({ kind: "updating" })
     try {
       const outcome = await live.update()
-      if (outcome.ok) setPhase({ kind: "updated" })
+      if (outcome.ok) { setPhase({ kind: "updated" }); onUpdated() }
       else if (outcome.reason === "refused") setPhase({ kind: "waits", refusal: outcome.message })
       else if (outcome.reason === "check-failed") setPhase({ kind: "unchecked", message: outcome.message })
       else if (outcome.reason === "installed-not-attached") setPhase({ kind: "update-not-attached", message: outcome.message })
@@ -315,6 +326,9 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
   const on = daemon.owner === "outside" && installed && daemon.serviceRunning === true
   const unknown = daemon.owner === "outside" && !on
   const serviceBehind = on && phase.kind !== "updated" && daemon.serviceVersion !== undefined && daemon.appVersion !== undefined && olderRelease(daemon.serviceVersion, daemon.appVersion)
+  const sameVersion = on && phase.kind !== "updated" && daemon.serviceVersion !== undefined && daemon.serviceVersion === daemon.appVersion
+  const replaceBuild = sameVersion && appCommit !== undefined && serviceCommit !== undefined && appCommit !== serviceCommit
+  const unknownBuild = sameVersion && (appCommit === undefined || serviceCommit === undefined)
   const updating = phase.kind === "updating"
   const state = on
     ? { label: "Running", tone: "bg-success", line: "Quitting this app leaves the daemon and its sessions running." }
@@ -380,12 +394,13 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
         </div>
         {live?.status ? <div><Button type="button" variant="outline" size="sm" disabled={checking || busy || updating} onClick={() => void check()}>Check again</Button></div> : null}
       </> : null}
-      {serviceBehind ? (
+      {serviceBehind || replaceBuild ? (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-warn-border bg-warn-background px-3 py-2 text-[11.5px] text-warn-foreground">
-          <p className="m-0 min-w-0 flex-1">{`The login service runs Domovoi ${daemon.serviceVersion}. This app is ${daemon.appVersion}.`}</p>
-          {live?.update ? <Button type="button" variant="outline" size="sm" disabled={busy || updating || checking || Boolean(live.refusal)} onClick={() => void update()}>Update the service</Button> : null}
+          <p className="m-0 min-w-0 flex-1">{replaceBuild ? "The service and this app have the same version but different build commits." : `The login service runs Domovoi ${daemon.serviceVersion}. This app is ${daemon.appVersion}.`}</p>
+          {live?.update ? <Button type="button" variant="outline" size="sm" disabled={busy || updating || checking || Boolean(live.refusal)} onClick={() => void update()}>{replaceBuild ? "Replace the service with this app's build" : "Update the service"}</Button> : null}
         </div>
       ) : null}
+      {unknownBuild ? <p className="m-0 text-[11.5px] text-muted-foreground">Build comparison is unavailable because this app's or the service's commit is unknown.</p> : null}
       {phase.kind === "update-failed" ? (
         <p className="m-0 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground" role="alert">{phase.message}</p>
       ) : null}
@@ -566,13 +581,13 @@ function pendingUpdateLine(status: UpdateStatus): string | undefined {
 
 // On its own, About is a card. Inside the daemon card it is that card's last
 // row, set off by a rule, as the design draws it.
-function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCard?: boolean }) {
+function useBuildStatus(about: AboutBuild | undefined, revision: number) {
   const [status, setStatus] = useState<UpdateStatus | undefined>(undefined)
   // Q169: the daemon answers update status only to its owner on a direct
   // loopback connection. A paired tab gets a policy refusal, keeps its
   // connection, and says why it has no status instead of going quiet.
   const [ownerOnly, setOwnerOnly] = useState(false)
-  const { onUpdateStatus } = about
+  const onUpdateStatus = about?.onUpdateStatus
   useEffect(() => {
     // Without a reader this client does not ask (a phone or tablet: the
     // daemon refuses update.status to that credential and drops the
@@ -583,6 +598,7 @@ function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCar
       setOwnerOnly(true)
       return
     }
+    setStatus(undefined)
     let active = true
     onUpdateStatus().then(
       (next) => { if (active) { setStatus(next); setOwnerOnly(false) } },
@@ -593,7 +609,12 @@ function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCar
       },
     )
     return () => { active = false }
-  }, [onUpdateStatus])
+  }, [onUpdateStatus, revision])
+  return { status, ownerOnly }
+}
+
+function AboutBuildSection({ about, inCard = false, build }: { about: AboutBuild; inCard?: boolean; build: ReturnType<typeof useBuildStatus> }) {
+  const { status, ownerOnly } = build
   const commit = status?.currentSourceCommit?.slice(0, 7)
   const pending = status ? pendingUpdateLine(status) : undefined
   const openReleasePage = about.onOpenReleasePage
@@ -726,6 +747,8 @@ export function SettingsShell({
   onWindowDecorationChange,
   onThemeChange,
 }: SettingsShellProps) {
+  const [buildRevision, setBuildRevision] = useState(0)
+  const build = useBuildStatus(about, buildRevision)
   const editorCapability = externalEditor !== undefined && onExternalEditorChange !== undefined
     ? { editor: externalEditor, onChange: onExternalEditorChange }
     : undefined
@@ -762,14 +785,14 @@ export function SettingsShell({
         </header>
 
         <fieldset disabled={readOnly} className="contents">
-          {daemonSection ? <DaemonSection daemon={daemonSection} footer={about || tailnet ? <>{tailnet ? <TailnetReachCard controller={tailnet} inCard /> : null}{about ? <AboutBuildSection about={about} inCard /> : null}</> : undefined} /> : null}
+          {daemonSection ? <DaemonSection daemon={daemonSection} buildStatus={build.status} onUpdated={() => setBuildRevision((value) => value + 1)} footer={about || tailnet ? <>{tailnet ? <TailnetReachCard controller={tailnet} inCard /> : null}{about ? <AboutBuildSection about={about} build={build} inCard /> : null}</> : undefined} /> : null}
           {tailnet && !daemonSection ? <TailnetReachCard controller={tailnet} /> : null}
 
           <section aria-label="Providers and tokens">
             <ProviderSettings providers={providers} machines={providerMachines} fleetOverflow={providerFleetOverflow} secrets={secrets} secretsRefusal={secretsWithheldFrom === undefined ? undefined : `Key status is off in a phone or tablet tab: the daemon does not report it to a phone or tablet credential. Use the desktop app on ${secretsWithheldFrom}.`} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
           </section>
 
-          {about && !daemonSection ? <AboutBuildSection about={about} /> : null}
+          {about && !daemonSection ? <AboutBuildSection about={about} build={build} /> : null}
 
           {pairing ? <PairingSection pairing={pairing} readOnly={readOnly} onOpenFleet={onOpenFleet} tailnet={tailnet} /> : null}
         </fieldset>

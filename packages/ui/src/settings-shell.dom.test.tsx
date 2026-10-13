@@ -1213,3 +1213,104 @@ it.each([
   expect(alert.textContent).toContain(prerequisite)
   expect(alert.textContent).toContain("domovoid service install")
 })
+
+const replaceBuildLabel = "Replace the service with this app's build"
+const unknownBuildReason = "Build comparison is unavailable because this app's or the service's commit is unknown."
+const appBuildCommit = "a".repeat(40)
+const serviceBuildCommit = "b".repeat(40)
+
+function sameVersionSettings(appCommit: unknown = appBuildCommit, serviceCommit: string = serviceBuildCommit) {
+  const update = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true }))
+  const onUpdateStatus = vi.fn(async (): Promise<import("@getdomovoi/protocol").UpdateStatus> => ({ channel: "stable", state: "idle", currentVersion: "0.0.1", currentSourceCommit: serviceCommit }))
+  return {
+    ...shellProps(),
+    about: { version: "0.0.1", onUpdateStatus },
+    localDaemon: {
+      title: "Connected to the installed Domovoi service", detail: "", owner: "outside" as const,
+      platform: "darwin" as const, serviceInstalled: true, serviceRunning: true,
+      appVersion: "0.0.1", serviceVersion: "0.0.1",
+      serviceReport: { installed: true, running: true, detail: "", supervisor: { appSourceCommit: appCommit, crashCount: 2 } },
+      service: { install: vi.fn(), remove: vi.fn(), update },
+    },
+  }
+}
+
+it("replaces differing same-version builds through update and rereads the daemon commit", async () => {
+  const props = sameVersionSettings()
+  render(<SettingsShell {...props} />)
+  const action = await screen.findByRole("button", { name: replaceBuildLabel })
+  expect(screen.queryByRole("button", { name: "Update the service" })).toBeNull()
+  expect(screen.getByText(/2 crashes/)).toBeTruthy()
+  expect(screen.getByText("domovoid 0.0.1 · bbbbbbb")).toBeTruthy()
+  props.about.onUpdateStatus.mockResolvedValue({ channel: "stable", state: "idle", currentVersion: "0.0.1", currentSourceCommit: appBuildCommit })
+  await userEvent.setup().click(action)
+  expect(props.localDaemon.service.update).toHaveBeenCalledOnce()
+  expect(await screen.findByText("domovoid 0.0.1 · aaaaaaa")).toBeTruthy()
+  expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
+})
+
+it("offers no replacement for equal commits", async () => {
+  render(<SettingsShell {...sameVersionSettings(appBuildCommit, appBuildCommit)} />)
+  await screen.findByText("domovoid 0.0.1 · aaaaaaa")
+  expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
+  expect(screen.queryByText(unknownBuildReason)).toBeNull()
+})
+
+it.each([null, 42, "", "abc1234", "g".repeat(40), "a".repeat(39), "a".repeat(41)])("treats invalid app commit %s as unknown without discarding supervisor facts", async (commit) => {
+  render(<SettingsShell {...sameVersionSettings(commit)} />)
+  await screen.findByText("domovoid 0.0.1 · bbbbbbb")
+  expect(screen.getByText(unknownBuildReason)).toBeTruthy()
+  expect(screen.getByText(/2 crashes/)).toBeTruthy()
+  expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
+})
+
+it("explains an absent service commit without offering replacement", async () => {
+  const props = sameVersionSettings()
+  props.about.onUpdateStatus.mockResolvedValue({ channel: "stable", state: "idle", currentVersion: "0.0.1" })
+  render(<SettingsShell {...props} />)
+  await act(async () => {})
+  expect(screen.getByText(unknownBuildReason)).toBeTruthy()
+  expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
+})
+
+it.each(["0.0.0", "0.0.2"])("preserves the version-based behavior for service %s", async (version) => {
+  const props = sameVersionSettings()
+  props.localDaemon.serviceVersion = version
+  render(<SettingsShell {...props} />)
+  await screen.findByText("domovoid 0.0.1 · bbbbbbb")
+  expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
+  expect(screen.queryByText(unknownBuildReason)).toBeNull()
+  expect(Boolean(screen.queryByRole("button", { name: "Update the service" }))).toBe(version === "0.0.0")
+})
+
+it("does not treat app build metadata as evidence of an installed supervisor", async () => {
+  const props = sameVersionSettings()
+  render(<SettingsShell {...props} localDaemon={{ ...props.localDaemon, serviceReport: { installed: null, running: false, detail: "", supervisor: { appSourceCommit: appBuildCommit } } }} />)
+  await screen.findByText("domovoid 0.0.1 · bbbbbbb")
+  expect(screen.queryByText(/Crash count unknown/)).toBeNull()
+})
+
+
+it("keeps replacement disabled during the existing active-work refusal", async () => {
+  const props = sameVersionSettings()
+  render(<SettingsShell {...props} localDaemon={{ ...props.localDaemon, service: { ...props.localDaemon.service, refusal: "1 turn is running." } }} />)
+  const action = await screen.findByRole("button", { name: replaceBuildLabel })
+  expect(action.hasAttribute("disabled")).toBe(true)
+  await userEvent.setup().click(action)
+  expect(props.localDaemon.service.update).not.toHaveBeenCalled()
+})
+
+it.each(["abc1234", "g".repeat(40)])("rejects a malformed service commit %s", async (commit) => {
+  render(<SettingsShell {...sameVersionSettings(appBuildCommit, commit)} />)
+  await act(async () => {})
+  expect(screen.getByText(unknownBuildReason)).toBeTruthy()
+  expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
+})
+
+it("does not compare a commit from a different daemon version read", async () => {
+  const props = sameVersionSettings()
+  props.about.onUpdateStatus.mockResolvedValue({ channel: "stable", state: "idle", currentVersion: "0.0.2", currentSourceCommit: serviceBuildCommit })
+  render(<SettingsShell {...props} />)
+  await act(async () => {})
+  expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
+})

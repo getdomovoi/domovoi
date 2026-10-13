@@ -142,18 +142,22 @@ pages, not from a run. Record what each OS showed, word for word where you can, 
    `domovoid <version> · <commit>` label. The commit is the running daemon's, here the login
    service's, so it matches the start of the commit recorded for this build. If no commit shows,
    record that in the notes.
-6. **Update by hand.** **Changes the OS. "Update the service" also changes the profile's runtime
-   copy and service configuration.** Build a package from a later commit, record that commit, and
-   install it over the first, as in step 1. Open the app; it attaches to the running service.
-   Settings shows "The login service runs Domovoi X. This app is Y." and "Update the service" only
-   when the service's version is older than the app's. Both are `0.0.1` at this commit, so two
-   builds at the same version show neither; record which you saw. If the button shows, choose it
-   and record the result. Then compare the commit in "About this build" with the one recorded in
-   step 5. It names the build the running daemon came from, which with the login service on is
-   the service's runtime copy. Record pass when it shows the later commit, and fail when it still
-   shows the step 5 commit, with both commits in the notes. Read from the code, not run: at the
-   same version nothing in this step replaces the service's copy, so expect the step 5 commit.
-   Record blocked, with "no build identity shown" in the notes, only when no commit shows.
+6. **Update by hand.** **Changes the OS. Replacing or updating the service changes the profile's
+   runtime copy and service configuration.** Build a package from a different clean commit,
+   record its full commit, and install it over the first, as in step 1. Open the app; it attaches
+   to the running service. When the versions are equal and both build commits are known and
+   differ, Settings offers "Replace the service with this app's build". Choose it and record the
+   result. It uses the existing in-place update, including its active-work and profile refusals.
+   Equal commits show no replacement action. If either commit is unknown, Settings shows
+   "Build comparison is unavailable because this app's or the service's commit is unknown."
+   and offers no replacement; record that reason and the missing commit in the notes.
+   Differing versions keep the existing behavior: "Update the service" appears only when the
+   service's version is older than the app's. After a successful replacement or update, compare
+   "About this build" with the app commit recorded for this step and the service commit from
+   step 5. Its `domovoid <version> · <commit>` label is read from the running daemon, here the
+   service's runtime copy. Record pass when it shows the app's commit, and fail if it still shows
+   the step 5 commit or no commit. Include both full commits, the displayed label, and the action
+   result in the notes.
 7. **Remove the login service.** **Changes the profile and the OS.** Settings, "Daemon on this
    machine", "Remove", then "Remove the service" in the dialog "Remove the login service?". Expect
    "Removed. Quitting Domovoi now stops the daemon and every session on it." The manager check

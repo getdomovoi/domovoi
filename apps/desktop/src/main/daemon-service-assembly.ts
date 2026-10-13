@@ -36,6 +36,7 @@ export function createDesktopDaemonService(
   // looked for (#635).
   const copies = profileDirectory ?? (process.platform === "win32" ? win32 : posix).join(home, ".domovoi")
   return new DesktopDaemonService({
+    appSourceCommit: daemon.builtSourceCommit,
     // Q408 A: the daemon's own copy routine, the one `domovoid service
     // install` uses when run from the app's runtime.
     stageRuntime: (operation) => daemon.prepareDaemonRuntime({
