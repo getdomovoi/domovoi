@@ -52,11 +52,13 @@ function LimitRows({ rows }: { rows: BrowserLimit[] }) {
   return (
     <ul aria-label="Browser limits" className="m-0 list-none divide-y divide-border rounded-xl border border-border p-0">
       {rows.map((row) => (
-        <li key={row.what} data-tone={row.tone} className="flex items-start gap-3 px-3.5 py-2.5">
+        // Three columns from sm up; on a phone the why takes its own line
+        // under the what and the state, so no column is squeezed to nothing.
+        <li key={row.what} data-tone={row.tone} className="flex flex-wrap items-start gap-x-3 gap-y-0.5 px-3.5 py-2.5 sm:flex-nowrap">
           <StatusDot meaning={meaningFor[row.tone]} label={row.state} labelHidden size="inline" className="mt-1.5" />
-          <span className="w-40 shrink-0 text-[12.5px] font-medium text-strong">{row.what}</span>
-          <span className={cn("w-32 shrink-0 font-mono text-[10.5px] leading-5", stateTone[row.tone])}>{row.state}</span>
-          <span className="min-w-0 flex-1 text-[11.5px] leading-5 text-muted-foreground">{row.why}</span>
+          <span className="min-w-0 flex-1 text-[12.5px] font-medium text-strong sm:w-40 sm:flex-none sm:shrink-0">{row.what}</span>
+          <span className={cn("shrink-0 font-mono text-[10.5px] leading-5 sm:w-32", stateTone[row.tone])}>{row.state}</span>
+          <span className="min-w-0 basis-full pl-5 text-[11.5px] leading-5 text-muted-foreground sm:basis-0 sm:flex-1 sm:pl-0">{row.why}</span>
         </li>
       ))}
     </ul>
