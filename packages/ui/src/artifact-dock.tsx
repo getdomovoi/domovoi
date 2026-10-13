@@ -1011,7 +1011,12 @@ export function ArtifactDock({
               <EmptyHeader>
                 <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
                 <EmptyTitle>Loading terminal</EmptyTitle>
-                <EmptyDescription>Preparing the interactive terminal renderer.</EmptyDescription>
+                {terminalReadOnlyReason !== undefined ? (
+                  <>
+                    <EmptyDescription>Preparing the terminal renderer.</EmptyDescription>
+                    <EmptyDescription>{terminalReadOnlyReason}</EmptyDescription>
+                  </>
+                ) : <EmptyDescription>Preparing the interactive terminal renderer.</EmptyDescription>}
               </EmptyHeader>
             </Empty>
           )}>
