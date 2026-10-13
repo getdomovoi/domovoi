@@ -22,13 +22,39 @@ must supply these fields, using `storedUpdatePolicySchema`:
   timestamp metadata, and snapshot/targets metadata with consistent-snapshot names.
 - `artifactBaseUrl`: HTTPS release base consumed by the existing bootstrap installer.
 - `trustedRoot`: the independently provisioned root metadata envelope.
-- `automaticChecks`: reserved installer authorization for a future scheduler.
+- `automaticChecks`: explicit boolean authorization for scheduled checks.
 
 URLs cannot contain credentials, query strings or fragments. RPC parameters cannot
-set these URLs, replace the trusted root or enable automatic checks. This slice
-adds neither an installer policy writer nor a periodic scheduler. The unused
-background-check entry was removed; stored authorization has no caller until
-the scheduler slice implements and tests that boundary.
+set these URLs, replace the trusted root or enable automatic checks. There is no
+installer policy writer in this slice.
+
+## Automatic checks
+
+The daemon starts its scheduler only after successful startup, with the explicitly
+configured updater and held profile lease. The first boundary is one hour later.
+Each completed cycle schedules the next boundary one hour later, including cycles
+that refuse local policy or receive an update failure. This is a local cadence,
+not a hosted service commitment. Slow checks and process suspension do not create
+catch-up bursts. Timers do not keep an otherwise stopped process alive.
+
+At each boundary the scheduler synchronously rereads the bounded private policy
+and immediately calls the existing updater with its stored channel, only when
+`automaticChecks` is `true`. Missing, inaccessible, non-private or invalid policy
+silently skips that admission without changing update status. A later valid policy
+can enable a later boundary. Stable and beta remain the only accepted channels;
+this adds no internal feed, trust root, signing or rollout authority. The policy's
+URLs and trust root retain the existing validation and TUF verification gates.
+
+The scheduler waits for its admitted check before creating another timer. Manual
+and scheduled checks use the same updater, preserving same-channel coalescing and
+competing-channel `busy` refusal. Channel changes take effect at the next admitted
+boundary even if a manual check changed the updater's last status channel.
+
+Authorization is an admission snapshot: an already admitted check may finish after
+the policy is disabled, removed or changed. Shutdown fences new admissions and
+clears the timer before waiting for admitted work. It does not cancel the ongoing
+download or promise no network activity after shutdown begins. Scheduling never
+calls activation, switches a runtime, or opens signing, provenance or native gates.
 
 ## State and persistence
 
