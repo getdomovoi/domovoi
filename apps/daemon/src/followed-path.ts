@@ -174,6 +174,15 @@ export type FileTargetIdentity = {
   target: NodeIdentity
 }
 
+// A reading that failed or timed out is not an absent earlier reading. Keep
+// it unreadable so a later regular file still requires a fresh approval.
+export const unreadableFileTargetIdentity: FileTargetIdentity = Object.freeze({
+  entry: Object.freeze({ kind: "unreadable", dev: "", ino: "", nlink: "" }),
+  realPath: undefined,
+  walkedPath: undefined,
+  target: Object.freeze({ kind: "unreadable", dev: "", ino: "", nlink: "" }),
+})
+
 async function nodeIdentity(path: string): Promise<NodeIdentity> {
   try {
     // Only lstat reads it: opening a FIFO with no writer would block.

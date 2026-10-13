@@ -75,6 +75,7 @@ import { ThreadFileChips } from "./thread-file-chips"
 import { TurnActivity } from "./turn-activity"
 import { activityTiming, headerClockText, latestSessionTurn, turnClock, type TurnTiming } from "./turn-clock"
 import { CheckpointRestore, checkpointRestoreBlocked } from "./checkpoint-actions.js"
+import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab.js"
 import {
   heldAfter,
   submitFromComposer,
@@ -238,11 +239,15 @@ export const CheckpointThreadItem = memo(function CheckpointThreadItem({
   disabled: boolean
   onRestore: (checkpointId: string) => void
 }) {
+  // checkpoint.restore is not on phoneAndTabletRpcMethods. A phone or tablet
+  // tab draws no restore on the chip (Q88); the Checkpoints and History tabs
+  // keep the control, disabled, with the reason.
+  const handheld = useHandheldTabMachine() !== undefined
   return (
     <div className="flex min-w-0 max-w-full flex-col items-center gap-1 self-center">
       <div className="flex max-w-full items-center gap-1 rounded-full border bg-card py-1 pr-1 pl-3 font-machine text-mono-xs text-faint">
         <span className="min-w-0 wrap-anywhere">Checkpoint · {item.label}</span>
-        {item.commit ? (
+        {item.commit && !handheld ? (
           <CheckpointRestore checkpointId={item.id} label={item.label} disabled={disabled} onRestore={onRestore} />
         ) : null}
       </div>
@@ -470,12 +475,20 @@ export function SessionReadOnlyNotice({
   pending: boolean
   onRelease: (offer: SessionRecoveryOffer) => void
 }) {
+  const handheldMachine = useHandheldTabMachine()
+  const lockedId = `session-release-locked-${session.id}`
   const notice = readOnlySessionNotice(session, otherLabel)
   if (!notice) return null
   // Only one of these can apply: a frozen move the daemon gave up on, or a
   // conflict. Both end in a confirmation the operator has to make in words.
   const offer = sessionRecoveryOffer(session, otherLabel) ?? sessionConflictOffer(session, otherLabel)
   const destructive = session.state === "ownership-conflict"
+  const offerLabel = offer?.kind === "keep-target" ? "Settle this" : "Release this session"
+  // session.transferResolveConflict and session.transferRecoverSource are not
+  // on phoneAndTabletRpcMethods (handheld-tab.ts).
+  const locked = offer && handheldMachine !== undefined
+    ? offInHandheldTab([offerLabel], "settle a move", handheldMachine)
+    : undefined
 
   return (
     <Alert variant={destructive ? "destructive" : "default"} className="mx-auto max-w-[var(--shell-thread)]">
@@ -486,8 +499,8 @@ export function SessionReadOnlyNotice({
         {offer ? (
           <AlertDialog>
             <AlertDialogTrigger asChild>
-              <Button variant="outline" size="sm" disabled={disabled || pending}>
-                {offer.kind === "keep-target" ? "Settle this" : "Release this session"}
+              <Button variant="outline" size="sm" disabled={disabled || pending || locked !== undefined} aria-describedby={locked !== undefined ? lockedId : undefined}>
+                {offerLabel}
               </Button>
             </AlertDialogTrigger>
             <AlertDialogContent>
@@ -497,13 +510,14 @@ export function SessionReadOnlyNotice({
               </AlertDialogHeader>
               <AlertDialogFooter>
                 <AlertDialogCancel>Cancel</AlertDialogCancel>
-                <AlertDialogAction variant="destructive" onClick={() => onRelease(offer)}>
+                <AlertDialogAction variant="destructive" onClick={() => { if (locked === undefined) onRelease(offer) }}>
                   {offer.confirmLabel}
                 </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
         ) : null}
+        {locked !== undefined ? <p id={lockedId} className="m-0 text-[12px] leading-relaxed">{locked}</p> : null}
       </AlertDescription>
     </Alert>
   )
@@ -826,6 +840,9 @@ export function Thread({
   const [effortDropped, setEffortDropped] = useState<{ sessionId: string, from: string, to: string }>()
   const [restartPending, setRestartPending] = useState(false)
   const [restartError, setRestartError] = useState("")
+  // session.restartProviderThread is not on phoneAndTabletRpcMethods
+  // (handheld-tab.ts), so a phone or tablet tab cannot retry the provider.
+  const handheldMachine = useHandheldTabMachine()
   const archiveReadOnly = sessionIsArchiveReadOnly(active)
   const readOnly = archiveReadOnly || watching
   // The design follows the latest decision with what to do next. Its move
@@ -1415,6 +1432,7 @@ export function Thread({
               ]}
               retrying={restartPending}
               retryDisabled={watching || !connected || onRestartProviderThread === undefined}
+              retryLocked={handheldMachine !== undefined ? offInHandheldTab(["Try again"], "restart a provider", handheldMachine) : undefined}
               retryError={restartError}
               onRetry={() => void restartProvider()}
             />

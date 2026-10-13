@@ -300,6 +300,90 @@ describe("the Terminal tab on a watching desktop", () => {
   })
 })
 
+// A phone or tablet credential reaches only phoneAndTabletRpcMethods, and the
+// terminal methods on it are terminal.list, terminal.watch and
+// terminal.unwatch. The daemon refuses any other with the authentication
+// error, on which the client closes its connection, so a full-access phone or
+// tablet tab reads the shell the way a watching desktop does.
+describe("the Terminal tab in a phone or tablet tab", () => {
+  const refused = ["terminal.create", "terminal.input", "terminal.resize", "terminal.claim", "terminal.release", "terminal.close"] as const
+
+  async function openTerminalTab(clientKind: "desktop" | "web" | "phone" | "tablet") {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = userEvent.setup()
+    const open = screen.queryByRole("button", { name: "Open the sheet" })
+    if (open) await user.click(open)
+    await settle()
+    await user.click(screen.getByRole("tab", { name: "Terminal" }))
+    await settle()
+    return { snapshot, socket, user }
+  }
+
+  it.each(["phone", "tablet"] as const)("a %s tab watches the session's shell and sends no refused terminal method", async (clientKind) => {
+    const { snapshot, socket, user } = await openTerminalTab(clientKind)
+    const terminalId = terminalIdForSession(snapshot.activeSessionId!)
+    await waitFor(() => expect(sentRequests(socket, "terminal.watch")).toHaveLength(1))
+    expect(sentRequests(socket, "terminal.watch")[0]?.params).toMatchObject({ terminalId })
+
+    await act(async () => {
+      respond(socket, "terminal.watch", {
+        terminalId,
+        sessionId: snapshot.activeSessionId!,
+        cols: 80,
+        rows: 24,
+        shell: "bash",
+        cwd: "/worktrees/demo",
+        owner: { client: "desktop", clientId: "client-desktop-holder" },
+        claimHeld: true,
+        openedAt: "2026-10-12T09:00:00.000Z",
+        state: "live",
+        buffer: "$ pnpm test\r\n",
+        earlierOutputDropped: false,
+        watchedAt: "2026-10-12T09:01:00.000Z",
+      })
+    })
+    await settle()
+
+    // The shell is read, and the pane says why it cannot be taken here.
+    expect(await screen.findByText("Claimed by a desktop")).toBeTruthy()
+    const reason = screen.getByText(`Opening, typing into, resizing and taking a shell are off in a phone or tablet tab: the daemon lets a phone or tablet credential only read one. Use the desktop app on ${snapshot.machine.name}.`)
+    const take = screen.getByRole<HTMLButtonElement>("button", { name: "Take the shell" })
+    expect(take.disabled).toBe(true)
+    expect(take.getAttribute("aria-describedby")).toBe(reason.id)
+    await user.click(take)
+    expect(screen.queryByRole("button", { name: "Close terminal" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Interrupt ⌃C" })).toBeNull()
+    await settle()
+
+    for (const method of refused) expect(sentRequests(socket, method), method).toEqual([])
+    expect(harness.sockets).toHaveLength(1)
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab says a session with no shell cannot open one here", async (clientKind) => {
+    const { snapshot, socket } = await openTerminalTab(clientKind)
+    await waitFor(() => expect(sentRequests(socket, "terminal.watch")).toHaveLength(1))
+    await act(async () => {
+      fail(socket, "terminal.watch", { code: -32602, message: "Terminal does not exist" })
+    })
+    await settle()
+
+    expect(await screen.findByText("No shell is open in this session")).toBeTruthy()
+    expect(screen.getByText(`Opening, typing into, resizing and taking a shell are off in a phone or tablet tab: the daemon lets a phone or tablet credential only read one. Use the desktop app on ${snapshot.machine.name}.`)).toBeTruthy()
+    for (const method of refused) expect(sentRequests(socket, method), method).toEqual([])
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  // The daemon opens a shell for a web or desktop credential.
+  it.each(["web", "desktop"] as const)("a %s tab still opens the session's shell", async (clientKind) => {
+    const { socket } = await openTerminalTab(clientKind)
+    await waitFor(() => expect(sentRequests(socket, "terminal.create")).toHaveLength(1))
+    expect(sentRequests(socket, "terminal.watch")).toEqual([])
+    expect(screen.queryByText(/off in a phone or tablet tab/u)).toBeNull()
+  })
+})
+
 // The Desktop V2 frame links Permissions and rules and Checkpoints from
 // Settings' Elsewhere to the sheet tabs that own them, one click away.
 describe("Settings' links to the sheet", () => {
@@ -553,5 +637,348 @@ describe("Skills in a phone or tablet tab", () => {
     expect(screen.getByRole("button", { name: /Install from a path/u })).toHaveProperty("disabled", false)
     expect(screen.getByRole("button", { name: /View SKILL\.md/u })).toHaveProperty("disabled", false)
     expect(screen.queryByText(/are off in a phone or tablet tab/u)).toBeNull()
+  })
+})
+
+// Controls a person presses whose request is not on phoneAndTabletRpcMethods:
+// Take a checkpoint (checkpoint.create), Revert, Reset and Restore worktree
+// (checkpoint.restore), a file's Revert (session.revertFile), Revoke
+// (approvalRule.revoke), Archive session (session.archive), Export this query
+// (audit.export), the provider's Try again (session.restartProviderThread) and
+// settling a move (session.transferResolveConflict). The daemon answers each
+// from a phone or tablet credential with the authentication error, before it
+// reads the parameters (server.ts), and the client closes its connection on
+// that code (client.ts). A phone or tablet tab locks them and says why; the
+// fake socket refuses the way the daemon does, so a stray press shows as a
+// closed socket as well as in the list of what was sent.
+describe("controls a phone or tablet tab presses", () => {
+  const handheldRefuses = (method: RpcMethod) => !phoneAndTabletRpcMethods.has(method)
+  const pressed = [
+    "checkpoint.create", "checkpoint.restore", "session.revertFile", "approvalRule.revoke", "session.archive",
+    "audit.export", "session.restartProviderThread", "session.transferResolveConflict", "session.transferRecoverSource",
+  ] as const satisfies readonly RpcMethod[]
+  const off = (controls: string, refused: string, machine: string) =>
+    `${controls} off in a phone or tablet tab: the daemon does not ${refused} for a phone or tablet credential. Use the desktop app on ${machine}.`
+
+  it("names only methods the daemon refuses a phone or tablet credential", () => {
+    for (const method of pressed) expect(phoneAndTabletRpcMethods.has(method), method).toBe(false)
+  })
+
+  function withRule(): Hello {
+    const base = workspaceSnapshot()
+    return workspaceSnapshot({
+      approvalRules: [{
+        id: "rule-tests", useCount: 4, projectId: base.project!.id, operation: "shell", command: "pnpm test",
+        createdBy: "desktop", createdAt: "2026-09-03T10:00:00.000Z", status: "active",
+        execution: {
+          state: "resolved", digest: `sha256:${"a".repeat(64)}`,
+          record: { version: 1, cwd: ".", kind: "shell", coverage: "command-and-script-text", entries: [{ id: 0, source: { kind: "request" }, parts: [{ operator: null, argv: ["pnpm", "test"], expandsTo: [] }] }] },
+        },
+      }],
+    } as Partial<Hello>)
+  }
+
+  // The daemon pages history oldest first: the session start, then a manual one.
+  const historyPage = (sessionId: string) => ({
+    sessionId,
+    hasMore: false,
+    items: [
+      { id: "thread:ckpt-0000", sourceId: "ckpt-0000", sessionId, createdAt: "2026-09-08T14:02:00.000Z", category: "checkpoints" as const, reason: "session-start" as const, label: "Worktree created off main", commit: "b".repeat(40) },
+      { id: "thread:ckpt-7f24", sourceId: "ckpt-7f24", sessionId, createdAt: "2026-09-08T14:06:00.000Z", category: "checkpoints" as const, reason: "manual" as const, label: "Before the migration ran", commit: "a".repeat(40) },
+    ],
+  })
+  const evidence = (sessionId: string) => ({
+    sessionId,
+    refreshedAt: "2026-09-01T12:00:00.000Z",
+    workspace: {
+      baseCommit: "a".repeat(40),
+      diff: "",
+      diffTruncated: false,
+      totalChangedFiles: 1,
+      files: [{ path: "src/app.ts", status: "modified" as const, staged: false, unstaged: true, additions: 1, deletions: 1, binary: false }],
+      filesTruncated: false,
+    },
+    tests: { passed: 0, failed: 0, totalRuns: 0, runs: [], runsTruncated: false },
+  })
+
+  // Answers the reads the sheet tabs make, and refuses anything a phone or
+  // tablet credential may not send the way the daemon does.
+  function answer(socket: FakeWebSocket, refuses: (method: RpcMethod) => boolean) {
+    for (const request of sentRequests(socket)) {
+      if (socket.answered.has(request.id)) continue
+      const method = request.method as RpcMethod
+      const sessionId = (request.params as { sessionId?: string } | undefined)?.sessionId ?? ""
+      if (refuses(method)) fail(socket, method, { code: daemonAuthenticationErrorCode, message: "Refused for this credential" })
+      else if (method === "session.history") { socket.answered.add(request.id); socket.receive({ jsonrpc: "2.0", id: request.id, result: historyPage(sessionId) }) }
+      else if (method === "session.evidence") { socket.answered.add(request.id); socket.receive({ jsonrpc: "2.0", id: request.id, result: evidence(sessionId) }) }
+    }
+  }
+
+  async function openTab(socket: FakeWebSocket, refuses: (method: RpcMethod) => boolean, name: string) {
+    const user = userEvent.setup()
+    const sheet = screen.queryByRole("button", { name: "Open the sheet" })
+    if (sheet) await user.click(sheet)
+    await user.click(screen.getByRole("tab", { name }))
+    await settle()
+    await act(async () => { answer(socket, refuses) })
+    await settle()
+    return user
+  }
+
+  async function pressAll(user: ReturnType<typeof userEvent.setup>, controls: readonly HTMLElement[]) {
+    for (const control of controls) {
+      expect(control).toHaveProperty("disabled", true)
+      await user.click(control)
+    }
+    await settle()
+  }
+
+  function expectNothingRefused(socket: FakeWebSocket) {
+    expect(sentRequests(socket).map(({ method }) => method).filter((method) => handheldRefuses(method as RpcMethod))).toEqual([])
+    expect(harness.sockets).toHaveLength(1)
+    expect(socket.readyState).toBe(socket.OPEN)
+  }
+
+  it.each(["phone", "tablet"] as const)("a %s tab locks Take a checkpoint, Revert and Reset, says why, and keeps Fork", async (clientKind) => {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = await openTab(socket, handheldRefuses, "Checkpoints")
+    const panel = await screen.findByTestId("checkpoints-content")
+    await within(panel).findByRole("button", { name: "Reset" })
+
+    await pressAll(user, [
+      within(panel).getByRole("button", { name: /Take a checkpoint/u }),
+      within(panel).getByRole("button", { name: "Revert" }),
+      within(panel).getByRole("button", { name: "Reset" }),
+    ])
+    await act(async () => { answer(socket, handheldRefuses) })
+
+    expect(within(panel).getByText(off("Take a checkpoint, Revert and Reset are", "take or restore a checkpoint", snapshot.machine.name))).toBeTruthy()
+    expect(within(panel).getByRole("button", { name: "Fork" })).toHaveProperty("disabled", false)
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+    expectNothingRefused(socket)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab locks History's Restore worktree and says why", async (clientKind) => {
+    const snapshot = workspaceSnapshot()
+    const socket = await openTab(await openWorkspace(snapshot, { clientKind }), handheldRefuses, "History").then(() => harness.socket(0))
+    const panel = await screen.findByTestId("history-content")
+    const restores = await within(panel).findAllByRole("button", { name: "Restore worktree" })
+    expect(restores).toHaveLength(2)
+
+    await pressAll(userEvent.setup(), restores)
+    await act(async () => { answer(socket, handheldRefuses) })
+
+    expect(within(panel).getByText(off("Restore worktree is", "restore a checkpoint", snapshot.machine.name))).toBeTruthy()
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+    expectNothingRefused(socket)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab offers no Restore worktree on the thread's checkpoint", async (clientKind) => {
+    const socket = await openWorkspace(workspaceSnapshot(), { clientKind })
+    expect(screen.getByText(/^Checkpoint · ckpt_7f21/u)).toBeTruthy()
+    expect(screen.queryByRole("button", { name: "Restore worktree" })).toBeNull()
+    expectNothingRefused(socket)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab refuses /revert with the reason and sends no restore", async (clientKind) => {
+    const snapshot = workspaceSnapshot({ approvals: [] } as Partial<Hello>)
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = userEvent.setup()
+    await user.type(screen.getByLabelText("Message"), "/revert thread-checkpoint{Enter}")
+    await settle()
+    await act(async () => { answer(socket, handheldRefuses) })
+
+    expect(await screen.findByText(off("Restoring a checkpoint is", "restore a checkpoint", snapshot.machine.name))).toBeTruthy()
+    expectNothingRefused(socket)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab offers no file Revert in Changes and says why", async (clientKind) => {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    await openTab(socket, handheldRefuses, "Changes")
+    await screen.findByText("src/app.ts")
+
+    expect(screen.queryByRole("button", { name: "Revert src/app.ts" })).toBeNull()
+    expect(screen.getByText(off("Reverting a file is", "revert a file", snapshot.machine.name))).toBeTruthy()
+    expectNothingRefused(socket)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab locks Revoke in Rules and says why", async (clientKind) => {
+    const snapshot = withRule()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = await openTab(socket, handheldRefuses, "Rules")
+    const row = screen.getAllByTestId("rule-row")[0]!
+
+    await pressAll(user, [within(row).getByRole("button", { name: "Revoke" })])
+    await act(async () => { answer(socket, handheldRefuses) })
+
+    expect(screen.getByText(off("Revoke is", "revoke a rule", snapshot.machine.name))).toBeTruthy()
+    expectNothingRefused(socket)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab locks a session's Archive session and says why", async (clientKind) => {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: /^Sessions \d/u }))
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    await user.click(screen.getByRole("button", { name: `Actions for ${active.title}` }))
+    const archive = await screen.findByRole("menuitem", { name: "Archive session" })
+
+    expect(archive.getAttribute("aria-disabled")).toBe("true")
+    await user.click(archive)
+    await settle()
+    await act(async () => { answer(socket, handheldRefuses) })
+
+    expect(screen.getByText(off("Archive session is", "archive a session", snapshot.machine.name))).toBeTruthy()
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+    expectNothingRefused(socket)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab's command palette offers no Take a checkpoint", async (clientKind) => {
+    const socket = await openWorkspace(workspaceSnapshot(), { clientKind })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Open command palette" }))
+    await screen.findByRole("option", { name: /Open the changes sheet/u })
+
+    expect(screen.queryByRole("option", { name: /Take a checkpoint/u })).toBeNull()
+    expectNothingRefused(socket)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab locks the audit log's Export this query and says why", async (clientKind) => {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = userEvent.setup()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /Audit log/u }))
+    await screen.findByRole("heading", { level: 1, name: "Audit log" })
+
+    await pressAll(user, [screen.getByRole("button", { name: "Export this query" })])
+    await act(async () => { answer(socket, handheldRefuses) })
+
+    expect(screen.getByText(off("Export this query is", "export the audit log", snapshot.machine.name))).toBeTruthy()
+    expectNothingRefused(socket)
+  })
+
+  // The active session, changed. A provider that stopped answering leaves it
+  // failed with no provider thread, and Try again restarts it with
+  // session.restartProviderThread. Another machine also claiming it offers
+  // Settle this (session.transferResolveConflict); a move the daemon gave up
+  // on offers Release this session (session.transferRecoverSource).
+  function withActive(change: (session: Hello["sessions"][number]) => Record<string, unknown>): Hello {
+    const base = workspaceSnapshot()
+    return workspaceSnapshot({
+      approvals: [],
+      sessions: base.sessions.map((session) => session.id === base.activeSessionId ? change(session) : session),
+    } as Partial<Hello>)
+  }
+  const failedProvider = () => withActive(({ providerThreadId: _thread, activeTurnId: _turn, ...rest }) => ({ ...rest, state: "failed" }))
+  const contested = () => withActive(({ activeTurnId: _turn, providerThreadId: _thread, ...rest }) => ({
+    ...rest,
+    state: "ownership-conflict",
+    workspacePath: "/worktrees/session",
+    ownershipGeneration: 3,
+    ownershipConflict: {
+      kind: "target-session-detected", transferId: `transfer-${"a".repeat(32)}`, otherMachineId: `machine-${"b".repeat(32)}`,
+      otherGeneration: 4, detectedAt: "2026-09-04T11:00:00.000Z", recoveryAction: "keep-target-session",
+      reason: "target-session-newer", manifestDigest: `sha256:${"f".repeat(64)}`,
+    },
+  }))
+  const stranded = () => withActive(({ activeTurnId: _turn, providerThreadId: _thread, ...rest }) => ({
+    ...rest,
+    state: "transferring",
+    workspacePath: "/worktrees/session",
+    ownershipGeneration: 1,
+    transfer: {
+      phase: "transferring", transferId: `transfer-${"a".repeat(32)}`, targetMachineId: `machine-${"b".repeat(32)}`,
+      intentDigest: `sha256:${"c".repeat(64)}`, nextGeneration: 2, startedAt: "2026-09-04T09:00:00.000Z",
+      resumeState: "failed", method: "git-bundle", requestedBy: { client: "desktop" },
+      package: {
+        state: "staged", manifestDigest: `sha256:${"d".repeat(64)}`,
+        reconciliation: {
+          state: "ownership-unconfirmed", reason: "target-unreachable", firstFailedAt: "2026-09-04T09:00:00.000Z",
+          lastFailedAt: "2026-09-04T11:00:00.000Z", attemptCount: 7, recoveryAction: "confirm-source-recovery",
+        },
+      },
+    },
+  }))
+
+  it.each(["phone", "tablet"] as const)("a %s tab locks the provider's Try again and says why", async (clientKind) => {
+    const snapshot = failedProvider()
+    const socket = await openWorkspace(snapshot, { clientKind })
+
+    await pressAll(userEvent.setup(), [screen.getByRole("button", { name: "Try again" })])
+    await act(async () => { answer(socket, handheldRefuses) })
+
+    expect(screen.getByText(off("Try again is", "restart a provider", snapshot.machine.name))).toBeTruthy()
+    expectNothingRefused(socket)
+  })
+
+  it.each([
+    ["phone", "Settle this", contested],
+    ["tablet", "Settle this", contested],
+    ["phone", "Release this session", stranded],
+    ["tablet", "Release this session", stranded],
+  ] as const)("a %s tab locks %s on a move and says why", async (clientKind, control, build) => {
+    const snapshot = build()
+    const socket = await openWorkspace(snapshot, { clientKind })
+
+    await pressAll(userEvent.setup(), [screen.getByRole("button", { name: control })])
+    await act(async () => { answer(socket, handheldRefuses) })
+
+    expect(screen.getByText(off(`${control} is`, "settle a move", snapshot.machine.name))).toBeTruthy()
+    expect(screen.queryByRole("alertdialog")).toBeNull()
+    expectNothingRefused(socket)
+  })
+
+  it.each(["desktop", "web"] as const)("a %s tab keeps Try again, Settle this and Release this session live", async (clientKind) => {
+    for (const [control, build] of [["Try again", failedProvider], ["Settle this", contested], ["Release this session", stranded]] as const) {
+      await openWorkspace(build(), { clientKind })
+      const skip = screen.queryByRole("button", { name: "Skip for now" })
+      if (skip) { await userEvent.setup().click(skip); await settle() }
+      expect(screen.getByRole("button", { name: control }), control).toHaveProperty("disabled", false)
+      expect(screen.queryByText(/off in a phone or tablet tab/u)).toBeNull()
+      cleanup()
+      harness.uninstall()
+      harness = installFakeWebSocket()
+    }
+  })
+
+  // The desktop app and a full-access web tab keep every one of them.
+  it.each(["desktop", "web"] as const)("a %s tab keeps them live with no reason line", async (clientKind) => {
+    const snapshot = withRule()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = userEvent.setup()
+    const skip = screen.queryByRole("button", { name: "Skip for now" })
+    if (skip) { await user.click(skip); await settle() }
+    expect(screen.getByRole("button", { name: "Restore worktree" })).toHaveProperty("disabled", false)
+    const drawer = screen.queryByRole("button", { name: /^Sessions \d/u })
+    if (drawer) await user.click(drawer)
+    const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
+    await user.click(screen.getByRole("button", { name: `Actions for ${active.title}` }))
+    expect((await screen.findByRole("menuitem", { name: "Archive session" })).getAttribute("aria-disabled")).toBeNull()
+    await user.keyboard("{Escape}")
+
+    await openTab(socket, () => false, "Checkpoints")
+    const checkpoints = await screen.findByTestId("checkpoints-content")
+    await within(checkpoints).findByRole("button", { name: "Reset" })
+    for (const name of [/Take a checkpoint/u, /^Revert$/u, /^Reset$/u]) {
+      expect(within(checkpoints).getByRole("button", { name })).toHaveProperty("disabled", false)
+    }
+    await openTab(socket, () => false, "Changes")
+    expect(await screen.findByRole("button", { name: "Revert src/app.ts" })).toBeTruthy()
+    await openTab(socket, () => false, "Rules")
+    expect(within(screen.getAllByTestId("rule-row")[0]!).getByRole("button", { name: "Revoke" })).toHaveProperty("disabled", false)
+    await user.click(within(screen.getAllByTestId("rule-row")[0]!).getByRole("button", { name: "Revoke" }))
+    await settle()
+    expect(sentRequests(socket, "approvalRule.revoke")).toHaveLength(1)
+    expect(screen.queryByText(/off in a phone or tablet tab/u)).toBeNull()
+
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /Audit log/u }))
+    await screen.findByRole("heading", { level: 1, name: "Audit log" })
+    expect(screen.getByRole("button", { name: "Export this query" })).toHaveProperty("disabled", false)
+    expect(screen.queryByText(/off in a phone or tablet tab/u)).toBeNull()
   })
 })

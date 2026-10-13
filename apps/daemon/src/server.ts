@@ -281,6 +281,7 @@ import {
   fileTargetChanged,
   fileTargetHasOtherNames,
   fileTargetIdentity,
+  unreadableFileTargetIdentity,
   type FileTargetIdentity,
 } from "./followed-path.js"
 import { ProviderSecretManager } from "./provider-secrets.js"
@@ -336,6 +337,7 @@ import { PrintableArtifactError, safeArtifactFilename, sanitizePrintableArtifact
 import type { AuditAppendInput, AuditLog } from "./audit-log.js"
 import { PairingClaimAdmission } from "./pairing-admission.js"
 import { DaemonRelaySocket, maximumDaemonRelayChannels } from "./relay-admission.js"
+import { createDaemonRelayCarrier, type DaemonRelayCarrier, type DaemonRelayCarrierOptions } from "./relay-carrier.js"
 import { relayIdentityPublicKeyIsValid, relayPublicKeyFromPrivateKey, verifyRelayChannelSuccessor, type RelayCarrier, type RelayChannel } from "@getdomovoi/protocol/relay-admission"
 import { relayRecoveryParamsSchema, relayRecoveryResultSchema, type RelayAdmissionContext, type RelayRecoveryResult } from "@getdomovoi/protocol"
 import { resolveFleetClientRoute } from "./fleet-client-route.js"
@@ -1610,6 +1612,7 @@ export type DaemonServerOptions = {
   // Supplied from endpoint-owned custody. No generated per-process fallback.
   relayStaticKey?: Uint8Array
   relayRecovery?: RelayRecoveryResult
+  relayCarrier?: DaemonRelayCarrierOptions
   allowRemoteTransport?: boolean
   authTimeoutMs?: number
   terminalReapGraceMs?: number
@@ -1788,6 +1791,8 @@ export class DomovoiDaemon {
   #relaySockets = new Set<DaemonRelaySocket>()
   #relayStaticKey: Uint8Array | undefined
   #relayRecovery: RelayRecoveryResult | undefined
+  #relayCarrierOptions: DaemonRelayCarrierOptions | undefined
+  #relayCarrier: DaemonRelayCarrier | undefined
   // Independent of code-claim attempts, with the same bounded source/listener budgets.
   #relayRecoveryAdmission = new PairingClaimAdmission()
   #snapshot: WorkspaceSnapshot
@@ -2074,6 +2079,17 @@ export class DomovoiDaemon {
     const authToken = options.authToken ?? randomBytes(32).toString("base64url")
     if (!credentialSchema.safeParse(authToken).success) {
       throw new Error("Daemon credential must be a 43-character base64url value")
+    }
+    if (options.relayCarrier) {
+      const credential = options.relayCarrier.registrationCredential
+      if (!this.#relayRecovery || !this.#relayStaticKey || credential === authToken
+        || credential === options.relayCarrier.routeId || credential === Buffer.from(this.#relayStaticKey).toString("base64url")
+        || credential === this.#relayRecovery.identity.identityPublicKey
+        || credential === this.#relayRecovery.identity.channel.responderPublicKey
+        || credential === this.#relayRecovery.successor?.statement.previousChannelPublicKey) {
+        throw new Error("Relay carrier requires a provisioned identity and an independent registration credential")
+      }
+      this.#relayCarrierOptions = structuredClone(options.relayCarrier)
     }
     this.host = options.host ?? "127.0.0.1"
     this.requestedPort = options.port ?? 47831
@@ -3181,6 +3197,22 @@ export class DomovoiDaemon {
     // the desktop and the CLI attach on loopback, which already answers.
     await this.#openTailnetListener(this.address!.port)
 
+    if (this.#relayCarrierOptions) {
+      signal?.throwIfAborted()
+      if (this.#stopping || this.#stopped) throw new Error("Daemon stopped during relay startup")
+      if (this.#store.devices?.verify(this.#relayCarrierOptions.registrationCredential)) {
+        throw new Error("Relay registration credential must differ from every paired client or machine bearer")
+      }
+      this.#relayCarrier = createDaemonRelayCarrier(this.#relayCarrierOptions, {
+        recovery: this.relayRecovery({ machineId: this.#snapshot.machine.id }, "outbound-carrier"),
+        openChannel: (options) => this.openRelayChannel(options),
+        onStatus: (status) => { if (status.state === "refused") this.#reportError("Relay carrier requires operator attention", status.reason) },
+      })
+      await this.#relayCarrier.start()
+      signal?.throwIfAborted()
+      if (this.#stopping || this.#stopped) throw new Error("Daemon stopped during relay startup")
+    }
+
     // A dead target must not hold daemon startup hostage. Each frozen source
     // remains read-only while its own resource queue reconciles in background.
     this.#scheduleSessionTransferRecovery()
@@ -3472,13 +3504,14 @@ export class DomovoiDaemon {
     this.#runtimeDiscoveryAbort.abort(new Error("Daemon stopping"))
     const fleetStopped = this.#fleetEnrollment.stop()
     const updatesStopped = this.#updates.stop()
+    const relayStopped = this.#relayCarrier?.stop()
     if (this.#transferReconciliationTimer) {
       clearTimeout(this.#transferReconciliationTimer)
       this.#transferReconciliationTimer = undefined
     }
     this.#closeArtifactWatchers()
     for (const unsubscribe of this.#unsubscribeAgents.splice(0)) unsubscribe()
-    const stopping = this.#finishStop(Promise.all([fleetStopped, updatesStopped]).then(() => {}))
+    const stopping = this.#finishStop(Promise.all([fleetStopped, updatesStopped, relayStopped]).then(() => {}))
     this.#stopPromise = stopping
     return stopping
   }
@@ -11494,12 +11527,6 @@ export class DomovoiDaemon {
         blockedPath: event.blockedPath,
         tool: event.tool ?? (toolServer === undefined ? undefined : command ?? toolServer.name),
       }
-      // A file tool's card is held with what was at its file, read before the
-      // request is resolved, so a swap after this reading shows as a change
-      // when the card is answered.
-      const identity = heldFileTool(request)
-        ? await fileTargetIdentity(request.workspace, request.path!, request.cwd ?? request.workspace)
-        : undefined
       const policy = (execution: ExecutionResolution) => permissionDecisionFor({
         runtime: session.runtime,
         ...(command ? { command } : {}),
@@ -11513,7 +11540,7 @@ export class DomovoiDaemon {
       const origin = eventTurnId !== undefined
         && turnOrigin?.identity === providerTurnIdentity(provider, threadId, eventTurnId)
         ? turnOrigin.origin : undefined
-      const settlement = await settleApproval({
+      const input: Parameters<typeof settleApproval>[0] = {
         approval: {
           ...(origin === undefined ? {} : { origin }),
           id: `approval-${randomUUID()}`,
@@ -11536,7 +11563,29 @@ export class DomovoiDaemon {
         scope: this.#approvalScope(session.runtime),
         execution: "resolve",
         risk: (execution) => policy(execution).risk,
-      })
+      }
+      // Read the held identity before resolving the request, with both using
+      // one budget. A swap after this reading shows as a change when the card
+      // is answered. Unknown identity must seal the card, never fall through
+      // to automatic approval or a standing rule with an unjudged target.
+      const controller = new AbortController()
+      const deadline = OperationDeadline.start(realPathLookupBudgetMs, { signal: controller.signal })
+      let identity: FileTargetIdentity | undefined
+      let settlement: Settlement
+      try {
+        identity = heldFileTool(request)
+          ? await beforeDeadline(fileTargetIdentity(request.workspace, request.path!, request.cwd ?? request.workspace), deadline)
+          : undefined
+        settlement = await settleApproval(input, deadline)
+      } catch {
+        // Seal through the existing settlement path even if the read failed
+        // before expiry. A late read has no continuation that publishes state.
+        identity = unreadableFileTargetIdentity
+        controller.abort()
+        settlement = await settleApproval(input, deadline)
+      } finally {
+        deadline.clear()
+      }
       // Past the last await of card construction: the file's identity and the
       // settlement (execution resolution and every path on the card, judged on
       // disk). From here the request is denied, allowed by policy, or put up

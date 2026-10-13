@@ -916,6 +916,76 @@ describe("TerminalPane on a watching desktop", () => {
 
     expect(screen.getByText("Watching only")).toBeTruthy()
   })
+
+  // A phone or tablet tab is read-only for a reason the generic lines do not
+  // give: its credential may read a shell and nothing more.
+  const handheldReason = "Opening, typing into, resizing and taking a shell are off here."
+
+  it("says why the shell cannot be taken, beside the control", async () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.resolve(watchResult())
+    })
+
+    const reason = screen.getByText(handheldReason)
+    expect(screen.getByRole("button", { name: "Take the shell" }).getAttribute("aria-describedby")).toBe(reason.id)
+    expect(screen.queryByText("This view reads the shell and cannot take it.")).toBeNull()
+    expect(target.create).not.toHaveBeenCalled()
+  })
+
+  it("says why no shell can be opened when the session has none", async () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.reject(new Error("Terminal does not exist"))
+    })
+
+    expect(screen.getByText("No shell is open in this session")).toBeTruthy()
+    expect(screen.getByText(handheldReason)).toBeTruthy()
+    expect(target.create).not.toHaveBeenCalled()
+  })
+
+  // The claim banner is gone once the shell has exited, while a watch is
+  // refused or unanswered, and while disconnected; the reason stays.
+  it.each([
+    ["the watched shell has exited", (target: ReturnType<typeof watcher>) => target.watched.resolve(watchResult({ state: "closed", exitCode: 0 }))],
+    ["the watch was refused", (target: ReturnType<typeof watcher>) => target.watched.reject(new Error("Terminal could not be read"))],
+    ["the watch is unanswered", () => undefined],
+  ] as const)("keeps the reason on screen when %s", async (_state, settleWatch) => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      settleWatch(target)
+    })
+
+    expect(screen.getAllByText(handheldReason)).toHaveLength(1)
+  })
+
+  it("offers no terminal to start when no session is active", () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={null} />)
+
+    expect(screen.getByText("No active session")).toBeTruthy()
+    expect(screen.getByText("Open a session to read its shell.")).toBeTruthy()
+    expect(screen.getByText(handheldReason)).toBeTruthy()
+    expect(screen.queryByText(/before starting its terminal/u)).toBeNull()
+  })
+
+  it("keeps the reason on screen while disconnected", () => {
+    const target = watcher()
+    render(<TerminalPane connected={false} readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+
+    expect(screen.getAllByText(handheldReason)).toHaveLength(1)
+  })
+
+  it("gives the reason in the watching empty state when this client cannot watch", () => {
+    const target = harness()
+    render(<TerminalPane connected readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+
+    expect(screen.getByText("Watching only")).toBeTruthy()
+    expect(screen.getByText(handheldReason)).toBeTruthy()
+  })
 })
 
 describe("Attach this output to the composer", () => {

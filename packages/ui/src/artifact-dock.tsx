@@ -89,6 +89,7 @@ import type { TerminalControls } from "./terminal-pane"
 import { SessionEvidencePanel } from "./session-evidence"
 import { type DesktopWindowBridge } from "./desktop-platform"
 import { HistoryPanel } from "./history-panel"
+import { useHandheldTabMachine } from "./handheld-tab"
 import { dockTabDefinitions } from "./dock-tabs"
 import { activeSession, sessionIsArchiveReadOnly } from "./workspace-selectors"
 
@@ -159,6 +160,13 @@ export async function capturePreviewThumbnailState({
     sync(lifecycle.readyUrls())
   }
 }
+
+// Q78, in the form of Machines' handheld lines (Q71): what is off, why, and
+// where it can be done.
+function terminalLockedInHandheldTab(machine: string): string {
+  return `Opening, typing into, resizing and taking a shell are off in a phone or tablet tab: the daemon lets a phone or tablet credential only read one. Use the desktop app on ${machine}.`
+}
+
 export function ArtifactDock({
   snapshot,
   clientAccess = "full",
@@ -323,6 +331,15 @@ export function ArtifactDock({
     (session) => session.id === snapshot.activeSessionId,
   ))
   const readOnly = archiveReadOnly || clientAccess === "watching"
+  // A phone or tablet credential reaches only phoneAndTabletRpcMethods, whose
+  // terminal methods are terminal.list, terminal.watch and terminal.unwatch.
+  // The daemon refuses terminal.create, input, resize, claim, release and
+  // close from it with the authentication error, on which the client closes
+  // its connection, so the Terminal tab only reads the shell there. The shell
+  // says whether this is a phone or tablet tab (handheld-tab.ts).
+  const handheld = useHandheldTabMachine() !== undefined
+  const terminalReadOnly = readOnly || handheld
+  const terminalReadOnlyReason = handheld ? terminalLockedInHandheldTab(snapshot.machine.name) : undefined
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
   const fullscreenFrameRef = useRef<HTMLIFrameElement>(null)
   const stageContainerRef = useRef<HTMLDivElement>(null)
@@ -991,14 +1008,20 @@ export function ArtifactDock({
               <EmptyHeader>
                 <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
                 <EmptyTitle>Loading terminal</EmptyTitle>
-                <EmptyDescription>Preparing the interactive terminal renderer.</EmptyDescription>
+                {terminalReadOnlyReason !== undefined ? (
+                  <>
+                    <EmptyDescription>Preparing the terminal renderer.</EmptyDescription>
+                    <EmptyDescription>{terminalReadOnlyReason}</EmptyDescription>
+                  </>
+                ) : <EmptyDescription>Preparing the interactive terminal renderer.</EmptyDescription>}
               </EmptyHeader>
             </Empty>
           )}>
             <TerminalPane
               connected={connected}
               controls={terminalControls}
-              readOnly={readOnly}
+              readOnly={terminalReadOnly}
+              readOnlyReason={terminalReadOnlyReason}
               machineName={snapshot.machine.name}
               sessionId={snapshot.activeSessionId}
             />
