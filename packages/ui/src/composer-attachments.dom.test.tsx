@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event"
 import type { ComponentProps } from "react"
 import { afterEach, expect, it, vi } from "vitest"
 
+import { AttachmentChips } from "./thread-composer.js"
 import { Thread } from "./workspace-shell.js"
 
 afterEach(cleanup)
@@ -58,10 +59,45 @@ it("offers every signed attachment source", async () => {
   expect(repo.textContent).toContain("Nothing is copied")
   expect(within(machine).getByText("DIR")).toBeTruthy()
   expect(machine.textContent).toContain("Reading outside the project asks first")
-  expect(within(device).getByText("FILE")).toBeTruthy()
+  expect(within(device).getByText("PNG")).toBeTruthy()
   expect(device.textContent).toContain(`copied to ${demoWorkspace.machine.name}`)
   expect(within(terminal).getByText("LOG")).toBeTruthy()
   expect(terminal.textContent).toContain("kept as a file in the session")
+})
+
+it("draws each attachment as a pill with its kind and where it is read from", async () => {
+  const user = userEvent.setup()
+  renderThread()
+  await user.click(screen.getByRole("button", { name: "Attach" }))
+  await user.click(screen.getByRole("menuitem", { name: "File in this repo" }))
+  await user.type(screen.getByRole("textbox", { name: "File in this repo" }), "src/thread.tsx")
+  await user.click(screen.getByText("Attach"))
+  await user.upload(screen.getByLabelText("Choose an image or file"), new File(["hello"], "notes.txt", { type: "text/plain" }))
+
+  const region = screen.getByRole("region", { name: "Attachments" })
+  await within(region).findByText("notes.txt")
+  const [repo, device] = within(region).getAllByRole("listitem")
+  expect(repo?.className).toContain("rounded-full")
+  expect(within(repo!).getByText("TSX").className).toContain("bg-muted")
+  expect(within(repo!).getByText(`on ${demoWorkspace.machine.name}`)).toBeTruthy()
+  expect(within(device!).getByText("TXT")).toBeTruthy()
+  expect(within(device!).getByText(`5 B · sent to ${demoWorkspace.machine.name}`)).toBeTruthy()
+})
+
+it("shows three chips and a more count that opens the rest", async () => {
+  const user = userEvent.setup()
+  const attachments = ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"].map((path) => ({ kind: "workspace-file" as const, path }))
+  const onRemove = vi.fn()
+  render(<AttachmentChips attachments={attachments} machineName="mac-mini-m4" onRemove={onRemove} />)
+
+  const region = screen.getByRole("region", { name: "Attachments" })
+  expect(within(region).getAllByRole("listitem")).toHaveLength(3)
+  const more = within(region).getByRole("button", { name: "+2 more" })
+  expect(more.getAttribute("aria-expanded")).toBe("false")
+  await user.click(more)
+  expect(within(region).getAllByRole("listitem")).toHaveLength(5)
+  await user.click(within(region).getByRole("button", { name: "Remove e.ts" }))
+  expect(onRemove).toHaveBeenCalledWith(4)
 })
 
 it("renders attachments as removable compact chips", async () => {
@@ -130,4 +166,29 @@ it("takes a file whose read finishes after a removal made room", async () => {
     { kind: "text", name: "kept.txt", mimeType: "text/plain", content: "kept" },
     { kind: "text", name: "new.txt", mimeType: "text/plain", content: "fresh" },
   ])
+})
+
+// A new draft starts collapsed again: the chips of a sent message must not
+// leave the next one showing everything.
+it("collapses the chips again once the draft is emptied", async () => {
+  const user = userEvent.setup()
+  const attachments = ["a.ts", "b.ts", "c.ts", "d.ts", "e.ts"].map((path) => ({ kind: "workspace-file" as const, path }))
+  const { rerender } = render(<AttachmentChips attachments={attachments} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: "+2 more" }))
+  rerender(<AttachmentChips attachments={[]} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  rerender(<AttachmentChips attachments={attachments} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  expect(within(screen.getByRole("region", { name: "Attachments" })).getAllByRole("listitem")).toHaveLength(3)
+})
+
+// The chosen variant's chip stays across sends; the attachments emptying is
+// what starts the next draft collapsed.
+it("collapses again when the attachments empty even with the variant chip shown", async () => {
+  const user = userEvent.setup()
+  const basis = { mark: "HTML", name: "Variant B", meta: "replay", onUnpick: vi.fn() }
+  const attachments = ["a.ts", "b.ts", "c.ts", "d.ts"].map((path) => ({ kind: "workspace-file" as const, path }))
+  const { rerender } = render(<AttachmentChips attachments={attachments} buildBasis={basis} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  await user.click(screen.getByRole("button", { name: "+2 more" }))
+  rerender(<AttachmentChips attachments={[]} buildBasis={basis} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  rerender(<AttachmentChips attachments={attachments} buildBasis={basis} machineName="mac-mini-m4" onRemove={vi.fn()} />)
+  expect(within(screen.getByRole("region", { name: "Attachments" })).getAllByRole("listitem")).toHaveLength(3)
 })

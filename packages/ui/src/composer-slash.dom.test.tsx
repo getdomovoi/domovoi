@@ -125,14 +125,14 @@ function fleetFor(snapshot: WorkspaceSnapshot): [FleetMachine, FleetMachine] {
   }]
 }
 
-it("opens from typed slash text and keeps all six design commands while dimming nonmatches", async () => {
+it("opens from typed slash text and keeps all seven design commands while dimming nonmatches", async () => {
   const user = userEvent.setup()
   render(<ThreadWith />)
 
   await user.type(field(), "/r")
 
   const list = screen.getByRole("listbox", { name: "THIS TURN" })
-  expect(within(list).getAllByRole("option")).toHaveLength(6)
+  expect(within(list).getAllByRole("option")).toHaveLength(7)
   expect(within(list).getByRole("option", { name: "/run <command>" }).getAttribute("data-match")).toBe("true")
   expect(within(list).getByRole("option", { name: "/mode plan · ask · build" }).getAttribute("data-match")).toBe("false")
   expect(screen.getByText("THIS TURN")).toBeTruthy()
@@ -183,12 +183,13 @@ it("names only what this session has, and the argument's shape otherwise", async
     "/run <command>",
     "/revert <checkpoint-id>",
     "/replan [from step N]",
+    "/checkpoint [label]",
     "/mode plan · ask · build",
     "/skill <reviewed-skill>",
     "/handoff <target-machine>",
   ])
   const text = options.map((option) => option.textContent).join(" ")
-  for (const sample of ["prisma", "ckpt_7f24", "from step 3", "pr-triage", "hetzner-cx42"]) {
+  for (const sample of ["prisma", "ckpt_7f24", "from step 3", "before the expiry change", "pr-triage", "hetzner-cx42"]) {
     expect(text).not.toContain(sample)
   }
 })
@@ -276,6 +277,65 @@ it("restores only a checkpoint belonging to the active session", async () => {
 
   await submit(`/revert ${activeCheckpoint.id}`)
   expect(onRestoreCheckpoint).toHaveBeenCalledWith(snapshot.activeSessionId, activeCheckpoint.id)
+})
+
+// checkpoint.create is the path the Checkpoints tab takes. Mid-turn it saves a
+// snapshot without moving the branch (#825), so the note says that rather than
+// the design's "at the next tool boundary".
+it("says what /checkpoint does between turns and during one", async () => {
+  const user = userEvent.setup()
+  render(<ThreadWith />)
+
+  await user.type(field(), "/c")
+
+  const checkpoint = within(screen.getByRole("listbox", { name: "THIS TURN" })).getByRole("option", { name: "/checkpoint [label]" })
+  expect(checkpoint.getAttribute("data-match")).toBe("true")
+  expect(checkpoint.getAttribute("title")).toBe("Takes a checkpoint of the worktree now. Between turns it commits on the session branch. During a turn it saves a snapshot without moving the branch.")
+})
+
+it("takes a checkpoint with the label typed after /checkpoint, without sending", async () => {
+  const onCheckpoint = vi.fn(async () => {})
+  const onSend = vi.fn(async () => {})
+  render(<ThreadWith onCheckpoint={onCheckpoint} onSend={onSend} />)
+
+  await submit("/checkpoint before the expiry change")
+
+  expect(onCheckpoint).toHaveBeenCalledWith(demoWorkspace.activeSessionId, "before the expiry change")
+  expect(onSend).not.toHaveBeenCalled()
+  expect(field().value).toBe("")
+})
+
+it("takes an unlabelled checkpoint for a bare /checkpoint", async () => {
+  const onCheckpoint = vi.fn(async () => {})
+  render(<ThreadWith onCheckpoint={onCheckpoint} />)
+
+  await submit("/checkpoint")
+
+  expect(onCheckpoint).toHaveBeenCalledWith(demoWorkspace.activeSessionId)
+})
+
+it("takes a checkpoint while a turn runs instead of queueing the command", async () => {
+  const snapshot = structuredClone(demoWorkspace)
+  snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!.activeTurnId = "turn-running"
+  const onCheckpoint = vi.fn(async () => {})
+  const onSend = vi.fn(async () => {})
+  render(<ThreadWith snapshot={snapshot} onCheckpoint={onCheckpoint} onSend={onSend} />)
+
+  await submit("/checkpoint mid-turn")
+
+  expect(onCheckpoint).toHaveBeenCalledWith(snapshot.activeSessionId, "mid-turn")
+  expect(onSend).not.toHaveBeenCalled()
+  expect(screen.queryByText("queued, sends when this turn ends")).toBeNull()
+})
+
+it("keeps the command and says why when the checkpoint is not taken", async () => {
+  const onCheckpoint = vi.fn(async () => { throw new Error("Checkpoint refused by the daemon") })
+  render(<ThreadWith onCheckpoint={onCheckpoint} />)
+
+  await submit("/checkpoint risky")
+
+  expect(await screen.findByText("Checkpoint refused by the daemon")).toBeTruthy()
+  expect(field().value).toBe("/checkpoint risky")
 })
 
 it("updates the pending turn skill selection without sending", async () => {
