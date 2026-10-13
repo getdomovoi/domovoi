@@ -161,9 +161,9 @@ describe("WSL service installation", () => {
   it("keeps existing systemd status and removal reachable inside WSL", async () => {
     const { wsl: _wsl, ...linuxConfiguration } = configuration
     const deps: ServiceCommandDependencies = { ...dependencies(), readConfiguration: () => linuxConfiguration,
-      capture: vi.fn(async () => ({ code: 0, stdout: "active" })), exists: async () => true }
+      capture: vi.fn(async () => ({ code: 0, stdout: "ActiveState=active\n" })), exists: async () => true }
     expect(await runServiceCommand(["service", "status"], deps)).toBe(0)
-    expect(deps.capture).toHaveBeenCalledWith("systemctl", ["--user", "is-active", "domovoid.service"], expect.anything())
+    expect(deps.capture).toHaveBeenCalledWith("systemctl", ["--user", "show", "domovoid.service", "--property=ActiveState", "--property=MainPID", "--property=ExecMainStartTimestamp", "--property=NRestarts", "--property=ExecMainCode", "--property=ExecMainStatus"], expect.anything())
     expect(await runServiceCommand(["service", "remove"], deps)).toBe(0)
     expect(deps.run).toHaveBeenCalledWith("systemctl", ["--user", "disable", "--now", "domovoid.service"], expect.anything())
   })
