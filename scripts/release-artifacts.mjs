@@ -358,7 +358,7 @@ export function sha256File(path) {
 }
 
 // pnpm 11.5.3 appends rewritten workspace dependencies in varying key order.
-// Only the CLI currently has multiple workspace links. Keep its dependency
+// Only the CLI has multiple workspace links in one dependency map. Keep its
 // maps ordered without reordering conditional exports/imports or touching the
 // protocol archive that the daemon embeds and pins by exact integrity.
 export function canonicalizeCliArchive(archive) {

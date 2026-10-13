@@ -21,7 +21,8 @@ Before hashing, the builder sorts only the CLI manifest's top-level dependency
 maps. pnpm 11.5.3 rewrites its three workspace links in varying key order. The
 builder preserves conditional exports/imports order and all other tar entry
 headers, modes and payload bytes, then emits deterministic gzip bytes. The
-protocol and credential store have no workspace links; the daemon has only one.
+protocol and credential store have no workspace links; the daemon has at most one
+per dependency map.
 Their archives remain untouched, including the protocol bytes embedded and pinned
 inside the daemon. The strict CLI transformation accepts bounded regular-file
 USTAR output and refuses unsupported entry forms. Any future nondeterminism
