@@ -103,8 +103,8 @@ describe("daemon command", () => {
     expect(dependencies.stderr).not.toHaveBeenCalled()
   })
 
-  it("returns zero for an installed but stopped service", async () => {
-    const dependencies = command({ capture: vi.fn(async () => ({ code: 3, stdout: "inactive\n" })) })
+  it.each(["inactive", "failed", "activating"])("returns zero for an installed but stopped service (%s)", async (state) => {
+    const dependencies = command({ capture: vi.fn(async () => ({ code: 0, stdout: `ActiveState=${state}\n` })) })
     expect(await runDaemonCommand(["status"], dependencies)).toBe(0)
     expect(dependencies.stdout).toHaveBeenCalledWith(expect.stringContaining("installed, not running:"))
   })
