@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react"
+import { useEffect, useId, useMemo, useRef, useState, useSyncExternalStore } from "react"
 import { CircleStopIcon, TerminalSquareIcon, XIcon } from "lucide-react"
 import { FitAddon } from "@xterm/addon-fit"
 import { Terminal } from "@xterm/xterm"
@@ -141,6 +141,7 @@ export function TerminalPane({
   historyRows = terminalScrollback,
   holderRefreshMs = terminalHolderRefreshMs,
   readOnly = false,
+  readOnlyReason,
   machineName,
   sessionId,
 }: {
@@ -151,9 +152,15 @@ export function TerminalPane({
   historyRows?: number
   holderRefreshMs?: number
   readOnly?: boolean
+  // Why this pane is read-only, when the generic lines do not say it: a phone
+  // or tablet credential may read a shell and nothing more. It replaces the
+  // note beside Take the shell and the no-shell and watching-only lines.
+  readOnlyReason?: string | undefined
   machineName: string
   sessionId: string | null
 }) {
+  const reasonId = useId()
+  const reason = readOnly ? readOnlyReason : undefined
   const containerRef = useRef<HTMLDivElement>(null)
   const xtermRef = useRef<Terminal | null>(null)
   // Set once the history has filled, and kept: a later clear or resize shrinks
@@ -444,6 +451,7 @@ export function TerminalPane({
           <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
           <EmptyTitle>Watching only</EmptyTitle>
           <EmptyDescription>Terminal controls are unavailable. Session output remains readable in the thread.</EmptyDescription>
+          {reason !== undefined ? <EmptyDescription>{reason}</EmptyDescription> : null}
         </EmptyHeader>
       </Empty>
     )
@@ -566,9 +574,9 @@ export function TerminalPane({
       : `Claimed by ${holder?.device?.label ?? (holder ? clientNoun[holder.client] : "another device")}${since}`
   const claimNote = writable
     ? "One claimant at a time. Other devices can watch."
-    : readOnly
+    : reason ?? (readOnly
       ? "This view reads the shell and cannot take it."
-      : "Reading is free, typing needs the claim."
+      : "Reading is free, typing needs the claim.")
   // Q340 A: the design's footer reads "read-only, the agent owns this shell".
   // Here the shell is an interactive PTY a person opened, so the footer says
   // who can type in it instead. A closed shell holds no claim, so nobody can.
@@ -640,7 +648,7 @@ export function TerminalPane({
               redrawn: it decides whether typing here reaches the shell. */}
           <div role="status" className="min-w-0 flex-1">
             <p className={`text-xs ${writable ? "text-ok-foreground" : "text-info-foreground"}`}>{claimText}</p>
-            <p className={`text-[11px] leading-snug ${writable ? "text-ok-dim" : "text-info-dim"}`}>{claimNote}</p>
+            <p id={reason !== undefined ? reasonId : undefined} className={`text-[11px] leading-snug ${writable ? "text-ok-dim" : "text-info-dim"}`}>{claimNote}</p>
           </div>
           {claimable ? (
             <Button
@@ -648,6 +656,7 @@ export function TerminalPane({
               size="xs"
               className="shrink-0 border-info-border text-info-foreground"
               disabled={readOnly || !connected}
+              aria-describedby={reason !== undefined ? reasonId : undefined}
               onClick={claim}
             >
               Take the shell
@@ -705,7 +714,7 @@ export function TerminalPane({
             {/* Read-only covers a watching device and an archived session, and
                 only the first will ever see a shell open, so the line promises
                 neither. */}
-            <EmptyDescription>This view reads a shell. It cannot open one.</EmptyDescription>
+            <EmptyDescription>{reason ?? "This view reads a shell. It cannot open one."}</EmptyDescription>
           </EmptyHeader>
           <EmptyContent>
             <Button variant="outline" size="xs" disabled={!connected} onClick={restart}>Check again</Button>

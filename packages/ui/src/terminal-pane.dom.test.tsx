@@ -916,6 +916,43 @@ describe("TerminalPane on a watching desktop", () => {
 
     expect(screen.getByText("Watching only")).toBeTruthy()
   })
+
+  // A phone or tablet tab is read-only for a reason the generic lines do not
+  // give: its credential may read a shell and nothing more.
+  const handheldReason = "Opening, typing into, resizing and taking a shell are off here."
+
+  it("says why the shell cannot be taken, beside the control", async () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.resolve(watchResult())
+    })
+
+    const reason = screen.getByText(handheldReason)
+    expect(screen.getByRole("button", { name: "Take the shell" }).getAttribute("aria-describedby")).toBe(reason.id)
+    expect(screen.queryByText("This view reads the shell and cannot take it.")).toBeNull()
+    expect(target.create).not.toHaveBeenCalled()
+  })
+
+  it("says why no shell can be opened when the session has none", async () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      target.watched.reject(new Error("Terminal does not exist"))
+    })
+
+    expect(screen.getByText("No shell is open in this session")).toBeTruthy()
+    expect(screen.getByText(handheldReason)).toBeTruthy()
+    expect(target.create).not.toHaveBeenCalled()
+  })
+
+  it("gives the reason in the watching empty state when this client cannot watch", () => {
+    const target = harness()
+    render(<TerminalPane connected readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+
+    expect(screen.getByText("Watching only")).toBeTruthy()
+    expect(screen.getByText(handheldReason)).toBeTruthy()
+  })
 })
 
 describe("Attach this output to the composer", () => {

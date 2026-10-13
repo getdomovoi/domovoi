@@ -9,6 +9,7 @@ import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
   completeHandshake,
+  fail,
   installFakeWebSocket,
   respond,
   sentRequests,
@@ -295,6 +296,90 @@ describe("the Terminal tab on a watching desktop", () => {
       terminalId: terminalIdForSession(snapshot.activeSessionId!),
     })
     expect(sentRequests(socket, "terminal.create")).toEqual([])
+  })
+})
+
+// A phone or tablet credential reaches only phoneAndTabletRpcMethods, and the
+// terminal methods on it are terminal.list, terminal.watch and
+// terminal.unwatch. The daemon refuses any other with the authentication
+// error, on which the client closes its connection, so a full-access phone or
+// tablet tab reads the shell the way a watching desktop does.
+describe("the Terminal tab in a phone or tablet tab", () => {
+  const refused = ["terminal.create", "terminal.input", "terminal.resize", "terminal.claim", "terminal.release", "terminal.close"] as const
+
+  async function openTerminalTab(clientKind: "desktop" | "web" | "phone" | "tablet") {
+    const snapshot = workspaceSnapshot()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const user = userEvent.setup()
+    const open = screen.queryByRole("button", { name: "Open the sheet" })
+    if (open) await user.click(open)
+    await settle()
+    await user.click(screen.getByRole("tab", { name: "Terminal" }))
+    await settle()
+    return { snapshot, socket, user }
+  }
+
+  it.each(["phone", "tablet"] as const)("a %s tab watches the session's shell and sends no refused terminal method", async (clientKind) => {
+    const { snapshot, socket, user } = await openTerminalTab(clientKind)
+    const terminalId = terminalIdForSession(snapshot.activeSessionId!)
+    await waitFor(() => expect(sentRequests(socket, "terminal.watch")).toHaveLength(1))
+    expect(sentRequests(socket, "terminal.watch")[0]?.params).toMatchObject({ terminalId })
+
+    await act(async () => {
+      respond(socket, "terminal.watch", {
+        terminalId,
+        sessionId: snapshot.activeSessionId!,
+        cols: 80,
+        rows: 24,
+        shell: "bash",
+        cwd: "/worktrees/demo",
+        owner: { client: "desktop", clientId: "client-desktop-holder" },
+        claimHeld: true,
+        openedAt: "2026-10-12T09:00:00.000Z",
+        state: "live",
+        buffer: "$ pnpm test\r\n",
+        earlierOutputDropped: false,
+        watchedAt: "2026-10-12T09:01:00.000Z",
+      })
+    })
+    await settle()
+
+    // The shell is read, and the pane says why it cannot be taken here.
+    expect(await screen.findByText("Claimed by a desktop")).toBeTruthy()
+    const reason = screen.getByText(`Opening, typing into, resizing and taking a shell are off in a phone or tablet tab: the daemon lets a phone or tablet credential only read one. Use the desktop app on ${snapshot.machine.name}.`)
+    const take = screen.getByRole<HTMLButtonElement>("button", { name: "Take the shell" })
+    expect(take.disabled).toBe(true)
+    expect(take.getAttribute("aria-describedby")).toBe(reason.id)
+    await user.click(take)
+    expect(screen.queryByRole("button", { name: "Close terminal" })).toBeNull()
+    expect(screen.queryByRole("button", { name: "Interrupt ⌃C" })).toBeNull()
+    await settle()
+
+    for (const method of refused) expect(sentRequests(socket, method), method).toEqual([])
+    expect(harness.sockets).toHaveLength(1)
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab says a session with no shell cannot open one here", async (clientKind) => {
+    const { snapshot, socket } = await openTerminalTab(clientKind)
+    await waitFor(() => expect(sentRequests(socket, "terminal.watch")).toHaveLength(1))
+    await act(async () => {
+      fail(socket, "terminal.watch", { code: -32602, message: "Terminal does not exist" })
+    })
+    await settle()
+
+    expect(await screen.findByText("No shell is open in this session")).toBeTruthy()
+    expect(screen.getByText(`Opening, typing into, resizing and taking a shell are off in a phone or tablet tab: the daemon lets a phone or tablet credential only read one. Use the desktop app on ${snapshot.machine.name}.`)).toBeTruthy()
+    for (const method of refused) expect(sentRequests(socket, method), method).toEqual([])
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  // The daemon opens a shell for a web or desktop credential.
+  it.each(["web", "desktop"] as const)("a %s tab still opens the session's shell", async (clientKind) => {
+    const { socket } = await openTerminalTab(clientKind)
+    await waitFor(() => expect(sentRequests(socket, "terminal.create")).toHaveLength(1))
+    expect(sentRequests(socket, "terminal.watch")).toEqual([])
+    expect(screen.queryByText(/off in a phone or tablet tab/u)).toBeNull()
   })
 })
 
