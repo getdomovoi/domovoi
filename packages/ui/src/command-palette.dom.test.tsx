@@ -68,12 +68,13 @@ describe("workspace command palette keyboard path", () => {
     expect(document.activeElement).toBe(trigger)
   })
 
-  it("takes a checkpoint of the active session and says why when the daemon refuses", async () => {
+  it.each([false, true])("takes a checkpoint and renders real refusals while running=%s", async (running) => {
     const user = userEvent.setup()
     const snapshot = workspaceSnapshot()
     const active = snapshot.sessions.find((session) => session.id === snapshot.activeSessionId)!
-    delete active.activeTurnId
-    active.state = "idle"
+    if (running) active.activeTurnId = "turn-running"
+    else delete active.activeTurnId
+    active.state = running ? "active" : "idle"
     render(<WorkspaceShell />)
     const socket = harness.socket(0)
     await act(async () => {
@@ -87,10 +88,10 @@ describe("workspace command palette keyboard path", () => {
       expect.objectContaining({ params: expect.objectContaining({ sessionId: active.id }) }),
     ])
     await act(async () => {
-      fail(socket, "checkpoint.create", { code: -32602, message: "Stop the active turn before creating a checkpoint" })
+      fail(socket, "checkpoint.create", { code: -32602, message: "Session has no worktree" })
     })
     await settle()
-    expect(screen.getByText("Stop the active turn before creating a checkpoint")).toBeTruthy()
+    expect(screen.getByText("Session has no worktree")).toBeTruthy()
   })
 
   it("shows the v2 session commands with their meta", async () => {

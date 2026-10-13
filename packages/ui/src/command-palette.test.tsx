@@ -92,7 +92,7 @@ describe("buildWorkspaceCommands", () => {
     expect(disconnected.find(({ id }) => id === "new-session")?.disabled).toBe(true)
   })
 
-  it("offers Take a checkpoint for the active session and locks it while a turn runs", () => {
+  it("offers Take a checkpoint and preserves an explicit unavailable state", () => {
     const takeCheckpoint = vi.fn()
     const base = {
       connected: true,
@@ -105,14 +105,14 @@ describe("buildWorkspaceCommands", () => {
       reconnect: vi.fn(),
       setSurface: vi.fn(),
     }
-    const idle = buildWorkspaceCommands({ ...base, takeCheckpoint, checkpointBlocked: false })
-    const command = idle.find(({ id }) => id === "take-checkpoint")
+    const available = buildWorkspaceCommands({ ...base, takeCheckpoint })
+    const command = available.find(({ id }) => id === "take-checkpoint")
     expect(command).toMatchObject({ label: "Take a checkpoint", section: "Session", disabled: false })
     command?.run()
     expect(takeCheckpoint).toHaveBeenCalledOnce()
 
-    const running = buildWorkspaceCommands({ ...base, takeCheckpoint, checkpointBlocked: true })
-    expect(running.find(({ id }) => id === "take-checkpoint")?.disabled).toBe(true)
+    const unavailable = buildWorkspaceCommands({ ...base, takeCheckpoint, checkpointBlocked: true })
+    expect(unavailable.find(({ id }) => id === "take-checkpoint")?.disabled).toBe(true)
     expect(buildWorkspaceCommands(base).find(({ id }) => id === "take-checkpoint")).toBeUndefined()
   })
 

@@ -56,10 +56,9 @@ export function checkpointMeta(entry: CheckpointEntry): string {
   return entry.reason ? `${time} · ${reasonCopy[entry.reason]}` : time
 }
 
-// v2 draws Take a checkpoint at the head of the tab: an optional label, a line
-// saying what it commits, then the two buttons. The daemon refuses a checkpoint
-// while a turn runs, so the control says that instead of the design's
-// next-tool-boundary note.
+// Q72/Q73: mid-turn captures use repeated staging. They do not wait for a
+// tool boundary as the design promises. State that limit here and on the
+// saved row beside its restore decision.
 function TakeCheckpoint({
   blockedReason,
   onTake,
@@ -124,7 +123,7 @@ function TakeCheckpoint({
             onChange={(event) => setLabel(event.target.value)}
           />
           <p className="text-[11px] leading-normal text-muted-foreground">
-            Optional label. It commits the worktree as it is now, on the session branch, and reverts like the others.
+            Optional label. Between turns, this commits on the session branch. During a turn, this saves a snapshot without moving the branch. Matching passes do not guarantee a single point in time. A change that reverts between passes is missed.
           </p>
           {error ? <Alert variant="destructive"><CircleStopIcon /><AlertTitle>Checkpoint not taken</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
           <div className="flex items-center gap-2">
@@ -227,7 +226,7 @@ export function CheckpointsPanel({
             return (
               // Dot, id, label, meta, then the two decisions. The id and the
               // meta hold fixed columns so the labels line up down the list.
-              <div key={entry.id} data-testid="checkpoint-row" className="flex items-center gap-2.5 rounded-xl border bg-card px-3 py-2.5">
+              <div key={entry.id} data-testid="checkpoint-row" className="flex flex-wrap items-center gap-2.5 rounded-xl border bg-card px-3 py-2.5">
                 <StatusDot meaning={outcome.meaning} label={outcome.label} size="inline" labelHidden />
                 <span className="w-[78px] shrink-0 truncate font-machine text-[11px] text-strong">{entry.sourceId}</span>
                 <span className="min-w-0 flex-1 truncate text-[12px]">{entry.label}</span>
@@ -242,6 +241,25 @@ export function CheckpointsPanel({
                 ) : null}
                 {entry.commit && onRestoreCheckpoint ? (
                   <CheckpointRestore checkpointId={entry.sourceId} label={entry.label} disabled={restoreBlocked} onRestore={onRestoreCheckpoint} triggerLabel={sessionStart ? "Reset" : "Revert"} triggerVariant="outline" />
+                ) : null}
+                {entry.midTurn ? (
+                  <div className="basis-full min-w-0 text-[11px] leading-normal text-muted-foreground">
+                    <p className="wrap-anywhere">Taken mid-turn while the agent was running. {entry.midTurn.providerTurnId !== undefined
+                      ? <>Turn: {entry.midTurn.providerTurnId}.</>
+                      : <>Turn ID SHA-256: {entry.midTurn.providerTurnIdSha256}.</>}</p>
+                    {entry.midTurn.stability === "unstable" ? (
+                      <>
+                        <p>Files changed while it was taken:</p>
+                        <ul className="list-inside list-disc font-machine">
+                          {entry.midTurn.changedPaths.map((path, index) => <li key={index} className="whitespace-pre-wrap wrap-anywhere">{path}</li>)}
+                        </ul>
+                        {entry.midTurn.changedPathCount > entry.midTurn.changedPaths.length ? (
+                          <p>{entry.midTurn.changedPathCount - entry.midTurn.changedPaths.length} more changed {entry.midTurn.changedPathCount - entry.midTurn.changedPaths.length === 1 ? "path" : "paths"} not shown.</p>
+                        ) : null}
+                      </>
+                    ) : <p>Two staging passes matched.</p>}
+                    <p>Matching passes do not guarantee a single point in time. A change that reverts between passes is missed.</p>
+                  </div>
                 ) : null}
               </div>
             )
