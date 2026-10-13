@@ -21,7 +21,6 @@ import type {
   Annotation,
   Artifact,
   ClientAccess,
-  ClientKind,
   ArtifactAccess,
   RpcParams,
   SessionEvidence,
@@ -90,6 +89,7 @@ import type { TerminalControls } from "./terminal-pane"
 import { SessionEvidencePanel } from "./session-evidence"
 import { type DesktopWindowBridge } from "./desktop-platform"
 import { HistoryPanel } from "./history-panel"
+import { useHandheldTabMachine } from "./handheld-tab"
 import { dockTabDefinitions } from "./dock-tabs"
 import { activeSession, sessionIsArchiveReadOnly } from "./workspace-selectors"
 
@@ -170,7 +170,6 @@ function terminalLockedInHandheldTab(machine: string): string {
 export function ArtifactDock({
   snapshot,
   clientAccess = "full",
-  clientKind,
   onCollapse,
   collapseButtonRef,
   defaultTab,
@@ -210,9 +209,6 @@ export function ArtifactDock({
   // client's (the fleet's daemonTime pattern); 0 when unknown.
   daemonTimeOffsetMs?: number
   clientAccess?: ClientAccess
-  // The kind this tab's credential was paired as. Absent, the dock treats the
-  // tab as able to open a shell, as before the prop existed.
-  clientKind?: ClientKind | undefined
   onCollapse: () => void
   // The pin control sits in this tab row. Given a row of its own it is alone
   // with nothing beside it, and floated over the row it covers the last tabs.
@@ -339,8 +335,9 @@ export function ArtifactDock({
   // terminal methods are terminal.list, terminal.watch and terminal.unwatch.
   // The daemon refuses terminal.create, input, resize, claim, release and
   // close from it with the authentication error, on which the client closes
-  // its connection, so the Terminal tab only reads the shell there.
-  const handheld = clientKind === "phone" || clientKind === "tablet"
+  // its connection, so the Terminal tab only reads the shell there. The shell
+  // says whether this is a phone or tablet tab (handheld-tab.ts).
+  const handheld = useHandheldTabMachine() !== undefined
   const terminalReadOnly = readOnly || handheld
   const terminalReadOnlyReason = handheld ? terminalLockedInHandheldTab(snapshot.machine.name) : undefined
   const previewFrameRef = useRef<HTMLIFrameElement>(null)
