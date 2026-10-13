@@ -598,9 +598,10 @@ export type SettingsShellProps = {
   about?: AboutBuild | undefined
   pairing?: PairingSettings | undefined
   secrets: readonly ProviderSecretStatus[]
-  // Set where this client does not ask for key status: the line that says
-  // why, drawn in place of the key rows.
-  secretsRefusal?: string | undefined
+  // Set in a phone or tablet tab, to the machine's name: provider.secret.list
+  // is not on phoneAndTabletRpcMethods, so the tab does not ask for key status
+  // and the card says why in place of the key rows (Q84).
+  secretsWithheldFrom?: string | undefined
   localDaemon?: LocalDaemonDescription
   approvalRules: readonly ApprovalRule[]
   notifications: NotificationPreferences
@@ -630,7 +631,7 @@ export function SettingsShell({
   providerMachines,
   providerFleetOverflow,
   secrets,
-  secretsRefusal,
+  secretsWithheldFrom,
   about,
   pairing,
   localDaemon,
@@ -693,7 +694,7 @@ export function SettingsShell({
           {tailnet && !daemonSection ? <TailnetReachCard controller={tailnet} /> : null}
 
           <section aria-label="Providers and tokens">
-            <ProviderSettings providers={providers} machines={providerMachines} fleetOverflow={providerFleetOverflow} secrets={secrets} secretsRefusal={secretsRefusal} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
+            <ProviderSettings providers={providers} machines={providerMachines} fleetOverflow={providerFleetOverflow} secrets={secrets} secretsRefusal={secretsWithheldFrom === undefined ? undefined : `Key status is off in a phone or tablet tab: the daemon does not report it to a phone or tablet credential. Use the desktop app on ${secretsWithheldFrom}.`} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
           </section>
 
           {about && !daemonSection ? <AboutBuildSection about={about} /> : null}

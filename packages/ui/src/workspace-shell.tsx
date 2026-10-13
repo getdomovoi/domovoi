@@ -510,10 +510,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The move dialog asks for session.transferPreview as it opens, and neither
   // it nor session.transfer is on phoneAndTabletRpcMethods. A handheld answers
   // the preview here with the reason, which the dialog shows; without a
-  // preview it offers no Move session, so session.transfer is never sent.
+  // preview it offers no Move session, so session.transfer is never sent (Q86).
   const handheldMachineName = snapshot?.machine.name
   const previewTransfer = useCallback<typeof previewWorkspaceTransfer>((...args) => handheld
-    ? Promise.reject(new Error(`Moving a session is off in a phone or tablet tab: the daemon does not preview or make a move for a phone or tablet credential. Use the desktop app on ${handheldMachineName ?? "this machine"}.`))
+    ? Promise.reject(new Error(`Moving a session is off in a phone or tablet tab: the daemon does not preview or make a move for a phone or tablet credential. Use the desktop app on ${handheldMachineName}.`))
     : previewWorkspaceTransfer(...args), [handheld, handheldMachineName, previewWorkspaceTransfer])
   const watching = workspaceAccess === "watching"
   const terminalControls = useMemo<TerminalControls>(() => ({
@@ -1761,7 +1761,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             }) : undefined}
             providerFleetOverflow={fleet ? undefined : fleetOverflow ?? undefined}
             secrets={providerSecrets}
-            secretsRefusal={handheld ? `Key status is off in a phone or tablet tab: the daemon does not report it to a phone or tablet credential. Use the desktop app on ${snapshot.machine.name}.` : undefined}
+            secretsWithheldFrom={handheld ? snapshot.machine.name : undefined}
             readOnly={watching}
             {...(localDaemon && !attached ? { localDaemon: {
               ...localDaemon,
