@@ -19,6 +19,8 @@ type HeldChunk = {
   requested: Promise<void>
   request: () => void
   requests: number
+  // How many loads from now fail, as a chunk that cannot be fetched would.
+  failures: number
   ended: boolean
 }
 
@@ -27,7 +29,7 @@ function held(): HeldChunk {
   const ready = new Promise<void>((resolve) => { release = resolve })
   let request = () => {}
   const requested = new Promise<void>((resolve) => { request = resolve })
-  return { ready, release, requested, request, requests: 0, ended: false }
+  return { ready, release, requested, request, requests: 0, failures: 0, ended: false }
 }
 
 let chunk = held()
@@ -43,6 +45,10 @@ beforeEach(() => {
     current.requests += 1
     current.request()
     await current.ready
+    if (current.failures > 0) {
+      current.failures -= 1
+      throw new Error("Failed to fetch dynamically imported module")
+    }
     const actual = await importOriginal()
     return current.ended ? new Promise<never>(() => {}) : actual
   })
@@ -57,6 +63,7 @@ afterEach(async () => {
   cleanup()
   harness.uninstall()
   vi.doUnmock("./desktop-first-run")
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   await new Promise((resolve) => setTimeout(resolve, 0))
 })
@@ -148,4 +155,58 @@ it("skips setup when its frame is closed before the code arrives, and stays clos
 
   await arrive()
   expect(screen.queryByRole("dialog")).toBeNull()
+})
+
+// A setup whose code cannot be fetched says so in its own frame. It never
+// takes the workspace down with it, open or closed.
+it("says setup did not load when its code fails, and Try again loads it", async () => {
+  chunk.failures = 1
+  // The failed load is logged by design; the frame is what is checked here.
+  vi.spyOn(console, "error").mockImplementation(() => {})
+  await openDesktop()
+  await act(async () => { await chunk.requested })
+  await arrive()
+
+  const failed = await screen.findByRole("dialog", { name: "Setup did not load in this window. Nothing on the machine changed." })
+  expect(failed.getAttribute("aria-busy")).toBeNull()
+  expect(failed.contains(document.activeElement)).toBe(true)
+  expect(screen.getByRole("button", { name: "Settings", hidden: true })).toBeTruthy()
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Try again" }))
+  await settle()
+  const setup = await screen.findByRole("dialog", { name: /Connect an agent on/ })
+  expect(chunk.requests).toBe(2)
+  expect(screen.getAllByRole("dialog")).toHaveLength(1)
+  expect(setup.contains(document.activeElement)).toBe(true)
+})
+
+it("skips setup from the frame that says it did not load", async () => {
+  chunk.failures = 1
+  // The failed load is logged by design; the frame is what is checked here.
+  vi.spyOn(console, "error").mockImplementation(() => {})
+  await openDesktop()
+  await act(async () => { await chunk.requested })
+  await arrive()
+
+  await userEvent.setup().click(await screen.findByRole("button", { name: "Skip for now" }))
+  await settle()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(loadDesktopFirstRunState(localStorage).status).toBe("dismissed")
+  expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy()
+})
+
+it("leaves the workspace as it was when setup was closed before its code failed to load", async () => {
+  chunk.failures = 1
+  // The failed load is logged by design; the frame is what is checked here.
+  vi.spyOn(console, "error").mockImplementation(() => {})
+  await openDesktop()
+  await act(async () => { await chunk.requested })
+  await userEvent.setup().keyboard("{Escape}")
+  await settle()
+  expect(screen.queryByRole("dialog")).toBeNull()
+
+  await arrive()
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(screen.getByRole("button", { name: "Settings" })).toBeTruthy()
+  expect(loadDesktopFirstRunState(localStorage).status).toBe("dismissed")
 })
