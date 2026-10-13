@@ -333,6 +333,8 @@ afterEach(async () => {
 describe("DomovoiDaemon", () => {
   it.each([
     { name: "quiet", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
+    { name: "oversized active turn id", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
+    { name: "sensitive paths", racing: false, reportedPaths: ["NPM_TOKEN=synthetic-checkpoint-fixture", ".env", ".ssh/id_rsa", "safe.txt"], expectedPaths: ["safe.txt"], total: 4 },
     { name: "long active turn id", racing: false, reportedPaths: undefined, expectedPaths: [], total: 0 },
     { name: "over serialized path budget", racing: false,
       reportedPaths: Array.from({ length: 50 }, (_, index) => String(index).padStart(2, "0") + "x".repeat(4094)),
@@ -366,7 +368,7 @@ describe("DomovoiDaemon", () => {
     snapshot.activeSessionId = session.id
     snapshot.approvals = []
     session.workspacePath = path
-    const providerTurnId = name === "long active turn id" ? "turn-" + "😀".repeat(2_000) : "capture-turn"
+    const providerTurnId = name === "oversized active turn id" ? "t".repeat(65 * 1024) : name === "long active turn id" ? "turn-" + "😀".repeat(2_000) : "capture-turn"
     session.activeTurnId = providerTurnId
     session.state = "active"
     const activateTurns = deferLiveTurns(snapshot)
@@ -416,8 +418,9 @@ describe("DomovoiDaemon", () => {
     const item = view.thread.find((item) => item.kind === "checkpoint" && item.label.endsWith(" · capture"))!
     expect(item).toMatchObject({
       kind: "checkpoint", reason: "manual",
-      midTurn: { providerTurnId, stability: racing || reportedPaths ? "unstable" : "matched", changedPaths: expectedPaths, changedPathCount: total },
+      midTurn: { ...(providerTurnId.length > 1024 ? { providerTurnIdSha256: createHash("sha256").update(providerTurnId).digest("hex") } : { providerTurnId }), stability: racing || reportedPaths ? "unstable" : "matched", changedPaths: expectedPaths, changedPathCount: total },
     })
+    if (providerTurnId.length > 1024) expect(item).not.toHaveProperty("midTurn.providerTurnId")
     const persisted = workspaceSnapshotSchema.parse(save.mock.lastCall?.[0])
     expect(persisted.thread.find((saved) => saved.id === item.id)).toEqual(item)
     const history = await rpc("session.history", { sessionId: session.id, categories: ["checkpoints"] })

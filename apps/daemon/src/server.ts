@@ -9,6 +9,7 @@ import {
   approvalCheckpointErrorCode,
   buildVersion,
   maximumRpcMessageBytes,
+  maximumMidTurnCheckpointTurnIdLength,
   maximumMidTurnCheckpointPaths,
   maximumMidTurnCheckpointPathLength,
   maximumMidTurnCheckpointPathsBytes,
@@ -356,7 +357,7 @@ import {
   WorkingPlanMutationError,
   type ProviderTaskLink,
 } from "./working-plan.js"
-import { redactDeviceLabel } from "./workspace-redaction.js"
+import { checkpointPathIsSafe, redactDeviceLabel } from "./workspace-redaction.js"
 
 const invalidRequest = -32600
 const methodNotFound = -32601
@@ -10858,7 +10859,7 @@ export class DomovoiDaemon {
           : []
         const displayedChangedPaths: string[] = []
         for (const path of changedPaths) {
-          if (path.length === 0 || path.length > maximumMidTurnCheckpointPathLength) continue
+          if (path.length === 0 || path.length > maximumMidTurnCheckpointPathLength || !checkpointPathIsSafe(path)) continue
           if (displayedChangedPaths.length >= maximumMidTurnCheckpointPaths
             || Buffer.byteLength(JSON.stringify([...displayedChangedPaths, path]), "utf8") > maximumMidTurnCheckpointPathsBytes) break
           displayedChangedPaths.push(path)
@@ -10871,7 +10872,9 @@ export class DomovoiDaemon {
           ...(providerTurnId ? {
             ...turnLink,
             midTurn: {
-              providerTurnId,
+              ...(providerTurnId.length <= maximumMidTurnCheckpointTurnIdLength
+                ? { providerTurnId }
+                : { providerTurnIdSha256: createHash("sha256").update(providerTurnId).digest("hex") }),
               stability: checkpoint.matched === true ? "matched" as const : "unstable" as const,
               changedPaths: displayedChangedPaths,
               changedPathCount: changedPaths.length,

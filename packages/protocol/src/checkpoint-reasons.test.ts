@@ -56,12 +56,36 @@ describe("checkpoint reasons", () => {
 describe("mid-turn checkpoints", () => {
   const matched = { providerTurnId: "provider-turn-1", stability: "matched", changedPaths: [], changedPathCount: 0 }
   const unstable = { providerTurnId: "provider-turn-1", stability: "unstable", changedPaths: ["src/a.ts", " "], changedPathCount: 2 }
-  it("accepts a long active turn id without narrowing the session identity contract", () => {
+  it("accepts a bounded turn ID without narrowing the session identity contract", () => {
     const providerTurnId = "turn-" + "😀".repeat(2_000)
     expect(sessionSummarySchema.shape.activeTurnId.parse(providerTurnId)).toBe(providerTurnId)
-    const midTurn = { ...matched, providerTurnId }
+    const midTurn = { ...matched, providerTurnId: "😀".repeat(512) }
     expect(threadItemSchema.parse({ ...checkpoint, midTurn })).toEqual({ ...checkpoint, midTurn })
     expect(sessionHistoryEntrySchema.parse({ ...history, midTurn })).toEqual({ ...history, midTurn })
+  })
+  it("accepts a digest instead of copying an oversized provider turn ID", () => {
+    const { providerTurnId: _id, ...facts } = matched
+    const midTurn = { ...facts, providerTurnIdSha256: "a".repeat(64) }
+    expect(threadItemSchema.parse({ ...checkpoint, midTurn })).toEqual({ ...checkpoint, midTurn })
+    expect(sessionHistoryEntrySchema.parse({ ...history, midTurn })).toEqual({ ...history, midTurn })
+  })
+  it("accepts the exact UTF-16 turn ID budget", () => {
+    const midTurn = { ...matched, providerTurnId: "t".repeat(1024) }
+    expect(threadItemSchema.parse({ ...checkpoint, midTurn })).toEqual({ ...checkpoint, midTurn })
+    expect(sessionHistoryEntrySchema.parse({ ...history, midTurn })).toEqual({ ...history, midTurn })
+  })
+  it.each([
+    { providerTurnId: "t".repeat(1025) },
+    { providerTurnId: "漢".repeat(1025) },
+    { providerTurnId: "😀".repeat(513) },
+    { providerTurnId: undefined },
+    { providerTurnId: "turn", providerTurnIdSha256: "a".repeat(64) },
+    { providerTurnId: undefined, providerTurnIdSha256: "a".repeat(63) },
+    { providerTurnId: undefined, providerTurnIdSha256: "G".repeat(64) },
+  ])("rejects oversized or ambiguous turn identity: %#", (identity) => {
+    const midTurn = { ...matched, ...identity }
+    expect(threadItemSchema.safeParse({ ...checkpoint, midTurn }).success).toBe(false)
+    expect(sessionHistoryEntrySchema.safeParse({ ...history, midTurn }).success).toBe(false)
   })
   const exactBudgetPaths = ["a".repeat(4095), "b".repeat(4092), "c".repeat(4092), "d".repeat(4092)]
   it("accepts the exact 16 KiB serialized path budget", () => {
