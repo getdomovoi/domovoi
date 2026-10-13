@@ -145,7 +145,7 @@ pages, not from a run. Record what each OS showed, word for word where you can, 
 6. **Update by hand.** **Changes the OS. Replacing or updating the service changes the profile's
    runtime copy and service configuration.** Build a package from a different clean commit,
    record its full commit, and install it over the first, as in step 1. Open the app; it attaches
-   to the running service. When the versions are equal and both build commits are known and
+   to the running service. When the release versions are equal and both build commits are known and
    differ, Settings offers "Replace the service with this app's build". Choose it and record the
    result. It uses the existing in-place update, including its active-work and profile refusals.
    Equal commits show no replacement action. If either commit is unknown, Settings shows

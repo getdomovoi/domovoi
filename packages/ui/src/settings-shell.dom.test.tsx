@@ -1312,6 +1312,19 @@ it("explains an absent service commit without offering replacement", async () =>
   expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
 })
 
+it.each(["dev", "0.0.1-dev", "v0.0.1", "0.0", "0.0.1+build"])("does not offer replacement for equal non-release versions %s", async (version) => {
+  const props = sameVersionSettings()
+  props.about.version = version
+  props.localDaemon.appVersion = version
+  props.localDaemon.serviceVersion = version
+  props.about.onUpdateStatus.mockResolvedValue({ channel: "stable", state: "idle", currentVersion: version, currentSourceCommit: serviceBuildCommit })
+  render(<SettingsShell {...props} />)
+  await screen.findByText(`domovoid ${version} · bbbbbbb`)
+  expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
+  expect(screen.queryByRole("button", { name: "Update the service" })).toBeNull()
+  expect(screen.queryByText(unknownBuildReason)).toBeNull()
+})
+
 it.each(["0.0.0", "0.0.2"])("preserves the version-based behavior for service %s", async (version) => {
   const props = sameVersionSettings()
   props.localDaemon.serviceVersion = version

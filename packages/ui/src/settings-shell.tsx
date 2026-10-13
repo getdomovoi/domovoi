@@ -101,10 +101,13 @@ type ServicePhase =
 const profileRecoverCommand = "domovoid profile recover --confirm-no-supervisor"
 
 // Release versions are major.minor.patch; anything else is not compared.
+function parseRelease(version: string) {
+  return /^(\d+)\.(\d+)\.(\d+)$/u.exec(version)?.slice(1).map(Number)
+}
+
 function olderRelease(version: string, than: string): boolean {
-  const parse = (value: string) => /^(\d+)\.(\d+)\.(\d+)$/u.exec(value)?.slice(1).map(Number)
-  const left = parse(version)
-  const right = parse(than)
+  const left = parseRelease(version)
+  const right = parseRelease(than)
   if (!left || !right) return false
   for (let index = 0; index < 3; index += 1) {
     if (left[index]! !== right[index]!) return left[index]! < right[index]!
@@ -326,7 +329,7 @@ function DaemonSection({ daemon, footer, buildStatus, buildSettled, onUpdated }:
   const on = daemon.owner === "outside" && installed && daemon.serviceRunning === true
   const unknown = daemon.owner === "outside" && !on
   const serviceBehind = on && phase.kind !== "updated" && daemon.serviceVersion !== undefined && daemon.appVersion !== undefined && olderRelease(daemon.serviceVersion, daemon.appVersion)
-  const sameVersion = on && daemon.serviceVersion !== undefined && daemon.serviceVersion === daemon.appVersion
+  const sameVersion = on && daemon.serviceVersion !== undefined && daemon.serviceVersion === daemon.appVersion && parseRelease(daemon.serviceVersion) !== undefined
   const comparisonSettled = buildSettled && report !== undefined
   const replaceBuild = comparisonSettled && sameVersion && phase.kind !== "updated" && appCommit !== undefined && serviceCommit !== undefined && appCommit !== serviceCommit
   const unknownBuild = comparisonSettled && sameVersion && (appCommit === undefined || serviceCommit === undefined)
