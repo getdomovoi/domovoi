@@ -338,21 +338,32 @@ it("sends images when the harness has not said, and says what is not known", asy
   expect(onSend).toHaveBeenCalledWith(activeId, "Maybe", undefined, [image])
 })
 
-it("locks the device source in the attach menu and names the model's image input", async () => {
+// Only images are locked: the device source also takes text files, which a
+// text-only model reads like any other (PR #846 review).
+it("locks images, not text files, at the device source for a model that takes none", async () => {
   const user = userEvent.setup()
-  renderThread({ imageInput: false })
+  const { onSend } = renderThread({ imageInput: false, prompt: "Read this" })
 
   // The menu reads the answer the thread already has.
   await waitFor(() => expect(screen.getByRole("button", { name: "Attach" })).toBeTruthy())
   await user.click(screen.getByRole("button", { name: "Attach" }))
   const menu = await screen.findByRole("menu")
-  await waitFor(() => expect(within(menu).getByText("Locked for this model.")).toBeTruthy())
+  await waitFor(() => expect(within(menu).getByText("Images are locked for this model. Text files still attach.")).toBeTruthy())
   const device = within(menu).getByRole("menuitem", { name: /Image or file from this device/u })
-  expect(device.getAttribute("aria-disabled")).toBe("true")
+  expect(device.getAttribute("aria-disabled")).toBeNull()
   expect(within(device).getByText(`refused by ${machine} · attach.image.model_no_input`)).toBeTruthy()
+  const picker = screen.getByLabelText("Choose an image or file") as HTMLInputElement
+  expect(picker.accept).not.toContain("image/")
+  expect(picker.accept).toContain("text/plain")
   const footer = within(menu).getByRole("group", { name: "The model this message goes to" })
   expect(within(footer).getByText("sonnet-4.6")).toBeTruthy()
   expect(within(footer).getByText("takes no image input, as its harness reports")).toBeTruthy()
+  await user.keyboard("{Escape}")
+
+  await user.upload(picker, new File(["notes"], "notes.md", { type: "text/plain" }))
+  await screen.findByRole("button", { name: "Remove notes.md" })
+  await user.click(send())
+  expect(onSend).toHaveBeenCalledWith(activeId, "Read this", undefined, [{ kind: "text", name: "notes.md", mimeType: "text/plain", content: "notes" }])
 })
 
 it("keeps the device source open for a model that takes images", async () => {

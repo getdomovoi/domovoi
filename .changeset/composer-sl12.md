@@ -6,7 +6,7 @@
 
 The composer reads whether the session's model takes images. When its harness reports that it
 takes none, image chips turn red, a notice says how many images cannot go to the model with Remove
-and Change model, send stays off, and the attach menu locks the device source. When the harness
+and Change model, send stays off, and the attach menu locks images while text files still attach. When the harness
 has not said, nothing locks and a line says it is not known.
 
 `/checkpoint` takes a checkpoint from the composer, with an optional label, during a turn as well

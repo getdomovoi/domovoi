@@ -488,7 +488,7 @@ export function ThreadComposer({
       <input
         ref={attachmentInput}
         type="file"
-        accept="image/png,image/jpeg,text/plain,.md,.json,.csv,.log"
+        accept={imageInput === false ? "text/plain,.md,.json,.csv,.log" : "image/png,image/jpeg,text/plain,.md,.json,.csv,.log"}
         className="sr-only"
         aria-label="Choose an image or file"
         onChange={(event) => {
@@ -625,13 +625,15 @@ export function ThreadComposer({
                   <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">Anything else on that machine, including files outside the project. Reading outside the project asks first.</span>
                 </span>
               </DropdownMenuItem>
-              {/* Locked, as the design's default draws it, when the model's
-                  harness reports no image input. The daemon would refuse an
-                  image with this code. */}
-              <DropdownMenuItem aria-label="Image or file from this device" disabled={imageInput === false} className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px] data-disabled:opacity-100" onSelect={() => attachmentInput.current?.click()}>
-                <span className={cn("mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground", imageInput === false && "opacity-55")}>PNG</span>
+              {/* When the model's harness reports no image input, images are
+                  locked here (the picker offers text files only) and the
+                  daemon would refuse one with this code. The source stays
+                  open: a text-only model reads text files like any other. An
+                  image that gets in anyway is caught by the notice above. */}
+              <DropdownMenuItem aria-label="Image or file from this device" className="items-start gap-[11px] rounded-none border-t px-[13px] py-[11px]" onSelect={() => attachmentInput.current?.click()}>
+                <span className="mt-px rounded bg-muted px-[5px] py-[3px] font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">PNG</span>
                 <span className="min-w-0 flex-1">
-                  <span className={cn("block text-[12.5px]", imageInput === false ? "text-muted-foreground" : "text-foreground")}>Image or file from this device</span>
+                  <span className="block text-[12.5px] text-foreground">Image or file from this device</span>
                   {/* Only the desktop app's own daemon is on this computer;
                       a browser's loopback address may be an SSH forward. The
                       design's claim that nothing leaves is not made: the agent
@@ -645,7 +647,7 @@ export function ThreadComposer({
                     <span className="mt-[7px] flex items-start gap-[7px]">
                       <LockIcon aria-hidden className="mt-0.5 size-3 shrink-0 text-muted-foreground" />
                       <span className="flex min-w-0 flex-col gap-0.5">
-                        <span className="text-[11px] leading-[1.45] text-foreground">Locked for this model.</span>
+                        <span className="text-[11px] leading-[1.45] text-foreground">Images are locked for this model. Text files still attach.</span>
                         <span className="font-machine text-[10.5px] text-faint">{`refused by ${machineName} · ${modelImageInputRefusalCode}`}</span>
                       </span>
                     </span>

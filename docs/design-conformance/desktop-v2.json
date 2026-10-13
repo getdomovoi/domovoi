@@ -1274,7 +1274,7 @@
         "cannot go to"
       ],
       "notes": [
-        "Built 2026-10-13 (SL-12) from ProviderModel.imageInput of the session's model: the notice with Remove and Change model, red image chips reading no image input, send held off, the attach menu's device source locked with refused by <machine> · attach.image.model_no_input (the phone's line), and no image input on model rows. The design's default guard (A) locks the source; its option B, attach then block, is not built.",
+        "Built 2026-10-13 (SL-12) from ProviderModel.imageInput of the session's model: the notice with Remove and Change model, red image chips reading no image input, send held off, images locked at the attach menu's device source with Images are locked for this model. Text files still attach. and refused by <machine> · attach.image.model_no_input (the phone's line), the picker then offering text files only, and no image input on model rows. The design's default guard (A) locks the whole source, which also takes text files; a text-only model reads those, so only images are locked (PR #846 review, Q101). An image that gets in anyway (an older draft, a picker that ignores the filter) is caught by the notice and blocks send, the design's option B.",
         "An absent imageInput is not known, never no: nothing locks, and a line says Domovoi does not know whether the model takes image input and that the machine refuses the send if it does not (the phone's words). A message queued before a model change still goes out at release, where the daemon refuses it.",
         "Checked against the vendored handoff only for the notice's words, which live in the design's data past the first 256 KiB."
       ]
