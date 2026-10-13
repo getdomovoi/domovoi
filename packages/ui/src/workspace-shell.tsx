@@ -419,11 +419,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const homeSkillInventory = home.getSkillInventory
   const homeVersion = home.snapshot?.machine.version
   const openReleasePage = windowBridge?.openReleasePage
+  // The web app greets as phone or tablet on a handheld browser. The daemon
+  // refuses every method outside phoneAndTabletRpcMethods from that credential
+  // with the authentication error, on which the client closes its connection,
+  // so the reads the shell makes on its own leave those methods out:
+  // update.status, provider.secret.list and skill.inventory.
+  const handheld = clientKind === "phone" || clientKind === "tablet"
   const about = useMemo(() => attached || homeVersion === undefined ? undefined : {
     version: homeVersion,
-    onUpdateStatus: updateStatus,
+    ...(handheld ? {} : { onUpdateStatus: updateStatus }),
     ...(openReleasePage ? { onOpenReleasePage: openReleasePage } : {}),
-  }, [attached, homeVersion, updateStatus, openReleasePage])
+  }, [attached, homeVersion, handheld, updateStatus, openReleasePage])
   const {
     activateSession,
     archiveSession,
@@ -667,6 +673,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const [skills, setSkills] = useState<SkillSummary[]>([])
   const [skillInventories, setSkillInventories] = useState<SkillInventorySource[]>([])
   const [localSkillInventory, setLocalSkillInventory] = useState<SkillInventorySource | null>(null)
+  // Whether the open project's catalog has answered. A handheld lists it
+  // without reading the machine's inventory, so this is not the inventory.
+  const [skillCatalogLoaded, setSkillCatalogLoaded] = useState(false)
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
@@ -1035,7 +1044,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       // Waiting, not held: an unloaded catalog says nothing about whether the
       // chosen skill still exists, and "your skill is gone" is a lie until it
       // has answered.
-      if (chosen && chosen.length > 0 && localSkillInventory?.state !== "available") continue
+      if (chosen && chosen.length > 0 && !skillCatalogLoaded) continue
       const { selection, missing } = turnSkillSelectionFor(
         chosen ? new Set(chosen) : undefined,
         selectableTurnSkills(skills, snapshot?.skillEnablements ?? [], snapshot?.project?.id),
@@ -1076,7 +1085,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           setSettled((count) => count + 1)
         })
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, localSkillInventory, settled, watching])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, settled, watching])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
@@ -1516,6 +1525,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
 
   useEffect(() => {
     if (surface !== "providers") return
+    // provider.secret.list is not on phoneAndTabletRpcMethods. Settings says
+    // why there is no key status instead (secretsRefusal).
+    if (handheld) {
+      setProviderSecrets([])
+      return
+    }
     if (!connected) {
       setProviderSecrets([
         { provider: "anthropic", state: "unavailable", source: "keychain" },
@@ -1536,7 +1551,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       },
     )
     return () => { active = false }
-  }, [connected, listProviderSecrets, surface])
+  }, [connected, handheld, listProviderSecrets, surface])
 
   // A refresh follows the machine and project keys, a reconnect, and an
   // explicit retry. Other workspace changes and surface moves leave the catalog
@@ -1546,6 +1561,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (!skillsWanted) return
     if (!connected) {
       setLocalSkillInventory(null)
+      setSkillCatalogLoaded(false)
       setSkillsLoading(false)
       setSkillInventories(skillMachine ? [{
         state: "unreachable",
@@ -1559,10 +1575,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     const options = { signal: refresh.signal }
     setSkillsLoading(true)
     setSkillsError("")
-    void Promise.all([listSkills(options), getSkillInventory(options)]).then(
+    // skill.inventory is not on phoneAndTabletRpcMethods (skill.list is: the
+    // composer offers skills by name), so a handheld lists the catalog only
+    // and the Skills surface shows no machine comparison.
+    void Promise.all([listSkills(options), handheld ? undefined : getSkillInventory(options)]).then(
       ([discovered, inventory]) => {
         if (!active) return
         setSkills(discovered)
+        setSkillCatalogLoaded(true)
+        if (!inventory) {
+          setSkillInventories([])
+          return
+        }
         setLocalSkillInventory({ state: "available", inventory })
         setSkillInventories([{ state: "available", inventory }])
       },
@@ -1585,6 +1609,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }, [
     connected,
     getSkillInventory,
+    handheld,
     listSkills,
     skillMachine,
     skillProjectKey,
@@ -1722,6 +1747,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             }) : undefined}
             providerFleetOverflow={fleet ? undefined : fleetOverflow ?? undefined}
             secrets={providerSecrets}
+            secretsRefusal={handheld ? `Key status is off in a phone or tablet tab: the daemon does not report it to a phone or tablet credential. Use the desktop app on ${snapshot.machine.name}.` : undefined}
             readOnly={watching}
             {...(localDaemon && !attached ? { localDaemon: {
               ...localDaemon,

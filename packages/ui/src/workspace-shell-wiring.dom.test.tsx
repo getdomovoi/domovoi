@@ -1,7 +1,7 @@
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { protocolVersion, type FleetMachine } from "@getdomovoi/protocol"
+import { daemonAuthenticationErrorCode, phoneAndTabletRpcMethods, protocolVersion, rpcMethodAuthorizations, type FleetMachine, type RpcMethod } from "@getdomovoi/protocol"
 
 import type { DesktopWindowBridge } from "./desktop-platform"
 import { terminalIdForSession } from "./terminal-id"
@@ -9,10 +9,12 @@ import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
   completeHandshake,
+  fail,
   installFakeWebSocket,
   respond,
   sentRequests,
   workspaceSnapshot,
+  type FakeWebSocket,
   type FakeWebSocketHarness,
 } from "./test-support/fake-websocket"
 
@@ -376,5 +378,119 @@ describe("window decoration on a watching desktop", () => {
 
     expect(setWindowDecoration).toHaveBeenCalledWith("system")
     expect(sentRequests(socket).slice(before)).toEqual([])
+  })
+})
+
+// What a tab sends on its own: on connect, once a project is open, and when a
+// surface or a sheet tab mounts. The daemon refuses a method a credential may
+// not send with the authentication error, before it reads the parameters
+// (server.ts), and the client closes its connection on that code (client.ts).
+// The fake socket here answers the same way, so a stray request shows as a
+// closed socket as well as in the list of what was sent.
+describe("requests a tab sends on its own", () => {
+  const isControl = (method: RpcMethod) => rpcMethodAuthorizations[method] === "control"
+  const handheldRefuses = (method: RpcMethod) => !phoneAndTabletRpcMethods.has(method)
+
+  function refuseLikeTheDaemon(socket: FakeWebSocket, refuses: (method: RpcMethod) => boolean) {
+    for (const request of sentRequests(socket)) {
+      const method = request.method as RpcMethod
+      if (socket.answered.has(request.id) || !refuses(method)) continue
+      fail(socket, method, { code: daemonAuthenticationErrorCode, message: "Refused for this credential" })
+    }
+  }
+
+  // The project is open on connect, then each sheet tab but Terminal (task 81
+  // makes that tab watch-only on a handheld), then Settings, Skills and its
+  // Tools tab, the audit log and Machines.
+  async function walk(socket: FakeWebSocket, refuses: (method: RpcMethod) => boolean) {
+    const user = userEvent.setup()
+    const step = async () => {
+      await settle()
+      await act(async () => { refuseLikeTheDaemon(socket, refuses) })
+      await settle()
+    }
+    await step()
+    const sheet = screen.queryByRole("button", { name: "Open the sheet" })
+    if (sheet) await user.click(sheet)
+    await step()
+    for (const name of ["Changes", "History", "Checkpoints", "Rules", "Preview"]) {
+      const tab = screen.queryByRole("tab", { name })
+      if (tab) await user.click(tab)
+      await step()
+    }
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await screen.findByRole("region", { name: "About this build" })
+    await step()
+    await user.click(await screen.findByRole("button", { name: /^Skills/u }))
+    await screen.findByRole("heading", { level: 1, name: "Skills on this machine" })
+    await step()
+    await user.click(screen.getByRole("tab", { name: "Tools" }))
+    await step()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /Audit log/u }))
+    await screen.findByRole("heading", { level: 1, name: "Audit log" })
+    await step()
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+    await screen.findByRole("heading", { level: 1, name: "Machines" })
+    await step()
+  }
+
+  it.each(["phone", "tablet"] as const)("a %s tab with a project open sends nothing the daemon refuses it, and stays connected", async (clientKind) => {
+    const snapshot = workspaceSnapshot()
+    expect(snapshot.project).toBeTruthy()
+    const socket = await openWorkspace(snapshot, { clientKind })
+    await walk(socket, handheldRefuses)
+
+    expect(sentRequests(socket).map(({ method }) => method).filter((method) => handheldRefuses(method as RpcMethod))).toEqual([])
+    // The composer still offers the project's skills by name, and the walk
+    // reached the sheet, the Tools tab and the audit log.
+    for (const method of ["skill.list", "session.history", "tool.inventory", "audit.query"] as const) {
+      expect(sentRequests(socket, method), method).not.toHaveLength(0)
+    }
+    expect(harness.sockets).toHaveLength(1)
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  it.each(["phone", "tablet"] as const)("a %s tab says why Settings shows no update status and no key status", async (clientKind) => {
+    const snapshot = workspaceSnapshot()
+    await openWorkspace(snapshot, { clientKind })
+    await userEvent.setup().click(screen.getByRole("button", { name: "Settings" }))
+    const about = await screen.findByRole("region", { name: "About this build" })
+    await settle()
+
+    expect(about.textContent).toContain("No update status: the daemon answers it only over loopback, to its owner's credential.")
+    expect(screen.getByText(`Key status is off in a phone or tablet tab: the daemon does not report it to a phone or tablet credential. Use the desktop app on ${snapshot.machine.name}.`)).toBeTruthy()
+    expect(screen.queryByText("Keychain unavailable")).toBeNull()
+  })
+
+  it.each(["web", "phone"] as const)("a watching %s tab sends nothing the daemon refuses it, and stays connected", async (clientKind) => {
+    const snapshot = workspaceSnapshot({ clientAccess: "watching" } as Partial<Hello>)
+    const socket = await openWorkspace(snapshot, { clientKind })
+    const refuses = clientKind === "phone" ? (method: RpcMethod) => isControl(method) || handheldRefuses(method) : isControl
+    await walk(socket, refuses)
+
+    expect(sentRequests(socket).map(({ method }) => method).filter((method) => refuses(method as RpcMethod))).toEqual([])
+    expect(harness.sockets).toHaveLength(1)
+    expect(socket.readyState).toBe(socket.OPEN)
+  })
+
+  // A full-access web tab and the desktop keep every read: the skill
+  // inventory once a project is open, and update and key status in Settings.
+  it.each(["web", "desktop"] as const)("a %s tab still reads the skill inventory, update status and key status", async (clientKind) => {
+    const socket = await openWorkspace(workspaceSnapshot(), { clientKind })
+    await settle()
+    expect(sentRequests(socket, "skill.inventory")).toHaveLength(1)
+
+    const user = userEvent.setup()
+    const skip = screen.queryByRole("button", { name: "Skip for now" })
+    if (skip) { await user.click(skip); await settle() }
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    await screen.findByRole("region", { name: "About this build" })
+    await settle()
+
+    expect(sentRequests(socket, "update.status")).toHaveLength(1)
+    expect(sentRequests(socket, "provider.secret.list")).toHaveLength(1)
+    expect(screen.queryByText(/Key status is off/u)).toBeNull()
   })
 })

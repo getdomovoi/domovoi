@@ -463,3 +463,28 @@ it('Pause everything says so when the daemon refuses it, and keeps the hold', as
   expect(sentRequests(socket, 'session.send')).toHaveLength(0)
   expect(screen.getByText(/Held because work was stopped/)).toBeTruthy()
 })
+
+// A phone or tablet tab lists the catalog (skill.list) but never reads the
+// machine's skill inventory: the daemon refuses skill.inventory to that
+// credential and the client drops the connection on it. A queued explicit
+// choice is released once the catalog has answered.
+it.each(['phone', 'tablet'] as const)('a %s tab releases a queued explicit skill choice once the catalog answers', async (clientKind) => {
+  const skills = [skill('a', 'alpha'), skill('b', 'beta')]
+  const value = withSkills(running(), skills)
+  render(<WorkspaceShell clientKind={clientKind} />)
+  const socket = harness.sockets.at(-1)!
+  await act(async () => completeHandshake(socket, value))
+  await act(async () => { respond(socket, 'skill.list', skills) })
+  await settle()
+  selectSkill('alpha')
+  queue('alpha only')
+  await snapshot(socket, idle(value))
+
+  expect(sentRequests(socket, 'skill.inventory')).toEqual([])
+  expect(sentRequests(socket, 'session.send')).toHaveLength(1)
+  expect(sentRequests(socket, 'session.send')[0]?.params).toMatchObject({
+    sessionId: value.activeSessionId,
+    skillSelection: { mode: 'turn-explicit', skills: [{ skillId: skills[0]!.id }] },
+  })
+  expect(socket.readyState).toBe(socket.OPEN)
+})
