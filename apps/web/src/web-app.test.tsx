@@ -217,6 +217,30 @@ describe("WebApp", () => {
     expect(text()).toContain("Continue to the session")
   })
 
+  // Web v2's accepted card leads its mono line with the route, by the rule the
+  // app bar's chip uses (route-word.ts).
+  it.each([
+    ["ws://127.0.0.1:47831/rpc", "loopback · credential cccccccc · this tab only"],
+    ["wss://mac-mini-m4.tail4c2e.ts.net:47831/rpc", "tailnet · credential cccccccc · this tab only"],
+    ["wss://studio.example.com:47831/rpc", "direct · credential cccccccc · this tab only"],
+  ])("names the route on the accepted line for %s", async (url, line) => {
+    await draw(memoryStorage(), vi.fn(() => pairingClient("pairs")), { rpcUrl: url })
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain(line)
+  })
+
+  // W6: the page compares its own origin with the socket it dials, and says
+  // what that shows about where the page came from.
+  it("says the page came from the daemon when the daemon served it", async () => {
+    await draw(memoryStorage(), vi.fn(), { rpcUrl: "wss://mac-mini-m4.tail4c2e.ts.net:47831/rpc", pageOrigin: "https://mac-mini-m4.tail4c2e.ts.net:47831" })
+    expect(text()).toContain("This page came from the daemon at mac-mini-m4.tail4c2e.ts.net:47831. No Domovoi server is in the path.")
+  })
+
+  it("names the page's own host when another server served it", async () => {
+    await draw(memoryStorage(), vi.fn())
+    expect(text()).toContain("This page came from 127.0.0.1:5178, not from the daemon's address. This tab talks only to the daemon at 127.0.0.1:47831.")
+  })
+
   // Q196, 2026-09-29: a phone browser handed a web code would store a
   // credential it can never greet with. It keeps nothing and says which code
   // it needs instead of saying it paired.

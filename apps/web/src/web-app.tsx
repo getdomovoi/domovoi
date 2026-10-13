@@ -2,12 +2,13 @@ import { useEffect, useRef, useState, type ReactNode } from "react"
 
 import type { ClientKind } from "@getdomovoi/protocol"
 import { BrowserLimitsPanel, DaemonCredentialPrompt, WebConnectPage, WebPageHeader, type PairingOutcome } from "@getdomovoi/ui"
+import { routeOfEndpoint } from "@/route-word"
 
 import { browserLimits } from "./browser-limits"
 import { browserLimitsSeen, markBrowserLimitsSeen } from "./browser-limits-seen"
 import type { BrowserPlatformEnvironment } from "./browser-platform"
 import { browserDeviceLabel, clearConfirmedDaemonSession, clearDaemonSession, loadDaemonSession, saveDaemonSession, type DaemonSession } from "./credential"
-import { codeNameFor, isLoopbackPageOrigin, pairBrowserDevice, pairingNextStep, pairingOutcomeFor, redeemBrowserCode, type PairingClientFactory } from "./daemon-pairing"
+import { codeNameFor, isLoopbackPageOrigin, pageOriginAgainstDaemon, pairBrowserDevice, pairingNextStep, pairingOutcomeFor, redeemBrowserCode, type PairingClientFactory } from "./daemon-pairing"
 
 export type WebAppProps = {
   rpcUrl: string
@@ -99,6 +100,7 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
     target?.focus()
   }, [limitsOpen])
   const { host, secure } = hostOf(rpcUrl)
+  const route = routeOfEndpoint(rpcUrl)
   const credentialOffered = isLoopbackPageOrigin(pageOrigin)
 
   const keep = (next: DaemonSession) => {
@@ -129,7 +131,8 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
         tone: "ok",
         pill: "accepted",
         title: `This browser is paired with ${host}`,
-        mono: `credential ${next.deviceId.slice(-8)} · this tab only`,
+        // Web v2 leads with the route, by the chip's rule (route-word.ts).
+        mono: `${route === "unknown" ? "" : `${route} · `}credential ${next.deviceId.slice(-8)} · this tab only`,
         body: "Close the tab and the credential goes with it. You pair again with a new code.",
         action: { label: "Open sessions", run: () => setSession(next) },
       })
@@ -174,6 +177,7 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
     }
     const connect = <WebConnectPage
       host={host}
+      pageOrigin={pageOriginAgainstDaemon(pageOrigin, rpcUrl)}
       codeName={codeNameFor(clientKind)}
       secure={secure}
       reached={reached}
