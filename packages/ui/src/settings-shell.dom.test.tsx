@@ -1249,6 +1249,45 @@ it("replaces differing same-version builds through update and rereads the daemon
   expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
 })
 
+it("waits for update status before explaining an absent commit", async () => {
+  const props = sameVersionSettings()
+  let finish!: (status: Awaited<ReturnType<typeof props.about.onUpdateStatus>>) => void
+  props.about.onUpdateStatus.mockImplementation(() => new Promise((resolve) => { finish = resolve }))
+  render(<SettingsShell {...props} />)
+  expect(props.about.onUpdateStatus).toHaveBeenCalledOnce()
+  expect(screen.queryByText(unknownBuildReason)).toBeNull()
+  expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
+  await act(async () => { finish({ channel: "stable", state: "idle", currentVersion: "0.0.1" }) })
+  expect(screen.getByText(unknownBuildReason)).toBeTruthy()
+})
+
+it("waits for the first guarded service report before explaining an absent app commit", async () => {
+  const props = sameVersionSettings(null)
+  const view = render(<SettingsShell {...props} localDaemon={{ ...props.localDaemon, serviceReport: undefined }} />)
+  await screen.findByText("domovoid 0.0.1 · bbbbbbb")
+  expect(screen.queryByText(unknownBuildReason)).toBeNull()
+  expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
+  view.rerender(<SettingsShell {...props} />)
+  expect(screen.getByText(unknownBuildReason)).toBeTruthy()
+})
+
+it.each([appBuildCommit, null])("hides comparison while Check again reads app commit %s", async (commit) => {
+  const props = sameVersionSettings(commit)
+  let finish!: () => void
+  const status = vi.fn(() => new Promise<typeof props.localDaemon.serviceReport>((resolve) => {
+    finish = () => resolve(props.localDaemon.serviceReport)
+  }))
+  render(<SettingsShell {...props} localDaemon={{ ...props.localDaemon, service: { ...props.localDaemon.service, status } }} />)
+  await screen.findByText("domovoid 0.0.1 · bbbbbbb")
+  await userEvent.setup().click(screen.getByRole("button", { name: "Check again" }))
+  expect(status).toHaveBeenCalledOnce()
+  expect(screen.queryByText(unknownBuildReason)).toBeNull()
+  expect(screen.queryByRole("button", { name: replaceBuildLabel })).toBeNull()
+  await act(async () => { finish() })
+  if (commit) expect(screen.getByRole("button", { name: replaceBuildLabel })).toBeTruthy()
+  else expect(screen.getByText(unknownBuildReason)).toBeTruthy()
+})
+
 it("offers no replacement for equal commits", async () => {
   render(<SettingsShell {...sameVersionSettings(appBuildCommit, appBuildCommit)} />)
   await screen.findByText("domovoid 0.0.1 · aaaaaaa")
@@ -1333,7 +1372,10 @@ it("bounds post-update reconnect retries and explains an unreadable commit", asy
   vi.useFakeTimers()
   try {
     await act(async () => { fireEvent.click(action) })
-    await act(async () => { await vi.advanceTimersByTimeAsync(15_000) })
+    expect(screen.queryByText(unknownBuildReason)).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(5_000) })
+    expect(screen.queryByText(unknownBuildReason)).toBeNull()
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000) })
     const attempts = props.about.onUpdateStatus.mock.calls.length
     expect(attempts).toBeGreaterThan(2)
     expect(screen.getByText(unknownBuildReason)).toBeTruthy()

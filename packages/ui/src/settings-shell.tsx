@@ -250,7 +250,7 @@ function knownSourceCommit(value: unknown): string | undefined {
 }
 
 // `footer` is the design's last row of the card: About this build.
-function DaemonSection({ daemon, footer, buildStatus, onUpdated }: { buildStatus: UpdateStatus | undefined; onUpdated: () => void; daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> }; footer?: ReactNode }) {
+function DaemonSection({ daemon, footer, buildStatus, buildSettled, onUpdated }: { buildStatus: UpdateStatus | undefined; buildSettled: boolean; onUpdated: () => void; daemon: LocalDaemonDescription & { owner: NonNullable<LocalDaemonDescription["owner"]>; platform: NonNullable<LocalDaemonDescription["platform"]> }; footer?: ReactNode }) {
   const service = loginServices[daemon.platform]
   // Q336 A: every printed command names what runs on this machine.
   const links = useCommandLinkView()
@@ -327,8 +327,9 @@ function DaemonSection({ daemon, footer, buildStatus, onUpdated }: { buildStatus
   const unknown = daemon.owner === "outside" && !on
   const serviceBehind = on && phase.kind !== "updated" && daemon.serviceVersion !== undefined && daemon.appVersion !== undefined && olderRelease(daemon.serviceVersion, daemon.appVersion)
   const sameVersion = on && daemon.serviceVersion !== undefined && daemon.serviceVersion === daemon.appVersion
-  const replaceBuild = sameVersion && phase.kind !== "updated" && appCommit !== undefined && serviceCommit !== undefined && appCommit !== serviceCommit
-  const unknownBuild = sameVersion && (appCommit === undefined || serviceCommit === undefined)
+  const comparisonSettled = buildSettled && report !== undefined
+  const replaceBuild = comparisonSettled && sameVersion && phase.kind !== "updated" && appCommit !== undefined && serviceCommit !== undefined && appCommit !== serviceCommit
+  const unknownBuild = comparisonSettled && sameVersion && (appCommit === undefined || serviceCommit === undefined)
   const updating = phase.kind === "updating"
   const state = on
     ? { label: "Running", tone: "bg-success", line: "Quitting this app leaves the daemon and its sessions running." }
@@ -582,6 +583,7 @@ function pendingUpdateLine(status: UpdateStatus): string | undefined {
 // Share one guarded read between build comparison and the About row.
 function useBuildStatus(about: AboutBuild | undefined, revision: number) {
   const [status, setStatus] = useState<UpdateStatus | undefined>(undefined)
+  const [settled, setSettled] = useState(false)
   // Q169: the daemon answers update status only to its owner on a direct
   // loopback connection. A paired tab gets a policy refusal, keeps its
   // connection, and says why it has no status instead of going quiet.
@@ -595,9 +597,11 @@ function useBuildStatus(about: AboutBuild | undefined, revision: number) {
     if (!onUpdateStatus) {
       setStatus(undefined)
       setOwnerOnly(true)
+      setSettled(true)
       return
     }
     setStatus(undefined)
+    setSettled(false)
     let active = true
     let retry: ReturnType<typeof setTimeout> | undefined
     // The desktop reconnects asynchronously after update succeeds. Retry
@@ -606,20 +610,21 @@ function useBuildStatus(about: AboutBuild | undefined, revision: number) {
     const retryUntil = Date.now() + (revision > 0 ? 10_000 : 0)
     const read = () => {
       onUpdateStatus().then(
-        (next) => { if (active) { setStatus(next); setOwnerOnly(false) } },
+        (next) => { if (active) { setStatus(next); setOwnerOnly(false); setSettled(true) } },
         (cause: unknown) => {
           if (!active) return
           setStatus(undefined)
           const denied = cause instanceof DaemonRpcError && cause.code === localOwnerRequiredErrorCode
           setOwnerOnly(denied)
           if (!denied && Date.now() < retryUntil) retry = setTimeout(read, 250)
+          else setSettled(true)
         },
       )
     }
     read()
     return () => { active = false; clearTimeout(retry) }
   }, [onUpdateStatus, revision])
-  return { status, ownerOnly }
+  return { status, ownerOnly, settled }
 }
 
 // On its own, About is a card; inside the daemon card it is the last row.
@@ -795,7 +800,7 @@ export function SettingsShell({
         </header>
 
         <fieldset disabled={readOnly} className="contents">
-          {daemonSection ? <DaemonSection daemon={daemonSection} buildStatus={build.status} onUpdated={() => setBuildRevision((value) => value + 1)} footer={about || tailnet ? <>{tailnet ? <TailnetReachCard controller={tailnet} inCard /> : null}{about ? <AboutBuildSection about={about} build={build} inCard /> : null}</> : undefined} /> : null}
+          {daemonSection ? <DaemonSection daemon={daemonSection} buildStatus={build.status} buildSettled={build.settled} onUpdated={() => setBuildRevision((value) => value + 1)} footer={about || tailnet ? <>{tailnet ? <TailnetReachCard controller={tailnet} inCard /> : null}{about ? <AboutBuildSection about={about} build={build} inCard /> : null}</> : undefined} /> : null}
           {tailnet && !daemonSection ? <TailnetReachCard controller={tailnet} /> : null}
 
           <section aria-label="Providers and tokens">
