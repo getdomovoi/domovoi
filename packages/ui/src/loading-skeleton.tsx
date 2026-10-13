@@ -1,3 +1,6 @@
+import { useState } from "react"
+
+import { useWorkspaceConnection } from "./connection-status"
 import { cn } from "./lib/utils"
 
 // The design draws exactly two loading states and calls them "skeletons in the
@@ -39,15 +42,47 @@ export function SkeletonBars({ blocks }: { blocks: number }) {
   )
 }
 
+// Before the hello there is no machine name, only what was dialled. An RPC
+// address names its host; the scheme and path say nothing to a reader.
+function readingFrom(from: string): string {
+  if (!/^(?:wss?|https?):\/\//iu.test(from)) return from
+  try {
+    return new URL(from).host || from
+  } catch {
+    return from
+  }
+}
+
 // Ruled Q344 A: once the first attempt has failed, nothing is being read, so
-// the shimmer stops and the line says so. notConnectedTo names the host the
-// client dialled. The shell's banner keeps saying what it is doing about it.
-export function ThreadSkeleton({ reading, notConnectedTo }: { reading: string, notConnectedTo?: string | undefined }) {
-  const still = notConnectedTo !== undefined
+// the shimmer stops and the line says so, and it stays stopped while the next
+// attempt runs under the banner. The shell's banner keeps saying what it is
+// doing about it. `from` is the machine being read, or the address dialled.
+export function ThreadSkeleton({ from }: { from: string }) {
+  const connection = useWorkspaceConnection()
+  // A failed attempt schedules the next one (reconnecting) or, refused, says
+  // why (authenticationRequired). The shell's connectionError is not read: it
+  // outlives a change of target, and a failed manual reconnect also schedules
+  // the next attempt.
+  const failing = connection !== null && !connection.connected
+    && (connection.reconnecting || connection.authenticationRequired !== null)
+  // The failure belongs to the target that failed: a new target reads
+  // afresh. The shell resets its connection state in an effect after the
+  // target changes, so a failure that arrives with a new target is the old
+  // one. A target's own failure is one seen after a moment without one.
+  const [seen, setSeen] = useState<{ from: string, failed: boolean, clear: boolean }>(
+    () => ({ from, failed: failing, clear: !failing }),
+  )
+  let next = seen
+  if (seen.from !== from) next = { from, failed: false, clear: !failing }
+  else if (failing && !seen.failed && seen.clear) next = { ...seen, failed: true }
+  else if (!failing && !seen.clear) next = { ...seen, clear: true }
+  if (next !== seen) setSeen(next)
+  const still = next.failed
+  const target = readingFrom(from)
   return (
     <div data-testid="thread-skeleton" className="flex min-h-0 flex-1 flex-col gap-4 p-4">
       <p role="status" className="font-machine text-mono-xs text-faint">
-        {still ? `Not connected. Nothing has been read from ${notConnectedTo} yet.` : reading}
+        {still ? `Not connected. Nothing has been read from ${target} yet.` : `reading the thread from ${target}`}
       </p>
       {[0, 1, 2].map((block) => (
         <div key={block} className="flex flex-col gap-2">

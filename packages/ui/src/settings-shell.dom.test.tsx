@@ -1029,3 +1029,187 @@ it("does not call a daemon outside the app the running service while the service
   expect(section.textContent).not.toContain("This app cannot tell whether that daemon is the installed service.")
   expect(section.textContent).toContain("The login service is installed but not running. This daemon was started outside any app and runs until it is stopped.")
 })
+
+// CX-10: the shell's existing read supplies the initial report.
+function supervisorCard(report: NonNullable<Parameters<typeof SettingsShell>[0]["localDaemon"]>["serviceReport"], status = vi.fn(), checkedAt = Date.now()) {
+  return <SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner: "outside", platform: "win32", serviceInstalled: true,
+    serviceReport: report, serviceCheckedAt: checkedAt, service: { install: vi.fn(), remove: vi.fn(), status } }} />
+}
+
+it("shows exhausted supervision with its real crash count, reason and terminal recovery", async () => {
+  const status = vi.fn()
+  render(supervisorCard({ installed: true, running: false, detail: "restart limit reached", supervisor: { supervisionFailure: "exhausted", crashCount: 4, lastExit: "code 9" } }, status))
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  expect(await card.findByText("The supervisor gave up after 4 crashes.")).toBeTruthy()
+  expect(card.getByText("The supervisor stopped trying: restart limit reached.")).toBeTruthy()
+  expect(card.getByText("Last exit: code 9")).toBeTruthy()
+  expect(card.getByText("domovoid service install")).toBeTruthy()
+  expect(card.queryByRole("button", { name: /Start it/ })).toBeNull()
+  expect(card.queryByText("PID unknown")).toBeNull()
+  expect(card.queryByText("Uptime unknown")).toBeNull()
+  expect(status).not.toHaveBeenCalled()
+})
+
+it("renders supplied pid and uptime, then uses Check again without retaining facts after failure", async () => {
+  vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-12T12:02:00.000Z"))
+  try {
+    const status = vi.fn().mockRejectedValue(new Error("manager unavailable"))
+    const view = render(supervisorCard({ installed: true, running: true, detail: "running", supervisor: { crashCount: 0, pid: 4321, startedAt: "2026-10-12T12:00:00.000Z" } }, status))
+    const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+    expect(await card.findByText("PID 4321")).toBeTruthy()
+    expect(card.getByText("up 2m at last check")).toBeTruthy()
+    expect(status).not.toHaveBeenCalled()
+    await userEvent.setup().click(card.getByRole("button", { name: "Check again" }))
+    // The guarded shell publishes this result; the card does not maintain a
+    // second report that could overwrite a newer install/remove answer.
+    view.rerender(supervisorCard({ unavailable: "manager unavailable" }, status))
+    expect(await card.findByText("manager unavailable")).toBeTruthy()
+    expect(status).toHaveBeenCalledOnce()
+    expect(card.queryByText("PID 4321")).toBeNull()
+    expect(card.queryByText("up 2m at last check")).toBeNull()
+    expect(card.queryByText("PID unknown")).toBeNull()
+    expect(card.queryByText("Uptime unknown")).toBeNull()
+  } finally { vi.restoreAllMocks() }
+})
+
+it.each([
+  ["Install", false], ["Install", true],
+  ["Remove", false], ["Remove", true],
+  ["Update the service", false], ["Update the service", true],
+] as const)("locks %s until a pending status read settles (reject: %s)", async (action, rejects) => {
+  const installed = action !== "Install"
+  const report = { installed, running: installed, detail: "read back" }
+  let resolve!: (value: typeof report) => void
+  let reject!: (cause: Error) => void
+  const pending = new Promise<typeof report>((yes, no) => { resolve = yes; reject = no })
+  const install = vi.fn(), remove = vi.fn(), update = vi.fn()
+  const user = userEvent.setup()
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner: installed ? "outside" : "app", platform: "win32",
+    serviceInstalled: installed, serviceRunning: installed, serviceVersion: "0.9.2", appVersion: "0.10.0", serviceReport: report,
+    service: { install, remove, update, status: () => pending },
+  }} />)
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  const button = card.getByRole("button", { name: action })
+  expect(button.hasAttribute("disabled")).toBe(false)
+  await user.click(card.getByRole("button", { name: "Check again" }))
+  try {
+    expect(button.hasAttribute("disabled")).toBe(true)
+    await user.click(button)
+    expect(install).not.toHaveBeenCalled()
+    expect(remove).not.toHaveBeenCalled()
+    expect(update).not.toHaveBeenCalled()
+  } finally {
+    await act(async () => { if (rejects) reject(new Error("Status unavailable")); else resolve(report) })
+  }
+  expect(button.hasAttribute("disabled")).toBe(false)
+})
+
+it.each([
+  { installed: true, running: true, detail: "pid 8888, up 3d" },
+])("never manufactures pid, uptime or crash facts from an incomplete report", async (report) => {
+  render(supervisorCard(report))
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  expect(await card.findByText("Supervisor exhaustion unknown")).toBeTruthy()
+  expect(card.getByText("Crash count unknown")).toBeTruthy()
+  expect(card.getByText("Last exit unknown")).toBeTruthy()
+  expect(card.getByText("PID unknown")).toBeTruthy()
+  expect(card.getByText("Uptime unknown")).toBeTruthy()
+  expect(card.queryByText(/pid 8888|up 3d/)).toBeNull()
+})
+
+it.each([
+  { unexpected: true }, { crashCount: "4" }, { pid: 0 }, { pid: 1.5 }, { startedAt: "yesterday" },
+  { lastExit: { code: 9 } }, { supervisionFailure: "probably-exhausted" }, { supervising: "yes" }, { treeUnconfirmed: "no" },
+])("rejects every supervisor fact if one field is extra or mistyped: %s", async (invalid) => {
+  render(supervisorCard({ installed: true, running: true, detail: "running", supervisor: {
+    crashCount: 4, pid: 4321, startedAt: "2026-10-12T12:00:00.000Z", lastExit: "code 9", supervisionFailure: "exhausted", ...invalid,
+  } }))
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  for (const text of ["Supervisor exhaustion unknown", "Crash count unknown", "Last exit unknown", "PID unknown", "Uptime unknown"]) {
+    expect(await card.findByText(text)).toBeTruthy()
+  }
+  expect(card.queryByRole("alert")).toBeNull()
+  expect(card.queryByText("PID 4321")).toBeNull()
+})
+
+
+it.each([
+  { installed: false, running: false, detail: "not installed" },
+  { installed: false, running: false, detail: "not installed", supervisor: { crashCount: 1 } },
+  { installed: null, running: false, detail: "unknown" },
+  { installed: null, running: false, detail: "unknown", supervisor: {} },
+  { installed: null, running: false, detail: "invalid", supervisor: { crashCount: "1" } },
+  { unavailable: "cannot read status" },
+  undefined,
+])("omits supervisor facts without an installed service or valid record: %s", (report) => {
+  render(supervisorCard(report))
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  for (const text of ["Supervisor exhaustion unknown", "Crash count unknown", "Last exit unknown", "PID unknown", "Uptime unknown", "1 crash", "1 crashes"]) {
+    expect(card.queryByText(text)).toBeNull()
+  }
+  expect(card.getByRole("button", { name: "Check again" })).toBeTruthy()
+})
+
+it.each([true, null])("shows recorded facts but no process metrics for a stopped service (installed %s)", (installed) => {
+  render(supervisorCard({ installed, running: false, detail: "stopped", supervisor: { crashCount: 1, lastExit: "code 9" } }))
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  expect(card.getByText("1 crash")).toBeTruthy()
+  expect(card.getByText("Last exit: code 9")).toBeTruthy()
+  expect(card.queryByText(/PID|Uptime|^up /)).toBeNull()
+  expect(card.queryByText("domovoid service install")).toBeNull()
+})
+
+it("omits process unknowns and terminal recovery for an installed stopped service without a supervisor record", () => {
+  render(supervisorCard({ installed: true, running: false, detail: "waiting to restart" }))
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  expect(card.getByText("Supervisor exhaustion unknown")).toBeTruthy()
+  expect(card.getByText("Crash count unknown")).toBeTruthy()
+  expect(card.getByText("Last exit unknown")).toBeTruthy()
+  expect(card.queryByText(/PID|Uptime|^up /)).toBeNull()
+  expect(card.queryByText("domovoid service install")).toBeNull()
+})
+
+it("labels uptime as the last check reading after time passes, and refreshes on a new report", () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-12T12:05:00.000Z"))
+  try {
+    const report = { installed: true, running: true, detail: "running", supervisor: { pid: 4321, startedAt: "2026-10-12T12:00:00.000Z" } }
+    const view = render(supervisorCard(report))
+    const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+    expect(card.getByText("up 5m at last check")).toBeTruthy()
+    clock.mockReturnValue(Date.parse("2026-10-12T13:05:00.000Z"))
+    view.rerender(supervisorCard(report, vi.fn(), Date.parse("2026-10-12T12:05:00.000Z")))
+    expect(card.getByText("up 5m at last check")).toBeTruthy()
+    view.rerender(supervisorCard({ ...report }))
+    expect(card.getByText("up 1h 5m at last check")).toBeTruthy()
+  } finally { vi.restoreAllMocks() }
+})
+
+
+it.each([
+  { installed: true, running: false, detail: "restart limit reached", supervisor: { supervisionFailure: "exhausted", crashCount: 4, lastExit: "code 9" } },
+  { unavailable: "Service manager unavailable" },
+])("shows supplied service evidence in a watching card without mutation methods", (report) => {
+  render(<SettingsShell {...shellProps()} readOnly localDaemon={{ title: "Local daemon", detail: "", owner: "outside", platform: "win32", serviceReport: report }} />)
+  const card = within(screen.getByRole("region", { name: "Daemon on this machine" }))
+  if ("unavailable" in report) expect(card.getByText("Service manager unavailable")).toBeTruthy()
+  else {
+    expect(card.getByText("The supervisor gave up after 4 crashes.")).toBeTruthy()
+    expect(card.getByText("4 crashes")).toBeTruthy()
+    expect(card.getByText("Last exit: code 9")).toBeTruthy()
+  }
+  expect(card.queryByRole("button", { name: "Check again" })).toBeNull()
+})
+
+it.each([
+  ["app", "Quit this Domovoi app to stop its daemon and sessions before running the command."],
+  ["other-app", "Quit the other Domovoi app to stop its daemon and sessions before running the command."],
+  ["outside", "Stop the daemon running outside this app before running the command."],
+] as const)("names the owner prerequisite before terminal recovery: %s", (owner, prerequisite) => {
+  render(<SettingsShell {...shellProps()} localDaemon={{ title: "Local daemon", detail: "", owner, platform: "win32", serviceInstalled: true,
+    serviceReport: { installed: true, running: false, detail: "restart limit reached", supervisor: { supervisionFailure: "exhausted", crashCount: 4 } },
+    service: { install: vi.fn(), remove: vi.fn(), status: vi.fn() },
+  }} />)
+  const alert = within(screen.getByRole("region", { name: "Daemon on this machine" })).getByRole("alert")
+  expect(alert.textContent).toContain(prerequisite)
+  expect(alert.textContent).toContain("domovoid service install")
+})

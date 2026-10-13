@@ -1,5 +1,5 @@
 import { relayClientPinSchema, relayRecoveryResultSchema, type RelayClientPin } from "@getdomovoi/protocol"
-import { adoptRelayRecovery, type RelayPinStore } from "@getdomovoi/protocol/relay-admission"
+import type { RelayPinStore } from "@getdomovoi/protocol/relay-admission"
 
 import { DaemonRpcError } from "./client.js"
 
@@ -154,6 +154,11 @@ export async function reconcileRelayPin(input: {
     if (!enrolled) throw new Error("The relay pin changed while enrolling; read it again.")
     return "enrolled"
   }
+  // The successor check and the curve library under it load only here: a
+  // client that enrols or keeps a trusted pin never needs them, so they stay
+  // out of the code a launch loads. A load that fails rejects like any other
+  // failure here and leaves the saved pin as it was.
+  const { adoptRelayRecovery } = await import("@getdomovoi/protocol/relay-admission")
   await adoptRelayRecovery(input.store, parsed)
   return "recovered"
 }
