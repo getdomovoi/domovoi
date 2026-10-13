@@ -545,7 +545,8 @@ export const releasePageUrl = "https://github.com/getdomovoi/domovoi/releases"
 
 export type AboutBuild = {
   version: string
-  onUpdateStatus: () => Promise<UpdateStatus>
+  // Absent where this client may not ask; About then says why it has none.
+  onUpdateStatus?: (() => Promise<UpdateStatus>) | undefined
   // The desktop opens the release page in the person's browser; a browser
   // tab links it directly.
   onOpenReleasePage?: (() => Promise<boolean>) | undefined
@@ -573,6 +574,15 @@ function AboutBuildSection({ about, inCard = false }: { about: AboutBuild; inCar
   const [ownerOnly, setOwnerOnly] = useState(false)
   const { onUpdateStatus } = about
   useEffect(() => {
+    // Without a reader this client does not ask (a phone or tablet: the
+    // daemon refuses update.status to that credential and drops the
+    // connection), and it is not the owner on loopback either, so the same
+    // line says why.
+    if (!onUpdateStatus) {
+      setStatus(undefined)
+      setOwnerOnly(true)
+      return
+    }
     let active = true
     onUpdateStatus().then(
       (next) => { if (active) { setStatus(next); setOwnerOnly(false) } },
@@ -660,6 +670,10 @@ export type SettingsShellProps = {
   about?: AboutBuild | undefined
   pairing?: PairingSettings | undefined
   secrets: readonly ProviderSecretStatus[]
+  // Set in a phone or tablet tab, to the machine's name: provider.secret.list
+  // is not on phoneAndTabletRpcMethods, so the tab does not ask for key status
+  // and the card says why in place of the key rows (Q84).
+  secretsWithheldFrom?: string | undefined
   localDaemon?: LocalDaemonDescription
   approvalRules: readonly ApprovalRule[]
   notifications: NotificationPreferences
@@ -689,6 +703,7 @@ export function SettingsShell({
   providerMachines,
   providerFleetOverflow,
   secrets,
+  secretsWithheldFrom,
   about,
   pairing,
   localDaemon,
@@ -751,7 +766,7 @@ export function SettingsShell({
           {tailnet && !daemonSection ? <TailnetReachCard controller={tailnet} /> : null}
 
           <section aria-label="Providers and tokens">
-            <ProviderSettings providers={providers} machines={providerMachines} fleetOverflow={providerFleetOverflow} secrets={secrets} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
+            <ProviderSettings providers={providers} machines={providerMachines} fleetOverflow={providerFleetOverflow} secrets={secrets} secretsRefusal={secretsWithheldFrom === undefined ? undefined : `Key status is off in a phone or tablet tab: the daemon does not report it to a phone or tablet credential. Use the desktop app on ${secretsWithheldFrom}.`} {...(localDaemon && !daemonSection ? { localDaemon } : {})} {...(localDaemon ? { printCommand: (command: string) => printedCommand(command, links) } : {})} />
           </section>
 
           {about && !daemonSection ? <AboutBuildSection about={about} /> : null}
