@@ -19,6 +19,7 @@ import { createLocalOwnerSecret, writeLocalOwnerRecord, type LocalOwnerRecord } 
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 import { redactErrorDetail } from "./rpc-errors.js"
 import { loadOrProvisionRelayChannel, type ProvisionedRelayChannel } from "./relay-provisioning.js"
+import { loadDaemonRelayCarrierConfiguration } from "./relay-carrier.js"
 import {
   DomovoiDaemon,
   type DaemonErrorSink,
@@ -235,6 +236,7 @@ export async function createProductionDaemonWithDependencies(
     deadline.throwIfExpired()
     lease ??= claimProfile(profile)
     const ownedLease = lease
+    const relayCarrier = loadDaemonRelayCarrierConfiguration(profileDirectory(profile))
     diagnosticLog = new RotatingDaemonLog(join(profileDirectory(profile), "logs"))
     const ownedLog = diagnosticLog
     let reportedLogFailure = false
@@ -305,6 +307,7 @@ export async function createProductionDaemonWithDependencies(
       ...(config.webAppUrl ? { webAppUrl: config.webAppUrl } : {}),
       webApp,
       authToken,
+      ...(relayCarrier ? { relayCarrier } : {}),
       ...(relay ? { relayStaticKey: relay.privateKey,
         relayRecovery: { identity: relay.identity, ...(relay.successor ? { successor: relay.successor } : {}) },
       } : {}),
