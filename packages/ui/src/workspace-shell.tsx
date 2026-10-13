@@ -68,7 +68,7 @@ import { gitFilterRefusalFrom } from "./session-refusal"
 import { DialogLoading, lazyDialog, lazySurface, prefetchWhenIdle, SurfaceCodeReload, useDrawnOnceOpen } from "./lazy-surface"
 import { ThreadSkeleton } from "./loading-skeleton"
 import { MachineSheet } from "./machine-sheet"
-import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked } from "./checkpoint-actions.js"
+import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { latestTurnFromHistory } from "./usage-chip.js"
 import {
   failedAttempt,
@@ -239,7 +239,7 @@ export function skillProjectRefreshKey(snapshot: WorkspaceSnapshot | null): stri
 
 export { providerHandoffChoices, openProviderChoice, forkProviderChoice, type ProviderChoice } from "./provider-choice-dialog.js"
 
-export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointBlockedReason, checkpointRestoreBlocked }
+export { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointRestoreBlocked }
 
 
 // Whether a service read shows the change the action set out to make, in
@@ -1180,7 +1180,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     openCheckpoints,
     ...(!watching && snapshot && activeSession(snapshot) ? {
       takeCheckpoint: takeActiveCheckpoint,
-      checkpointBlocked: Boolean(activeSession(snapshot)?.activeTurnId),
     } : {}),
     // Desktop V2's session commands open views the shell already has. The
     // sheet tabs carry their own read-only and blocked states, so opening one

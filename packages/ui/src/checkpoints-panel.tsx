@@ -244,7 +244,9 @@ export function CheckpointsPanel({
                 ) : null}
                 {entry.midTurn ? (
                   <div className="basis-full min-w-0 text-[11px] leading-normal text-muted-foreground">
-                    <p className="wrap-anywhere">Taken mid-turn while the agent was running. Turn: {entry.midTurn.providerTurnId}.</p>
+                    <p className="wrap-anywhere">Taken mid-turn while the agent was running. {entry.midTurn.providerTurnId !== undefined
+                      ? <>Turn: {entry.midTurn.providerTurnId}.</>
+                      : <>Turn ID SHA-256: {entry.midTurn.providerTurnIdSha256}.</>}</p>
                     {entry.midTurn.stability === "unstable" ? (
                       <>
                         <p>Files changed while it was taken:</p>

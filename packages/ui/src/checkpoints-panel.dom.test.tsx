@@ -305,3 +305,13 @@ it.each([1, 8])("shows the count of %s omitted changed paths", async (omitted) =
   expect(row.getByText(`${omitted} more changed ${omitted === 1 ? "path" : "paths"} not shown.`)).toBeTruthy()
   expect(row.getByText("src/a.ts")).toBeTruthy()
 })
+
+
+it("labels a large turn ID digest explicitly", async () => {
+  const entry = page().items[1]!
+  render(panel(vi.fn(async () => page({ items: [{ ...entry, category: "checkpoints", label: "capture", midTurn: {
+    providerTurnIdSha256: "a".repeat(64), stability: "matched", changedPaths: [], changedPathCount: 0,
+  } }] }))))
+  await settle()
+  expect(screen.getByText(`Taken mid-turn while the agent was running. Turn ID SHA-256: ${"a".repeat(64)}.`)).toBeTruthy()
+})
