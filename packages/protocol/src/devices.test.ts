@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest"
+import { phoneAndTabletRpcMethods, rpcMethods, rpcMethodAuthorizations, watchingClientControlMethod, watchingClientControlMethodSchema } from "./rpc.js"
 import { protocolVersion } from "./schema.js"
 
 import {
@@ -416,5 +417,39 @@ describe("devicesResultSchema", () => {
     expect(devicesResultSchema.safeParse({
       devices: [{ ...device, token: "secret" }],
     }).success).toBe(false)
+  })
+})
+
+describe("self-revocation RPC", () => {
+  it("opens only current-device identity and self-revocation to handheld clients", () => {
+    expect([...phoneAndTabletRpcMethods].filter((method) => method.startsWith("device.")).sort())
+      .toEqual(["device.current", "device.revokeCurrent"])
+    expect(rpcMethodAuthorizations["device.revokeCurrent"]).toBe("control")
+  })
+
+  it("accepts no target or extra parameters and only a confirmed success result", () => {
+    const { params, result } = rpcMethods["device.revokeCurrent"]
+    expect(params.safeParse({}).success).toBe(true)
+    for (const value of [{ deviceId: device.id }, { client: "web" }, { extra: true }, null, []]) {
+      expect(params.safeParse(value).success).toBe(false)
+    }
+    expect(result.safeParse({ revoked: true }).success).toBe(true)
+    for (const value of [{ revoked: false }, {}, { revoked: true, deviceId: device.id }, null]) {
+      expect(result.safeParse(value).success).toBe(false)
+    }
+  })
+})
+
+describe("watching client control exception", () => {
+  it("admits only self-revocation without reclassifying it", () => {
+    expect(watchingClientControlMethod).toBe("device.revokeCurrent")
+    expect(rpcMethodAuthorizations[watchingClientControlMethod]).toBe("control")
+    for (const method of Object.keys(rpcMethods)) {
+      expect(watchingClientControlMethodSchema.safeParse(method).success, method)
+        .toBe(method === "device.revokeCurrent")
+    }
+    for (const invalid of [undefined, null, {}, "device.unknown"]) {
+      expect(watchingClientControlMethodSchema.safeParse(invalid).success).toBe(false)
+    }
   })
 })

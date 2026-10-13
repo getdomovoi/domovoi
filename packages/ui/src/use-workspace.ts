@@ -6,6 +6,7 @@ import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, t
 import type { ClientAdmission } from "./client-admission-policy"
 import { Deadline } from "./deadline"
 import { applyWorkspaceDelta, openCommentReviewFor } from "@getdomovoi/protocol"
+import { sessionPreviewBuildBasis } from "./artifacts"
 import { fleetListingOverflow } from "./fleet-overflow"
 import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 import { createRelayPinStore, reconcileRelayPin, type RelayPinStorage } from "./relay-pin"
@@ -392,16 +393,23 @@ export function useWorkspace(
     prompt: string,
     skillSelection?: TurnSkillSelection,
     attachments?: RpcParams<"session.send">["attachments"],
+    // The preview the person chose in the dock as this session's build basis.
+    buildBasisId?: string,
   ) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
     // Desktop and web list the session's comments as open with no further
     // choice, so the send names every open comment of that session (rulings
     // Q348 A, Q402); the daemon attaches nothing a message did not name. The
-    // chosen build basis is dock state and stays a viewer bookmark here
-    // (ruling Q342 A) until the dock sends it.
+    // chosen build basis rides the same review (ruling Q342 A), and only while
+    // it names a preview of this session: the daemon refuses the whole
+    // message for any other.
     const current = snapshotRef.current
-    const review = current ? openCommentReviewFor(current, sessionId) : { annotationIds: [] }
+    const buildBasis = current ? sessionPreviewBuildBasis(current, sessionId, buildBasisId) : undefined
+    const review = {
+      ...(current ? openCommentReviewFor(current, sessionId) : { annotationIds: [] }),
+      ...(buildBasis ? { buildBasis: { artifactId: buildBasis.id } } : {}),
+    }
     updateSnapshotFrom(client, await client.sendMessage(sessionId, prompt, skillSelection, attachments, review))
   }, [updateSnapshotFrom])
 
@@ -717,6 +725,12 @@ export function useWorkspace(
     return client.listDevices(options)
   }, [])
 
+  const revokeCurrentDevice = useCallback(async () => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.request("device.revokeCurrent", {})
+  }, [])
+
   const revokeDevice = useCallback(async (
     params: { deviceId: string },
     options?: DomovoiRequestOptions,
@@ -1013,6 +1027,7 @@ export function useWorkspace(
     setRuntime,
     snapshot,
     revokeDevice,
+    revokeCurrentDevice,
     rotateDevice,
     renameDevice,
     transferSession,

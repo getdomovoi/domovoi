@@ -28,6 +28,13 @@ export function redactDeviceLabel(label: string): string {
   return redactDurableText(label).value.slice(0, maximumPairedDeviceLabelLength).trim()
 }
 
+// A displayed path must still name the original file. Omit credential paths
+// and text that would be redacted rather than displaying a replacement name.
+export function checkpointPathIsSafe(path: string): boolean {
+  const text = redactDurableText(path)
+  return !namesSecretPath(path) && !text.redacted && !text.truncated
+}
+
 export function executionContainsSecret(
   execution: WorkspaceSnapshot["approvals"][number]["execution"],
 ): boolean {
@@ -226,7 +233,14 @@ function redactThreadItem(item: ThreadItem): ThreadItem {
     }
   }
   if (item.kind === "checkpoint") {
-    return { ...item, label: redactDurableText(item.label).value }
+    return {
+      ...item,
+      label: redactDurableText(item.label).value,
+      ...(item.midTurn ? { midTurn: {
+        ...item.midTurn,
+        changedPaths: item.midTurn.changedPaths.filter(checkpointPathIsSafe),
+      } } : {}),
+    }
   }
   if (item.kind === "system") {
     return {
