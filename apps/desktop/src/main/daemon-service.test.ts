@@ -607,3 +607,14 @@ describe("staging the shipped runtime under the profile", () => {
     expect(deps.stageRuntime).toHaveBeenCalledWith("update")
   })
 })
+
+describe("CX-10 status transport", () => {
+  it.each([
+    { installed: true, running: false, detail: "restart limit reached", supervisionFailure: "exhausted" as const, crashCount: 4, lastExit: "code 9" },
+    { installed: true, running: true, detail: "running", crashCount: 0, pid: 4321, startedAt: "2026-10-12T12:00:00.000Z" },
+    { installed: null, running: false, detail: "unknown" },
+  ])("preserves exactly the recorded facts: $detail", async (report) => {
+    const { service } = harness({ status: async () => report })
+    await expect(service.status()).resolves.toEqual(report)
+  })
+})
