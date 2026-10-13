@@ -267,7 +267,9 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
   const report = checking ? undefined : daemon.serviceReport
   const observed = report && "installed" in report ? report : undefined
   const supervisor = parseSupervisorFacts(observed?.supervisor)
-  const exhausted = supervisor?.supervisionFailure === "exhausted"
+  const hasService = observed?.installed === true || (observed?.installed === null && supervisor !== undefined)
+  const crashes = supervisor?.crashCount === undefined ? "Crash count unknown" : `${supervisor.crashCount} ${supervisor.crashCount === 1 ? "crash" : "crashes"}`
+  const exhausted = hasService && supervisor?.supervisionFailure === "exhausted"
   const birth = observed?.running && supervisor?.startedAt ? Date.parse(supervisor.startedAt) : NaN
   const minutes = Number.isFinite(birth) && birth <= checkedAt ? Math.floor((checkedAt - birth) / 60_000) : undefined
   const uptime = minutes === undefined ? "Uptime unknown" : minutes < 60 ? `up ${minutes}m` : `up ${Math.floor(minutes / 60)}h ${minutes % 60}m`
@@ -358,22 +360,23 @@ function DaemonSection({ daemon, footer }: { daemon: LocalDaemonDescription & { 
       </div>
       {live?.status ? <>
         {exhausted ? <div role="alert" className="flex flex-col gap-1.5 rounded-md border border-danger-border bg-danger-background px-3 py-2 text-[11.5px] text-danger-foreground">
-          <span className="font-medium">{supervisor.crashCount === undefined ? "The supervisor gave up. Crash count unknown." : `The supervisor gave up after ${supervisor.crashCount} crashes.`}</span>
+          <span className="font-medium">{supervisor.crashCount === undefined ? "The supervisor gave up. Crash count unknown." : `The supervisor gave up after ${crashes}.`}</span>
           <span>The supervisor stopped trying: restart limit reached.</span>
           <span>To reinstall and start the service, run this in a terminal.</span>
           <span className="font-machine text-[11px]">{printed("domovoid service install")}</span>
         </div> : null}
-        {observed?.installed && !observed.running && !exhausted ? <p className="m-0 text-[11.5px] text-muted-foreground">To reinstall and start the service, run this in a terminal. <span className="font-machine text-[11px]">{printed("domovoid service install")}</span></p> : null}
         {report && "unavailable" in report ? <p className="m-0 text-[11.5px] text-muted-foreground">{report.unavailable}</p> : null}
         {supervisor?.supervisionFailure && !exhausted ? <p className="m-0 text-[11.5px] text-muted-foreground">{observed?.detail}</p> : null}
         <div aria-live="polite" aria-busy={checking} className="flex flex-wrap items-center gap-x-3 gap-y-1 font-machine text-[11px] text-muted-foreground">
-          {checking ? <span>Checking status</span> : <>
-            <span>{observed?.running && supervisor?.pid !== undefined ? `pid ${supervisor.pid}` : "PID unknown"}</span>
-            <span>{uptime}</span>
-            <span>{supervisor?.crashCount === undefined ? "Crash count unknown" : `${supervisor.crashCount} crashes`}</span>
+          {checking ? <span>Checking status</span> : hasService ? <>
+            {observed?.running ? <>
+              <span>{supervisor?.pid !== undefined ? `PID ${supervisor.pid}` : "PID unknown"}</span>
+              <span>{uptime}{minutes === undefined ? "" : " at last check"}</span>
+            </> : null}
+            <span>{crashes}</span>
             <span>{supervisor?.lastExit ? `Last exit: ${supervisor.lastExit}` : "Last exit unknown"}</span>
             {supervisor?.supervisionFailure === undefined && supervisor?.crashCount === undefined ? <span>Supervisor exhaustion unknown</span> : null}
-          </>}
+          </> : null}
         </div>
         <div><Button type="button" variant="outline" size="sm" disabled={checking || busy || updating} onClick={() => void check()}>Check again</Button></div>
       </> : null}
