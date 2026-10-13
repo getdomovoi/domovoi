@@ -25,18 +25,18 @@ async function deviceNote() {
 
 // The same rule as the lost banner's last heard: the desktop app's own daemon
 // on this machine, dialled on loopback.
-it("says nothing leaves this computer in the desktop app on its own daemon", async () => {
+it("names this computer in the desktop app on its own daemon", async () => {
   render(<WorkspaceShell clientKind="desktop" localDaemon={{ title: "Running Domovoi inside this app", detail: "", owner: "app" }} />)
 
-  expect(await deviceNote()).toContain("That is this computer, so nothing leaves it.")
+  expect(await deviceNote()).toContain("which is this computer. The agent can still send what it reads to its model provider.")
 })
 
 // A tab's loopback address can be the local end of an SSH forward to another
-// machine, so a tab never claims the bytes stay here.
-it("does not say nothing leaves in a browser on a loopback address", async () => {
+// machine, so a tab never claims the copy lands here.
+it("does not name this computer in a browser on a loopback address", async () => {
   render(<WorkspaceShell />)
 
   const note = await deviceNote()
   expect(note).toContain("with the next message.")
-  expect(note).not.toContain("nothing leaves it")
+  expect(note).not.toContain("this computer")
 })

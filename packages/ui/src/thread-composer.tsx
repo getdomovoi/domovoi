@@ -633,10 +633,12 @@ export function ThreadComposer({
                 <span className="min-w-0 flex-1">
                   <span className={cn("block text-[12.5px]", imageInput === false ? "text-muted-foreground" : "text-foreground")}>Image or file from this device</span>
                   {/* Only the desktop app's own daemon is on this computer;
-                      a browser's loopback address may be an SSH forward. */}
+                      a browser's loopback address may be an SSH forward. The
+                      design's claim that nothing leaves is not made: the agent
+                      can send what it reads to a hosted model provider. */}
                   <span className="mt-[3px] block text-[11px] leading-[1.45] text-muted-foreground">
                     {onThisComputer
-                      ? `It is copied to ${machineName}. That is this computer, so nothing leaves it.`
+                      ? `It is copied to ${machineName}, which is this computer. The agent can still send what it reads to its model provider.`
                       : `The selected file is copied to ${machineName} with the next message.`}
                   </span>
                   {imageInput === false ? (

@@ -1372,11 +1372,16 @@
         "Path on",
         "Image or file from this device",
         "Paste terminal output",
-        "That is this computer, so nothing leaves it.",
+        "which is this computer. The agent can still send what it reads to its model provider.",
+        {
+          "absent": "so nothing leaves it",
+          "in": "packages/ui/src/thread-composer.tsx"
+        },
         "takes image input, as its harness reports"
       ],
       "notes": [
-        "Built 2026-10-13 (SL-12): the device row carries PNG, and the footer names the session's model with takes image input, takes no image input, or image input not known, as its harness reports. The device note says It is copied to <machine>. That is this computer, so nothing leaves it. only for the desktop app's own daemon dialled on loopback, the rule that also decides the lost banner's last heard (connection-status.tsx); a browser tab, whose loopback address may be an SSH forward, and an attached machine keep The selected file is copied to <machine> with the next message.",
+        "Built 2026-10-13 (SL-12): the device row carries PNG, and the footer names the session's model with takes image input, takes no image input, or image input not known, as its harness reports. The device note says It is copied to <machine>, which is this computer. only for the desktop app's own daemon dialled on loopback, the rule that also decides the lost banner's last heard (connection-status.tsx); a browser tab, whose loopback address may be an SSH forward, and an attached machine keep The selected file is copied to <machine> with the next message.",
+        "Deviation (PR #846 review, Q100): the design's That is this computer, so nothing leaves it. is not said. The copy stays on this computer, but the agent can send what it reads (the first 40 lines of a text file, an image as visual context) to a hosted model provider, so the line says that instead.",
         "No kbd column: nothing in this composer answers @, a drag, an image paste or a paste-terminal shortcut, so drawing those keys would promise what does not happen. The harness mark in the footer is not vendored (Q388 A). The design's Paste 640 lines and Paste 12 lines rows demonstrate the paste states and are not menu rows. The menu's data lies past the first 256 KiB, so it was checked against the vendored handoff only."
       ]
     },

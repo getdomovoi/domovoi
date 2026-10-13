@@ -378,10 +378,11 @@ it("says image input is not known until the harness says", async () => {
   expect(within(footer).getByText("image input not known")).toBeTruthy()
 })
 
-// "That is this computer, so nothing leaves it" is a claim about where the
-// bytes go. Only the desktop app's own daemon on this machine makes it; a
-// browser on a loopback address may be an SSH forward, and an attached
-// machine is somewhere else.
+// "Which is this computer" is a claim about where the copy lands. Only the
+// desktop app's own daemon on this machine makes it; a browser on a loopback
+// address may be an SSH forward, and an attached machine is somewhere else.
+// The design's "nothing leaves it" is not said at all: the agent can send
+// what it reads to a hosted model provider.
 const connection = (endpoint: string | undefined) => (node: ReactNode) => (
   <WorkspaceConnectionProvider
     connected
@@ -405,15 +406,17 @@ async function deviceNote(wrap: (node: ReactNode) => ReactNode) {
   return within(await screen.findByRole("menu")).getByRole("menuitem", { name: /Image or file from this device/u }).textContent
 }
 
-it("says nothing leaves this computer only for the desktop app's own daemon", async () => {
-  expect(await deviceNote(connection("ws://127.0.0.1:47831/rpc"))).toContain(`It is copied to ${machine}. That is this computer, so nothing leaves it.`)
+it("names this computer only for the desktop app's own daemon, and says what can still leave", async () => {
+  const note = await deviceNote(connection("ws://127.0.0.1:47831/rpc"))
+  expect(note).toContain(`It is copied to ${machine}, which is this computer. The agent can still send what it reads to its model provider.`)
+  expect(note).not.toContain("nothing leaves")
 })
 
 it("keeps the plain copy note for a browser or an attached machine", async () => {
   // The shell passes no endpoint for either.
   const note = await deviceNote(connection(undefined))
   expect(note).toContain(`The selected file is copied to ${machine} with the next message.`)
-  expect(note).not.toContain("nothing leaves it")
+  expect(note).not.toContain("this computer")
 })
 
 it("keeps the plain copy note without a connection to read", async () => {
