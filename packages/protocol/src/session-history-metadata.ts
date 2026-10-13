@@ -28,6 +28,7 @@ export const maximumMidTurnCheckpointPathsBytes = 16 * 1_024
 
 // Matching consecutive staging passes is an observation, not an atomic
 // snapshot: a write that reverts between passes cannot be detected.
+// Approval captures reuse these facts even when no active turn is known.
 export const midTurnCheckpointSchema = z.object({
   // Keep the active-turn contract unchanged. Large IDs are represented by a
   // digest so repeated captures cannot overflow a history page or snapshot.
@@ -41,9 +42,9 @@ export const midTurnCheckpointSchema = z.object({
   ),
   // Total distinct observed paths, including those omitted by either bound.
   changedPathCount: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
-}).strict().refine((capture) => (capture.providerTurnId !== undefined) !== (capture.providerTurnIdSha256 !== undefined), {
+}).strict().refine((capture) => capture.providerTurnId === undefined || capture.providerTurnIdSha256 === undefined, {
   path: ["providerTurnId"],
-  message: "A capture must contain either the provider turn ID or its SHA-256 digest",
+  message: "A capture cannot contain both the provider turn ID and its SHA-256 digest",
 }).refine((capture) => capture.changedPathCount >= capture.changedPaths.length, {
   path: ["changedPathCount"],
   message: "The changed-path count must include every displayed path",
@@ -52,6 +53,15 @@ export const midTurnCheckpointSchema = z.object({
   message: "Matching captures have no changed paths",
 })
 export type MidTurnCheckpoint = z.infer<typeof midTurnCheckpointSchema>
+
+// Only an approval snapshot can exist without a known active provider turn.
+export function checkpointCaptureHasRequiredTurn(entry: {
+  reason?: CheckpointReason | undefined
+  midTurn?: MidTurnCheckpoint | undefined
+}): boolean {
+  return entry.midTurn === undefined || entry.reason === "before-approved-command"
+    || entry.midTurn.providerTurnId !== undefined || entry.midTurn.providerTurnIdSha256 !== undefined
+}
 
 
 // Wall-clock time from the approval request to its resolution. This is consent

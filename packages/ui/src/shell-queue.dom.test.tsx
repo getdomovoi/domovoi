@@ -463,3 +463,48 @@ it('Pause everything says so when the daemon refuses it, and keeps the hold', as
   expect(sentRequests(socket, 'session.send')).toHaveLength(0)
   expect(screen.getByText(/Held because work was stopped/)).toBeTruthy()
 })
+
+// A phone or tablet tab lists the catalog (skill.list) but never reads the
+// machine's skill inventory: the daemon refuses skill.inventory to that
+// credential and the client drops the connection on it. A queued explicit
+// choice is released once the catalog has answered.
+it.each(['phone', 'tablet'] as const)('a %s tab releases a queued explicit skill choice once the catalog answers', async (clientKind) => {
+  const skills = [skill('a', 'alpha'), skill('b', 'beta')]
+  const value = withSkills(running(), skills)
+  render(<WorkspaceShell clientKind={clientKind} />)
+  const socket = harness.sockets.at(-1)!
+  await act(async () => completeHandshake(socket, value))
+  await act(async () => { respond(socket, 'skill.list', skills) })
+  await settle()
+  selectSkill('alpha')
+  queue('alpha only')
+  await snapshot(socket, idle(value))
+
+  expect(sentRequests(socket, 'skill.inventory')).toEqual([])
+  expect(sentRequests(socket, 'session.send')).toHaveLength(1)
+  expect(sentRequests(socket, 'session.send')[0]?.params).toMatchObject({
+    sessionId: value.activeSessionId,
+    skillSelection: { mode: 'turn-explicit', skills: [{ skillId: skills[0]!.id }] },
+  })
+  expect(socket.readyState).toBe(socket.OPEN)
+})
+
+// A project or branch change refreshes the catalog. Until the new list
+// answers, the old one says nothing about whether a chosen skill is still in
+// it, so the queue waits, and then holds the message if the skill is gone.
+it('waits for the refreshed catalog when the turn ends in the same snapshot that changes the branch', async () => {
+  const skills = [skill('a', 'alpha'), skill('b', 'beta')]
+  const value = withSkills(running(), skills)
+  const socket = await open(value, false, skills)
+  selectSkill('alpha')
+  queue('alpha only')
+  const moved = idle(value)
+  moved.project = { ...moved.project!, branch: 'other-branch' }
+  await snapshot(socket, moved)
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+
+  await loadCatalog(socket, moved, [skills[1]!])
+  await settle()
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+  expect(screen.getByText(/Held because a skill you chose is no longer/)).toBeTruthy()
+})

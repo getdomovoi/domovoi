@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import { once } from "node:events"
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -17,7 +18,7 @@ import { GitNotFoundError } from "./git-command.js"
 import { GitTooOldForIsolationError } from "./isolated-checkout.js"
 import { RepositoryGitConfigUnreadableError } from "./repository-git-filters.js"
 import { RepositoryConfigRefusedError, SubmoduleChangesRefusedError } from "./workspace.js"
-import type { WorkspaceService } from "./workspace.js"
+import type { Checkpoint, WorkspaceService } from "./workspace.js"
 
 // J34, ruled 2026-09-23: when a person allows a gated command, the daemon
 // takes a checkpoint first and names it on the receipt; if it cannot, the
@@ -50,14 +51,15 @@ function pendingApproval(worktree: boolean | string = true): WorkspaceSnapshot {
 
 async function start(options: {
   worktree?: boolean | string
-  checkpoint?: (worktree: string, label: string, signal?: AbortSignal) => Promise<{ commit: string, changedFiles: string[] }>
+  checkpoint?: (worktree: string, label: string, signal?: AbortSignal) => Promise<Checkpoint>
+  turnId?: string | null
   agentTimeoutMs?: number
 } = {}) {
   let emit: (event: AgentEvent) => void = () => {}
   const provider = {
     connect: vi.fn(async () => {}), listModels: vi.fn(async () => []),
     startThread: vi.fn(async () => "unused"), resumeThread: vi.fn(async () => {}), stopThread: vi.fn(async () => {}),
-    startTurn: vi.fn<() => Promise<string>>().mockResolvedValueOnce("turn-billing").mockResolvedValue("turn-billing-2"), steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
+    startTurn: vi.fn<() => Promise<string>>().mockResolvedValueOnce(options.turnId ?? "turn-billing").mockResolvedValue("turn-billing-2"), steerTurn: vi.fn(async () => {}), interruptTurn: vi.fn(async () => {}),
     resolveApproval: vi.fn(),
     onEvent: vi.fn((listener: (event: AgentEvent) => void) => { emit = listener; return () => {} }),
     close: vi.fn(async () => {}),
@@ -92,7 +94,7 @@ async function start(options: {
   const snapshot = async () => workspaceSnapshotSchema.parse((await rpc("workspace.get", {})).result)
   // A session without a worktree cannot start a turn, so its provider raises
   // the gate on the thread without one.
-  if (options.worktree === false) {
+  if (options.worktree === false || options.turnId === null) {
     emit({ type: "approval-requested", requestId: 41, threadId: "thread-billing", itemId: "call_migrate", command: "pnpm migrate" })
     await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(1))
     return { provider, workspaceService, rpc, snapshot, approvalId: (await snapshot()).approvals[0]!.id, emit: (event: AgentEvent) => emit(event) }
@@ -100,7 +102,7 @@ async function start(options: {
   // The gate arrives the way a provider raises it: inside a running turn,
   // naming the item the command belongs to.
   const sent = await rpc("session.send", { sessionId: "session-billing", prompt: "run the migrations", client: "phone" }); expect(sent.error?.message).toBeUndefined()
-  emit({ type: "approval-requested", requestId: 41, threadId: "thread-billing", turnId: "turn-billing", itemId: "call_migrate", command: "pnpm migrate" })
+  emit({ type: "approval-requested", requestId: 41, threadId: "thread-billing", turnId: options.turnId ?? "turn-billing", itemId: "call_migrate", command: "pnpm migrate" })
   await waitForDaemon(async () => expect((await snapshot()).approvals).toHaveLength(1))
   const approvalId = (await snapshot()).approvals[0]!.id
   return { provider, workspaceService, rpc, snapshot, approvalId, emit: (event: AgentEvent) => emit(event) }
@@ -119,6 +121,48 @@ describe("a checkpoint before an approved write", () => {
     const state = await snapshot()
     expect(state.thread).toContainEqual(expect.objectContaining({ kind: "checkpoint", reason: "before-approved-command", label: `${checkpointCommit.slice(0, 8)} · before an approved command`, commit: checkpointCommit, sessionId: "session-billing" }))
     expect(state.thread).toContainEqual(expect.objectContaining({ kind: "receipt", decision: "allow-once", checkpoint: checkpointCommit }))
+  })
+
+  it.each([true, false, undefined])("retains approval capture stability in thread and history: %s", async (matched) => {
+    const { rpc, snapshot, approvalId } = await start({ checkpoint: async () => ({
+      commit: checkpointCommit, changedFiles: [], ...(matched === undefined ? {} : { matched }),
+      unstablePaths: ["src/b.ts", "src/a.ts", "src/b.ts", ".env", ".aws/credentials"],
+    }) })
+    expect((await rpc("approval.resolve", allow(approvalId))).error).toBeUndefined()
+    const midTurn = {
+      providerTurnId: "turn-billing", stability: matched === true ? "matched" : "unstable",
+      changedPaths: matched === true ? [] : ["src/a.ts", "src/b.ts"], changedPathCount: matched === true ? 0 : 4,
+    }
+    expect((await snapshot()).thread).toContainEqual(expect.objectContaining({ kind: "checkpoint", reason: "before-approved-command", midTurn }))
+    const history = await rpc("session.history", { sessionId: "session-billing", categories: ["checkpoints"] })
+    expect((history.result as { items: unknown[] }).items).toContainEqual(expect.objectContaining({ reason: "before-approved-command", midTurn }))
+  })
+
+  it.each([null, "t".repeat(1025)])("retains approval facts with absent or oversized turn identity: %#", async (turnId) => {
+    const { rpc, snapshot, approvalId } = await start({ turnId, checkpoint: async () => ({ commit: checkpointCommit, changedFiles: [], matched: false }) })
+    expect((await rpc("approval.resolve", allow(approvalId))).error).toBeUndefined()
+    expect((await snapshot()).thread).toContainEqual(expect.objectContaining({ kind: "checkpoint", midTurn: {
+      ...(turnId === null ? {} : { providerTurnIdSha256: createHash("sha256").update(turnId).digest("hex") }),
+      stability: "unstable", changedPaths: [], changedPathCount: 0,
+    } }))
+  })
+
+  it.each(["count", "bytes"])("bounds approval changed paths by %s without losing the total", async (bound) => {
+    const paths = bound === "count"
+      ? Array.from({ length: 55 }, (_, i) => `src/${String(i).padStart(2, "0")}.ts`)
+      : Array.from({ length: 8 }, (_, i) => `src/${i}${"漢".repeat(1000)}.ts`)
+    const unsafe = [".env", ".aws/credentials", "x".repeat(4097), "src/token=ghp_" + "a".repeat(36)]
+    const { rpc, snapshot, approvalId } = await start({ checkpoint: async () => ({
+      commit: checkpointCommit, changedFiles: [], matched: false, unstablePaths: [...paths, ...unsafe, paths[0]!],
+    }) })
+    expect((await rpc("approval.resolve", allow(approvalId))).error).toBeUndefined()
+    const item = (await snapshot()).thread.find((entry) => entry.kind === "checkpoint" && entry.reason === "before-approved-command")
+    expect(item?.kind).toBe("checkpoint")
+    if (item?.kind !== "checkpoint") throw new Error("Approval checkpoint missing")
+    expect(item.midTurn).toBeDefined()
+    expect(item.midTurn!.changedPathCount).toBe(paths.length + unsafe.length)
+    expect(item.midTurn!.changedPaths).toEqual(paths.slice(0, bound === "count" ? 50 : 5))
+    expect(Buffer.byteLength(JSON.stringify(item.midTurn!.changedPaths), "utf8")).toBeLessThanOrEqual(16 * 1024)
   })
 
   it("keeps the gate when the checkpoint cannot be taken, and the command does not run", async () => {
