@@ -118,6 +118,7 @@ import {
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from "ws"
 
 import { normalizeLegacyEffort } from "./legacy-effort.js"
+import { realPathLookupBudgetMs } from "./credential-stores.js"
 import { approvalCheckpointRefusal } from "./approval-checkpoint-refusal.js"
 import { approvalToolServerFact, type ApprovalScope } from "./approval-facts.js"
 import {
@@ -126,6 +127,8 @@ import {
   sameApproval,
   sameExecution,
   savedSettlementInput,
+  sealedApproval,
+  type Settlement,
   nextRevision,
   settleApproval,
   type ApprovalRequest,
@@ -3878,11 +3881,6 @@ export class DomovoiDaemon {
     if (workspace === undefined) return { refusal: undefined, otherNames: false }
     const held = this.#approvalTargets.get(approval.id)
     const fileTool = held !== undefined && heldFileTool(held.request)
-    const identity = fileTool
-      ? await fileTargetIdentity(held.request.workspace, held.request.path!, held.request.cwd ?? held.request.workspace)
-      : undefined
-    const otherNames = identity !== undefined && fileTargetHasOtherNames(identity)
-    const targetChanged = identity !== undefined && fileTargetChanged(held?.identity, identity)
     const heldExecution = held?.execution ?? approval.execution
     const reResolve = fileTool || (heldExecution.state === "resolved"
       && heldExecution.record.kind === "shell"
@@ -3897,9 +3895,27 @@ export class DomovoiDaemon {
         execution,
       }).risk
     }
-    const settlement = await settleApproval(held
-      ? heldSettlementInput(approval, held.request, scope, reResolve ? "resolve" : held.execution, risk)
-      : savedSettlementInput(approval, workspace, scope, risk))
+    // Identity and settlement share one budget. A stalled filesystem read
+    // must not hold an Allow before the path-check clock has even started.
+    const deadline = OperationDeadline.start(realPathLookupBudgetMs)
+    let identity: FileTargetIdentity | undefined
+    let settlement: Settlement
+    try {
+      identity = fileTool
+        ? await beforeDeadline(fileTargetIdentity(held.request.workspace, held.request.path!, held.request.cwd ?? held.request.workspace), deadline)
+        : undefined
+      settlement = await settleApproval(held
+        ? heldSettlementInput(approval, held.request, scope, reResolve ? "resolve" : held.execution, risk)
+        : savedSettlementInput(approval, workspace, scope, risk), deadline)
+    } catch {
+      // The late read has no state to publish. Even a card already sealed by
+      // an earlier timeout must be refused again while identity is unknown.
+      settlement = { approval: sealedApproval(approval, workspace), execution: { state: "unresolved", reason: "sensitive-content" }, sensitive: true }
+    } finally {
+      deadline.clear()
+    }
+    const otherNames = identity !== undefined && fileTargetHasOtherNames(identity)
+    const targetChanged = fileTool && (identity === undefined || fileTargetChanged(held?.identity, identity))
     const current = this.#snapshot.approvals.find((candidate) => candidate.id === approval.id)
     if (current === undefined) return { refusal: undefined, otherNames }
     // The record a hidden card keeps in memory can change while every copy of
