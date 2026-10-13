@@ -5,7 +5,7 @@ import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest"
 
 import type { DesktopWindowBridge } from "./desktop-platform"
 import { WorkspaceShell } from "./workspace-shell"
-import { completeHandshake, installFakeWebSocket, workspaceSnapshot, type FakeWebSocketHarness } from "./test-support/fake-websocket"
+import { completeHandshake, installFakeWebSocket, respond, sentRequests, workspaceSnapshot, type FakeWebSocketHarness } from "./test-support/fake-websocket"
 
 let harness: FakeWebSocketHarness
 // The lazy Settings chunk's first import is not what these tests measure.
@@ -502,4 +502,25 @@ it("keeps the actual status-read time when Settings mounts later and timestamps 
     expect(await card.findByText("up 1h 2m at last check")).toBeTruthy()
     expect(status).toHaveBeenCalledTimes(2)
   } finally { vi.restoreAllMocks() }
+})
+
+
+it("uses the status report app commit and the connected daemon commit for replacement", async () => {
+  const windowBridge = bridge(vi.fn())
+  const appCommit = "a".repeat(40)
+  const update = vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true }))
+  windowBridge.daemonService = { ...windowBridge.daemonService!, update,
+    status: async () => ({ installed: true, running: true, detail: "", supervisor: { appSourceCommit: appCommit } }),
+  }
+  const changed = vi.fn()
+  const { user, section } = await openDaemonSection(windowBridge, outside, changed)
+  const socket = harness.socket(0)
+  const status = { channel: "stable", state: "idle", currentVersion: quietWorkspace().machine.version } as const
+  await act(async () => { respond(socket, "update.status", { ...status, currentSourceCommit: "b".repeat(40) }) })
+  await user.click(await within(section()).findByRole("button", { name: "Replace the service with this app's build" }))
+  expect(update).toHaveBeenCalledOnce()
+  expect(changed).toHaveBeenCalledOnce()
+  expect(sentRequests(socket, "update.status")).toHaveLength(2)
+  await act(async () => { respond(socket, "update.status", { ...status, currentSourceCommit: appCommit }) })
+  expect(await screen.findByText(`domovoid ${status.currentVersion} · aaaaaaa`)).toBeTruthy()
 })

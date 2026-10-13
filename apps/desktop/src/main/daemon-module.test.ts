@@ -41,6 +41,13 @@ describe("where the in-app daemon is loaded from", () => {
     expect(daemonModuleSpecifier({ isPackaged: false, resourcesPath: "/ignored" })).toBe("@getdomovoi/daemon")
   })
 
+  it("requires the build commit reader from the shipped runtime", async () => {
+    const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
+    delete module.builtSourceCommit
+    await expect(loadDaemonModule({ isPackaged: true, resourcesPath: host.resourcesPath }, async () => module))
+      .rejects.toThrow(/is missing builtSourceCommit/)
+  })
+
   it("returns the module and says where it came from", async () => {
     const module = Object.fromEntries(daemonModuleExports.map((name) => [name, vi.fn()]))
     const importer = vi.fn(async () => module)
