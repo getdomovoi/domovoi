@@ -17,6 +17,17 @@ The comparison covers exactly ten files, without normalizing their contents:
 - `domovoi-web-<version>.tar.gz`;
 - `SHA256SUMS`, which hashes the preceding nine files.
 
+Before hashing, the builder sorts only the CLI manifest's top-level dependency
+maps. pnpm 11.5.3 rewrites its three workspace links in varying key order. The
+builder preserves conditional exports/imports order and all other tar entry
+headers, modes and payload bytes, then emits deterministic gzip bytes. The
+protocol and credential store have no workspace links; the daemon has only one.
+Their archives remain untouched, including the protocol bytes embedded and pinned
+inside the daemon. The strict CLI transformation accepts bounded regular-file
+USTAR output and refuses unsupported entry forms. Any future nondeterminism
+elsewhere still fails the comparison. The comparator itself never normalizes or
+excludes bytes.
+
 There are no signing envelopes in this inventory and no excluded bytes. Native
 installer signatures, notarization tickets and platform packages are outside this
 release path. Adding them requires a separately reviewed comparison scope; an
