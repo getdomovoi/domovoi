@@ -40,15 +40,17 @@
       ],
       "presence": [
         "export function ThreadSkeleton(",
-        "readingLabel = `reading "
+        "reading the thread from"
       ],
       "evidence": [
         "export function ThreadSkeleton(",
-        "reading the thread from"
+        "reading the thread from",
+        "Nothing has been read from",
+        "re:reading \\$\\{[^}]+\\} machines"
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "split from states.sessions, which held its line. ThreadSkeleton draws full-width bars at first connect with reading <machine id or RPC URL>, so before attach it names a raw ws:// address; there are no rail skeleton rows, bubble shapes, composer skeleton, reading N machines footer or connecting pill. The shimmer and the reading line stay after the first attempt fails, under the Cannot reach the daemon banner: Q344 A (2026-10-02) stops the shimmer then and says Not connected. Nothing has been read from <host> yet. The phone draws its own Reaching the daemon state; the tablet falls back to the phone layout until a snapshot exists"
+        "reason": "split from states.sessions, which held its line. Updated 2026-10-12 (SL-11): ThreadSkeleton draws full-width bars at first connect with reading the thread from <machine id, or the host it dialled>, never the raw ws:// address, and once the first attempt fails (Q344 A) it stops shimmering and says Not connected. Nothing has been read from <host> yet. under the Cannot reach the daemon banner. Still missing: rail skeleton rows, bubble shapes, composer skeleton, the reading N machines footer (the re: evidence string) and the connecting pill. The phone draws its own Reaching the daemon state; the tablet falls back to the phone layout until a snapshot exists"
       }
     },
     {

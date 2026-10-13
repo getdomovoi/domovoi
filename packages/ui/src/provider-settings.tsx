@@ -16,6 +16,7 @@ import {
 } from "./desktop-platform.js"
 import { fleetOverflowNotice } from "./fleet-overflow.js"
 import { cn } from "./lib/utils"
+import { providerAccountCommand } from "./runtime.js"
 
 export type ProviderSecretStatus = {
   provider: "anthropic" | "openai" | "openrouter"
@@ -442,18 +443,7 @@ function AgentRow({ name, machine, state, tone, dimmed = false, problem, signIn 
   )
 }
 
-// The provider CLI's own sign-in command. Undefined for a provider whose
-// command Domovoi does not know (review P3-9): a help command is not one.
-export function providerAccountCommand(provider: ProviderRuntime): string | undefined {
-  if (provider.id === "claude-code") return "claude auth login"
-  if (provider.id === "codex") return "codex login"
-  if (provider.id === "cursor-agent") return `${provider.command} login`
-  if (provider.id === "grok") return "grok login"
-  if (provider.id === "opencode" || provider.id === "kilo") {
-    return `${provider.command} auth login`
-  }
-  return undefined
-}
+export { providerAccountCommand }
 
 function directProviderName(provider: ProviderSecretStatus["provider"]): string {
   if (provider === "openai") return "OpenAI"

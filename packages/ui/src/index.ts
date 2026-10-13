@@ -36,5 +36,7 @@ export { DaemonCredentialPrompt } from "./daemon-credential-prompt"
 export { WebConnectPage, isWebCode, type PairingOutcome } from "./web-connect-page"
 export { BrowserLimitsPanel, type BrowserLimit, type BrowserLimitTone } from "./browser-limits-panel"
 export { WebPageHeader } from "./web-page-header"
-export { AppearanceSettings, ProviderSettings, type ProviderSecretStatus } from "./provider-settings"
+// Not the Settings components (provider-settings.tsx): only lazily loaded
+// surfaces draw them, and a re-export here would hold them in the code every
+// launch loads, since the apps import this file.
 export { bridgeRelayPinStorage, createRelayPinStore, localStorageRelayPinStorage, readRelayPin, reconcileRelayPin, relayPinKey, type ClientRelayPinStore, type RelayPinStorage } from "./relay-pin"
