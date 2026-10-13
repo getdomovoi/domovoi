@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto"
+import { lstatSync } from "node:fs"
 import { rm, writeFile } from "node:fs/promises"
 import { isAbsolute } from "node:path"
 
@@ -22,6 +23,7 @@ export function openRelayGeneration(path: string, binding: string, publish = pub
   const lease = claimExclusiveFileLease(`${path}.owner.sqlite`, () => new Error("Relay generation is already owned"))
   let generation: number
   try {
+    if (!lstatSync(path).isFile()) throw new Error("Relay generation must be a regular file")
     const record = recordSchema.parse(JSON.parse(readLocalProfileFile(path, 2048)))
     if (record.binding !== binding) throw new Error("Relay generation binding changed")
     generation = record.generation

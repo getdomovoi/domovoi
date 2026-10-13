@@ -63,3 +63,22 @@ it("never returns an uncertain publication, poisons that owner, and skips its vi
   await store.close()
   expect(await open(path).next()).toBe(2)
 })
+
+it("holds exclusive ownership while stop waits for an in-flight publication", async () => {
+  const path = await fixture()
+  let release!: () => void, entered!: () => void
+  const blocked = new Promise<void>((resolve) => { release = resolve })
+  const publishing = new Promise<void>((resolve) => { entered = resolve })
+  const store = open(path, async (staging, destination) => {
+    entered(); await blocked; await publishFileDurably(staging, destination)
+  })
+  const reservation = store.next()
+  await publishing
+  const closing = store.close()
+  expect(() => open(path)).toThrow()
+  await expect(store.next()).rejects.toThrow()
+  release()
+  expect(await reservation).toBe(1)
+  await closing
+  expect(await open(path).next()).toBe(2)
+})
