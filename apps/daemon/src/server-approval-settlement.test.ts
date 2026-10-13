@@ -62,9 +62,9 @@ function checkpointingWorkspace(): WorkspaceService {
 // 4951 ms against 2397 ms over 100 runs), and twice one approval.resolve there
 // outlived a fixed 4 s (CI runs 37097510351 and 38320188619), so Windows gets
 // the lookup budget plus its observation budget, 12 s, below its 30 s test
-// budget. On macOS and Linux CI no call outlived 4 s in 600 runs, and 4 s
-// stays below the 5 s test budget, so a call that never answers is named
-// before the test times out.
+// budget. On macOS and Linux CI no call outlived 4 s in 600 runs, so it stays
+// 4 s there, below the 5 s test budget; a call made late in a test can still
+// meet the test's deadline first.
 const rpcTimeoutMs = process.platform === "win32"
   ? realPathLookupBudgetMs + daemonWaitTimeoutMs(process.platform)
   : 4_000
