@@ -85,8 +85,41 @@ jobs:
           commit-message: "chore(release): version packages"
           pr-title: "chore(release): version packages"
 
-  pack:
+  pack-build:
     needs: gate
+    if: needs.gate.outputs.mode == 'publish' && vars.RELEASE_PUBLISHING == 'enabled'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        slot: [a, b]
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/setup@fbda4c85fc2e1e08721cd8763afea8f48d60f024 # v3.0.0
+        with:
+          install: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22.23.3"
+      - name: Build independently from a clean checkout and fresh caches
+        env:
+          BUILD_SLOT: ${{ matrix.slot }}
+          BUILD_RUN: ${{ github.run_id }}.${{ github.run_attempt }}
+        run: node scripts/release-reproducibility.mjs build "$BUILD_SLOT" "$BUILD_RUN"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-candidate-${{ matrix.slot }}
+          path: release
+          if-no-files-found: error
+          retention-days: 7
+
+  pack:
+    needs: [gate, pack-build]
     if: needs.gate.outputs.mode == 'publish' && vars.RELEASE_PUBLISHING == 'enabled'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -102,8 +135,16 @@ jobs:
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm release:artifacts
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-a
+          path: candidates/a
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-candidate-b
+          path: candidates/b
+      - run: node scripts/release-reproducibility.mjs compare candidates/a candidates/b
       - run: pnpm changeset publish-plan --output release/publish-plan.json
       - run: pnpm release:prepare
       - run: pnpm release:verify
