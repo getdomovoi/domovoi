@@ -562,6 +562,7 @@ export function TerminalPane({
     )
   }
 
+  const claimBanner = metadata !== undefined && !closed && connected
   const holder = metadata?.owner
   // Desktop V2 draws "Claimed by iPhone 16 Pro since 14:04". The time is the
   // daemon's claim time; an older daemon sends none, and the line ends at
@@ -639,7 +640,12 @@ export function TerminalPane({
           </div>
         ) : null}
       </div>
-      {metadata && !closed && connected ? (
+      {reason !== undefined && !claimBanner && !missing ? (
+        // The banner and the no-shell state carry the reason where they show;
+        // every other state (exited, refused, unanswered, offline) shows it here.
+        <p id={reasonId} className="border-b bg-sidebar px-3 py-1.5 text-[11px] text-muted-foreground">{reason}</p>
+      ) : null}
+      {claimBanner ? (
         <div
           className={`flex shrink-0 items-center gap-2.5 border-b px-3.5 py-2.5 ${writable ? "bg-ok-background" : "bg-info-background"}`}
         >

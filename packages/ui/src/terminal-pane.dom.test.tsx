@@ -946,6 +946,29 @@ describe("TerminalPane on a watching desktop", () => {
     expect(target.create).not.toHaveBeenCalled()
   })
 
+  // The claim banner is gone once the shell has exited, while a watch is
+  // refused or unanswered, and while disconnected; the reason stays.
+  it.each([
+    ["the watched shell has exited", (target: ReturnType<typeof watcher>) => target.watched.resolve(watchResult({ state: "closed", exitCode: 0 }))],
+    ["the watch was refused", (target: ReturnType<typeof watcher>) => target.watched.reject(new Error("Terminal could not be read"))],
+    ["the watch is unanswered", () => undefined],
+  ] as const)("keeps the reason on screen when %s", async (_state, settleWatch) => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+    await act(async () => {
+      settleWatch(target)
+    })
+
+    expect(screen.getAllByText(handheldReason)).toHaveLength(1)
+  })
+
+  it("keeps the reason on screen while disconnected", () => {
+    const target = watcher()
+    render(<TerminalPane connected={false} readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
+
+    expect(screen.getAllByText(handheldReason)).toHaveLength(1)
+  })
+
   it("gives the reason in the watching empty state when this client cannot watch", () => {
     const target = harness()
     render(<TerminalPane connected readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)
