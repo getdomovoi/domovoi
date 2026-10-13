@@ -88,6 +88,7 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
     if (stopped) return
     if (attempts >= policy.maximumAttempts) { refused("transport"); return }
     report({ state: "retrying" })
+    if (stopped) return
     const cap = Math.min(policy.retryMaximumMs, policy.retryBaseMs * 2 ** Math.min(attempts - 1, 30))
     // Equal jitter has a positive floor and cannot create a synchronous retry loop.
     retry = setTimeout(begin, Math.max(1, Math.floor(cap * (0.5 + Math.random() / 2))))
@@ -95,10 +96,13 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
   }
   function begin() {
     retry = undefined
+    if (stopped) return
     dialing = dial().catch(() => { if (!stopped) refused("generation") })
   }
   async function dial() {
+    if (stopped) return
     report({ state: "connecting" })
+    if (stopped) return
     attempts++
     const generation = await generations.next()
     if (stopped) return
@@ -117,7 +121,7 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
     let heartbeatTimer: ReturnType<typeof setTimeout> | undefined
     let awaitingPong: Uint8Array | undefined
     const channels = new Map<number, ReturnType<Endpoint["openChannel"]>>()
-    const queue: Array<{ bytes: Uint8Array; binary: boolean; ping: boolean }> = []
+    const queue: Array<{ bytes: Uint8Array; binary: boolean; ping: boolean; channelId?: number }> = []
     let queuedBytes = 0, sending = false
     function fence() {
       if (fenced) return
@@ -140,6 +144,9 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
     function pump() {
       const entry = queue[0]
       if (fenced || sending || !entry) return
+      if (entry.channelId !== undefined && !channels.has(entry.channelId)) {
+        queue.shift(); queuedBytes -= entry.bytes.byteLength; pump(); return
+      }
       sending = true
       sendTimer = setTimeout(() => fail("capacity"), policy.sendTimeoutMs)
       sendTimer.unref()
@@ -154,12 +161,12 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
         else socket.send(entry.bytes, { binary: entry.binary }, sent)
       } catch { fail(undefined) }
     }
-    function enqueue(bytes: Uint8Array, binary: boolean, ping = false) {
+    function enqueue(bytes: Uint8Array, binary: boolean, ping = false, channelId?: number) {
       if (fenced) return
       if (queue.length >= policy.maximumQueuedMessages || queuedBytes + bytes.byteLength > policy.maximumQueuedBytes) {
         fail("capacity"); return
       }
-      queue.push({ bytes: Uint8Array.from(bytes), binary, ping }); queuedBytes += bytes.byteLength
+      queue.push({ bytes: Uint8Array.from(bytes), binary, ping, ...(channelId !== undefined ? { channelId } : {}) }); queuedBytes += bytes.byteLength
       pump()
     }
     function heartbeat() {
@@ -174,6 +181,13 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
     function closeChannel(id: number, notify: boolean) {
       const channel = channels.get(id)
       channels.delete(id)
+      // The in-flight write was already handed to ws and cannot be recalled.
+      // Retire only pending output, keeping other channels and accounting intact.
+      for (let index = queue.length - 1; index >= (sending ? 1 : 0); index--) {
+        if (queue[index]!.channelId === id) {
+          queuedBytes -= queue[index]!.bytes.byteLength; queue.splice(index, 1)
+        }
+      }
       channel?.close()
       if (notify && !fenced) enqueue(encodeRelayCarrierControl({ kind: "close", carrierVersion: 1, channelId: id }), false)
     }
@@ -225,7 +239,7 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
         const id = control.channelId
         const channel = endpoint.openChannel({ context: { relayProtocol: 1, routeId: options.routeId, channel: recovery.identity.channel }, carrier: {
           get bufferedAmount() { return queuedBytes + socket.bufferedAmount },
-          send: (frame) => { if (!fenced && channels.has(id)) enqueue(encodeRelayMultiplexedFrame(id, frame), true) },
+          send: (frame) => { if (!fenced && channels.has(id)) enqueue(encodeRelayMultiplexedFrame(id, frame), true, false, id) },
           close: () => { if (channels.has(id)) closeChannel(id, true) },
         } })
         if (!channel.closed && !fenced) channels.set(id, channel)
@@ -235,7 +249,10 @@ export function createDaemonRelayCarrier(input: DaemonRelayCarrierOptions, endpo
   }
   return {
     start() { if (started || stopped) return; started = true; begin() },
-    async stop() { stopped = true; clearTimeout(retry); retire?.(); report({ state: "stopped" }); await dialing; await generations.close() },
+    async stop() {
+      if (!stopped) { stopped = true; clearTimeout(retry); retire?.(); report({ state: "stopped" }) }
+      await dialing; await generations.close()
+    },
     get status() { return { ...status } },
   }
 }

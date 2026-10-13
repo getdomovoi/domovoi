@@ -5,12 +5,12 @@ import { createServer } from "node:https"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { demoWorkspace, encodeRelayCarrierControl, encodeRelayMultiplexedFrame, parseRelayCarrierControl, type RelayCarrierControl } from "@getdomovoi/protocol"
+import { demoWorkspace, decodeRelayMultiplexedFrame, encodeRelayCarrierControl, encodeRelayMultiplexedFrame, parseRelayCarrierControl, type RelayCarrierControl } from "@getdomovoi/protocol"
 import { relayPublicKeyFromPrivateKey, type RelayCarrier } from "@getdomovoi/protocol/relay-admission"
 import { afterEach, expect, it, vi } from "vitest"
 import { WebSocket, WebSocketServer } from "ws"
 
-import { createDaemonRelayCarrier, loadDaemonRelayCarrierConfiguration, relayRegistrationBinding, type DaemonRelayCarrier, type DaemonRelayCarrierOptions } from "./relay-carrier.js"
+import { createDaemonRelayCarrier, loadDaemonRelayCarrierConfiguration, relayRegistrationBinding, type DaemonRelayCarrier, type DaemonRelayCarrierOptions, type DaemonRelayCarrierStatus } from "./relay-carrier.js"
 import { removeScratchDirectories } from "./test-scratch.js"
 
 const roots: string[] = [], cleanups: Array<() => Promise<void>> = []
@@ -24,18 +24,21 @@ afterEach(async () => {
   await Promise.all(carriers.splice(0).map((carrier) => carrier.stop()))
   for (const close of cleanups.splice(0)) await close()
   await removeScratchDirectories(roots)
+  vi.restoreAllMocks()
 })
-async function fixture(onMessage: (socket: WebSocket, message: RelayCarrierControl) => void, host = "localhost", trust = true, respondPong = true) {
+async function fixture(onMessage: (socket: WebSocket, message: RelayCarrierControl) => void, host = "localhost", trust = true, respondPong = true,
+  onStatus?: (status: DaemonRelayCarrierStatus) => void) {
   const certificate = await readFile(new URL("../test-fixtures/local-owner-tls/localhost-cert.pem", import.meta.url), "utf8")
   const key = await readFile(new URL("../test-fixtures/local-owner-tls/localhost-key.pem", import.meta.url))
   const server = createServer({ cert: certificate, key })
   const wss = new WebSocketServer({ server, maxPayload: 65539, autoPong: respondPong })
   const connections: WebSocket[] = []
   const records: RelayCarrierControl[] = []
+  const frames: Array<{ socket: WebSocket; channelId: number; frame: Uint8Array }> = []
   wss.on("connection", (socket) => {
     connections.push(socket)
     socket.on("message", (bytes, binary) => {
-      if (binary) return
+      if (binary) { frames.push({ socket, ...decodeRelayMultiplexedFrame(bytes as Buffer) }); return }
       const message = parseRelayCarrierControl(Buffer.from(bytes as Buffer))
       records.push(message)
       onMessage(socket, message)
@@ -50,20 +53,39 @@ async function fixture(onMessage: (socket: WebSocket, message: RelayCarrierContr
     url: `wss://${host}:${(server.address() as { port: number }).port}/carrier`, routeId, registrationCredential: credential,
     generationPath: join(directory, "relay-generation.json"), ...(trust ? { ca: certificate } : {}),
     policy: { connectTimeoutMs: 500, registrationTimeoutMs: 500, sendTimeoutMs: 500, maximumAttempts: 3,
-      retryBaseMs: 10, retryMaximumMs: 20, heartbeatIntervalMs: 20, heartbeatTimeoutMs: 100,
+      retryBaseMs: 10, retryMaximumMs: 20, heartbeatIntervalMs: respondPong ? 1000 : 20, heartbeatTimeoutMs: respondPong ? 1000 : 100,
       maximumChannels: 2, maximumQueuedBytes: 131078, maximumQueuedMessages: 8 },
   }
   const binding = relayRegistrationBinding(options, recovery.identity.machineId)
   await writeFile(options.generationPath, JSON.stringify({ version: 1, binding, generation: 0 }), { mode: 0o600 })
   const receive = vi.fn(), close = vi.fn()
   const openChannel = vi.fn((_options: { carrier: RelayCarrier }) => ({ receive, close, closed: false }))
-  const carrier = createDaemonRelayCarrier(options, { recovery, openChannel })
+  const carrier = createDaemonRelayCarrier(options, { recovery, openChannel, ...(onStatus ? { onStatus } : {}) })
   carriers.push(carrier)
-  return { carrier, options, connections, records, receive, close, openChannel }
+  return { carrier, options, connections, records, frames, receive, close, openChannel }
 }
 const send = (socket: WebSocket, record: unknown) => socket.send(encodeRelayCarrierControl(record), { binary: false })
 const acknowledge = (socket: WebSocket, record: RelayCarrierControl) => {
   if (record.kind === "register") send(socket, { kind: "registered", carrierVersion: 1, generation: record.generation })
+}
+
+// Keep one actual write in flight while subsequent frames enter the carrier's
+// queue. The socket bytes are real; only its completion notification is held.
+function holdFirstBinaryCompletion(serverSockets: WebSocket[]) {
+  const original = WebSocket.prototype.send
+  let held = false
+  let release: (() => void) | undefined
+  vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (this: WebSocket, ...args: Parameters<WebSocket["send"]>) {
+    const [data, options, callback] = args
+    if (!held && !serverSockets.includes(this) && options?.binary) {
+      held = true
+      Reflect.apply(original, this, [data, options, (error?: Error) => { release = () => callback?.(error) }])
+    } else Reflect.apply(original, this, args)
+  })
+  return async () => {
+    await vi.waitFor(() => expect(release).toBeDefined(), { timeout: 1000 })
+    release!()
+  }
 }
 
 it("registers only after valid TLS, publishes the bound recovery and routes opaque frames to admission", async () => {
@@ -218,4 +240,61 @@ it("loads only bounded private operator configuration and never exposes malforme
   try { loadDaemonRelayCarrierConfiguration(directory) } catch (error) { expect(String(error)).not.toContain(credential) }
   await writeFile(path, "x".repeat(65537))
   expect(() => loadDaemonRelayCarrierConfiguration(directory)).toThrow("private bounded regular file")
+})
+
+it("drops a retired logical channel's queued bytes while retaining its in-flight boundary and another channel", async () => {
+  const f = await fixture(acknowledge)
+  f.carrier.start()
+  await vi.waitFor(() => expect(f.carrier.status.state).toBe("registered"), { timeout: 1000 })
+  for (const channelId of [1, 2]) send(f.connections[0]!, { kind: "open", carrierVersion: 1, channelId })
+  await vi.waitFor(() => expect(f.openChannel).toHaveBeenCalledTimes(2), { timeout: 1000 })
+  const a = f.openChannel.mock.calls[0]![0].carrier, b = f.openChannel.mock.calls[1]![0].carrier
+  const release = holdFirstBinaryCompletion(f.connections)
+  a.send(new Uint8Array([11])); a.send(new Uint8Array([12])); b.send(new Uint8Array([21]))
+  await vi.waitFor(() => expect(f.frames.map((entry) => [...entry.frame])).toEqual([[11]]), { timeout: 1000 })
+  a.close()
+  await release()
+  await vi.waitFor(() => expect(f.records.some((record) => record.kind === "close" && record.channelId === 1)).toBe(true), { timeout: 1000 })
+  expect(f.frames.map(({ channelId, frame }) => [channelId, ...frame])).toEqual([[1, 11], [2, 21]])
+  expect(f.close).toHaveBeenCalledOnce()
+  b.send(new Uint8Array([22]))
+  await vi.waitFor(() => expect(f.frames.at(-1)?.frame).toEqual(new Uint8Array([22])), { timeout: 1000 })
+  await vi.waitFor(() => expect(b.bufferedAmount).toBe(0), { timeout: 1000 })
+  expect(f.carrier.status.state).toBe("registered")
+})
+
+it("discards pending outbound frames across replacement and fences a stale logical handle and late callback", async () => {
+  const f = await fixture(acknowledge)
+  f.carrier.start()
+  await vi.waitFor(() => expect(f.carrier.status.state).toBe("registered"), { timeout: 1000 })
+  const first = f.connections[0]!
+  send(first, { kind: "open", carrierVersion: 1, channelId: 1 })
+  await vi.waitFor(() => expect(f.openChannel).toHaveBeenCalledOnce(), { timeout: 1000 })
+  const old = f.openChannel.mock.calls[0]![0].carrier
+  const release = holdFirstBinaryCompletion(f.connections)
+  old.send(new Uint8Array([31])); old.send(new Uint8Array([32]))
+  await vi.waitFor(() => expect(f.frames).toHaveLength(1), { timeout: 1000 })
+  first.terminate()
+  await vi.waitFor(() => { expect(f.connections).toHaveLength(2); expect(f.carrier.status.state).toBe("registered") }, { timeout: 1000 })
+  send(f.connections[1]!, { kind: "open", carrierVersion: 1, channelId: 1 })
+  await vi.waitFor(() => expect(f.openChannel).toHaveBeenCalledTimes(2), { timeout: 1000 })
+  await release()
+  old.send(new Uint8Array([33]))
+  f.openChannel.mock.calls[1]![0].carrier.send(new Uint8Array([41]))
+  await vi.waitFor(() => expect(f.frames.at(-1)?.frame).toEqual(new Uint8Array([41])), { timeout: 1000 })
+  expect(f.frames.filter((entry) => entry.socket === first).map((entry) => [...entry.frame])).toEqual([[31]])
+  expect(f.frames.filter((entry) => entry.socket !== first).map((entry) => [...entry.frame])).toEqual([[41]])
+})
+
+it("cannot schedule a retry after the status callback stops it", async () => {
+  let stopping: Promise<void> | undefined
+  const f = await fixture((socket, record) => { acknowledge(socket, record); socket.close(1012) }, "localhost", true, true,
+    (status) => { if (status.state === "retrying") stopping = f.carrier.stop() })
+  f.carrier.start()
+  await vi.waitFor(() => expect(stopping).toBeDefined(), { timeout: 1000 })
+  await stopping
+  // A positive timer barrier is later than the configured maximum retry delay.
+  await new Promise<void>((resolve) => setTimeout(resolve, 50))
+  expect(f.carrier.status.state).toBe("stopped")
+  expect(f.records).toHaveLength(1)
 })

@@ -135,7 +135,10 @@ Channels open only after the matching registration acknowledgment. Each opens
 the existing daemon Noise admission path, which still requires a paired credential
 bound to the client's channel key. Physical retirement closes all channels and
 discards pending frames. A replacement connection requires fresh admission; no
-RPC mutation is replayed. Closed channel IDs discard late frames, while unknown
+RPC mutation is replayed. Closing one logical channel discards its pending output
+while preserving other channels. Bytes already handed to the physical socket
+cannot be recalled; the send completion callback is not a revocation boundary.
+Closed channel IDs discard late frames, while unknown
 or reused IDs refuse the physical carrier. Queue bytes include the in-flight
 message; message count, channel count, fragment count, connection and send
 deadlines are bounded. Heartbeats use that same bounded queue.
