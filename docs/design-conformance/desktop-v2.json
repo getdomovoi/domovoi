@@ -587,7 +587,7 @@
       ],
       "partial": {
         "since": "2026-10-02",
-        "reason": "the section draws the real ownership state and the per-platform facts, and Install and Remove now run through windowBridge.daemonService (the earlier ND9 lock is gone). Left: the supervisor gave-up banner with Start it again, pid and uptime, and the Check again and Start it status actions, which need the supervisor state over the desktop bridge (DaemonServiceStatusReport carries installed, running and detail only, while the supervisor record has exhausted with restart-limit; it exhausts at 4 crashes, so the copy must take the real count, not the drawn 5); and the drawn card arrangement (header row, service sub-card, WHAT IT WROTE rows, footer). The TailnetReach row is built as the card's footer row since 2026-10-02 (settings-shell.tsx, read in tailnet-reach-v2.json)"
+        "reason": "The card carries supervisor facts through the existing guarded status read and validates the complete group in Settings. It shows exhaustion with the recorded crash count, last exit, a live daemon pid and uptime where supplied, explicit unknown facts otherwise, and Check again. Q80 applies domovoid service install as terminal recovery because no dedicated desktop start path can restart an unreachable daemon. Left: the drawn card arrangement (header row, service sub-card, WHAT IT WROTE rows, footer). The TailnetReach row remains the card footer."
       }
     },
     {

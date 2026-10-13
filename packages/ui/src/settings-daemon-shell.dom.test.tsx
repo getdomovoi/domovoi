@@ -261,12 +261,13 @@ it("draws the daemon section with the window's platform", async () => {
 // a status read that answers after a newer one.
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((settle) => { resolve = settle })
-  return { promise, resolve }
+  let reject!: (cause: Error) => void
+  const promise = new Promise<T>((settle, fail) => { resolve = settle; reject = fail })
+  return { promise, resolve, reject }
 }
-type Status = { installed: boolean | null; running: boolean; detail: string }
+type Status = { installed: boolean | null; running: boolean; detail: string; supervisor?: unknown }
 const quietWorkspace = () => workspaceSnapshot({ approvals: [], sessions: demoWorkspace.sessions.map((session) => { const { activeTurnId: _turn, ...rest } = session; return { ...rest, state: "idle" as const } }) })
-type LocalDaemon = { title: string; detail: string; owner: "app" | "outside"; serviceInstalled?: boolean }
+type LocalDaemon = { title: string; detail: string; owner: "app" | "outside"; serviceInstalled?: boolean; serviceRunning?: boolean }
 const inApp: LocalDaemon = { title: "Running Domovoi inside this app", detail: "", owner: "app" }
 const outside: LocalDaemon = { title: "Connected to a daemon outside this app", detail: "", owner: "outside" }
 
@@ -428,4 +429,75 @@ it.each(failureCases)("refreshes the owner after a failed $action (read-back $se
     expect(section.textContent).not.toContain("nothing is installed")
     expect(within(section).getByRole("button", { name: "Install" }).hasAttribute("disabled")).toBe(true)
   }
+})
+
+it.each(["install", "remove"] as const)("preserves %s sequencing and the newest full report", async (action) => {
+  const stale = deferred<Status>()
+  const windowBridge = bridge(vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true })))
+  const report = { installed: action === "install", running: action === "install", detail: "read after change", supervisor: action === "install" ? { pid: 4321, crashCount: 0 } : {} }
+  const status = vi.fn().mockImplementationOnce(() => stale.promise).mockResolvedValue(report)
+  windowBridge.daemonService!.status = status
+  const { user, section } = await openDaemonSection(windowBridge, action === "install" ? inApp : { ...outside, serviceInstalled: true })
+  expect(status).toHaveBeenCalledOnce()
+  if (action === "install") await user.click(within(section()).getByRole("button", { name: "Install" }))
+  else await confirmRemove(user, section())
+  await waitFor(() => expect(status).toHaveBeenCalledTimes(2))
+  await act(async () => { stale.resolve({ installed: true, running: false, detail: "old failure", supervisor: { supervisionFailure: "exhausted", crashCount: 4 } }) })
+  await settle()
+  expect(within(section()).queryByText("The supervisor gave up after 4 crashes.")).toBeNull()
+  if (action === "install") expect(within(section()).getByText("PID 4321")).toBeTruthy()
+  else expect(within(section()).queryByText(/PID/)).toBeNull()
+  await user.click(within(section()).getByRole("button", { name: "Check again" }))
+  expect(status).toHaveBeenCalledTimes(3)
+})
+
+it("keeps new supervisor facts when an older initial status read rejects after an install", async () => {
+  const oldRead = deferred<Status>()
+  const windowBridge = bridge(vi.fn(async () => ({ ok: true as const, kind: "file" as const, target: "/p", daemonRunning: true })))
+  windowBridge.daemonService!.status = vi.fn()
+    .mockImplementationOnce(() => oldRead.promise)
+    .mockResolvedValue({ installed: true, running: true, detail: "running", supervisor: { pid: 4321 } })
+  const { user, section } = await openDaemonSection(windowBridge, inApp)
+  await user.click(within(section()).getByRole("button", { name: "Install" }))
+  await within(section()).findByText("Installed. Quitting this app now leaves the daemon and its sessions running.")
+  await act(async () => { oldRead.reject(new Error("old status failed")) })
+  expect(await within(section()).findByText("PID 4321")).toBeTruthy()
+  expect(within(section()).queryByText("old status failed")).toBeNull()
+})
+
+
+it.each([false, true])("refreshes supervisor facts when first-run service facts change with the same bridge (installed %s)", async (installed) => {
+  const windowBridge = bridge(vi.fn())
+  const status = vi.fn()
+    .mockResolvedValueOnce({ installed, running: false, detail: "before setup" })
+    .mockResolvedValue({ installed: true, running: true, detail: "after setup", supervisor: { pid: 4321, crashCount: 0 } })
+  windowBridge.daemonService!.status = status
+  const { section, moveTo } = await openDaemonSection(windowBridge, { ...inApp, serviceInstalled: installed, serviceRunning: false })
+  expect(status).toHaveBeenCalledOnce()
+  moveTo({ ...outside, serviceInstalled: true, serviceRunning: true })
+  expect(await within(section()).findByText("PID 4321")).toBeTruthy()
+  expect(within(section()).getByText("0 crashes")).toBeTruthy()
+  expect(status).toHaveBeenCalledTimes(2)
+})
+
+it("keeps the actual status-read time when Settings mounts later and timestamps Check again", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-12T12:02:00.000Z"))
+  try {
+    const windowBridge = bridge(vi.fn())
+    const status = vi.fn().mockResolvedValue({ installed: true, running: true, detail: "running", supervisor: { pid: 4321, startedAt: "2026-10-12T12:00:00.000Z" } })
+    windowBridge.daemonService!.status = status
+    render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} localDaemon={outside} />)
+    await act(async () => { completeHandshake(harness.socket(0), quietWorkspace()) })
+    await settle()
+    const user = userEvent.setup()
+    await skipFirstRun(user)
+    expect(status).toHaveBeenCalledOnce()
+    clock.mockReturnValue(Date.parse("2026-10-12T13:02:00.000Z"))
+    await user.click(screen.getByRole("button", { name: "Settings" }))
+    const card = within(await screen.findByRole("region", { name: "Daemon on this machine" }))
+    expect(card.getByText("up 2m at last check")).toBeTruthy()
+    await user.click(card.getByRole("button", { name: "Check again" }))
+    expect(await card.findByText("up 1h 2m at last check")).toBeTruthy()
+    expect(status).toHaveBeenCalledTimes(2)
+  } finally { vi.restoreAllMocks() }
 })
