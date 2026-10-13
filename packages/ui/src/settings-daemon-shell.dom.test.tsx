@@ -14,8 +14,10 @@ beforeAll(async () => { await import("./settings-shell") })
 beforeEach(() => { harness = installFakeWebSocket() })
 afterEach(() => { cleanup(); harness.uninstall() })
 // A desktop with a bridge opens first-run setup over the shell; this test is
-// about Settings, so it skips the setup the way a person would.
+// about Settings, so it skips the setup the way a person would. Setup's code
+// loads when it opens, so its frame gives way to it before Skip is looked for.
 async function skipFirstRun(user: ReturnType<typeof userEvent.setup>) {
+  await waitFor(() => expect(screen.queryByRole("dialog", { name: "Domovoi setup" })).toBeNull())
   const skip = screen.queryByRole("button", { name: "Skip for now" })
   if (skip) { await user.click(skip); await settle() }
 }

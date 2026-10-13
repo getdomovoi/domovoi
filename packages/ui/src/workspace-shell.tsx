@@ -81,11 +81,8 @@ import {
   type SessionQueues,
 } from "./turn-queue"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
-import {
-  DesktopFirstRunDialog,
-  desktopFirstRunAvailable,
-  firstRunDefaultProvider,
-} from "./desktop-first-run"
+import { DesktopFirstRunDialog } from "./desktop-first-run-lazy"
+import { desktopFirstRunAvailable, firstRunDefaultProvider } from "./desktop-first-run-rules"
 import {
   browserDesktopFirstRunStorage,
   completeDesktopFirstRun,

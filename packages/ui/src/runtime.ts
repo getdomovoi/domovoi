@@ -89,6 +89,21 @@ export function providerDisplayName(providerId: string): string {
   return providerNames[providerId] ?? providerId
 }
 
+// The provider CLI's own sign-in command. Undefined for a provider whose
+// command Domovoi does not know (review P3-9): a help command is not one.
+// Here rather than in provider-settings.tsx so that first-run's readiness
+// rules, which the shell runs, do not pull the Settings components in.
+export function providerAccountCommand(provider: ProviderRuntime): string | undefined {
+  if (provider.id === "claude-code") return "claude auth login"
+  if (provider.id === "codex") return "codex login"
+  if (provider.id === "cursor-agent") return `${provider.command} login`
+  if (provider.id === "grok") return "grok login"
+  if (provider.id === "opencode" || provider.id === "kilo") {
+    return `${provider.command} auth login`
+  }
+  return undefined
+}
+
 export function preferredSessionProvider(
   providers: readonly ProviderRuntime[],
 ): ProviderRuntime | undefined {
