@@ -7,7 +7,7 @@ import { Button } from "./components/ui/button"
 import { Dialog, DialogClose, DialogPortal, DialogTitle } from "./components/ui/dialog"
 import { Textarea } from "./components/ui/textarea"
 import { cn } from "./lib/utils"
-import { AttachmentChips } from "./thread-composer"
+import { AttachmentChips, type BuildBasisChip } from "./thread-composer"
 
 export type PromptEditorMode = "prose" | "markdown"
 
@@ -46,6 +46,7 @@ export function PromptEditorDialog({
   open,
   draft,
   attachments,
+  buildBasis,
   onRemoveAttachment,
   pending,
   sendDisabled,
@@ -67,6 +68,8 @@ export function PromptEditorDialog({
   // The composer's own draft attachments: the design carries them through,
   // and a removal here is a removal there.
   attachments: readonly SessionAttachment[]
+  // The chosen preview variant the send carries, as the composer shows it.
+  buildBasis?: BuildBasisChip | undefined
   onRemoveAttachment: (index: number) => void
   pending: boolean
   sendDisabled: boolean
@@ -170,7 +173,7 @@ export function PromptEditorDialog({
           </div>
 
           <div className="flex min-h-0 flex-1 flex-col gap-[13px] px-[18px] py-4">
-            <AttachmentChips attachments={attachments} machineName={machineName} onRemove={onRemoveAttachment} pastedAsChips />
+            <AttachmentChips attachments={attachments} buildBasis={buildBasis} machineName={machineName} onRemove={onRemoveAttachment} pastedAsChips />
             {/* Focused by definition: a field that exists to be typed in opens
                 with the ring rather than waiting to be clicked. */}
             <Textarea

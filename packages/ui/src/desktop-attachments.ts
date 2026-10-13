@@ -73,7 +73,11 @@ export function isImageAttachment(attachment: SessionAttachment): attachment is 
 export function attachmentMark(attachment: SessionAttachment): string {
   if (isImageAttachment(attachment)) return attachment.mimeType === "image/png" ? "PNG" : "JPG"
   if (attachment.kind === "text") return attachment.name === terminalOutputName ? "LOG" : "TXT"
-  return /\.([a-z0-9]{1,4})$/iu.exec(attachment.path)?.[1]?.toUpperCase() ?? "FILE"
+  return pathMark(attachment.path)
+}
+
+export function pathMark(path: string | undefined): string {
+  return (path === undefined ? undefined : /\.([a-z0-9]{1,4})$/iu.exec(path)?.[1]?.toUpperCase()) ?? "FILE"
 }
 
 function byteSize(bytes: number): string {

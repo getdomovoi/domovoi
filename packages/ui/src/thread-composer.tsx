@@ -40,6 +40,7 @@ import {
   workspacePathAttachment,
 } from "./desktop-attachments"
 import { PastedTextCard } from "./pasted-text-card"
+import { PreviewVariantCopy } from "./preview-controls"
 import { FloatingSurface } from "./floating-surface"
 import { cn } from "./lib/utils"
 import { EffortChip, ModeChip } from "./mode-chip.js"
@@ -71,12 +72,23 @@ export function imageInputLine(imageInput: boolean | undefined): string {
 // same chips, so the draft looks the same in both.
 export const visibleAttachmentChips = 3
 
+// The preview variant chosen with Build on this. It rides every send of the
+// session (Q342 A), so it is drawn first among the chips, as the design draws
+// what the preview sends, and its remove is Unpick.
+export type BuildBasisChip = {
+  mark: string
+  name: string
+  meta: string
+  onUnpick: () => void
+}
+
 export function AttachmentChips({
   attachments,
   machineName,
   onRemove,
   pastedAsChips = false,
   imagesBlocked = false,
+  buildBasis,
 }: {
   attachments: readonly SessionAttachment[]
   machineName: string
@@ -86,9 +98,19 @@ export function AttachmentChips({
   pastedAsChips?: boolean
   // The session's model reported it takes no image input.
   imagesBlocked?: boolean
+  buildBasis?: BuildBasisChip | undefined
 }) {
   const [expanded, setExpanded] = useState(false)
-  const items: ChipItem[] = attachments.flatMap((attachment, index) => {
+  const basisItems: ChipItem[] = buildBasis ? [{
+    key: "build-basis",
+    mark: buildBasis.mark,
+    name: buildBasis.name,
+    meta: buildBasis.meta,
+    blocked: false,
+    removeLabel: `${PreviewVariantCopy.unpick} ${buildBasis.name}`,
+    onRemove: buildBasis.onUnpick,
+  }] : []
+  const items: ChipItem[] = [...basisItems, ...attachments.flatMap((attachment, index) => {
     if (!pastedAsChips && pastedText(attachment)) return []
     const name = attachmentName(attachment)
     const blocked = imagesBlocked && isImageAttachment(attachment)
@@ -101,7 +123,7 @@ export function AttachmentChips({
       removeLabel: `Remove ${name}`,
       onRemove: () => onRemove(index),
     }]
-  })
+  })]
   if (items.length === 0) return null
   const hidden = expanded ? 0 : Math.max(0, items.length - visibleAttachmentChips)
   return (
@@ -176,6 +198,7 @@ export function ThreadComposer({
   effortModel,
   effortDropped,
   imageInput,
+  buildBasis,
   onOpenSheet,
   onOpenPromptEditor,
   usage,
@@ -231,6 +254,8 @@ export function ThreadComposer({
   // Undefined is not known (not read yet, or not reported), which is not no:
   // only false locks images.
   imageInput: boolean | undefined
+  // The chosen preview variant, drawn as the first chip (task 83).
+  buildBasis?: BuildBasisChip | undefined
   onOpenSheet?: (() => void) | undefined
   onOpenPromptEditor: () => void
   usage: SessionUsage | null
@@ -386,6 +411,7 @@ export function ThreadComposer({
         attachments={attachments}
         machineName={machineName}
         imagesBlocked={imageInput === false}
+        buildBasis={buildBasis}
         onRemove={(index) => onAttachmentsChange((current) => current.filter((_, candidate) => candidate !== index))}
       />
       {/* J42: the model's harness reports no image input, so the daemon

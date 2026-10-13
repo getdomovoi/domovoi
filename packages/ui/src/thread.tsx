@@ -100,8 +100,11 @@ import { PolicyRefusalCard } from "./policy-refusal-card"
 import { ApprovalCard } from "./approval-card"
 import { DaemonRpcError } from "./client"
 import { slashIntent, type SlashIntentContext } from "./composer-slash"
-import { ThreadComposer } from "./thread-composer"
-import { attachmentName, desktopAttachmentLimit, desktopInlineLineLimit, isImageAttachment, pasteOutcome } from "./desktop-attachments"
+import { ThreadComposer, type BuildBasisChip } from "./thread-composer"
+import { sessionPreviewBuildBasis } from "./artifacts"
+import { PreviewVariantCopy } from "./preview-controls"
+import { previewRenderName } from "./preview-renders"
+import { attachmentName, desktopAttachmentLimit, desktopInlineLineLimit, isImageAttachment, pasteOutcome, pathMark } from "./desktop-attachments"
 import { composerInbox } from "./composer-inbox"
 import { loadingLineRef, startOpenerRef } from "./start-handoff"
 
@@ -551,6 +554,8 @@ export function Thread({
   skillNames,
   skillCatalog,
   surface = "desktop",
+  buildBasisId,
+  onUnpickBuildBasis,
 }: {
   snapshot: WorkspaceSnapshot
   connected: boolean
@@ -636,6 +641,11 @@ export function Thread({
   skillNames?: Record<string, string> | undefined
   skillCatalog?: readonly SkillSummary[] | undefined
   surface?: "desktop" | "web" | undefined
+  // The preview this session's sends carry as their build basis (Q342 A),
+  // as the shell holds it, and Unpick. The composer shows it so nothing
+  // rides a send that the person cannot see.
+  buildBasisId?: string | undefined
+  onUnpickBuildBasis?: (() => void) | undefined
 }) {
   const watching = clientAccess === "watching"
   // The shell's connection, for the offline Reconnect action. A thread drawn
@@ -962,6 +972,16 @@ export function Thread({
     skills: selectableSkills,
     machines,
   }
+
+  // The rule the send uses (use-workspace.ts): a basis that no longer names a
+  // preview of this session is not sent, so it is not shown either.
+  const buildBasis = sessionPreviewBuildBasis(snapshot, active.id, buildBasisId)
+  const buildBasisChip: BuildBasisChip | undefined = buildBasis && onUnpickBuildBasis ? {
+    mark: pathMark(buildBasis.path),
+    name: buildBasis.variant?.label ?? buildBasis.title,
+    meta: `${previewRenderName(buildBasis)} · ${PreviewVariantCopy.buildsOnThis}`,
+    onUnpick: onUnpickBuildBasis,
+  } : undefined
 
   const providerRestartRequired = active.state === "failed" && !active.providerThreadId
   // The worktree of a session nothing has run in yet: no turn is running or
@@ -1574,6 +1594,7 @@ export function Thread({
           effortModel={effortModel}
           effortDropped={effortDroppedHere}
           imageInput={effortModel?.imageInput}
+          buildBasis={buildBasisChip}
           onOpenSheet={onOpenSheet}
           onOpenPromptEditor={() => setPromptEditorOpen(true)}
           usage={usage}
@@ -1648,6 +1669,7 @@ export function Thread({
             open={promptEditorOpen}
             draft={prompt}
             attachments={attachments}
+            buildBasis={buildBasisChip}
             onRemoveAttachment={(index) => setAttachments((current) => current.filter((_, candidate) => candidate !== index))}
             pending={pending}
             sendDisabled={!connected || !prompt.trim() || providerRestartRequired || emergencyStopPending
