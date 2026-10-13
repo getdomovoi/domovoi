@@ -725,6 +725,12 @@ export function useWorkspace(
     return client.listDevices(options)
   }, [])
 
+  const revokeCurrentDevice = useCallback(async () => {
+    const client = clientRef.current
+    if (!client) throw new Error("Daemon connection is not open")
+    return client.request("device.revokeCurrent", {})
+  }, [])
+
   const revokeDevice = useCallback(async (
     params: { deviceId: string },
     options?: DomovoiRequestOptions,
@@ -1021,6 +1027,7 @@ export function useWorkspace(
     setRuntime,
     snapshot,
     revokeDevice,
+    revokeCurrentDevice,
     rotateDevice,
     renameDevice,
     transferSession,
