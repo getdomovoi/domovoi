@@ -113,7 +113,14 @@ Producer execution is supported on POSIX hosts because bounded shutdown uses an
 owned process group. The release jobs run on Linux. Comparison and evidence
 validation do not require POSIX process control. A producer has a 20-minute total
 budget and a separate 30-second cleanup budget. Commands have bounded output; a
-nonzero exit or deadline refuses the build. Owned descendants must stop before
+nonzero exit or deadline refuses the build. On Linux, cleanup checks bounded `/proc` process and thread states after killing
+the owned group. Unreaped zombies count as exited; live threads, changing
+inventories and unreadable or unknown state do not prove quiescence. Other POSIX
+hosts retain the process-group disappearance check. A command that leaves a group
+may still fail conservatively even when its remaining members are zombies; their
+terminal state permits cleanup, not a successful build. A signaling failure remains
+attached as `cleanupError` without replacing the original command or abort error.
+Unconfirmed cleanup still refuses cache removal. Owned descendants must stop before
 cache removal. If exit cannot be confirmed, the operation fails and names the
 retained isolation directory. Filesystem operations cannot be preempted by a
 JavaScript timer; a timeout is a refusal boundary, not a hard operating-system

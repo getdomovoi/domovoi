@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process"
 import { createHash, randomUUID } from "node:crypto"
-import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { delimiter, dirname, join, resolve } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
@@ -143,8 +143,68 @@ export async function verifyReleaseReproducibility({ root = process.cwd(), direc
   return outer ? verify(outer) : bounded(timeoutMs, verify)
 }
 
+// Linux keeps unreaped zombies in process groups. They cannot execute, but a
+// zombie thread-group leader can still have live threads. This probe is used
+// only after SIGKILL of our entire group, never as permission to skip that kill.
+export async function linuxGroupHasLiveMembers(group, { procRoot = "/proc", check = () => {} } = {}) {
+  requireValue(Number.isSafeInteger(group) && group > 0, "Invalid owned process group")
+  const ids = async (directory) => {
+    check()
+    const entries = await readdir(directory)
+    check()
+    requireValue(entries.length <= 100_000, "Process inventory exceeds its bound")
+    return entries.filter((name) => /^[1-9]\d*$/u.test(name)).sort()
+  }
+  const state = async (directory, id) => {
+    check()
+    let file
+    try {
+      file = await open(join(directory, "stat"), "r")
+      const buffer = Buffer.alloc(8193)
+      const { bytesRead } = await file.read(buffer, 0, buffer.length, 0)
+      check()
+      requireValue(bytesRead <= 8192, "Invalid bounded process state")
+      const text = buffer.subarray(0, bytesRead).toString("utf8")
+      const end = text.lastIndexOf(") ")
+      const fields = text.slice(end + 2).trim().split(/\s+/u)
+      requireValue(text.startsWith(`${id} (`) && end > 0
+        && /^[RSDZTtWXxKPI]$/u.test(fields[0]) && /^\d+$/u.test(fields[1])
+        && /^\d+$/u.test(fields[2]) && Number.isSafeInteger(Number(fields[2])), "Invalid process state")
+      return { group: Number(fields[2]), terminal: ["Z", "X", "x"].includes(fields[0]) }
+    } catch (error) {
+      if (error.code === "ENOENT" || error.code === "ESRCH") return null
+      throw error
+    } finally { await file?.close() }
+  }
+  const before = await ids(procRoot)
+  for (const id of before) {
+    const directory = join(procRoot, id)
+    const leader = await state(directory, id)
+    if (!leader || leader.group !== group) continue
+    if (!leader.terminal) return true
+    let threads
+    try { threads = await ids(join(directory, "task")) }
+    catch (error) {
+      if ((error.code === "ENOENT" || error.code === "ESRCH") && !await state(directory, id)) continue
+      throw new Error("Could not inspect process threads", { cause: error })
+    }
+    requireValue(threads.length > 0, "Could not inspect process threads")
+    for (const thread of threads) {
+      const member = await state(join(directory, "task", thread), thread)
+      if (member?.group === group && !member.terminal) return true
+    }
+    // A changing inventory is uncertainty, not proof that every member exited.
+    try { if (!isDeepStrictEqual(threads, await ids(join(directory, "task")))) return true }
+    catch (error) {
+      if ((error.code === "ENOENT" || error.code === "ESRCH") && !await state(directory, id)) continue
+      throw new Error("Could not inspect process threads", { cause: error })
+    }
+  }
+  return !isDeepStrictEqual(before, await ids(procRoot))
+}
+
 // Release producers run on POSIX runners. A detached group contains only this
-// command and its descendants; caches are removable only after it is gone.
+// command and its descendants; caches require confirmed quiescence before removal.
 export async function runBuildCommand({ root, executable, args, env, deadline, cleanupTimeoutMs = 30_000 }) {
   requireValue(process.platform !== "win32", "Independent release producers require POSIX process groups")
   deadline.check()
@@ -154,6 +214,7 @@ export async function runBuildCommand({ root, executable, args, env, deadline, c
     const stderr = []
     let outputSize = 0
     let failure
+    let cleanupError
     let closed = false
     let finished = false
     let cleanupTimer
@@ -170,6 +231,7 @@ export async function runBuildCommand({ root, executable, args, env, deadline, c
       clearTimeout(poll)
       deadline.signal.removeEventListener("abort", abort)
       if (error) {
+        if (cleanupError) error.cleanupError = cleanupError
         error.command = args[0]
         error.stderr = Buffer.concat(stderr).toString("utf8")
         error.stdout = Buffer.concat(stdout).toString("utf8")
@@ -189,16 +251,22 @@ export async function runBuildCommand({ root, executable, args, env, deadline, c
       }, cleanupTimeoutMs)
       if (child.pid) {
         try { process.kill(-child.pid, "SIGKILL") }
-        catch (cause) { if (cause.code !== "ESRCH") failure = cause }
+        catch (cause) { if (cause.code !== "ESRCH") cleanupError ??= cause }
       }
     }
-    const checkClosed = () => {
+    const checkClosed = async () => {
       if (finished || !closed) return
       try {
         if (!groupExists()) { finish(failure); return }
-        stop(failure ?? new Error("Build command left running descendants"))
-        poll = setTimeout(checkClosed, 10)
-      } catch (error) { stop(error); poll = setTimeout(checkClosed, 10) }
+        stop(failure ?? new Error("Build command retained a process group"))
+        if (process.platform === "linux" && !await linuxGroupHasLiveMembers(child.pid, {
+          check: () => { if (finished) throw new Error("Build cleanup inspection ended") },
+        })) {
+          if (!finished) finish(failure)
+          return
+        }
+        if (!finished) poll = setTimeout(checkClosed, 10)
+      } catch (error) { if (!finished) { stop(error); poll = setTimeout(checkClosed, 10) } }
     }
     const abort = () => stop(deadline.signal.reason)
     deadline.signal.addEventListener("abort", abort, { once: true })

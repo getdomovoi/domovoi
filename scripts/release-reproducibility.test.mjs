@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { createHash } from "node:crypto"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
@@ -153,6 +154,122 @@ test("a failed build command refuses and an aborted command stops its owned desc
   const after = await readFile(marker)
   await new Promise((resolve) => setTimeout(resolve, 30))
   assert.deepEqual(await readFile(marker), after, "descendants cannot continue writing after cleanup is permitted")
+})
+
+test("cleanup signal errors preserve abort and still require confirmed quiescence", { timeout: 15_000 }, async (t) => {
+  if (process.platform === "win32") { t.skip("POSIX process-group contract"); return }
+  const { runBuildCommand, linuxGroupHasLiveMembers } = await import("./release-reproducibility.mjs")
+  const { bootstrapDeadline } = await import("./bootstrap-deadline.mjs")
+  for (const unconfirmed of [false, true]) await t.test(unconfirmed ? "unknown cleanup" : "confirmed cleanup", async (t) => {
+    const root = await mkdtemp(join(tmpdir(), "domovoi-signal-error-"))
+    const marker = join(root, "ready")
+    const controller = new AbortController()
+    const wait = bootstrapDeadline(5000, "test cleanup deadline")
+    const actualKill = process.kill.bind(process)
+    let group
+    let killed = false
+    let probe = 0
+    let signalErrors = 0
+    const killMock = t.mock.method(process, "kill", (pid, signal) => {
+      if (pid < 0 && signal === "SIGKILL") {
+        group = -pid
+        if (!killed) { const result = actualKill(pid, signal); killed = true; return result }
+        signalErrors++
+        throw Object.assign(new Error("synthetic signal denial"), { code: "EPERM" })
+      }
+      if (pid === -group && signal === 0 && killed) {
+        if (unconfirmed) throw Object.assign(new Error("synthetic visibility denial"), { code: "EPERM" })
+        if (probe++ === 0) return true
+      }
+      return actualKill(pid, signal)
+    })
+    const running = runBuildCommand({ root, executable: process.execPath,
+      args: ["-e", `require('node:fs').writeFileSync(${JSON.stringify(marker)},'ready');setInterval(()=>{},1000)`],
+      env: process.env, deadline: { signal: controller.signal, check: () => controller.signal.throwIfAborted() }, cleanupTimeoutMs: 100 })
+    running.catch(() => {})
+    t.after(async () => {
+      controller.abort(new Error("test teardown"))
+      await running.catch(() => {})
+      killMock.mock.restore()
+      try {
+        if (group) {
+          try {
+            actualKill(-group, 0)
+            assert.equal(process.platform, "linux", "owned group must be absent on this host")
+            assert.equal(await linuxGroupHasLiveMembers(group, { check: () => wait.check() }), false)
+          } catch (error) { if (error.code !== "ESRCH") throw error }
+        }
+        await rm(root, { recursive: true, force: true })
+      } finally { wait.clear() }
+    })
+    for (;;) {
+      wait.check()
+      try { if (await readFile(marker, "utf8") === "ready") break } catch (error) { if (error.code !== "ENOENT") throw error }
+      await new Promise((resolve) => setTimeout(resolve, 5))
+    }
+    controller.abort(new Error("primary synthetic abort"))
+    await assert.rejects(running, (error) => {
+      assert.equal(signalErrors > 0, true)
+      if (unconfirmed) {
+        assert.equal(error.unconfirmedChildren, true)
+        assert.equal(error.cause.message, "primary synthetic abort")
+      } else {
+        assert.equal(error.message, "primary synthetic abort")
+        assert.equal(error.unconfirmedChildren, undefined)
+      }
+      assert.equal(error.cleanupError?.code, "EPERM", "cleanup signal failure remains observable")
+      return true
+    })
+  })
+})
+
+test("Linux cleanup distinguishes zombie groups, live threads and unknown state", async (t) => {
+  const { linuxGroupHasLiveMembers } = await import("./release-reproducibility.mjs")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-proc-fixture-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const record = (pid, state, group = 42) => `${pid} (synthetic ) task) ${state} 1 ${group} 42 0 0 0\n`
+  await mkdir(join(root, "42/task/42"), { recursive: true })
+  await writeFile(join(root, "42/stat"), record(42, "Z"))
+  await writeFile(join(root, "42/task/42/stat"), record(42, "Z"))
+  assert.equal(await linuxGroupHasLiveMembers(42, { procRoot: root }), false, "zombie-only group cannot execute or write")
+  await mkdir(join(root, "42/task/43"))
+  await writeFile(join(root, "42/task/43/stat"), record(43, "S"))
+  assert.equal(await linuxGroupHasLiveMembers(42, { procRoot: root }), true, "zombie leader does not hide a live thread")
+  await writeFile(join(root, "42/task/43/stat"), record(43, "X"))
+  assert.equal(await linuxGroupHasLiveMembers(42, { procRoot: root }), false)
+  await mkdir(join(root, "77"))
+  await writeFile(join(root, "77/stat"), record(77, "R", 0))
+  assert.equal(await linuxGroupHasLiveMembers(42, { procRoot: root }), false, "unrelated live group does not block cleanup")
+  await writeFile(join(root, "42/task/43/stat"), record(43, "?"))
+  await assert.rejects(linuxGroupHasLiveMembers(42, { procRoot: root }), /process state/)
+  await writeFile(join(root, "42/task/43/stat"), "malformed")
+  await assert.rejects(linuxGroupHasLiveMembers(42, { procRoot: root }), /process state/)
+  await rm(join(root, "42/task/43/stat"))
+  await mkdir(join(root, "42/task/43/stat"))
+  await assert.rejects(linuxGroupHasLiveMembers(42, { procRoot: root }), /EISDIR/)
+  await rm(join(root, "42/task"), { recursive: true })
+  await assert.rejects(linuxGroupHasLiveMembers(42, { procRoot: root }), /inspect process threads/)
+  await mkdir(join(root, "42/task"))
+  await assert.rejects(linuxGroupHasLiveMembers(42, { procRoot: root }), /inspect process threads/)
+})
+
+test("Linux cleanup refuses a changing process snapshot and an expired inspection", async (t) => {
+  const { linuxGroupHasLiveMembers } = await import("./release-reproducibility.mjs")
+  const root = await mkdtemp(join(tmpdir(), "domovoi-proc-race-"))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(join(root, "42/task/42"), { recursive: true })
+  await writeFile(join(root, "42/stat"), "42 (old parent) Z 1 42 42\n")
+  await writeFile(join(root, "42/task/42/stat"), "42 (old parent) Z 1 42 42\n")
+  let checks = 0
+  assert.equal(await linuxGroupHasLiveMembers(42, { procRoot: root, check: () => {
+    if (++checks === 3) {
+      mkdirSync(join(root, "43"))
+      writeFileSync(join(root, "43/stat"), "43 (new child) R 1 42 42\n")
+    }
+  } }), true, "a child appearing after the initial list prevents terminal-only acceptance")
+  await assert.rejects(linuxGroupHasLiveMembers(42, { procRoot: root, check: () => {
+    throw new Error("cleanup deadline")
+  } }), /cleanup deadline/)
 })
 
 test("observed Node component versions retain empty and build-metadata values", async (t) => {
