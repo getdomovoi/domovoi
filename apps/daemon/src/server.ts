@@ -6305,6 +6305,7 @@ export class DomovoiDaemon {
       handheld?.binding.kind === "client"
       && handheld.binding.clientAccess === "watching"
       && rpcMethodAuthorizations[method] === "control"
+      && method !== "device.revokeCurrent"
     ) {
       this.#error(socket, request.id, daemonAuthenticationErrorCode, "Watching-only credentials may only observe")
       return
@@ -6760,22 +6761,28 @@ export class DomovoiDaemon {
         this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result })
         return
       }
-      if (method === "fleet.heartbeat" || method === "device.revokeCurrent") {
+      if (method === "fleet.heartbeat") {
         const credential = this.#deviceCredentials.get(socket)?.verified
         if (authenticatedActor?.kind !== "machine" || credential?.binding.kind !== "machine") {
           this.#error(socket, request.id, daemonAuthenticationErrorCode, "This method requires a machine-paired credential")
           return
         }
-        if (method === "fleet.heartbeat") {
-          this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: this.#machineDescriptor() })
-        } else {
-          this.#store.devices!.revoke(credential.device.id)
-          this.#amendPendingAudit(socket, request.id, { target: credential.device.id })
-          // The response precedes the close frame so the source can distinguish
-          // confirmed revocation from an ambiguous disconnected socket.
-          this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: { revoked: true } })
-          this.#disconnectInactiveDevices()
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: this.#machineDescriptor() })
+        return
+      }
+      if (method === "device.revokeCurrent") {
+        const credential = this.#deviceCredentials.get(socket)?.verified
+        if (!credential) {
+          this.#error(socket, request.id, daemonAuthenticationErrorCode, "This method requires a paired credential")
+          return
         }
+        // No caller-supplied identity can select the target of self-revocation.
+        this.#store.devices!.revoke(credential.device.id)
+        this.#amendPendingAudit(socket, request.id, { target: credential.device.id })
+        // The response precedes the close frame so the source can distinguish
+        // confirmed revocation from an ambiguous disconnected socket.
+        this.#sendResult(socket, method, { jsonrpc: "2.0", id: request.id, result: { revoked: true } })
+        this.#disconnectInactiveDevices()
         return
       }
       if (method === "system.emergencyStop") {

@@ -107,11 +107,13 @@ describe("a phone-scoped credential", () => {
       expect(reply, method).toHaveProperty("error")
       expect(errorMessage(reply), method).toMatch(refusal)
     }
+    expect([...phoneAndTabletRpcMethods].filter((method) => method.startsWith("device.")).sort())
+      .toEqual(["device.current", "device.revokeCurrent"])
     // What the card names is never turned away for being a phone. A request
     // with empty parameters may still fail its own checks; that failure is
     // not the scope refusal.
     for (const method of phoneAndTabletRpcMethods) {
-      if (method === "system.hello") continue
+      if (method === "system.hello" || method === "device.revokeCurrent") continue
       const reply = await call(phone, method, {})
       expect(errorMessage(reply), method).not.toMatch(refusal)
     }
@@ -131,5 +133,6 @@ describe("a phone-scoped credential", () => {
     const listed = await call(owner, "device.list", {})
     const devices = (listed.result as { devices: { id: string, revokedAt?: string }[] }).devices
     expect(devices.filter((entry) => entry.revokedAt === undefined).map((entry) => entry.id)).toEqual([device.id])
+    expect(await call(phone, "device.revokeCurrent", {})).toMatchObject({ result: { revoked: true } })
   })
 })

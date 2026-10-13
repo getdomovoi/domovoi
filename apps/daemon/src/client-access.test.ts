@@ -54,7 +54,7 @@ afterEach(async () => {
 })
 
 describe("watching client access", () => {
-  it("refuses every control method before parsing parameters and permits every observe method", async () => {
+  it("refuses every other control method and permits observation before self-revocation", async () => {
     const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:" })
     daemons.push(daemon)
     await daemon.start()
@@ -84,7 +84,7 @@ describe("watching client access", () => {
 
     const refusal = /Watching-only credentials may only observe/
     const methods = Object.keys(rpcMethods) as RpcMethod[]
-    for (const method of methods.filter((candidate) => rpcMethodAuthorizations[candidate] === "control")) {
+    for (const method of methods.filter((candidate) => rpcMethodAuthorizations[candidate] === "control" && candidate !== "device.revokeCurrent")) {
       const reply = await watching(method, {})
       expect(errorMessage(reply), method).toMatch(refusal)
     }
@@ -93,6 +93,8 @@ describe("watching client access", () => {
       const reply = await watching(method, {})
       expect(errorMessage(reply), method).not.toMatch(refusal)
     }
+    expect(await watching("device.revokeCurrent", { deviceId: "other" })).toMatchObject({ error: { code: -32602 } })
+    expect(await watching("device.revokeCurrent", {})).toMatchObject({ result: { revoked: true } })
   })
 
   it.each(["terminal.create", "terminal.claim", "terminal.input", "terminal.resize", "terminal.close"] as const)(
