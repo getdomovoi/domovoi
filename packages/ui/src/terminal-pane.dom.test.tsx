@@ -962,6 +962,16 @@ describe("TerminalPane on a watching desktop", () => {
     expect(screen.getAllByText(handheldReason)).toHaveLength(1)
   })
 
+  it("offers no terminal to start when no session is active", () => {
+    const target = watcher()
+    render(<TerminalPane connected readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={null} />)
+
+    expect(screen.getByText("No active session")).toBeTruthy()
+    expect(screen.getByText("Open a session to read its shell.")).toBeTruthy()
+    expect(screen.getByText(handheldReason)).toBeTruthy()
+    expect(screen.queryByText(/before starting its terminal/u)).toBeNull()
+  })
+
   it("keeps the reason on screen while disconnected", () => {
     const target = watcher()
     render(<TerminalPane connected={false} readOnly readOnlyReason={handheldReason} controls={target.controls} machineName="worktop" sessionId={sessionId} />)

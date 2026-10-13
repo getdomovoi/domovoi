@@ -438,7 +438,12 @@ export function TerminalPane({
         <EmptyHeader>
           <EmptyMedia variant="icon"><TerminalSquareIcon /></EmptyMedia>
           <EmptyTitle>No active session</EmptyTitle>
-          <EmptyDescription>Open a session before starting its terminal.</EmptyDescription>
+          {reason !== undefined ? (
+            <>
+              <EmptyDescription>Open a session to read its shell.</EmptyDescription>
+              <EmptyDescription>{reason}</EmptyDescription>
+            </>
+          ) : <EmptyDescription>Open a session before starting its terminal.</EmptyDescription>}
         </EmptyHeader>
       </Empty>
     )
