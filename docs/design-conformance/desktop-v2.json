@@ -163,7 +163,8 @@
           "absent": "attached ? \"remote\" : \"local\"",
           "in": "packages/ui/src/workspace-shell.tsx"
         },
-        "machineTransport={!connected ? \"unreachable\" : !attached ? machineRoute(endpointUrl)",
+        "const chipRoute = !attached ? machineRoute(endpointUrl)",
+        "machineTransport={!connected ? \"unreachable\" : chipRoute}",
         "if (isTailnetHost(name)) return \"tailnet\""
       ],
       "notes": [

@@ -213,8 +213,9 @@ export type WorkspaceShellProps = {
   currentDeviceId?: string
   onSignedOut?: (result: { revoked: true }) => void
   // Q367 A: the web's limits page, opened from the palette and handed the
-  // control that opened the palette, so focus can go back to it.
-  onOpenBrowserLimits?: ((opener: HTMLElement | null) => void) | undefined
+  // control that opened the palette, so focus can go back to it, and the
+  // route the machine chip names (undefined while it is not resolved).
+  onOpenBrowserLimits?: ((opener: HTMLElement | null, route: ReturnType<typeof machineRoute> | undefined) => void) | undefined
   // Where this client keeps each daemon's relay identity pin. Absent means no
   // pin is kept and none is reconciled; the web passes localStorage.
   relayPinStorage?: RelayPinStorage
@@ -1189,6 +1190,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       : null
     setCommandPaletteOpen(true)
   }
+  // The machine chip's route word, which the browser limits also name: the
+  // home endpoint's route, or an attached machine's once its own route
+  // answers for this attach.
+  const chipRoute = !attached ? machineRoute(endpointUrl) : dialedRoute?.epoch === attachEpoch ? machineRoute(endpointUrl, dialedRoute.kind) : undefined
   const rawWorkspaceCommands = buildWorkspaceCommands({
     ...((windowBridge || platform) && activeWorkspacePath && !attached ? {
       activeWorkspacePath,
@@ -1235,7 +1240,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     } : {}),
     // The pairing card is in the desktop's own settings, for its own daemon.
     ...(clientKind === "desktop" && !attached ? { pairDevice: () => setSurface("providers") } : {}),
-    ...(onOpenBrowserLimits ? { openBrowserLimits: () => onOpenBrowserLimits(commandPaletteFocusRef.current) } : {}),
+    ...(onOpenBrowserLimits ? { openBrowserLimits: () => onOpenBrowserLimits(commandPaletteFocusRef.current, chipRoute) } : {}),
     shortcutsBound: workspaceShortcutsBound,
     // Cmd+Enter on a machine starts a session there: attach to that daemon,
     // then open the launcher on it. The intent names the machine, and the
@@ -1713,7 +1718,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     >
     <TooltipProvider>
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
-        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" }))} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={!connected ? "unreachable" : !attached ? machineRoute(endpointUrl) : dialedRoute?.epoch === attachEpoch ? machineRoute(endpointUrl, dialedRoute.kind) : undefined} theme={resolvedTheme} />
+        <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" }))} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={!connected ? "unreachable" : chipRoute} theme={resolvedTheme} />
         {/* The thread column draws the lost banner at its own top, as the
             design does. Without one it spans the window here. */}
         <ShellConnectionStatus threadColumn={Boolean(snapshot) && surface === "workspace" && !startRefusal} />

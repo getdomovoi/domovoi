@@ -79,7 +79,8 @@ it("names an SSH forward to an attached machine as ssh, not loopback", async () 
     verifiedRoute: { endpoint: "wss://studio.example:47831/rpc", lastAuthenticatedAt: observedAt },
     transports: [transport],
   }
-  render(<WorkspaceShell />)
+  const limitsRoutes: unknown[] = []
+  render(<WorkspaceShell onOpenBrowserLimits={(_opener, route) => limitsRoutes.push(route)} />)
   const home = harness.socket(0)
   await act(async () => { completeHandshake(home) })
   await settle()
@@ -110,6 +111,13 @@ it("names an SSH forward to an attached machine as ssh, not loopback", async () 
   await settle()
   const chip = () => screen.getByRole("button", { name: "Machines: Studio" })
   expect(chip().textContent).toMatch(/Studiossh$/u)
+
+  // The browser limits opened now name the chip's route, not the home
+  // endpoint's loopback (the page reads ssh as the route).
+  await user.click(screen.getByRole("button", { name: "Open command palette" }))
+  await user.type(await screen.findByRole("combobox"), "what a browser tab")
+  await user.keyboard("{Enter}")
+  expect(limitsRoutes).toEqual(["ssh"])
 
   // Choosing the attached machine again keeps its connection, so the word
   // stays with it.

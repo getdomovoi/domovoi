@@ -3,6 +3,7 @@ import { act, useEffect, useState } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import type { LimitsRoute } from "./browser-limits"
 import type { BrowserPlatformEnvironment } from "./browser-platform"
 import type { BearerPairingClient, CodePairingClient, PairingClientFactory } from "./daemon-pairing"
 import { WebApp, type WebAppProps } from "./web-app"
@@ -670,7 +671,8 @@ describe("WebApp", () => {
 describe("limits from the workspace", () => {
   // The shell binds its shortcuts on the window, as this stand-in does.
   const shortcut = vi.fn()
-  function Workspace({ onOpenLimits, onChangeCredential }: { onOpenLimits: (opener: HTMLElement | null) => void; onChangeCredential: () => void }) {
+  type OpenLimits = (opener: HTMLElement | null, route: LimitsRoute | undefined) => void
+  function Workspace({ onOpenLimits, onChangeCredential }: { onOpenLimits: OpenLimits; onChangeCredential: () => void }) {
     const [count, setCount] = useState(0)
     useEffect(() => {
       const onKeyDown = (event: KeyboardEvent) => { if (event.key === "k" && event.ctrlKey) shortcut() }
@@ -681,7 +683,7 @@ describe("limits from the workspace", () => {
       <main>
         <p>Workspace open, count {count}</p>
         <button type="button" onClick={() => setCount((value) => value + 1)}>Count</button>
-        <button type="button" onClick={(event) => onOpenLimits(event.currentTarget)}>Limits</button>
+        <button type="button" onClick={(event) => onOpenLimits(event.currentTarget, "loopback")}>Limits</button>
         <button type="button" onClick={onChangeCredential}>Change credential</button>
       </main>
     )
@@ -743,7 +745,7 @@ describe("limits from the workspace", () => {
   // Chosen again from the palette while it is open, the dialog keeps the
   // control that first opened it, not one inside the dialog.
   it("keeps the first opener when the limits are asked for again while open", async () => {
-    let open: ((opener: HTMLElement | null) => void) | undefined
+    let open: OpenLimits | undefined
     const storage = memoryStorage()
     storage.setItem("domovoi.daemon-session", JSON.stringify({ deviceId, token: deviceToken }))
     storage.setItem("domovoi.web.limitsSeen", "1")
@@ -754,14 +756,39 @@ describe("limits from the workspace", () => {
       )
     })
     const first = button("First opener")
-    await act(async () => { open!(first) })
+    await act(async () => { open!(first, "loopback") })
     await settle()
-    await act(async () => { open!(dialogButton("Back")) })
+    await act(async () => { open!(dialogButton("Back"), "loopback") })
     await settle()
     await act(async () => { dialogButton("Back").click() })
     await settle()
     expect(limitsDialog()).toBeNull()
     expect(document.activeElement).toBe(first)
+  })
+
+  // The rows describe the route the session is on, as the shell's chip names
+  // it: attached over the tailnet says so, over SSH or still unresolved says
+  // the route, and the home loopback stays loopback.
+  it.each([
+    ["tailnet", "over the tailnet."],
+    ["ssh", "over the route."],
+    [undefined, "over the route."],
+    ["loopback", "over loopback."],
+  ] as const)("describes the session's route %s in the rows", async (route, words) => {
+    let open: OpenLimits | undefined
+    const storage = memoryStorage()
+    storage.setItem("domovoi.daemon-session", JSON.stringify({ deviceId, token: deviceToken }))
+    storage.setItem("domovoi.web.limitsSeen", "1")
+    await act(async () => {
+      root.render(
+        <WebApp rpcUrl={rpcUrl} pageOrigin={loopbackPage} clientKind="web" environment={environment} storage={storage} createClient={vi.fn()} labelSuffix={() => "1234"}
+          workspace={({ onOpenLimits }) => { open = onOpenLimits; return <button type="button">Opener</button> }} />,
+      )
+    })
+    await act(async () => { open!(button("Opener"), route) })
+    await settle()
+    const watch = [...(limitsDialog()?.querySelectorAll("li") ?? [])].find((item) => item.textContent?.includes("Watch a session live"))
+    expect(watch?.textContent).toContain(`The daemon streams the thread and the plan ${words}`)
   })
 
   // The session's own window shortcuts are its business while the dialog is
