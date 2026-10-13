@@ -377,3 +377,16 @@ describe("createDesktopWindowBridge", () => {
     expect(target.invoke).not.toHaveBeenCalled()
   })
 })
+
+it("carries a plain supervisor report without interpreting its fields", async () => {
+  const target = ipc()
+  const supervisor = { crashCount: 4, supervisionFailure: "exhausted", lastExit: "code 9" }
+  target.invoke.mockResolvedValue({ installed: true, running: false, detail: "exhausted", supervisor })
+  expect(await createDesktopWindowBridge(target, "win32").daemonService!.status()).toEqual({ installed: true, running: false, detail: "exhausted", supervisor })
+})
+
+it.each([null, [], () => {}, 3, "record", new Date(), Object.create({ crashCount: 4 })])("drops a non-plain supervisor report: %s", async (supervisor) => {
+  const target = ipc()
+  target.invoke.mockResolvedValue({ installed: true, running: false, detail: "unknown", supervisor })
+  expect(await createDesktopWindowBridge(target, "win32").daemonService!.status()).not.toHaveProperty("supervisor")
+})

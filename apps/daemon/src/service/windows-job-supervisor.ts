@@ -78,7 +78,18 @@ export function windowsSupervisorStatus(record: WindowsSupervisorRecord, bootId:
               : running ? `daemon running; attempt ${record.attempts.length}; ${record.crashes} crashes`
                 : `supervisor ${record.state}; daemon readiness unconfirmed`
   const supervising = record.loop.bootId === bootId && loopAlive && !["stopped", "failed", "exhausted"].includes(record.state)
-  return { installed: null, running, supervising, detail: observed, ...(failure ? { supervisionFailure: failure } : {}) }
+  const exited = record.attempts.findLast((attempt) => attempt.exitCode !== null)
+  // GetProcessTimes records creation in 100 ns intervals since 1601. Keep
+  // arithmetic exact before converting to milliseconds; attempt.startedAt
+  // is launch intent, not process birth.
+  const child = running ? last?.child : undefined
+  const milliseconds = child ? Number(BigInt(child.start) / 10_000n - 11_644_473_600_000n) : NaN
+  const startedAt = Number.isSafeInteger(milliseconds) && milliseconds >= 0 && milliseconds <= 8_640_000_000_000_000
+    ? new Date(milliseconds).toISOString() : undefined
+  return { installed: null, running, supervising, detail: observed, crashCount: record.crashes,
+    ...(exited ? { lastExit: `code ${exited.exitCode}` } : {}),
+    ...(child ? { pid: child.pid } : {}), ...(startedAt === undefined ? {} : { startedAt }),
+    ...(failure ? { supervisionFailure: failure } : {}) }
 }
 
 // Windows MoveFileEx can refuse replacement while status or stop readers, or
