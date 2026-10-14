@@ -1,16 +1,22 @@
 import { act, cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { useLayoutEffect, useRef } from "react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
 
 import { AppBar } from "./app-bar"
 import { DaemonLostBanner } from "./connection-status"
+import { SessionsDrawerColumn } from "./sessions-drawer"
 import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
 import {
   completeHandshake,
   installFakeWebSocket,
+  notify,
+  pendingRequest,
+  respond,
+  sentRequests,
   workspaceSnapshot,
   type FakeWebSocketHarness,
 } from "./test-support/fake-websocket"
@@ -18,7 +24,8 @@ import {
 // A tab narrower than 640 px (Tailwind's sm, 40rem), such as a phone at 390
 // or 360 px. jsdom lays nothing out, so the width rules are read from the
 // classes that carry them; the browser check in the pull request measures the
-// boxes.
+// boxes. The sessions drawer follows the same breakpoint through matchMedia,
+// stubbed below.
 
 let harness: FakeWebSocketHarness
 
@@ -34,6 +41,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   harness.uninstall()
+  vi.unstubAllGlobals()
   vi.restoreAllMocks()
 })
 
@@ -143,4 +151,254 @@ it("below 640 px the lost banner keeps its words on most of the line", () => {
   )
   const words = screen.getByText("Lost the daemon on macbook-pro-m3").closest("span.flex")
   expect(classes(words)).toContain("max-sm:min-w-[60%]")
+  // The thread column draws the banner at its top. Below 640 px the sessions
+  // drawer can cover that column (z-50, the thread made inert); the covered
+  // banner paints above it, drawn later at the same level, so the loss stays
+  // in view.
+  expect(classes(screen.getByRole("status"))).toEqual(expect.arrayContaining(["inert:relative", "inert:z-50"]))
+})
+
+// The sessions drawer below 640 px. Beside the 268 px column a phone's thread
+// kept about 120 px, so there the open column covers the thread instead of
+// pushing it. Whatever it covers is inert, so no focus, Tab, key press or tap
+// reaches a covered approval card while the column hides its facts.
+
+const narrowQuery = "(width < 40rem)"
+
+// Returns a resize: it changes the answer and tells the listeners, as a
+// browser does when the tab crosses the breakpoint.
+function stubWidth(narrow: boolean) {
+  const listeners = new Set<() => void>()
+  vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
+    get matches() { return query === narrowQuery ? narrow : false },
+    media: query,
+    onchange: null,
+    addEventListener: (_type: string, listener: () => void) => { if (query === narrowQuery) listeners.add(listener) },
+    removeEventListener: (_type: string, listener: () => void) => { listeners.delete(listener) },
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  })))
+  return (next: boolean) => {
+    narrow = next
+    for (const listener of listeners) listener()
+  }
+}
+
+// The rest of the drawer's row: the surface it covers in a narrow tab.
+function besideDrawer(): Element[] {
+  const drawer = document.getElementById("sessions-drawer")
+  const row = drawer?.parentElement
+  if (!drawer || !row) return []
+  return [...row.children].filter((child) => child !== drawer && !child.hasAttribute("data-sessions-backdrop"))
+}
+
+const sessionsButton = () => screen.getByRole("button", { name: /^(Sessions|Hide sessions) \d/ })
+const allowOnce = () => screen.getByRole("button", { name: /^Allow once/ })
+
+// Runs a step outside act, as a browser runs it: act would flush every
+// pending effect first and hide a window a key press can hit.
+async function outsideAct(step: () => Promise<void>) {
+  const reactGlobal = globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean | undefined }
+  const actEnvironment = reactGlobal.IS_REACT_ACT_ENVIRONMENT
+  reactGlobal.IS_REACT_ACT_ENVIRONMENT = false
+  try {
+    await step()
+  } finally {
+    reactGlobal.IS_REACT_ACT_ENVIRONMENT = actEnvironment
+  }
+  await settle()
+}
+
+it("below 640 px the open drawer covers the thread, and the covered thread is inert", async () => {
+  stubWidth(true)
+  const user = userEvent.setup()
+  await openShell()
+  expect(allowOnce().closest("[inert]")).toBeNull()
+  await user.click(sessionsButton())
+  const drawer = screen.getByRole("complementary", { name: "Sessions" })
+  expect(classes(drawer)).toEqual(expect.arrayContaining(["absolute", "inset-y-0", "left-0"]))
+  // The row is the overlay's anchor, below the app bar.
+  expect(classes(drawer.parentElement)).toContain("max-sm:relative")
+  const covered = besideDrawer()
+  expect(covered.length).toBeGreaterThan(0)
+  for (const element of covered) expect(element.hasAttribute("inert")).toBe(true)
+  expect(allowOnce().closest("[inert]")).not.toBeNull()
+  expect(drawer.closest("[inert]")).toBeNull()
+  // The waiting approval stays in view: its session heads the drawer's NEEDS
+  // YOU group.
+  expect(screen.getByRole("region", { name: "NEEDS YOU" })).toBeTruthy()
+})
+
+it("below 640 px Escape, a tap on the uncovered strip, or choosing a session closes the drawer and returns focus to Sessions", async () => {
+  stubWidth(true)
+  const user = userEvent.setup()
+  const { snapshot, socket } = await openShell()
+
+  await user.click(sessionsButton())
+  screen.getByRole("complementary", { name: "Sessions" }).querySelector("button")!.focus()
+  await user.keyboard("{Escape}")
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+  expect(document.activeElement).toBe(sessionsButton())
+  expect(sessionsButton().getAttribute("aria-expanded")).toBe("false")
+  expect(allowOnce().closest("[inert]")).toBeNull()
+
+  await user.click(sessionsButton())
+  const backdrop = document.querySelector("[data-sessions-backdrop]")
+  expect(backdrop).toBeTruthy()
+  // Above the thread's own raised controls (z-10, such as its follow button)
+  // and the unpinned dock sheet (z-40); the column, drawn after it at the same
+  // level, stays on top.
+  expect(classes(backdrop)).toContain("z-50")
+  expect(classes(screen.getByRole("complementary", { name: "Sessions" }))).toContain("z-50")
+  expect(backdrop?.closest("[inert]")).toBeNull()
+  await user.click(backdrop as HTMLElement)
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+  expect(document.activeElement).toBe(sessionsButton())
+
+  await user.click(sessionsButton())
+  const other = snapshot.sessions.find((session) => session.id !== snapshot.activeSessionId)!
+  await user.click(screen.getByRole("button", { name: new RegExp(`^${other.title.slice(0, 24)}`) }))
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+  expect(document.activeElement).toBe(sessionsButton())
+  expect(pendingRequest(socket, "session.activate").params).toMatchObject({ sessionId: other.id })
+  await act(async () => { respond(socket, "session.activate", workspaceSnapshot({ activeSessionId: other.id })) })
+  await settle()
+})
+
+// The path that beat close-on-event three times: Allow once focused in a wide
+// tab with the drawer open, then the tab narrows. The commit that turns the
+// column into a cover also makes the thread inert and moves focus out of it,
+// so the first key press after the resize cannot approve.
+it("narrowing past 640 px with Allow once focused makes the thread inert and moves focus out in the same commit", async () => {
+  const resize = stubWidth(false)
+  const user = userEvent.setup()
+  const { socket } = await openShell()
+  await user.click(sessionsButton())
+  const allow = allowOnce()
+  act(() => { allow.focus() })
+  expect(document.activeElement).toBe(allow)
+
+  await outsideAct(async () => {
+    resize(true)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(document.getElementById("sessions-drawer")).not.toBeNull()
+    expect(allow.closest("[inert]")).not.toBeNull()
+    expect(document.activeElement).toBe(sessionsButton())
+    await user.keyboard(" ")
+    await user.keyboard("{Enter}")
+  })
+  expect(sentRequests(socket, "approval.resolve")).toHaveLength(0)
+})
+
+// A resize commits on React's sync lane, whose passive effects also run before
+// the browser takes the next input, so the test above cannot tell a layout
+// effect from a passive one. Other commits defer passive effects to a later
+// task. This probe sits beside the column, as the thread does, and reads its
+// own state from its layout effect, which runs after the column's in the same
+// commit and before any passive effect: the cover and the inert thread arrive
+// together, whatever lane drew them.
+it("the covered thread is inert and has lost focus by the layout phase of the commit that draws the cover", async () => {
+  stubWidth(true)
+  const seen: { inert: boolean; focused: boolean }[] = []
+  function Beside() {
+    const ref = useRef<HTMLButtonElement | null>(null)
+    useLayoutEffect(() => {
+      const button = ref.current
+      if (button) seen.push({ inert: button.closest("[inert]") !== null, focused: document.activeElement === button })
+    })
+    return <div><button ref={ref} type="button" autoFocus={false}>Allow once</button></div>
+  }
+  function Row({ open }: { open: boolean }) {
+    return (
+      <div className="flex max-sm:relative">
+        <SessionsDrawerColumn snapshot={workspaceSnapshot()} open={open} onOpenChange={vi.fn()} onActivate={vi.fn()} />
+        <Beside />
+      </div>
+    )
+  }
+  const view = render(<Row open={false} />)
+  act(() => { screen.getByRole("button", { name: "Allow once" }).focus() })
+  seen.length = 0
+  view.rerender(<Row open />)
+  expect(seen).toEqual([{ inert: true, focused: false }])
+})
+
+it("below 640 px an approval that arrives under the open drawer takes no focus and cannot be acted on until it closes", async () => {
+  stubWidth(true)
+  const user = userEvent.setup()
+  render(<WorkspaceShell />)
+  const socket = harness.socket(0)
+  await act(async () => { completeHandshake(socket, workspaceSnapshot({ approvals: [] })) })
+  await settle()
+  expect(screen.queryByRole("button", { name: /^Allow once/ })).toBeNull()
+  await user.click(sessionsButton())
+  const opener = document.activeElement
+
+  await act(async () => { notify(socket, "workspace.changed", workspaceSnapshot()) })
+  await settle()
+  const allow = allowOnce()
+  expect(allow.closest("[inert]")).not.toBeNull()
+  expect(document.activeElement).toBe(opener)
+  expect(screen.getByRole("region", { name: "NEEDS YOU" })).toBeTruthy()
+
+  await user.keyboard("{Escape}")
+  expect(allow.closest("[inert]")).toBeNull()
+  await user.click(allow)
+  expect(sentRequests(socket, "approval.resolve")).toHaveLength(1)
+})
+
+it("below 640 px a row menu and the command palette open over the drawer, outside what it covers", async () => {
+  stubWidth(true)
+  const user = userEvent.setup()
+  const { snapshot } = await openShell()
+  await user.click(sessionsButton())
+  await user.click(screen.getByRole("button", { name: `Actions for ${snapshot.sessions[0]!.title}` }))
+  const menu = screen.getByRole("menu")
+  expect(menu.closest("[inert]")).toBeNull()
+  // The open menu hides the rest of the page from the accessibility tree, so
+  // the column is found by its id here. The menu takes its own Escape.
+  await user.keyboard("{Escape}")
+  expect(screen.queryByRole("menu")).toBeNull()
+  expect(document.getElementById("sessions-drawer")).not.toBeNull()
+
+  await user.click(screen.getByRole("button", { name: "Open command palette" }))
+  const palette = await screen.findByRole("dialog")
+  expect(palette.closest("[inert]")).toBeNull()
+  expect(palette.contains(document.activeElement)).toBe(true)
+  await user.keyboard("{Escape}")
+  expect(screen.queryByRole("dialog")).toBeNull()
+  expect(document.getElementById("sessions-drawer")).not.toBeNull()
+  expect(allowOnce().closest("[inert]")).not.toBeNull()
+})
+
+it("widening past 640 px with the drawer open turns it back into a column and frees the thread", async () => {
+  const resize = stubWidth(true)
+  const user = userEvent.setup()
+  await openShell()
+  await user.click(sessionsButton())
+  expect(allowOnce().closest("[inert]")).not.toBeNull()
+  act(() => { resize(false) })
+  const drawer = screen.getByRole("complementary", { name: "Sessions" })
+  expect(classes(drawer)).not.toContain("absolute")
+  expect(document.querySelector("[data-sessions-backdrop]")).toBeNull()
+  for (const element of besideDrawer()) expect(element.hasAttribute("inert")).toBe(false)
+})
+
+it("at 640 px and wider the drawer stays a column: nothing is inert, and Escape or choosing a session leave it open", async () => {
+  stubWidth(false)
+  const user = userEvent.setup()
+  const { snapshot, socket } = await openShell()
+  await user.click(sessionsButton())
+  expect(document.querySelector("[data-sessions-backdrop]")).toBeNull()
+  expect(classes(screen.getByRole("complementary", { name: "Sessions" }))).not.toContain("absolute")
+  for (const element of besideDrawer()) expect(element.hasAttribute("inert")).toBe(false)
+  expect(allowOnce().closest("[inert]")).toBeNull()
+  await user.keyboard("{Escape}")
+  expect(screen.getByRole("complementary", { name: "Sessions" })).toBeTruthy()
+  const other = snapshot.sessions.find((session) => session.id !== snapshot.activeSessionId)!
+  await user.click(screen.getByRole("button", { name: new RegExp(`^${other.title.slice(0, 24)}`) }))
+  expect(pendingRequest(socket, "session.activate").params).toMatchObject({ sessionId: other.id })
+  expect(screen.getByRole("complementary", { name: "Sessions" })).toBeTruthy()
 })

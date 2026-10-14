@@ -1825,10 +1825,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           <span>{!access ? "Client access is no longer verified for" : connected ? "Using" : "Connecting to"} <span className="font-machine">{fleetMachines(fleet?.entries ?? []).find((machine) => machine.id === attached.machineId)?.label ?? attached.machineId}</span>{access ? " with this app's client credential." : ". Return home and authorize this client again."}</span>
           <Button variant="outline" size="sm" onClick={() => setAttached(null)}>Return to home daemon</Button>
         </div> : null}
-        {snapshot ? <div className="flex min-h-0 flex-1">
+        {snapshot ? <div className="flex min-h-0 flex-1 max-sm:relative">
           <SessionsDrawerColumn
             snapshot={snapshot}
             open={sessionsOpen}
+            onOpenChange={setSessionsOpen}
             onActivate={openSessionInWorkspace}
               onAction={watching ? undefined : sessionRowAction}
             machineAvailability={machineAvailability}

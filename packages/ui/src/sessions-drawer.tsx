@@ -1,5 +1,5 @@
 import { ArchiveIcon, ChevronRightIcon, EllipsisIcon, GitBranchIcon, GitForkIcon, MonitorIcon, PanelLeftIcon, PauseIcon, PlayIcon } from "lucide-react"
-import { useId, useState, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react"
 
 import type { ClientKind, SessionSummary, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
@@ -18,7 +18,8 @@ import { titlebarTipClassName } from "./titlebar-tip"
 import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab"
 
 // v2 takes the sessions list out of the permanent sidebar and puts it behind a
-// button in the top bar. When open it is a column beside the thread at the
+// button in the top bar (in a tab narrower than 40rem it covers the thread
+// instead; see useNarrowTab). When open it is a column beside the thread at the
 // design system's sidebar width (the v2 template draws 268px; the token the
 // design system publishes is what the shell reads), grouped by what each
 // session wants from you, each group collapsible with
@@ -103,6 +104,25 @@ function useDrawerClock(open: boolean): number {
   return useSyncExternalStore(open ? tickingClock : noClock, readClock, readClock)
 }
 
+// Below Tailwind's sm breakpoint (40rem) the open column covers the thread
+// instead of pushing it: beside the 268px column a phone's thread kept about
+// 120px. The query is the one the stylesheet's max-sm variant uses.
+const narrowTabQuery = "(width < 40rem)"
+const subscribeNarrowTab = (changed: () => void) => {
+  const query = globalThis.matchMedia?.(narrowTabQuery)
+  query?.addEventListener("change", changed)
+  return () => query?.removeEventListener("change", changed)
+}
+const readNarrowTab = () => globalThis.matchMedia?.(narrowTabQuery).matches ?? false
+
+function useNarrowTab(): boolean {
+  return useSyncExternalStore(subscribeNarrowTab, readNarrowTab, () => false)
+}
+
+// The app bar's button that opens the column, where focus goes when a
+// covering column closes or takes focus out of what it covers.
+const sessionsButton = () => document.querySelector<HTMLElement>("[aria-controls='sessions-drawer']")
+
 // How long, in the design's units: running 12m, failed 1h ago, idle 2d. A
 // reading ahead of this client's clock counts as now.
 function elapsed(since: string, now: number): string {
@@ -131,6 +151,7 @@ function rowMeta(entry: GroupedSession, session: SessionSummary | undefined, now
 export function SessionsDrawerColumn({
   snapshot,
   open,
+  onOpenChange,
   onActivate,
   onAction,
   machineAvailability,
@@ -141,6 +162,8 @@ export function SessionsDrawerColumn({
 }: {
   snapshot: WorkspaceSnapshot
   open: boolean
+  // Lets the column close itself where it covers the thread (a narrow tab).
+  onOpenChange?: ((open: boolean) => void) | undefined
   onActivate: (sessionId: string) => void
   // A browser tab over the tailnet reaches one machine and holds its
   // credential for the tab only; the column says both (Web v2, 2026-09-23).
@@ -161,6 +184,53 @@ export function SessionsDrawerColumn({
   const archiveLocked = handheldMachine !== undefined
     ? offInHandheldTab(["Archive session"], "archive a session", handheldMachine)
     : undefined
+  // Covering the thread in a narrow tab, the column makes the rest of its row
+  // inert: whatever it covers, an approval card's Allow once included, takes
+  // no focus, Tab, key press or tap until it closes. It closes on Escape, on a
+  // tap on the strip of thread it leaves uncovered, and once a session is
+  // chosen, and focus goes back to the Sessions button.
+  const overlay = useNarrowTab() && open && onOpenChange !== undefined
+  const asideRef = useRef<HTMLElement | null>(null)
+  const close = useCallback(() => {
+    onOpenChange?.(false)
+    sessionsButton()?.focus()
+  }, [onOpenChange])
+  // No dependency list: this runs in every commit the column renders in,
+  // which is every commit of the shell that owns the row, so a surface the
+  // shell swaps in beside the column is inert in the commit that adds it. A
+  // layout effect runs inside the commit that draws the cover, before paint
+  // and before any input event: a tab that narrows with focus on Allow once
+  // never shows the cover over a control that can still take a key. Focus
+  // that is behind the cover then moves to the Sessions button; a browser
+  // would only drop it to the body at its next rendering step.
+  useLayoutEffect(() => {
+    const aside = asideRef.current
+    const row = aside?.parentElement
+    if (!overlay || !aside || !row) return
+    // Row menus, the archive dialog and the command palette draw in portals
+    // outside the row, so they stay usable over the column.
+    const covered = [...row.children].filter((child) => child !== aside && !child.hasAttribute("data-sessions-backdrop"))
+    for (const element of covered) element.setAttribute("inert", "")
+    const focused = document.activeElement
+    if (focused && covered.some((element) => element.contains(focused))) {
+      const button = sessionsButton()
+      if (button) button.focus()
+      else if (focused instanceof HTMLElement) focused.blur()
+    }
+    return () => {
+      for (const element of covered) element.removeAttribute("inert")
+    }
+  })
+  useEffect(() => {
+    if (!overlay) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      // A menu or dialog above the column takes its own Escape and marks it
+      // handled; only an unhandled one closes the column.
+      if (event.key === "Escape" && !event.defaultPrevented) close()
+    }
+    document.addEventListener("keydown", closeOnEscape)
+    return () => document.removeEventListener("keydown", closeOnEscape)
+  }, [overlay, close])
   if (!open) return null
   const groups = groupSessions(snapshot)
   const machine = snapshot.machine.name
@@ -173,10 +243,20 @@ export function SessionsDrawerColumn({
   })
 
   return (
+    <>
+    {/* The uncovered strip of thread: a tap there closes the column. The
+        keyboard has Escape, so the strip is not a focus stop. z-50 puts it
+        above the thread's raised controls (z-10) and the unpinned dock sheet
+        (z-40, machine-sheet.tsx). The column, drawn after it at the same
+        level, stays on top; the covered lost banner, drawn later still, above
+        both (connection-status.tsx); menus and dialogs, in portals at the end
+        of the body, above all three. */}
+    {overlay ? <div aria-hidden data-sessions-backdrop="" className="absolute inset-0 z-50 bg-foreground/10" onClick={close} /> : null}
     <aside
+      ref={asideRef}
       id="sessions-drawer"
       aria-label="Sessions"
-      className={cn("flex w-[268px] shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar", className)}
+      className={cn("flex w-[268px] shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar", overlay && "absolute inset-y-0 left-0 z-50 shadow-lg", className)}
     >
       {scope ? (
         <div className="flex shrink-0 items-center gap-2 border-b px-[14px] py-[9px]">
@@ -220,7 +300,11 @@ export function SessionsDrawerColumn({
                     <button
                       type="button"
                       aria-current={current ? "true" : undefined}
-                      onClick={() => onActivate(entry.id)}
+                      onClick={() => {
+                        onActivate(entry.id)
+                        // A covering column gets out of the way of the chosen thread.
+                        if (overlay) close()
+                      }}
                       className="flex min-w-0 flex-1 items-start gap-[9px] text-left"
                     >
                       {/* The title comes first in the button's name, so the dot
@@ -302,5 +386,6 @@ export function SessionsDrawerColumn({
         </div>
       ) : null}
     </aside>
+    </>
   )
 }
