@@ -1012,7 +1012,10 @@ describe("Attach this output to the composer", () => {
     const [attachment] = receive.mock.calls[0]!
     expect(attachment).toMatchObject({ kind: "text", name: "terminal-output.txt", mimeType: "text/plain" })
     expect("content" in attachment ? attachment.content : "").toContain("$ echo hi\nhi")
-    expect(screen.getByText("Attached to the composer as terminal-output.txt.")).toBeTruthy()
+    // The note is React state set right after the offer, so it commits in a
+    // later Scheduler task. Under load the click can resolve, and receive be
+    // seen, before that task runs, so the note is awaited, not read at once.
+    expect(await screen.findByText("Attached to the composer as terminal-output.txt.")).toBeTruthy()
   })
 
   // xterm parses writes later. An attach right after output arrives waits for
@@ -1135,7 +1138,7 @@ describe("Attach this output to the composer", () => {
     expect(content).toMatch(/^\[earlier lines were cut to fit the attachment limit\]\n/u)
     expect(content).not.toContain("$ first command")
     expect(new TextEncoder().encode(content).byteLength).toBeLessThanOrEqual(maximumTextAttachmentBytes)
-    expect(screen.getByText(/The start was cut to fit the attachment limit\./u)).toBeTruthy()
+    expect(await screen.findByText(/The start was cut to fit the attachment limit\./u)).toBeTruthy()
   })
 
   // The pane keeps a bounded history (5,000 rows; 50 here, so filling it is
@@ -1167,7 +1170,7 @@ describe("Attach this output to the composer", () => {
     const content = "content" in attachment ? attachment.content : ""
     expect(content).toMatch(/^\[this pane's history filled up; earlier output may be missing from this file\]\n/u)
     expect(content).not.toContain("$ first command")
-    expect(screen.getByText(/The pane's history filled up, so earlier output may be missing\./u)).toBeTruthy()
+    expect(await screen.findByText(/The pane's history filled up, so earlier output may be missing\./u)).toBeTruthy()
   })
 
   // Rows also leave the history without a line feed: an index (ESC D) at the
