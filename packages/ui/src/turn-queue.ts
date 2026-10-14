@@ -87,6 +87,22 @@ export function shouldRelease({
   return !turnRunning && !busy
 }
 
+// A waiting message on a session with no turn running is the next thing to
+// go. The release may still be waiting, on the skill catalog, on its own
+// catalog read for images, or on an earlier send to settle. A message sent
+// past it reaches the daemon first, and the daemon does not refuse a send
+// while a turn runs, so the order the person wrote them in would invert.
+// Queueing the new one would replace the waiting one, so the new one stays a
+// draft until the waiting one has left. Held is not waiting: nothing releases
+// it but the person, so it never holds a new message back.
+export function awaitingRelease(
+  queued: QueuedMessage | undefined,
+  sessionId: string,
+  turnRunning: boolean,
+): boolean {
+  return queued?.sessionId === sessionId && queued.state === "waiting" && !turnRunning
+}
+
 export function heldAfter(queued: QueuedMessage, reason: string): QueuedMessage {
   return { ...queued, state: "held", reason }
 }

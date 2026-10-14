@@ -2,6 +2,7 @@ import type { ProviderModel, SessionAttachment } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
 import {
+  awaitingRelease,
   carriesImages,
   heldAfter,
   imageRelease,
@@ -60,6 +61,25 @@ describe("what may leave the queue", () => {
     const queues: SessionQueues = { a: waiting("a") }
     expect(releasableQueues([{ id: "a", activeTurnId: "turn-1" }], queues, { busy: false })).toEqual([])
     expect(releasableQueues([{ id: "a" }], queues, { busy: true })).toEqual([])
+  })
+})
+
+describe("a new message and one still waiting to leave", () => {
+  it("waits behind a message that is waiting on an idle session", () => {
+    expect(awaitingRelease(waiting("a"), "a", false)).toBe(true)
+  })
+
+  it("does not wait while the turn runs: a new message queues then", () => {
+    expect(awaitingRelease(waiting("a"), "a", true)).toBe(false)
+  })
+
+  it("does not wait behind a held message, which only the person sends", () => {
+    expect(awaitingRelease(heldAfter(waiting("a"), "held"), "a", false)).toBe(false)
+  })
+
+  it("does not wait behind another session's message or an empty slot", () => {
+    expect(awaitingRelease(waiting("b"), "a", false)).toBe(false)
+    expect(awaitingRelease(undefined, "a", false)).toBe(false)
   })
 })
 
