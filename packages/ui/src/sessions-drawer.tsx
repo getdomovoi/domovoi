@@ -281,6 +281,8 @@ export function SessionsDrawerColumn({
       event.stopImmediatePropagation()
       const focused = document.activeElement
       if (focused && row.contains(focused) && !aside.contains(focused)) sessionsButton()?.focus()
+      // Escape still does what it does over a drawn cover: it closes the column.
+      if (event instanceof KeyboardEvent && event.type === "keydown" && event.key === "Escape") onOpenChange(false)
     }
     for (const type of refusedInput) document.addEventListener(type, refuse, { capture: true, passive: false })
     return () => {

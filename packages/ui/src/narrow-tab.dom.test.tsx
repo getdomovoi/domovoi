@@ -321,6 +321,25 @@ it("a key or click aimed behind the open drawer after the tab narrows, before th
   expect(document.activeElement).toBe(sessionsButton())
 })
 
+// Pull request review: in the same gap, Escape aimed behind the drawer was
+// refused with the rest and the drawer stayed open. It closes the drawer.
+it("Escape aimed behind the open drawer after the tab narrows, before the media change arrives, closes the drawer", async () => {
+  const resize = stubWidth(false)
+  const user = userEvent.setup()
+  const { socket } = await openShell()
+  await user.click(sessionsButton())
+  act(() => { allowOnce().focus() })
+
+  resize(true, false)
+  await user.keyboard("{Escape}")
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+  expect(document.activeElement).toBe(sessionsButton())
+  expect(sentRequests(socket, "approval.resolve")).toHaveLength(0)
+  act(() => { resize(true) })
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+  expect(allowOnce().closest("[inert]")).toBeNull()
+})
+
 it("the drawer refuses nothing at 640 px and wider: Allow once beside the open column still approves", async () => {
   stubWidth(false)
   const user = userEvent.setup()
