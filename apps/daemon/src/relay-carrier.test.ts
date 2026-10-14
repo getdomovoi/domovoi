@@ -215,10 +215,74 @@ it("expires registration without sending endpoint traffic", async () => {
 })
 
 it("detects a silent half-open connection through bounded ping/pong probes", async () => {
-  const f = await fixture(acknowledge, "localhost", true, false)
-  f.carrier.start()
-  await vi.waitFor(() => expect(f.carrier.status).toEqual({ state: "refused", reason: "transport" }), { timeout: 2000 })
-  expect(f.records).toHaveLength(3)
+  const realTimeout = setTimeout, realClearTimeout = clearTimeout
+  async function io<T>(operation: Promise<T>): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      return await Promise.race([operation, new Promise<never>((_resolve, reject) => {
+        timer = realTimeout(() => reject(new Error("Half-open fixture I/O did not complete")), 2000)
+      })])
+    } finally { realClearTimeout(timer) }
+  }
+  const waiters: AbortController[] = []
+  function event(socket: WebSocket, name: "ping" | "close") {
+    const controller = new AbortController()
+    waiters.push(controller)
+    const outcome = io(once(socket, name, { signal: controller.signal })).finally(() => controller.abort())
+    void outcome.catch(() => {}) // An earlier assertion may fail before this await.
+    return outcome
+  }
+  let registered = () => {}, attempts = 0
+  const f = await fixture(acknowledge, "localhost", true, false, (status) => {
+    if (status.state === "registered") registered()
+    if (status.state === "connecting") attempts++
+  })
+  const { heartbeatIntervalMs, heartbeatTimeoutMs, retryMaximumMs, maximumAttempts } = f.options.policy
+  // Real TLS, generation persistence and Ping delivery have independent I/O
+  // barriers. Only carrier timers advance here, never a wall-clock poll over
+  // all retries; vi.waitFor would advance the fake clock implicitly.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] })
+  try {
+    for (let attempt = 1; attempt <= maximumAttempts; attempt++) {
+      const acknowledged = new Promise<void>((resolve) => { registered = resolve })
+      if (attempt === 1) await io(f.carrier.start())
+      else {
+        expect(vi.getTimerCount()).toBe(1)
+        await vi.advanceTimersToNextTimerAsync()
+      }
+      await io(acknowledged)
+      expect(f.records).toHaveLength(attempt)
+      const socket = f.connections[attempt - 1]!
+      const probes = vi.fn()
+      socket.on("ping", probes)
+      const probe = event(socket, "ping")
+      await vi.advanceTimersByTimeAsync(heartbeatIntervalMs - 1)
+      expect(probes).not.toHaveBeenCalled()
+      expect(f.carrier.status.state).toBe("registered")
+      await vi.advanceTimersByTimeAsync(1)
+      await probe
+      expect(probes).toHaveBeenCalledOnce()
+      expect(probes.mock.calls[0]![0]).toHaveLength(8)
+      await vi.advanceTimersByTimeAsync(heartbeatTimeoutMs - 1)
+      expect(f.carrier.status.state).toBe("registered")
+      const closed = event(socket, "close")
+      await vi.advanceTimersByTimeAsync(1)
+      expect(f.carrier.status).toEqual(attempt < maximumAttempts
+        ? { state: "retrying" } : { state: "refused", reason: "transport" })
+      await closed
+      expect(socket.readyState).toBe(WebSocket.CLOSED)
+    }
+    expect(f.records.map((record) => record.kind === "register" && record.generation)).toEqual([1, 2, 3])
+    expect(JSON.parse(await io(readFile(f.options.generationPath, "utf8"))).generation).toBe(3)
+    await vi.advanceTimersByTimeAsync(retryMaximumMs + heartbeatIntervalMs + heartbeatTimeoutMs)
+    expect(f.carrier.status).toEqual({ state: "refused", reason: "transport" })
+    expect(attempts).toBe(3)
+    expect(f.records).toHaveLength(3)
+    expect(f.connections).toHaveLength(3)
+  } finally {
+    for (const waiter of waiters) waiter.abort()
+    try { await io(f.carrier.stop()) } finally { vi.useRealTimers() }
+  }
 })
 
 it("retires immediately closed admission without consuming a channel slot", async () => {
