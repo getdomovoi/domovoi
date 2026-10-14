@@ -5,6 +5,7 @@ import {
   carriesImages,
   heldAfter,
   imageRelease,
+  noteImageRefusals,
   heldAfterStop,
   holdAllAfterStop,
   releasableQueues,
@@ -80,41 +81,39 @@ describe("images and a model that takes none", () => {
     expect(carriesImages(waiting("a"))).toBe(false)
   })
 
-  const answer = (ticket: number, imageInput: boolean | undefined, id = "sonnet-4.6", provider = "claude-code") =>
-    ({ ticket, models: [model(id, imageInput, provider)] })
-  const settled = (...answers: ReturnType<typeof answer>[]) => ({ answers, settled: true })
+  // A read that started at ticket 5, the turn boundary.
+  const pending = { since: 5, settled: false }
+  const settled = { since: 5, settled: true }
+  const refusedAt = (ticket: number, id = "sonnet-4.6", provider = "claude-code") =>
+    noteImageRefusals({}, [model(id, false, provider)], ticket)
 
   it("releases a message without images whatever the catalog says", () => {
-    expect(imageRelease(waiting("a"), runtime, { answers: [], settled: false })).toBe("release")
-    expect(imageRelease({ ...waiting("a"), attachments: [notes] }, runtime, settled(answer(1, false)))).toBe("release")
+    expect(imageRelease(waiting("a"), runtime, {}, pending)).toBe("release")
+    expect(imageRelease({ ...waiting("a"), attachments: [notes] }, runtime, refusedAt(6), settled)).toBe("release")
   })
 
-  // The daemon reads the adapter's capability on every catalog request, so an
-  // older yes from another reader does not stand in for the release's own read.
-  it("waits for the release's own read unless a no is already known", () => {
-    expect(imageRelease(withImage, runtime, { answers: [], settled: false })).toBe("wait")
-    expect(imageRelease(withImage, runtime, { answers: [answer(1, true)], settled: false })).toBe("wait")
-    expect(imageRelease(withImage, runtime, { answers: [answer(1, false)], settled: false })).toBe("hold")
+  // The daemon asks the adapter on every catalog read, and the answer can
+  // change while a turn runs, so only a read started at the boundary counts.
+  it("waits for the read started at the turn boundary", () => {
+    expect(imageRelease(withImage, runtime, {}, pending)).toBe("wait")
+    expect(imageRelease(withImage, runtime, refusedAt(4), pending)).toBe("wait")
+    expect(imageRelease(withImage, runtime, refusedAt(4), settled)).toBe("release")
   })
 
-  it("holds only when the session's own model says it takes no images", () => {
-    expect(imageRelease(withImage, runtime, settled(answer(1, false)))).toBe("hold")
-    expect(imageRelease(withImage, runtime, settled(answer(1, true)))).toBe("release")
-    expect(imageRelease(withImage, runtime, settled(answer(1, false, "opus-4.6")))).toBe("release")
-    expect(imageRelease(withImage, runtime, settled(answer(1, false, "sonnet-4.6", "codex")))).toBe("release")
+  it("holds at once on a no from any read started after the boundary", () => {
+    expect(imageRelease(withImage, runtime, refusedAt(6), pending)).toBe("hold")
+    expect(imageRelease(withImage, runtime, refusedAt(6), settled)).toBe("hold")
   })
 
-  // The composer, the launcher and the release each read for themselves.
-  // Capability can change between reads, so the newest explicit answer wins,
-  // and a newer "not said" does not undo an older explicit one.
-  it("follows the newest explicit answer across readers", () => {
-    expect(imageRelease(withImage, runtime, settled(answer(1, false), answer(2, true)))).toBe("release")
-    expect(imageRelease(withImage, runtime, settled(answer(2, false), answer(1, true)))).toBe("hold")
-    expect(imageRelease(withImage, runtime, settled(answer(1, false), answer(2, undefined)))).toBe("hold")
+  it("holds only for the session's own model", () => {
+    expect(imageRelease(withImage, runtime, refusedAt(6, "opus-4.6"), settled)).toBe("release")
+    expect(imageRelease(withImage, runtime, refusedAt(6, "sonnet-4.6", "codex"), settled)).toBe("release")
   })
 
-  it("does not hold on what is not known", () => {
-    expect(imageRelease(withImage, runtime, settled(answer(1, undefined)))).toBe("release")
-    expect(imageRelease(withImage, runtime, settled())).toBe("release")
+  it("notes only explicit refusals, each at its newest read", () => {
+    const noted = noteImageRefusals(refusedAt(7), [model("sonnet-4.6", false), model("opus-4.6", undefined), model("haiku-4.5", true)], 3)
+    expect(noted).toEqual({ "claude-code\nsonnet-4.6": 7 })
+    const unchanged = refusedAt(7)
+    expect(noteImageRefusals(unchanged, [model("opus-4.6", true)], 9)).toBe(unchanged)
   })
 })

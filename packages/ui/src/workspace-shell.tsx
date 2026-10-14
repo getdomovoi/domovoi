@@ -77,12 +77,14 @@ import {
   heldAfter,
   holdAllAfterStop,
   imageRelease,
+  noteImageRefusals,
   provesNothingRan,
   releasableQueues,
   setQueue,
-  type CatalogAnswer,
-  type CatalogReader,
   type FailedAttempt,
+  type ImageRefusals,
+  type QueuedMessage,
+  type ReleaseRead,
   type SessionQueues,
 } from "./turn-queue"
 import { imagesHeldReason } from "./thread-composer"
@@ -359,18 +361,15 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // queued in A must leave at A's next turn boundary whether or not anyone is
   // looking at A.
   const [queues, setQueues] = useState<SessionQueues>({})
-  // Each provider's model catalog answers that came through the shell, the
-  // newest per reader: Thread with its model menu, the launcher, and the
-  // release's own read. Thread's hold on images a model cannot take reaches
-  // only the session on screen, and only from the commit after its read
-  // answers, so the release holds from these instead and never knows less
-  // than the composer. Per reader, so a newer "not said" from one reader does
-  // not erase another's explicit answer.
-  const [catalogAnswers, setCatalogAnswers] = useState<Readonly<Record<string, Partial<Record<CatalogReader, CatalogAnswer>>>>>({})
-  // The release's own read per provider, and whether it has answered or
-  // failed. The counter wakes the release when one settles.
-  const catalogRequests = useRef(new Map<string, { connectionId: string | null, settled: boolean }>())
-  const [catalogReadsSettled, setCatalogReadsSettled] = useState(0)
+  // Every "no image input" a catalog read through the shell answered: Thread's
+  // and its model menu's, the launcher's, and the release's own. Thread's hold
+  // reaches only the session on screen, so the release reads for itself at
+  // each turn boundary and holds on a no from any read started since.
+  const [imageRefusals, setImageRefusals] = useState<ImageRefusals>({})
+  // The release's own read per session, for the message it was started for.
+  // The counter wakes the release when one settles.
+  const releaseReads = useRef(new Map<string, ReleaseRead & { message: QueuedMessage, connectionId: string | null }>())
+  const [releaseReadsSettled, setReleaseReadsSettled] = useState(0)
   // Every send that did not come back, kept by identity. One slot per session
   // was still one slot: a second refusal would erase the first receipt and the
   // reason with it.
@@ -1086,81 +1085,47 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setQueues(holdAllAfterStop)
   }, [emergencyStopPending])
 
-  // The providers whose sessions have a message with images waiting, as one
-  // key so the read below runs only when that set changes.
-  const imageQueueProviders = useMemo(() => {
-    const providers = new Set<string>()
-    for (const session of snapshot?.sessions ?? []) {
-      const queued = queues[session.id]
-      if (queued?.state === "waiting" && carriesImages(queued)) providers.add(session.runtime.provider)
-    }
-    return [...providers].sort().join("\n")
-  }, [snapshot, queues])
   // Another daemon's catalog says nothing about this one's models. Reset
   // during render, as the stop above is, so no release reads the old answers.
   const [catalogConnection, setCatalogConnection] = useState(connectionId)
   if (catalogConnection !== connectionId) {
     setCatalogConnection(connectionId)
-    setCatalogAnswers({})
+    setImageRefusals({})
   }
   const liveConnection = useRef(connectionId)
   useEffect(() => { liveConnection.current = connectionId }, [connectionId])
-  // Every catalog read through the shell records its answer before its caller
-  // sees it, so no commit gives a reader an answer the release lacks. For
+  // Every catalog read through the shell notes its refusals before its caller
+  // sees the answer, so no commit gives a reader a no the release lacks. For
   // Thread that is the catalog read and the model menu's "ask again", which
   // discovers.
-  const readCatalogSeen = useCallback(async <T,>(reader: CatalogReader, provider: string, read: () => Promise<T>, modelsOf: (answer: T) => readonly ProviderModel[] | undefined): Promise<T> => {
+  const readCatalogSeen = useCallback(async <T,>(read: () => Promise<T>, modelsOf: (answer: T) => readonly ProviderModel[] | undefined): Promise<T> => {
     const ticket = nextCatalogReadTicket()
     const startedOn = liveConnection.current
     const answer = await read()
     const models = modelsOf(answer)
-    if (models && liveConnection.current === startedOn) {
-      setCatalogAnswers((current) => {
-        const readers = current[provider] ?? {}
-        if ((readers[reader]?.ticket ?? 0) > ticket) return current
-        return { ...current, [provider]: { ...readers, [reader]: { models, ticket } } }
-      })
-    }
+    if (models && liveConnection.current === startedOn) setImageRefusals((current) => noteImageRefusals(current, models, ticket))
     return answer
   }, [])
   const listModelsSeen = useCallback(
-    (provider: string) => readCatalogSeen("thread", provider, () => listModels(provider), (models) => models),
+    (provider: string) => readCatalogSeen(() => listModels(provider), (models) => models),
     [readCatalogSeen, listModels],
   )
   const discoverRuntimeSeen = useCallback(
-    (provider: string) => readCatalogSeen("thread", provider, () => discoverRuntime(provider), (result) => result.status === "ready" ? result.models : undefined),
+    (provider: string) => readCatalogSeen(() => discoverRuntime(provider), (result) => result.status === "ready" ? result.models : undefined),
     [readCatalogSeen, discoverRuntime],
   )
-  const launcherListModels = useCallback(
-    (provider: string) => readCatalogSeen("launcher", provider, () => listModels(provider), (models) => models),
-    [readCatalogSeen, listModels],
-  )
-  // The release's own read, once per provider per connection while a message
-  // with images waits on it, so a session off screen is covered too. A newer
-  // need reads again, since the daemon asks the adapter on every read; until
-  // it settles, the message waits unless a no is already known.
-  useEffect(() => {
-    const needed = new Set(connected && !watching && imageQueueProviders ? imageQueueProviders.split("\n") : [])
-    const requests = catalogRequests.current
-    for (const provider of [...requests.keys()]) if (!needed.has(provider)) requests.delete(provider)
-    for (const provider of needed) {
-      if (requests.get(provider)?.connectionId === connectionId) continue
-      const request = { connectionId, settled: false }
-      requests.set(provider, request)
-      const settle = () => {
-        if (requests.get(provider) !== request) return
-        request.settled = true
-        setCatalogReadsSettled((count) => count + 1)
-      }
-      void readCatalogSeen("release", provider, () => listModels(provider), (models) => models).then(settle, settle)
-    }
-  }, [imageQueueProviders, connected, watching, connectionId, readCatalogSeen, listModels])
 
   // The release lives here rather than in Thread because a turn ending in A is
   // A's business whether or not A is the session on screen.
   useEffect(() => {
     if (watching || !connected) return
-    for (const message of releasableQueues(snapshot?.sessions ?? [], queues, { busy: emergencyStopPending })) {
+    const ready = releasableQueues(snapshot?.sessions ?? [], queues, { busy: emergencyStopPending })
+    // A read belongs to one turn boundary: once its message is no longer
+    // releasable, the next boundary reads again.
+    for (const [sessionId, read] of [...releaseReads.current]) {
+      if (!ready.some((message) => message === read.message && message.sessionId === sessionId)) releaseReads.current.delete(sessionId)
+    }
+    for (const message of ready) {
       const session = { id: message.sessionId }
       if (releasing.current.has(session.id)) continue
       const chosen = message.skillIds
@@ -1183,17 +1148,29 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       }
       // The daemon refuses images for a model whose harness reports none, so
       // the message is held with Thread's notice rather than sent into that
-      // refusal. Until the release's own read for it settles, it waits.
+      // refusal. The adapter can change its answer while the turn runs, so the
+      // release reads the catalog again here and waits for that read.
       const runtime = snapshot?.sessions.find((candidate) => candidate.id === session.id)?.runtime
-      const request = runtime ? catalogRequests.current.get(runtime.provider) : undefined
-      const images = runtime ? imageRelease(message, runtime, {
-        answers: Object.values(catalogAnswers[runtime.provider] ?? {}),
-        settled: request?.connectionId === connectionId && request.settled,
-      }) : "release"
-      if (images === "wait") continue
-      if (images === "hold") {
-        setQueues((current) => setQueue(current, session.id, heldAfter(message, imagesHeldReason(runtime!.model))))
-        continue
+      if (runtime && carriesImages(message)) {
+        let read = releaseReads.current.get(session.id)
+        if (!read || read.message !== message || read.connectionId !== connectionId) {
+          const started = { message, connectionId, since: nextCatalogReadTicket(), settled: false }
+          releaseReads.current.set(session.id, started)
+          const settle = () => {
+            if (releaseReads.current.get(session.id) !== started) return
+            started.settled = true
+            setReleaseReadsSettled((count) => count + 1)
+          }
+          void listModelsSeen(runtime.provider).then(settle, settle)
+          read = started
+        }
+        const images = imageRelease(message, runtime, imageRefusals, read)
+        if (images === "wait") continue
+        releaseReads.current.delete(session.id)
+        if (images === "hold") {
+          setQueues((current) => setQueue(current, session.id, heldAfter(message, imagesHeldReason(runtime.model))))
+          continue
+        }
       }
       releasing.current.add(session.id)
       setQueues((current) => setQueue(current, session.id, undefined))
@@ -1222,7 +1199,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           setSettled((count) => count + 1)
         })
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, settled, watching, connected, catalogAnswers, catalogReadsSettled, connectionId])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, settled, watching, connected, imageRefusals, releaseReadsSettled, connectionId, listModelsSeen])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
@@ -2181,7 +2158,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
             onOpenProject={openProjectSafely}
             onCreateSession={(title, runtime) => startSession({ kind: "create", title, runtime })}
-            onListModels={launcherListModels}
+            onListModels={listModelsSeen}
             recentSessions={snapshot.sessions}
             onResumeSession={(sessionId) => {
               openSessionInWorkspace(sessionId)

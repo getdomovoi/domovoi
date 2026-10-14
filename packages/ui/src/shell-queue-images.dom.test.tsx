@@ -129,26 +129,28 @@ it('holds an image message when the model answer lands in the commit that ends t
 
 // Codex review round 1: the release's own read failing must not leave it
 // knowing less than the composer, whose read answers in the commit that ends
-// the turn.
+// the turn. The release's read is the one it starts at that boundary.
 it('holds an image message on the composer\'s answer when the release\'s own read failed', async () => {
   const value = running()
   withImageDraft(value.activeSessionId!)
   const socket = await open(value)
   queue('look at this')
-  const open_ = sentRequests(socket, 'runtime.models').filter((request) => !socket.answered.has(request.id))
-  expect(open_.length).toBeGreaterThanOrEqual(2)
-  const releaseRead = open_.at(-1)!
-  await act(async () => {
-    socket.answered.add(releaseRead.id)
-    socket.receive({ jsonrpc: '2.0', id: releaseRead.id, error: { code: -32603, message: 'catalog unavailable' } })
-  })
-  await settle()
 
   await act(async () => {
     answerModels(socket, textOnly)
     notify(socket, 'workspace.changed', idle(value))
   })
   await settle()
+  const releaseReads = pendingModels(socket)
+  expect(releaseReads.length).toBeGreaterThanOrEqual(1)
+  await act(async () => {
+    for (const read of releaseReads) {
+      socket.answered.add(read.id)
+      socket.receive({ jsonrpc: '2.0', id: read.id, error: { code: -32603, message: 'catalog unavailable' } })
+    }
+  })
+  await settle()
+  await snapshot(socket, idle(value))
 
   expect(sentRequests(socket, 'session.send')).toHaveLength(0)
   expect(screen.getByText(heldNotice)).toBeTruthy()
@@ -199,22 +201,20 @@ it('holds on the composer\'s older no-image answer after the release\'s newer re
   withImageDraft(value.activeSessionId!)
   const socket = await open(value)
   queue('look at this')
-  const pending = sentRequests(socket, 'runtime.models').filter((request) => !socket.answered.has(request.id))
-  expect(pending.length).toBeGreaterThanOrEqual(2)
-  const composerRead = pending[0]!
-  const releaseRead = pending.at(-1)!
-  const answer = (id: number | string, models: ProviderModel[]) => {
-    socket.answered.add(id)
-    socket.receive({ jsonrpc: '2.0', id, result: models })
-  }
-  await act(async () => answer(releaseRead.id, [model('claude-code', 'sonnet-4.6', undefined)]))
-  await settle()
+  const composerRead = pendingModels(socket)[0]!
 
   await act(async () => {
-    answer(composerRead.id, textOnly['claude-code'])
+    answerRequest(socket, composerRead.id, textOnly['claude-code'])
     notify(socket, 'workspace.changed', idle(value))
   })
   await settle()
+  const releaseReads = pendingModels(socket)
+  expect(releaseReads.length).toBeGreaterThanOrEqual(1)
+  await act(async () => {
+    for (const read of releaseReads) answerRequest(socket, read.id, [model('claude-code', 'sonnet-4.6', undefined)])
+  })
+  await settle()
+  await snapshot(socket, idle(value))
 
   expect(sentRequests(socket, 'session.send')).toHaveLength(0)
   expect(screen.getByText(heldNotice)).toBeTruthy()
@@ -290,6 +290,7 @@ it('releases on the newest explicit answer over an older no from the launcher', 
   await settle()
 
   queue('look at this')
+  await snapshot(socket, idle(parsed))
   await act(async () => answerModels(socket, takesImages))
   await settle()
   await snapshot(socket, idle(parsed))
@@ -297,6 +298,26 @@ it('releases on the newest explicit answer over an older no from the launcher', 
   const sends = sentRequests(socket, 'session.send')
   expect(sends).toHaveLength(1)
   expect(sends[0]?.params).toMatchObject({ prompt: 'look at this', attachments: [image] })
+})
+
+// PR #850 review (P1, second round): the adapter can stop taking images while
+// the turn runs. What it said when the message was queued is not what it says
+// at the turn boundary, so the release reads again there.
+it('holds an image message when the adapter stops taking images during the turn', async () => {
+  const value = running()
+  withImageDraft(value.activeSessionId!)
+  const socket = await open(value)
+  queue('look at this')
+  await act(async () => answerModels(socket, { 'claude-code': [model('claude-code', 'sonnet-4.6', true)] }))
+  await settle()
+
+  await snapshot(socket, idle(value))
+  await act(async () => answerModels(socket, textOnly))
+  await settle()
+  await snapshot(socket, idle(value))
+
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+  expect(screen.getByText(heldNotice)).toBeTruthy()
 })
 
 it('holds a background session\'s image message for a model that takes none', async () => {
@@ -311,6 +332,9 @@ it('holds a background session\'s image message for a model that takes none', as
   await act(async () => answerModels(socket, textOnly))
   await settle()
   await snapshot(socket, visible(idle(value, owner), other))
+  // The release reads again at the turn boundary, and that read says no.
+  await act(async () => answerModels(socket, textOnly))
+  await settle()
 
   expect(sentRequests(socket, 'session.send')).toHaveLength(0)
   // Coming back shows it still queued, with the same notice.
@@ -324,9 +348,12 @@ it('releases an image message when the harness has not said whether the model ta
   withImageDraft(value.activeSessionId!)
   const socket = await open(value)
   queue('look at this')
-  await act(async () => answerModels(socket, { 'claude-code': [model('claude-code', 'sonnet-4.6', undefined)] }))
+  const notSaid = { 'claude-code': [model('claude-code', 'sonnet-4.6', undefined)] }
+  await act(async () => answerModels(socket, notSaid))
   await settle()
   await snapshot(socket, idle(value))
+  await act(async () => answerModels(socket, notSaid))
+  await settle()
 
   const sends = sentRequests(socket, 'session.send')
   expect(sends).toHaveLength(1)

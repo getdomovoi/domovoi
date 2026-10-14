@@ -124,38 +124,47 @@ export function carriesImages(queued: QueuedMessage): boolean {
   return Boolean(queued.attachments?.some(isImageAttachment))
 }
 
-// One reader's newest catalog answer, ticketed by when its read started.
-export type CatalogAnswer = { models: readonly ProviderModel[], ticket: number }
+// For each provider and model, the newest catalog read (by the ticket taken
+// when it started) whose answer said the model takes no image input.
+export type ImageRefusals = Readonly<Record<string, number>>
 
-// What the shell has seen of one provider's model catalog: the newest answer
-// of each reader (the composer, the launcher, the release's own read), and
-// whether the release's own read for this message has answered or failed.
-export type CatalogRead = { answers: readonly CatalogAnswer[], settled: boolean }
+function refusalKey(provider: string, model: string): string {
+  return `${provider}\n${model}`
+}
 
-export type CatalogReader = "thread" | "launcher" | "release"
+export function noteImageRefusals(current: ImageRefusals, models: readonly ProviderModel[], ticket: number): ImageRefusals {
+  let next: Record<string, number> | undefined
+  for (const model of models) {
+    if (model.imageInput !== false) continue
+    const key = refusalKey(model.provider, model.id)
+    if ((current[key] ?? 0) >= ticket) continue
+    next ??= { ...current }
+    next[key] = ticket
+  }
+  return next ?? current
+}
+
+// The release's own catalog read for one message, started when the message
+// became releasable at the turn boundary.
+export type ReleaseRead = { since: number, settled: boolean }
 
 // Whether a releasable message may go to the session's model. The daemon
 // refuses images for a model whose harness reports no image input, so that
-// message is held rather than sent into a refusal. The newest explicit answer
-// decides, across readers: capability can change between reads, and a newer
-// "not said" does not undo an older explicit answer. A no holds at once.
-// Otherwise the message waits for the release's own read, because an older
-// yes is not the adapter's current answer. Waiting is not holding: the
-// message stays waiting. Nothing holds on what is not known, a failed read or
-// a model that has not said, which is #846's rule in the composer.
+// message is held rather than sent into a refusal. The daemon asks the
+// adapter on every catalog read and the answer can change while a turn runs,
+// so only reads started at or after the boundary count: a no from any of them
+// holds at once, and otherwise the message waits for the release's own read.
+// Waiting is not holding: the message stays waiting. Nothing holds on what is
+// not known, a failed read or a model that has not said, which is #846's rule
+// in the composer.
 export function imageRelease(
   queued: QueuedMessage,
   runtime: { provider: string, model: string },
-  read: CatalogRead,
+  refusals: ImageRefusals,
+  read: ReleaseRead,
 ): "release" | "wait" | "hold" {
   if (!carriesImages(queued)) return "release"
-  let newest: { ticket: number, imageInput: boolean } | undefined
-  for (const answer of read.answers) {
-    const imageInput = answer.models.find((candidate) => candidate.provider === runtime.provider && candidate.id === runtime.model)?.imageInput
-    if (imageInput === undefined || (newest && newest.ticket > answer.ticket)) continue
-    newest = { ticket: answer.ticket, imageInput }
-  }
-  if (newest?.imageInput === false) return "hold"
+  if ((refusals[refusalKey(runtime.provider, runtime.model)] ?? 0) > read.since) return "hold"
   return read.settled ? "release" : "wait"
 }
 
