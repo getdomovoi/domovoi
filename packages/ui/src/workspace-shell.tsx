@@ -366,9 +366,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // reaches only the session on screen, so the release reads for itself at
   // each turn boundary and holds on a no from any read started since.
   const [imageRefusals, setImageRefusals] = useState<ImageRefusals>({})
-  // The release's own read per session, for the message it was started for.
-  // The counter wakes the release when one settles.
-  const releaseReads = useRef(new Map<string, ReleaseRead & { message: QueuedMessage, connectionId: string | null }>())
+  // The release's own read per session, for the message, connection and
+  // provider it was started for. The counter wakes the release when one settles.
+  const releaseReads = useRef(new Map<string, ReleaseRead & { message: QueuedMessage, connectionId: string | null, provider: string }>())
   const [releaseReadsSettled, setReleaseReadsSettled] = useState(0)
   // Every send that did not come back, kept by identity. One slot per session
   // was still one slot: a second refusal would erase the first receipt and the
@@ -1153,8 +1153,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       const runtime = snapshot?.sessions.find((candidate) => candidate.id === session.id)?.runtime
       if (runtime && carriesImages(message)) {
         let read = releaseReads.current.get(session.id)
-        if (!read || read.message !== message || read.connectionId !== connectionId) {
-          const started = { message, connectionId, since: nextCatalogReadTicket(), settled: false }
+        if (!read || read.message !== message || read.connectionId !== connectionId || read.provider !== runtime.provider) {
+          const started = { message, connectionId, provider: runtime.provider, since: nextCatalogReadTicket(), settled: false }
           releaseReads.current.set(session.id, started)
           const settle = () => {
             if (releaseReads.current.get(session.id) !== started) return

@@ -320,6 +320,33 @@ it('holds an image message when the adapter stops taking images during the turn'
   expect(screen.getByText(heldNotice)).toBeTruthy()
 })
 
+// Codex review of the read-at-release change: a read for one provider says
+// nothing about another. A session that changes provider while the release's
+// read is out is read again for its new provider.
+it('reads again when a waiting session changes provider before the release read answers', async () => {
+  const value = running()
+  const owner = value.activeSessionId!
+  const other = value.sessions.find(session => session.id !== owner)!.id
+  withImageDraft(owner)
+  const socket = await open(value)
+  queue('look at this')
+  await snapshot(socket, visible(value, other))
+  await snapshot(socket, visible(idle(value, owner), other))
+
+  const moved = structuredClone(visible(idle(value, owner), other))
+  const session = moved.sessions.find(candidate => candidate.id === owner)!
+  session.runtime = { ...session.runtime, provider: 'codex', model: 'gpt-5.3-codex' }
+  await snapshot(socket, workspaceSnapshotSchema.parse(moved))
+  await act(async () => answerModels(socket, {
+    'claude-code': [model('claude-code', 'sonnet-4.6', true)],
+    codex: [model('codex', 'gpt-5.3-codex', false)],
+  }))
+  await settle()
+  await snapshot(socket, workspaceSnapshotSchema.parse(moved))
+
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+})
+
 it('holds a background session\'s image message for a model that takes none', async () => {
   const value = running()
   const owner = value.activeSessionId!
