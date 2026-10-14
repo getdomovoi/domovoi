@@ -1,4 +1,6 @@
-import type { SessionAttachment } from "@getdomovoi/protocol"
+import type { ProviderModel, SessionAttachment } from "@getdomovoi/protocol"
+
+import { isImageAttachment } from "./desktop-attachments"
 
 // Sending while a turn is running queues the message. It never cancels the
 // turn: the agent is mid-flight on a worktree, and a client keystroke is not a
@@ -115,6 +117,55 @@ export function releasableQueues(
     ready.push(queued!)
   }
   return ready
+}
+
+// Images only: a model that takes no image input still takes text files.
+export function carriesImages(queued: QueuedMessage): boolean {
+  return Boolean(queued.attachments?.some(isImageAttachment))
+}
+
+// For each provider and model, the newest catalog read (by the ticket taken
+// when it started) whose answer said the model takes no image input.
+export type ImageRefusals = Readonly<Record<string, number>>
+
+function refusalKey(provider: string, model: string): string {
+  return `${provider}\n${model}`
+}
+
+export function noteImageRefusals(current: ImageRefusals, models: readonly ProviderModel[], ticket: number): ImageRefusals {
+  let next: Record<string, number> | undefined
+  for (const model of models) {
+    if (model.imageInput !== false) continue
+    const key = refusalKey(model.provider, model.id)
+    if ((current[key] ?? 0) >= ticket) continue
+    next ??= { ...current }
+    next[key] = ticket
+  }
+  return next ?? current
+}
+
+// The release's own catalog read for one message, started when the message
+// became releasable at the turn boundary.
+export type ReleaseRead = { since: number, settled: boolean }
+
+// Whether a releasable message may go to the session's model. The daemon
+// refuses images for a model whose harness reports no image input, so that
+// message is held rather than sent into a refusal. The daemon asks the
+// adapter on every catalog read and the answer can change while a turn runs,
+// so only reads started at or after the boundary count: a no from any of them
+// holds at once, and otherwise the message waits for the release's own read.
+// Waiting is not holding: the message stays waiting. Nothing holds on what is
+// not known, a failed read or a model that has not said, which is #846's rule
+// in the composer.
+export function imageRelease(
+  queued: QueuedMessage,
+  runtime: { provider: string, model: string },
+  refusals: ImageRefusals,
+  read: ReleaseRead,
+): "release" | "wait" | "hold" {
+  if (!carriesImages(queued)) return "release"
+  if ((refusals[refusalKey(runtime.provider, runtime.model)] ?? 0) > read.since) return "hold"
+  return read.settled ? "release" : "wait"
 }
 
 // A send that did not come back with a result. The distinction matters: the
