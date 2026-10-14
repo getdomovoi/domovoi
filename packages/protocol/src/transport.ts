@@ -79,7 +79,7 @@ export const transportContract = {
 // Local and WSL describe a loopback hop, not a remotely asserted destination.
 // LAN/tailnet remain operator classifications, never proof of network membership.
 // SSH describes a source-configured forward; a peer cannot configure one here.
-// Relay is a reserved, non-dialable record until its encrypted contract exists.
+// Relay is dialable only by a consumer with an explicit encrypted adapter.
 export const transportCandidateSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("local"), endpoint: loopbackTransportEndpointSchema, authenticated: z.literal(true) }).strict(),
   z.object({ kind: z.literal("wsl"), endpoint: loopbackTransportEndpointSchema, authenticated: z.literal(true) }).strict(),
@@ -102,9 +102,12 @@ export function orderedTransports(candidates: TransportCandidate[]): TransportCa
 // Display ordering may retain unavailable entries. Every dialer must use this
 // eligibility boundary, so an SSH toggle or reserved relay means the same thing
 // in every consumer. Network failure and deadline-aware fallback remain local.
-export function usableTransports(candidates: TransportCandidate[]): TransportCandidate[] {
+export function usableTransports(candidates: TransportCandidate[], options?: { encryptedRelay?: boolean }): TransportCandidate[] {
   return orderedTransports(candidates).filter((candidate) => {
     if (candidate.kind === "ssh") return candidate.configured
+    // This is local adapter capability, never an advertised trust assertion.
+    // Existing consumers remain closed unless they supply the encrypted path.
+    if (candidate.kind === "relay") return options?.encryptedRelay === true
     return transportContract[candidate.kind].availability === "candidate"
   })
 }
