@@ -80,14 +80,29 @@ function BrowserLimitsDialog({ rows, onContinue, continueLabel, open, returnFocu
   const heading = useRef<HTMLHeadingElement>(null)
   // Set when focus left for another surface, which then keeps it.
   const leftForElsewhere = useRef(false)
+  // Set when the dialog's own layer took this Escape and closed the limits.
+  const escapeTaken = useRef(false)
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!next) onContinue() }}>
       <DialogContent
         data-browser-limits=""
         showCloseButton={false}
         className="max-h-[85dvh] overflow-y-auto sm:max-w-2xl"
+        // The layer closes the limits on an Escape no one has prevented yet.
+        onEscapeKeyDown={(event) => { escapeTaken.current = !event.defaultPrevented }}
+        // The palette that opened the limits keeps its layer for a few frames
+        // while it closes, and an Escape in that time stops at that layer.
+        // Focus is in the limits, so the Escape is theirs either way. (The
+        // focus scope inside DialogContent replaces an onKeyDown.)
+        onKeyDownCapture={(event) => {
+          if (event.key !== "Escape") return
+          const taken = escapeTaken.current
+          escapeTaken.current = false
+          if (!taken) onContinue()
+        }}
         onOpenAutoFocus={(event) => {
           leftForElsewhere.current = false
+          escapeTaken.current = false
           event.preventDefault()
           heading.current?.focus()
         }}

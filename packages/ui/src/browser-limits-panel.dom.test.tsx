@@ -70,9 +70,28 @@ describe("BrowserLimitsPanel", () => {
     opener.remove()
   })
 
-  // The palette can open over the dialog and attach the session elsewhere,
-  // which would leave the rows naming a route the session left. So focus
-  // moving to another surface closes the limits, and focus stays there.
+  // Task 99: the palette that opened the limits is still closing for a few
+  // frames, and its layer can take an Escape meant for the limits (a document
+  // listener here stands in for it). Focus is in the limits, so the Escape is
+  // theirs: they close once.
+  it("closes on an Escape a closing layer took first, once", async () => {
+    const user = userEvent.setup()
+    const onContinue = vi.fn()
+    // Registered before the limits' own layer, as the palette's was.
+    const closingLayer = (event: KeyboardEvent) => { if (event.key === "Escape") event.preventDefault() }
+    document.addEventListener("keydown", closingLayer, { capture: true })
+    try {
+      render(<BrowserLimitsPanel rows={rows} onContinue={onContinue} continueLabel="Back" dialog={{ open: true, returnFocusTo: null }} />)
+      expect(document.activeElement).toBe(screen.getByRole("heading", { name: "What a browser tab can and cannot do" }))
+      await user.keyboard("{Escape}")
+    } finally {
+      document.removeEventListener("keydown", closingLayer, { capture: true })
+    }
+    expect(onContinue).toHaveBeenCalledTimes(1)
+  })
+
+  // The palette can open over the dialog and take the session elsewhere. So
+  // focus moving to another surface closes the limits, and focus stays there.
   it("closes when focus moves to another surface over it, and leaves focus there", async () => {
     const opener = document.createElement("button")
     document.body.append(opener)
