@@ -381,6 +381,15 @@ export function CommandPalette({
     if (picked && switching) onCancelSwitch?.()
     reset(); remote.forget(); onOpenChange(false)
   }
+  // Set when the dialog itself took this key (Escape, an outside press).
+  const dismissedByDialog = useRef(false)
+  // Escape backs out of a half-made choice before it closes the whole
+  // launcher.
+  const dismiss = () => {
+    dismissedByDialog.current = true
+    if (choosing) { reset(); return }
+    close()
+  }
   const now = Date.now()
 
   useEffect(() => {
@@ -430,13 +439,7 @@ export function CommandPalette({
       className={commandPaletteFrame}
       open={open}
       onOpenChange={(nextOpen) => {
-        // Escape backs out of a half-made choice before it closes the whole
-        // launcher. The dialog owns the key, so the step back happens here.
-        if (!nextOpen && choosing) {
-          reset()
-          return
-        }
-        if (!nextOpen) { close(); return }
+        if (!nextOpen) { dismiss(); return }
         onOpenChange(nextOpen)
       }}
       title={commandPaletteTitle}
@@ -449,6 +452,17 @@ export function CommandPalette({
         onValueChange={setHighlighted}
         className="rounded-none! bg-transparent p-0"
         onKeyDown={(event) => {
+          // A dialog the palette opened over (the browser limits) keeps its
+          // layer for a few frames while it closes, and an Escape in that time
+          // stops at that layer. Focus is in the palette, so the Escape is the
+          // palette's either way.
+          const dialogTookIt = dismissedByDialog.current
+          dismissedByDialog.current = false
+          if (event.key === "Escape") {
+            if (!dialogTookIt) dismiss()
+            dismissedByDialog.current = false
+            return
+          }
           // cmdk's own Enter handler carries no modifiers, so the modified key
           // is read here and stopped before it reaches the default.
           if (!opensElsewhere(event, platform)) return

@@ -1,9 +1,12 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useState } from "react"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { BrowserLimitsPanel } from "./browser-limits-panel"
+import { CommandPalette } from "./command-palette"
+import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog"
+import type { WorkspaceCommand } from "./workspace-commands"
 import { WorkspaceShell } from "./workspace-shell"
 import {
   completeHandshake,
@@ -28,6 +31,21 @@ afterEach(() => {
 const settle = () => act(async () => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 })
+
+// A palette drawn on its own: one session that can move to one machine.
+const standaloneCommands: WorkspaceCommand[] = [
+  {
+    id: "session-1",
+    label: "Migrate billing",
+    section: "Sessions",
+    keywords: [],
+    kind: "SESSION",
+    run: () => undefined,
+    elsewhereTargets: [
+      { id: "move-1-to-b", label: "thinkpad", section: "Machines", keywords: [], kind: "MACHINE", run: () => undefined },
+    ],
+  },
+]
 
 // The palette's code loads the first time it opens, and a dialog with its
 // name stands in for it until then, so an open waits for the palette's own
@@ -221,6 +239,76 @@ describe("workspace command palette keyboard path", () => {
     await act(async () => { completeHandshake(harness.sockets.at(-1)!, workspaceSnapshot()) })
     await settle()
     expect(routes).toEqual([undefined, "loopback", undefined, "loopback"])
+  })
+
+  // Task 99: a dialog the palette opened over (the browser limits) keeps its
+  // layer for a few frames while it closes, and that layer can take an Escape
+  // meant for the palette (a document listener here stands in for it). Focus
+  // is in the palette, so the Escape is the palette's.
+  it("closes on an Escape a closing layer under it took first", async () => {
+    const user = userEvent.setup()
+    render(<WorkspaceShell />)
+    await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
+    const trigger = screen.getByRole<HTMLButtonElement>("button", { name: "Open command palette" })
+    trigger.focus()
+    const closingLayer = (event: KeyboardEvent) => { if (event.key === "Escape") event.preventDefault() }
+    document.addEventListener("keydown", closingLayer, { capture: true })
+    try {
+      await openPalette(user)
+      await user.keyboard("{Escape}")
+      await settle()
+    } finally {
+      document.removeEventListener("keydown", closingLayer, { capture: true })
+    }
+    expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  // The palette's own Escape is unchanged: one Escape closes it once and
+  // leaves a dialog under it open, and with a machine being chosen it steps
+  // back out of the choice first, also when a closing layer took the key.
+  it("closes once on one Escape and leaves a dialog under it open", async () => {
+    const user = userEvent.setup()
+    const changes: boolean[] = []
+    const under = vi.fn()
+    let setPaletteOpen: ((open: boolean) => void) | undefined
+    function Harness() {
+      const [open, setOpen] = useState(false)
+      setPaletteOpen = setOpen
+      return <>
+        <Dialog open onOpenChange={under}><DialogContent aria-describedby={undefined}><DialogTitle>Under</DialogTitle></DialogContent></Dialog>
+        <CommandPalette open={open} platform="darwin" commands={standaloneCommands} onOpenChange={(next) => { changes.push(next); setOpen(next) }} restoreFocusTo={null} />
+      </>
+    }
+    render(<Harness />)
+    // The palette opens over the dialog already on screen.
+    await act(async () => { setPaletteOpen!(true) })
+    await screen.findByRole("combobox")
+    await user.keyboard("{Escape}")
+    await settle()
+    expect(changes).toEqual([false])
+    expect(under).not.toHaveBeenCalled()
+    expect(screen.getByRole("dialog", { name: "Under" })).toBeTruthy()
+  })
+
+  it("steps back out of a machine choice on an Escape a closing layer took", async () => {
+    const user = userEvent.setup()
+    const changes: boolean[] = []
+    const closingLayer = (event: KeyboardEvent) => { if (event.key === "Escape") event.preventDefault() }
+    document.addEventListener("keydown", closingLayer, { capture: true })
+    try {
+      render(<CommandPalette open platform="darwin" commands={standaloneCommands} onOpenChange={(next) => changes.push(next)} restoreFocusTo={null} />)
+      await screen.findByRole("combobox")
+      await user.keyboard("{Meta>}{Enter}{/Meta}")
+      expect(screen.getByRole("option", { name: /thinkpad/u })).toBeTruthy()
+      await user.keyboard("{Escape}")
+      expect(screen.getByRole("option", { name: /Migrate billing/u })).toBeTruthy()
+      expect(changes).toEqual([])
+      await user.keyboard("{Escape}")
+      expect(changes).toEqual([false])
+    } finally {
+      document.removeEventListener("keydown", closingLayer, { capture: true })
+    }
   })
 
   // Task 99: the palette opened over the limits closes them, so the control
