@@ -105,11 +105,18 @@ export function AppBar({
   const transport = machineTransport ?? (connected ? undefined : "unreachable")
   const watching = clientAccess === "watching"
   const appearanceLabel = theme === "dark" ? "Light appearance" : "Dark appearance"
+  // A watching tab cannot start a session or stop anything, and its watching
+  // only chip says so. Below 40rem those two disabled controls fold away to
+  // leave room for that chip and for unreachable.
+  const foldWhenWatching = watching ? "max-sm:hidden" : undefined
 
   return (
     <TooltipProvider>
       <header
-        className="electron-drag flex h-[var(--shell-titlebar)] shrink-0 items-center gap-3 border-b border-border bg-background px-[14px]"
+        // Below 40rem (a phone tab) the bar collapses to fit: tighter spacing,
+        // the shortcut hint and the route word fold away, the machine name
+        // truncates, and the theme toggle leaves for Settings, Appearance.
+        className="electron-drag flex h-[var(--shell-titlebar)] shrink-0 items-center gap-3 border-b border-border bg-background px-[14px] max-sm:gap-1 max-sm:px-2"
         style={leadingInset > 0 ? { paddingLeft: leadingInset } : undefined}
       >
       <DomovoiMark reduced className="size-[22px] shrink-0 text-primary" />
@@ -118,16 +125,16 @@ export function AppBar({
         <TooltipTrigger asChild>
           {/* startOpenerRef registers a control that opens a session start:
               a refusal of that start may take focus from it (ruling Q410). */}
-          <Button ref={startOpenerRef} variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label="New session" disabled={watching || !onNewSession} onClick={onNewSession}>
+          <Button ref={startOpenerRef} variant="ghost" size="icon-sm" className={cn(titlebarIconClassName, foldWhenWatching)} aria-label="New session" disabled={watching || !onNewSession} onClick={onNewSession}>
             <PlusIcon className="size-4" />
           </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom" sideOffset={7} showArrow={false} className={titlebarTipClassName}>{newSessionShortcut ? `New session · ${newSessionShortcut}` : "New session"}</TooltipContent>
       </Tooltip>
-      <div className="flex min-w-0 flex-1 justify-center">
+      <div className="flex min-w-8 flex-1 justify-center">
         <Button
           variant="outline"
-          className="electron-no-drag h-7 w-full max-w-[560px] min-w-0 justify-start rounded-full bg-sidebar px-3 font-normal hover:bg-accent"
+          className="electron-no-drag h-7 w-full max-w-[560px] min-w-0 justify-start overflow-hidden rounded-full bg-sidebar px-3 font-normal hover:bg-accent max-sm:px-2"
           aria-label="Open command palette"
           disabled={!onOpenCommands}
           onClick={onOpenCommands}
@@ -135,7 +142,7 @@ export function AppBar({
           <SearchIcon className="size-3.5 shrink-0 text-faint" />
           <span className="truncate text-[12.5px] text-strong">{titleText}</span>
           <span className="flex-1" />
-          {commandShortcut ? <kbd className="shrink-0 font-machine text-[10.5px] text-faint">{commandShortcut}</kbd> : null}
+          {commandShortcut ? <kbd className="shrink-0 font-machine text-[10.5px] text-faint max-sm:hidden">{commandShortcut}</kbd> : null}
         </Button>
       </div>
       {watching ? (
@@ -152,7 +159,7 @@ export function AppBar({
         variant="ghost"
         size="sm"
         className={cn(
-          "electron-no-drag h-7 shrink-0 rounded-full border-border px-2.5 font-normal",
+          "electron-no-drag h-7 shrink-0 rounded-full border-border px-2.5 font-normal max-sm:min-w-0 max-sm:shrink",
           !connected && "border-danger-border bg-danger-background",
         )}
         aria-label={`Machines: ${snapshot?.machine.name ?? "daemon"}`}
@@ -160,10 +167,13 @@ export function AppBar({
         onClick={onOpenMachines}
       >
         <StatusDot meaning={connected ? "online" : "offline"} label={`${connected ? "Connected to" : "Disconnected from"} ${snapshot?.machine.name ?? "daemon"}.`} size="inline" labelHidden />
-        <span className="font-machine text-[10.5px]">{snapshot?.machine.name ?? "daemon"}</span>
-        {transport ? <span className="text-[10.5px] text-faint">{transport}</span> : null}
+        <span className="min-w-0 truncate font-machine text-[10.5px]">{snapshot?.machine.name ?? "daemon"}</span>
+        {/* Machines names the route; unreachable stays on a narrow bar. */}
+        {transport ? <span className={cn("text-[10.5px] text-faint", connected && "max-sm:hidden")}>{transport}</span> : null}
       </Button>
-      <StopMenu connected={connected} pending={emergencyStopPending} disabled={watching} onPauseAll={onPauseAll} onEmergencyStop={onEmergencyStop} />
+      <span className={cn("contents", foldWhenWatching)}>
+        <StopMenu connected={connected} pending={emergencyStopPending} disabled={watching} onPauseAll={onPauseAll} onEmergencyStop={onEmergencyStop} />
+      </span>
       <Tooltip>
         <TooltipTrigger asChild>
           <Button variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label="Settings" disabled={!onOpenSettings} onClick={onOpenSettings}>
@@ -176,7 +186,7 @@ export function AppBar({
           so watching does not lock it (Q362 A). */}
       <Tooltip>
         <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon-sm" className={titlebarIconClassName} aria-label={theme === "dark" ? "Use light theme" : "Use dark theme"} disabled={!onToggleTheme} onClick={onToggleTheme}>
+          <Button variant="ghost" size="icon-sm" className={cn(titlebarIconClassName, "max-sm:hidden")} aria-label={theme === "dark" ? "Use light theme" : "Use dark theme"} disabled={!onToggleTheme} onClick={onToggleTheme}>
             {theme === "dark" ? <MoonIcon className="size-4" /> : <SunIcon className="size-4" />}
           </Button>
         </TooltipTrigger>
