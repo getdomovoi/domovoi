@@ -410,7 +410,10 @@ export function CommandPalette({
   }, [picked, switching])
 
   useEffect(() => {
-    if (!wasOpen.current && open) shouldRestoreFocus.current = true
+    if (!wasOpen.current && open) {
+      shouldRestoreFocus.current = true
+      dismissedByDialog.current = false
+    }
     if (wasOpen.current && !open) {
       // The shell can close the palette itself (its toggle), past close();
       // a switch still in flight is cancelled on that path too.
