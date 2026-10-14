@@ -119,6 +119,33 @@ it('holds an image message when the model answer lands in the commit that ends t
   expect(screen.getByText(heldNotice)).toBeTruthy()
 })
 
+// Codex review round 1: the release's own read failing must not leave it
+// knowing less than the composer, whose read answers in the commit that ends
+// the turn.
+it('holds an image message on the composer\'s answer when the release\'s own read failed', async () => {
+  const value = running()
+  withImageDraft(value.activeSessionId!)
+  const socket = await open(value)
+  queue('look at this')
+  const open_ = sentRequests(socket, 'runtime.models').filter((request) => !socket.answered.has(request.id))
+  expect(open_.length).toBeGreaterThanOrEqual(2)
+  const releaseRead = open_.at(-1)!
+  await act(async () => {
+    socket.answered.add(releaseRead.id)
+    socket.receive({ jsonrpc: '2.0', id: releaseRead.id, error: { code: -32603, message: 'catalog unavailable' } })
+  })
+  await settle()
+
+  await act(async () => {
+    answerModels(socket, textOnly)
+    notify(socket, 'workspace.changed', idle(value))
+  })
+  await settle()
+
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+  expect(screen.getByText(heldNotice)).toBeTruthy()
+})
+
 it('holds a background session\'s image message for a model that takes none', async () => {
   const value = running()
   const owner = value.activeSessionId!

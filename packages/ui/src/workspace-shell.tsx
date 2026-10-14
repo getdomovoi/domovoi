@@ -12,6 +12,7 @@ import type {
   ClientKind,
   PermissionMode,
   ProjectSwitchConfirmation,
+  ProviderModel,
   RepositoryGitFilterRefusal,
   RpcParams,
   Runtime,
@@ -84,6 +85,7 @@ import {
   type SessionQueues,
 } from "./turn-queue"
 import { imagesHeldReason } from "./thread-composer"
+import { nextCatalogReadTicket } from "./model-popover"
 import { notificationPreferenceFor, type NotificationPreferences } from "./notification-preferences"
 import { DesktopFirstRunDialog } from "./desktop-first-run-lazy"
 import { desktopFirstRunAvailable, firstRunDefaultProvider } from "./desktop-first-run-rules"
@@ -352,13 +354,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // queued in A must leave at A's next turn boundary whether or not anyone is
   // looking at A.
   const [queues, setQueues] = useState<SessionQueues>({})
-  // Each provider's model catalog as the release last read it. Thread's hold
+  // Each provider's newest model catalog answer that came through the shell:
+  // Thread's and its model menu's reads, and the release's own. Thread's hold
   // on images a model cannot take reaches only the session on screen, and
-  // only from the commit after its read answers, so the release reads for
-  // itself. Kept only while a waiting message with images needs it.
-  const [queueCatalogs, setQueueCatalogs] = useState<Readonly<Record<string, CatalogRead>>>({})
-  const queueCatalogTickets = useRef(new Map<string, number>())
-  const nextQueueCatalogTicket = useRef(0)
+  // only from the commit after its read answers, so the release holds from
+  // these instead and never knows less than the composer. Newest by when the
+  // read started, as Thread orders its own.
+  const [catalogAnswers, setCatalogAnswers] = useState<Readonly<Record<string, { models: readonly ProviderModel[], ticket: number }>>>({})
+  // Providers whose latest release read failed. Not known is not no, so a
+  // message with images goes; with neither an answer nor a failure, it waits.
+  const [catalogFailures, setCatalogFailures] = useState<ReadonlySet<string>>(() => new Set())
+  const catalogRequests = useRef(new Map<string, { ticket: number, connectionId: string | null }>())
   // Every send that did not come back, kept by identity. One slot per session
   // was still one slot: a second refusal would erase the first receipt and the
   // reason with it.
@@ -1084,33 +1090,50 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     }
     return [...providers].sort().join("\n")
   }, [snapshot, queues])
-  // One read per provider while it is needed. A provider no longer needed is
-  // dropped, answer and all, so the next message with images reads afresh
-  // rather than trusting a catalog from before a model or harness change. The
-  // ticket keeps a dropped read's late answer out.
+  // Another daemon's catalog says nothing about this one's models. Reset
+  // during render, as the stop above is, so no release reads the old answers.
+  const [catalogConnection, setCatalogConnection] = useState(connectionId)
+  if (catalogConnection !== connectionId) {
+    setCatalogConnection(connectionId)
+    setCatalogAnswers({})
+    setCatalogFailures(new Set())
+  }
+  const liveConnection = useRef(connectionId)
+  useEffect(() => { liveConnection.current = connectionId }, [connectionId])
+  // Every catalog read through the shell records its answer before its caller
+  // sees it, so no commit gives Thread an answer the release lacks.
+  const listModelsSeen = useCallback(async (provider: string): Promise<ProviderModel[]> => {
+    const ticket = nextCatalogReadTicket()
+    const startedOn = liveConnection.current
+    const models = await listModels(provider)
+    if (liveConnection.current === startedOn) {
+      setCatalogAnswers((current) => (current[provider]?.ticket ?? 0) > ticket ? current : { ...current, [provider]: { models, ticket } })
+    }
+    return models
+  }, [listModels])
+  // The release's own read, once per provider per connection while a message
+  // with images waits on it, so a session off screen is covered too. A newer
+  // need reads again; until it answers, the newest answer already seen holds.
   useEffect(() => {
     const needed = new Set(connected && !watching && imageQueueProviders ? imageQueueProviders.split("\n") : [])
-    const tickets = queueCatalogTickets.current
-    for (const provider of [...tickets.keys()]) if (!needed.has(provider)) tickets.delete(provider)
-    setQueueCatalogs((current) => {
-      const kept = Object.fromEntries(Object.entries(current).filter(([provider]) => needed.has(provider)))
-      return Object.keys(kept).length === Object.keys(current).length ? current : kept
-    })
+    const requests = catalogRequests.current
+    for (const provider of [...requests.keys()]) if (!needed.has(provider)) requests.delete(provider)
     for (const provider of needed) {
-      if (tickets.has(provider)) continue
-      nextQueueCatalogTicket.current += 1
-      const ticket = nextQueueCatalogTicket.current
-      tickets.set(provider, ticket)
-      const settle = (read: CatalogRead) => {
-        if (tickets.get(provider) !== ticket) return
-        setQueueCatalogs((current) => ({ ...current, [provider]: read }))
-      }
-      void listModels(provider).then(
-        (models) => settle({ state: "read", models }),
-        () => settle({ state: "failed" }),
-      )
+      if (requests.get(provider)?.connectionId === connectionId) continue
+      const request = { ticket: nextCatalogReadTicket(), connectionId }
+      requests.set(provider, request)
+      setCatalogFailures((current) => {
+        if (!current.has(provider)) return current
+        const next = new Set(current)
+        next.delete(provider)
+        return next
+      })
+      void listModelsSeen(provider).catch(() => {
+        if (requests.get(provider) !== request) return
+        setCatalogFailures((current) => new Set(current).add(provider))
+      })
     }
-  }, [imageQueueProviders, connected, watching, listModels])
+  }, [imageQueueProviders, connected, watching, connectionId, listModelsSeen])
 
   // The release lives here rather than in Thread because a turn ending in A is
   // A's business whether or not A is the session on screen.
@@ -1141,7 +1164,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       // the message is held with Thread's notice rather than sent into that
       // refusal. Until this provider's catalog answers, it waits.
       const runtime = snapshot?.sessions.find((candidate) => candidate.id === session.id)?.runtime
-      const images = runtime ? imageRelease(message, runtime, queueCatalogs[runtime.provider]) : "release"
+      const answer = runtime ? catalogAnswers[runtime.provider] : undefined
+      const read: CatalogRead | undefined = answer
+        ? { state: "read", models: answer.models }
+        : runtime && catalogFailures.has(runtime.provider) ? { state: "failed" } : undefined
+      const images = runtime ? imageRelease(message, runtime, read) : "release"
       if (images === "wait") continue
       if (images === "hold") {
         setQueues((current) => setQueue(current, session.id, heldAfter(message, imagesHeldReason(runtime!.model))))
@@ -1174,7 +1201,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           setSettled((count) => count + 1)
         })
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, settled, watching, connected, queueCatalogs])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, settled, watching, connected, catalogAnswers, catalogFailures])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
@@ -2060,7 +2087,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                     />
                   </div>
                 </main>
-              ) : <Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} connectionId={connectionId} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModels} onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={threadPairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntime} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} onOpenDockTab={openSheetTab} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onUnpickBuildBasis={() => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, undefined) })) }} />}</ResizablePanel>
+              ) : <Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} connectionId={connectionId} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModelsSeen}onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={threadPairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntime} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} onOpenDockTab={openSheetTab} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onUnpickBuildBasis={() => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, undefined) })) }} />}</ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces(<Button ref={dockUnpinButtonRef} variant="ghost" size="icon-sm" className="size-7 flex-none rounded-full bg-accent text-primary" aria-pressed aria-label="Unpin" onClick={() => setDockPinned(false)}><PinIcon className="size-[15px]" /></Button>, true)}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
