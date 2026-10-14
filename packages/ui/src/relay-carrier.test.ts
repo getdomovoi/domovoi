@@ -32,7 +32,7 @@ class Wire extends EventTarget implements RelayWebSocket {
   open() { this.readyState = 1; this.dispatchEvent(new Event("open")) }
   receive(data: unknown) { this.dispatchEvent(new MessageEvent("message", { data })) }
   control(value: unknown) { this.receive(new TextDecoder().decode(encodeRelayCarrierControl(value))) }
-  lost(code = 1006) { this.readyState = 3; this.dispatchEvent(Object.assign(new Event("close"), { code })) }
+  lost(code = 1006, reason = "") { this.readyState = 3; this.dispatchEvent(Object.assign(new Event("close"), { code, reason })) }
 }
 
 async function flush() { for (let i = 0; i < 30; i++) await Promise.resolve() }
@@ -131,6 +131,7 @@ it.each(["handshake", "receipt"])("keeps an ordinary network loss during %s retr
   if (stage === "receipt") responder(wire).step()
   wire.lost(1006)
   expect(f.closed).toEqual([1006])
+  expect(f.socket.localAdmissionRefusal).toBeUndefined()
   expect(f.opened).not.toHaveBeenCalled()
   expect(f.wires).toHaveLength(2)
 })
@@ -196,6 +197,7 @@ it("shares the caller deadline with a stalled pin read and ignores its late resu
   await flush()
   await vi.advanceTimersByTimeAsync(5_000)
   expect(f.closed).toEqual([1006])
+  expect(f.socket.localAdmissionRefusal).toBeUndefined()
   resolve(pin); await flush()
   expect(f.wires).toEqual([])
   expect(f.opened).not.toHaveBeenCalled()
@@ -288,6 +290,7 @@ it("the channel's uncompleted admission deadline remains a retryable loss", asyn
   const f = fixture({ deadlineMs: 20_000 }), wire = await f.connect()
   await vi.advanceTimersByTimeAsync(10_000)
   expect(f.closed).toEqual([1006])
+  expect(f.socket.localAdmissionRefusal).toBeUndefined()
   expect(wire.readyState).toBe(3)
   expect(f.opened).not.toHaveBeenCalled()
 })
@@ -328,6 +331,7 @@ it("keeps a physical send exception during the Noise handshake retryable", async
   wire.onSend = () => { throw new Error("network send failed") }
   wire.control({ kind: "connected", carrierVersion: 1 })
   expect(f.closed).toEqual([1006])
+  expect(f.socket.localAdmissionRefusal).toBeUndefined()
   expect(f.opened).not.toHaveBeenCalled()
 })
 
@@ -338,6 +342,7 @@ it("refuses a mutation on a closing physical socket as network loss without repl
   wire.readyState = 2
   expect(() => f.socket.send("mutation")).toThrow()
   expect(f.closed).toEqual([1006])
+  expect(f.socket.localAdmissionRefusal).toBeUndefined()
   expect(wire.sent).toHaveLength(sent)
   expect(remote.received).toEqual([])
   expect(f.wires).toHaveLength(2)
@@ -350,6 +355,7 @@ it("does not pretend a daemon credential rejection has an authenticated refusal 
   // The relay terminates the logical client's physical socket. It does not
   // preserve the daemon's reason, so this is indistinguishable from link loss.
   expect(f.closed).toEqual([1006])
+  expect(f.socket.localAdmissionRefusal).toBeUndefined()
   expect(f.opened).not.toHaveBeenCalled()
   expect(remote.received).toEqual([])
 })
@@ -395,4 +401,41 @@ it("treats unavailable platform entropy during channel construction as terminal"
   await vi.waitFor(() => expect(f.closed).toEqual([1008]))
   expect(f.wires).toHaveLength(1)
   expect(f.opened).not.toHaveBeenCalled()
+})
+
+it.each([undefined, "corrupt pin"])("reports local saved-pin verification failure without claiming bearer rejection: %s", async (saved) => {
+  const f = fixture({ pinStore: { read: async () => saved, compareAndSwap: async () => false } })
+  const retry = vi.fn(() => 1), snapshots = vi.fn()
+  const client = new DomovoiClient("wss://relay.example/carrier", "web", {
+    authToken: "", createSocket: () => f.socket, admission: { machineId },
+    budgets: { connectMs: 5_000, requestMs: 5_000 },
+    scheduler: { setTimeout: retry, clearTimeout: vi.fn() },
+  })
+  cleanup.push(() => client.disconnect())
+  client.addEventListener("snapshot", snapshots)
+  const failure: unknown = await client.connect().catch((error: unknown) => error)
+  expect(f.wires).toEqual([])
+  expect(f.socket.localAdmissionRefusal).toBe("relay-verification-refused")
+  expect(Reflect.set(f.socket, "localAdmissionRefusal", undefined)).toBe(false)
+  expect(snapshots).not.toHaveBeenCalled()
+  expect(retry).not.toHaveBeenCalled()
+  expect(failure).toMatchObject({ name: "ClientAdmissionError", reason: "relay-verification-refused" })
+})
+
+it.each(["recovering", "admitting"])("never promotes a peer close reason to the local relay refusal signal while %s", async (stage) => {
+  const f = fixture()
+  const retry = vi.fn(() => 1)
+  const client = new DomovoiClient("wss://relay.example/carrier", "web", {
+    authToken: "", createSocket: () => f.socket, admission: { machineId },
+    budgets: { connectMs: 5_000, requestMs: 5_000 }, scheduler: { setTimeout: retry, clearTimeout: vi.fn() },
+  })
+  cleanup.push(() => client.disconnect())
+  const outcome = client.connect().catch((error: unknown) => error)
+  if (stage === "admitting") await f.connect()
+  else await vi.waitFor(() => expect(f.wires).toHaveLength(1))
+  f.wires.at(-1)!.lost(1008, "relay-verification-refused")
+  await flush()
+  expect(await outcome).toMatchObject({ name: "ClientAdmissionError", reason: "client-credential-required" })
+  expect(Reflect.get(f.socket, "localAdmissionRefusal")).toBeUndefined()
+  expect(retry).not.toHaveBeenCalled()
 })

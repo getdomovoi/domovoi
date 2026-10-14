@@ -27,7 +27,7 @@ export type RelaySocketOptions = {
 }
 
 const encoder = new TextEncoder(), decoder = new TextDecoder()
-const refused = () => new ClientAdmissionError("verification-unavailable")
+const refused = () => new ClientAdmissionError("relay-verification-refused")
 type Stage = "starting" | "recovering" | "verifying" | "connecting" | "admitting" | "open" | "closed"
 
 // One attempt owns two sequential physical sockets and one fresh Noise channel.
@@ -36,6 +36,7 @@ type Stage = "starting" | "recovering" | "verifying" | "connecting" | "admitting
 class RelaySocket implements ClientSocket {
   readonly #events = new EventTarget()
   #stage: Stage = "starting"
+  #localRefusal: "relay-verification-refused" | undefined
   #wire: RelayWebSocket | undefined
   #wireListeners: AbortController | undefined
   #channel: RelayClient | undefined
@@ -68,8 +69,10 @@ class RelaySocket implements ClientSocket {
     this.#limits = { ...options.limits }
     this.#now = options.now ?? (() => performance.now())
     // Defer all observable work until the consumer can attach its listeners.
-    void Promise.resolve().then(() => this.#begin()).catch(() => this.#finish(1008))
+    void Promise.resolve().then(() => this.#begin()).catch(() => this.#refuse())
   }
+
+  get localAdmissionRefusal(): "relay-verification-refused" | undefined { return this.#localRefusal }
 
   get readyState(): number { return this.#stage === "closed" ? 3 : this.#stage === "open" ? 1 : 0 }
 
@@ -79,7 +82,7 @@ class RelaySocket implements ClientSocket {
 
   send(message: string): void {
     if (this.#stage !== "open") throw refused()
-    try { this.#channel!.send(message) } catch { this.#finish(1008); throw refused() }
+    try { this.#channel!.send(message) } catch { this.#refuse(); throw refused() }
   }
 
   close(): void { this.#finish(1000) }
@@ -98,8 +101,13 @@ class RelaySocket implements ClientSocket {
     try { wire?.close(1000, "client closed") } catch { /* Refusal cannot revive an abandoned socket. */ }
   }
 
-  #finish(code: number): void {
+  #refuse(): void { this.#finish(1008, true) }
+
+  #finish(code: number, localRefusal = false): void {
     if (this.#stage === "closed") return
+    // First terminal outcome wins. A later local exception cannot upgrade an
+    // earlier network/peer closure into a locally verified refusal.
+    if (localRefusal) this.#localRefusal = "relay-verification-refused"
     this.#stage = "closed"
     this.#deadline.signal.removeEventListener("abort", this.#expire)
     this.#key.fill(0)
@@ -118,7 +126,7 @@ class RelaySocket implements ClientSocket {
     if (!this.#alive()) throw refused()
     if (!wire || wire.readyState !== 1) { this.#finish(1006); throw refused() }
     if (!Number.isSafeInteger(wire.bufferedAmount) || wire.bufferedAmount < 0
-      || wire.bufferedAmount + bytes > maximumRelayBufferedBytes) { this.#finish(1008); throw refused() }
+      || wire.bufferedAmount + bytes > maximumRelayBufferedBytes) { this.#refuse(); throw refused() }
     try { wire.send(typeof data === "string" ? data : new Uint8Array(data)) }
     catch { this.#finish(1006); throw refused() }
   }
@@ -154,7 +162,7 @@ class RelaySocket implements ClientSocket {
     }, { once: true, signal: listeners.signal })
     wire.addEventListener("message", (event) => {
       if (!current()) return
-      try { this.#receive(event.data) } catch { this.#finish(1008) }
+      try { this.#receive(event.data) } catch { this.#refuse() }
     }, { signal: listeners.signal })
     wire.addEventListener("close", (event) => {
       if (current()) this.#finish(event.code === 1008 ? 1008 : 1006)
@@ -197,7 +205,7 @@ class RelaySocket implements ClientSocket {
       if (this.#stage === "recovering" && control.kind === "recovery") {
         this.#stage = "verifying"
         this.#dropWire()
-        void this.#recover(control.recovery).catch(() => this.#finish(1008))
+        void this.#recover(control.recovery).catch(() => this.#refuse())
       } else if (this.#stage === "connecting" && control.kind === "connected") {
         this.#stage = "admitting"
         this.#channel!.start()
@@ -248,7 +256,7 @@ class RelaySocket implements ClientSocket {
         // Later the channel also closes on its own deadline. Synchronous
         // crypto/parse failures latch 1008 before that deferred timer-style loss.
         close: () => {
-          if (this.#stage === "verifying") this.#finish(1008)
+          if (this.#stage === "verifying") this.#refuse()
           else queueMicrotask(() => this.#finish(1006))
         },
       },
