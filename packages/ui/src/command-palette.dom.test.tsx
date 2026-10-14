@@ -1,7 +1,12 @@
-import { act, cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, beforeEach, describe, expect, it } from "vitest"
+import { useState } from "react"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import { BrowserLimitsPanel } from "./browser-limits-panel"
+import { CommandPalette } from "./command-palette"
+import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog"
+import type { WorkspaceCommand } from "./workspace-commands"
 import { WorkspaceShell } from "./workspace-shell"
 import {
   completeHandshake,
@@ -26,6 +31,21 @@ afterEach(() => {
 const settle = () => act(async () => {
   for (let index = 0; index < 8; index += 1) await Promise.resolve()
 })
+
+// A palette drawn on its own: one session that can move to one machine.
+const standaloneCommands: WorkspaceCommand[] = [
+  {
+    id: "session-1",
+    label: "Migrate billing",
+    section: "Sessions",
+    keywords: [],
+    kind: "SESSION",
+    run: () => undefined,
+    elsewhereTargets: [
+      { id: "move-1-to-b", label: "thinkpad", section: "Machines", keywords: [], kind: "MACHINE", run: () => undefined },
+    ],
+  },
+]
 
 // The palette's code loads the first time it opens, and a dialog with its
 // name stands in for it until then, so an open waits for the palette's own
@@ -197,6 +217,146 @@ describe("workspace command palette keyboard path", () => {
     })
     await openPalette(user)
     expect(screen.queryByRole("option", { name: /^What a browser tab can and cannot do/u })).toBeNull()
+  })
+
+  // Task 99: the open limits name the route the chip names now, so the shell
+  // reports each change of that word, and none while the daemon is lost.
+  it("reports the chip's route to the browser limits on each change, none while the daemon is lost", async () => {
+    const routes: unknown[] = []
+    render(<WorkspaceShell clientKind="web" onOpenBrowserLimits={() => undefined} onBrowserLimitsRoute={(route) => routes.push(route)} />)
+    await settle()
+    expect(routes).toEqual([undefined])
+    await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
+    await settle()
+    expect(routes).toEqual([undefined, "loopback"])
+
+    await act(async () => { harness.socket(0).drop() })
+    await settle()
+    expect(routes).toEqual([undefined, "loopback", undefined])
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry now" }))
+    await settle()
+    await act(async () => { completeHandshake(harness.sockets.at(-1)!, workspaceSnapshot()) })
+    await settle()
+    expect(routes).toEqual([undefined, "loopback", undefined, "loopback"])
+  })
+
+  // Task 99: a dialog the palette opened over (the browser limits) keeps its
+  // layer for a few frames while it closes, and that layer can take an Escape
+  // meant for the palette (a document listener here stands in for it). Focus
+  // is in the palette, so the Escape is the palette's.
+  it("closes on an Escape a closing layer under it took first", async () => {
+    const user = userEvent.setup()
+    render(<WorkspaceShell />)
+    await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
+    const trigger = screen.getByRole<HTMLButtonElement>("button", { name: "Open command palette" })
+    trigger.focus()
+    const closingLayer = (event: KeyboardEvent) => { if (event.key === "Escape") event.preventDefault() }
+    document.addEventListener("keydown", closingLayer, { capture: true })
+    try {
+      await openPalette(user)
+      await user.keyboard("{Escape}")
+      await settle()
+    } finally {
+      document.removeEventListener("keydown", closingLayer, { capture: true })
+    }
+    expect(screen.queryByRole("dialog", { name: "Domovoi commands" })).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  // The palette's own Escape is unchanged: one Escape closes it once and
+  // leaves a dialog under it open, and with a machine being chosen it steps
+  // back out of the choice first, also when a closing layer took the key.
+  it("closes once on one Escape and leaves a dialog under it open", async () => {
+    const user = userEvent.setup()
+    const changes: boolean[] = []
+    const under = vi.fn()
+    let setPaletteOpen: ((open: boolean) => void) | undefined
+    function Harness() {
+      const [open, setOpen] = useState(false)
+      setPaletteOpen = setOpen
+      return <>
+        <Dialog open onOpenChange={under}><DialogContent aria-describedby={undefined}><DialogTitle>Under</DialogTitle></DialogContent></Dialog>
+        <CommandPalette open={open} platform="darwin" commands={standaloneCommands} onOpenChange={(next) => { changes.push(next); setOpen(next) }} restoreFocusTo={null} />
+      </>
+    }
+    render(<Harness />)
+    // The palette opens over the dialog already on screen.
+    await act(async () => { setPaletteOpen!(true) })
+    await screen.findByRole("combobox")
+    await user.keyboard("{Escape}")
+    await settle()
+    expect(changes).toEqual([false])
+    expect(under).not.toHaveBeenCalled()
+    expect(screen.getByRole("dialog", { name: "Under" })).toBeTruthy()
+  })
+
+  it("steps back out of a machine choice on an Escape a closing layer took", async () => {
+    const user = userEvent.setup()
+    const changes: boolean[] = []
+    const closingLayer = (event: KeyboardEvent) => { if (event.key === "Escape") event.preventDefault() }
+    document.addEventListener("keydown", closingLayer, { capture: true })
+    try {
+      render(<CommandPalette open platform="darwin" commands={standaloneCommands} onOpenChange={(next) => changes.push(next)} restoreFocusTo={null} />)
+      await screen.findByRole("combobox")
+      await user.keyboard("{Meta>}{Enter}{/Meta}")
+      expect(screen.getByRole("option", { name: /thinkpad/u })).toBeTruthy()
+      await user.keyboard("{Escape}")
+      expect(screen.getByRole("option", { name: /Migrate billing/u })).toBeTruthy()
+      expect(changes).toEqual([])
+      await user.keyboard("{Escape}")
+      expect(changes).toEqual([false])
+    } finally {
+      document.removeEventListener("keydown", closingLayer, { capture: true })
+    }
+  })
+
+  // Task 99: the palette opened over the limits closes them, so the control
+  // that had focus when it opened (the limits heading) is gone when it closes.
+  // Focus goes back to the control that first opened the limits instead, and
+  // the limits asked for again from that palette keep that control too.
+  it("gives focus back to the limits' first opener when a palette opened over them closes", async () => {
+    const user = userEvent.setup()
+    const opened: Array<HTMLElement | null> = []
+    function Tab() {
+      const [limits, setLimits] = useState<{ open: boolean; opener: HTMLElement | null }>({ open: false, opener: null })
+      return <>
+        <WorkspaceShell clientKind="web" onOpenBrowserLimits={(opener) => { opened.push(opener); setLimits({ open: true, opener }) }} />
+        <BrowserLimitsPanel rows={[]} continueLabel="Back" onContinue={() => setLimits((current) => ({ ...current, open: false }))} dialog={{ open: limits.open, returnFocusTo: limits.opener }} />
+      </>
+    }
+    render(<Tab />)
+    await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
+    const trigger = screen.getByRole<HTMLButtonElement>("button", { name: "Open command palette" })
+    trigger.focus()
+    const openLimits = async () => {
+      await user.type(screen.getByRole("combobox"), "what a browser tab")
+      await user.keyboard("{Enter}")
+      await settle()
+    }
+    const limits = () => screen.queryByRole("dialog", { name: "What a browser tab can and cannot do" })
+
+    await openPalette(user)
+    await openLimits()
+    expect(limits()).not.toBeNull()
+    expect(document.activeElement?.textContent).toBe("What a browser tab can and cannot do")
+
+    // The palette over the limits closes them; Escape closes the palette.
+    await openPalette(user)
+    expect(limits()).toBeNull()
+    await user.keyboard("{Escape}")
+    await settle()
+    expect(document.activeElement).toBe(trigger)
+
+    // Asked for again from a palette opened over them, they keep the trigger.
+    await openPalette(user)
+    await openLimits()
+    await openPalette(user)
+    await openLimits()
+    expect(opened).toEqual([trigger, trigger, trigger])
+    await user.click(screen.getByRole("button", { name: "Back" }))
+    await settle()
+    expect(document.activeElement).toBe(trigger)
   })
 
   it("opens the machine menu on the active session to move it", async () => {

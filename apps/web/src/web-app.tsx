@@ -31,8 +31,9 @@ export type WebAppProps = {
   labelSuffix: () => string
   // onOpenLimits reopens the limits over the session (Q367 A), handed the
   // control to give focus back to on the way out and the route the shell's
-  // chip names, or undefined while that route is not resolved.
-  workspace: (session: { token: string, deviceId: string, onSignedOut: (result: unknown) => void, onChangeCredential: () => void, onOpenLimits: (opener: HTMLElement | null, route: LimitsRoute | undefined) => void }) => ReactNode
+  // chip names, or undefined while that route is not resolved. onLimitsRoute
+  // takes each change of that route, so limits already open follow it.
+  workspace: (session: { token: string, deviceId: string, onSignedOut: (result: unknown) => void, onChangeCredential: () => void, onOpenLimits: (opener: HTMLElement | null, route: LimitsRoute | undefined) => void, onLimitsRoute: (route: LimitsRoute | undefined) => void }) => ReactNode
 }
 
 const pairedBeforeKey = "domovoi.paired-before"
@@ -104,7 +105,11 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
   }, [limitsOpen])
   // Inside the session the limits open as a dialog over it (Q99 A), and give
   // focus back to the control that opened the palette.
-  const [sessionLimits, setSessionLimits] = useState<{ open: boolean; opener: HTMLElement | null; route: LimitsRoute | undefined }>({ open: false, opener: null, route: undefined })
+  const [sessionLimits, setSessionLimits] = useState<{ open: boolean; opener: HTMLElement | null }>({ open: false, opener: null })
+  // The route the session is on now, as the shell's chip names it. The shell
+  // reports each change, so the rows of an open dialog follow a reconnect
+  // over another route or a lost daemon.
+  const [sessionRoute, setSessionRoute] = useState<LimitsRoute | undefined>(undefined)
   const { host, secure } = hostOf(rpcUrl)
   const route = routeOfEndpoint(rpcUrl)
   const credentialOffered = isLoopbackPageOrigin(pageOrigin)
@@ -223,7 +228,8 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
   // A session that ends with the limits open takes them with it, so the next
   // session does not open on limits it did not ask for.
   const leaveSession = () => {
-    setSessionLimits({ open: false, opener: null, route: undefined })
+    setSessionLimits({ open: false, opener: null })
+    setSessionRoute(undefined)
     setOutcome(undefined)
     setPath("code")
     setSession(undefined)
@@ -245,16 +251,19 @@ export function WebApp({ rpcUrl, pageOrigin, clientKind, environment, storage, m
       // The rows always take the route the session is on now. Asked for from a
       // palette opened over the limits, the opener is inside the limits, so
       // the dialog keeps the control that first opened it.
-      onOpenLimits: (opener, route) => setSessionLimits((current) => ({
-        open: true,
-        route,
-        opener: current.opener && opener?.closest("[data-browser-limits]") ? current.opener : opener,
-      })),
+      onOpenLimits: (opener, route) => {
+        setSessionRoute(route)
+        setSessionLimits((current) => ({
+          open: true,
+          opener: current.opener && opener?.closest("[data-browser-limits]") ? current.opener : opener,
+        }))
+      },
+      onLimitsRoute: setSessionRoute,
     })}
     <BrowserLimitsPanel
       // The session's route as its chip names it, which for an attached
       // machine is not the home endpoint's.
-      rows={browserLimits(environment, { route: sessionLimits.route }, markBrowserLimitsSeen(storage))}
+      rows={browserLimits(environment, { route: sessionRoute }, markBrowserLimitsSeen(storage))}
       continueLabel="Back"
       onContinue={() => setSessionLimits((current) => ({ ...current, open: false }))}
       dialog={{ open: sessionLimits.open, returnFocusTo: sessionLimits.opener }}

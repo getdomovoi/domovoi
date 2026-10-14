@@ -804,6 +804,34 @@ describe("limits from the workspace", () => {
     expect(watch?.textContent).toContain(`The daemon streams the thread and the plan ${words}`)
   })
 
+  // Task 99: the open dialog names the route the session is on now. A
+  // reconnect over another route, or a lost daemon, changes the rows under it.
+  it("keeps the open dialog's rows on the route the shell reports now", async () => {
+    let open: OpenLimits | undefined
+    let report: ((route: LimitsRoute | undefined) => void) | undefined
+    const storage = memoryStorage()
+    storage.setItem("domovoi.daemon-session", JSON.stringify({ deviceId, token: deviceToken }))
+    storage.setItem("domovoi.web.limitsSeen", "1")
+    await act(async () => {
+      root.render(
+        <WebApp rpcUrl={rpcUrl} pageOrigin={loopbackPage} clientKind="web" environment={environment} storage={storage} createClient={vi.fn()} labelSuffix={() => "1234"}
+          workspace={({ onOpenLimits, onLimitsRoute }) => { open = onOpenLimits; report = onLimitsRoute; return <button type="button">Opener</button> }} />,
+      )
+    })
+    const watch = () => [...(limitsDialog()?.querySelectorAll("li") ?? [])].find((item) => item.textContent?.includes("Watch a session live"))?.textContent
+    await act(async () => { report!("tailnet") })
+    await act(async () => { open!(button("Opener"), "tailnet") })
+    await settle()
+    expect(watch()).toContain("over the tailnet.")
+
+    await act(async () => { report!(undefined) })
+    expect(watch()).toContain("over the route.")
+    await act(async () => { report!("loopback") })
+    expect(watch()).toContain("over loopback.")
+    await act(async () => { report!("direct") })
+    expect(watch()).toContain("over the route.")
+  })
+
   // The session's own window shortcuts are its business while the dialog is
   // up, as with any of its dialogs; the limits add no key handling.
   it("leaves the session's shortcuts to it while the dialog is open", async () => {

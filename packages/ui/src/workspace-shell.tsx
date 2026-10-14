@@ -227,6 +227,9 @@ export type WorkspaceShellProps = {
   // control that opened the palette, so focus can go back to it, and the
   // route the machine chip names (undefined while it is not resolved).
   onOpenBrowserLimits?: ((opener: HTMLElement | null, route: ReturnType<typeof machineRoute> | undefined) => void) | undefined
+  // Told the same route each time it changes, so limits already open name the
+  // route the session is on now (a reconnect over another route, a lost daemon).
+  onBrowserLimitsRoute?: ((route: ReturnType<typeof machineRoute> | undefined) => void) | undefined
   // Where this client keeps each daemon's relay identity pin. Absent means no
   // pin is kept and none is reconciled; the web passes localStorage.
   relayPinStorage?: RelayPinStorage
@@ -303,7 +306,7 @@ type StartScope = {
   focusFrom: { trigger: Element | null; within: Element | null }
 }
 
-export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, currentDeviceId, onSignedOut, onOpenBrowserLimits, relayPinStorage }: WorkspaceShellProps) {
+export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47831/rpc", rpcToken, resolveRpcEndpoint, localDaemon, onLocalDaemonChanged, windowBridge, platform, onChangeCredential, currentDeviceId, onSignedOut, onOpenBrowserLimits, onBrowserLimitsRoute, relayPinStorage }: WorkspaceShellProps) {
   const [attached, setAttached] = useState<{ machineId: string } | null>(null)
   // J24: whether the login service is installed, from the desktop's own
   // status read. A daemon outside the app is drawn as the service only when
@@ -603,6 +606,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const sheetPinButtonRef = useRef<HTMLButtonElement>(null)
   const notificationTrackerRef = useRef(new WorkspaceNotificationTracker())
   const commandPaletteFocusRef = useRef<HTMLElement | null>(null)
+  // The control that opened the browser limits, which the palette gives
+  // focus back to when it opened over them.
+  const browserLimitsOpenerRef = useRef<HTMLElement | null>(null)
   const deepLinkRoutingRef = useRef(false)
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false)
   const commandPaletteDrawn = useDrawnOnceOpen(commandPaletteOpen)
@@ -1297,15 +1303,23 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     void platform.install.prompt().then(setInstallState)
   }
   const openCommandPalette = () => {
-    commandPaletteFocusRef.current = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
+    const focused = typeof document !== "undefined" && document.activeElement instanceof HTMLElement
       ? document.activeElement
       : null
+    // The palette opened over the browser limits closes them, so the control
+    // focused in them is gone when the palette closes: it gives focus back to
+    // the control that opened the limits instead.
+    commandPaletteFocusRef.current = focused?.closest("[data-browser-limits]") ? browserLimitsOpenerRef.current : focused
     setCommandPaletteOpen(true)
   }
   // The machine chip's route word, which the browser limits also name: the
   // home endpoint's route, or an attached machine's once its own route
   // answers for this attach.
   const chipRoute = !attached ? machineRoute(endpointUrl) : dialedRoute?.epoch === attachEpoch ? machineRoute(endpointUrl, dialedRoute.kind) : undefined
+  const browserLimitsRoute = connected ? chipRoute : undefined
+  useEffect(() => {
+    onBrowserLimitsRoute?.(browserLimitsRoute)
+  }, [onBrowserLimitsRoute, browserLimitsRoute])
   const rawWorkspaceCommands = buildWorkspaceCommands({
     ...((windowBridge || platform) && activeWorkspacePath && !attached ? {
       activeWorkspacePath,
@@ -1354,7 +1368,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     } : {}),
     // The pairing card is in the desktop's own settings, for its own daemon.
     ...(clientKind === "desktop" && !attached ? { pairDevice: () => setSurface("providers") } : {}),
-    ...(onOpenBrowserLimits ? { openBrowserLimits: () => onOpenBrowserLimits(commandPaletteFocusRef.current, connected ? chipRoute : undefined) } : {}),
+    ...(onOpenBrowserLimits ? {
+      openBrowserLimits: () => {
+        browserLimitsOpenerRef.current = commandPaletteFocusRef.current
+        onOpenBrowserLimits(commandPaletteFocusRef.current, browserLimitsRoute)
+      },
+    } : {}),
     shortcutsBound: workspaceShortcutsBound,
     // Cmd+Enter on a machine starts a session there: attach to that daemon,
     // then open the launcher on it. The intent names the machine, and the
