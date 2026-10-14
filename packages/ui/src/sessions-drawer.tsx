@@ -123,12 +123,18 @@ export function useNarrowTab(): boolean {
 
 // The input a narrow tab's open column refuses behind it before the cover is
 // drawn: keys (a keydown refused also stops the click Enter or Space would
-// make), text input, a paste, cut or drop with no key before it, and every
-// step of a tap or click. Listened for on the document in the capture phase,
-// ahead of React's listeners on its root.
+// make), text input, a paste, cut or drop with no key before it, every step
+// of a tap or click, and the wheel. A composition or a focus move cannot be
+// cancelled, but refusing one takes focus out from behind the column, which
+// ends a composition before its text lands. The input event itself is not
+// refused: the edit is already in the field by then, and hiding it from
+// React would leave the controlled field and its state apart. Listened for
+// on the document in the capture phase, ahead of React's listeners on its
+// root.
 const refusedInput = [
-  "keydown", "keypress", "keyup", "beforeinput", "paste", "cut", "drop",
+  "keydown", "keypress", "keyup", "beforeinput", "compositionstart", "compositionupdate", "paste", "cut", "drop",
   "pointerdown", "mousedown", "mouseup", "click", "dblclick", "auxclick", "contextmenu", "touchstart", "touchend",
+  "wheel", "focusin",
 ] as const
 
 // The app bar's button that opens the column, where focus goes when a

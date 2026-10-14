@@ -310,8 +310,10 @@ it("a key or click aimed behind the open drawer after the tab narrows, before th
   expect(sentRequests(socket, "approval.resolve")).toHaveLength(0)
   // The refused key also takes focus out from behind the column.
   expect(document.activeElement).toBe(sessionsButton())
+  // Focus cannot go back behind it either.
   act(() => { allow.focus() })
-  await user.keyboard("{Enter}")
+  expect(document.activeElement).toBe(sessionsButton())
+  expect(allow.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }))).toBe(false)
   await user.click(allow)
   expect(sentRequests(socket, "approval.resolve")).toHaveLength(0)
   expect(document.getElementById("sessions-drawer")).not.toBeNull()
@@ -381,9 +383,29 @@ it("paste, drop and context menus aimed behind the open drawer in the narrowing 
   act(() => { composerField.focus() })
 
   resize(true, false)
-  for (const type of ["paste", "cut", "drop", "contextmenu", "dblclick", "auxclick"]) {
+  for (const type of ["paste", "cut", "drop", "contextmenu", "dblclick", "auxclick", "wheel"]) {
     expect(composerField.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }))).toBe(false)
   }
+  act(() => { resize(true) })
+})
+
+// Review of the paste fix: an IME composition can start with no cancelable
+// event, and assistive technology can move focus behind the drawer, in the
+// same gap. Either takes focus out from behind it at once, which also ends
+// a composition before its text lands.
+it("a composition or a focus move behind the open drawer in the narrowing gap sends focus to Sessions", async () => {
+  const resize = stubWidth(false)
+  const user = userEvent.setup()
+  await openShell()
+  await user.click(sessionsButton())
+  const composerField = screen.getByPlaceholderText(/Steer it, or queue the next message|Cannot send, the daemon is not answering/)
+  act(() => { composerField.focus() })
+
+  resize(true, false)
+  act(() => { composerField.dispatchEvent(new Event("compositionstart", { bubbles: true })) })
+  expect(document.activeElement).toBe(sessionsButton())
+  act(() => { allowOnce().focus() })
+  expect(document.activeElement).toBe(sessionsButton())
   act(() => { resize(true) })
 })
 
