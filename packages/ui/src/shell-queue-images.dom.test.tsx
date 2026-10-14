@@ -4,6 +4,7 @@
 // hold (#846) reaches only the session on screen, and only from the commit
 // after the model's answer, so the release itself has to know.
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { workspaceSnapshotSchema, type ProviderModel, type SessionAttachment, type WorkspaceSnapshot } from '@getdomovoi/protocol'
 import { WorkspaceShell } from "./workspace-shell"
@@ -138,6 +139,43 @@ it('holds an image message on the composer\'s answer when the release\'s own rea
 
   await act(async () => {
     answerModels(socket, textOnly)
+    notify(socket, 'workspace.changed', idle(value))
+  })
+  await settle()
+
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+  expect(screen.getByText(heldNotice)).toBeTruthy()
+})
+
+// Codex review round 2: the model menu's "ask again" discovers rather than
+// lists, and its answer must reach the release as soon as it reaches Thread.
+it('holds an image message on the model menu\'s ask-again answer in the commit that ends the turn', async () => {
+  const user = userEvent.setup()
+  const value = running()
+  value.machine.providers = [{ id: 'claude-code', command: 'claude', status: 'ready', sessionCapable: true }]
+  withImageDraft(value.activeSessionId!)
+  const socket = await open(workspaceSnapshotSchema.parse(value))
+  queue('look at this')
+  const unknown = { 'claude-code': [model('claude-code', 'sonnet-4.6', undefined)] }
+  await act(async () => answerModels(socket, unknown))
+  await settle()
+
+  await user.click(screen.getByRole('button', { name: /claude-code · sonnet/u }))
+  await act(async () => answerModels(socket, unknown))
+  await settle()
+  await user.click(screen.getByRole('button', { name: 'Ask the agents again' }))
+  await settle()
+
+  await act(async () => {
+    respond(socket, 'runtime.discover', {
+      machineId: value.machine.id,
+      provider: 'claude-code',
+      status: 'ready',
+      models: textOnly['claude-code'],
+      defaultRuntime: { provider: 'claude-code', model: 'sonnet-4.6', reasoning: 'unset', permissionMode: 'build', auto: false },
+      permissionModes: ['ask', 'plan', 'build'],
+      supportsAuto: true,
+    })
     notify(socket, 'workspace.changed', idle(value))
   })
   await settle()
