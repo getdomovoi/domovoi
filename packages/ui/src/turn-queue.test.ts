@@ -82,7 +82,7 @@ describe("images and a model that takes none", () => {
 
   it("releases a message without images whatever the catalog says", () => {
     expect(imageRelease(waiting("a"), runtime, undefined)).toBe("release")
-    expect(imageRelease({ ...waiting("a"), attachments: [notes] }, runtime, { state: "read", models: [model("sonnet-4.6", false)] })).toBe("release")
+    expect(imageRelease({ ...waiting("a"), attachments: [notes] }, runtime, { state: "read", answers: [[model("sonnet-4.6", false)]] })).toBe("release")
   })
 
   it("waits for a catalog read that has not answered", () => {
@@ -90,14 +90,21 @@ describe("images and a model that takes none", () => {
   })
 
   it("holds only when the session's own model says it takes no images", () => {
-    expect(imageRelease(withImage, runtime, { state: "read", models: [model("sonnet-4.6", false)] })).toBe("hold")
-    expect(imageRelease(withImage, runtime, { state: "read", models: [model("sonnet-4.6", true)] })).toBe("release")
-    expect(imageRelease(withImage, runtime, { state: "read", models: [model("opus-4.6", false)] })).toBe("release")
-    expect(imageRelease(withImage, runtime, { state: "read", models: [model("sonnet-4.6", false, "codex")] })).toBe("release")
+    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", false)]] })).toBe("hold")
+    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", true)]] })).toBe("release")
+    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("opus-4.6", false)]] })).toBe("release")
+    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", false, "codex")]] })).toBe("release")
+  })
+
+  // The composer, the launcher and the release each read for themselves. The
+  // composer holds on its own answer, so a no from any of them holds here.
+  it("holds when any reader's newest answer says no image input", () => {
+    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", undefined)], [model("sonnet-4.6", false)]] })).toBe("hold")
+    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", true)], [model("sonnet-4.6", undefined)]] })).toBe("release")
   })
 
   it("does not hold on what is not known", () => {
-    expect(imageRelease(withImage, runtime, { state: "read", models: [model("sonnet-4.6", undefined)] })).toBe("release")
+    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", undefined)]] })).toBe("release")
     expect(imageRelease(withImage, runtime, { state: "failed" })).toBe("release")
   })
 })

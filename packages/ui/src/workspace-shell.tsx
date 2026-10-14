@@ -81,6 +81,7 @@ import {
   releasableQueues,
   setQueue,
   type CatalogRead,
+  type CatalogReader,
   type FailedAttempt,
   type SessionQueues,
 } from "./turn-queue"
@@ -354,17 +355,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // queued in A must leave at A's next turn boundary whether or not anyone is
   // looking at A.
   const [queues, setQueues] = useState<SessionQueues>({})
-  // Each provider's newest model catalog answer that came through the shell:
-  // Thread's and its model menu's reads, and the release's own. Thread's hold
-  // on images a model cannot take reaches only the session on screen, and
-  // only from the commit after its read answers, so the release holds from
-  // these instead and never knows less than the composer. Newest by when the
-  // read started, as Thread orders its own.
-  const [catalogAnswers, setCatalogAnswers] = useState<Readonly<Record<string, { models: readonly ProviderModel[], ticket: number }>>>({})
+  // Each provider's model catalog answers that came through the shell, the
+  // newest per reader: Thread with its model menu, the launcher, and the
+  // release's own read. Thread's hold on images a model cannot take reaches
+  // only the session on screen, and only from the commit after its read
+  // answers, so the release holds from these instead and never knows less
+  // than the composer. Per reader, because Thread orders only its own reads:
+  // a newer release read must not outrank the answer Thread holds on.
+  const [catalogAnswers, setCatalogAnswers] = useState<Readonly<Record<string, Partial<Record<CatalogReader, { models: readonly ProviderModel[], ticket: number }>>>>>({})
   // Providers whose latest release read failed. Not known is not no, so a
   // message with images goes; with neither an answer nor a failure, it waits.
   const [catalogFailures, setCatalogFailures] = useState<ReadonlySet<string>>(() => new Set())
-  const catalogRequests = useRef(new Map<string, { ticket: number, connectionId: string | null }>())
+  const catalogRequests = useRef(new Map<string, { connectionId: string | null }>())
   // Every send that did not come back, kept by identity. One slot per session
   // was still one slot: a second refusal would erase the first receipt and the
   // reason with it.
@@ -1101,25 +1103,34 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const liveConnection = useRef(connectionId)
   useEffect(() => { liveConnection.current = connectionId }, [connectionId])
   // Every catalog read through the shell records its answer before its caller
-  // sees it, so no commit gives Thread an answer the release lacks. That is
-  // the catalog read and the model menu's "ask again", which discovers.
-  const readCatalogSeen = useCallback(async <T,>(provider: string, read: () => Promise<T>, modelsOf: (answer: T) => readonly ProviderModel[] | undefined): Promise<T> => {
+  // sees it, so no commit gives a reader an answer the release lacks. For
+  // Thread that is the catalog read and the model menu's "ask again", which
+  // discovers.
+  const readCatalogSeen = useCallback(async <T,>(reader: CatalogReader, provider: string, read: () => Promise<T>, modelsOf: (answer: T) => readonly ProviderModel[] | undefined): Promise<T> => {
     const ticket = nextCatalogReadTicket()
     const startedOn = liveConnection.current
     const answer = await read()
     const models = modelsOf(answer)
     if (models && liveConnection.current === startedOn) {
-      setCatalogAnswers((current) => (current[provider]?.ticket ?? 0) > ticket ? current : { ...current, [provider]: { models, ticket } })
+      setCatalogAnswers((current) => {
+        const readers = current[provider] ?? {}
+        if ((readers[reader]?.ticket ?? 0) > ticket) return current
+        return { ...current, [provider]: { ...readers, [reader]: { models, ticket } } }
+      })
     }
     return answer
   }, [])
   const listModelsSeen = useCallback(
-    (provider: string) => readCatalogSeen(provider, () => listModels(provider), (models) => models),
+    (provider: string) => readCatalogSeen("thread", provider, () => listModels(provider), (models) => models),
     [readCatalogSeen, listModels],
   )
   const discoverRuntimeSeen = useCallback(
-    (provider: string) => readCatalogSeen(provider, () => discoverRuntime(provider), (result) => result.status === "ready" ? result.models : undefined),
+    (provider: string) => readCatalogSeen("thread", provider, () => discoverRuntime(provider), (result) => result.status === "ready" ? result.models : undefined),
     [readCatalogSeen, discoverRuntime],
+  )
+  const launcherListModels = useCallback(
+    (provider: string) => readCatalogSeen("launcher", provider, () => listModels(provider), (models) => models),
+    [readCatalogSeen, listModels],
   )
   // The release's own read, once per provider per connection while a message
   // with images waits on it, so a session off screen is covered too. A newer
@@ -1130,7 +1141,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     for (const provider of [...requests.keys()]) if (!needed.has(provider)) requests.delete(provider)
     for (const provider of needed) {
       if (requests.get(provider)?.connectionId === connectionId) continue
-      const request = { ticket: nextCatalogReadTicket(), connectionId }
+      const request = { connectionId }
       requests.set(provider, request)
       setCatalogFailures((current) => {
         if (!current.has(provider)) return current
@@ -1138,12 +1149,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
         next.delete(provider)
         return next
       })
-      void listModelsSeen(provider).catch(() => {
+      void readCatalogSeen("release", provider, () => listModels(provider), (models) => models).catch(() => {
         if (requests.get(provider) !== request) return
         setCatalogFailures((current) => new Set(current).add(provider))
       })
     }
-  }, [imageQueueProviders, connected, watching, connectionId, listModelsSeen])
+  }, [imageQueueProviders, connected, watching, connectionId, readCatalogSeen, listModels])
 
   // The release lives here rather than in Thread because a turn ending in A is
   // A's business whether or not A is the session on screen.
@@ -1174,9 +1185,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       // the message is held with Thread's notice rather than sent into that
       // refusal. Until this provider's catalog answers, it waits.
       const runtime = snapshot?.sessions.find((candidate) => candidate.id === session.id)?.runtime
-      const answer = runtime ? catalogAnswers[runtime.provider] : undefined
-      const read: CatalogRead | undefined = answer
-        ? { state: "read", models: answer.models }
+      const answers = Object.values(runtime ? catalogAnswers[runtime.provider] ?? {} : {}).map((answer) => answer.models)
+      const read: CatalogRead | undefined = answers.length > 0
+        ? { state: "read", answers }
         : runtime && catalogFailures.has(runtime.provider) ? { state: "failed" } : undefined
       const images = runtime ? imageRelease(message, runtime, read) : "release"
       if (images === "wait") continue
@@ -2165,7 +2176,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onOpenChange={(open) => { if (!open) setLauncherMode(null) }}
             onOpenProject={openProjectSafely}
             onCreateSession={(title, runtime) => startSession({ kind: "create", title, runtime })}
-            onListModels={listModels}
+            onListModels={launcherListModels}
             recentSessions={snapshot.sessions}
             onResumeSession={(sessionId) => {
               openSessionInWorkspace(sessionId)

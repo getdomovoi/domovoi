@@ -184,6 +184,63 @@ it('holds an image message on the model menu\'s ask-again answer in the commit t
   expect(screen.getByText(heldNotice)).toBeTruthy()
 })
 
+// Codex review round 3: the release's own newer read answering "not said"
+// must not outrank the composer's older read answering no image input. The
+// composer holds on its answer, so the release holds on it too.
+it('holds on the composer\'s older no-image answer after the release\'s newer read said nothing', async () => {
+  const value = running()
+  withImageDraft(value.activeSessionId!)
+  const socket = await open(value)
+  queue('look at this')
+  const pending = sentRequests(socket, 'runtime.models').filter((request) => !socket.answered.has(request.id))
+  expect(pending.length).toBeGreaterThanOrEqual(2)
+  const composerRead = pending[0]!
+  const releaseRead = pending.at(-1)!
+  const answer = (id: number | string, models: ProviderModel[]) => {
+    socket.answered.add(id)
+    socket.receive({ jsonrpc: '2.0', id, result: models })
+  }
+  await act(async () => answer(releaseRead.id, [model('claude-code', 'sonnet-4.6', undefined)]))
+  await settle()
+
+  await act(async () => {
+    answer(composerRead.id, textOnly['claude-code'])
+    notify(socket, 'workspace.changed', idle(value))
+  })
+  await settle()
+
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+  expect(screen.getByText(heldNotice)).toBeTruthy()
+})
+
+// Codex review round 3: the New session launcher reads catalogs too, and a
+// no-image answer it gets covers a background session's queued images.
+it('holds a background session\'s image message on the launcher\'s no-image answer', async () => {
+  const user = userEvent.setup()
+  const value = running()
+  value.machine.providers = [{ id: 'claude-code', command: 'claude', status: 'ready', sessionCapable: true }]
+  const parsed = workspaceSnapshotSchema.parse(value)
+  const owner = parsed.activeSessionId!
+  const other = parsed.sessions.find(session => session.id !== owner)!.id
+  withImageDraft(owner)
+  const socket = await open(parsed)
+  queue('look at this')
+  const unknown = { 'claude-code': [model('claude-code', 'sonnet-4.6', undefined)] }
+  await act(async () => answerModels(socket, unknown))
+  await snapshot(socket, visible(parsed, other))
+  await act(async () => answerModels(socket, unknown))
+  await settle()
+
+  await user.click(screen.getByRole('button', { name: 'New session' }))
+  await settle()
+  await screen.findByText('Loading models')
+  await act(async () => answerModels(socket, textOnly))
+  await settle()
+  await snapshot(socket, visible(idle(parsed, owner), other))
+
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+})
+
 it('holds a background session\'s image message for a model that takes none', async () => {
   const value = running()
   const owner = value.activeSessionId!

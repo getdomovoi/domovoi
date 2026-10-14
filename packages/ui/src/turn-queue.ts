@@ -124,18 +124,24 @@ export function carriesImages(queued: QueuedMessage): boolean {
   return Boolean(queued.attachments?.some(isImageAttachment))
 }
 
-// What the release has read of one provider's model catalog. No entry means
-// the read is still out; a failed read answered nothing.
+// What the shell has seen of one provider's model catalog: the newest answer
+// of each reader that has answered (the composer, the launcher, the release's
+// own read). No entry means the release's read is still out; a failed read
+// answered nothing.
 export type CatalogRead =
-  | { state: "read"; models: readonly ProviderModel[] }
+  | { state: "read"; answers: readonly (readonly ProviderModel[])[] }
   | { state: "failed" }
+
+export type CatalogReader = "thread" | "launcher" | "release"
 
 // Whether a releasable message may go to the session's model. The daemon
 // refuses images for a model whose harness reports no image input, so that
-// message is held rather than sent into a refusal. Waiting on an unanswered
-// read is not holding: the message stays waiting and goes once the catalog
-// answers. Nothing holds on what is not known, a failed read or a model that
-// has not said, which is #846's rule in the composer.
+// message is held rather than sent into a refusal. Any reader's no holds:
+// the composer holds on its own answer, and the release must not send what
+// the composer on screen would keep. Waiting on an unanswered read is not
+// holding: the message stays waiting and goes once the catalog answers.
+// Nothing holds on what is not known, a failed read or a model that has not
+// said, which is #846's rule in the composer.
 export function imageRelease(
   queued: QueuedMessage,
   runtime: { provider: string, model: string },
@@ -144,8 +150,9 @@ export function imageRelease(
   if (!carriesImages(queued)) return "release"
   if (!read) return "wait"
   if (read.state === "failed") return "release"
-  const model = read.models.find((candidate) => candidate.provider === runtime.provider && candidate.id === runtime.model)
-  return model?.imageInput === false ? "hold" : "release"
+  const refused = read.answers.some((models) => models.some((candidate) =>
+    candidate.provider === runtime.provider && candidate.id === runtime.model && candidate.imageInput === false))
+  return refused ? "hold" : "release"
 }
 
 // A send that did not come back with a result. The distinction matters: the
