@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useLayoutEffect, useRef } from "react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
@@ -151,11 +151,9 @@ it("below 640 px the lost banner keeps its words on most of the line", () => {
   )
   const words = screen.getByText("Lost the daemon on macbook-pro-m3").closest("span.flex")
   expect(classes(words)).toContain("max-sm:min-w-[60%]")
-  // The thread column draws the banner at its top. Below 640 px the sessions
-  // drawer can cover that column (z-50, the thread made inert); the covered
-  // banner paints above it, drawn later at the same level, so the loss stays
-  // in view.
-  expect(classes(screen.getByRole("status"))).toEqual(expect.arrayContaining(["inert:relative", "inert:z-50"]))
+  // A copy covered by the narrow sessions drawer (inert) hides; the shell
+  // draws the banner above the row then.
+  expect(classes(screen.getByRole("status"))).toContain("inert:hidden")
 })
 
 // The sessions drawer below 640 px. Beside the 268 px column a phone's thread
@@ -330,6 +328,66 @@ it("the drawer refuses nothing at 640 px and wider: Allow once beside the open c
   await user.click(sessionsButton())
   await user.click(allowOnce())
   expect(sentRequests(socket, "approval.resolve")).toHaveLength(1)
+})
+
+// The lost banner sits at the top of the thread column. In Chromium at 390 px,
+// painted above a covering drawer, it hid the drawer's NEEDS YOU group, and
+// inert with the thread its buttons did nothing. While the drawer covers the
+// thread the shell draws it across the window above the row instead, as on
+// surfaces without a thread column, and the thread's copy hides while inert.
+const lostBanners = () => screen.queryAllByRole("status", { hidden: true }).filter((region) => region.textContent?.includes("Lost the daemon on"))
+const shownLostBanners = () => lostBanners().filter((banner) => !banner.closest("[inert]"))
+
+async function loseDaemon(onChangeCredential: () => void) {
+  render(<WorkspaceShell onChangeCredential={onChangeCredential} />)
+  await act(async () => { completeHandshake(harness.socket(0)) })
+  await settle()
+  await act(async () => { harness.socket(0).drop() })
+  await settle()
+}
+
+it("below 640 px the drawer covering the thread moves the lost banner above the row, where its buttons work", async () => {
+  stubWidth(true)
+  const user = userEvent.setup()
+  const onChangeCredential = vi.fn()
+  await loseDaemon(onChangeCredential)
+  expect(lostBanners()).toHaveLength(1)
+  expect(lostBanners()[0]!.closest("main")).not.toBeNull()
+
+  await user.click(sessionsButton())
+  const drawer = document.getElementById("sessions-drawer")!
+  expect(shownLostBanners()).toHaveLength(1)
+  const banner = shownLostBanners()[0]!
+  expect(drawer.parentElement!.contains(banner)).toBe(false)
+  // Drawn before the row, so the drawer starts below it.
+  expect(banner.compareDocumentPosition(drawer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  // The thread's own copy is still in the document but inert, and hidden.
+  for (const covered of lostBanners().filter((region) => region.closest("[inert]"))) {
+    expect(classes(covered)).toContain("inert:hidden")
+  }
+
+  await user.click(within(banner).getByRole("button", { name: "Change credential" }))
+  expect(onChangeCredential).toHaveBeenCalledTimes(1)
+  const sockets = harness.sockets.length
+  await user.click(within(banner).getByRole("button", { name: "Retry now" }))
+  await settle()
+  expect(harness.sockets.length).toBeGreaterThan(sockets)
+  expect(document.getElementById("sessions-drawer")).not.toBeNull()
+
+  await user.keyboard("{Escape}")
+  expect(lostBanners()).toHaveLength(1)
+  expect(lostBanners()[0]!.closest("main")).not.toBeNull()
+})
+
+it("at 640 px and wider the lost banner stays at the top of the thread with the drawer open", async () => {
+  stubWidth(false)
+  const user = userEvent.setup()
+  await loseDaemon(vi.fn())
+  await user.click(sessionsButton())
+  expect(document.getElementById("sessions-drawer")).not.toBeNull()
+  expect(lostBanners()).toHaveLength(1)
+  expect(shownLostBanners()).toHaveLength(1)
+  expect(lostBanners()[0]!.closest("main")).not.toBeNull()
 })
 
 // A resize commits on React's sync lane, whose passive effects also run before

@@ -115,7 +115,9 @@ const subscribeNarrowTab = (changed: () => void) => {
 }
 const readNarrowTab = () => globalThis.matchMedia?.(narrowTabQuery).matches ?? false
 
-function useNarrowTab(): boolean {
+// The shell reads it too: while the column covers the thread, the shell draws
+// the lost banner above the row rather than in the covered thread.
+export function useNarrowTab(): boolean {
   return useSyncExternalStore(subscribeNarrowTab, readNarrowTab, () => false)
 }
 
@@ -280,9 +282,9 @@ export function SessionsDrawerColumn({
         keyboard has Escape, so the strip is not a focus stop. z-50 puts it
         above the thread's raised controls (z-10) and the unpinned dock sheet
         (z-40, machine-sheet.tsx). The column, drawn after it at the same
-        level, stays on top; the covered lost banner, drawn later still, above
-        both (connection-status.tsx); menus and dialogs, in portals at the end
-        of the body, above all three. */}
+        level, stays on top; menus and dialogs, in portals at the end of the
+        body, above both. The lost banner is drawn above the row meanwhile
+        (workspace-shell.tsx, connection-status.tsx). */}
     {overlay ? <div aria-hidden data-sessions-backdrop="" className="absolute inset-0 z-50 bg-foreground/10" onClick={close} /> : null}
     <aside
       ref={asideRef}
