@@ -5,6 +5,7 @@ import { Button } from "./components/ui/button"
 
 export function FailedReadState({
   message,
+  attemptCount,
   attempts = [],
   facts,
   retrying,
@@ -16,6 +17,9 @@ export function FailedReadState({
   nothingWritten = false,
 }: {
   message: string
+  // How many reads this client sent and saw fail, when it counted them. A
+  // failure nobody counted draws no number rather than an invented one.
+  attemptCount?: number | undefined
   attempts?: readonly string[] | undefined
   facts: readonly string[]
   retrying: boolean
@@ -36,6 +40,7 @@ export function FailedReadState({
         <div className="flex items-center gap-3 px-4 py-3 text-danger-foreground">
           <span aria-hidden className="size-2 rounded-full bg-destructive" />
           <h2 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">Could not read this session</h2>
+          {attemptCount !== undefined ? <span className="ml-auto font-machine text-[10.5px] text-danger-dim">{attemptCount === 1 ? "1 attempt" : `${attemptCount} attempts`}</span> : null}
         </div>
         <p className="m-0 px-4 pb-3 text-[13px] leading-relaxed text-danger-foreground">{message}</p>
       </div>
