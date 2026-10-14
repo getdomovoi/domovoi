@@ -544,6 +544,15 @@ it("below 640 px row actions that open the thread close the drawer, and Archive 
   await settle()
   expect(document.getElementById("sessions-drawer")).toBeNull()
   expect(pendingRequest(socket, "session.activate").params).toMatchObject({ sessionId: quiet.id })
+  // The menu's trigger left with the drawer; focus does not fall to the body.
+  expect(document.activeElement).not.toBe(document.body)
+  expect(document.activeElement?.closest("[inert]") ?? null).toBeNull()
+  // Once the session is active its checkpoints open, uncovered.
+  await act(async () => { respond(socket, "session.activate", workspaceSnapshot({ activeSessionId: quiet.id })) })
+  await settle()
+  const sheet = screen.getByRole("region", { name: "Machine surfaces" })
+  expect(within(sheet).getByRole("tab", { name: "Checkpoints" }).getAttribute("aria-selected")).toBe("true")
+  expect(sheet.closest("[inert]")).toBeNull()
 })
 
 it("below 640 px an approval that arrives under the open drawer takes no focus and cannot be acted on until it closes", async () => {

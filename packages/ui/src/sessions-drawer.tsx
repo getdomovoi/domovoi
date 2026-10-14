@@ -306,12 +306,14 @@ export function SessionsDrawerColumn({
   }, [overlay, close])
   if (!open) return null
   // A row action that opens something behind a covering column (the resumed
-  // thread, its checkpoints, its machine menu) gets the column out of the way.
-  // Focus goes where that opens, not back to Sessions. Stop opens nothing, and
-  // Archive asks in a dialog drawn above the column, so both keep it.
+  // thread, its checkpoints, its machine menu) gets the column out of the way,
+  // as choosing a session does. The menu's trigger leaves with the column, so
+  // focus goes to Sessions rather than the body; what the action opens may
+  // take it from there. Stop opens nothing, and Archive asks in a dialog drawn
+  // above the column, so both keep it.
   const openBehind = (action: "resume" | "fork" | "move", sessionId: string) => {
     onAction?.(action, sessionId)
-    if (overlay) onOpenChange?.(false)
+    if (overlay) close()
   }
   const groups = groupSessions(snapshot)
   const machine = snapshot.machine.name
@@ -411,7 +413,19 @@ export function SessionsDrawerColumn({
                             <EllipsisIcon className="size-3.5" />
                           </button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-[214px]">
+                        <DropdownMenuContent
+                          align="end"
+                          className="w-[214px]"
+                          // The menu returns focus to its trigger on close. When
+                          // its action closed the column, the trigger is gone, so
+                          // focus stays where the action put it, or goes to
+                          // Sessions if nothing took it.
+                          onCloseAutoFocus={(event) => {
+                            if (asideRef.current) return
+                            event.preventDefault()
+                            if (!document.activeElement || document.activeElement === document.body) sessionsButton()?.focus()
+                          }}
+                        >
                           {entry.archived ? (
                             <>
                               <DropdownMenuItem disabled title="Not built yet" aria-describedby={`${archivedNoteId}-${entry.id}`} className="justify-between">
