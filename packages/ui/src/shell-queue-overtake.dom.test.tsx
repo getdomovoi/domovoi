@@ -5,13 +5,14 @@
 // runs, so the order the person wrote them in would invert. Send stays off
 // until the waiting message has left; the new draft stays in the composer.
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, expect, it } from 'vitest'
 import { skillSummarySchema, workspaceSnapshotSchema, type ProviderModel, type SessionAttachment, type SkillSummary, type WorkspaceSnapshot } from '@getdomovoi/protocol'
 import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
 import { emptySessionDraft, sessionDraftStore } from "./session-draft"
 import {
-  completeHandshake, installFakeWebSocket, notify, respond, sentRequests, workspaceSnapshot,
+  completeHandshake, fail, installFakeWebSocket, notify, respond, sentRequests, workspaceSnapshot,
   type FakeWebSocketHarness, type FakeWebSocket,
 } from "./test-support/fake-websocket"
 
@@ -189,9 +190,9 @@ it('keeps a new message behind an image message waiting for the release\'s catal
   expect(sends()[1]?.params).not.toHaveProperty('attachments')
 })
 
-// A read that fails, or times out (the client rejects the request at its
-// budget), settles the release's wait the same way: nothing holds on what is
-// not known.
+// A read that fails, or times out (DomovoiClient.request rejects the pending
+// request with DomovoiRpcTimeoutError at its budget), settles the release's
+// wait the same way: nothing holds on what is not known.
 it('ends the wait when the release\'s catalog read fails', async () => {
   const value = running()
   withImageDraft(value.activeSessionId!)
@@ -200,9 +201,9 @@ it('ends the wait when the release\'s catalog read fails', async () => {
   await snapshot(socket, idle(value))
   await expectHeldBack('and this too')
 
+  // No snapshot after it: the settled read alone wakes the release.
   await act(async () => failModels(socket))
   await settle()
-  await snapshot(socket, idle(value))
   expect(prompts()).toEqual(['look at this'])
   expect(sendButton().disabled).toBe(false)
   await pressEnter()
@@ -347,4 +348,174 @@ it('is off for the offline reason while the link is down, and the wait ends afte
   expect(sendButton().disabled).toBe(false)
   await pressEnter()
   expect(prompts()).toEqual(['look at this', 'and this too'])
+})
+
+// The release also waits while an earlier release of this session is still
+// on its way: the newer queued message leaves only once that one settles.
+it('keeps a new message behind a queued one waiting on an earlier send', async () => {
+  const value = running()
+  const socket = await open(value)
+  queue('first instruction')
+  await snapshot(socket, idle(value))
+  expect(prompts()).toEqual(['first instruction'])
+  const nextTurn = structuredClone(value)
+  nextTurn.sessions.find(session => session.id === value.activeSessionId)!.activeTurnId = 'a-new-turn'
+  await snapshot(socket, nextTurn)
+  queue('newer instruction')
+  await snapshot(socket, idle(nextTurn))
+  expect(prompts()).toEqual(['first instruction'])
+  await expectHeldBack('newest draft')
+
+  await act(async () => respond(socket, 'session.send', idle(nextTurn)))
+  await settle()
+  expect(prompts()).toEqual(['first instruction', 'newer instruction'])
+  await pressEnter()
+  expect(prompts()).toEqual(['first instruction', 'newer instruction', 'newest draft'])
+})
+
+const carryOnRefusal = 'The queued message sends first. Carry on once it has left.'
+async function openPlanTab() {
+  const user = userEvent.setup()
+  const opener = screen.queryByRole('button', { name: 'Open the sheet' })
+  if (opener && screen.queryAllByRole('tab', { name: 'Plan preview' }).length === 0) await user.click(opener)
+  await settle()
+  await user.click(screen.getByRole('tab', { name: 'Plan preview' }))
+  await settle()
+}
+
+// The plan's carry on is a message too, sent by the shell rather than the
+// composer, so it waits behind the queued message the same way.
+it('refuses the plan\'s carry on while a queued message waits to leave, then carries on after it', async () => {
+  const user = userEvent.setup()
+  const value = running()
+  withImageDraft(value.activeSessionId!)
+  const socket = await open(value)
+  queue('look at this')
+  await snapshot(socket, idle(value))
+  await openPlanTab()
+
+  await user.click(screen.getByRole('button', { name: 'Looks right, carry on' }))
+  await settle()
+  expect(sends()).toHaveLength(0)
+  expect(screen.getByText(carryOnRefusal)).toBeTruthy()
+
+  await act(async () => answerModels(socket, takesImages))
+  await settle()
+  expect(prompts()).toEqual(['look at this'])
+  await act(async () => respond(socket, 'session.send', idle(value)))
+  await settle()
+  await user.click(screen.getByRole('button', { name: 'Looks right, carry on' }))
+  await settle()
+  expect(prompts()).toEqual(['look at this', 'Looks right, carry on'])
+})
+
+const catalogHeld = "Held because this project's skill catalog could not be read. Open Skills to retry, then send it."
+function failCatalog(socket: FakeWebSocket, handheld = false) {
+  fail(socket, 'skill.list', { code: -32603, message: 'skill directories unreadable' })
+  if (!handheld) fail(socket, 'skill.inventory', { code: -32603, message: 'skill directories unreadable' })
+}
+async function queueSkillChoiceAcrossBranchMove(socket: FakeWebSocket, value: WorkspaceSnapshot) {
+  queue('/skill alpha')
+  queue('alpha only')
+  const moved = onOtherBranch(idle(value))
+  await snapshot(socket, moved)
+  expect(sends()).toHaveLength(0)
+  return moved
+}
+const heldRowSend = () => within(screen.getByText('alpha only').parentElement!).getByRole('button', { name: 'Send' })
+
+// A failed catalog read is not retried by itself, so a message waiting on it
+// would wait for good, and Send with it. The release holds it instead, and a
+// held message never holds a new one back.
+it('holds a queued skill choice when the catalog read fails, so new messages are not held back', async () => {
+  const skills = [skill('a', 'alpha'), skill('b', 'beta')]
+  const value = withSkills(running(), skills)
+  const socket = await open(value, skills)
+  await queueSkillChoiceAcrossBranchMove(socket, value)
+  await expectHeldBack('the second one')
+
+  await act(async () => failCatalog(socket))
+  await settle()
+  expect(screen.getByText(catalogHeld)).toBeTruthy()
+  expect(sends()).toHaveLength(0)
+  expect(sendButton().disabled).toBe(false)
+  expect(screen.queryByText(waitLine)).toBeNull()
+  await pressEnter()
+  expect(prompts()).toEqual(['the second one'])
+
+  // Sending it again while the catalog is still unread holds it again rather
+  // than sending it without its skill.
+  await act(async () => respond(socket, 'session.send', onOtherBranch(idle(value))))
+  await settle()
+  fireEvent.click(heldRowSend())
+  await settle()
+  expect(prompts()).toEqual(['the second one'])
+  expect(screen.getByText(catalogHeld)).toBeTruthy()
+})
+
+it('lets a held skill choice go once a reconnect reads the catalog again', async () => {
+  const skills = [skill('a', 'alpha'), skill('b', 'beta')]
+  const value = withSkills(running(), skills)
+  render(<WorkspaceShell />)
+  const first = harness.socket(0)
+  await act(async () => completeHandshake(first, value))
+  await loadCatalog(first, value, skills)
+  await settle()
+  const moved = await queueSkillChoiceAcrossBranchMove(first, value)
+  await act(async () => failCatalog(first))
+  await settle()
+  expect(screen.getByText(catalogHeld)).toBeTruthy()
+
+  await act(async () => first.drop())
+  await settle()
+  fireEvent.click(screen.getByRole('button', { name: 'Retry now' }))
+  await settle()
+  const second = harness.sockets.at(-1)!
+  await act(async () => completeHandshake(second, moved))
+  // Held across the reconnect, and not released by it: only the person sends it.
+  expect(screen.getByText(catalogHeld)).toBeTruthy()
+  await loadCatalog(second, moved, skills)
+  await settle()
+  expect(sends()).toHaveLength(0)
+
+  fireEvent.click(heldRowSend())
+  await settle()
+  expect(prompts()).toEqual(['alpha only'])
+  expect(sends()[0]?.params).toMatchObject({ skillSelection: { mode: 'turn-explicit', skills: [{ skillId: skills[0]!.id }] } })
+})
+
+// #832 and Q87 leave Skills in a phone or tablet tab reading skill.list only,
+// and its Try again still reads it, so the held line's way out is real there.
+it.each(['phone', 'tablet'] as const)('a %s tab retries the catalog from Skills, and the held skill choice then sends', async (clientKind) => {
+  const user = userEvent.setup()
+  const skills = [skill('a', 'alpha'), skill('b', 'beta')]
+  const value = withSkills(running(), skills)
+  render(<WorkspaceShell clientKind={clientKind} />)
+  const socket = harness.sockets.at(-1)!
+  await act(async () => completeHandshake(socket, value))
+  await act(async () => { respond(socket, 'skill.list', skills) })
+  await settle()
+  await queueSkillChoiceAcrossBranchMove(socket, value)
+  await act(async () => failCatalog(socket, true))
+  await settle()
+  expect(screen.getByText(catalogHeld)).toBeTruthy()
+
+  await user.click(screen.getByRole('button', { name: 'Settings' }))
+  await user.click(await screen.findByRole('button', { name: /^Skills/u }))
+  await screen.findByRole('heading', { level: 1, name: 'Skills on this machine' })
+  await settle()
+  const listsBefore = sentRequests(socket, 'skill.list').length
+  await user.click(screen.getByRole('button', { name: 'Try again' }))
+  await settle()
+  expect(sentRequests(socket, 'skill.list')).toHaveLength(listsBefore + 1)
+  await act(async () => { respond(socket, 'skill.list', skills) })
+  await settle()
+
+  await user.click(screen.getByRole('button', { name: 'Settings' }))
+  await user.click(await screen.findByRole('button', { name: /^Checkpoints/u }))
+  await settle()
+  fireEvent.click(heldRowSend())
+  await settle()
+  expect(prompts()).toEqual(['alpha only'])
+  expect(sentRequests(socket, 'skill.inventory')).toEqual([])
 })

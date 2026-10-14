@@ -72,6 +72,7 @@ import { MachineSheet } from "./machine-sheet"
 import { CheckpointFork, CheckpointRestore, CheckpointRestoreAction, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { latestTurnFromHistory } from "./usage-chip.js"
 import {
+  awaitingRelease,
   carriesImages,
   failedAttempt,
   heldAfter,
@@ -724,6 +725,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The machine and project whose catalog last answered. A handheld lists it
   // without reading the machine's inventory, so this is not the inventory.
   const [skillCatalogKey, setSkillCatalogKey] = useState<string | null>(null)
+  // The machine and project whose last catalog read failed. Nothing reads it
+  // again until a retry, a reconnect or a key change, each of which clears it.
+  const [skillCatalogFailedKey, setSkillCatalogFailedKey] = useState<string | null>(null)
   const [skillsLoading, setSkillsLoading] = useState(false)
   const [skillsError, setSkillsError] = useState("")
   const [skillsRefresh, setSkillsRefresh] = useState(0)
@@ -846,6 +850,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // one that stops a queued skill choice from leaving on the old catalog.
   const skillCatalogFor = `${skillMachineKey}\u0000${skillProjectKey}`
   const skillCatalogLoaded = skillCatalogKey === skillCatalogFor
+  const skillCatalogFailed = !skillCatalogLoaded && skillCatalogFailedKey === skillCatalogFor
   // The composer names the skills a turn carries, so the catalog cannot wait
   // for someone to open the Skills surface first.
   const skillsWanted = surface === "skills" || skillProjectKey !== "no-project"
@@ -1131,8 +1136,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       const chosen = message.skillIds
       // Waiting, not held: an unloaded catalog says nothing about whether the
       // chosen skill still exists, and "your skill is gone" is a lie until it
-      // has answered.
-      if (chosen && chosen.length > 0 && !skillCatalogLoaded) continue
+      // has answered. A read that failed is not retried by itself, though, and
+      // a message waiting on it would also keep the composer's Send off for
+      // good (awaitingRelease), so that message is held instead.
+      if (chosen && chosen.length > 0 && !skillCatalogLoaded) {
+        if (skillCatalogFailed) {
+          setQueues((current) => setQueue(current, session.id, heldAfter(
+            message,
+            "Held because this project's skill catalog could not be read. Open Skills to retry, then send it.",
+          )))
+        }
+        continue
+      }
       const { selection, missing } = turnSkillSelectionFor(
         chosen ? new Set(chosen) : undefined,
         selectableTurnSkills(skills, snapshot?.skillEnablements ?? [], snapshot?.project?.id),
@@ -1199,7 +1214,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           setSettled((count) => count + 1)
         })
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, settled, watching, connected, imageRefusals, releaseReadsSettled, connectionId, listModelsSeen])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, skillCatalogFailed, settled, watching, connected, imageRefusals, releaseReadsSettled, connectionId, listModelsSeen])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)
@@ -1445,7 +1460,17 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // One dock, rendered either as the pinned panel or inside the floating sheet.
   // Named before the snapshot exists, because the snapshot is what is being
   // waited for. The endpoint is what this client actually knows it is reading.
-  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} daemonTimeOffsetMs={(attached ? remote : home).fleetDaemonTimeOffsetMs} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, artifactId) })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={() => snapshot.activeSessionId ? sendMessage(snapshot.activeSessionId, "Looks right, carry on") : Promise.reject(new Error("No session is active"))} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
+  // Carry on is a message too, so it never overtakes a queued message still
+  // waiting to leave this session (awaitingRelease); the plan card says why.
+  const carryOnPlan = () => {
+    const session = snapshot ? activeSession(snapshot) : undefined
+    if (!session) return Promise.reject(new Error("No session is active"))
+    if (awaitingRelease(queues[session.id], session.id, Boolean(session.activeTurnId))) {
+      return Promise.reject(new Error("The queued message sends first. Carry on once it has left."))
+    }
+    return sendMessage(session.id, "Looks right, carry on")
+  }
+  const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} daemonTimeOffsetMs={(attached ? remote : home).fleetDaemonTimeOffsetMs} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, artifactId) })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={carryOnPlan} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   const layoutKey = !dockCollapsed && dockPinned ? "drawer.dock" : "drawer.thread"
   const defaultLayout = layouts[layoutKey]
   const shellTitle = launcherMode
@@ -1682,6 +1707,8 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     if (!connected) {
       setLocalSkillInventory(null)
       setSkillCatalogKey(null)
+      // The reconnect reads again, so this failure says nothing about it.
+      setSkillCatalogFailedKey(null)
       setSkillsLoading(false)
       setSkillInventories(skillMachine ? [{
         state: "unreachable",
@@ -1695,6 +1722,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     const options = { signal: refresh.signal }
     setSkillsLoading(true)
     setSkillsError("")
+    setSkillCatalogFailedKey(null)
     // skill.inventory is not on phoneAndTabletRpcMethods (skill.list is: the
     // composer offers skills by name), so a handheld lists the catalog only
     // and the Skills surface shows no machine comparison.
@@ -1717,6 +1745,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             machine: skillMachine,
           }] : [])
           setSkillsError(cause instanceof Error ? cause.message : "Skill discovery failed")
+          setSkillCatalogFailedKey(skillCatalogFor)
         }
       },
     ).finally(() => {
