@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, StateRecovery, ToolInventory, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalResizedNotification, TerminalSession, TerminalSummary, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
-import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint, type TerminalWatch, type TerminalWatchOptions } from "./client"
+import { DaemonRpcError, DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint, type TerminalWatch, type TerminalWatchOptions } from "./client"
 import type { ClientAdmission } from "./client-admission-policy"
 import { Deadline } from "./deadline"
 import { applyWorkspaceDelta, openCommentReviewFor } from "@getdomovoi/protocol"
@@ -380,7 +380,11 @@ export function useWorkspace(
       // that is a change of target, not a failed read.
       const outcome = isCurrentConnection(clientRef.current, client) ? sessionReadOutcome(cause) : undefined
       if (!outcome) {
-        setSessionRead((current) => current?.sessionId === sessionId ? null : current)
+        // A refusal is the daemon's answer, so the read did not fail. A
+        // request that never left (no open connection) changes nothing.
+        setSessionRead((current) => current?.sessionId !== sessionId ? current
+          : cause instanceof DaemonRpcError ? null
+            : { ...current, retrying: false })
         throw cause
       }
       const attempt = { startedAt, endedAt: new Date(), outcome }

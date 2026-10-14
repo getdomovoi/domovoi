@@ -58,11 +58,15 @@ const sessionReadFacts = [
 export function FailedSessionRead({
   failure,
   title,
+  connected,
   onRetry,
   onOpenMachine,
 }: {
   failure: SessionReadFailure
   title: string
+  // Try again waits for an open connection: without one the read never
+  // leaves this client.
+  connected: boolean
   onRetry: () => void
   onOpenMachine?: (() => void) | undefined
 }) {
@@ -77,6 +81,7 @@ export function FailedSessionRead({
           attempts={sessionReadLog(failure.recent, title)}
           facts={sessionReadFacts}
           retrying={failure.retrying}
+          retryDisabled={!connected}
           onRetry={onRetry}
           onOpenMachine={onOpenMachine}
         />

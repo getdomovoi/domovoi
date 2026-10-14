@@ -110,6 +110,29 @@ describe("a session read that ends without an answer", () => {
     expect(screen.queryByText("nothing was written, nothing was lost")).toBeNull()
   })
 
+  // With the connection down a Try again would never leave this client, so
+  // it waits for the reconnect, and the failure stays on screen meanwhile.
+  it("holds Try again until the connection is back, keeping the failure", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    const { user, socket, snapshot, other } = await openShell({}, { advanceTimers: vi.advanceTimersByTime })
+    await pickSession(user, other.title)
+    await act(async () => { socket.drop() })
+    await settle()
+
+    const retry = () => within(failedRead()).getByRole("button", { name: "Try again" }) as HTMLButtonElement
+    expect(retry().disabled).toBe(true)
+
+    for (let step = 0; step < 60 && harness.sockets.length < 2; step += 1) {
+      await act(async () => { await vi.advanceTimersByTimeAsync(500) })
+    }
+    await act(async () => { completeHandshake(harness.socket(1), snapshot) })
+    await settle()
+
+    expect(retry().disabled).toBe(false)
+    expect(failedRead().textContent).toContain("1 attempt")
+    expect(screen.queryByText(previousLine)).toBeNull()
+  })
+
   it("says the daemon stopped answering when the read runs out of time", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const { user, other } = await openShell({}, { advanceTimers: vi.advanceTimersByTime })
