@@ -4,6 +4,7 @@ import type { TransportCandidate } from "@getdomovoi/protocol"
 
 import { dialTransport, TransportDialError } from "./transport-dial.js"
 import { DeadlineExceededError } from "./deadline.js"
+import { ClientAdmissionError } from "./client-admission-policy.js"
 
 const loopback: TransportCandidate = {
   kind: "local",
@@ -50,6 +51,30 @@ describe("dialTransport", () => {
     expect(connect).toHaveBeenCalledTimes(2)
     expect(connect).toHaveBeenNthCalledWith(1, { endpoint: lan.endpoint, credential, remainingCandidates: 2 })
     expect(connect).toHaveBeenNthCalledWith(2, { endpoint: tailnet.endpoint, credential, remainingCandidates: 1 })
+  })
+
+  it("uses only the encrypted connector for relay after direct network failure", async () => {
+    const relay: TransportCandidate = { kind: "relay", endpoint: "wss://relay.example/carrier", authenticated: true }
+    const calls: string[] = []
+    const connect = vi.fn(async () => { calls.push("direct"); throw new Error("unreachable") })
+    const connectRelay = vi.fn(async () => { calls.push("encrypted"); return { admitted: true } })
+    const result = await dialTransport({ candidates: [relay, lan], credential, connect, connectRelay })
+    expect(result).toEqual({ transport: relay, connection: { admitted: true } })
+    expect(calls).toEqual(["direct", "encrypted"])
+    expect(connect).toHaveBeenCalledOnce()
+    expect(connect).toHaveBeenCalledWith({ endpoint: lan.endpoint, credential, remainingCandidates: 2 })
+    expect(connectRelay).toHaveBeenCalledWith({ endpoint: relay.endpoint, credential, remainingCandidates: 1 })
+  })
+
+  it.each(["direct", "relay"])("never falls through terminal %s identity or saved-pin refusal", async (source) => {
+    const relay: TransportCandidate = { kind: "relay", endpoint: "wss://relay.example/carrier", authenticated: true }
+    const failure = new ClientAdmissionError("identity-mismatch")
+    const connect = vi.fn(async () => { throw failure })
+    const connectRelay = vi.fn(async () => { throw failure })
+    await expect(dialTransport({ candidates: source === "direct" ? [lan, relay] : [relay, { ...relay, endpoint: "wss://other.example/carrier" }],
+      credential, connect, connectRelay })).rejects.toBe(failure)
+    expect(connect).toHaveBeenCalledTimes(source === "direct" ? 1 : 0)
+    expect(connectRelay).toHaveBeenCalledTimes(source === "relay" ? 1 : 0)
   })
 
   it("refuses to send a credential in the clear to a remote host", async () => {

@@ -409,17 +409,19 @@ export class DomovoiClient extends EventTarget {
         socket.addEventListener("close", (event) => {
           if (!current()) return
           this.#socket = undefined
-          const error = this.#admission && event.code === 1008
-            ? new ClientAdmissionError("client-credential-required") : new Error("Daemon connection closed")
+          // Only the local adapter can supply this fixed signal. Peer close
+          // reasons never establish relay verification status.
+          const localRelayRefusal = event.code === 1008 && socket.localAdmissionRefusal === "relay-verification-refused"
+          const error = localRelayRefusal ? new ClientAdmissionError("relay-verification-refused")
+            : this.#admission && event.code === 1008
+              ? new ClientAdmissionError("client-credential-required") : new Error("Daemon connection closed")
           rejectOpening(error)
           this.#rejectPending(error)
-          // A policy close is terminal whatever it says: a revoked device is
-          // refused for the same reason a bad credential is, and retrying only
-          // presents a credential the machine will keep refusing.
+          // Local verification and peer policy closes are both terminal, but
+          // only the local signal changes the fixed admission remedy.
           if (event.code === 1008) {
-            this.#markAuthenticationRequired(this.#admission
-              ? new ClientAdmissionError("client-credential-required").message
-              : event.reason || "Daemon authentication required")
+            this.#markAuthenticationRequired(error instanceof ClientAdmissionError
+              ? error.message : event.reason || "Daemon authentication required")
           }
           this.dispatchEvent(new Event("disconnected"))
           this.#scheduleReconnect()
