@@ -80,7 +80,7 @@ import {
   provesNothingRan,
   releasableQueues,
   setQueue,
-  type CatalogRead,
+  type CatalogAnswer,
   type CatalogReader,
   type FailedAttempt,
   type SessionQueues,
@@ -364,13 +364,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // release's own read. Thread's hold on images a model cannot take reaches
   // only the session on screen, and only from the commit after its read
   // answers, so the release holds from these instead and never knows less
-  // than the composer. Per reader, because Thread orders only its own reads:
-  // a newer release read must not outrank the answer Thread holds on.
-  const [catalogAnswers, setCatalogAnswers] = useState<Readonly<Record<string, Partial<Record<CatalogReader, { models: readonly ProviderModel[], ticket: number }>>>>>({})
-  // Providers whose latest release read failed. Not known is not no, so a
-  // message with images goes; with neither an answer nor a failure, it waits.
-  const [catalogFailures, setCatalogFailures] = useState<ReadonlySet<string>>(() => new Set())
-  const catalogRequests = useRef(new Map<string, { connectionId: string | null }>())
+  // than the composer. Per reader, so a newer "not said" from one reader does
+  // not erase another's explicit answer.
+  const [catalogAnswers, setCatalogAnswers] = useState<Readonly<Record<string, Partial<Record<CatalogReader, CatalogAnswer>>>>>({})
+  // The release's own read per provider, and whether it has answered or
+  // failed. The counter wakes the release when one settles.
+  const catalogRequests = useRef(new Map<string, { connectionId: string | null, settled: boolean }>())
+  const [catalogReadsSettled, setCatalogReadsSettled] = useState(0)
   // Every send that did not come back, kept by identity. One slot per session
   // was still one slot: a second refusal would erase the first receipt and the
   // reason with it.
@@ -1102,7 +1102,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   if (catalogConnection !== connectionId) {
     setCatalogConnection(connectionId)
     setCatalogAnswers({})
-    setCatalogFailures(new Set())
   }
   const liveConnection = useRef(connectionId)
   useEffect(() => { liveConnection.current = connectionId }, [connectionId])
@@ -1138,25 +1137,22 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   )
   // The release's own read, once per provider per connection while a message
   // with images waits on it, so a session off screen is covered too. A newer
-  // need reads again; until it answers, the newest answer already seen holds.
+  // need reads again, since the daemon asks the adapter on every read; until
+  // it settles, the message waits unless a no is already known.
   useEffect(() => {
     const needed = new Set(connected && !watching && imageQueueProviders ? imageQueueProviders.split("\n") : [])
     const requests = catalogRequests.current
     for (const provider of [...requests.keys()]) if (!needed.has(provider)) requests.delete(provider)
     for (const provider of needed) {
       if (requests.get(provider)?.connectionId === connectionId) continue
-      const request = { connectionId }
+      const request = { connectionId, settled: false }
       requests.set(provider, request)
-      setCatalogFailures((current) => {
-        if (!current.has(provider)) return current
-        const next = new Set(current)
-        next.delete(provider)
-        return next
-      })
-      void readCatalogSeen("release", provider, () => listModels(provider), (models) => models).catch(() => {
+      const settle = () => {
         if (requests.get(provider) !== request) return
-        setCatalogFailures((current) => new Set(current).add(provider))
-      })
+        request.settled = true
+        setCatalogReadsSettled((count) => count + 1)
+      }
+      void readCatalogSeen("release", provider, () => listModels(provider), (models) => models).then(settle, settle)
     }
   }, [imageQueueProviders, connected, watching, connectionId, readCatalogSeen, listModels])
 
@@ -1187,13 +1183,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       }
       // The daemon refuses images for a model whose harness reports none, so
       // the message is held with Thread's notice rather than sent into that
-      // refusal. Until this provider's catalog answers, it waits.
+      // refusal. Until the release's own read for it settles, it waits.
       const runtime = snapshot?.sessions.find((candidate) => candidate.id === session.id)?.runtime
-      const answers = Object.values(runtime ? catalogAnswers[runtime.provider] ?? {} : {}).map((answer) => answer.models)
-      const read: CatalogRead | undefined = answers.length > 0
-        ? { state: "read", answers }
-        : runtime && catalogFailures.has(runtime.provider) ? { state: "failed" } : undefined
-      const images = runtime ? imageRelease(message, runtime, read) : "release"
+      const request = runtime ? catalogRequests.current.get(runtime.provider) : undefined
+      const images = runtime ? imageRelease(message, runtime, {
+        answers: Object.values(catalogAnswers[runtime.provider] ?? {}),
+        settled: request?.connectionId === connectionId && request.settled,
+      }) : "release"
       if (images === "wait") continue
       if (images === "hold") {
         setQueues((current) => setQueue(current, session.id, heldAfter(message, imagesHeldReason(runtime!.model))))
@@ -1226,7 +1222,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
           setSettled((count) => count + 1)
         })
     }
-  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, settled, watching, connected, catalogAnswers, catalogFailures])
+  }, [snapshot, queues, emergencyStopPending, skills, sendMessage, skillCatalogLoaded, settled, watching, connected, catalogAnswers, catalogReadsSettled, connectionId])
   const openProjectSafely = async (path: string) => {
     try {
       await openProject(path)

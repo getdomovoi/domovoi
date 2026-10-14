@@ -124,35 +124,39 @@ export function carriesImages(queued: QueuedMessage): boolean {
   return Boolean(queued.attachments?.some(isImageAttachment))
 }
 
+// One reader's newest catalog answer, ticketed by when its read started.
+export type CatalogAnswer = { models: readonly ProviderModel[], ticket: number }
+
 // What the shell has seen of one provider's model catalog: the newest answer
-// of each reader that has answered (the composer, the launcher, the release's
-// own read). No entry means the release's read is still out; a failed read
-// answered nothing.
-export type CatalogRead =
-  | { state: "read"; answers: readonly (readonly ProviderModel[])[] }
-  | { state: "failed" }
+// of each reader (the composer, the launcher, the release's own read), and
+// whether the release's own read for this message has answered or failed.
+export type CatalogRead = { answers: readonly CatalogAnswer[], settled: boolean }
 
 export type CatalogReader = "thread" | "launcher" | "release"
 
 // Whether a releasable message may go to the session's model. The daemon
 // refuses images for a model whose harness reports no image input, so that
-// message is held rather than sent into a refusal. Any reader's no holds:
-// the composer holds on its own answer, and the release must not send what
-// the composer on screen would keep. Waiting on an unanswered read is not
-// holding: the message stays waiting and goes once the catalog answers.
-// Nothing holds on what is not known, a failed read or a model that has not
-// said, which is #846's rule in the composer.
+// message is held rather than sent into a refusal. The newest explicit answer
+// decides, across readers: capability can change between reads, and a newer
+// "not said" does not undo an older explicit answer. A no holds at once.
+// Otherwise the message waits for the release's own read, because an older
+// yes is not the adapter's current answer. Waiting is not holding: the
+// message stays waiting. Nothing holds on what is not known, a failed read or
+// a model that has not said, which is #846's rule in the composer.
 export function imageRelease(
   queued: QueuedMessage,
   runtime: { provider: string, model: string },
-  read: CatalogRead | undefined,
+  read: CatalogRead,
 ): "release" | "wait" | "hold" {
   if (!carriesImages(queued)) return "release"
-  if (!read) return "wait"
-  if (read.state === "failed") return "release"
-  const refused = read.answers.some((models) => models.some((candidate) =>
-    candidate.provider === runtime.provider && candidate.id === runtime.model && candidate.imageInput === false))
-  return refused ? "hold" : "release"
+  let newest: { ticket: number, imageInput: boolean } | undefined
+  for (const answer of read.answers) {
+    const imageInput = answer.models.find((candidate) => candidate.provider === runtime.provider && candidate.id === runtime.model)?.imageInput
+    if (imageInput === undefined || (newest && newest.ticket > answer.ticket)) continue
+    newest = { ticket: answer.ticket, imageInput }
+  }
+  if (newest?.imageInput === false) return "hold"
+  return read.settled ? "release" : "wait"
 }
 
 // A send that did not come back with a result. The distinction matters: the

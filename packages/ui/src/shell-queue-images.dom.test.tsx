@@ -88,6 +88,13 @@ function answerModels(socket: FakeWebSocket, catalog: Readonly<Record<string, Pr
     respond(socket, 'runtime.models', catalog[provider] ?? [])
   }
 }
+function pendingModels(socket: FakeWebSocket) {
+  return sentRequests(socket, 'runtime.models').filter((request) => !socket.answered.has(request.id))
+}
+function answerRequest(socket: FakeWebSocket, id: number | string, models: ProviderModel[]) {
+  socket.answered.add(id)
+  socket.receive({ jsonrpc: '2.0', id, result: models })
+}
 function queue(text: string) {
   fireEvent.change(screen.getByLabelText('Message'), { target: { value: text } })
   fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
@@ -239,6 +246,57 @@ it('holds a background session\'s image message on the launcher\'s no-image answ
   await snapshot(socket, visible(idle(parsed, owner), other))
 
   expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+})
+
+// PR #850 review (P1): an older answer from another reader must not stand in
+// for the release's own read. The daemon reads the adapter's capability on
+// every catalog request, so the release waits for its fresh answer.
+it('waits for the release\'s own read even when the composer answered earlier', async () => {
+  const value = running()
+  withImageDraft(value.activeSessionId!)
+  const socket = await open(value)
+  const composerRead = pendingModels(socket)[0]!
+  await act(async () => answerRequest(socket, composerRead.id, [model('claude-code', 'sonnet-4.6', true)]))
+  await settle()
+  queue('look at this')
+  await snapshot(socket, idle(value))
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+
+  await act(async () => answerModels(socket, textOnly))
+  await settle()
+  await snapshot(socket, idle(value))
+  expect(sentRequests(socket, 'session.send')).toHaveLength(0)
+  expect(screen.getByText(heldNotice)).toBeTruthy()
+})
+
+// PR #850 review (P2): a stale no from one reader must not veto a fresher
+// explicit yes from another. Capability can change between reads.
+it('releases on the newest explicit answer over an older no from the launcher', async () => {
+  const user = userEvent.setup()
+  const value = running()
+  value.machine.providers = [{ id: 'claude-code', command: 'claude', status: 'ready', sessionCapable: true }]
+  const parsed = workspaceSnapshotSchema.parse(value)
+  withImageDraft(parsed.activeSessionId!)
+  const socket = await open(parsed)
+  const takesImages = { 'claude-code': [model('claude-code', 'sonnet-4.6', true)] }
+  await act(async () => answerModels(socket, takesImages))
+  await settle()
+  await user.click(screen.getByRole('button', { name: 'New session' }))
+  await settle()
+  await screen.findByText('Loading models')
+  await act(async () => answerModels(socket, textOnly))
+  await settle()
+  await user.keyboard('{Escape}')
+  await settle()
+
+  queue('look at this')
+  await act(async () => answerModels(socket, takesImages))
+  await settle()
+  await snapshot(socket, idle(parsed))
+
+  const sends = sentRequests(socket, 'session.send')
+  expect(sends).toHaveLength(1)
+  expect(sends[0]?.params).toMatchObject({ prompt: 'look at this', attachments: [image] })
 })
 
 it('holds a background session\'s image message for a model that takes none', async () => {

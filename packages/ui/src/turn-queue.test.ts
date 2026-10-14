@@ -80,31 +80,41 @@ describe("images and a model that takes none", () => {
     expect(carriesImages(waiting("a"))).toBe(false)
   })
 
+  const answer = (ticket: number, imageInput: boolean | undefined, id = "sonnet-4.6", provider = "claude-code") =>
+    ({ ticket, models: [model(id, imageInput, provider)] })
+  const settled = (...answers: ReturnType<typeof answer>[]) => ({ answers, settled: true })
+
   it("releases a message without images whatever the catalog says", () => {
-    expect(imageRelease(waiting("a"), runtime, undefined)).toBe("release")
-    expect(imageRelease({ ...waiting("a"), attachments: [notes] }, runtime, { state: "read", answers: [[model("sonnet-4.6", false)]] })).toBe("release")
+    expect(imageRelease(waiting("a"), runtime, { answers: [], settled: false })).toBe("release")
+    expect(imageRelease({ ...waiting("a"), attachments: [notes] }, runtime, settled(answer(1, false)))).toBe("release")
   })
 
-  it("waits for a catalog read that has not answered", () => {
-    expect(imageRelease(withImage, runtime, undefined)).toBe("wait")
+  // The daemon reads the adapter's capability on every catalog request, so an
+  // older yes from another reader does not stand in for the release's own read.
+  it("waits for the release's own read unless a no is already known", () => {
+    expect(imageRelease(withImage, runtime, { answers: [], settled: false })).toBe("wait")
+    expect(imageRelease(withImage, runtime, { answers: [answer(1, true)], settled: false })).toBe("wait")
+    expect(imageRelease(withImage, runtime, { answers: [answer(1, false)], settled: false })).toBe("hold")
   })
 
   it("holds only when the session's own model says it takes no images", () => {
-    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", false)]] })).toBe("hold")
-    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", true)]] })).toBe("release")
-    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("opus-4.6", false)]] })).toBe("release")
-    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", false, "codex")]] })).toBe("release")
+    expect(imageRelease(withImage, runtime, settled(answer(1, false)))).toBe("hold")
+    expect(imageRelease(withImage, runtime, settled(answer(1, true)))).toBe("release")
+    expect(imageRelease(withImage, runtime, settled(answer(1, false, "opus-4.6")))).toBe("release")
+    expect(imageRelease(withImage, runtime, settled(answer(1, false, "sonnet-4.6", "codex")))).toBe("release")
   })
 
-  // The composer, the launcher and the release each read for themselves. The
-  // composer holds on its own answer, so a no from any of them holds here.
-  it("holds when any reader's newest answer says no image input", () => {
-    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", undefined)], [model("sonnet-4.6", false)]] })).toBe("hold")
-    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", true)], [model("sonnet-4.6", undefined)]] })).toBe("release")
+  // The composer, the launcher and the release each read for themselves.
+  // Capability can change between reads, so the newest explicit answer wins,
+  // and a newer "not said" does not undo an older explicit one.
+  it("follows the newest explicit answer across readers", () => {
+    expect(imageRelease(withImage, runtime, settled(answer(1, false), answer(2, true)))).toBe("release")
+    expect(imageRelease(withImage, runtime, settled(answer(2, false), answer(1, true)))).toBe("hold")
+    expect(imageRelease(withImage, runtime, settled(answer(1, false), answer(2, undefined)))).toBe("hold")
   })
 
   it("does not hold on what is not known", () => {
-    expect(imageRelease(withImage, runtime, { state: "read", answers: [[model("sonnet-4.6", undefined)]] })).toBe("release")
-    expect(imageRelease(withImage, runtime, { state: "failed" })).toBe("release")
+    expect(imageRelease(withImage, runtime, settled(answer(1, undefined)))).toBe("release")
+    expect(imageRelease(withImage, runtime, settled())).toBe("release")
   })
 })
