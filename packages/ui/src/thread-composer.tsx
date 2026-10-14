@@ -185,6 +185,7 @@ export function ThreadComposer({
   sending,
   queued,
   turnRunning,
+  releasePending,
   pending,
   connected,
   readOnly,
@@ -234,6 +235,9 @@ export function ThreadComposer({
   // Already narrowed to this session.
   queued: QueuedMessage | undefined
   turnRunning: boolean
+  // The queued message is waiting to leave on an idle session, so a send now
+  // would overtake it (awaitingRelease in turn-queue.ts).
+  releasePending: boolean
   pending: boolean
   connected: boolean
   readOnly: boolean
@@ -743,6 +747,10 @@ export function ThreadComposer({
           <span role="status" className="flex flex-col items-end font-machine text-mono-xs leading-[1.35] text-faint">
             {providerRestartRequired
               ? <span>Restart the provider before sending</span>
+              // Send is off until the queued message leaves. Offline the
+              // card says nothing live, so the offline reason stands alone.
+              : releasePending && connected
+                ? <span className="whitespace-nowrap">The queued message sends first</span>
               : sendHint(composerPlatform()).split(" · ").map((line) => (
                   <span key={line} className="whitespace-nowrap">{line}</span>
                 ))}
@@ -770,7 +778,7 @@ export function ThreadComposer({
                 </TooltipContent>
               </Tooltip>
             </TooltipProvider>
-          ) : null}<Button size="icon-sm" className="rounded-full" aria-label="Send message" disabled={readOnly || !prompt.trim() || pending || !connected || providerRestartRequired || emergencyStopPending || blockedImages > 0} onClick={onSubmit}><ArrowUpIcon /></Button></div>
+          ) : null}<Button size="icon-sm" className="rounded-full" aria-label="Send message" disabled={readOnly || !prompt.trim() || pending || !connected || providerRestartRequired || emergencyStopPending || blockedImages > 0 || releasePending} onClick={onSubmit}><ArrowUpIcon /></Button></div>
       </div>
       {children}
     </div>

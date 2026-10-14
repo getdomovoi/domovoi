@@ -77,6 +77,7 @@ import { activityTiming, headerClockText, latestSessionTurn, turnClock, type Tur
 import { CheckpointRestore, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab.js"
 import {
+  awaitingRelease,
   heldAfter,
   submitFromComposer,
   type FailedAttempt,
@@ -1028,6 +1029,9 @@ export function Thread({
   const lockedImageCount = activeModelImageInput === false ? attachments.filter(isImageAttachment).length : 0
 
   const providerRestartRequired = active.state === "failed" && !active.providerThreadId
+  // A message sent now would overtake the queued one the shell is about to
+  // release, so the new draft waits in the composer until that one has left.
+  const releasePending = awaitingRelease(queued, active.id, Boolean(active.activeTurnId))
   // The worktree of a session nothing has run in yet: no turn is running or
   // being sent, it has a worktree to be ready, and its thread holds only what
   // session.create writes (a session-start checkpoint and system rows), no
@@ -1193,7 +1197,7 @@ export function Thread({
       }
     }
     // A slash command that sends nothing still runs; a message waits.
-    if (imagesLocked) return
+    if (imagesLocked || releasePending) return
     const outcome = submitFromComposer({
       text: submittedText,
       turnRunning: Boolean(active.activeTurnId),
@@ -1610,6 +1614,7 @@ export function Thread({
           sending={sending}
           queued={queued?.sessionId === active.id ? queued : undefined}
           turnRunning={Boolean(active.activeTurnId)}
+          releasePending={releasePending}
           pending={pending}
           connected={connected}
           readOnly={readOnly}
@@ -1725,7 +1730,7 @@ export function Thread({
             buildBasis={buildBasisChip}
             onRemoveAttachment={(index) => setAttachments((current) => current.filter((_, candidate) => candidate !== index))}
             pending={pending}
-            sendDisabled={!connected || !prompt.trim() || providerRestartRequired || emergencyStopPending || lockedImageCount > 0}
+            sendDisabled={!connected || !prompt.trim() || providerRestartRequired || emergencyStopPending || lockedImageCount > 0 || releasePending}
             imagesBlocked={effortModel?.imageInput === false}
             {...(lockedImageCount > 0 ? {
               imagesNote: `${lockedImagesWords(lockedImageCount).lead}${active.runtime.model}${lockedImagesWords(lockedImageCount).tail}`,
