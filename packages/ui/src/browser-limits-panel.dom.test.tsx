@@ -1,8 +1,9 @@
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, waitFor } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { BrowserLimitsPanel, type BrowserLimit } from "./browser-limits-panel.js"
+import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog.js"
 
 afterEach(cleanup)
 
@@ -27,6 +28,13 @@ describe("BrowserLimitsPanel", () => {
     expect(items[1]!.getAttribute("data-tone")).toBe("refused")
   })
 
+  // The Web v2 bar above the page carries the mark, so the page draws none
+  // of its own (web-v2 appbar).
+  it("draws no mark of its own under the bar", () => {
+    const { container } = render(<BrowserLimitsPanel rows={rows} onContinue={vi.fn()} />)
+    expect(container.querySelector("svg path[fill-rule='evenodd']")).toBeNull()
+  })
+
   it("continues into the session on the one button", async () => {
     const user = userEvent.setup()
     const onContinue = vi.fn()
@@ -35,6 +43,57 @@ describe("BrowserLimitsPanel", () => {
     await user.click(screen.getByRole("button", { name: "Continue to the session" }))
 
     expect(onContinue).toHaveBeenCalledTimes(1)
+  })
+
+  // Q99 A: inside a session the same limits open as a dialog over the live
+  // session, closed by Back or Escape, and focus goes back to the opener.
+  it("opens as a dialog over a session and hands focus back on the way out", async () => {
+    const user = userEvent.setup()
+    const opener = document.createElement("button")
+    document.body.append(opener)
+    const onContinue = vi.fn()
+    const { rerender } = render(<BrowserLimitsPanel rows={rows} onContinue={onContinue} continueLabel="Back" dialog={{ open: true, returnFocusTo: opener }} />)
+
+    const dialog = screen.getByRole("dialog", { name: "What a browser tab can and cannot do" })
+    expect(dialog.textContent).toContain("Each difference follows from one fact: no daemon, no repository, no keychain.")
+    expect(screen.getByRole("list", { name: "Browser limits" }).querySelectorAll("li")).toHaveLength(3)
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "What a browser tab can and cannot do" }))
+
+    await user.keyboard("{Escape}")
+    expect(onContinue).toHaveBeenCalledTimes(1)
+    await user.click(screen.getByRole("button", { name: "Back" }))
+    expect(onContinue).toHaveBeenCalledTimes(2)
+
+    rerender(<BrowserLimitsPanel rows={rows} onContinue={onContinue} continueLabel="Back" dialog={{ open: false, returnFocusTo: opener }} />)
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull())
+    await waitFor(() => expect(document.activeElement).toBe(opener))
+    opener.remove()
+  })
+
+  // The palette can open over the dialog and attach the session elsewhere,
+  // which would leave the rows naming a route the session left. So focus
+  // moving to another surface closes the limits, and focus stays there.
+  it("closes when focus moves to another surface over it, and leaves focus there", async () => {
+    const opener = document.createElement("button")
+    document.body.append(opener)
+    const onContinue = vi.fn()
+    const { rerender } = render(<BrowserLimitsPanel rows={rows} onContinue={onContinue} continueLabel="Back" dialog={{ open: true, returnFocusTo: opener }} />)
+    expect(screen.getByRole("dialog").hasAttribute("data-browser-limits")).toBe(true)
+
+    rerender(<>
+      <BrowserLimitsPanel rows={rows} onContinue={onContinue} continueLabel="Back" dialog={{ open: true, returnFocusTo: opener }} />
+      <Dialog open><DialogContent aria-describedby={undefined}><DialogTitle>Commands</DialogTitle><input aria-label="Search" autoFocus /></DialogContent></Dialog>
+    </>)
+    await waitFor(() => expect(onContinue).toHaveBeenCalledTimes(1))
+    const search = screen.getByRole("textbox", { name: "Search" })
+    rerender(<>
+      <BrowserLimitsPanel rows={rows} onContinue={onContinue} continueLabel="Back" dialog={{ open: false, returnFocusTo: opener }} />
+      <Dialog open><DialogContent aria-describedby={undefined}><DialogTitle>Commands</DialogTitle><input aria-label="Search" autoFocus /></DialogContent></Dialog>
+    </>)
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "What a browser tab can and cannot do" })).toBeNull())
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(document.activeElement).toBe(search)
+    opener.remove()
   })
 
   it("names the way back when it was opened before there is a session", async () => {

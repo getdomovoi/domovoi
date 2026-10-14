@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 
-import { daemonCredentialShapeMessage, isLoopbackPageOrigin, pairBrowserDevice, RootCredentialOffLoopbackError, type BearerPairingClient, type CodePairingClient } from "./daemon-pairing"
+import { daemonCredentialShapeMessage, isLoopbackPageOrigin, pageOriginAgainstDaemon, pairBrowserDevice, RootCredentialOffLoopbackError, type BearerPairingClient, type CodePairingClient } from "./daemon-pairing"
 
 type PairingClient = BearerPairingClient & CodePairingClient
 
@@ -153,6 +153,29 @@ describe("a loopback page", () => {
   it("is not a page on any other name or address, or one with no origin", () => {
     for (const origin of ["https://studio.example.ts.net:47831", "http://10.0.0.2:47831", "http://127.0.0.1.example", "http://[::ffff:7f00:1]:47831", "file://", "null", "", "not an origin", "domovoi-app://desktop"]) {
       expect(isLoopbackPageOrigin(origin)).toBe(false)
+    }
+  })
+})
+
+// W6: all a page can check is its own origin against the socket it dials. A
+// page the daemon served dials /rpc on its own origin, ws for http and wss
+// for https; anything else came from somewhere the page can only name.
+describe("where the page came from", () => {
+  it("is the daemon's address when the page and the socket share an origin", () => {
+    expect(pageOriginAgainstDaemon("https://mac-mini-m4.tail4c2e.ts.net:47831", "wss://mac-mini-m4.tail4c2e.ts.net:47831/rpc")).toEqual({ sameAsDaemon: true })
+    expect(pageOriginAgainstDaemon("http://127.0.0.1:47831", "ws://127.0.0.1:47831/rpc")).toEqual({ sameAsDaemon: true })
+    expect(pageOriginAgainstDaemon("https://Studio.example.ts.net", "wss://studio.example.ts.net:443/rpc")).toEqual({ sameAsDaemon: true })
+  })
+
+  it("is another address when the host, the port or the security differs, named by its host", () => {
+    expect(pageOriginAgainstDaemon("http://127.0.0.1:5178", "ws://127.0.0.1:47831/rpc")).toEqual({ sameAsDaemon: false, host: "127.0.0.1:5178" })
+    expect(pageOriginAgainstDaemon("http://localhost:47831", "ws://127.0.0.1:47831/rpc")).toEqual({ sameAsDaemon: false, host: "localhost:47831" })
+    expect(pageOriginAgainstDaemon("http://mac-mini-m4.tail4c2e.ts.net:47831", "wss://mac-mini-m4.tail4c2e.ts.net:47831/rpc")).toEqual({ sameAsDaemon: false, host: "mac-mini-m4.tail4c2e.ts.net:47831" })
+  })
+
+  it("says nothing when either address has no host it can read", () => {
+    for (const [page, rpc] of [["null", "ws://127.0.0.1:47831/rpc"], ["file://", "ws://127.0.0.1:47831/rpc"], ["http://127.0.0.1:5178", "not a url"], ["domovoi-app://desktop", "ws://127.0.0.1:47831/rpc"]] as const) {
+      expect(pageOriginAgainstDaemon(page, rpc)).toBeUndefined()
     }
   })
 })

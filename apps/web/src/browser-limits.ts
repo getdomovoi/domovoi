@@ -1,6 +1,6 @@
 import { maximumImageUploadDimension } from "@getdomovoi/protocol"
 
-import { routeOfEndpoint } from "@/route-word"
+import { routeOfEndpoint, type machineRoute } from "@/route-word"
 
 import type { BrowserPlatformEnvironment } from "./browser-platform"
 import { browserRefusalMessage } from "./platform-refusals"
@@ -20,11 +20,18 @@ export type BrowserLimitRow = {
   why: string
 }
 
+// The word the shell's chip shows for the route a session is on (machineRoute).
+export type LimitsRoute = ReturnType<typeof machineRoute>
+
 // The route word comes from route-word.ts, the rule the app bar's chip uses.
-// A direct or unreadable route is "the route": the page does not name a
-// network it cannot prove.
-function routeName(rpcUrl: string): "loopback" | "the tailnet" | "the route" {
-  const route = routeOfEndpoint(rpcUrl)
+// Before the session the page reads it from the endpoint it dials; inside the
+// session the shell hands over its chip's word, which for an attached machine
+// is that machine's route. Only loopback and the tailnet are named. A direct,
+// plaintext or unreadable route, one through SSH or WSL, and one the shell has
+// not resolved yet are "the route": the page does not name a network it
+// cannot prove.
+function routeName(where: string | { route: LimitsRoute | undefined }): "loopback" | "the tailnet" | "the route" {
+  const route = typeof where === "string" ? routeOfEndpoint(where) : where.route
   return route === "loopback" ? "loopback" : route === "tailnet" ? "the tailnet" : "the route"
 }
 
@@ -71,12 +78,13 @@ function install(environment: BrowserPlatformEnvironment): BrowserLimitRow {
 
 export function browserLimits(
   environment: BrowserPlatformEnvironment,
-  rpcUrl: string,
+  // The endpoint this tab dials, or, inside a session, the chip's route word.
+  where: string | { route: LimitsRoute | undefined },
   // Whether this tab could hold a credential at all: session storage is what
   // keeps it, and a browser can block that.
   credentialStorable: boolean,
 ): BrowserLimitRow[] {
-  const route = routeName(rpcUrl)
+  const route = routeName(where)
   return [
     { what: "Watch a session live", state: "same as desktop", tone: "same", why: `The daemon streams the thread and the plan over ${route}.` },
     { what: "Answer a gate", state: "same as desktop", tone: "same", why: "The decision is a message, and the daemon records this browser as the device that sent it." },

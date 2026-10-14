@@ -42,7 +42,8 @@ export function WebPageHeader({ label, storage }: {
 
   return (
     <header className="flex h-[46px] shrink-0 items-center gap-3 border-b px-3.5">
-      <DomovoiMark className="size-[22px] text-primary" />
+      {/* Web v2's markStyle: mark-reduced.svg at 22px, as the workspace bar. */}
+      <DomovoiMark reduced className="size-[22px] shrink-0 text-primary" />
       <span className="text-[13px] font-semibold tracking-[-0.01em]">Domovoi</span>
       <span aria-hidden className="h-[18px] w-px bg-border" />
       <span className="min-w-0 truncate text-[12px] text-muted-foreground">{label}</span>

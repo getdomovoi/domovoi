@@ -58,7 +58,7 @@ createRoot(document.getElementById("root")!).render(
         codeFromUrl={codeFromUrl}
         createClient={createBrowserPairingClient}
         labelSuffix={() => crypto.randomUUID().slice(0, 8)}
-        workspace={({ token, deviceId, onSignedOut, onChangeCredential }) => (
+        workspace={({ token, deviceId, onSignedOut, onChangeCredential, onOpenLimits }) => (
           <WorkspaceShell
             clientKind={clientKind}
             rpcUrl={rpcUrl}
@@ -68,6 +68,7 @@ createRoot(document.getElementById("root")!).render(
             onChangeCredential={onChangeCredential}
             currentDeviceId={deviceId}
             onSignedOut={onSignedOut}
+            onOpenBrowserLimits={onOpenLimits}
           />
         )}
       />

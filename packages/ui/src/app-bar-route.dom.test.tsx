@@ -79,7 +79,8 @@ it("names an SSH forward to an attached machine as ssh, not loopback", async () 
     verifiedRoute: { endpoint: "wss://studio.example:47831/rpc", lastAuthenticatedAt: observedAt },
     transports: [transport],
   }
-  render(<WorkspaceShell />)
+  const limitsRoutes: unknown[] = []
+  render(<WorkspaceShell onOpenBrowserLimits={(_opener, route) => limitsRoutes.push(route)} />)
   const home = harness.socket(0)
   await act(async () => { completeHandshake(home) })
   await settle()
@@ -111,6 +112,13 @@ it("names an SSH forward to an attached machine as ssh, not loopback", async () 
   const chip = () => screen.getByRole("button", { name: "Machines: Studio" })
   expect(chip().textContent).toMatch(/Studiossh$/u)
 
+  // The browser limits opened now name the chip's route, not the home
+  // endpoint's loopback (the page reads ssh as the route).
+  await user.click(screen.getByRole("button", { name: "Open command palette" }))
+  await user.type(await screen.findByRole("combobox"), "what a browser tab")
+  await user.keyboard("{Enter}")
+  expect(limitsRoutes).toEqual(["ssh"])
+
   // Choosing the attached machine again keeps its connection, so the word
   // stays with it.
   await user.click(screen.getByRole("button", { name: "Settings" }))
@@ -118,6 +126,75 @@ it("names an SSH forward to an attached machine as ssh, not loopback", async () 
   await user.click(await screen.findByRole("button", { name: "Terminal on Studio" }))
   await settle()
   expect(chip().textContent).toMatch(/Studiossh$/u)
+}, 15_000)
+
+// The browser limits name the route the chip names: nothing while an attach
+// has not resolved its route (never the home loopback), then the attached
+// machine's own route, here the tailnet.
+it("hands the browser limits no route while an attach resolves, then the attached tailnet", async () => {
+  const user = userEvent.setup()
+  const settle = () => act(async () => { for (let i = 0; i < 16; i += 1) await Promise.resolve() })
+  const machineId = `machine-${"b".repeat(32)}`
+  const deviceId = `device-${"c".repeat(32)}`
+  const observedAt = "2026-09-06T00:00:00.000Z"
+  const transport = { kind: "tailnet", endpoint: "wss://studio.example.ts.net:47831/rpc", authenticated: true } as const
+  const target = { ...workspaceSnapshot(), machine: { ...workspaceSnapshot().machine, id: machineId, name: "Studio" } }
+  if (target.project) target.project = { ...target.project, machineId }
+  const machine: FleetMachine = {
+    id: machineId, label: "Studio", platform: "linux", arch: "x64", version: "0.0.1", protocolVersion,
+    connection: "tailnet", health: "healthy", self: false, capabilities: ["sessions", "terminals", "skills"],
+    heartbeat: { state: "online", lastSeenAt: observedAt },
+    verifiedRoute: { endpoint: transport.endpoint, lastAuthenticatedAt: observedAt },
+    transports: [transport],
+  }
+  const limitsRoutes: unknown[] = []
+  const openLimits = async () => {
+    await user.click(screen.getByRole("button", { name: "Open command palette" }))
+    await user.type(await screen.findByRole("combobox"), "what a browser tab")
+    await user.keyboard("{Enter}")
+    await settle()
+  }
+  render(<WorkspaceShell onOpenBrowserLimits={(_opener, route) => limitsRoutes.push(route)} />)
+  const home = harness.socket(0)
+  await act(async () => { completeHandshake(home) })
+  await settle()
+  await act(async () => { respond(home, "fleet.list", { entries: [{ kind: "machine", machine }] }) })
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await user.click(await screen.findByRole("button", { name: /Machines and daemons/u }))
+  await user.click(await screen.findByRole("button", { name: "Authorize this client for Studio" }))
+  const dialog = screen.getByRole("dialog")
+  await user.click(within(dialog).getByLabelText("Client credential"))
+  await user.paste("x".repeat(43))
+  await user.click(within(dialog).getByRole("button", { name: "Verify client access" }))
+  await settle()
+  await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
+  await settle()
+  const proof = harness.socket(1)
+  await act(async () => { completeHandshake(proof, target) })
+  await settle()
+  await act(async () => { respond(proof, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
+  await settle()
+  await user.click(screen.getByRole("button", { name: /^Open its (\d+ )?sessions? on Studio$/u }))
+  await settle()
+
+  // The attach has asked for its route and has none yet.
+  await openLimits()
+  expect(limitsRoutes).toEqual([undefined])
+
+  await act(async () => { respond(home, "fleet.clientRoute", { outcome: "ready", machineId, transport }) })
+  await settle()
+  // The route answered, but the attached daemon has not: still no route.
+  await openLimits()
+  expect(limitsRoutes).toEqual([undefined, undefined])
+
+  const remote = harness.socket(2)
+  await act(async () => { completeHandshake(remote, target) })
+  await settle()
+  await act(async () => { respond(remote, "device.current", { kind: "client", machineId, deviceId, client: "web", clientAccess: "full" }) })
+  await settle()
+  expect(screen.getByRole("button", { name: "Machines: Studio" }).textContent).toMatch(/Studiotailnet$/u)
+  await openLimits()
+  expect(limitsRoutes).toEqual([undefined, undefined, "tailnet"])
 }, 15_000)
 
 // A route resolution abandoned by a return home can land after the machine
