@@ -1,7 +1,9 @@
-import { act, cleanup, render, screen } from "@testing-library/react"
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
+import { useState } from "react"
 import { afterEach, beforeEach, describe, expect, it } from "vitest"
 
+import { BrowserLimitsPanel } from "./browser-limits-panel"
 import { WorkspaceShell } from "./workspace-shell"
 import {
   completeHandshake,
@@ -197,6 +199,76 @@ describe("workspace command palette keyboard path", () => {
     })
     await openPalette(user)
     expect(screen.queryByRole("option", { name: /^What a browser tab can and cannot do/u })).toBeNull()
+  })
+
+  // Task 99: the open limits name the route the chip names now, so the shell
+  // reports each change of that word, and none while the daemon is lost.
+  it("reports the chip's route to the browser limits on each change, none while the daemon is lost", async () => {
+    const routes: unknown[] = []
+    render(<WorkspaceShell clientKind="web" onOpenBrowserLimits={() => undefined} onBrowserLimitsRoute={(route) => routes.push(route)} />)
+    await settle()
+    expect(routes).toEqual([undefined])
+    await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
+    await settle()
+    expect(routes).toEqual([undefined, "loopback"])
+
+    await act(async () => { harness.socket(0).drop() })
+    await settle()
+    expect(routes).toEqual([undefined, "loopback", undefined])
+
+    fireEvent.click(screen.getByRole("button", { name: "Retry now" }))
+    await settle()
+    await act(async () => { completeHandshake(harness.sockets.at(-1)!, workspaceSnapshot()) })
+    await settle()
+    expect(routes).toEqual([undefined, "loopback", undefined, "loopback"])
+  })
+
+  // Task 99: the palette opened over the limits closes them, so the control
+  // that had focus when it opened (the limits heading) is gone when it closes.
+  // Focus goes back to the control that first opened the limits instead, and
+  // the limits asked for again from that palette keep that control too.
+  it("gives focus back to the limits' first opener when a palette opened over them closes", async () => {
+    const user = userEvent.setup()
+    const opened: Array<HTMLElement | null> = []
+    function Tab() {
+      const [limits, setLimits] = useState<{ open: boolean; opener: HTMLElement | null }>({ open: false, opener: null })
+      return <>
+        <WorkspaceShell clientKind="web" onOpenBrowserLimits={(opener) => { opened.push(opener); setLimits({ open: true, opener }) }} />
+        <BrowserLimitsPanel rows={[]} continueLabel="Back" onContinue={() => setLimits((current) => ({ ...current, open: false }))} dialog={{ open: limits.open, returnFocusTo: limits.opener }} />
+      </>
+    }
+    render(<Tab />)
+    await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
+    const trigger = screen.getByRole<HTMLButtonElement>("button", { name: "Open command palette" })
+    trigger.focus()
+    const openLimits = async () => {
+      await user.type(screen.getByRole("combobox"), "what a browser tab")
+      await user.keyboard("{Enter}")
+      await settle()
+    }
+    const limits = () => screen.queryByRole("dialog", { name: "What a browser tab can and cannot do" })
+
+    await openPalette(user)
+    await openLimits()
+    expect(limits()).not.toBeNull()
+    expect(document.activeElement?.textContent).toBe("What a browser tab can and cannot do")
+
+    // The palette over the limits closes them; Escape closes the palette.
+    await openPalette(user)
+    expect(limits()).toBeNull()
+    await user.keyboard("{Escape}")
+    await settle()
+    expect(document.activeElement).toBe(trigger)
+
+    // Asked for again from a palette opened over them, they keep the trigger.
+    await openPalette(user)
+    await openLimits()
+    await openPalette(user)
+    await openLimits()
+    expect(opened).toEqual([trigger, trigger, trigger])
+    await user.click(screen.getByRole("button", { name: "Back" }))
+    await settle()
+    expect(document.activeElement).toBe(trigger)
   })
 
   it("opens the machine menu on the active session to move it", async () => {

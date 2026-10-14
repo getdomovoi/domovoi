@@ -91,10 +91,10 @@ function BrowserLimitsDialog({ rows, onContinue, continueLabel, open, returnFocu
           event.preventDefault()
           heading.current?.focus()
         }}
-        // The session's palette can open over the dialog and attach the
-        // session to another machine, which would leave the rows naming a
-        // route the session left. Focus moving to another surface closes the
-        // limits instead; asked for again, they read the route afresh.
+        // The session's palette can open over the dialog and take the session
+        // somewhere else. Focus moving to another surface closes the limits;
+        // that surface gives focus back on its own way out (the palette to
+        // the control that opened the limits).
         onFocusOutside={() => {
           leftForElsewhere.current = true
           onContinue()
