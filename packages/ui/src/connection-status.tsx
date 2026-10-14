@@ -105,7 +105,11 @@ function useNow(active: boolean, fixed: Date | undefined): Date {
   return fixed ?? now
 }
 
-const bannerClass = "flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]"
+// inert:hidden: in a narrow tab the open sessions column covers the thread
+// and makes it inert (sessions-drawer.tsx). The shell then draws the lost
+// banner across the window above the row, where it stays live and the
+// column starts below it, so the thread's covered copy hides.
+const bannerClass = "flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)] inert:hidden"
 
 // The daemon-lost banner alone. The shell draws it at the top of the thread
 // column, as the design does, and across the window only where there is no
@@ -118,7 +122,9 @@ export function DaemonLostBanner(props: WorkspaceConnection & { now?: Date | und
     <div role="status" aria-live="polite" aria-atomic="true" className={bannerClass}>
       <StatusDot meaning="offline" label="Disconnected" size="default" labelHidden className="shrink-0" />
       {lostOn ? (
-        <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-[11px] gap-y-1">
+        // In a narrow tab the words keep most of the line and the buttons
+        // wrap below them, rather than the words wrapping one per line.
+        <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-[11px] gap-y-1 max-sm:min-w-[60%]">
           {props.lastHeardAt ? (
             // The age ticks every second, and every change inside the live
             // region would be announced again. The ticking words are hidden
@@ -135,7 +141,7 @@ export function DaemonLostBanner(props: WorkspaceConnection & { now?: Date | und
           </span>
         </span>
       ) : (
-        <span className="min-w-0 flex-1 break-words">
+        <span className="min-w-0 flex-1 break-words max-sm:min-w-[60%]">
           {props.connectionError
             ? `Reconnect failed: ${props.connectionError}`
             : props.authenticationRequired

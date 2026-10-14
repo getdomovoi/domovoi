@@ -1,5 +1,5 @@
 import { ArchiveIcon, ChevronRightIcon, EllipsisIcon, GitBranchIcon, GitForkIcon, MonitorIcon, PanelLeftIcon, PauseIcon, PlayIcon } from "lucide-react"
-import { useId, useState, useSyncExternalStore } from "react"
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react"
 
 import type { ClientKind, SessionSummary, WorkspaceSnapshot } from "@getdomovoi/protocol"
 
@@ -18,7 +18,8 @@ import { titlebarTipClassName } from "./titlebar-tip"
 import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab"
 
 // v2 takes the sessions list out of the permanent sidebar and puts it behind a
-// button in the top bar. When open it is a column beside the thread at the
+// button in the top bar (in a tab narrower than 40rem it covers the thread
+// instead; see useNarrowTab). When open it is a column beside the thread at the
 // design system's sidebar width (the v2 template draws 268px; the token the
 // design system publishes is what the shell reads), grouped by what each
 // session wants from you, each group collapsible with
@@ -103,6 +104,83 @@ function useDrawerClock(open: boolean): number {
   return useSyncExternalStore(open ? tickingClock : noClock, readClock, readClock)
 }
 
+// Below Tailwind's sm breakpoint (40rem) the open column covers the thread
+// instead of pushing it: beside the 268px column a phone's thread kept about
+// 120px. The query is the one the stylesheet's max-sm variant uses.
+const narrowTabQuery = "(width < 40rem)"
+const subscribeNarrowTab = (changed: () => void) => {
+  const query = globalThis.matchMedia?.(narrowTabQuery)
+  query?.addEventListener("change", changed)
+  return () => query?.removeEventListener("change", changed)
+}
+const readNarrowTab = () => globalThis.matchMedia?.(narrowTabQuery).matches ?? false
+
+// The shell reads it too: while the column covers the thread, the shell draws
+// the lost banner above the row rather than in the covered thread.
+export function useNarrowTab(): boolean {
+  return useSyncExternalStore(subscribeNarrowTab, readNarrowTab, () => false)
+}
+
+// The input a narrow tab's open column refuses behind it before the cover is
+// drawn: keys (a keydown refused also stops the click Enter or Space would
+// make), text input, a paste, cut or drop with no key before it, every step
+// of a tap or click, and the wheel. A composition or a focus move cannot be
+// cancelled, but refusing one takes focus out from behind the column, which
+// ends a composition before its text lands. The input event itself is not
+// refused: the edit is already in the field by then, and hiding it from
+// React would leave the controlled field and its state apart. Listened for
+// on the document in the capture phase, ahead of React's listeners on its
+// root.
+const refusedInput = [
+  "keydown", "keypress", "keyup", "beforeinput", "compositionstart", "compositionupdate", "paste", "cut", "drop",
+  "pointerdown", "mousedown", "mouseup", "click", "dblclick", "auxclick", "contextmenu", "touchstart", "touchend",
+  "wheel", "focusin",
+] as const
+
+// The app bar's button that opens the column, where focus goes when a
+// covering column closes or takes focus out of what it covers.
+const sessionsButton = () => document.querySelector<HTMLElement>("[aria-controls='sessions-drawer']")
+
+// Whether an Escape belongs to a layer above a covering column rather than to
+// the column. Row menus, dialogs, the command palette and floating surfaces
+// draw in portals at the end of the body, outside the app's own root, and take
+// their own Escape. An open tooltip keeps focus on its trigger, so it is
+// recognised by its content instead.
+function escapeBelongsAbove(aside: HTMLElement, target: EventTarget | null): boolean {
+  if (document.querySelector("[data-slot=tooltip-content]:not([data-state=closed])")) return true
+  let app: Element = aside
+  while (app.parentElement && app.parentElement !== document.body) app = app.parentElement
+  return target instanceof Node && target !== document.body && document.body.contains(target) && !app.contains(target)
+}
+
+// Makes the rest of the column's row inert, and moves focus behind the
+// column to the Sessions button (a browser would only drop it to the body at
+// its next rendering step). Row menus, the archive dialog and the command
+// palette draw in portals outside the row, so they stay usable over it.
+// Returns true when a surface landed beside a cover already drawn: the
+// person went somewhere else (the app bar's Machines or Settings, a palette
+// command), so the caller closes the column. The new surface is inert until
+// then, like the rest.
+function coverRow(aside: HTMLElement, marked: Set<Element>): boolean {
+  const row = aside.parentElement
+  if (!row) return false
+  const drawn = marked.size > 0
+  let landed = false
+  for (const child of row.children) {
+    if (child === aside || child.hasAttribute("data-sessions-backdrop") || marked.has(child)) continue
+    child.setAttribute("inert", "")
+    marked.add(child)
+    landed = drawn
+  }
+  const focused = document.activeElement
+  if (focused && row.contains(focused) && !aside.contains(focused)) {
+    const button = sessionsButton()
+    if (button) button.focus()
+    else if (focused instanceof HTMLElement) focused.blur()
+  }
+  return landed
+}
+
 // How long, in the design's units: running 12m, failed 1h ago, idle 2d. A
 // reading ahead of this client's clock counts as now.
 function elapsed(since: string, now: number): string {
@@ -131,6 +209,7 @@ function rowMeta(entry: GroupedSession, session: SessionSummary | undefined, now
 export function SessionsDrawerColumn({
   snapshot,
   open,
+  onOpenChange,
   onActivate,
   onAction,
   machineAvailability,
@@ -141,6 +220,8 @@ export function SessionsDrawerColumn({
 }: {
   snapshot: WorkspaceSnapshot
   open: boolean
+  // Lets the column close itself where it covers the thread (a narrow tab).
+  onOpenChange?: ((open: boolean) => void) | undefined
   onActivate: (sessionId: string) => void
   // A browser tab over the tailnet reaches one machine and holds its
   // credential for the tab only; the column says both (Web v2, 2026-09-23).
@@ -161,7 +242,116 @@ export function SessionsDrawerColumn({
   const archiveLocked = handheldMachine !== undefined
     ? offInHandheldTab(["Archive session"], "archive a session", handheldMachine)
     : undefined
+  // Covering the thread in a narrow tab, the column makes the rest of its row
+  // inert: whatever it covers, an approval card's Allow once included, takes
+  // no focus, Tab, key press or tap until it closes. It closes on Escape, on a
+  // tap on the strip of thread it leaves uncovered, and once a session is
+  // chosen, and focus goes back to the Sessions button.
+  const overlay = useNarrowTab() && open && onOpenChange !== undefined
+  const asideRef = useRef<HTMLElement | null>(null)
+  const close = useCallback(() => {
+    onOpenChange?.(false)
+    sessionsButton()?.focus()
+  }, [onOpenChange])
+  // Whether the open column covers the thread now, by the live query rather
+  // than the last render: between a narrowing and the media change it already
+  // does, as far as the person is concerned. Event handlers ask this.
+  const coversNow = () => onOpenChange !== undefined && readNarrowTab()
+  // What the column has made inert, so that closing frees exactly that.
+  const [marked] = useState(() => new Set<Element>())
+  // No dependency list: this runs in every commit the column renders in,
+  // which is every commit of the shell that owns the row, so a surface the
+  // shell swaps in beside the column is inert in the commit that adds it. A
+  // layout effect runs inside the commit that draws the cover, before paint
+  // and before any input event: a tab that narrows with focus on Allow once
+  // never shows the cover over a control that can still take a key.
+  useLayoutEffect(() => {
+    if (overlay && asideRef.current && coverRow(asideRef.current, marked)) onOpenChange?.(false)
+  })
+  // The thread under the cover changing (a session chosen from the command
+  // palette, say) changes nothing in the row itself, so the column watches
+  // the active session too, and gets out of the new thread's way.
+  const activeSessionId = snapshot.activeSessionId
+  const seenActiveSession = useRef(activeSessionId)
+  useLayoutEffect(() => {
+    const changed = seenActiveSession.current !== activeSessionId
+    seenActiveSession.current = activeSessionId
+    if (changed && overlay) onOpenChange?.(false)
+  }, [activeSessionId, overlay, onOpenChange])
+  // A surface can also replace its own element in the row in a commit the
+  // column takes no part in (a lazy surface's error boundary, say). The
+  // observer covers it at the next microtask, before paint and before any
+  // input event can reach it.
+  useLayoutEffect(() => {
+    const aside = asideRef.current
+    const row = aside?.parentElement
+    if (!overlay || !aside || !row) return
+    const observer = new MutationObserver(() => {
+      if (coverRow(aside, marked)) onOpenChange?.(false)
+    })
+    observer.observe(row, { childList: true })
+    return () => {
+      observer.disconnect()
+      for (const element of marked) element.removeAttribute("inert")
+      marked.clear()
+    }
+  }, [overlay, marked, onOpenChange])
+  // A browser applies a new viewport at once but reports the media change at
+  // its next rendering step, and an input event can run in between: Chromium
+  // let Space through to a focused Allow once there, before the commit above
+  // could draw the cover. So while the column is open, input aimed behind it
+  // is refused whenever the live query says narrow, whatever React has drawn
+  // yet; focus behind it moves to the Sessions button. At 40rem and wider
+  // nothing is refused.
+  useLayoutEffect(() => {
+    if (!open || onOpenChange === undefined) return
+    const refuse = (event: Event) => {
+      const aside = asideRef.current
+      const row = aside?.parentElement
+      const target = event.target
+      if (!aside || !row || !(target instanceof Node) || !row.contains(target) || aside.contains(target)) return
+      if (target instanceof Element && target.hasAttribute("data-sessions-backdrop")) return
+      if (!readNarrowTab()) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      const focused = document.activeElement
+      if (focused && row.contains(focused) && !aside.contains(focused)) sessionsButton()?.focus()
+      // Escape still does what it does over a drawn cover: it closes the column.
+      if (event instanceof KeyboardEvent && event.type === "keydown" && event.key === "Escape") onOpenChange(false)
+    }
+    for (const type of refusedInput) document.addEventListener(type, refuse, { capture: true, passive: false })
+    return () => {
+      for (const type of refusedInput) document.removeEventListener(type, refuse, { capture: true })
+    }
+  }, [open, onOpenChange])
+  // Escape closes the top layer only. It is taken in the capture phase, ahead
+  // of a floating dock sheet's own Escape under the column, and stops there.
+  // One that belongs to a layer above the column is left to that layer. It
+  // asks the live query, so an Escape between a narrowing and the media change
+  // closes the column too; at 40rem and wider it leaves the column open.
+  useEffect(() => {
+    if (!open || onOpenChange === undefined) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      const aside = asideRef.current
+      if (event.key !== "Escape" || event.defaultPrevented || !aside || !readNarrowTab()) return
+      if (escapeBelongsAbove(aside, event.target)) return
+      event.stopPropagation()
+      close()
+    }
+    document.addEventListener("keydown", closeOnEscape, { capture: true })
+    return () => document.removeEventListener("keydown", closeOnEscape, { capture: true })
+  }, [open, onOpenChange, close])
   if (!open) return null
+  // A row action that opens something behind a covering column (the resumed
+  // thread, its checkpoints, its machine menu) gets the column out of the way,
+  // as choosing a session does. The menu's trigger leaves with the column, so
+  // focus goes to Sessions rather than the body; what the action opens may
+  // take it from there. Stop opens nothing, and Archive asks in a dialog drawn
+  // above the column, so both keep it.
+  const openBehind = (action: "resume" | "fork" | "move", sessionId: string) => {
+    onAction?.(action, sessionId)
+    if (coversNow()) close()
+  }
   const groups = groupSessions(snapshot)
   const machine = snapshot.machine.name
   const sessionsById = new Map(snapshot.sessions.map((session) => [session.id, session]))
@@ -173,10 +363,20 @@ export function SessionsDrawerColumn({
   })
 
   return (
+    <>
+    {/* The uncovered strip of thread: a tap there closes the column. The
+        keyboard has Escape, so the strip is not a focus stop. z-50 puts it
+        above the thread's raised controls (z-10) and the unpinned dock sheet
+        (z-40, machine-sheet.tsx). The column, drawn after it at the same
+        level, stays on top; menus and dialogs, in portals at the end of the
+        body, above both. The lost banner is drawn above the row meanwhile
+        (workspace-shell.tsx, connection-status.tsx). */}
+    {overlay ? <div aria-hidden data-sessions-backdrop="" className="absolute inset-0 z-50 bg-foreground/10" onClick={close} /> : null}
     <aside
+      ref={asideRef}
       id="sessions-drawer"
       aria-label="Sessions"
-      className={cn("flex w-[268px] shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar", className)}
+      className={cn("flex w-[268px] shrink-0 flex-col overflow-hidden border-r border-border bg-sidebar", overlay && "absolute inset-y-0 left-0 z-50 shadow-lg", className)}
     >
       {scope ? (
         <div className="flex shrink-0 items-center gap-2 border-b px-[14px] py-[9px]">
@@ -220,7 +420,11 @@ export function SessionsDrawerColumn({
                     <button
                       type="button"
                       aria-current={current ? "true" : undefined}
-                      onClick={() => onActivate(entry.id)}
+                      onClick={() => {
+                        onActivate(entry.id)
+                        // A covering column gets out of the way of the chosen thread.
+                        if (coversNow()) close()
+                      }}
                       className="flex min-w-0 flex-1 items-start gap-[9px] text-left"
                     >
                       {/* The title comes first in the button's name, so the dot
@@ -246,7 +450,19 @@ export function SessionsDrawerColumn({
                             <EllipsisIcon className="size-3.5" />
                           </button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" className="w-[214px]">
+                        <DropdownMenuContent
+                          align="end"
+                          className="w-[214px]"
+                          // The menu returns focus to its trigger on close. When
+                          // its action closed the column, the trigger is gone, so
+                          // focus stays where the action put it, or goes to
+                          // Sessions if nothing took it.
+                          onCloseAutoFocus={(event) => {
+                            if (asideRef.current) return
+                            event.preventDefault()
+                            if (!document.activeElement || document.activeElement === document.body) sessionsButton()?.focus()
+                          }}
+                        >
                           {entry.archived ? (
                             <>
                               <DropdownMenuItem disabled title="Not built yet" aria-describedby={`${archivedNoteId}-${entry.id}`} className="justify-between">
@@ -262,10 +478,10 @@ export function SessionsDrawerColumn({
                               {entry.running ? (
                                 <DropdownMenuItem onSelect={() => onAction("stop", entry.id)}><PauseIcon />Stop the agent</DropdownMenuItem>
                               ) : (
-                                <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("resume", entry.id)}><PlayIcon />Resume session</DropdownMenuItem>
+                                <DropdownMenuItem disabled={entry.archiving} onSelect={() => openBehind("resume", entry.id)}><PlayIcon />Resume session</DropdownMenuItem>
                               )}
-                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("fork", entry.id)}><GitForkIcon />Fork from a checkpoint</DropdownMenuItem>
-                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("move", entry.id)}><MonitorIcon />Move to another machine</DropdownMenuItem>
+                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => openBehind("fork", entry.id)}><GitForkIcon />Fork from a checkpoint</DropdownMenuItem>
+                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => openBehind("move", entry.id)}><MonitorIcon />Move to another machine</DropdownMenuItem>
                               <DropdownMenuItem
                                 disabled={entry.archiving || archiveLocked !== undefined}
                                 aria-describedby={archiveLocked !== undefined ? `${archivedNoteId}-locked-${entry.id}` : undefined}
@@ -296,11 +512,16 @@ export function SessionsDrawerColumn({
       ) : null}
       {machineAvailability ? (
         <div className="flex shrink-0 items-center justify-center px-[10px] pt-[9px] pb-[11px]">
-          <button type="button" className="font-machine text-[10.5px] text-muted-foreground" disabled={!onOpenMachines} onClick={onOpenMachines}>
+          <button type="button" className="font-machine text-[10.5px] text-muted-foreground" disabled={!onOpenMachines} onClick={() => {
+            onOpenMachines?.()
+            // Machines opens beside the column, which would cover it.
+            if (coversNow()) close()
+          }}>
             {machineAvailability}
           </button>
         </div>
       ) : null}
     </aside>
+    </>
   )
 }

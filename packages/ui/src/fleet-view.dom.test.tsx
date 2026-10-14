@@ -958,7 +958,8 @@ it("draws the paired devices as rows of one card under its heading", async () =>
   renderFleet()
 
   const row = await screen.findByRole("row", { name: /studio-ipad/ })
-  const card = row.closest("table")?.parentElement
+  // The table sits in its own sideways scroll box inside the card (narrow tabs).
+  const card = row.closest("table")?.parentElement?.parentElement
   expect(card?.className.split(" ")).toEqual(expect.arrayContaining(["rounded-xl", "border", "bg-card"]))
   expect(within(card!).getByRole("heading", { name: "Devices paired with workshop" })).toBeTruthy()
   expect(screen.getByRole("columnheader", { name: "Kind" }).closest("thead")?.className).toContain("sr-only")

@@ -49,7 +49,7 @@ import { fleetMachines } from "./fleet-entries.js"
 import { machineAttachment } from "./machine-selection.js"
 import { TooltipProvider } from "./components/ui/tooltip"
 import { DaemonRpcError, ProjectSwitchConfirmationError, clientVersion } from "./client"
-import { SessionsDrawerColumn, SessionsDrawerTrigger, sessionsColumnOpensByDefault, type SessionRowAction } from "./sessions-drawer"
+import { SessionsDrawerColumn, SessionsDrawerTrigger, sessionsColumnOpensByDefault, useNarrowTab, type SessionRowAction } from "./sessions-drawer"
 import { machineRoute } from "./route-word"
 import { useWorkspace } from "./use-workspace"
 import type { RelayPinStorage } from "./relay-pin"
@@ -599,6 +599,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
 
   const shellRef = useRef<HTMLDivElement>(null)
   const [sessionsOpen, setSessionsOpen] = useState(() => typeof window !== "undefined" && sessionsColumnOpensByDefault(clientKind, window.innerWidth))
+  const sessionsCoverThread = useNarrowTab() && sessionsOpen
   const dockCollapseButtonRef = useRef<HTMLButtonElement>(null)
   const dockUnpinButtonRef = useRef<HTMLButtonElement>(null)
   const sheetPinButtonRef = useRef<HTMLButtonElement>(null)
@@ -1838,16 +1839,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       <div ref={shellRef} className="flex h-dvh min-h-0 flex-col overflow-hidden bg-background text-foreground">
         <AppBar sessionsDrawer={snapshot ? <SessionsDrawerTrigger snapshot={snapshot} open={sessionsOpen} onOpenChange={setSessionsOpen} /> : undefined} snapshot={snapshot} connected={connected} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} emergencyStopOutcome={emergencyStopOutcome} emergencyStopError={emergencyStopError} bridge={windowBridge} windowDecoration={activeWindowDecoration} onNewSession={newSession} newSessionShortcut={workspaceShortcutsBound ? shortcutLabel("mod+N", commandPlatform) : undefined} onOpenMachines={() => setSurface("fleet")} onOpenSettings={() => setSurface("providers")} onPauseAll={pauseActiveTurns} onEmergencyStop={stopEverything} onOpenCommands={openCommandPalette} onToggleTheme={() => setWorkspaceUi((current) => ({ ...current, theme: resolvedTheme === "dark" ? "light" : "dark" }))} commandShortcut={commandPlatform === "darwin" ? "⌘K" : "Ctrl+K"} title={shellTitle} machineTransport={!connected ? "unreachable" : chipRoute} theme={resolvedTheme} />
         {/* The thread column draws the lost banner at its own top, as the
-            design does. Without one it spans the window here. */}
-        <ShellConnectionStatus threadColumn={Boolean(snapshot) && surface === "workspace" && !startRefusal} />
+            design does. Without one, or with the narrow sessions drawer
+            covering it, it spans the window here. */}
+        <ShellConnectionStatus threadColumn={Boolean(snapshot) && surface === "workspace" && !startRefusal && !sessionsCoverThread} />
         {attached ? <div className="flex shrink-0 items-center justify-between gap-3 border-b px-3 py-2 text-sm" role="status">
           <span>{!access ? "Client access is no longer verified for" : connected ? "Using" : "Connecting to"} <span className="font-machine">{fleetMachines(fleet?.entries ?? []).find((machine) => machine.id === attached.machineId)?.label ?? attached.machineId}</span>{access ? " with this app's client credential." : ". Return home and authorize this client again."}</span>
           <Button variant="outline" size="sm" onClick={() => setAttached(null)}>Return to home daemon</Button>
         </div> : null}
-        {snapshot ? <div className="flex min-h-0 flex-1">
+        {snapshot ? <div className="flex min-h-0 flex-1 max-sm:relative">
           <SessionsDrawerColumn
             snapshot={snapshot}
             open={sessionsOpen}
+            onOpenChange={setSessionsOpen}
             onActivate={openSessionInWorkspace}
               onAction={watching ? undefined : sessionRowAction}
             machineAvailability={machineAvailability}
@@ -2071,7 +2074,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onExport={exportAudit}
           />
         ) : (
-          <div className="relative flex min-h-0 flex-1">
+          <div className="relative flex min-h-0 min-w-0 flex-1">
             <ResizablePanelGroup
               key={layoutKey}
               orientation="horizontal"
