@@ -166,7 +166,10 @@ it("below 640 px the lost banner keeps its words on most of the line", () => {
 const narrowQuery = "(width < 40rem)"
 
 // Returns a resize: it changes the answer and tells the listeners, as a
-// browser does when the tab crosses the breakpoint.
+// browser does when the tab crosses the breakpoint. With tell false it only
+// changes the answer: a browser applies a new viewport at once but reports
+// the media change at its next rendering step, and an input event can come
+// between the two.
 function stubWidth(narrow: boolean) {
   const listeners = new Set<() => void>()
   vi.stubGlobal("matchMedia", vi.fn((query: string) => ({
@@ -179,9 +182,9 @@ function stubWidth(narrow: boolean) {
     removeListener: () => {},
     dispatchEvent: () => false,
   })))
-  return (next: boolean) => {
+  return (next: boolean, tell = true) => {
     narrow = next
-    for (const listener of listeners) listener()
+    if (tell) for (const listener of listeners) listener()
   }
 }
 
@@ -290,6 +293,43 @@ it("narrowing past 640 px with Allow once focused makes the thread inert and mov
     await user.keyboard("{Enter}")
   })
   expect(sentRequests(socket, "approval.resolve")).toHaveLength(0)
+})
+
+// Found in Chromium: Playwright narrowed the viewport and pressed Space at
+// once, and the key reached Allow once before the browser reported the media
+// change, so before React drew the cover. Below the breakpoint the open
+// column refuses input aimed behind it even before the change arrives.
+it("a key or click aimed behind the open drawer after the tab narrows, before the media change arrives, does nothing", async () => {
+  const resize = stubWidth(false)
+  const user = userEvent.setup()
+  const { socket } = await openShell()
+  await user.click(sessionsButton())
+  const allow = allowOnce()
+  act(() => { allow.focus() })
+
+  resize(true, false)
+  await user.keyboard(" ")
+  expect(sentRequests(socket, "approval.resolve")).toHaveLength(0)
+  // The refused key also takes focus out from behind the column.
+  expect(document.activeElement).toBe(sessionsButton())
+  act(() => { allow.focus() })
+  await user.keyboard("{Enter}")
+  await user.click(allow)
+  expect(sentRequests(socket, "approval.resolve")).toHaveLength(0)
+  expect(document.getElementById("sessions-drawer")).not.toBeNull()
+
+  act(() => { resize(true) })
+  expect(allow.closest("[inert]")).not.toBeNull()
+  expect(document.activeElement).toBe(sessionsButton())
+})
+
+it("the drawer refuses nothing at 640 px and wider: Allow once beside the open column still approves", async () => {
+  stubWidth(false)
+  const user = userEvent.setup()
+  const { socket } = await openShell()
+  await user.click(sessionsButton())
+  await user.click(allowOnce())
+  expect(sentRequests(socket, "approval.resolve")).toHaveLength(1)
 })
 
 // A resize commits on React's sync lane, whose passive effects also run before

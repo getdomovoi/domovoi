@@ -119,6 +119,12 @@ function useNarrowTab(): boolean {
   return useSyncExternalStore(subscribeNarrowTab, readNarrowTab, () => false)
 }
 
+// The input a narrow tab's open column refuses behind it before the cover is
+// drawn: keys (a keydown refused also stops the click Enter or Space would
+// make), text input, and every step of a tap or click. Listened for on the
+// document in the capture phase, ahead of React's listeners on its root.
+const refusedInput = ["keydown", "keypress", "keyup", "beforeinput", "pointerdown", "mousedown", "mouseup", "click", "touchstart", "touchend"] as const
+
 // The app bar's button that opens the column, where focus goes when a
 // covering column closes or takes focus out of what it covers.
 const sessionsButton = () => document.querySelector<HTMLElement>("[aria-controls='sessions-drawer']")
@@ -221,6 +227,32 @@ export function SessionsDrawerColumn({
       for (const element of covered) element.removeAttribute("inert")
     }
   })
+  // A browser applies a new viewport at once but reports the media change at
+  // its next rendering step, and an input event can run in between: Chromium
+  // let Space through to a focused Allow once there, before the commit above
+  // could draw the cover. So while the column is open, input aimed behind it
+  // is refused whenever the live query says narrow, whatever React has drawn
+  // yet; focus behind it moves to the Sessions button. At 40rem and wider
+  // nothing is refused.
+  useLayoutEffect(() => {
+    if (!open || onOpenChange === undefined) return
+    const refuse = (event: Event) => {
+      const aside = asideRef.current
+      const row = aside?.parentElement
+      const target = event.target
+      if (!aside || !row || !(target instanceof Node) || !row.contains(target) || aside.contains(target)) return
+      if (target instanceof Element && target.hasAttribute("data-sessions-backdrop")) return
+      if (!readNarrowTab()) return
+      event.preventDefault()
+      event.stopImmediatePropagation()
+      const focused = document.activeElement
+      if (focused && row.contains(focused) && !aside.contains(focused)) sessionsButton()?.focus()
+    }
+    for (const type of refusedInput) document.addEventListener(type, refuse, { capture: true, passive: false })
+    return () => {
+      for (const type of refusedInput) document.removeEventListener(type, refuse, { capture: true })
+    }
+  }, [open, onOpenChange])
   useEffect(() => {
     if (!overlay) return
     const closeOnEscape = (event: KeyboardEvent) => {
