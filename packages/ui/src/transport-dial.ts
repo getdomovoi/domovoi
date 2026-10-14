@@ -68,14 +68,17 @@ export async function dialTransport<Connection>(input: {
   candidates: TransportCandidate[]
   credential: string
   connect: (attempt: { endpoint: string; credential: string; remainingCandidates: number }) => Promise<Connection>
-  // Compatibility input only. It cannot enable an unimplemented relay.
+  // Only an encrypted adapter may implement this path. A relay candidate
+  // never reaches connect, even when the advertised endpoint looks direct.
+  connectRelay?: (attempt: { endpoint: string; credential: string; remainingCandidates: number }) => Promise<Connection>
+  // Compatibility input only. Availability is not an encrypted adapter.
   relayAvailable?: boolean
 }): Promise<DialedTransport<Connection>> {
   if (!input.credential) throw new TransportDialError("A transport credential is required")
 
   let usable: TransportCandidate[]
   try {
-    usable = usableTransports(input.candidates)
+    usable = usableTransports(input.candidates, { encryptedRelay: typeof input.connectRelay === "function" })
   } catch {
     throw invalidTransportError(input.candidates)
   }
@@ -84,7 +87,8 @@ export async function dialTransport<Connection>(input: {
   let lastTimeout: { endpoint: string; error: DeadlineExceededError } | undefined
   for (const [index, candidate] of usable.entries()) {
     try {
-      return { transport: candidate, connection: await input.connect({
+      const connect = candidate.kind === "relay" ? input.connectRelay! : input.connect
+      return { transport: candidate, connection: await connect({
         endpoint: candidate.endpoint,
         credential: input.credential,
         remainingCandidates: usable.length - index,
