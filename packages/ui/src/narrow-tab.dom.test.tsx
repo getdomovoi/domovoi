@@ -1,6 +1,6 @@
 import { act, cleanup, render, screen, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { useLayoutEffect, useRef } from "react"
+import { useLayoutEffect, useRef, useState } from "react"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
 import { demoWorkspace } from "@getdomovoi/protocol"
@@ -421,6 +421,52 @@ it("the covered thread is inert and has lost focus by the layout phase of the co
   seen.length = 0
   view.rerender(<Row open />)
   expect(seen).toEqual([{ inert: true, focused: false }])
+})
+
+// Review round 1: a surface can replace its own element in the row in a
+// commit the column takes no part in (a lazy surface's error boundary, for
+// one). That element is covered too, and inert before anything can focus it.
+it("a surface that swaps its own element beside the covering drawer is inert as soon as it lands", async () => {
+  stubWidth(true)
+  let fail: () => void = () => {}
+  function Surface() {
+    const [failed, setFailed] = useState(false)
+    fail = () => setFailed(true)
+    return failed
+      ? <section><button type="button" autoFocus>Try again</button></section>
+      : <div><button type="button">Allow once</button></div>
+  }
+  render(
+    <div className="flex max-sm:relative">
+      <SessionsDrawerColumn snapshot={workspaceSnapshot()} open onOpenChange={vi.fn()} onActivate={vi.fn()} />
+      <Surface />
+    </div>,
+  )
+  expect(screen.getByRole("button", { name: "Allow once", hidden: true }).closest("[inert]")).not.toBeNull()
+  act(() => { fail() })
+  await act(async () => { await Promise.resolve() })
+  const retry = screen.getByRole("button", { name: "Try again", hidden: true })
+  expect(retry.closest("[inert]")).not.toBeNull()
+  expect(document.activeElement).not.toBe(retry)
+})
+
+// Review round 1: with the floating dock sheet open under the covering drawer,
+// Escape closed both, and the sheet's own focus return sent focus into the
+// thread. Escape closes the top layer only: the drawer.
+it("below 640 px Escape closes the drawer and leaves a floating sheet under it open", async () => {
+  stubWidth(true)
+  const user = userEvent.setup()
+  await openShell()
+  await user.click(screen.getByRole("button", { name: "Open the sheet" }))
+  await settle()
+  expect(screen.getByRole("region", { name: "Machine surfaces" })).toBeTruthy()
+  expect(screen.queryByRole("button", { name: "Pin" })).not.toBeNull()
+  await user.click(sessionsButton())
+  await user.keyboard("{Escape}")
+  await settle()
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+  expect(screen.getByRole("region", { name: "Machine surfaces" })).toBeTruthy()
+  expect(document.activeElement).toBe(sessionsButton())
 })
 
 it("below 640 px an approval that arrives under the open drawer takes no focus and cannot be acted on until it closes", async () => {

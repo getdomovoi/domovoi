@@ -131,6 +131,29 @@ const refusedInput = ["keydown", "keypress", "keyup", "beforeinput", "pointerdow
 // covering column closes or takes focus out of what it covers.
 const sessionsButton = () => document.querySelector<HTMLElement>("[aria-controls='sessions-drawer']")
 
+// Layers drawn above a covering column, in portals, that take their own
+// Escape: row menus, the archive dialog, the command palette.
+const layerAbove = "[role=menu], [role=menubar], [role=dialog], [role=alertdialog], [role=listbox]"
+
+// Makes the rest of the column's row inert, and moves focus behind the
+// column to the Sessions button (a browser would only drop it to the body at
+// its next rendering step). Row menus, the archive dialog and the command
+// palette draw in portals outside the row, so they stay usable over it.
+function coverRow(aside: HTMLElement, marked: Set<Element>) {
+  const row = aside.parentElement
+  if (!row) return
+  for (const child of row.children) {
+    if (child === aside || child.hasAttribute("data-sessions-backdrop") || marked.has(child)) continue
+    child.setAttribute("inert", "")
+    marked.add(child)
+  }
+  const focused = document.activeElement
+  if (!focused || !row.contains(focused) || aside.contains(focused)) return
+  const button = sessionsButton()
+  if (button) button.focus()
+  else if (focused instanceof HTMLElement) focused.blur()
+}
+
 // How long, in the design's units: running 12m, failed 1h ago, idle 2d. A
 // reading ahead of this client's clock counts as now.
 function elapsed(since: string, now: number): string {
@@ -203,32 +226,33 @@ export function SessionsDrawerColumn({
     onOpenChange?.(false)
     sessionsButton()?.focus()
   }, [onOpenChange])
+  // What the column has made inert, so that closing frees exactly that.
+  const [marked] = useState(() => new Set<Element>())
   // No dependency list: this runs in every commit the column renders in,
   // which is every commit of the shell that owns the row, so a surface the
   // shell swaps in beside the column is inert in the commit that adds it. A
   // layout effect runs inside the commit that draws the cover, before paint
   // and before any input event: a tab that narrows with focus on Allow once
-  // never shows the cover over a control that can still take a key. Focus
-  // that is behind the cover then moves to the Sessions button; a browser
-  // would only drop it to the body at its next rendering step.
+  // never shows the cover over a control that can still take a key.
+  useLayoutEffect(() => {
+    if (overlay && asideRef.current) coverRow(asideRef.current, marked)
+  })
+  // A surface can also replace its own element in the row in a commit the
+  // column takes no part in (a lazy surface's error boundary, say). The
+  // observer covers it at the next microtask, before paint and before any
+  // input event can reach it.
   useLayoutEffect(() => {
     const aside = asideRef.current
     const row = aside?.parentElement
     if (!overlay || !aside || !row) return
-    // Row menus, the archive dialog and the command palette draw in portals
-    // outside the row, so they stay usable over the column.
-    const covered = [...row.children].filter((child) => child !== aside && !child.hasAttribute("data-sessions-backdrop"))
-    for (const element of covered) element.setAttribute("inert", "")
-    const focused = document.activeElement
-    if (focused && covered.some((element) => element.contains(focused))) {
-      const button = sessionsButton()
-      if (button) button.focus()
-      else if (focused instanceof HTMLElement) focused.blur()
-    }
+    const observer = new MutationObserver(() => coverRow(aside, marked))
+    observer.observe(row, { childList: true })
     return () => {
-      for (const element of covered) element.removeAttribute("inert")
+      observer.disconnect()
+      for (const element of marked) element.removeAttribute("inert")
+      marked.clear()
     }
-  })
+  }, [overlay, marked])
   // A browser applies a new viewport at once but reports the media change at
   // its next rendering step, and an input event can run in between: Chromium
   // let Space through to a focused Allow once there, before the commit above
@@ -255,15 +279,19 @@ export function SessionsDrawerColumn({
       for (const type of refusedInput) document.removeEventListener(type, refuse, { capture: true })
     }
   }, [open, onOpenChange])
+  // Escape closes the top layer only. It is taken in the capture phase, ahead
+  // of a floating dock sheet's own Escape under the column, and stops there.
+  // One aimed at a menu or dialog drawn above the column is left to it.
   useEffect(() => {
     if (!overlay) return
     const closeOnEscape = (event: KeyboardEvent) => {
-      // A menu or dialog above the column takes its own Escape and marks it
-      // handled; only an unhandled one closes the column.
-      if (event.key === "Escape" && !event.defaultPrevented) close()
+      if (event.key !== "Escape" || event.defaultPrevented) return
+      if (event.target instanceof Element && event.target.closest(layerAbove)) return
+      event.stopPropagation()
+      close()
     }
-    document.addEventListener("keydown", closeOnEscape)
-    return () => document.removeEventListener("keydown", closeOnEscape)
+    document.addEventListener("keydown", closeOnEscape, { capture: true })
+    return () => document.removeEventListener("keydown", closeOnEscape, { capture: true })
   }, [overlay, close])
   if (!open) return null
   const groups = groupSessions(snapshot)
