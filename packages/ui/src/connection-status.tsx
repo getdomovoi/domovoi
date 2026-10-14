@@ -105,7 +105,11 @@ function useNow(active: boolean, fixed: Date | undefined): Date {
   return fixed ?? now
 }
 
-const bannerClass = "flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)]"
+// inert:hidden: in a narrow tab the open sessions column covers the thread
+// and makes it inert (sessions-drawer.tsx). The shell then draws the lost
+// banner across the window above the row, where it stays live and the
+// column starts below it, so the thread's covered copy hides.
+const bannerClass = "flex shrink-0 flex-wrap items-center gap-3 border-b border-[var(--danger-border)] bg-[var(--danger-bg)] px-4 py-2.5 text-[12.5px] text-[var(--danger-fg)] inert:hidden"
 
 // The daemon-lost banner alone. The shell draws it at the top of the thread
 // column, as the design does, and across the window only where there is no
