@@ -234,6 +234,10 @@ export function SessionsDrawerColumn({
     onOpenChange?.(false)
     sessionsButton()?.focus()
   }, [onOpenChange])
+  // Whether the open column covers the thread now, by the live query rather
+  // than the last render: between a narrowing and the media change it already
+  // does, as far as the person is concerned. Event handlers ask this.
+  const coversNow = () => onOpenChange !== undefined && readNarrowTab()
   // What the column has made inert, so that closing frees exactly that.
   const [marked] = useState(() => new Set<Element>())
   // No dependency list: this runs in every commit the column renders in,
@@ -291,19 +295,21 @@ export function SessionsDrawerColumn({
   }, [open, onOpenChange])
   // Escape closes the top layer only. It is taken in the capture phase, ahead
   // of a floating dock sheet's own Escape under the column, and stops there.
-  // One that belongs to a layer above the column is left to that layer.
+  // One that belongs to a layer above the column is left to that layer. It
+  // asks the live query, so an Escape between a narrowing and the media change
+  // closes the column too; at 40rem and wider it leaves the column open.
   useEffect(() => {
-    if (!overlay) return
+    if (!open || onOpenChange === undefined) return
     const closeOnEscape = (event: KeyboardEvent) => {
       const aside = asideRef.current
-      if (event.key !== "Escape" || event.defaultPrevented || !aside) return
+      if (event.key !== "Escape" || event.defaultPrevented || !aside || !readNarrowTab()) return
       if (escapeBelongsAbove(aside, event.target)) return
       event.stopPropagation()
       close()
     }
     document.addEventListener("keydown", closeOnEscape, { capture: true })
     return () => document.removeEventListener("keydown", closeOnEscape, { capture: true })
-  }, [overlay, close])
+  }, [open, onOpenChange, close])
   if (!open) return null
   // A row action that opens something behind a covering column (the resumed
   // thread, its checkpoints, its machine menu) gets the column out of the way,
@@ -313,7 +319,7 @@ export function SessionsDrawerColumn({
   // above the column, so both keep it.
   const openBehind = (action: "resume" | "fork" | "move", sessionId: string) => {
     onAction?.(action, sessionId)
-    if (overlay) close()
+    if (coversNow()) close()
   }
   const groups = groupSessions(snapshot)
   const machine = snapshot.machine.name
@@ -386,7 +392,7 @@ export function SessionsDrawerColumn({
                       onClick={() => {
                         onActivate(entry.id)
                         // A covering column gets out of the way of the chosen thread.
-                        if (overlay) close()
+                        if (coversNow()) close()
                       }}
                       className="flex min-w-0 flex-1 items-start gap-[9px] text-left"
                     >
@@ -475,7 +481,11 @@ export function SessionsDrawerColumn({
       ) : null}
       {machineAvailability ? (
         <div className="flex shrink-0 items-center justify-center px-[10px] pt-[9px] pb-[11px]">
-          <button type="button" className="font-machine text-[10.5px] text-muted-foreground" disabled={!onOpenMachines} onClick={onOpenMachines}>
+          <button type="button" className="font-machine text-[10.5px] text-muted-foreground" disabled={!onOpenMachines} onClick={() => {
+            onOpenMachines?.()
+            // Machines opens beside the column, which would cover it.
+            if (coversNow()) close()
+          }}>
             {machineAvailability}
           </button>
         </div>

@@ -340,6 +340,36 @@ it("Escape aimed behind the open drawer after the tab narrows, before the media 
   expect(allowOnce().closest("[inert]")).toBeNull()
 })
 
+// Pull request review: the same gap with focus inside the drawer. Escape
+// there was ignored until React drew the cover; it closes the drawer too.
+it("Escape from inside the drawer after the tab narrows, before the media change arrives, closes it", async () => {
+  const resize = stubWidth(false)
+  const user = userEvent.setup()
+  await openShell()
+  await user.click(sessionsButton())
+  act(() => { document.getElementById("sessions-drawer")!.querySelector("button")!.focus() })
+
+  resize(true, false)
+  await user.keyboard("{Escape}")
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+  expect(document.activeElement).toBe(sessionsButton())
+  act(() => { resize(true) })
+})
+
+// Pull request review: the drawer's machine count opens Machines, which the
+// drawer then covered. Below 640 px it closes the drawer on the way.
+it("below 640 px the drawer's machine count opens Machines uncovered", async () => {
+  stubWidth(true)
+  const user = userEvent.setup()
+  await openShell()
+  await user.click(sessionsButton())
+  await user.click(screen.getByRole("button", { name: /machine · \d+ unreachable/ }))
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+  const machines = await screen.findByRole("heading", { name: "Machines", level: 1 }, { timeout: 5000 })
+  expect(machines.closest("[inert]")).toBeNull()
+  await settle()
+})
+
 it("the drawer refuses nothing at 640 px and wider: Allow once beside the open column still approves", async () => {
   stubWidth(false)
   const user = userEvent.setup()
