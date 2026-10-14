@@ -10,6 +10,7 @@ import { sessionPreviewBuildBasis } from "./artifacts"
 import { fleetListingOverflow } from "./fleet-overflow"
 import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 import { createRelayPinStore, reconcileRelayPin, type RelayPinStorage } from "./relay-pin"
+import { SessionReadError, sessionReadLogAttempts, sessionReadOutcome, type SessionReadFailure } from "./session-read"
 
 
 type WorkspaceSnapshotState = {
@@ -115,6 +116,7 @@ export function useWorkspace(
   const [connected, setConnected] = useState(false)
   const [clientAccess, setClientAccess] = useState<ClientAccess>("full")
   const [stateRecovery, setStateRecovery] = useState<StateRecovery | null>(null)
+  const [sessionRead, setSessionRead] = useState<(SessionReadFailure & { target: string }) | null>(null)
   // The id the daemon gave the connection open now, from its hello. A row the
   // daemon attributes to a connection is this client's only when it names this
   // one, so it is null while no connection is open.
@@ -359,11 +361,55 @@ export function useWorkspace(
     updateSnapshotFrom(client, await client.restartProviderThread(sessionId, runtime))
   }, [updateSnapshotFrom])
 
+  // Opening a session reads its thread: session.activate answers with the
+  // workspace that holds it. A read that ends without an answer is recorded
+  // here for the thread column, with the attempts this client really sent;
+  // an answer, a refusal included, clears it.
   const activateSession = useCallback(async (sessionId: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshotFrom(client, await client.activateSession(sessionId))
-  }, [updateSnapshotFrom])
+    const startedAt = new Date()
+    setSessionRead((current) => current?.target === target && current.sessionId === sessionId
+      ? { ...current, retrying: true }
+      : null)
+    try {
+      updateSnapshotFrom(client, await client.activateSession(sessionId))
+      setSessionRead((current) => current?.sessionId === sessionId ? null : current)
+    } catch (cause) {
+      // A connection this hook already replaced closed under its own request:
+      // that is a change of target, not a failed read.
+      const outcome = isCurrentConnection(clientRef.current, client) ? sessionReadOutcome(cause) : undefined
+      if (!outcome) {
+        setSessionRead((current) => current?.sessionId === sessionId ? null : current)
+        throw cause
+      }
+      const attempt = { startedAt, endedAt: new Date(), outcome }
+      setSessionRead((current) => {
+        const earlier = current?.target === target && current.sessionId === sessionId ? current : undefined
+        return {
+          target,
+          sessionId,
+          count: (earlier?.count ?? 0) + 1,
+          recent: [...(earlier?.recent ?? []), attempt].slice(-sessionReadLogAttempts),
+          retrying: false,
+        }
+      })
+      throw new SessionReadError(outcome, cause)
+    }
+  }, [target, updateSnapshotFrom])
+  // The read can land after this client stopped waiting for it: the daemon
+  // then sends the workspace with that session active, and nothing failed.
+  const activeSessionId = snapshot?.activeSessionId
+  useEffect(() => {
+    if (sessionRead && activeSessionId === sessionRead.sessionId) setSessionRead(null)
+  }, [activeSessionId, sessionRead])
+  const visibleSessionRead: SessionReadFailure | null = sessionRead
+    && sessionRead.target === target
+    && snapshot !== null
+    && snapshot.activeSessionId !== sessionRead.sessionId
+    && snapshot.sessions.some((session) => session.id === sessionRead.sessionId)
+    ? { sessionId: sessionRead.sessionId, count: sessionRead.count, recent: sessionRead.recent, retrying: sessionRead.retrying }
+    : null
 
   const openProject = useCallback(async (path: string, confirmation?: ProjectSwitchConfirmation) => {
     const client = clientRef.current
@@ -966,6 +1012,7 @@ export function useWorkspace(
     connectionId,
     clientAccess,
     stateRecovery,
+    sessionReadFailure: visibleSessionRead,
     createCheckpoint,
     createAnnotation,
     createTerminal,

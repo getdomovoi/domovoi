@@ -66,18 +66,22 @@
         "Try again",
         "Open the machine",
         "nothing was written, nothing was lost",
-        "idempotency"
-      ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "FailedReadState draws the frame, but its one caller is the provider-restart path in thread.tsx, not a failed session read. No caller passes attempts or Open the machine, so WHAT IT TRIED and the attempt count are never drawn. The line nothing was written, nothing was lost shows only where a caller says the failure only read, and no caller does: a provider can write files before it stops."
-      },
-      "presence": [
-        "Could not read this session",
-        "WHAT IT TRIED"
+        "idempotency",
+        "The session is still on the machine. A client that cannot read it has not changed it.",
+        "If a turn was running it is still running. The daemon does not need this window.",
+        "Any gate raised while you were away is still waiting, and will be here when the read succeeds."
       ],
       "evidence": [
-        "3 attempts"
+        "Could not read this session",
+        "WHAT IT TRIED",
+        "re:\\$\\{attemptCount\\} attempts",
+        "Open the machine",
+        "<FailedSessionRead failure={sessionReadFailure}",
+        "The session is still on the machine. A client that cannot read it has not changed it.",
+        "If a turn was running it is still running. The daemon does not need this window."
+      ],
+      "notes": [
+        "2026-10-14 (S3): built for the read a session open makes. session.activate answers with the workspace that holds the session's thread; when it ends without an answer (no answer within the request budget, the connection closed, an answer the client cannot parse), the desktop and web thread column draws FailedSessionRead for the session asked for, in place of the previous session's thread. The header count is the reads this client sent for that session in a row, and WHAT IT TRIED logs the last five. Try again sends session.activate again and Open the machine opens the Machines view; both work in phone and tablet tabs. A daemon refusal stays in the shell's alert. The connect read before any snapshot stays with ThreadSkeleton (Q344 A), and the provider-restart caller is unchanged."
       ]
     },
     {
@@ -148,6 +152,11 @@
       "id": "states.loading",
       "since": "2026-10-02",
       "note": "Q344 A: once the first attempt fails the skeleton stops and says Not connected. Nothing has been read from <host> yet., a third state the design does not draw; the drawn shimmer would claim a read that is not happening."
+    },
+    {
+      "id": "states.failed-read",
+      "since": "2026-10-14",
+      "note": "S3, recommendation applied under the standing ruling of 2026-10-06: the session read draws two of the design's three What is still true lines. Any gate raised while you were away is still waiting is left out because another client can answer a gate while this one cannot read. nothing was written, nothing was lost is not drawn for it either: opening a session writes the daemon's active session. The message names how the read ended (no answer, connection closed, unreadable answer), with the design's sentence for no answer. The app bar title still names the session that was open before; the failed state names the one asked for in WHAT IT TRIED."
     }
   ],
   "scriptBacklog": {
@@ -172,9 +181,6 @@
       "clean · main at 8f3c1de",
       "claude-code, codex",
       "both authenticated",
-      "The session is still on the machine. A client that cannot read it has not changed it.",
-      "If a turn was running it is still running. The daemon does not need this window.",
-      "Any gate raised while you were away is still waiting, and will be here when the read succeeds.",
       "Migrate billing webhooks to the new idempotency table",
       "mac-mini-m4 · 4m",
       "Backfill the customer search index",
