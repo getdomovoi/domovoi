@@ -305,6 +305,14 @@ export function SessionsDrawerColumn({
     return () => document.removeEventListener("keydown", closeOnEscape, { capture: true })
   }, [overlay, close])
   if (!open) return null
+  // A row action that opens something behind a covering column (the resumed
+  // thread, its checkpoints, its machine menu) gets the column out of the way.
+  // Focus goes where that opens, not back to Sessions. Stop opens nothing, and
+  // Archive asks in a dialog drawn above the column, so both keep it.
+  const openBehind = (action: "resume" | "fork" | "move", sessionId: string) => {
+    onAction?.(action, sessionId)
+    if (overlay) onOpenChange?.(false)
+  }
   const groups = groupSessions(snapshot)
   const machine = snapshot.machine.name
   const sessionsById = new Map(snapshot.sessions.map((session) => [session.id, session]))
@@ -419,10 +427,10 @@ export function SessionsDrawerColumn({
                               {entry.running ? (
                                 <DropdownMenuItem onSelect={() => onAction("stop", entry.id)}><PauseIcon />Stop the agent</DropdownMenuItem>
                               ) : (
-                                <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("resume", entry.id)}><PlayIcon />Resume session</DropdownMenuItem>
+                                <DropdownMenuItem disabled={entry.archiving} onSelect={() => openBehind("resume", entry.id)}><PlayIcon />Resume session</DropdownMenuItem>
                               )}
-                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("fork", entry.id)}><GitForkIcon />Fork from a checkpoint</DropdownMenuItem>
-                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => onAction("move", entry.id)}><MonitorIcon />Move to another machine</DropdownMenuItem>
+                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => openBehind("fork", entry.id)}><GitForkIcon />Fork from a checkpoint</DropdownMenuItem>
+                              <DropdownMenuItem disabled={entry.archiving} onSelect={() => openBehind("move", entry.id)}><MonitorIcon />Move to another machine</DropdownMenuItem>
                               <DropdownMenuItem
                                 disabled={entry.archiving || archiveLocked !== undefined}
                                 aria-describedby={archiveLocked !== undefined ? `${archivedNoteId}-locked-${entry.id}` : undefined}

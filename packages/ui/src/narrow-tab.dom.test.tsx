@@ -520,6 +520,32 @@ it("below 640 px Escape aimed at a portal layer or with a tooltip showing leaves
   expect(document.getElementById("sessions-drawer")).toBeNull()
 })
 
+// Pull request review: a row action that opens something behind the cover
+// (the resumed thread, its checkpoints, its machine menu) left the cover over
+// it. Those close the drawer; Archive asks in a dialog above it and keeps it.
+it("below 640 px row actions that open the thread close the drawer, and Archive keeps it", async () => {
+  stubWidth(true)
+  const user = userEvent.setup()
+  const { snapshot, socket } = await openShell()
+  const quiet = snapshot.sessions.find((session) => session.id !== snapshot.activeSessionId)!
+  const rowMenu = async (title: string) => {
+    await user.click(screen.getByRole("button", { name: `Actions for ${title}` }))
+    return screen.getByRole("menu")
+  }
+
+  await user.click(sessionsButton())
+  await user.click(within(await rowMenu(quiet.title)).getByRole("menuitem", { name: /Archive session/ }))
+  expect(document.getElementById("sessions-drawer")).not.toBeNull()
+  await user.click(await screen.findByRole("button", { name: "Keep the session" }))
+  await settle()
+
+  if (!document.getElementById("sessions-drawer")) await user.click(sessionsButton())
+  await user.click(within(await rowMenu(quiet.title)).getByRole("menuitem", { name: /Fork from a checkpoint/ }))
+  await settle()
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+  expect(pendingRequest(socket, "session.activate").params).toMatchObject({ sessionId: quiet.id })
+})
+
 it("below 640 px an approval that arrives under the open drawer takes no focus and cannot be acted on until it closes", async () => {
   stubWidth(true)
   const user = userEvent.setup()
