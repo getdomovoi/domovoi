@@ -118,7 +118,9 @@ export function DaemonLostBanner(props: WorkspaceConnection & { now?: Date | und
     <div role="status" aria-live="polite" aria-atomic="true" className={bannerClass}>
       <StatusDot meaning="offline" label="Disconnected" size="default" labelHidden className="shrink-0" />
       {lostOn ? (
-        <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-[11px] gap-y-1">
+        // In a narrow tab the words keep most of the line and the buttons
+        // wrap below them, rather than the words wrapping one per line.
+        <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-[11px] gap-y-1 max-sm:min-w-[60%]">
           {props.lastHeardAt ? (
             // The age ticks every second, and every change inside the live
             // region would be announced again. The ticking words are hidden
@@ -135,7 +137,7 @@ export function DaemonLostBanner(props: WorkspaceConnection & { now?: Date | und
           </span>
         </span>
       ) : (
-        <span className="min-w-0 flex-1 break-words">
+        <span className="min-w-0 flex-1 break-words max-sm:min-w-[60%]">
           {props.connectionError
             ? `Reconnect failed: ${props.connectionError}`
             : props.authenticationRequired

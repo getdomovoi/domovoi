@@ -1475,7 +1475,9 @@ export function FleetView({
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
+    // min-w-0: a flex item in the shell's row, so it shrinks to the tab
+    // rather than to its widest content.
+    <div className="flex min-h-0 min-w-0 flex-1">
       <ScrollArea className="min-h-0 min-w-0 flex-1">
         <main className="mx-auto flex w-full max-w-[1180px] flex-col px-4 py-5 sm:px-[34px] sm:py-[30px]">
           <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1610,6 +1612,10 @@ export function FleetView({
             ) : null}
 
             {devices && devices.length > 0 ? (
+              // The table may be wider than a phone. It scrolls in its own box;
+              // w-0 min-w-full keeps its width out of the page's, which the
+              // scroll area would otherwise widen past the tab and clip.
+              <div className="w-0 min-w-full overflow-x-auto">
               <table className="w-full border-collapse">
                 <caption className="sr-only">Devices paired with this machine</caption>
                 <DeviceTableHead />
@@ -1639,6 +1645,7 @@ export function FleetView({
                   })}
                 </tbody>
               </table>
+              </div>
             ) : null}
 
             {devices && devices.length === 0 ? (
@@ -1675,6 +1682,7 @@ export function FleetView({
 
             {connected && !handheld && !devices && !devicesError ? (
               <>
+                <div className="w-0 min-w-full overflow-x-auto">
                 <table className="w-full animate-pulse border-collapse">
                   <caption className="sr-only">Devices paired with this machine</caption>
                   <DeviceTableHead />
@@ -1684,6 +1692,7 @@ export function FleetView({
                     <LoadingRow wide={false} />
                   </tbody>
                 </table>
+                </div>
                 <p role="status" className="m-0 border-t px-[15px] py-2.5 font-machine text-[11.5px] text-faint">
                   Loading paired devices
                 </p>

@@ -2052,7 +2052,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             onExport={exportAudit}
           />
         ) : (
-          <div className="relative flex min-h-0 flex-1">
+          <div className="relative flex min-h-0 min-w-0 flex-1">
             <ResizablePanelGroup
               key={layoutKey}
               orientation="horizontal"
