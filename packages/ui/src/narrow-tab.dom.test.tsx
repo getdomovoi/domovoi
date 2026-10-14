@@ -485,9 +485,10 @@ it("a surface that swaps its own element beside the covering drawer is inert as 
       ? <section><button type="button" autoFocus>Try again</button></section>
       : <div><button type="button">Allow once</button></div>
   }
+  const onOpenChange = vi.fn()
   render(
     <div className="flex max-sm:relative">
-      <SessionsDrawerColumn snapshot={workspaceSnapshot()} open onOpenChange={vi.fn()} onActivate={vi.fn()} />
+      <SessionsDrawerColumn snapshot={workspaceSnapshot()} open onOpenChange={onOpenChange} onActivate={vi.fn()} />
       <Surface />
     </div>,
   )
@@ -497,6 +498,31 @@ it("a surface that swaps its own element beside the covering drawer is inert as 
   const retry = screen.getByRole("button", { name: "Try again", hidden: true })
   expect(retry.closest("[inert]")).not.toBeNull()
   expect(document.activeElement).not.toBe(retry)
+  // A new surface beside a cover already drawn is somewhere the person went,
+  // so the drawer also gets out of its way (next test).
+  expect(onOpenChange).toHaveBeenCalledWith(false)
+})
+
+// Pull request review: the app bar stays live above the cover, and its
+// Machines chip and Settings button changed the surface behind the drawer,
+// which then covered it. A surface landing beside a drawn cover closes it.
+it("below 640 px the app bar's Machines and Settings open uncovered", async () => {
+  stubWidth(true)
+  const user = userEvent.setup()
+  await openShell()
+  await user.click(sessionsButton())
+  await user.click(screen.getByRole("button", { name: /^Machines:/ }))
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+  const machines = await screen.findByRole("heading", { name: "Machines", level: 1 }, { timeout: 5000 })
+  expect(machines.closest("[inert]")).toBeNull()
+  await settle()
+
+  await user.click(sessionsButton())
+  expect(document.getElementById("sessions-drawer")).not.toBeNull()
+  await user.click(screen.getByRole("button", { name: "Settings" }))
+  await settle()
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+  for (const element of document.querySelectorAll("[inert]")) expect(element.classList.contains("sr-only")).toBe(true)
 })
 
 // Review round 1: with the floating dock sheet open under the covering drawer,

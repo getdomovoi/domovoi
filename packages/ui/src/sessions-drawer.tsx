@@ -147,19 +147,28 @@ function escapeBelongsAbove(aside: HTMLElement, target: EventTarget | null): boo
 // column to the Sessions button (a browser would only drop it to the body at
 // its next rendering step). Row menus, the archive dialog and the command
 // palette draw in portals outside the row, so they stay usable over it.
-function coverRow(aside: HTMLElement, marked: Set<Element>) {
+// Returns true when a surface landed beside a cover already drawn: the
+// person went somewhere else (the app bar's Machines or Settings, a palette
+// command), so the caller closes the column. The new surface is inert until
+// then, like the rest.
+function coverRow(aside: HTMLElement, marked: Set<Element>): boolean {
   const row = aside.parentElement
-  if (!row) return
+  if (!row) return false
+  const drawn = marked.size > 0
+  let landed = false
   for (const child of row.children) {
     if (child === aside || child.hasAttribute("data-sessions-backdrop") || marked.has(child)) continue
     child.setAttribute("inert", "")
     marked.add(child)
+    landed = drawn
   }
   const focused = document.activeElement
-  if (!focused || !row.contains(focused) || aside.contains(focused)) return
-  const button = sessionsButton()
-  if (button) button.focus()
-  else if (focused instanceof HTMLElement) focused.blur()
+  if (focused && row.contains(focused) && !aside.contains(focused)) {
+    const button = sessionsButton()
+    if (button) button.focus()
+    else if (focused instanceof HTMLElement) focused.blur()
+  }
+  return landed
 }
 
 // How long, in the design's units: running 12m, failed 1h ago, idle 2d. A
@@ -247,7 +256,7 @@ export function SessionsDrawerColumn({
   // and before any input event: a tab that narrows with focus on Allow once
   // never shows the cover over a control that can still take a key.
   useLayoutEffect(() => {
-    if (overlay && asideRef.current) coverRow(asideRef.current, marked)
+    if (overlay && asideRef.current && coverRow(asideRef.current, marked)) onOpenChange?.(false)
   })
   // A surface can also replace its own element in the row in a commit the
   // column takes no part in (a lazy surface's error boundary, say). The
@@ -257,14 +266,16 @@ export function SessionsDrawerColumn({
     const aside = asideRef.current
     const row = aside?.parentElement
     if (!overlay || !aside || !row) return
-    const observer = new MutationObserver(() => coverRow(aside, marked))
+    const observer = new MutationObserver(() => {
+      if (coverRow(aside, marked)) onOpenChange?.(false)
+    })
     observer.observe(row, { childList: true })
     return () => {
       observer.disconnect()
       for (const element of marked) element.removeAttribute("inert")
       marked.clear()
     }
-  }, [overlay, marked])
+  }, [overlay, marked, onOpenChange])
   // A browser applies a new viewport at once but reports the media change at
   // its next rendering step, and an input event can run in between: Chromium
   // let Space through to a focused Allow once there, before the commit above
