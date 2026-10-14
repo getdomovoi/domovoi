@@ -469,6 +469,38 @@ it("below 640 px Escape closes the drawer and leaves a floating sheet under it o
   expect(document.activeElement).toBe(sessionsButton())
 })
 
+// Review round 2: Escape from a control in a floating surface (drawn in a
+// portal, root role group) or with a tooltip showing closed the drawer
+// instead of that layer. Escape belongs to the layer above the drawer.
+it("below 640 px Escape aimed at a portal layer or with a tooltip showing leaves the drawer open", async () => {
+  stubWidth(true)
+  const user = userEvent.setup()
+  await openShell()
+  await user.click(sessionsButton())
+
+  const portal = document.createElement("div")
+  portal.setAttribute("role", "group")
+  const field = document.createElement("input")
+  portal.append(field)
+  document.body.append(portal)
+  act(() => { field.focus() })
+  await user.keyboard("{Escape}")
+  expect(document.getElementById("sessions-drawer")).not.toBeNull()
+  portal.remove()
+
+  const tip = document.createElement("div")
+  tip.setAttribute("data-slot", "tooltip-content")
+  tip.setAttribute("data-state", "delayed-open")
+  document.body.append(tip)
+  act(() => { sessionsButton().focus() })
+  await user.keyboard("{Escape}")
+  expect(document.getElementById("sessions-drawer")).not.toBeNull()
+  tip.remove()
+
+  await user.keyboard("{Escape}")
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+})
+
 it("below 640 px an approval that arrives under the open drawer takes no focus and cannot be acted on until it closes", async () => {
   stubWidth(true)
   const user = userEvent.setup()

@@ -131,9 +131,17 @@ const refusedInput = ["keydown", "keypress", "keyup", "beforeinput", "pointerdow
 // covering column closes or takes focus out of what it covers.
 const sessionsButton = () => document.querySelector<HTMLElement>("[aria-controls='sessions-drawer']")
 
-// Layers drawn above a covering column, in portals, that take their own
-// Escape: row menus, the archive dialog, the command palette.
-const layerAbove = "[role=menu], [role=menubar], [role=dialog], [role=alertdialog], [role=listbox]"
+// Whether an Escape belongs to a layer above a covering column rather than to
+// the column. Row menus, dialogs, the command palette and floating surfaces
+// draw in portals at the end of the body, outside the app's own root, and take
+// their own Escape. An open tooltip keeps focus on its trigger, so it is
+// recognised by its content instead.
+function escapeBelongsAbove(aside: HTMLElement, target: EventTarget | null): boolean {
+  if (document.querySelector("[data-slot=tooltip-content]:not([data-state=closed])")) return true
+  let app: Element = aside
+  while (app.parentElement && app.parentElement !== document.body) app = app.parentElement
+  return target instanceof Node && target !== document.body && document.body.contains(target) && !app.contains(target)
+}
 
 // Makes the rest of the column's row inert, and moves focus behind the
 // column to the Sessions button (a browser would only drop it to the body at
@@ -281,12 +289,13 @@ export function SessionsDrawerColumn({
   }, [open, onOpenChange])
   // Escape closes the top layer only. It is taken in the capture phase, ahead
   // of a floating dock sheet's own Escape under the column, and stops there.
-  // One aimed at a menu or dialog drawn above the column is left to it.
+  // One that belongs to a layer above the column is left to that layer.
   useEffect(() => {
     if (!overlay) return
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return
-      if (event.target instanceof Element && event.target.closest(layerAbove)) return
+      const aside = asideRef.current
+      if (event.key !== "Escape" || event.defaultPrevented || !aside) return
+      if (escapeBelongsAbove(aside, event.target)) return
       event.stopPropagation()
       close()
     }
