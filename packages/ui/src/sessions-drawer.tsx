@@ -123,9 +123,13 @@ export function useNarrowTab(): boolean {
 
 // The input a narrow tab's open column refuses behind it before the cover is
 // drawn: keys (a keydown refused also stops the click Enter or Space would
-// make), text input, and every step of a tap or click. Listened for on the
-// document in the capture phase, ahead of React's listeners on its root.
-const refusedInput = ["keydown", "keypress", "keyup", "beforeinput", "pointerdown", "mousedown", "mouseup", "click", "touchstart", "touchend"] as const
+// make), text input, a paste, cut or drop with no key before it, and every
+// step of a tap or click. Listened for on the document in the capture phase,
+// ahead of React's listeners on its root.
+const refusedInput = [
+  "keydown", "keypress", "keyup", "beforeinput", "paste", "cut", "drop",
+  "pointerdown", "mousedown", "mouseup", "click", "dblclick", "auxclick", "contextmenu", "touchstart", "touchend",
+] as const
 
 // The app bar's button that opens the column, where focus goes when a
 // covering column closes or takes focus out of what it covers.
@@ -258,6 +262,16 @@ export function SessionsDrawerColumn({
   useLayoutEffect(() => {
     if (overlay && asideRef.current && coverRow(asideRef.current, marked)) onOpenChange?.(false)
   })
+  // The thread under the cover changing (a session chosen from the command
+  // palette, say) changes nothing in the row itself, so the column watches
+  // the active session too, and gets out of the new thread's way.
+  const activeSessionId = snapshot.activeSessionId
+  const seenActiveSession = useRef(activeSessionId)
+  useLayoutEffect(() => {
+    const changed = seenActiveSession.current !== activeSessionId
+    seenActiveSession.current = activeSessionId
+    if (changed && overlay) onOpenChange?.(false)
+  }, [activeSessionId, overlay, onOpenChange])
   // A surface can also replace its own element in the row in a commit the
   // column takes no part in (a lazy surface's error boundary, say). The
   // observer covers it at the next microtask, before paint and before any

@@ -370,6 +370,37 @@ it("below 640 px the drawer's machine count opens Machines uncovered", async () 
   await settle()
 })
 
+// Pull request review: a paste (from a context menu or the system, with no
+// keydown first) in the same gap reached the composer behind the drawer.
+it("paste, drop and context menus aimed behind the open drawer in the narrowing gap are refused", async () => {
+  const resize = stubWidth(false)
+  const user = userEvent.setup()
+  await openShell()
+  await user.click(sessionsButton())
+  const composerField = screen.getByPlaceholderText(/Steer it, or queue the next message|Cannot send, the daemon is not answering/)
+  act(() => { composerField.focus() })
+
+  resize(true, false)
+  for (const type of ["paste", "cut", "drop", "contextmenu", "dblclick", "auxclick"]) {
+    expect(composerField.dispatchEvent(new Event(type, { bubbles: true, cancelable: true }))).toBe(false)
+  }
+  act(() => { resize(true) })
+})
+
+// Pull request review: choosing a session from the command palette changes
+// the thread inside the covered surface, which no row child swap shows. The
+// thread the drawer covers changing closes it too.
+it("below 640 px the active session changing under the drawer closes it", async () => {
+  stubWidth(true)
+  const user = userEvent.setup()
+  const { snapshot, socket } = await openShell()
+  await user.click(sessionsButton())
+  const other = snapshot.sessions.find((session) => session.id !== snapshot.activeSessionId)!
+  await act(async () => { notify(socket, "workspace.changed", workspaceSnapshot({ activeSessionId: other.id })) })
+  await settle()
+  expect(document.getElementById("sessions-drawer")).toBeNull()
+})
+
 it("the drawer refuses nothing at 640 px and wider: Allow once beside the open column still approves", async () => {
   stubWidth(false)
   const user = userEvent.setup()
