@@ -4,7 +4,7 @@
 // longer names a preview of the session is never sent.
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
-import { afterEach, beforeEach, expect, it } from "vitest"
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import { workspaceSnapshotSchema, type Artifact, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { WorkspaceShell } from "./workspace-shell"
@@ -18,10 +18,18 @@ let harness: FakeWebSocketHarness
 beforeEach(() => {
   try { localStorage?.removeItem(workspaceUiStorageKey) } catch { /* a browser with site data blocked still runs the test */ }
   harness = installFakeWebSocket()
+  // No idle time here. The shell loads every lazy surface's code at idle
+  // (prefetchWhenIdle). happy-dom has no requestIdleCallback, so that ran on a
+  // 1 ms timer after the mount, and the first test also paid for loading
+  // Settings, Skills, Machines and the rest while it ran. None of that code is
+  // under test in this file.
+  vi.stubGlobal("requestIdleCallback", () => 0)
+  vi.stubGlobal("cancelIdleCallback", () => {})
 })
 afterEach(() => {
   cleanup()
   harness?.uninstall()
+  vi.unstubAllGlobals()
   try { localStorage?.removeItem(workspaceUiStorageKey) } catch { /* as above */ }
 })
 
@@ -96,52 +104,91 @@ function lastReview(socket: FakeWebSocket) {
   return (sentRequests(socket, "session.send").at(-1)?.params as { review: Record<string, unknown> }).review
 }
 
-it("carries the chosen variant on the thread send, a released queued send and carry on, until Unpick", async () => {
+it("sends no basis while none is chosen", async () => {
   const value = idleWithVariants()
-  const sessionId = value.activeSessionId!
   const socket = await open(value)
 
-  // None chosen: nothing rides the send.
   type("Before choosing")
   expect(sentRequests(socket, "session.send")).toHaveLength(1)
   expect(lastReview(socket)).not.toHaveProperty("buildBasis")
-  await answerLastSend(socket, value)
+})
 
-  await openSheetTab("Preview")
-  await userEvent.setup().click(screen.getByRole("button", { name: "Build on this" }))
-  await settle()
-  expect(screen.getByText("the agent builds on this one")).toBeTruthy()
+// Each send path gets its own test, and mounting the shell and choosing
+// variant B happen in beforeEach, outside the 5 s test budget. One test that
+// walked every path after a mount took up to 3.8 s on Windows CI and timed out
+// there once at 5185 ms.
+describe("with variant B chosen through Build on this", () => {
+  let value: WorkspaceSnapshot
+  let sessionId: string
+  let socket: FakeWebSocket
 
-  type("Build the replay table")
-  expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ sessionId, prompt: "Build the replay table" })
-  expect(lastReview(socket)).toEqual({ annotationIds: [], buildBasis: { artifactId: "variant-b" } })
-  await answerLastSend(socket, value)
+  beforeEach(async () => {
+    value = idleWithVariants()
+    sessionId = value.activeSessionId!
+    socket = await open(value)
+    await openSheetTab("Preview")
+    await userEvent.setup().click(screen.getByRole("button", { name: "Build on this" }))
+    await settle()
+    expect(screen.getByText("the agent builds on this one")).toBeTruthy()
+  })
 
-  // A message queued while the agent works is released when it stops, and
-  // carries the choice too.
-  await act(async () => notify(socket, "workspace.changed", running(value)))
-  await settle()
-  type("Then the empty state")
-  expect(sentRequests(socket, "session.send")).toHaveLength(2)
-  await act(async () => notify(socket, "workspace.changed", value))
-  await settle()
-  expect(sentRequests(socket, "session.send")).toHaveLength(3)
-  expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ prompt: "Then the empty state" })
-  expect(lastReview(socket)).toMatchObject({ buildBasis: { artifactId: "variant-b" } })
-  await answerLastSend(socket, value)
+  // One thread send, answered: exactly one more request, carrying the choice.
+  async function sendFromThread(prompt: string) {
+    const before = sentRequests(socket, "session.send").length
+    type(prompt)
+    expect(sentRequests(socket, "session.send")).toHaveLength(before + 1)
+    expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ sessionId, prompt })
+    expect(lastReview(socket)).toEqual({ annotationIds: [], buildBasis: { artifactId: "variant-b" } })
+    await answerLastSend(socket, value)
+  }
 
-  await openSheetTab("Plan preview")
-  await userEvent.setup().click(screen.getByRole("button", { name: "Looks right, carry on" }))
-  expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ prompt: "Looks right, carry on" })
-  expect(lastReview(socket)).toMatchObject({ buildBasis: { artifactId: "variant-b" } })
-  await answerLastSend(socket, value)
+  it("carries the chosen variant on every thread send", async () => {
+    await sendFromThread("Build the replay table")
+    await sendFromThread("And the header")
+  })
 
-  await openSheetTab("Preview")
-  await userEvent.setup().click(screen.getByRole("button", { name: "Unpick" }))
-  await settle()
-  type("After unpicking")
-  expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ prompt: "After unpicking" })
-  expect(lastReview(socket)).not.toHaveProperty("buildBasis")
+  it("carries the chosen variant on a queued send when it is released", async () => {
+    await sendFromThread("Build the replay table")
+    // A message queued while the agent works is released when it stops, and
+    // carries the choice too.
+    await act(async () => notify(socket, "workspace.changed", running(value)))
+    await settle()
+    type("Then the empty state")
+    expect(sentRequests(socket, "session.send")).toHaveLength(1)
+    await act(async () => notify(socket, "workspace.changed", value))
+    await settle()
+    expect(sentRequests(socket, "session.send")).toHaveLength(2)
+    expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ sessionId, prompt: "Then the empty state" })
+    expect(lastReview(socket)).toMatchObject({ buildBasis: { artifactId: "variant-b" } })
+    // Its answer does not clear the choice.
+    await answerLastSend(socket, value)
+    await sendFromThread("After the queue")
+  })
+
+  it("carries the chosen variant on the plan's carry on", async () => {
+    await sendFromThread("Build the replay table")
+    await openSheetTab("Plan preview")
+    await userEvent.setup().click(screen.getByRole("button", { name: "Looks right, carry on" }))
+    expect(sentRequests(socket, "session.send")).toHaveLength(2)
+    expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ sessionId, prompt: "Looks right, carry on" })
+    expect(lastReview(socket)).toMatchObject({ buildBasis: { artifactId: "variant-b" } })
+    // Its answer does not clear the choice.
+    await answerLastSend(socket, value)
+    await sendFromThread("After carry on")
+  })
+
+  it("keeps the choice across sends until Unpick, then sends none", async () => {
+    await sendFromThread("Build the replay table")
+    await sendFromThread("And the header")
+
+    await openSheetTab("Plan preview")
+    await openSheetTab("Preview")
+    await userEvent.setup().click(screen.getByRole("button", { name: "Unpick" }))
+    await settle()
+    type("After unpicking")
+    expect(sentRequests(socket, "session.send").at(-1)?.params).toMatchObject({ sessionId, prompt: "After unpicking" })
+    expect(lastReview(socket)).not.toHaveProperty("buildBasis")
+  })
 })
 
 it("never sends a remembered basis that is gone or belongs to another session", async () => {

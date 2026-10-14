@@ -5,7 +5,7 @@ import { join } from "node:path"
 import { afterEach, describe, expect, it, vi } from "vitest"
 import { updateRootMetadataSchema } from "@getdomovoi/protocol"
 import {
-  canonicalUpdateJson, fetchUpdateMetadata, selectUpdateTarget,
+  canonicalUpdateJson, fetchUpdateMetadata, fetchVerifiedReleaseInventory, selectUpdateTarget,
   maximumUpdateMetadataBytes, updateInactivityTimeoutMs, updateFetchTimeoutMs, maximumUpdateRootRotations,
   type TrustedUpdateDocuments,
 } from "./update-verification.js"
@@ -41,9 +41,9 @@ function fixture() {
     const bytes = Buffer.from(JSON.stringify(value))
     return { version, length: bytes.length, hashes: { sha256: createHash("sha256").update(bytes).digest("hex") } }
   }
-  const publish = (version = 1, expires = "2099-01-01T00:00:00Z", signer = online) => {
+  const publish = (version = 1, expires = "2099-01-01T00:00:00Z", signer = online, targets: Record<string, unknown> = {}) => {
     const common = { spec_version: "1.0.31", version, expires }
-    documents["targets.json"] = envelope({ ...common, _type: "targets", targets: {} }, [signer])
+    documents["targets.json"] = envelope({ ...common, _type: "targets", targets }, [signer])
     documents["snapshot.json"] = envelope({ ...common, _type: "snapshot", meta: { "targets.json": binding(documents["targets.json"], version) } }, [signer])
     documents["timestamp.json"] = envelope({ ...common, _type: "timestamp", meta: { "snapshot.json": binding(documents["snapshot.json"], version) } }, [signer])
   }
@@ -56,8 +56,151 @@ function fixture() {
   let trusted: TrustedUpdateDocuments = {}
   const persist = vi.fn(async (next: TrustedUpdateDocuments) => { trusted = next })
   const check = () => fetchUpdateMetadata({ baseUrl: "https://updates.example.test/", trustedRoot: root, trusted, fetcher, persist })
-  return { offline, online, rootBody, root, makeRoot, roots, documents, publish, fetcher, persist, check, trusted: () => trusted }
+  return { offline, online, rootBody, root, makeRoot, roots, documents, publish, binding, fetcher, persist, check, trusted: () => trusted }
 }
+
+function inventoryFixture() {
+  const repo = fixture()
+  const version = "1.2.3"
+  const inventory = { schemaVersion: 2, version, channel: "stable", commit: "c".repeat(40), gitTag: `v${version}`, files: [
+    ...["protocol", "credential-store", "daemon", "cli"].flatMap((name) => [
+      { kind: "npm", packageName: `@getdomovoi/${name}`, name: `getdomovoi-${name}-${version}.tgz`, length: 10, sha256: "a".repeat(64) },
+      { kind: "sbom", packageName: `@getdomovoi/${name}`, name: `getdomovoi-${name}-${version}.sbom.json`, length: 10, sha256: "a".repeat(64) },
+    ]),
+    ...[["web", `domovoi-web-${version}.tar.gz`], ["checksums", "SHA256SUMS"], ["reproducibility", "reproducibility.json"]].map(([kind, name]) => ({ kind, name, length: 10, sha256: "a".repeat(64) })),
+  ] }
+  let bytes = Buffer.from(JSON.stringify(inventory))
+  const custom = { schemaVersion: 1, kind: "release-inventory", version, channel: "stable", sourceCommit: inventory.commit }
+  const publish = (metadataVersion = 1, expires = "2099-01-01T00:00:00Z", extraCustom = {}) => {
+    repo.publish(metadataVersion, expires)
+    const common = { spec_version: "1.0.31", version: metadataVersion, expires }
+    repo.documents["targets.json"] = envelope({ ...common, _type: "targets", targets: {
+      "release.json": { length: bytes.length, hashes: { sha256: createHash("sha256").update(bytes).digest("hex") }, custom: { ...custom, ...extraCustom } },
+    } }, [repo.online])
+    repo.documents["snapshot.json"] = envelope({ ...common, _type: "snapshot", meta: { "targets.json": repo.binding(repo.documents["targets.json"], metadataVersion) } }, [repo.online])
+    repo.documents["timestamp.json"] = envelope({ ...common, _type: "timestamp", meta: { "snapshot.json": repo.binding(repo.documents["snapshot.json"], metadataVersion) } }, [repo.online])
+  }
+  publish()
+  const metadataFetch = repo.fetcher.getMockImplementation()!
+  repo.fetcher.mockImplementation(async (input) => new URL(String(input)).pathname.startsWith("/artifacts/")
+    ? new Response(bytes) : metadataFetch(input))
+  const options = () => ({ baseUrl: "https://updates.example.test/", targetBaseUrl: "https://updates.example.test/artifacts/",
+    trustedRoot: repo.root, trusted: repo.trusted(), persist: repo.persist, fetcher: repo.fetcher,
+    version, channel: "stable" as const, sourceCommit: inventory.commit,
+  })
+  return { ...repo, inventory, publishInventory: publish, options, bytes: () => bytes, serve: (value: Buffer) => { bytes = Buffer.from(value) },
+    inventoryCheck: () => fetchVerifiedReleaseInventory(options()),
+  }
+}
+
+describe("verified release inventory", () => {
+  it("verifies the exact target bytes and uses the consistent-snapshot target URL", async () => {
+    const repo = inventoryFixture()
+    const result = await repo.inventoryCheck()
+    expect(result).toMatchObject({ inventory: repo.inventory, bytes: repo.bytes() })
+    const digest = createHash("sha256").update(repo.bytes()).digest("hex")
+    expect(repo.fetcher.mock.calls.map(([url]) => String(url)).at(-1)).toBe(`https://updates.example.test/artifacts/${digest}.release.json`)
+    expect(repo.trusted()).toHaveProperty("targets")
+  })
+
+  it("refuses altered inventory bytes even when they still parse as JSON", async () => {
+    const repo = inventoryFixture()
+    repo.serve(Buffer.from(JSON.stringify({ ...repo.inventory, commit: "d".repeat(40) })))
+    await expect(repo.inventoryCheck()).rejects.toMatchObject({ reason: "target-mismatch" })
+  })
+
+  it("uses the unprefixed target only when the accepted root disables consistent snapshots", async () => {
+    const repo = inventoryFixture()
+    repo.roots["2.root.json"] = envelope({ ...repo.rootBody, version: 2, consistent_snapshot: false }, repo.offline.slice(0, 2))
+    await repo.inventoryCheck()
+    expect(String(repo.fetcher.mock.calls.at(-1)![0])).toBe("https://updates.example.test/artifacts/release.json")
+  })
+
+  it("refuses an unauthorized signer before fetching the inventory", async () => {
+    const repo = inventoryFixture()
+    const targets = repo.documents["targets.json"] as { signed: Record<string, unknown> }
+    repo.documents["targets.json"] = envelope(targets.signed, [keyMaterial(50)])
+    await expect(repo.inventoryCheck()).rejects.toMatchObject({ reason: "signature" })
+    expect(repo.fetcher.mock.calls.some(([url]) => String(url).includes("/artifacts/"))).toBe(false)
+  })
+
+  it("refuses a caller-supplied verified flag in a correctly signed inventory", async () => {
+    const repo = inventoryFixture()
+    repo.serve(Buffer.from(JSON.stringify({ ...repo.inventory, verified: true })))
+    repo.publishInventory()
+    await expect(repo.inventoryCheck()).rejects.toMatchObject({ reason: "target-mismatch" })
+  })
+
+  it.each(["oversize", "redirect", "short"])("refuses a %s inventory response", async (fault) => {
+    const repo = inventoryFixture()
+    const original = repo.fetcher.getMockImplementation()!
+    repo.fetcher.mockImplementation(async (input) => {
+      if (!String(input).includes("/artifacts/")) return original(input)
+      const response = new Response(fault === "oversize" ? Buffer.alloc(repo.bytes().length + 1)
+        : fault === "short" ? repo.bytes().subarray(0, -1) : repo.bytes())
+      if (fault === "redirect") Object.defineProperty(response, "redirected", { value: true })
+      return response
+    })
+    await expect(repo.inventoryCheck()).rejects.toMatchObject({ reason: fault === "redirect" ? "network" : "target-mismatch" })
+    expect(repo.fetcher).toHaveBeenLastCalledWith(expect.any(URL), expect.objectContaining({ redirect: "error" }))
+  })
+
+  it("does not fetch or return an inventory if accepted target metadata cannot be persisted", async () => {
+    const repo = inventoryFixture()
+    const persist = repo.persist.getMockImplementation()!
+    repo.persist.mockImplementation(async (documents) => {
+      if (documents.targets) throw new Error("Synthetic flush failure")
+      await persist(documents)
+    })
+    await expect(repo.inventoryCheck()).rejects.toMatchObject({ reason: "policy" })
+    expect(repo.fetcher.mock.calls.some(([url]) => String(url).includes("/artifacts/"))).toBe(false)
+  })
+
+  it("rejects an inventory target absent from the authenticated repository", async () => {
+    const repo = fixture()
+    await expect(fetchVerifiedReleaseInventory({ baseUrl: "https://updates.example.test/", targetBaseUrl: "https://updates.example.test/artifacts/",
+      trustedRoot: repo.root, trusted: {}, persist: repo.persist, fetcher: repo.fetcher,
+      version: "1.2.3", channel: "stable", sourceCommit: "c".repeat(40),
+    })).rejects.toMatchObject({ reason: "target-mismatch" })
+  })
+
+  it.each(["version", "channel", "sourceCommit"])("binds the caller's expected %s", async (field) => {
+    const repo = inventoryFixture()
+    const wrong = field === "version" ? "9.9.9" : field === "channel" ? "beta" : "d".repeat(40)
+    await expect(fetchVerifiedReleaseInventory({ ...repo.options(), [field]: wrong })).rejects.toMatchObject({ reason: "target-mismatch" })
+  })
+
+  it.each(["version", "channel", "sourceCommit"])("requires an explicit expected %s from untyped callers", async (field) => {
+    const repo = inventoryFixture()
+    await expect(fetchVerifiedReleaseInventory({ ...repo.options(), [field]: undefined })).rejects.toMatchObject({ reason: "target-mismatch" })
+    expect(repo.fetcher).not.toHaveBeenCalled()
+  })
+
+  it("refuses a signed inventory whose body disagrees with its signed target custom identity", async () => {
+    const repo = inventoryFixture()
+    repo.serve(Buffer.from(JSON.stringify({ ...repo.inventory, channel: "beta" })))
+    repo.publishInventory()
+    await expect(repo.inventoryCheck()).rejects.toMatchObject({ reason: "target-mismatch" })
+  })
+
+  it("preserves root rotation, expiry and durable rollback floors for inventory refresh", async () => {
+    const repo = inventoryFixture()
+    repo.roots["2.root.json"] = repo.makeRoot(2)
+    repo.publishInventory(2)
+    await repo.inventoryCheck()
+    expect(JSON.parse(repo.trusted().root!).signed.version).toBe(2)
+    repo.publishInventory(1)
+    await expect(repo.inventoryCheck()).rejects.toMatchObject({ reason: "replay" })
+    repo.publishInventory(3, "2000-01-01T00:00:00Z")
+    await expect(repo.inventoryCheck()).rejects.toMatchObject({ reason: "expired" })
+  })
+
+  it.each(["trusted", "persist"])("requires explicit %s even from untyped callers", async (field) => {
+    const repo = inventoryFixture()
+    await expect(fetchVerifiedReleaseInventory({ ...repo.options(), [field]: undefined })).rejects.toMatchObject({ reason: "policy" })
+    expect(repo.fetcher).not.toHaveBeenCalled()
+  })
+})
 
 async function useDurableTrust(repo: ReturnType<typeof fixture>) {
   const home = await mkdtemp(join(tmpdir(), "domovoi-update-rotation-"))
@@ -85,6 +228,20 @@ describe("daemon update verification", () => {
     const repo = fixture()
     expect(await repo.check()).toMatchObject({ "root.json": { signed: { version: 1 } } })
     expect(repo.fetcher.mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual(["/2.root.json", "/timestamp.json", "/1.snapshot.json", "/1.targets.json"])
+  })
+
+  it("preserves exact old daemon-only target bytes, trust root and runtime-lock binding", async () => {
+    const repo = fixture()
+    const name = "getdomovoi-daemon-1.2.3.tgz"
+    const target = { length: 50, hashes: { sha256: "a".repeat(64) }, custom: {
+      schemaVersion: 1, version: "1.2.3", channel: "stable", sourceCommit: "b".repeat(40), runtimeLockDigest: `sha256:${"c".repeat(64)}`,
+    } }
+    repo.publish(1, "2099-01-01T00:00:00Z", repo.online, { [name]: target })
+    const result = await repo.check()
+    expect(result["root.json"]).toEqual(repo.root)
+    expect(result.raw["targets.json"]).toEqual(Buffer.from(JSON.stringify(repo.documents["targets.json"])))
+    expect(result["targets.json"]).toMatchObject({ signed: { targets: { [name]: target } } })
+    expect(selectUpdateTarget(result["targets.json"], "stable", "0.0.1")).toEqual({ name, version: "1.2.3", sourceCommit: "b".repeat(40) })
   })
 
   it("refuses a root rotation that skips the next trusted version", async () => {

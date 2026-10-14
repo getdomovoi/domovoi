@@ -46,6 +46,20 @@ describe("browserLimits", () => {
     expect(plaintext).not.toMatch(/tailnet/)
   })
 
+  // Inside a session the shell names the route its chip shows, which for an
+  // attached machine is not the home endpoint's. Only loopback and the
+  // tailnet are named; a route through SSH or WSL, a direct or plaintext one,
+  // and one not resolved yet read as the route, never as loopback.
+  it("takes the route word the shell's chip shows, naming only what is proved", () => {
+    const terminal = (route: Parameters<typeof browserLimits>[1]) => row(browserLimits(environment(), route, true), "Terminal").why
+    expect(terminal({ route: "loopback" })).toMatch(/on loopback,/)
+    expect(terminal({ route: "tailnet" })).toMatch(/on the tailnet,/)
+    for (const route of ["ssh", "wsl", "direct", "plaintext", "unknown", undefined] as const) {
+      expect(terminal({ route })).toMatch(/on the route,/)
+      expect(row(browserLimits(environment(), { route }, true), "Watch a session live").why).toBe("The daemon streams the thread and the plan over the route.")
+    }
+  })
+
   it("reports notifications as this browser actually has them", () => {
     const none = browserLimits(environment(), "ws://127.0.0.1:47831/rpc", true)
     expect(row(none, "Notifications")).toMatchObject({ state: "refused", tone: "refused", why: browserRefusalMessage["notifications-unsupported"] })

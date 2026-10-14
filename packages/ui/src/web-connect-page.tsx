@@ -44,9 +44,13 @@ export function WebConnectPage({
   onOpenLimits,
   onUseCredential,
   codeName = "web code",
+  pageOrigin,
 }: {
   // The address the page dials, which is all a tab knows before it pairs.
   host: string
+  // Whether the page's own origin is the daemon's address, or the host it
+  // came from instead. Absent when the page cannot read its origin.
+  pageOrigin?: { sameAsDaemon: true } | { sameAsDaemon: false; host: string } | undefined
   // The code this browser needs, named for the kind it greets as: a touch
   // browser greets as a phone or tablet and is refused a web credential.
   codeName?: string
@@ -70,8 +74,13 @@ export function WebConnectPage({
   const [filledFromUrl, setFilledFromUrl] = useState(fromUrl)
   useEffect(() => { if (outcome) setFilledFromUrl(false) }, [outcome])
   const ready = isWebCode(code)
+  // Web v2 opens with where the page came from. The page says it only from
+  // what it can check, its own origin against the daemon's address.
+  const origin = !pageOrigin ? `This tab talks only to the daemon at ${host}.`
+    : pageOrigin.sameAsDaemon ? `This page came from the daemon at ${host}. No Domovoi server is in the path.`
+      : `This page came from ${pageOrigin.host}, not from the daemon's address. This tab talks only to the daemon at ${host}.`
   const facts = [
-    { text: `This tab talks only to the daemon at ${host}.`, tone: "bg-info" },
+    { text: origin, tone: "bg-info" },
     ...(secure && reached ? [{ text: "The certificate is the one the browser checked for this name.", tone: "bg-success" }] : []),
     { text: "The credential lives in this tab only. Close the tab and you pair again.", tone: "bg-info" },
     { text: "Previews open in a sandboxed frame that cannot reach this page.", tone: "bg-success" },
@@ -162,17 +171,19 @@ export function WebConnectPage({
           </div>
         ) : null}
 
-        <div className="flex flex-col gap-1.5">
-          <span id="tab-trust" className="text-[10.5px] tracking-[0.13em] text-faint">HOW THIS TAB IS TRUSTED</span>
-          <ul aria-labelledby="tab-trust" className="m-0 flex list-none flex-col gap-1 p-0 text-[11.5px] text-muted-foreground">
+        {/* Web v2's card: the eyebrow is its first row, ruled off, then a
+            row per fact. */}
+        <section aria-labelledby="tab-trust" className="overflow-hidden rounded-lg border bg-card">
+          <div id="tab-trust" className="border-b px-3.5 py-[11px] text-[10.5px] font-medium tracking-[0.13em] text-faint">HOW THIS TAB IS TRUSTED</div>
+          <ul aria-labelledby="tab-trust" className="m-0 flex list-none flex-col p-0 text-[12px] leading-[1.55] text-strong">
             {facts.map((fact) => (
-              <li key={fact.text} className="flex items-start gap-2">
+              <li key={fact.text} className="flex items-start gap-2.5 px-3.5 py-[9px]">
                 <span aria-hidden className={`mt-[6px] size-1.5 shrink-0 rounded-full ${fact.tone}`} />
                 <span>{fact.text}</span>
               </li>
             ))}
           </ul>
-        </div>
+        </section>
 
         {onUseCredential ? (
           <button type="button" className="self-start text-[11.5px] text-faint underline-offset-2 hover:underline" onClick={onUseCredential}>

@@ -7,6 +7,7 @@ import {
   ExternalLinkIcon,
   FolderOpenIcon,
   GitCommitHorizontalIcon,
+  GlobeIcon,
   HistoryIcon,
   MessageSquarePlusIcon,
   MonitorIcon,
@@ -196,6 +197,7 @@ export function buildWorkspaceCommands({
   approvalRuleCount,
   moveSession,
   pairDevice,
+  openBrowserLimits,
   shortcutsBound,
 }: {
   activeWorkspacePath?: string | undefined
@@ -244,6 +246,10 @@ export function buildWorkspaceCommands({
   approvalRuleCount?: number | undefined
   moveSession?: (() => void) | undefined
   pairDevice?: (() => void) | undefined
+  // Q367 A: a browser tab reopens the page of what it can and cannot do. Only
+  // the web supplies it. The page takes focus itself, so the palette does not
+  // hand focus back; the shell names the palette's opener to the page instead.
+  openBrowserLimits?: (() => void) | undefined
   // Whether the shell binds the changes and machines shortcuts. Ruling Q291 A
   // (2026-10-01): only the desktop does, so a browser names no shortcut it
   // would leave to the browser.
@@ -275,6 +281,9 @@ export function buildWorkspaceCommands({
     { id: "surface-fleet", label: "Show all machines", section: "Navigate", keywords: ["fleet", "machines", "devices", "pairing"], icon: ServerIcon, tone: "online", ...(shortcutsBound ? { shortcut: "mod+shift+M" } : {}), run: () => setSurface("fleet") },
     ...(pairDevice ? [
       { id: "pair-device", label: "Pair a phone or tablet", section: "Navigate" as const, keywords: ["pairing", "phone", "tablet", "device"], icon: SmartphoneIcon, tone: "handoff" as const, detail: "settings", disabled: !connected, run: pairDevice },
+    ] : []),
+    ...(openBrowserLimits ? [
+      { id: "browser-limits", label: "What a browser tab can and cannot do", section: "Navigate" as const, keywords: ["limits", "browser", "tab"], icon: GlobeIcon, tone: "online" as const, restoreFocus: false, run: openBrowserLimits },
     ] : []),
     { id: "surface-audit", label: "Read the audit log", section: "Navigate", keywords: ["audit log", "history", "receipts"], icon: HistoryIcon, tone: "online", detail: "on this machine", run: () => setSurface("audit") },
     { id: "open-project", label: "Open project", section: "Project", keywords: ["folder", "repository"], icon: FolderOpenIcon, tone: "handoff", restoreFocus: false, run: openProject },

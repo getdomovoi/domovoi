@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "releaseBaseUrl": "https://github.com/getdomovoi/domovoi/releases/download",
+  "cask": {
+    "token": "domovoi",
+    "name": "Domovoi",
+    "description": "Private workspace access",
+    "homepage": "https://domovoi.sh",
+    "packageName": "@getdomovoi/desktop",
+    "bundleId": "sh.domovoi.desktop",
+    "app": "Domovoi.app",
+    "architectures": {
+      "arm64": { "platform": "darwin", "arch": "arm64", "format": "dmg" },
+      "x64": { "platform": "darwin", "arch": "x64", "format": "dmg" }
+    }
+  }
+}

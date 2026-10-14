@@ -167,6 +167,38 @@ describe("workspace command palette keyboard path", () => {
     expect(await screen.findByRole("heading", { name: "Phone and tablet" })).toBeTruthy()
   })
 
+  // Q367 A: the web hands the shell a way back to its limits page, and the
+  // palette opens it with the control that opened the palette, so focus can
+  // go back there. A shell given no way has no entry.
+  // The page's rows name the route, so the shell hands over the word its
+  // chip shows: loopback at home on loopback, the tailnet over the tailnet.
+  it.each([
+    ["ws://127.0.0.1:47831/rpc", "loopback"],
+    ["wss://studio.example.ts.net:47831/rpc", "tailnet"],
+  ] as const)("opens the browser limits page from the palette at %s, naming the opener and the route %s", async (rpcUrl, route) => {
+    const user = userEvent.setup()
+    const opened: unknown[][] = []
+    const { unmount } = render(<WorkspaceShell clientKind="web" rpcUrl={rpcUrl} onOpenBrowserLimits={(...args) => opened.push(args)} />)
+    await act(async () => {
+      completeHandshake(harness.socket(0), workspaceSnapshot())
+    })
+
+    const trigger = screen.getByRole<HTMLButtonElement>("button", { name: "Open command palette" })
+    trigger.focus()
+    await openPalette(user)
+    await user.type(screen.getByRole("combobox"), "what a browser tab")
+    await user.keyboard("{Enter}")
+    expect(opened).toEqual([[trigger, route]])
+    unmount()
+
+    render(<WorkspaceShell clientKind="web" />)
+    await act(async () => {
+      completeHandshake(harness.socket(1), workspaceSnapshot())
+    })
+    await openPalette(user)
+    expect(screen.queryByRole("option", { name: /^What a browser tab can and cannot do/u })).toBeNull()
+  })
+
   it("opens the machine menu on the active session to move it", async () => {
     const user = userEvent.setup()
     render(<WorkspaceShell />)

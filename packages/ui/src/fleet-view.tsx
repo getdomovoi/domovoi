@@ -1307,7 +1307,7 @@ export function FleetView({
       await onSignOut()
       setSignOutOpen(false)
     } catch {
-      setSignOutError("Sign-out was not confirmed. This device may have signed out. Reconnect to check. If access is refused, pair this tab again from Settings on the machine.")
+      setSignOutError("Sign-out was not confirmed. This device may have signed out. To check, choose Sign this device out again, or Retry now if the connection dropped. If access is refused, pair this tab again from Settings on the machine.")
       setSignOutOpen(false)
     } finally {
       signingOut.current = false

@@ -116,6 +116,30 @@ describe("buildWorkspaceCommands", () => {
     expect(buildWorkspaceCommands(base).find(({ id }) => id === "take-checkpoint")).toBeUndefined()
   })
 
+  // Q367 A: a browser tab can reopen its limits page from the workspace. Only
+  // a shell that can open the page (the web) supplies the action, and the
+  // page takes focus, so the palette does not hand it back.
+  it("offers the browser limits page only where the shell can open it", () => {
+    const openBrowserLimits = vi.fn()
+    const base = {
+      connected: false,
+      emergencyStopPending: false,
+      hasProject: true,
+      openProject: vi.fn(),
+      newSession: vi.fn(),
+      pauseAll: vi.fn(),
+      emergencyStop: vi.fn(),
+      reconnect: vi.fn(),
+      setSurface: vi.fn(),
+    }
+    const command = buildWorkspaceCommands({ ...base, openBrowserLimits }).find(({ id }) => id === "browser-limits")
+    expect(command).toMatchObject({ label: "What a browser tab can and cannot do", section: "Navigate", restoreFocus: false })
+    expect(command?.disabled).toBeFalsy()
+    command?.run()
+    expect(openBrowserLimits).toHaveBeenCalledOnce()
+    expect(buildWorkspaceCommands(base).find(({ id }) => id === "browser-limits")).toBeUndefined()
+  })
+
   it("routes surface and session commands through supplied actions", () => {
     const callbacks = {
       openProject: vi.fn(),

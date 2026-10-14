@@ -233,6 +233,33 @@ export function isLoopbackPageOrigin(origin: string): boolean {
   }
 }
 
+// The socket scheme a page on each web scheme dials when the daemon served
+// it (rpc-url.ts): /rpc on the page's own origin.
+const socketSchemeFor: Readonly<Record<string, string>> = { "http:": "ws:", "https:": "wss:" }
+
+export type PageOriginFact = { sameAsDaemon: true } | { sameAsDaemon: false; host: string }
+
+// Where the page came from, as far as the page can check: its own origin
+// against the socket it dials. A page the daemon served shares the daemon's
+// origin (S3.2 slice 4). Any other page came from an address that is not the
+// daemon's, which the page can name but not vouch for. URL normalizes case
+// and default ports, so https://name and wss://name:443 are one origin.
+// An origin with no readable host, an opaque "null" included, says nothing.
+export function pageOriginAgainstDaemon(pageOrigin: string, rpcUrl: string): PageOriginFact | undefined {
+  let page: URL
+  let socket: URL
+  try {
+    page = new URL(pageOrigin)
+    socket = new URL(rpcUrl)
+  } catch {
+    return undefined
+  }
+  const socketScheme = socketSchemeFor[page.protocol]
+  if (!socketScheme || !page.host || !socket.host) return undefined
+  if (socket.protocol === socketScheme && socket.host === page.host) return { sameAsDaemon: true }
+  return { sameAsDaemon: false, host: page.host }
+}
+
 export class RootCredentialOffLoopbackError extends Error {
   constructor() {
     super("The daemon credential is only accepted on a page opened on the machine itself. Pair this browser with a web code, shown on the machine in Settings under Phone and tablet.")

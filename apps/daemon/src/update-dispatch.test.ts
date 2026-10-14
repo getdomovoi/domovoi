@@ -24,7 +24,7 @@ afterEach(async () => {
   await removeScratchDirectories(homes)
 })
 
-function signedRepository(options: { version?: number; keyid?: string; targetVersion?: string; expires?: string; targetName?: string; minimumUpdaterVersion?: string } = {}) {
+function signedRepository(options: { version?: number; keyid?: string; targetVersion?: string; expires?: string; targetName?: string; minimumUpdaterVersion?: string; inventory?: "mixed" | "only" } = {}) {
   const pair = generateKeyPairSync("ed25519")
   const keyid = options.keyid ?? "a".repeat(64)
   const envelope = (signed: Record<string, unknown>) => ({ signed, signatures: [{ keyid, sig: sign(null, Buffer.from(canonicalUpdateJson(signed)), pair.privateKey).toString("hex") }] })
@@ -36,10 +36,13 @@ function signedRepository(options: { version?: number; keyid?: string; targetVer
   const version = options.targetVersion ?? "1.2.3"
   const name = options.targetName ?? `getdomovoi-daemon-${version}.tgz`
   const targets = envelope({ ...common, _type: "targets", targets: {
-    [name]: { length: 10, hashes: { sha256: "b".repeat(64) }, custom: {
+    ...(options.inventory === "only" ? {} : { [name]: { length: 10, hashes: { sha256: "b".repeat(64) }, custom: {
       schemaVersion: 1, version, channel: "stable", sourceCommit: "c".repeat(40), runtimeLockDigest: `sha256:${"d".repeat(64)}`,
       ...(options.minimumUpdaterVersion ? { minimumUpdaterVersion: options.minimumUpdaterVersion } : {}),
-    } },
+    } } }),
+    ...(options.inventory ? { "release.json": { length: 100, hashes: { sha256: "e".repeat(64) }, custom: {
+      schemaVersion: 1, kind: "release-inventory", version: "99.0.0", channel: "stable", sourceCommit: "f".repeat(40),
+    } } } : {}),
   } })
   const binding = (value: unknown) => {
     const bytes = Buffer.from(JSON.stringify(value))
@@ -74,6 +77,21 @@ async function setup(repository = signedRepository(), automaticChecks = false) {
 }
 
 describe("daemon update operation", () => {
+  it("stages only the original daemon archive from mixed signed metadata", async () => {
+    const { updates, install, homeDirectory } = await setup(signedRepository({ inventory: "mixed" }))
+    expect(await updates.check()).toMatchObject({ state: "pending", pendingVersion: "1.2.3", pendingSourceCommit: "c".repeat(40) })
+    expect(install).toHaveBeenCalledExactlyOnceWith({ version: "1.2.3", baseUrl: "https://updates.example.test/artifacts/",
+      destination: join(homeDirectory, ".domovoi", "runtimes"), expectedSha256: "b".repeat(64),
+    })
+    expect(updates.activate()).toMatchObject({ state: "deferred", refusal: { reason: "policy" } })
+  })
+
+  it("never stages an inventory-only repository as a daemon update", async () => {
+    const { updates, install } = await setup(signedRepository({ inventory: "only" }))
+    expect(await updates.check()).toMatchObject({ state: "idle" })
+    expect(install).not.toHaveBeenCalled()
+  })
+
   it("reports the built commit in its initial status", () => {
     vi.stubGlobal("__BUILD_SOURCE_COMMIT__", "a".repeat(40))
     expect(new DaemonUpdates().status()).toMatchObject({ currentSourceCommit: "a".repeat(40) })

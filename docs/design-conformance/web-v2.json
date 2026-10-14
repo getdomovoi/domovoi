@@ -40,6 +40,7 @@
       "evidence": [
         "<DomovoiMark reduced className=\"size-[22px] shrink-0 text-primary\"",
         "Use dark theme",
+        "re:<DomovoiMark reduced className=\"size-\\[22px\\] shrink-0 text-primary\" />\\n\\s*<span className=\"text-\\[13px\\] font-semibold tracking-\\[-0\\.01em\\]\">Domovoi</span>",
         {
           "absent": "<DomovoiMark reduced className=\"size-5 text-primary\" />",
           "in": "packages/ui/src/web-connect-page.tsx"
@@ -51,14 +52,15 @@
         {
           "absent": "<DomovoiMark reduced className=\"size-5\" />",
           "in": "packages/ui/src/browser-limits-panel.tsx"
+        },
+        {
+          "absent": "<DomovoiMark reduced className=\"size-5\" />",
+          "in": "packages/ui/src/daemon-credential-prompt.tsx"
         }
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the pre-session pages draw the Web v2 bar now (WebPageHeader: mark, Domovoi, the page's label, the theme toggle), and inside the workspace the web keeps the desktop v2 bar (Q382 A). Two marks are still not as drawn. The bar draws the full mark, mouth included, where the design's markStyle draws mark-reduced.svg at 22px, as the workspace bar does; the evidence holds that as no unreduced DomovoiMark in web-page-header.tsx. BrowserLimitsPanel and DaemonCredentialPrompt still put their own 20px mark tile above the heading, under the bar, so the mark shows twice; the design's limits page draws the mark only in the bar, and the evidence holds the tile's absence from browser-limits-panel.tsx. The route chip is appbar.route-chip"
-      },
       "notes": [
-        "2026-10-01 (S3.10 slice 1): the shared app bar draws the mark at 22px, which the Web v2 markStyle also draws."
+        "2026-10-01 (S3.10 slice 1): the shared app bar draws the mark at 22px, which the Web v2 markStyle also draws.",
+        "2026-10-13 (SL-6w, W9): WebPageHeader draws mark-reduced at 22px, eyes and no mouth, as the workspace bar does, and BrowserLimitsPanel and DaemonCredentialPrompt dropped their own 20px mark tile, so the pre-session pages draw the mark once, in the bar. Inside the workspace the web keeps the desktop v2 bar (Q382 A). The route chip is appbar.route-chip. Pinned in web-page-header.dom.test.tsx, browser-limits-panel.dom.test.tsx and daemon-credential-prompt.dom.test.tsx."
       ]
     },
     {
@@ -79,11 +81,13 @@
           "absent": "attached ? \"remote\" : \"local\"",
           "in": "packages/ui/src/workspace-shell.tsx"
         },
-        "machineTransport={!connected ? \"unreachable\" : !attached ? machineRoute(endpointUrl)",
-        "import { routeOfEndpoint } from \"@/route-word\""
+        "const chipRoute = !attached ? machineRoute(endpointUrl)",
+        "machineTransport={!connected ? \"unreachable\" : chipRoute}",
+        "import { routeOfEndpoint, type machineRoute } from \"@/route-word\""
       ],
       "notes": [
-        "2026-10-11 (SL-1, W4): the chip reads loopback or tailnet from the endpoint the tab dialed, by the one rule the limits page also uses (packages/ui/src/route-word.ts): tailnet only for a ts.net name or a Tailscale address, direct for any other TLS host such as a custom MagicDNS name or a LAN address, plaintext for a non-loopback endpoint without TLS (the daemon refuses one), never local. The cloud relay · latency state is the relay (M2) and is not drawn. Pinned in packages/ui/src/route-word.test.ts, app-bar-route.dom.test.tsx and apps/web/src/browser-limits.test.ts."
+        "2026-10-11 (SL-1, W4): the chip reads loopback or tailnet from the endpoint the tab dialed, by the one rule the limits page also uses (packages/ui/src/route-word.ts): tailnet only for a ts.net name or a Tailscale address, direct for any other TLS host such as a custom MagicDNS name or a LAN address, plaintext for a non-loopback endpoint without TLS (the daemon refuses one), never local. The cloud relay · latency state is the relay (M2) and is not drawn. Pinned in packages/ui/src/route-word.test.ts, app-bar-route.dom.test.tsx and apps/web/src/browser-limits.test.ts.",
+        "2026-10-13 (SL-6w, W7): the chip's route word is one expression (chipRoute in workspace-shell.tsx) that the chip and the in-session browser limits both read, so the limits rows name an attached machine's route, not the home endpoint's."
       ]
     },
     {
@@ -118,28 +122,29 @@
         "Pair this browser",
         "HOW THIS TAB IS TRUSTED",
         "Reload this page",
+        "next === \"retry\" ? { label: \"Try again\", run: () => redeem(code) }",
+        "mono: `${route === \"unknown\" ? \"\" : `${route} · `}credential ${next.deviceId.slice(-8)} · this tab only`",
+        "<section aria-labelledby=\"tab-trust\" className=\"overflow-hidden rounded-lg border bg-card\">",
         {
           "absent": "mono: `credential ${next.deviceId.slice(-8)} · this tab only`",
           "in": "apps/web/src/web-app.tsx"
         }
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "pairing by code works; the page is not the drawn page. Every refusal offers Type a new code, so a version mismatch says to reload but offers no Reload this page (environment.reloadPage exists) and no answer offers no Try again (Q366 A, 2026-10-02: Try again resends the same code). The accepted mono line lacks the route prefix (tailnet · credential …). The trust facts are a bare list, not the bordered card; the page has no app bar (see appbar); the What a browser tab can and cannot do link is dead before pairing (see limits)"
-      }
+      "notes": [
+        "2026-10-13 (SL-6w, W5): a version refusal where the page is older offers Reload this page, which reloads the tab (environment.reloadPage, location.reload), and no answer offers Try again, which sends the same code again (Q366 A); both landed with 8da82c36 and are pinned in apps/web/src/web-app.test.tsx. The accepted mono line leads with the route by the chip's rule (loopback, tailnet, direct or plaintext · credential … · this tab only). The trust facts are the drawn bordered card, the eyebrow its ruled first row. The bar is appbar and the limits link is limits. Pinned in web-connect-page.dom.test.tsx and web-app.test.tsx."
+      ]
     },
     {
       "id": "connect.page-origin",
       "name": "Trust fact: the page came from the daemon",
       "where": "HOW THIS TAB IS TRUSTED on the connect page: This page came from the daemon on <machine>, at its tailnet name. No Domovoi server is in the path.",
       "evidence": [
-        "No Domovoi server is in the path"
+        "No Domovoi server is in the path",
+        "pageOrigin={pageOriginAgainstDaemon(pageOrigin, rpcUrl)}"
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "platform",
-        "reason": "apps/web is a separate build and the daemon serves no page, so the address a tab shows is the one it dials, not where the page came from; the page says This tab talks only to the daemon at <host> until the daemon serves the web app"
-      }
+      "notes": [
+        "2026-10-13 (SL-6w, W6): since S3.2 slice 4 the daemon serves the page, and a served page dials /rpc on its own origin. The page compares its own origin with the socket it dials (pageOriginAgainstDaemon in apps/web/src/daemon-pairing.ts). The same origin reads This page came from the daemon at <host>. No Domovoi server is in the path. Another origin, such as the vite dev server or a build with VITE_DOMOVOI_RPC_URL, reads This page came from <page host>, not from the daemon's address, then the old This tab talks only to the daemon at <host>. An origin with no readable host keeps the old line alone. The page names the address, not the machine, because before pairing it knows only the address (see humanRead connect 2026-09-23). Wording logged as a question, recommendation applied."
+      ]
     },
     {
       "id": "connect.outcomes-distinct",
@@ -301,12 +306,13 @@
         {
           "absent": "workspace: (session: { token: string, deviceId: string, onSignedOut: (result: unknown) => void, onChangeCredential: () => void }) => ReactNode",
           "in": "apps/web/src/web-app.tsx"
-        }
+        },
+        "onOpenBrowserLimits={onOpenLimits}",
+        "{ id: \"browser-limits\", label: \"What a browser tab can and cannot do\""
       ],
-      "partial": {
-        "since": "2026-10-02",
-        "reason": "the panel reports real browser state, and before pairing the connect page's link opens it with a way back. One part of Q367 A (2026-10-02) is not built: nothing in the workspace reopens the page. Neither the palette nor Settings has an entry for it, and WebApp hands the workspace its token, deviceId, onSignedOut and onChangeCredential, but no callback to open the limits page, so once a tab is in its session it cannot get back to the page. The evidence holds that hand-off: its signature in web-app.tsx changes when the workspace is given a way to open the page. 2026-10-13 (CX-4): refreshed the signature evidence because self-sign-out added deviceId and onSignedOut. Neither workspace callback opens browser limits, so this entry remains partial."
-      }
+      "notes": [
+        "2026-10-13 (SL-6w, W7): the second half of Q367 A. WebApp hands the workspace onOpenLimits, the web entry passes it to WorkspaceShell as onOpenBrowserLimits, and the palette lists What a browser tab can and cannot do under Navigate (web only; the desktop supplies no way to open it). Inside the session the limits open as a dialog over the live session (Q99 A), with the same heading, line and rows and Back; Escape closes the topmost of the session's dialogs, and focus returns to the control that opened the palette. A session that ends with the dialog open closes it. Its rows name the route the machine chip shows (chipRoute): loopback or the tailnet when proved, the route for SSH, WSL, direct, plaintext or not yet resolved. Focus moving to another surface over it (the palette, which can attach the session elsewhere) closes it, so its rows never outlive the route they name. Web v2 draws no in-session path; a page drawn over a hidden session leaked its shortcuts, theme and open dialogs (review rounds 1 and 2), so the in-session form is a dialog. Before pairing the connect page's link still opens it with Back to pairing, or Back once the tab is paired. Pinned in apps/web/src/web-app.test.tsx, command-palette.test.tsx and command-palette.dom.test.tsx."
+      ]
     },
     {
       "id": "limits.tier-note",

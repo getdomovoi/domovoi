@@ -29,6 +29,54 @@ export const updateTargetSchema = z.object({
   custom: updateTargetCustomSchema,
 }).strict()
 
+export const releaseInventoryTargetCustomSchema = z.object({
+  schemaVersion: z.literal(1),
+  kind: z.literal("release-inventory"),
+  version: updateVersionSchema,
+  channel: updateChannelSchema,
+  sourceCommit: commitShaSchema,
+}).strict()
+const releaseInventoryTargetSchema = updateTargetSchema.extend({ custom: releaseInventoryTargetCustomSchema })
+
+const releasePackageSchema = z.enum(["@getdomovoi/protocol", "@getdomovoi/credential-store", "@getdomovoi/daemon", "@getdomovoi/cli"])
+const releaseFileFields = {
+  name: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+-]*$/).max(256),
+  length: z.number().int().positive().safe(),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+}
+const releaseFileSchema = z.discriminatedUnion("kind", [
+  z.object({ ...releaseFileFields, kind: z.enum(["npm", "sbom"]), packageName: releasePackageSchema }).strict(),
+  z.object({ ...releaseFileFields, kind: z.enum(["web", "checksums", "reproducibility"]) }).strict(),
+  z.object({ ...releaseFileFields, kind: z.literal("desktop"), packageName: z.literal("@getdomovoi/desktop"),
+    platform: z.literal("darwin"), arch: z.enum(["arm64", "x64"]), format: z.literal("dmg"),
+    bundleId: z.literal("sh.domovoi.desktop"), app: z.literal("Domovoi.app"),
+  }).strict(),
+])
+
+export const releaseInventorySchema = z.object({
+  schemaVersion: z.literal(2), version: updateVersionSchema, channel: updateChannelSchema,
+  commit: commitShaSchema, gitTag: z.string().max(129), files: z.array(releaseFileSchema).min(11).max(13),
+}).strict().superRefine((inventory, context) => {
+  if (inventory.gitTag !== `v${inventory.version}`) context.addIssue({ code: "custom", path: ["gitTag"], message: "Release tag must bind the version" })
+  const expected = new Set([
+    ...releasePackageSchema.options.flatMap((name) => [`getdomovoi-${name.split("/")[1]}-${inventory.version}.tgz`, `getdomovoi-${name.split("/")[1]}-${inventory.version}.sbom.json`]),
+    `domovoi-web-${inventory.version}.tar.gz`, "SHA256SUMS", "reproducibility.json",
+  ])
+  const seen = new Set<string>()
+  for (const [index, file] of inventory.files.entries()) {
+    const name = file.kind === "npm" || file.kind === "sbom"
+      ? `getdomovoi-${file.packageName.split("/")[1]}-${inventory.version}.${file.kind === "npm" ? "tgz" : "sbom.json"}`
+      : file.kind === "desktop" ? `domovoi-desktop-${inventory.version}-${file.arch}.dmg`
+        : file.kind === "web" ? `domovoi-web-${inventory.version}.tar.gz`
+          : file.kind === "checksums" ? "SHA256SUMS" : "reproducibility.json"
+    if (file.name !== name || seen.has(name)) context.addIssue({ code: "custom", path: ["files", index], message: "Release file identity is inconsistent or duplicated" })
+    seen.add(name)
+    expected.delete(name)
+  }
+  if (expected.size) context.addIssue({ code: "custom", path: ["files"], message: "Release inventory is missing a core artifact" })
+})
+export type ReleaseInventory = z.infer<typeof releaseInventorySchema>
+
 export const updateRoleNameSchema = z.enum(["root", "targets", "snapshot", "timestamp"])
 export type UpdateRoleName = z.infer<typeof updateRoleNameSchema>
 const tufSpecVersionSchema = z.string().regex(/^1\.0\.\d+$/).check(utf16MaxLength(32))
@@ -84,7 +132,14 @@ export const updateTargetsMetadataSchema = signedEnvelopeSchema.extend({
     spec_version: tufSpecVersionSchema,
     version: z.number().int().positive().safe(),
     expires: dateTimeSchema,
-    targets: z.record(updateTargetNameSchema, updateTargetSchema),
+    targets: z.record(z.union([updateTargetNameSchema, z.literal("release.json")]), z.union([updateTargetSchema, releaseInventoryTargetSchema]))
+      .superRefine((targets, context) => {
+        for (const [name, target] of Object.entries(targets)) {
+          if ((name === "release.json") !== ("kind" in target.custom)) {
+            context.addIssue({ code: "custom", path: [name], message: "Target name must match its signed kind" })
+          }
+        }
+      }),
   }).strict(),
 }).strict()
 

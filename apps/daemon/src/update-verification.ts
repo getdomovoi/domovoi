@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { Readable } from "node:stream"
 import { canonicalize } from "@tufjs/canonical-json"
 import { Metadata, MetadataKind } from "@tufjs/models"
 import { UnsignedMetadataError } from "@tufjs/models/dist/error.js"
@@ -14,6 +15,8 @@ import {
   updateRootMetadataSchema, updateTargetsMetadataSchema,
   updateSnapshotMetadataSchema, updateTimestampMetadataSchema,
   updateTargetNameSchema, updateVersionSchema,
+  releaseInventorySchema, releaseInventoryTargetCustomSchema,
+  type ReleaseInventory,
 } from "@getdomovoi/protocol"
 
 export const maximumUpdateMetadataBytes = 1_048_576
@@ -23,6 +26,71 @@ export const maximumUpdateRootRotations = 32
 export type TrustedUpdateDocuments = Partial<Record<UpdateRoleName, string | undefined>>
 const roles = ["root", "timestamp", "snapshot", "targets"] as const
 const schemas = { root: updateRootMetadataSchema, timestamp: updateTimestampMetadataSchema, snapshot: updateSnapshotMetadataSchema, targets: updateTargetsMetadataSchema }
+
+type UpdateMetadataOptions = {
+  baseUrl: string
+  trustedRoot: UpdateRootMetadata
+  trusted?: TrustedUpdateDocuments
+  fetcher?: typeof fetch
+  persist: (documents: TrustedUpdateDocuments) => Promise<void>
+}
+type VerifiedMetadata = Record<string, unknown> & { raw: Record<string, Uint8Array> }
+
+/** Authenticate an inventory using the same live TUF refresh as daemon updates.
+ * Callers own durable trust storage; neither the target nor its body supplies it.
+ */
+export async function fetchVerifiedReleaseInventory(options: UpdateMetadataOptions & {
+  targetBaseUrl: string
+  trusted: TrustedUpdateDocuments
+  version: string
+  channel: UpdateChannel
+  sourceCommit: string
+}): Promise<{ inventory: ReleaseInventory; bytes: Uint8Array; raw: Record<string, Uint8Array> }> {
+  try {
+    z.partialRecord(z.enum(roles), z.string()).parse(options.trusted)
+    if (typeof options.persist !== "function") throw new Error("Missing persistence")
+  } catch (error) { throw new UpdateVerificationError("policy", "Release verification requires explicit trusted state and persistence", { cause: error }) }
+  let expected: z.infer<typeof releaseInventoryTargetCustomSchema>
+  try {
+    expected = releaseInventoryTargetCustomSchema.parse({ schemaVersion: 1, kind: "release-inventory",
+      version: options.version, channel: options.channel, sourceCommit: options.sourceCommit })
+  } catch (error) { throw new UpdateVerificationError("target-mismatch", "Expected release identity is invalid", { cause: error }) }
+  const base = new URL(options.targetBaseUrl.endsWith("/") ? options.targetBaseUrl : `${options.targetBaseUrl}/`)
+  if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) {
+    throw new UpdateVerificationError("network", "Release targets require a credential-free HTTPS URL")
+  }
+  return withRefreshedMetadata(options, async (updater, metadata, signal) => {
+    const target = await updater.getTargetInfo("release.json")
+    if (!target || target.path !== "release.json" || target.length > maximumUpdateMetadataBytes) {
+      throw new UpdateVerificationError("target-mismatch", "Release inventory target is missing or exceeds its bound")
+    }
+    const custom = releaseInventoryTargetCustomSchema.parse(target.custom)
+    if (custom.version !== expected.version || custom.channel !== expected.channel || custom.sourceCommit !== expected.sourceCommit) {
+      throw new UpdateVerificationError("target-mismatch", "Release inventory target identity does not match the requested release")
+    }
+    const root = updateRootMetadataSchema.parse(metadata["root.json"])
+    // This matches tuf-js downloadTarget's default prefixTargetsWithHash policy.
+    // Our admitted target schema permits only SHA-256 and the flat release name.
+    const name = root.signed.consistent_snapshot ? `${target.hashes.sha256}.release.json` : "release.json"
+    const url = new URL(name, base)
+    if (signal.aborted) throw new UpdateVerificationError("network", "Release inventory fetch timed out")
+    let response: Response
+    try { response = await (options.fetcher ?? fetch)(url, { signal, redirect: "error" }) }
+    catch (error) { throw new UpdateVerificationError("network", "Release inventory fetch failed", { cause: error }) }
+    if (!response.ok || response.redirected || (response.url && response.url !== url.href)) {
+      void response.body?.cancel().catch(() => {})
+      throw new UpdateVerificationError("network", "Release inventory request or redirect refused")
+    }
+    const bytes = await readMetadata(response, target.length, signal)
+    await target.verify(Readable.from([bytes]))
+    if (signal.aborted) throw new UpdateVerificationError("network", "Release inventory fetch timed out")
+    const inventory = releaseInventorySchema.parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)))
+    if (inventory.version !== custom.version || inventory.channel !== custom.channel || inventory.commit !== custom.sourceCommit) {
+      throw new UpdateVerificationError("target-mismatch", "Release inventory body does not match its authenticated identity")
+    }
+    return { inventory, bytes, raw: metadata.raw }
+  })
+}
 
 export class UpdateVerificationError extends Error {
   constructor(readonly reason: "expired" | "signature" | "replay" | "target-mismatch" | "malformed-metadata" | "network" | "policy", message: string, options?: { cause?: unknown }) {
@@ -157,13 +225,13 @@ async function readMetadata(response: Response, limit: number, signal: AbortSign
  * Its ordinary cache writes stay in scratch; only verified files are published by
  * the caller's atomic, flushed persistence under the profile lease.
  */
-export async function fetchUpdateMetadata(options: {
-  baseUrl: string
-  trustedRoot: UpdateRootMetadata
-  trusted?: TrustedUpdateDocuments
-  fetcher?: typeof fetch
-  persist: (documents: TrustedUpdateDocuments) => Promise<void>
-}): Promise<Record<string, unknown> & { raw: Record<string, Uint8Array> }> {
+export async function fetchUpdateMetadata(options: UpdateMetadataOptions): Promise<VerifiedMetadata> {
+  return withRefreshedMetadata(options, async (_updater, metadata) => metadata)
+}
+
+async function withRefreshedMetadata<T>(options: UpdateMetadataOptions,
+  consume: (updater: Updater, metadata: VerifiedMetadata, signal: AbortSignal) => Promise<T>,
+): Promise<T> {
   const base = new URL(options.baseUrl.endsWith("/") ? options.baseUrl : `${options.baseUrl}/`)
   if (base.protocol !== "https:" || base.username || base.password || base.search || base.hash) {
     throw new UpdateVerificationError("network", "Update metadata requires a credential-free HTTPS URL")
@@ -284,7 +352,7 @@ export async function fetchUpdateMetadata(options: {
       raw[`${role}.json`] = Buffer.from(documents[role]!)
       values[`${role}.json`] = parseMetadata(role, documents[role]!)
     }
-    return { ...values, raw }
+    return await consume(updater, { ...values, raw }, controller.signal)
   } catch (error) {
     throw verificationError(callbackFailure ?? error)
   } finally {

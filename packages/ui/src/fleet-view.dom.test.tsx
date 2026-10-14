@@ -1638,9 +1638,16 @@ it.each(["desktop", "web"] as const)("offers no self sign-out in %s without a ma
   expect(screen.queryByRole("button", { name: "Sign this device out" })).toBeNull()
 })
 
-it("keeps an ambiguous sign-out visible with instructions to check", async () => {
-  const { user } = renderFleet({ clientKind: "web", currentDeviceId: device.id, onSignOut: () => Promise.reject(new Error("socket closed")) })
+// Task 92: the check the text names is a control that exists in that state.
+// A request that timed out on an open socket leaves no connection bar, but
+// the row's Sign this device out stays; a dropped socket has the bar's Retry
+// now. A device that did sign out is refused by either.
+it("keeps an ambiguous sign-out visible and names the controls that check it", async () => {
+  const { user } = renderFleet({ clientKind: "web", currentDeviceId: device.id, onSignOut: () => Promise.reject(new Error("request timed out")) })
   await user.click(await screen.findByRole("button", { name: "Sign this device out" }))
   await user.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Sign this device out" }))
-  expect((await screen.findByText(/This device may have signed out/)).textContent).toContain("Reconnect to check. If access is refused, pair this tab again from Settings on the machine.")
+  expect((await screen.findByText(/This device may have signed out/)).textContent).toBe("Sign-out was not confirmed. This device may have signed out. To check, choose Sign this device out again, or Retry now if the connection dropped. If access is refused, pair this tab again from Settings on the machine.")
+  expect(screen.queryByText(/Reconnect to check/)).toBeNull()
+  const again = screen.getByRole("button", { name: "Sign this device out" })
+  expect(again.hasAttribute("disabled")).toBe(false)
 })

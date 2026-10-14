@@ -1,8 +1,9 @@
 // @vitest-environment happy-dom
-import { act } from "react"
+import { act, useEffect, useState } from "react"
 import { createRoot, type Root } from "react-dom/client"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
+import type { LimitsRoute } from "./browser-limits"
 import type { BrowserPlatformEnvironment } from "./browser-platform"
 import type { BearerPairingClient, CodePairingClient, PairingClientFactory } from "./daemon-pairing"
 import { WebApp, type WebAppProps } from "./web-app"
@@ -215,6 +216,38 @@ describe("WebApp", () => {
     expect(storage.getItem("domovoi.daemon-session")).toContain(deviceToken)
     await act(async () => { button("Open sessions").click() })
     expect(text()).toContain("Continue to the session")
+  })
+
+  // Web v2's accepted card leads its mono line with the route, by the rule the
+  // app bar's chip uses (route-word.ts).
+  it.each([
+    ["ws://127.0.0.1:47831/rpc", "loopback · credential cccccccc · this tab only"],
+    ["wss://mac-mini-m4.tail4c2e.ts.net:47831/rpc", "tailnet · credential cccccccc · this tab only"],
+    ["wss://studio.example.com:47831/rpc", "direct · credential cccccccc · this tab only"],
+  ])("names the route on the accepted line for %s", async (url, line) => {
+    await draw(memoryStorage(), vi.fn(() => pairingClient("pairs")), { rpcUrl: url })
+    await submitCode("hearth-quiet-ember-42")
+    expect(text()).toContain(line)
+  })
+
+  // An address the page cannot read names no route rather than guessing one.
+  it("names no route on the accepted line when the address does not parse", async () => {
+    await draw(memoryStorage(), vi.fn(() => pairingClient("pairs")), { rpcUrl: "not a url" })
+    await submitCode("hearth-quiet-ember-42")
+    const mono = [...container.querySelectorAll("span")].find((span) => span.textContent?.endsWith("· this tab only"))
+    expect(mono?.textContent).toBe("credential cccccccc · this tab only")
+  })
+
+  // W6: the page compares its own origin with the socket it dials, and says
+  // what that shows about where the page came from.
+  it("says the page came from the daemon when the daemon served it", async () => {
+    await draw(memoryStorage(), vi.fn(), { rpcUrl: "wss://mac-mini-m4.tail4c2e.ts.net:47831/rpc", pageOrigin: "https://mac-mini-m4.tail4c2e.ts.net:47831" })
+    expect(text()).toContain("This page came from the daemon at mac-mini-m4.tail4c2e.ts.net:47831. No Domovoi server is in the path.")
+  })
+
+  it("names the page's own host when another server served it", async () => {
+    await draw(memoryStorage(), vi.fn())
+    expect(text()).toContain("This page came from 127.0.0.1:5178, not from the daemon's address. This tab talks only to the daemon at 127.0.0.1:47831.")
   })
 
   // Q196, 2026-09-29: a phone browser handed a web code would store a
@@ -629,6 +662,168 @@ describe("WebApp", () => {
     await act(async () => { button("Change credential").click() })
     expect(text()).toContain("Connect this browser to")
     expect(storage.getItem("domovoi.daemon-session")).toBeNull()
+  })
+})
+
+// Q367 A: the workspace reopens the limits page. The session stays mounted
+// under it, so nothing the workspace holds is lost on the way back, and focus
+// returns to the control that opened it.
+describe("limits from the workspace", () => {
+  // The shell binds its shortcuts on the window, as this stand-in does.
+  const shortcut = vi.fn()
+  type OpenLimits = (opener: HTMLElement | null, route: LimitsRoute | undefined) => void
+  function Workspace({ onOpenLimits, onChangeCredential }: { onOpenLimits: OpenLimits; onChangeCredential: () => void }) {
+    const [count, setCount] = useState(0)
+    useEffect(() => {
+      const onKeyDown = (event: KeyboardEvent) => { if (event.key === "k" && event.ctrlKey) shortcut() }
+      globalThis.addEventListener("keydown", onKeyDown)
+      return () => globalThis.removeEventListener("keydown", onKeyDown)
+    }, [])
+    return (
+      <main>
+        <p>Workspace open, count {count}</p>
+        <button type="button" onClick={() => setCount((value) => value + 1)}>Count</button>
+        <button type="button" onClick={(event) => onOpenLimits(event.currentTarget, "loopback")}>Limits</button>
+        <button type="button" onClick={onChangeCredential}>Change credential</button>
+      </main>
+    )
+  }
+
+  let changeCredential: (() => void) | undefined
+  function drawSession() {
+    const storage = memoryStorage()
+    storage.setItem("domovoi.daemon-session", JSON.stringify({ deviceId, token: deviceToken }))
+    storage.setItem("domovoi.web.limitsSeen", "1")
+    return act(async () => {
+      root.render(
+        <WebApp
+          rpcUrl={rpcUrl}
+          pageOrigin={loopbackPage}
+          clientKind="web"
+          environment={environment}
+          storage={storage}
+          createClient={vi.fn()}
+          labelSuffix={() => "1234"}
+          workspace={({ onOpenLimits, onChangeCredential }) => {
+            changeCredential = onChangeCredential
+            return <Workspace onOpenLimits={onOpenLimits} onChangeCredential={onChangeCredential} />
+          }}
+        />,
+      )
+    })
+  }
+  // The dialog is drawn in a portal on the document, outside the container.
+  const limitsDialog = () => document.querySelector<HTMLElement>("[role='dialog']")
+  const dialogButton = (name: string) => {
+    const found = [...(limitsDialog()?.querySelectorAll("button") ?? [])].find((candidate) => candidate.textContent?.trim() === name)
+    if (!found) throw new Error(`No dialog button named ${name}`)
+    return found
+  }
+  const settle = () => act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+
+  // Q99 A: inside a session the limits are a dialog over the live session,
+  // which stays on screen and keeps what it holds.
+  it("opens the limits as a dialog over the live session and goes back to it as it was", async () => {
+    await drawSession()
+    await act(async () => { button("Count").click() })
+    const opener = button("Limits")
+    await act(async () => { opener.click() })
+
+    expect(limitsDialog()?.textContent).toContain("What a browser tab can and cannot do")
+    expect(limitsDialog()?.querySelector("[aria-label='Browser limits']")).not.toBeNull()
+    expect(container.querySelector("header")).toBeNull()
+    expect(opener.closest("[hidden]")).toBeNull()
+    expect(() => dialogButton("Continue to the session")).toThrow()
+
+    await act(async () => { dialogButton("Back").click() })
+    await settle()
+    expect(limitsDialog()).toBeNull()
+    expect(text()).toContain("Workspace open, count 1")
+    expect(document.activeElement).toBe(opener)
+  })
+
+  // Chosen again from the palette while it is open, the dialog keeps the
+  // control that first opened it, not one inside the dialog.
+  it("keeps the first opener when the limits are asked for again while open", async () => {
+    let open: OpenLimits | undefined
+    const storage = memoryStorage()
+    storage.setItem("domovoi.daemon-session", JSON.stringify({ deviceId, token: deviceToken }))
+    storage.setItem("domovoi.web.limitsSeen", "1")
+    await act(async () => {
+      root.render(
+        <WebApp rpcUrl={rpcUrl} pageOrigin={loopbackPage} clientKind="web" environment={environment} storage={storage} createClient={vi.fn()} labelSuffix={() => "1234"}
+          workspace={({ onOpenLimits }) => { open = onOpenLimits; return <button type="button">First opener</button> }} />,
+      )
+    })
+    const first = button("First opener")
+    await act(async () => { open!(first, "loopback") })
+    await settle()
+    // Asked for again from inside the limits while open, with the route the
+    // session is on now: the rows follow the route, focus still goes home.
+    await act(async () => { open!(dialogButton("Back"), "tailnet") })
+    await settle()
+    expect(limitsDialog()?.textContent).toContain("The daemon streams the thread and the plan over the tailnet.")
+    const inside = dialogButton("Back")
+    await act(async () => { inside.click() })
+    await settle()
+    expect(limitsDialog()).toBeNull()
+    expect(document.activeElement).toBe(first)
+
+    // Closed because the palette took focus, then asked for again from that
+    // palette: its opener was inside the limits, so the first opener stays.
+    await act(async () => { open!(inside, "ssh") })
+    await settle()
+    expect(limitsDialog()?.textContent).toContain("The daemon streams the thread and the plan over the route.")
+    await act(async () => { dialogButton("Back").click() })
+    await settle()
+    expect(document.activeElement).toBe(first)
+  })
+
+  // The rows describe the route the session is on, as the shell's chip names
+  // it: attached over the tailnet says so, over SSH or still unresolved says
+  // the route, and the home loopback stays loopback.
+  it.each([
+    ["tailnet", "over the tailnet."],
+    ["ssh", "over the route."],
+    [undefined, "over the route."],
+    ["loopback", "over loopback."],
+  ] as const)("describes the session's route %s in the rows", async (route, words) => {
+    let open: OpenLimits | undefined
+    const storage = memoryStorage()
+    storage.setItem("domovoi.daemon-session", JSON.stringify({ deviceId, token: deviceToken }))
+    storage.setItem("domovoi.web.limitsSeen", "1")
+    await act(async () => {
+      root.render(
+        <WebApp rpcUrl={rpcUrl} pageOrigin={loopbackPage} clientKind="web" environment={environment} storage={storage} createClient={vi.fn()} labelSuffix={() => "1234"}
+          workspace={({ onOpenLimits }) => { open = onOpenLimits; return <button type="button">Opener</button> }} />,
+      )
+    })
+    await act(async () => { open!(button("Opener"), route) })
+    await settle()
+    const watch = [...(limitsDialog()?.querySelectorAll("li") ?? [])].find((item) => item.textContent?.includes("Watch a session live"))
+    expect(watch?.textContent).toContain(`The daemon streams the thread and the plan ${words}`)
+  })
+
+  // The session's own window shortcuts are its business while the dialog is
+  // up, as with any of its dialogs; the limits add no key handling.
+  it("leaves the session's shortcuts to it while the dialog is open", async () => {
+    shortcut.mockClear()
+    await drawSession()
+    await act(async () => { button("Limits").click() })
+    await act(async () => {
+      document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "k", ctrlKey: true, bubbles: true }))
+    })
+    expect(shortcut).toHaveBeenCalledOnce()
+  })
+
+  it("closes the limits when the session ends under them", async () => {
+    await drawSession()
+    await act(async () => { button("Limits").click() })
+    await act(async () => { changeCredential!() })
+    await settle()
+    expect(limitsDialog()).toBeNull()
+    expect(text()).toContain("Connect this browser to")
+    expect(container.querySelector("[aria-label='Browser limits']")).toBeNull()
   })
 })
 

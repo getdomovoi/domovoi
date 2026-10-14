@@ -25,16 +25,18 @@ try {
       })
     }
   `)
-  const imported = spawnSync(process.execPath, [
-    "--import", detectSqlite,
-    "--input-type=module", "-e", 'await import("./dist/daemon-command.js")',
-  ], {
-    encoding: "utf8", timeout: 2_000,
-    env: { ...process.env, DOMOVOI_PROFILE_DIR: commandProfile },
-  })
-  assert.equal(imported.status, 0, imported.error?.message || imported.stderr)
-  assert.equal(imported.stdout, "")
-  assert.equal(imported.stderr, "")
+  for (const entry of ["daemon-command", "update-verification"]) {
+    const imported = spawnSync(process.execPath, [
+      "--import", detectSqlite,
+      "--input-type=module", "-e", `await import("./dist/${entry}.js")`,
+    ], {
+      encoding: "utf8", timeout: 2_000,
+      env: { ...process.env, DOMOVOI_PROFILE_DIR: commandProfile },
+    })
+    assert.equal(imported.status, 0, imported.error?.message || imported.stderr)
+    assert.equal(imported.stdout, "")
+    assert.equal(imported.stderr, "")
+  }
   assert.deepEqual(readdirSync(commandProfile), [])
 } finally { rmSync(commandProfile, { recursive: true, force: true }) }
 
@@ -42,6 +44,10 @@ const publicApi = await import("./dist/public.js")
 const { createProductionDaemon } = publicApi
 const bootstrap = await import("./dist/bootstrap-install.js")
 assert.equal(typeof bootstrap.install, "function")
+const verification = await import("./dist/update-verification.js")
+assert.equal(typeof verification.fetchVerifiedReleaseInventory, "function")
+assert.equal(typeof verification.fetchUpdateMetadata, "function")
+await assert.rejects(() => verification.fetchVerifiedReleaseInventory({}), { reason: "policy" })
 
 // The published entry point cannot bypass production assembly.
 assert.deepEqual(Object.keys(publicApi).sort(), [

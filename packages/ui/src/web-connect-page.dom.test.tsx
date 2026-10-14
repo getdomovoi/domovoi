@@ -48,6 +48,32 @@ it("says how this tab is trusted, and that the credential lives in the tab", () 
   expect(within(facts).getByText("This page and the daemon must speak the same protocol version. After a daemon update, reload.")).toBeTruthy()
 })
 
+// Web v2 draws the facts as one bordered card, the eyebrow its first row.
+it("draws the trust facts in one bordered card under its eyebrow", () => {
+  render(<WebConnectPage {...base} />)
+  const facts = screen.getByRole("list", { name: "HOW THIS TAB IS TRUSTED" })
+  const card = facts.closest("section")
+  expect(card?.className).toContain("border")
+  expect(card?.textContent?.startsWith("HOW THIS TAB IS TRUSTED")).toBe(true)
+  expect(within(facts).getAllByRole("listitem")).toHaveLength(4)
+})
+
+// W6: a page the daemon served shares its origin, so the first fact can say
+// where the page came from. A page from anywhere else says so, by its host.
+it("says the page came from the daemon when the page shares the daemon's origin", () => {
+  render(<WebConnectPage {...base} pageOrigin={{ sameAsDaemon: true }} />)
+  const facts = screen.getByRole("list", { name: "HOW THIS TAB IS TRUSTED" })
+  expect(within(facts).getByText("This page came from the daemon at mac-mini-m4.tail4c2e.ts.net. No Domovoi server is in the path.")).toBeTruthy()
+  expect(within(facts).queryByText(/talks only to the daemon/)).toBeNull()
+})
+
+it("names the page's own host when it did not come from the daemon's address", () => {
+  render(<WebConnectPage {...base} pageOrigin={{ sameAsDaemon: false, host: "127.0.0.1:5178" }} />)
+  const facts = screen.getByRole("list", { name: "HOW THIS TAB IS TRUSTED" })
+  expect(within(facts).getByText("This page came from 127.0.0.1:5178, not from the daemon's address. This tab talks only to the daemon at mac-mini-m4.tail4c2e.ts.net.")).toBeTruthy()
+  expect(within(facts).queryByText(/No Domovoi server/)).toBeNull()
+})
+
 it("names a reopened tab and a code filled from the address bar", () => {
   render(<WebConnectPage {...base} reopened initialCode="hearth-quiet-ember-42" fromUrl />)
   expect(screen.getByText("Pair this browser again with")).toBeTruthy()
