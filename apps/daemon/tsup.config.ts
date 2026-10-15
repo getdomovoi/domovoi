@@ -14,6 +14,7 @@ export default defineConfig({
     "machine-keyring-worker": "src/machine-keyring-worker.ts",
     "bootstrap-install": "src/bootstrap-install.ts",
     "update-verification": "src/update-verification.ts",
+    "tier-claim": "src/tier-claim.ts",
   },
   format: ["esm"],
   platform: "node",

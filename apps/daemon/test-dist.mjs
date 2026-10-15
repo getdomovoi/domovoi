@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { spawnSync } from "node:child_process"
+import { generateKeyPairSync, sign } from "node:crypto"
 import { mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -25,7 +26,7 @@ try {
       })
     }
   `)
-  for (const entry of ["daemon-command", "update-verification"]) {
+  for (const entry of ["daemon-command", "update-verification", "tier-claim"]) {
     const imported = spawnSync(process.execPath, [
       "--import", detectSqlite,
       "--input-type=module", "-e", `await import("./dist/${entry}.js")`,
@@ -48,6 +49,26 @@ const verification = await import("./dist/update-verification.js")
 assert.equal(typeof verification.fetchVerifiedReleaseInventory, "function")
 assert.equal(typeof verification.fetchUpdateMetadata, "function")
 await assert.rejects(() => verification.fetchVerifiedReleaseInventory({}), { reason: "policy" })
+
+// Exercise the shipped pure verifier with independent literal signing bytes.
+const tierClaim = await import("./dist/tier-claim.js")
+assert.equal(typeof tierClaim.verifyTierClaim, "function")
+assert.match(readFileSync(new URL("./dist/tier-claim.d.ts", import.meta.url), "utf8"), /verifyTierClaim/)
+const claimKey = generateKeyPairSync("ed25519")
+const claimPayload = { version: 1, issuer: "issuer-test", keyId: "key-1", audience: "domovoi-hosted-relay-v1",
+  claimId: "claim-1", accountId: "account-1", machineId: "machine-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  entitlementEpoch: 2, capability: "relay.connect", maximumMachines: 3, issuedAt: 1700000000, expiresAt: 1700003600 }
+const claimMessage = 'domovoi.tier-claim.v1\n[1,"issuer-test","key-1","domovoi-hosted-relay-v1","claim-1","account-1","machine-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",2,"relay.connect",3,1700000000,1700003600]'
+const claimBytes = Buffer.from(JSON.stringify({ payload: claimPayload,
+  signature: sign(null, Buffer.from(claimMessage), claimKey.privateKey).toString("base64url") }))
+const claimContext = { issuer: claimPayload.issuer, audience: claimPayload.audience, accountId: claimPayload.accountId,
+  machineId: claimPayload.machineId, now: claimPayload.issuedAt, maximumLifetimeSeconds: 3600, minimumEntitlementEpoch: 2,
+  keys: [{ keyId: claimPayload.keyId, publicKey: claimKey.publicKey.export({ format: "jwk" }).x,
+    notBefore: claimPayload.issuedAt, notAfter: claimPayload.expiresAt }] }
+assert.deepEqual(tierClaim.verifyTierClaim(claimBytes, claimContext), { status: "eligible", claim: claimPayload })
+assert.deepEqual(tierClaim.verifyTierClaim(claimBytes, { ...claimContext, accountId: "other-account" }),
+  { status: "refused", reason: "binding-mismatch" })
+assert.deepEqual(tierClaim.verifyTierClaim(claimBytes, {}), { status: "unavailable", reason: "invalid-context" })
 
 // The published entry point cannot bypass production assembly.
 assert.deepEqual(Object.keys(publicApi).sort(), [
