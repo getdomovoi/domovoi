@@ -14,6 +14,7 @@ import { phoneFacts } from "../phone-facts"
 import type { ConnectionFault } from "../lib/connection-fault"
 import type { DaemonStatus } from "../lib/daemon"
 import type { ThemePreference } from "../theme/theme"
+import type { ToolCardDefault } from "../tool-cards"
 import { useTheme } from "../theme/theme-provider"
 
 // The four the handoff lists. They configure a machine rather than a phone, so
@@ -44,6 +45,8 @@ export function SettingsScreen({
   onOpenStop,
   themePreference,
   onChangeTheme,
+  toolCardDefault,
+  onChangeToolCards,
   paired,
   device,
   bottomInset,
@@ -59,6 +62,9 @@ export function SettingsScreen({
   onOpenStop: () => void
   themePreference: ThemePreference
   onChangeTheme: (preference: ThemePreference) => void
+  // How tool cards open in the phone thread, kept on this device.
+  toolCardDefault: ToolCardDefault
+  onChangeToolCards: (value: ToolCardDefault) => void
   // Whether this phone has a daemon to talk to at all. Device settings work
   // either way; the machine-scoped ones do not exist until one is paired.
   paired: boolean
@@ -182,6 +188,39 @@ export function SettingsScreen({
                 <Text variant="meta">{fact.value}</Text>
               </View>
             ))}
+            {/* Task 107: how tool and command cards open in the phone thread,
+                drawn as Appearance is. The tablet thread draws a tool call as
+                one line of text, so the setting is not offered there. */}
+            {device === "phone" ? (
+              <View
+                accessibilityLabel={`Tool cards, ${toolCardDefault === "expanded" ? "Expanded" : "Collapsed"}`}
+                className="gap-2 border-t border-border px-[13px] py-3"
+              >
+                <View className="flex-row items-center gap-2.5">
+                  <Text className="flex-1 text-[12.5px]">Tool cards</Text>
+                  <Text variant="meta">{toolCardDefault === "expanded" ? "Expanded" : "Collapsed"}</Text>
+                </View>
+                <View className="flex-row rounded-lg bg-accent p-1">
+                  {(["collapsed", "expanded"] as const).map((choice) => {
+                    const selected = toolCardDefault === choice
+                    const label = choice === "expanded" ? "Expanded" : "Collapsed"
+                    return (
+                      <Pressable
+                        key={choice}
+                        accessibilityRole="radio"
+                        accessibilityLabel={label}
+                        accessibilityState={{ checked: selected }}
+                        onPress={() => onChangeToolCards(choice)}
+                        className={cn("min-h-tap flex-1 items-center justify-center rounded-md", selected && "bg-card")}
+                      >
+                        <Text className={cn("font-sans-medium text-[12px]", selected ? "text-foreground" : "text-muted-foreground")}>{label}</Text>
+                      </Pressable>
+                    )
+                  })}
+                </View>
+                <Text variant="note">How commands and tool calls open in a thread. A command waiting on an approval always shows in full.</Text>
+              </View>
+            ) : null}
             {/* Listed, dimmed and not touchable, with no chevron: there is no
                 push without the relay, so the setting does not exist yet. */}
             <View

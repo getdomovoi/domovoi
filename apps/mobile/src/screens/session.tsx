@@ -24,9 +24,12 @@ import type { ArtifactRow } from "../artifact-rows"
 import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
 import type { Attachment, ModelImages } from "../attachments"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
+
+type ToolStatus = NonNullable<Extract<ThreadEntry, { kind: "note" }>["tool"]>["status"]
 import type { PhoneRefusal } from "../session-refusal"
 import { watchedSummary, type TerminalWatch } from "../terminal-rows"
 import { useTheme } from "../theme/theme-provider"
+import { foldsAway, freshToolCardDefault, toolCardOpen, toolSummary, type ToolCardDefault } from "../tool-cards"
 import { TerminalBlock } from "./watching"
 
 // The handoff tints a step's mark with the state it is in rather than outlining
@@ -129,8 +132,71 @@ function Receipt({ entry, onWatch }: {
   )
 }
 
-const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWatch: () => void }) {
+// Frame 01b's tool row: a status dot, the command in mono on one line, and the
+// status at the end, on the code ground. Task 107 makes it fold: a tap on the
+// row opens the full command under it, and a tap again folds it back. A card
+// that cannot fold (see foldsAway) is drawn open with no control.
+const toolDot: Record<ToolStatus, string> = {
+  running: "bg-primary",
+  completed: "bg-success",
+  failed: "bg-destructive",
+  declined: "bg-faint",
+}
+
+function ToolCard({ entry, tool, open, folds, onToggle }: {
+  entry: Extract<ThreadEntry, { kind: "note" }>
+  tool: { name: string, status: ToolStatus }
+  open: boolean
+  folds: boolean
+  onToggle: (id: string, open: boolean) => void
+}) {
+  const summary = toolSummary(entry.body)
+  const label = `${tool.name}, ${tool.status}, ${summary}`
+  const row = (
+    <>
+      <View className={cn("h-1.5 w-1.5 rounded-full", toolDot[tool.status])} />
+      {open
+        ? <Text variant="machine" className="flex-1">{tool.name}</Text>
+        : <Text testID={`tool-summary-${entry.id}`} numberOfLines={1} className="flex-1 font-mono text-[11.5px] text-strong">{summary}</Text>}
+      <Text variant="machine">{tool.status}</Text>
+      {folds ? <Icon name={open ? "chevron-up" : "chevron-down"} tone="faint" size={14} /> : null}
+    </>
+  )
+  return (
+    <View className="overflow-hidden rounded-xl border border-border bg-code">
+      {folds ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          accessibilityState={{ expanded: open }}
+          onPress={() => onToggle(entry.id, !open)}
+          className="min-h-tap flex-row items-center gap-[9px] px-3 active:opacity-70"
+        >
+          {row}
+        </Pressable>
+      ) : (
+        <View accessible accessibilityLabel={`${tool.name}, ${tool.status}`} className="min-h-tap flex-row items-center gap-[9px] px-3">
+          {row}
+        </View>
+      )}
+      {open ? (
+        <Text selectable className="px-3 pb-3 font-mono text-[11.5px] leading-[18px] text-strong">{entry.body}</Text>
+      ) : null}
+    </View>
+  )
+}
+
+const Entry = memo(function Entry({ entry, onWatch, open, folds, onToggle }: {
+  entry: ThreadEntry
+  onWatch: () => void
+  open: boolean
+  folds: boolean
+  onToggle: (id: string, open: boolean) => void
+}) {
   if (entry.kind === "receipt") return <Receipt entry={entry} onWatch={onWatch} />
+  if (entry.kind === "note" && entry.tool) {
+    return <ToolCard entry={entry} tool={entry.tool} open={open} folds={folds} onToggle={onToggle} />
+  }
 
   if (entry.kind === "policy-refusal") return null
   // Phone v2 frame 11: yours is filled with the primary colour and tails to
@@ -591,6 +657,7 @@ export function SessionScreen({
   terminals = [],
   connected = true,
   onOpenTerminal,
+  toolCardDefault = freshToolCardDefault,
 }: {
   detail: SessionDetail
   // The route can die while the thread is open; the screen says what is drawn
@@ -658,8 +725,15 @@ export function SessionScreen({
   // state is unconfirmed.
   connected?: boolean | undefined
   onOpenTerminal?: ((terminalId: string) => void) | undefined
+  // The device setting for how tool cards open (task 107). A card toggled by
+  // hand keeps that choice while this screen is open, whatever the default.
+  toolCardDefault?: ToolCardDefault | undefined
 }) {
   const [startOpen, setStartOpen] = useState(false)
+  const [toolChoices, setToolChoices] = useState<ReadonlyMap<string, boolean>>(() => new Map())
+  const toggleTool = useCallback((id: string, open: boolean) => {
+    setToolChoices((choices) => new Map(choices).set(id, open))
+  }, [])
   const [attachOpen, setAttachOpen] = useState(false)
   const [planOpen, setPlanOpen] = useState(false)
   // The composer floats over the thread, so the thread pads by what the
@@ -813,9 +887,19 @@ export function SessionScreen({
               onCancel={onCancelQueuedSend}
             />
           ) : null}
-          {detail.entries.map((entry) => (
-            <Entry key={entry.id} entry={entry} onWatch={watchReceipt} />
-          ))}
+          {detail.entries.map((entry) => {
+            const folds = foldsAway(entry, Boolean(approvalId))
+            return (
+              <Entry
+                key={entry.id}
+                entry={entry}
+                onWatch={watchReceipt}
+                folds={folds}
+                open={!folds || toolCardOpen(toolChoices.get(entry.id), toolCardDefault)}
+                onToggle={toggleTool}
+              />
+            )
+          })}
 
           {access === "full" ? <Card className="gap-2">
             <Text variant="label">Session control</Text>

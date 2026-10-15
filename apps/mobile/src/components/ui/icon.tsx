@@ -3,6 +3,7 @@ import ArrowUp from "lucide-react-native/icons/arrow-up"
 import Ban from "lucide-react-native/icons/ban"
 import Camera from "lucide-react-native/icons/camera"
 import Check from "lucide-react-native/icons/check"
+import ChevronDown from "lucide-react-native/icons/chevron-down"
 import ChevronLeft from "lucide-react-native/icons/chevron-left"
 import ChevronRight from "lucide-react-native/icons/chevron-right"
 import ChevronUp from "lucide-react-native/icons/chevron-up"
@@ -36,6 +37,7 @@ const glyphs = {
   ban: Ban,
   camera: Camera,
   check: Check,
+  "chevron-down": ChevronDown,
   "chevron-left": ChevronLeft,
   "chevron-right": ChevronRight,
   "chevron-up": ChevronUp,
