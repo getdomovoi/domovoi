@@ -1397,6 +1397,11 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
       ["three numbers", row("application.sh.domovoi.desktop.1.218603379.218608385")],
       ["a name where a number goes", row("application.sh.domovoi.desktop.helper.218608385")],
       ["the app row with a space", row("application.sh.domovoi.desktop.218603379.218608385 old")],
+      // Codex review round 1 (Major): a label may hold a space, so a row
+      // whose last field is the app's label is still not the app's row.
+      ["a label that ends with the app's label after a space", row("old application.sh.domovoi.desktop.218603379.218608385")],
+      ["a label that ends with the app's label after a tab", row("old\tapplication.sh.domovoi.desktop.218603379.218608385")],
+      ["a status column launchd does not print", "gui/501 = {\n\tservices = {\n\t\t   19937    old  \tapplication.sh.domovoi.desktop.218603379.218608385\n\t}\n}\n"],
       ["the app row after another field", "gui/501 = {\n\tservices = {\n\t\t   19937      -  \tapplication.sh.domovoi.desktop.218603379.218608385\tcom.apple.example\n\t}\n}\n"],
     ] as const) {
       const effects = dependencies({ exists: noDefinition, capture: listing(stdout) })
@@ -1405,6 +1410,9 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
       await expect(refused, label).rejects.toThrow("launchd listed the jobs in gui/501 in a form this app cannot read, so whether a login service is registered there is not known. Nothing was changed.")
       expect(effects.write, label).not.toHaveBeenCalled()
       expect(effects.run, label).not.toHaveBeenCalled()
+      const removal = dependencies({ exists: noDefinition, capture: listing(stdout) })
+      await expect(removeDaemonService(removal, { environment: {} }), label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      expect(removal.run, label).not.toHaveBeenCalled()
     }
   })
 
