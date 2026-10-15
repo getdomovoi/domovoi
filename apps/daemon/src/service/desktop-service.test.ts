@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
 import { replaceFile } from "@getdomovoi/credential-store"
@@ -1128,8 +1128,9 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
   const savedFor = (profileDirectory: string) => vi.fn(() => ({ owner: undefined, configurationDigest: "digest", profileDirectory, effectiveProfileDirectory: profileDirectory }))
   const noDefinition = vi.fn(async (path: string) => path !== plistPath)
   // launchd with nothing of Domovoi's loaded: the label is not found and the
-  // domain lists no sh.domovoi job. Round 4 checks both.
-  const domain = (labels: string[] = []) => `gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n${labels.map((label) => `\t\t     812      0  \t${label}\n`).join("")}\t}\n}\n`
+  // domain lists no sh.domovoi job. Round 4 checks both. The domain also lists
+  // the running Domovoi app, as macOS does while the app is open.
+  const domain = (labels: string[] = []) => `gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n\t\t   19937      -  \tapplication.sh.domovoi.desktop.218603379.218608385\n${labels.map((label) => `\t\t     812      0  \t${label}\n`).join("")}\t}\n}\n`
   const launchd = (options: { loaded?: boolean; labels?: string[] } = {}) => vi.fn(async (_command: string, args: string[]) => {
     if (args[1] === "gui/501/sh.domovoi.domovoid") {
       return options.loaded
@@ -1359,6 +1360,63 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
     }
   })
 
+  // While the Domovoi app runs, LaunchServices lists it in gui/<uid> as
+  // application.sh.domovoi.desktop.<digits>.<digits>. That row is the running
+  // app, not a launch agent, so the install from the app goes ahead. The
+  // fixture is a trimmed `launchctl print gui/501` from macOS 26 with the app
+  // open; its rows are verbatim.
+  it("installs while the running Domovoi app is listed in the domain", async () => {
+    const stdout = await readFile(new URL("../../test-fixtures/launchctl-print-gui-501.txt", import.meta.url), "utf8")
+    expect(stdout).toContain("\tapplication.sh.domovoi.desktop.218603379.218608385\n")
+    const listing = () => vi.fn(async (_command: string, args: string[]) => args[1] === "gui/501/sh.domovoi.domovoid"
+      ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+      : { code: 0, stdout })
+    const installed = listing()
+    const effects = dependencies({ exists: noDefinition, capture: installed })
+    await expect(installDaemonService({ runtime, environment: {}, releaseInAppDaemon: async () => {} }, effects)).resolves.toMatchObject({ kind: "file" })
+    expect(installed).toHaveBeenCalledWith("launchctl", ["print", "gui/501"], expect.anything())
+    expect(effects.run).toHaveBeenCalledWith("launchctl", ["bootstrap", "gui/501", plistPath], expect.anything())
+    const removed = listing()
+    const removal = dependencies({ exists: noDefinition, capture: removed })
+    await expect(removeDaemonService(removal, { environment: {} })).resolves.toMatchObject({ kind: "file" })
+    expect(removed).toHaveBeenCalledWith("launchctl", ["print", "gui/501"], expect.anything())
+  })
+
+  // Only the exact LaunchServices form of Domovoi's own bundle id is the app.
+  // Any other application row that names Domovoi is ambiguous and refuses.
+  it("refuses an application row that is not exactly the running Domovoi app", async () => {
+    const listing = (stdout: string) => vi.fn(async (_command: string, args: string[]) => args[1] === "gui/501/sh.domovoi.domovoid"
+      ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
+      : { code: 0, stdout })
+    const row = (label: string) => `gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n\t\t   19937      -  \t${label}\n\t}\n}\n`
+    for (const [label, stdout] of [
+      ["another bundle id under sh.domovoi", row("application.sh.domovoi.desktop-helper.218603379.218608385")],
+      ["another bundle id naming domovoi", row("application.com.example.domovoi.218603379.218608385")],
+      ["the daemon's own label", row("application.sh.domovoi.domovoid.218603379.218608385")],
+      ["one number", row("application.sh.domovoi.desktop.218603379")],
+      ["three numbers", row("application.sh.domovoi.desktop.1.218603379.218608385")],
+      ["a name where a number goes", row("application.sh.domovoi.desktop.helper.218608385")],
+      ["the app row with a space", row("application.sh.domovoi.desktop.218603379.218608385 old")],
+      ["the app row after another field", "gui/501 = {\n\tservices = {\n\t\t   19937      -  \tapplication.sh.domovoi.desktop.218603379.218608385\tcom.apple.example\n\t}\n}\n"],
+    ] as const) {
+      const effects = dependencies({ exists: noDefinition, capture: listing(stdout) })
+      const refused = installDaemonService({ runtime, environment: {} }, effects)
+      await expect(refused, label).rejects.toBeInstanceOf(ServiceProfileUnknownError)
+      await expect(refused, label).rejects.toThrow("launchd listed the jobs in gui/501 in a form this app cannot read, so whether a login service is registered there is not known. Nothing was changed.")
+      expect(effects.write, label).not.toHaveBeenCalled()
+      expect(effects.run, label).not.toHaveBeenCalled()
+    }
+  })
+
+  // The running app's row does not hide a Domovoi job listed beside it.
+  it("still finds a Domovoi job listed beside the running app", async () => {
+    const effects = dependencies({ exists: noDefinition, capture: launchd({ labels: ["application.sh.domovoi.desktop.218603379.218608385", "sh.domovoi.domovoid-old"] }) })
+    await expect(installDaemonService({ runtime, environment: {} }, effects)).rejects.toThrow(
+      "A login service is registered at gui/501/sh.domovoi.domovoid-old, but its saved configuration is missing, so the profile it runs is not known. Nothing was changed.",
+    )
+    expect(effects.write).not.toHaveBeenCalled()
+  })
+
   // Security review round 5 of #577 (P1): every refusal comes before the
   // publish: the handoff's own profile check, the caller's fence (thrown from
   // the handoff), and the claim of the profile for the service.
@@ -1400,7 +1458,7 @@ describe("installDaemonService leaves every runtime copy alone on every failure 
   const plistPath = "/Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist"
   const missingJob = vi.fn(async (_command: string, args: string[]) => args[1] === "gui/501/sh.domovoi.domovoid"
     ? { code: 113, stdout: "", stderr: 'Could not find service "sh.domovoi.domovoid" in domain for user gui: 501' }
-    : { code: 0, stdout: "gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n\t}\n}\n" })
+    : { code: 0, stdout: "gui/501 = {\n\tservices = {\n\t\t       0      -  \tcom.apple.example\n\t\t   19937      -  \tapplication.sh.domovoi.desktop.218603379.218608385\n\t}\n}\n" })
   function versioned() {
     const state = { version: "old" }
     return { state, staged: { runtime: staged, publish: vi.fn(async () => { state.version = "new" }), revert: vi.fn(async () => { state.version = "old" }) } }
