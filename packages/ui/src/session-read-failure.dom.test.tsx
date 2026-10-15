@@ -201,6 +201,7 @@ describe("a session read that ends without an answer", () => {
     await act(async () => { answerUnreadably(socket) })
     await settle()
 
+    expect(screen.queryByRole("heading", { name: "Machines" })).toBeNull()
     await user.click(within(failedRead()).getByRole("button", { name: "Open the machine" }))
     await screen.findByRole("heading", { name: "Machines" })
   })
@@ -218,7 +219,13 @@ describe("a session read that ends without an answer", () => {
     expect(failedRead().textContent).not.toMatch(/off in a phone or tablet tab/u)
     await user.click(retry)
     expect(pendingRequest(socket, "session.activate").params).toMatchObject({ sessionId: other.id })
-    expect(within(failedRead()).getByRole("button", { name: "Open the machine" })).toBeTruthy()
+    await act(async () => { answerUnreadably(socket) })
+    await settle()
+    expect(failedRead().textContent).toContain("2 attempts")
+
+    expect(screen.queryByRole("heading", { name: "Machines" })).toBeNull()
+    await user.click(within(failedRead()).getByRole("button", { name: "Open the machine" }))
+    await screen.findByRole("heading", { name: "Machines" })
   })
 })
 
