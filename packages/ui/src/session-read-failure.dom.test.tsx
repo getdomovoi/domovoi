@@ -99,6 +99,38 @@ function answerWithoutEnvelope(socket: FakeWebSocket) {
 
 const failedRead = () => screen.getByRole("region", { name: "Could not read this session" })
 
+// A desktop bridge whose notification clicks the test makes.
+function notifyingBridge() {
+  let listener: ((sessionId: string) => void) | undefined
+  const windowBridge: DesktopWindowBridge = {
+    platform: "darwin",
+    getRpcEndpoint: async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "t" }),
+    captureAnnotation: async () => { throw new Error("not in this test") },
+    notify: async () => true,
+    onNotificationActivate: (next) => {
+      listener = next
+      return () => { listener = undefined }
+    },
+    openDirectory: async () => ({ status: "cancelled" as const }),
+    readClipboardText: async () => "",
+    writeClipboardText: async () => true,
+    openExternal: async () => true,
+    onDeepLink: () => () => {},
+    getWindowDecoration: async () => "domovoi",
+    setWindowDecoration: async () => true,
+    minimize: () => {},
+    maximize: () => {},
+    close: () => {},
+  }
+  return {
+    windowBridge,
+    activate: (sessionId: string) => {
+      if (!listener) throw new Error("The shell has not subscribed to notification clicks")
+      listener(sessionId)
+    },
+  }
+}
+
 describe("a session read that ends without an answer", () => {
   it("draws the failed-read state for the asked-for session when the connection closes mid-read", async () => {
     const { user, socket, other } = await openShell()
@@ -259,39 +291,36 @@ describe("a session read that ends without an answer", () => {
   // A notification can open a session while Machines is on screen. The thread
   // column is not drawn there, so the alert still says the read failed.
   it("keeps the alert when the thread column is not on screen", async () => {
-    let activateFromNotification: ((sessionId: string) => void) | undefined
-    const windowBridge: DesktopWindowBridge = {
-      platform: "darwin",
-      getRpcEndpoint: async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "t" }),
-      captureAnnotation: async () => { throw new Error("not in this test") },
-      notify: async () => true,
-      onNotificationActivate: (listener) => {
-        activateFromNotification = listener
-        return () => { activateFromNotification = undefined }
-      },
-      openDirectory: async () => ({ status: "cancelled" as const }),
-      readClipboardText: async () => "",
-      writeClipboardText: async () => true,
-      openExternal: async () => true,
-      onDeepLink: () => () => {},
-      getWindowDecoration: async () => "domovoi",
-      setWindowDecoration: async () => true,
-      minimize: () => {},
-      maximize: () => {},
-      close: () => {},
-    }
-    const { user, socket, other } = await openShell({ windowBridge })
+    const notifications = notifyingBridge()
+    const { user, socket, other } = await openShell({ windowBridge: notifications.windowBridge })
     await pickSession(user, other.title)
     await act(async () => { answerUnreadably(socket) })
     await settle()
     await user.click(within(failedRead()).getByRole("button", { name: "Open the machine" }))
     await screen.findByRole("heading", { name: "Machines" })
 
-    await act(async () => { activateFromNotification?.(other.id) })
+    await act(async () => { notifications.activate(other.id) })
     await act(async () => { answerUnreadably(socket) })
     await settle()
 
     expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
+  })
+
+  // A notification can name a session this snapshot does not list, such as
+  // one from a project the window has since left. The thread column draws a
+  // failed read only for a listed session, so the alert says this one.
+  it("keeps the alert for a session the snapshot does not list", async () => {
+    const notifications = notifyingBridge()
+    const { socket } = await openShell({ windowBridge: notifications.windowBridge })
+
+    await act(async () => { notifications.activate("session-from-another-project") })
+    expect(pendingRequest(socket, "session.activate").params).toMatchObject({ sessionId: "session-from-another-project" })
+    await act(async () => { answerUnreadably(socket) })
+    await settle()
+
+    expect(screen.queryByRole("region", { name: "Could not read this session" })).toBeNull()
+    expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
+    expect(screen.getByText(previousLine)).toBeTruthy()
   })
 
   it("opens the Machines view from Open the machine", async () => {

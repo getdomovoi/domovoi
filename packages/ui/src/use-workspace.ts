@@ -384,8 +384,12 @@ export function useWorkspace(
     } catch (cause) {
       if (generation !== activationGeneration.current) throw cause
       // A connection this hook already replaced closed under its own request:
-      // that is a change of target, not a failed read.
-      const outcome = isCurrentConnection(clientRef.current, client) ? sessionReadOutcome(cause) : undefined
+      // that is a change of target, not a failed read. The thread column draws
+      // a failed read only for a session the snapshot lists; one it does not
+      // list (a notification from a project the window has left) stays the
+      // caller's to say.
+      const listed = snapshotRef.current?.sessions.some((session) => session.id === sessionId) ?? false
+      const outcome = listed && isCurrentConnection(clientRef.current, client) ? sessionReadOutcome(cause) : undefined
       if (!outcome) {
         // A refusal is the daemon's answer, so the read did not fail. A
         // request that never left (no open connection) changes nothing.
