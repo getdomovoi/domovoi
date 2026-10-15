@@ -98,9 +98,9 @@ const bridge: DesktopWindowBridge = {
   close: () => {},
 }
 
-async function openDesktop() {
+async function openDesktop(windowBridge: DesktopWindowBridge = bridge) {
   const { WorkspaceShell } = await import("./workspace-shell")
-  render(<WorkspaceShell clientKind="desktop" windowBridge={bridge} />)
+  render(<WorkspaceShell clientKind="desktop" windowBridge={windowBridge} />)
   await act(async () => { completeHandshake(harness.socket(0), workspaceSnapshot()) })
   await settle()
 }
@@ -236,4 +236,41 @@ it.each([
   await settle()
   expect(screen.queryByRole("dialog")).toBeNull()
   expect(document.activeElement).toBe(screen.getByRole("button", { name: "First-run setup" }))
+})
+
+// Setup covers the whole window, its header where the shell's titlebar was.
+// With Domovoi's own decoration on macOS the window buttons sit over that row,
+// so the header starts past them by the inset the desktop derived, as the
+// titlebar does (window-decoration.dom.test.tsx). The row drags the window and
+// every control in it opts out, as in the titlebar (app-bar-drag.dom.test.tsx).
+const dragRowOf = (element: HTMLElement) => element.closest<HTMLElement>(".electron-drag")
+const titlebarControls = (row: HTMLElement | null) => [...row?.querySelectorAll("button, a[href], input, select, textarea, [role='button']") ?? []]
+
+it("starts the setup header and its loading frame past the macOS window buttons, and drags the window from them", async () => {
+  await openDesktop({ ...bridge, titlebarLeadingInset: 84, getWindowDecoration: async () => "domovoi" })
+  await act(async () => { await chunk.requested })
+  expect(dragRowOf(screen.getByText("Domovoi setup"))?.style.paddingLeft).toBe("84px")
+
+  await arrive()
+  await screen.findByRole("dialog", { name: /Connect an agent on/ })
+  const header = dragRowOf(screen.getByRole("button", { name: "Skip for now" }))
+  expect(header?.style.paddingLeft).toBe("84px")
+  expect(header?.textContent).toContain("Setup")
+  expect(titlebarControls(header).length).toBeGreaterThan(0)
+  for (const control of titlebarControls(header)) {
+    expect(control.closest(".electron-no-drag"), `${control.textContent} inherits the drag region`).not.toBeNull()
+  }
+})
+
+it.each([
+  ["on Linux", { ...bridge, platform: "linux" as const, titlebarLeadingInset: 0, getWindowDecoration: async () => "domovoi" as const }],
+  ["under the macOS system frame", { ...bridge, titlebarLeadingInset: 84, getWindowDecoration: async () => "system" as const }],
+])("reserves no inset in the setup header %s", async (_label, windowBridge) => {
+  await openDesktop(windowBridge)
+  await act(async () => { await chunk.requested })
+  expect(dragRowOf(screen.getByText("Domovoi setup"))?.style.paddingLeft).toBe("")
+
+  await arrive()
+  await screen.findByRole("dialog", { name: /Connect an agent on/ })
+  expect(dragRowOf(screen.getByRole("button", { name: "Skip for now" }))?.style.paddingLeft).toBe("")
 })
