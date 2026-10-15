@@ -10,7 +10,7 @@ import { sessionPreviewBuildBasis } from "./artifacts"
 import { fleetListingOverflow } from "./fleet-overflow"
 import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 import { createRelayPinStore, reconcileRelayPin, type RelayPinStorage } from "./relay-pin"
-import { SessionReadError, sessionReadLogAttempts, sessionReadOutcome, type SessionReadFailure } from "./session-read"
+import { nextSessionReadId, SessionReadError, sessionReadLogAttempts, sessionReadOutcome, type SessionReadFailure } from "./session-read"
 
 
 type WorkspaceSnapshotState = {
@@ -398,7 +398,7 @@ export function useWorkspace(
             : { ...current, retrying: false })
         throw cause
       }
-      const attempt = { startedAt, endedAt: new Date(), outcome }
+      const attempt = { id: nextSessionReadId(), startedAt, endedAt: new Date(), outcome }
       setSessionRead((current) => {
         const earlier = current?.target === target && current.sessionId === sessionId ? current : undefined
         return {
@@ -409,7 +409,7 @@ export function useWorkspace(
           retrying: false,
         }
       })
-      throw new SessionReadError(outcome, cause)
+      throw new SessionReadError(outcome, cause, attempt.id)
     }
   }, [target, updateSnapshotFrom])
   // The read can land after this client stopped waiting for it: the daemon

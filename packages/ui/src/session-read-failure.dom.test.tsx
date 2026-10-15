@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
+import { activationAlert, alertDrawnInThread, SessionReadError, type SessionReadFailure } from "./session-read"
 import {
   completeHandshake,
   fail,
@@ -306,6 +307,21 @@ describe("a session read that ends without an answer", () => {
     expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
   })
 
+  // A notification can re-open the session already open. The thread column
+  // keeps that session's thread, so the alert says its read failed.
+  it("keeps the alert when the session that failed is the one already open", async () => {
+    const notifications = notifyingBridge()
+    const { socket, active } = await openShell({ windowBridge: notifications.windowBridge })
+
+    await act(async () => { notifications.activate(active.id) })
+    await act(async () => { answerUnreadably(socket) })
+    await settle()
+
+    expect(screen.queryByRole("region", { name: "Could not read this session" })).toBeNull()
+    expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
+    expect(screen.getByText(previousLine)).toBeTruthy()
+  })
+
   // A notification can name a session this snapshot does not list, such as
   // one from a project the window has since left. The thread column draws a
   // failed read only for a listed session, so the alert says this one.
@@ -354,6 +370,50 @@ describe("a session read that ends without an answer", () => {
     expect(screen.queryByRole("heading", { name: "Machines" })).toBeNull()
     await user.click(within(failedRead()).getByRole("button", { name: "Open the machine" }))
     await screen.findByRole("heading", { name: "Machines" })
+  })
+})
+
+// The alert stays quiet only while the thread column draws the very read it
+// reports, matched by the read's id as the shell renders. Any read the column
+// does not draw falls back to the alert.
+describe("whether the thread column already says an activation failed", () => {
+  const unreadable = { kind: "unreadable" } as const
+  const drawn = (sessionId: string, ids: readonly number[]): SessionReadFailure => ({
+    sessionId,
+    count: ids.length,
+    recent: ids.map((id) => ({ id, startedAt: new Date(0), endedAt: new Date(0), outcome: unreadable })),
+    retrying: false,
+  })
+  const failedRead = (readId: number) => activationAlert(new SessionReadError(unreadable, new Error("Daemon returned an invalid RPC result"), readId), "The session could not be opened")
+
+  it("is quiet while the column draws that same read", () => {
+    const alert = failedRead(7)
+    expect(alertDrawnInThread(alert, alert.message, drawn("session-a", [6, 7]))).toBe(true)
+  })
+
+  it("speaks when the column draws no failed read", () => {
+    const alert = failedRead(7)
+    expect(alertDrawnInThread(alert, alert.message, null)).toBe(false)
+  })
+
+  // The window moved to another machine before the home read failed: the
+  // column draws that machine's failure for the same session id, not this one.
+  it("speaks when the column draws a different read of the same session", () => {
+    const alert = failedRead(7)
+    expect(alertDrawnInThread(alert, alert.message, drawn("session-a", [3]))).toBe(false)
+  })
+
+  // A later Try again replaced the read the alert reported.
+  it("speaks when the drawn read's latest attempt is not the one it reports", () => {
+    const alert = failedRead(7)
+    expect(alertDrawnInThread(alert, alert.message, drawn("session-a", [7, 8]))).toBe(false)
+  })
+
+  it("speaks for a failure that is not a failed read, and for another message", () => {
+    const refused = activationAlert(new Error("Session does not exist"), "The session could not be opened")
+    expect(alertDrawnInThread(refused, refused.message, drawn("session-a", [7]))).toBe(false)
+    const alert = failedRead(7)
+    expect(alertDrawnInThread(alert, "Another failure", drawn("session-a", [7]))).toBe(false)
   })
 })
 

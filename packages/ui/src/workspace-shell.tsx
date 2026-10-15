@@ -153,7 +153,7 @@ import { AppBar, useUsageToday } from "./app-bar"
 import { ArchiveConfirmBody, Thread, archiveSessionDescription, freshStartPanel, moveDialog } from "./thread"
 import { HandheldTabMachine, offInHandheldTab } from "./handheld-tab"
 import { FailedSessionRead } from "./failed-read-state"
-import { activationAlert } from "./session-read"
+import { activationAlert, alertDrawnInThread, type ActivationAlert } from "./session-read"
 
 export { CheckpointThreadItem, SessionReadOnlyNotice, SessionRow, type SessionTransferReceipt, Thread, archiveSessionDescription, providerFailureActionCopy, sessionStatusMeaning, sessionTransferReceiptText } from "./thread"
 
@@ -713,6 +713,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setWorkspaceUi((current) => ({ ...current, surface: nextSurface }))
   }
   const [workspaceError, setWorkspaceError] = useState("")
+  // The last session open that failed, for the alert: it stays quiet only
+  // while the thread column draws that same read (alertDrawnInThread).
+  const [activationFailure, setActivationFailure] = useState<ActivationAlert | null>(null)
   // Once the shell has painted, the secondary surfaces are fetched while the
   // browser is idle, so opening one rarely shows the loading frame at all.
   useEffect(() => prefetchWhenIdle(lazySurfaces), [])
@@ -777,12 +780,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     scope: StartScope
   } | null>(null)
   const startRefusals = useRef(0)
-  // Whether the thread column, where a failed session read is drawn, is on
-  // screen. An open that fails anywhere else still says so in the alert.
-  const threadColumnShown = useRef(false)
-  useEffect(() => {
-    threadColumnShown.current = surface === "workspace" && !startRefusal
-  }, [startRefusal, surface])
   // Advances on every scope change and never goes back. The effect that
   // advances it also retires the card, so a result that lands before it runs
   // is cleared with the card.
@@ -883,7 +880,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const activateVisibleSession = (sessionId: string) => {
     setWorkspaceError("")
     void activateSession(sessionId).catch((cause: unknown) => {
-      setWorkspaceError(activationAlert(cause, "The session could not be opened", threadColumnShown.current))
+      const alert = activationAlert(cause, "The session could not be opened")
+      setActivationFailure(alert)
+      setWorkspaceError(alert.message)
     })
   }
   // Opening a session means showing its thread. Activation alone leaves whatever
@@ -1405,7 +1404,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       setLauncherTransfer({ sessionId, machineId, sourceMachineId, opened: false })
       void activateSession(sessionId).catch((cause: unknown) => {
         setLauncherTransfer((current) => current?.sessionId === sessionId ? null : current)
-        setWorkspaceError(activationAlert(cause, "The session could not be opened", threadColumnShown.current))
+        const alert = activationAlert(cause, "The session could not be opened")
+        setActivationFailure(alert)
+        setWorkspaceError(alert.message)
       })
     },
     currentMachineId: attached?.machineId ?? snapshot?.machine.id,
@@ -1502,6 +1503,11 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // A session read that ended without an answer: the thread column draws it
   // in place of the thread (failed-read-state.tsx).
   const sessionReadFailure = (attached ? remote : home).sessionReadFailure
+  // The failed read the thread column draws in this render: only the
+  // workspace view draws the column, and a start refusal takes its place. The
+  // alert stays quiet only for that same read.
+  const drawnSessionRead = surface === "workspace" && !startRefusal ? sessionReadFailure : null
+  const alertMessage = alertDrawnInThread(activationFailure, workspaceError, drawnSessionRead) ? "" : workspaceError
   const layoutKey = !dockCollapsed && dockPinned ? "drawer.dock" : "drawer.thread"
   const defaultLayout = layouts[layoutKey]
   const shellTitle = launcherMode
@@ -1575,7 +1581,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     return windowBridge.onNotificationActivate((sessionId) => {
       setWorkspaceError("")
       void activateSession(sessionId).catch((cause: unknown) => {
-        setWorkspaceError(activationAlert(cause, "The session could not be opened", threadColumnShown.current))
+        const alert = activationAlert(cause, "The session could not be opened")
+        setActivationFailure(alert)
+        setWorkspaceError(alert.message)
       })
     })
   }, [activateSession, windowBridge])
@@ -1601,7 +1609,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     deepLinkRoutingRef.current = true
     setWorkspaceError("")
     void activateSession(sessionId).catch((cause: unknown) => {
-      setWorkspaceError(activationAlert(cause, "The linked session could not be opened", threadColumnShown.current))
+      const alert = activationAlert(cause, "The linked session could not be opened")
+      setActivationFailure(alert)
+      setWorkspaceError(alert.message)
     }).finally(() => {
       deepLinkRoutingRef.current = false
       removeLink()
@@ -2176,7 +2186,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             <ThreadSkeleton from={attached?.machineId ?? endpointUrl} />
           </main>
         )}
-        {workspaceError || visibleStateRecovery ? (
+        {alertMessage || visibleStateRecovery ? (
           <div className="absolute bottom-3 left-3 z-50 flex max-w-sm flex-col gap-2">
             {visibleStateRecovery ? (
               <StateRecoveryNotice
@@ -2185,14 +2195,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 className="w-auto shadow-[var(--shadow-md)]"
               />
             ) : null}
-            {workspaceError ? (
+            {alertMessage ? (
               <Alert
                 variant="destructive"
                 className="w-auto shadow-[var(--shadow-md)]"
               >
                 <CircleStopIcon />
                 <AlertTitle>Workspace action failed</AlertTitle>
-                <AlertDescription>{workspaceError}</AlertDescription>
+                <AlertDescription>{alertMessage}</AlertDescription>
               </Alert>
             ) : null}
           </div>
