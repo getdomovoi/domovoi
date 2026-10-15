@@ -210,3 +210,37 @@ it("carries the effort level across a provider pick by its word", async () => {
   await waitFor(() => expect(onCreateSession).toHaveBeenCalledTimes(1))
   expect(onCreateSession).toHaveBeenCalledWith("Fix the build", expect.objectContaining({ provider: "codex", reasoning: "medium" }))
 })
+
+// M1 walk F4. A harness that could not report its models is named, with the
+// reason the daemon gave, and the read can be asked for again.
+it("says which harness could not report its models, with the reason, and reads again on request", async () => {
+  const user = userEvent.setup()
+  const onListModels = vi.fn()
+    .mockRejectedValueOnce(new Error("Provider request failed"))
+    .mockResolvedValueOnce([{
+      provider: "claude-code",
+      id: "opus",
+      displayName: "Opus",
+      description: "",
+      supportedReasoningEfforts: [],
+      isDefault: true,
+    }])
+  render(<LauncherDialog
+    mode="session"
+    defaultProviderId="claude-code"
+    defaultPermissionMode="build"
+    onOpenChange={vi.fn()}
+    onOpenProject={vi.fn(async () => {})}
+    onCreateSession={vi.fn(async () => {})}
+    onListModels={onListModels}
+    providers={[{ id: "claude-code", command: "claude", status: "ready", sessionCapable: true, version: "2.1.301" }]}
+  />)
+
+  expect(await screen.findByText("Domovoi could not read the model list from Claude Code. Provider request failed.")).toBeTruthy()
+  expect(screen.getByRole("button", { name: "Model" }).getAttribute("aria-describedby")).toBe("launcher-model-error")
+  await user.click(screen.getByRole("button", { name: "Try again" }))
+  await screen.findByText("Opus")
+  expect(onListModels).toHaveBeenNthCalledWith(2, "claude-code")
+  expect(screen.queryByText(/could not read the model list/)).toBeNull()
+  expect(screen.queryByRole("button", { name: "Try again" })).toBeNull()
+})

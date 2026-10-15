@@ -30,6 +30,7 @@ import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "./c
 import { launcherContentClassName, launcherTitle, type LauncherMode } from "./launcher-frame"
 import { startOpenerRef } from "./start-handoff"
 import {
+  modelReadFailure,
   preferredSessionProvider,
   providerCanStartSession,
   providerDisplayName,
@@ -154,6 +155,9 @@ export function LauncherDialog({
   const [models, setModels] = useState<ProviderModel[]>([])
   const [modelsPending, setModelsPending] = useState(false)
   const [modelsError, setModelsError] = useState("")
+  // The last model read failed, as opposed to answering with nothing, so it
+  // can be asked for again.
+  const [modelsReadFailed, setModelsReadFailed] = useState(false)
   const modelRequest = useRef(0)
   // The provider whose scale the runtime's reasoning id belongs to, set only
   // while a provider pick waits for its models.
@@ -181,6 +185,7 @@ export function LauncherDialog({
     ) ?? preferredSessionProvider(providersRef.current)
     if (!provider) {
       setModels([])
+      setModelsReadFailed(false)
       setModelsError("Domovoi found no provider CLI on the path it searched")
       return
     }
@@ -195,6 +200,7 @@ export function LauncherDialog({
     setModels([])
     setModelsPending(true)
     setModelsError("")
+    setModelsReadFailed(false)
     void onListModels(provider.id).then(
       (nextModels) => {
         if (request !== modelRequest.current) return
@@ -205,7 +211,8 @@ export function LauncherDialog({
       },
       (cause: unknown) => {
         if (request === modelRequest.current) {
-          setModelsError(cause instanceof Error ? cause.message : "Models could not be loaded")
+          setModelsError(modelReadFailure(provider.id, cause))
+          setModelsReadFailed(true)
         }
       },
     ).finally(() => {
@@ -226,6 +233,7 @@ export function LauncherDialog({
     setModels([])
     setModelsPending(true)
     setModelsError("")
+    setModelsReadFailed(false)
     void onListModels(provider.id).then(
       (nextModels) => {
         if (request !== modelRequest.current) return
@@ -239,7 +247,8 @@ export function LauncherDialog({
       },
       (cause: unknown) => {
         if (request === modelRequest.current) {
-          setModelsError(cause instanceof Error ? cause.message : "Models could not be loaded")
+          setModelsError(modelReadFailure(provider.id, cause))
+          setModelsReadFailed(true)
         }
       },
     ).finally(() => {
@@ -387,7 +396,14 @@ export function LauncherDialog({
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
-                <FieldError id="launcher-model-error">{modelsError}</FieldError>
+                <div className="flex items-start justify-between gap-2">
+                  <FieldError id="launcher-model-error">{modelsError}</FieldError>
+                  {modelsReadFailed && selectedProvider && !modelsPending ? (
+                    <Button type="button" variant="outline" size="sm" disabled={pending} onClick={() => selectProvider(selectedProvider)}>
+                      Try again
+                    </Button>
+                  ) : null}
+                </div>
                 <ProviderReadinessList providers={providers} toolPath={toolPath} />
               </Field>
             ) : null}

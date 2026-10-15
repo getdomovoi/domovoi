@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from "react"
 
 import { FloatingSurface } from "./floating-surface"
 import { ProviderChoiceDialog } from "./provider-choice-dialog.js"
-import { providerCanStartSession, providerDisplayName, selectRuntimeModel } from "./runtime.js"
+import { modelReadFailure, providerCanStartSession, providerDisplayName, selectRuntimeModel } from "./runtime.js"
 import { StatusDot } from "./status-dot"
 import { cn } from "./lib/utils"
 
@@ -124,7 +124,7 @@ export function ModelPopover({
       },
       (cause: unknown) => {
         if (generation.current !== current) return
-        const note = cause instanceof Error ? cause.message : "Models could not be loaded"
+        const note = modelReadFailure(provider.id, cause)
         setCatalogs((previous) => ({ ...previous, [provider.id]: { status: "unavailable", note } }))
       },
     )))
