@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { performance } from "node:perf_hooks"
 import { dirname, join, sep } from "node:path"
 
-import { toolInventoryProviderSchema, toolInventorySchema, type ToolInventoryFile, type ToolInventoryProvider } from "@getdomovoi/protocol"
+import { toolInventoryGitFiltersSchema, toolInventoryProviderSchema, toolInventorySchema, type ToolInventoryFile, type ToolInventoryProvider } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { inventoryShellWords } from "./inventory-redaction.js"
@@ -46,6 +46,12 @@ const secrets = [
 function expectNoSecret(value: unknown): void {
   const text = JSON.stringify(value)
   for (const secret of secrets) expect(text).not.toContain(secret)
+}
+
+function expectNoGitFilters(value: unknown): void {
+  if (value === undefined) return
+  expect(toolInventoryGitFiltersSchema.safeParse(value).success).toBe(true)
+  expect(value).toMatchObject({ files: [], entries: [], omittedEntries: 0 })
 }
 
 describe("readRepositoryProviderConfig: Claude Code", () => {
@@ -2086,10 +2092,14 @@ describe("readRepositoryProviderConfig: git filters", () => {
   it("reads past Git config Git itself cannot read, and lists no filter", async () => {
     const plain = await scratch()
     await put(plain, ".claude/settings.json", settings)
+    const before = await readRepositoryProviderConfig(plain, { heldBack: true })
+    expect(before.gitFilters).toBeUndefined()
     await put(plain, ".git", "gitdir: ./missing\n")
     expect(() => execFileSync("git", ["-C", plain, "config", "--list"], { stdio: "pipe" })).toThrow()
     const read = await readRepositoryProviderConfig(plain, { heldBack: true })
-    expect(read.gitFilters).toBeUndefined()
+    // Git versions differ in whether this is a non-repository or an unreadable
+    // config. Either representation must list no filters or files.
+    expectNoGitFilters(read.gitFilters)
     // The .git file itself is read as Codex reads it: a main checkout that
     // cannot be found refuses trust, as it did before filters were covered.
     expect(read.trustRefusals).toEqual([{ provider: "codex", reason: "main-checkout-unknown", path: ".git" }])
