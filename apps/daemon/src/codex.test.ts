@@ -1519,6 +1519,9 @@ describe("CodexAppServerAdapter", () => {
     ["item/permissions/requestApproval", { itemId: "perm-1", cwd: "/worktree", permissions: { network: { enabled: true } } }, { result: { permissions: {} } }, "item/permissions/requestApproval", "Codex sent item/permissions/requestApproval"],
     ["item/tool/requestUserInput", { itemId: "ask-1", isBlocking: true, questions: [] }, { error: { code: -32601, message: "Domovoi does not handle item/tool/requestUserInput" } }, "item/tool/requestUserInput", "Codex sent item/tool/requestUserInput"],
     ["item/somethingNew/requestApproval", { itemId: "new-1", command: "rm -rf build", reason: "Clean the build" }, { error: { code: -32601, message: "Domovoi does not handle item/somethingNew/requestApproval" } }, "rm -rf build", "Clean the build"],
+    // A device-authenticated approval in the 0.162.1 schema: an MCP server's
+    // own request, declined and shown (ruling Q156 A).
+    ["mcpServer/elicitation/request", { itemId: "verify-1", serverName: "bank", mode: "openai/userVerification", title: "Verify", description: "Confirm the transfer", challenge: "c-1" }, { result: { action: "decline", content: null } }, "bank", "Message sent with the request, not checked by Domovoi: Confirm the transfer"],
   ] as const)("refuses %s visibly and tells Codex", async (method, params, answer, command, operation) => {
     const transport = new FakeTransport()
     const adapter = new CodexAppServerAdapter(() => transport)
@@ -1556,14 +1559,53 @@ describe("CodexAppServerAdapter", () => {
     await connecting
 
     transport.receive({ id: 8, method, params })
-    expect(transport.sent.at(-1)).toEqual({ id: 8, result: { decision: "denied" } })
+    // denied is a string in older Codex and an object with a rejection in
+    // 0.162.1; abort reads the same in both.
+    expect(transport.sent.at(-1)).toEqual({ id: 8, result: { decision: "abort" } })
     expect(events).toEqual([expect.objectContaining({ type: "policy-refused", threadId: "thread-1", itemId: "call-1", command, refusal: codexRequestRefusal })])
     await adapter.close()
   })
 
-  // Requests that ask nothing of the person get an error and no refusal:
-  // one that names no thread has no session to show it in, and the others
-  // are Codex asking the client for a service Domovoi does not offer.
+  it("stops Codex when a request it cannot show names no session", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({ id: 10, method: "item/somethingNew/requestApproval", params: { command: "rm -rf build" } })
+    expect(transport.sent.at(-1)).toEqual({ id: 10, error: { code: -32601, message: "Domovoi does not handle item/somethingNew/requestApproval" } })
+    expect(events).toEqual([{
+      type: "provider-disconnected",
+      reason: "Codex sent a request Domovoi cannot show and could not tie to a session (item/somethingNew/requestApproval). Domovoi refused it and stopped Codex.",
+    }])
+    expect(transport.closeCount).toBe(1)
+  })
+
+  it("bounds what a refusal quotes from the request", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({
+      id: 11,
+      method: "item/fileChange/requestApproval",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "patch-1", reason: "a".repeat(20_000), command: "b".repeat(40_000) },
+    })
+    const refusal = events.find((event) => event.type === "policy-refused")
+    expect(refusal?.type === "policy-refused" && refusal.reason.length).toBeLessThanOrEqual(1_024)
+    expect(refusal?.type === "policy-refused" && refusal.command.length).toBeLessThanOrEqual(4_096)
+    await adapter.close()
+  })
+
+  // Requests that ask nothing of the person, only the client for a service
+  // Domovoi does not offer, get an error and no refusal.
   it.each([
     ["attestation/generate", {}],
     ["currentTime/read", { threadId: "thread-1" }],
@@ -1654,12 +1696,18 @@ describe("CodexAppServerAdapter", () => {
     adapter.resolveApproval(57, "deny")
     declined(57)
 
-    // A server's own question is not an approval: no card and, until the
-    // follow-up that declines it (ruling Q156), no answer.
-    const sent = transport.sent.length
+    // A server's own question is not an approval: no card. It is declined
+    // (ruling Q156 A) and the session shows the refusal.
     ask(58, "github", undefined)
     expect(approvals()).toHaveLength(2)
-    expect(transport.sent).toHaveLength(sent)
+    declined(58)
+    expect(events.at(-1)).toEqual({
+      type: "policy-refused",
+      ...common,
+      command: "github",
+      reason: 'Message sent with the request, not checked by Domovoi: Allow the github MCP server to run tool "create_issue"?',
+      refusal: codexRequestRefusal,
+    })
     await adapter.close()
   })
 
@@ -1715,6 +1763,9 @@ describe("CodexAppServerAdapter", () => {
     ask(65, "github", { mode: "url", url: "https://example.test", elicitationId: "e-2" })
     declined(65)
     expect(events.filter((candidate) => candidate.type === "approval-requested")).toHaveLength(0)
+    // Never declined unseen: each decline shows as a refusal in the session.
+    expect(events.filter((candidate) => candidate.type === "policy-refused").map((candidate) => candidate.type === "policy-refused" && candidate.command))
+      .toEqual(["docs", "linear", "jira", "github", "github"])
     await adapter.close()
   })
 

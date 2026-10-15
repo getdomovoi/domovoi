@@ -957,12 +957,11 @@ export class CodexAppServerAdapter implements AgentAdapter {
         ...(typeof params.reason === "string" ? { reason: params.reason } : {}),
       })
     } else if (message.method === "mcpServer/elicitation/request" && message.id !== undefined) {
-      // A server's own question is not an approval and is left as before; a
-      // marked request that is not tied to one running call is declined.
+      // A marked request that is not tied to one running call, and a
+      // server's own question (ruling Q156 A), are declined and shown.
       const request = toolServerApproval(params, this.#toolServerCalls)
-      if (request === "not-approval") return
-      if (request === "decline") {
-        this.#transport?.send({ id: message.id, result: { action: "decline", content: null } })
+      if (request === "decline" || request === "not-approval") {
+        this.#refuseRequest(message.id, message.method, params)
         return
       }
       this.#toolServerApprovals.add(message.id)
@@ -1023,33 +1022,43 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   // A request Codex waits on that Domovoi does not show as a card is refused
-  // at once, so the turn does not wait on an answer that never comes. Codex
-  // is told; the session shows the refusal unless the request only asks the
-  // client for a service, or names no thread to show it in.
+  // at once, so the turn does not wait on an answer that never comes, and
+  // Codex is told. The session shows the refusal. A request that only asks
+  // the client for a service shows nothing; one that names no thread has no
+  // session to show it in, so Domovoi stops Codex, which every Codex session
+  // shows.
   #refuseRequest(id: number, method: string, params: Record<string, unknown>): void {
     const decline = Object.hasOwn(codexRequestDeclines, method) ? codexRequestDeclines[method] : undefined
     this.#transport?.send(decline === undefined
       ? { id, error: { code: -32601, message: `Domovoi does not handle ${method}` } }
       : { id, result: decline })
     if (codexServiceRequests.has(method)) return
-    const threadId = typeof params.threadId === "string" ? params.threadId
-      : typeof params.conversationId === "string" ? params.conversationId
+    const threadId = nonEmpty(params.threadId) ?? nonEmpty(params.conversationId)
+    if (!threadId) {
+      const transport = this.#transport
+      if (transport) {
+        this.#handleTransportFailure(transport, new Error(
+          `Codex sent a request Domovoi cannot show and could not tie to a session (${clipped(method, 256)}). Domovoi refused it and stopped Codex.`,
+        ))
+      }
+      return
+    }
+    const itemId = nonEmpty(params.itemId) ?? nonEmpty(params.callId)
+    const commandParts = Array.isArray(params.command) && params.command.every((part) => typeof part === "string")
+      ? nonEmpty(params.command.join(" "))
       : undefined
-    if (!threadId) return
-    const itemId = typeof params.itemId === "string" ? params.itemId
-      : typeof params.callId === "string" ? params.callId
-      : undefined
-    const command = typeof params.command === "string" && params.command.trim() ? params.command
-      : Array.isArray(params.command) && params.command.length > 0 && params.command.every((part) => typeof part === "string")
-        ? params.command.join(" ")
-        : method
+    const command = nonEmpty(params.command) ?? commandParts ?? nonEmpty(params.serverName) ?? method
+    // An MCP server writes its own message: quoted as unchecked, as on a card.
+    const message = nonEmpty(params.message) ?? nonEmpty(params.description)
+    const reason = nonEmpty(params.reason)
+      ?? (message === undefined ? `Codex sent ${method}` : `Message sent with the request, not checked by Domovoi: ${clipped(message, toolServerMessageLength)}`)
     this.#emit({
       type: "policy-refused",
       threadId,
       ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
       ...(itemId ? { itemId } : {}),
-      command,
-      reason: typeof params.reason === "string" && params.reason.trim() ? params.reason : `Codex sent ${method}`,
+      command: clipped(command, refusalCommandLength),
+      reason: clipped(reason, refusalReasonLength),
       refusal: codexRequestRefusal,
     })
   }
@@ -1076,11 +1085,26 @@ const codexServiceRequests = new Set(["account/chatgptAuthTokens/refresh", "atte
 // The refusal each approval request Domovoi does not show takes, in that
 // request's own response shape (codex-cli 0.162.1 app-server schema). Any
 // other request is answered with a JSON-RPC error.
+// The older requests take abort: their denied answer changed from a string to
+// an object that carries a rejection, and abort is the same in both.
 const codexRequestDeclines: Record<string, Record<string, unknown>> = {
   "item/fileChange/requestApproval": { decision: "decline" },
   "item/permissions/requestApproval": { permissions: {} },
-  execCommandApproval: { decision: "denied" },
-  applyPatchApproval: { decision: "denied" },
+  "mcpServer/elicitation/request": { action: "decline", content: null },
+  execCommandApproval: { decision: "abort" },
+  applyPatchApproval: { decision: "abort" },
+}
+
+// Bounds for what a refusal quotes, within the thread item's limits.
+const refusalCommandLength = 4_096
+const refusalReasonLength = 1_024
+
+function nonEmpty(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined
+}
+
+function clipped(text: string, length: number): string {
+  return redactInventoryText(text.slice(0, 8 * length), length)
 }
 
 export const codexRequestRefusal = {

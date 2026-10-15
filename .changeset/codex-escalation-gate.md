@@ -15,6 +15,8 @@ outside the sandbox, so an allowed write failed with "Operation not permitted" a
 could not read the worktree at all. The sandbox now refuses every entry of `~/.domovoi` except
 `worktrees`, and the secret file patterns in every session worktree.
 
-A Codex request Domovoi does not show as a card (a file change, a permissions grant, a question, the
-older approval requests, or one it does not know) is refused at once, Codex is told, and the session
-shows the refusal in any mode. Before, Domovoi left such a request unanswered.
+A Codex request Domovoi does not show as a card (a file change, a permissions grant, a question, an
+MCP server's own request, the older approval requests, or one it does not know) is refused at once,
+Codex is told, and the session shows the refusal in any mode. Before, Domovoi left most of these
+unanswered and declined a tool server request it could not tie to a running call without showing
+it. A refused request that names no session stops Codex, which every Codex session shows.
