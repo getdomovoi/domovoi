@@ -1,6 +1,5 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react"
-import { KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native"
-import { useSafeAreaInsets } from "react-native-safe-area-context"
+import { Modal, Platform, Pressable, TextInput, View } from "react-native"
 
 import { threadFollowState, type ApprovalDecision, type ClientAccess, type PermissionMode, type QueuedSessionSend } from "@getdomovoi/protocol"
 
@@ -20,6 +19,7 @@ import { Card, PressableCard } from "../components/ui/card"
 import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
+import { useKeyboardLift } from "../lib/use-keyboard-lift"
 import type { ArtifactRow } from "../artifact-rows"
 import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
 import type { Attachment, ModelImages } from "../attachments"
@@ -329,12 +329,8 @@ export function PolicyRefusalCards({ refusal }: {
   )
 }
 
-export function keyboardAvoidance(platform: string, top: number) {
-  return {
-    behavior: platform === "ios" ? "padding" as const : undefined,
-    keyboardVerticalOffset: top,
-  }
-}
+// Frame 12 leaves this much between the composer and the keyboard.
+const keyboardGap = 8
 
 const queueLabels: Record<QueuedSessionSend["state"], string> = {
   waiting: "Waiting for the next turn",
@@ -769,18 +765,16 @@ export function SessionScreen({
     if (delta > 0 && !atEnd) setUnseen((count) => count + delta)
   }, [atEnd, detail.entries.length, detail.id])
   const follow = threadFollowState({ atBottom: atEnd, unseen, gated: Boolean(approvalId) })
-  // The screen sits inside the safe area, so the keyboard's height is measured
-  // from a frame that starts below the status bar. Without the offset the
-  // composer is lifted short by exactly that much and the keyboard covers its
-  // bottom rows.
-  const insets = useSafeAreaInsets()
-  const keyboard = keyboardAvoidance(Platform.OS, insets.top)
+  // The composer floats, absolutely positioned, so padding a keyboard-avoiding
+  // parent never moved it: the thread shrank and the composer stayed under the
+  // keyboard (F13). It is lifted by the keyboard's reach instead, measured in
+  // window coordinates, and the thread pads by its footprint as before. The
+  // screen's bottom edge is the window's, so the home-indicator inset sits
+  // under the keyboard and is not added.
+  const lift = useKeyboardLift(Platform.OS)
+  const composerBottom = lift > 0 ? lift + keyboardGap : composerBottomInset
   return (
-    <KeyboardAvoidingView
-      className="flex-1 bg-background"
-      behavior={keyboard.behavior}
-      keyboardVerticalOffset={keyboard.keyboardVerticalOffset}
-    >
+    <View className="flex-1 bg-background">
       <View className="flex-row items-center gap-2.5 px-3.5 pb-3 pt-1.5">
         <Pressable
           accessibilityRole="button"
@@ -970,7 +964,7 @@ export function SessionScreen({
           if (plan) setPlanOpen(true)
         }}
         onFocusChange={onComposerFocusChange}
-        bottomInset={composerBottomInset}
+        bottomInset={composerBottom}
         onOpenAttach={() => setAttachOpen(true)}
         onRemoveAttachment={onRemoveAttachment}
         onRemoveAttachments={onRemoveAttachments}
@@ -986,6 +980,6 @@ export function SessionScreen({
         onTakePhoto={() => { setAttachOpen(false); onTakePhoto() }}
         onClose={() => setAttachOpen(false)}
       />
-    </KeyboardAvoidingView>
+    </View>
   )
 }
