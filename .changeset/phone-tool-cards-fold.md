@@ -14,3 +14,9 @@ unchanged.
 
 The composer no longer clips its placeholder while a turn runs. The send hint sits on its own line
 under the input instead of beside it.
+
+On iOS the composer rides above the keyboard. It is a floating bar, and the padding a
+keyboard-avoiding view adds never moved it, so the thread shrank while the composer stayed under
+the keyboard. The session screen now lifts it by the keyboard's reach, and the thread pads by the
+bar's new footprint so a reader at the bottom keeps the latest content in view. Android is
+unchanged.

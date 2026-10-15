@@ -927,6 +927,11 @@
       "id": "composer.keyboard",
       "since": "2026-10-15",
       "note": "F8 (walk 2026-10-15, task 107): at rest the pill laid the running-turn hint beside the input and clipped the placeholder. A send hint now stacks the composer into frame 12's card and sits on its own line under the input row with the info dot, as frame 12 draws it; frame 11's pill draws no hint, and the hint is kept because it is a fact about what Send will do. The Skills row still waits for focus. Render tests only; a real device check is owed to fetzy"
+    },
+    {
+      "id": "composer.keyboard",
+      "since": "2026-10-15",
+      "note": "F13 (walk 2026-10-15, task 107): on the iPhone the keyboard covered the composer, because the composer is an absolutely positioned floating bar and a keyboard-avoiding view's padding does not move it. The session screen now lifts the bar by the keyboard's reach plus frame 12's 8 point gap, and the thread pads by the bar's footprint, so the composer rides above the keyboard as frame 12 draws it. iOS only: Android resizes the window for the keyboard and is unchanged and unchecked. Render tests only; a real device check is owed to fetzy"
     }
   ],
   "scriptBacklog": {
