@@ -1,36 +1,53 @@
 import { useEffect, useState } from "react"
 import { Keyboard, useWindowDimensions, type KeyboardEvent } from "react-native"
 
-// How far the keyboard reaches up into the window, in points, or 0 while it is
-// down. A floating bar (the composer) is absolutely positioned, and padding
-// added under its parent does not move an absolutely positioned child, so a
-// KeyboardAvoidingView left the composer behind the keyboard while the thread
-// above it shrank (F13, walk 2026-10-15). The screen lifts the bar by this
-// much instead, and the thread pads by the bar's footprint as before.
+// How far the keyboard reaches up from the window's bottom edge, in points,
+// or 0 while it is down. A floating bar (the composer) is absolutely
+// positioned, and the padding a KeyboardAvoidingView adds does not move an
+// absolutely positioned child, so the composer stayed under the keyboard while
+// the thread above it shrank (F13, walk 2026-10-15). The session screen lifts
+// the bar by this much while the composer has the keyboard.
 //
-// iOS only. iOS overlays the keyboard on a window that keeps its size; the
-// will- events arrive before the keyboard moves, so the bar rides up with it.
-// Android resizes the window for the keyboard (expo's default), so a bar at
-// the window's bottom already sits above it; lifting it again would double the
-// gap. That platform is not changed here and has not been checked on a device.
-export function keyboardOverlap(event: KeyboardEvent, windowHeight: number): number {
+// iOS overlays the keyboard on a window that keeps its size and reports where
+// the keyboard's top lands in window coordinates; the will- events arrive
+// before the keyboard moves, so the bar is scheduled to move with it.
+//
+// Android draws edge to edge (app.json edgeToEdgeEnabled), so the window runs
+// under the navigation bar and is not resized for the keyboard. React Native
+// reports the keyboard's height above the system bars, so the reach from the
+// window's bottom adds the navigation bar's inset. Android has only did-
+// events. Neither platform has been checked on a device for this change.
+export function keyboardReach(platform: string, event: KeyboardEvent, windowHeight: number, bottomInset: number): number {
   const { screenY, height } = event.endCoordinates
+  if (platform === "android") return height > 0 ? height + bottomInset : 0
   return Math.max(0, Math.min(height, windowHeight - screenY))
 }
 
-export function useKeyboardLift(platform: string): number {
+const events: Record<string, { show: readonly KeyboardEventName[], hide: KeyboardEventName }> = {
+  ios: { show: ["keyboardWillShow", "keyboardWillChangeFrame"], hide: "keyboardWillHide" },
+  android: { show: ["keyboardDidShow"], hide: "keyboardDidHide" },
+}
+
+type KeyboardEventName = "keyboardWillShow" | "keyboardWillChangeFrame" | "keyboardWillHide" | "keyboardDidShow" | "keyboardDidHide"
+
+export function useKeyboardReach(platform: string, bottomInset: number): number {
   const { height: windowHeight } = useWindowDimensions()
-  const [lift, setLift] = useState(0)
+  const [reach, setReach] = useState(0)
 
   useEffect(() => {
-    if (platform !== "ios") return undefined
+    const names = events[platform]
+    if (!names) return undefined
+    const move = (event: KeyboardEvent, next: number) => {
+      // Animates the layout this change causes on the keyboard's own curve.
+      if (platform === "ios") Keyboard.scheduleLayoutAnimation(event)
+      setReach(next)
+    }
     const subscriptions = [
-      Keyboard.addListener("keyboardWillShow", (event) => setLift(keyboardOverlap(event, windowHeight))),
-      Keyboard.addListener("keyboardWillChangeFrame", (event) => setLift(keyboardOverlap(event, windowHeight))),
-      Keyboard.addListener("keyboardWillHide", () => setLift(0)),
+      ...names.show.map((name) => Keyboard.addListener(name, (event) => move(event, keyboardReach(platform, event, windowHeight, bottomInset)))),
+      Keyboard.addListener(names.hide, (event) => move(event, 0)),
     ]
     return () => { for (const subscription of subscriptions) subscription.remove() }
-  }, [platform, windowHeight])
+  }, [platform, windowHeight, bottomInset])
 
-  return lift
+  return reach
 }

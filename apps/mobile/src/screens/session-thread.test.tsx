@@ -78,10 +78,15 @@ function keyboardEvents() {
     handlers.set(name, [...(handlers.get(name) ?? []), handler])
     return real(name as "keyboardWillShow", handler)
   }) as typeof Keyboard.addListener)
+  const schedule = jest.spyOn(Keyboard, "scheduleLayoutAnimation").mockImplementation(() => {})
   const emit = async (name: string, event: KeyboardEvent) => {
     await act(async () => { for (const handler of handlers.get(name) ?? []) handler(event) })
   }
-  return { spy, emit }
+  const restore = () => {
+    spy.mockRestore()
+    schedule.mockRestore()
+  }
+  return { emit, restore }
 }
 
 function keyboardAt(height: number): KeyboardEvent {
@@ -109,14 +114,26 @@ function composerBottom(): unknown {
   return (StyleSheet.flatten(composerBar().props.style as never) as { bottom?: unknown }).bottom
 }
 
+// A composer that can take a message, so it can be focused.
+async function drawWritable() {
+  const detail = sessionDetail(workspace(), "session-billing")
+  if (!detail) throw new Error("fixture needs the billing session")
+  return render(screenFor({ ...detail, sending: { can: true, hint: undefined } }))
+}
+
+async function focusComposer() {
+  await fireEvent(screen.getByLabelText("Reply to this session"), "focus")
+}
+
 describe("SessionScreen thread", () => {
   it("lifts the composer above the iOS keyboard and sets it back down when the keyboard goes", async () => {
     const keyboard = keyboardEvents()
     try {
-      await draw()
+      await drawWritable()
       const resting = composerBottom()
       expect(resting).toBe(metrics.insets.bottom)
 
+      await focusComposer()
       await keyboard.emit("keyboardWillShow", keyboardAt(336))
       // The keyboard's own height plus the gap frame 12 leaves above it; the
       // home-indicator inset sits under the keyboard and is not added.
@@ -128,7 +145,7 @@ describe("SessionScreen thread", () => {
       await keyboard.emit("keyboardWillHide", keyboardAt(0))
       expect(composerBottom()).toBe(resting)
     } finally {
-      keyboard.spy.mockRestore()
+      keyboard.restore()
     }
   })
 
@@ -138,7 +155,7 @@ describe("SessionScreen thread", () => {
     const keyboard = keyboardEvents()
     const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => {})
     try {
-      await draw()
+      await drawWritable()
       const thread = screen.getByTestId("thread")
       await fireEvent(thread, "layout", { nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } })
       await fireEvent(thread, "contentSizeChange", 390, 900)
@@ -147,6 +164,8 @@ describe("SessionScreen thread", () => {
       expect(padding()).toBe(64 + metrics.insets.bottom)
       scrollToEnd.mockClear()
 
+      await focusComposer()
+      await fireEvent(composerBar() as never, "layout", { nativeEvent: { layout: { x: 0, y: 0, width: 362, height: 64 } } })
       await keyboard.emit("keyboardWillShow", keyboardAt(336))
       // The thread pads by the composer's height plus where it now sits, so
       // its end stays above the lifted bar.
@@ -155,8 +174,44 @@ describe("SessionScreen thread", () => {
       expect(scrollToEnd).toHaveBeenCalledTimes(1)
     } finally {
       scrollToEnd.mockRestore()
-      keyboard.spy.mockRestore()
+      keyboard.restore()
     }
+  })
+
+  // Codex review round 2: a plan step's editor raises the keyboard too. The
+  // composer is not what is being typed into, so it stays down, and the
+  // screen keeps avoiding the keyboard for that editor as it did before.
+  it("leaves the composer down for a keyboard another input raised, and avoids it for that input", async () => {
+    const keyboard = keyboardEvents()
+    try {
+      await drawWritable()
+      const resting = composerBottom()
+      const window = Dimensions.get("window").height
+      const page = screen.getByTestId("session-screen")
+      await fireEvent(page, "layout", { persist: () => {}, nativeEvent: { layout: { x: 0, y: metrics.insets.top, width: 390, height: window - metrics.insets.top } } })
+      const avoided = () => (StyleSheet.flatten(screen.getByTestId("session-screen").props.style as never) as { paddingBottom?: number }).paddingBottom ?? 0
+
+      await keyboard.emit("keyboardWillShow", keyboardAt(336))
+      await keyboard.emit("keyboardWillChangeFrame", keyboardAt(336))
+      expect(composerBottom()).toBe(resting)
+      expect(avoided()).toBeGreaterThan(0)
+
+      // Typing into the composer hands the keyboard to the lift instead, so
+      // the two never move the composer twice.
+      await focusComposer()
+      expect(composerBottom()).toBe(336 + 8)
+      expect(avoided()).toBe(0)
+    } finally {
+      keyboard.restore()
+    }
+  })
+
+  // Codex review round 2: with the keyboard up, the first tap on a tool
+  // card's header (or any button in the thread) reaches it, rather than only
+  // dismissing the keyboard.
+  it("lets a tap in the thread reach its target while the keyboard is up", async () => {
+    await draw()
+    expect(screen.getByTestId("thread").props.keyboardShouldPersistTaps).toBe("handled")
   })
 
   it("follows the end of the thread when a reply lands", async () => {

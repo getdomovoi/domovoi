@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react"
-import { Modal, Platform, Pressable, TextInput, View } from "react-native"
+import { KeyboardAvoidingView, Modal, Platform, Pressable, TextInput, View } from "react-native"
+import { useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { threadFollowState, type ApprovalDecision, type ClientAccess, type PermissionMode, type QueuedSessionSend } from "@getdomovoi/protocol"
 
@@ -19,7 +20,7 @@ import { Card, PressableCard } from "../components/ui/card"
 import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
-import { useKeyboardLift } from "../lib/use-keyboard-lift"
+import { useKeyboardReach } from "../lib/use-keyboard-lift"
 import type { ArtifactRow } from "../artifact-rows"
 import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
 import type { Attachment, ModelImages } from "../attachments"
@@ -726,6 +727,7 @@ export function SessionScreen({
   toolCardDefault?: ToolCardDefault | undefined
 }) {
   const [startOpen, setStartOpen] = useState(false)
+  const [composerFocused, setComposerFocused] = useState(false)
   const [toolChoices, setToolChoices] = useState<ReadonlyMap<string, boolean>>(() => new Map())
   const toggleTool = useCallback((id: string, open: boolean) => {
     // Opening a card grows the thread, and at the bottom the scroller would
@@ -767,14 +769,30 @@ export function SessionScreen({
   const follow = threadFollowState({ atBottom: atEnd, unseen, gated: Boolean(approvalId) })
   // The composer floats, absolutely positioned, so padding a keyboard-avoiding
   // parent never moved it: the thread shrank and the composer stayed under the
-  // keyboard (F13). It is lifted by the keyboard's reach instead, measured in
-  // window coordinates, and the thread pads by its footprint as before. The
-  // screen's bottom edge is the window's, so the home-indicator inset sits
-  // under the keyboard and is not added.
-  const lift = useKeyboardLift(Platform.OS)
+  // keyboard (F13). While the composer has the keyboard it is lifted by the
+  // keyboard's reach instead, and the thread pads by its footprint as before.
+  // The screen's bottom edge is the window's, so the home-indicator inset sits
+  // under the keyboard and is not added. Another input on the screen (a plan
+  // step's editor) leaves the composer down, and the screen avoids the
+  // keyboard for it as it always has; the two never act at once.
+  const insets = useSafeAreaInsets()
+  const reach = useKeyboardReach(Platform.OS, insets.bottom)
+  const lift = composerFocused ? reach : 0
   const composerBottom = lift > 0 ? lift + keyboardGap : composerBottomInset
+  const focusComposer = useCallback((focused: boolean) => {
+    setComposerFocused(focused)
+    onComposerFocusChange(focused)
+  }, [onComposerFocusChange])
   return (
-    <View className="flex-1 bg-background">
+    <KeyboardAvoidingView
+      testID="session-screen"
+      className="flex-1 bg-background"
+      enabled={!composerFocused}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      // The screen sits inside the safe area, so the keyboard's height is
+      // measured from a frame that starts below the status bar.
+      keyboardVerticalOffset={insets.top}
+    >
       <View className="flex-row items-center gap-2.5 px-3.5 pb-3 pt-1.5">
         <Pressable
           accessibilityRole="button"
@@ -798,6 +816,9 @@ export function SessionScreen({
           ref={thread}
           contentContainerClassName="gap-3 px-3.5"
           bottomInset={composerFootprint}
+          // With the keyboard up, a tap on a card's header or a button reaches
+          // it the first time; a tap on nothing still dismisses the keyboard.
+          keyboardShouldPersistTaps="handled"
           followEnd
           onAtEndChange={(next) => { setAtEnd(next); if (next) setUnseen(0) }}
           // Terminal blocks above the messages grow, and appear, as output
@@ -963,7 +984,7 @@ export function SessionScreen({
           if (plan && !planPinned) onPinPlan(true)
           if (plan) setPlanOpen(true)
         }}
-        onFocusChange={onComposerFocusChange}
+        onFocusChange={focusComposer}
         bottomInset={composerBottom}
         onOpenAttach={() => setAttachOpen(true)}
         onRemoveAttachment={onRemoveAttachment}
@@ -980,6 +1001,6 @@ export function SessionScreen({
         onTakePhoto={() => { setAttachOpen(false); onTakePhoto() }}
         onClose={() => setAttachOpen(false)}
       />
-    </View>
+    </KeyboardAvoidingView>
   )
 }
