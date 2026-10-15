@@ -10,7 +10,7 @@ import { sessionPreviewBuildBasis } from "./artifacts"
 import { fleetListingOverflow } from "./fleet-overflow"
 import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 import { createRelayPinStore, reconcileRelayPin, type RelayPinStorage } from "./relay-pin"
-import { nextSessionReadId, SessionReadError, sessionReadLogAttempts, sessionReadOutcome, type SessionReadFailure } from "./session-read"
+import { sessionReadLogAttempts, sessionReadOutcome, type SessionReadFailure } from "./session-read"
 
 
 type WorkspaceSnapshotState = {
@@ -385,9 +385,9 @@ export function useWorkspace(
       if (generation !== activationGeneration.current) throw cause
       // A connection this hook already replaced closed under its own request:
       // that is a change of target, not a failed read. The thread column draws
-      // a failed read only for a session the snapshot lists; one it does not
-      // list (a notification from a project the window has left) stays the
-      // caller's to say.
+      // a failed read only for a session the snapshot lists, so one it does
+      // not list (a notification from a project the window has left) is not
+      // recorded.
       const listed = snapshotRef.current?.sessions.some((session) => session.id === sessionId) ?? false
       const outcome = listed && isCurrentConnection(clientRef.current, client) ? sessionReadOutcome(cause) : undefined
       if (!outcome) {
@@ -398,7 +398,7 @@ export function useWorkspace(
             : { ...current, retrying: false })
         throw cause
       }
-      const attempt = { id: nextSessionReadId(), startedAt, endedAt: new Date(), outcome }
+      const attempt = { startedAt, endedAt: new Date(), outcome }
       setSessionRead((current) => {
         const earlier = current?.target === target && current.sessionId === sessionId ? current : undefined
         return {
@@ -409,7 +409,8 @@ export function useWorkspace(
           retrying: false,
         }
       })
-      throw new SessionReadError(outcome, cause, attempt.id)
+      // The caller's alert says it as well, as it does every failed open.
+      throw cause
     }
   }, [target, updateSnapshotFrom])
   // The read can land after this client stopped waiting for it: the daemon

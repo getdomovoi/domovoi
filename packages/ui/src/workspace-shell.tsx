@@ -153,7 +153,6 @@ import { AppBar, useUsageToday } from "./app-bar"
 import { ArchiveConfirmBody, Thread, archiveSessionDescription, freshStartPanel, moveDialog } from "./thread"
 import { HandheldTabMachine, offInHandheldTab } from "./handheld-tab"
 import { FailedSessionRead } from "./failed-read-state"
-import { activationAlert, alertDrawnInThread, type ActivationAlert } from "./session-read"
 
 export { CheckpointThreadItem, SessionReadOnlyNotice, SessionRow, type SessionTransferReceipt, Thread, archiveSessionDescription, providerFailureActionCopy, sessionStatusMeaning, sessionTransferReceiptText } from "./thread"
 
@@ -713,9 +712,6 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     setWorkspaceUi((current) => ({ ...current, surface: nextSurface }))
   }
   const [workspaceError, setWorkspaceError] = useState("")
-  // The last session open that failed, for the alert: it stays quiet only
-  // while the thread column draws that same read (alertDrawnInThread).
-  const [activationFailure, setActivationFailure] = useState<ActivationAlert | null>(null)
   // Once the shell has painted, the secondary surfaces are fetched while the
   // browser is idle, so opening one rarely shows the loading frame at all.
   useEffect(() => prefetchWhenIdle(lazySurfaces), [])
@@ -880,9 +876,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const activateVisibleSession = (sessionId: string) => {
     setWorkspaceError("")
     void activateSession(sessionId).catch((cause: unknown) => {
-      const alert = activationAlert(cause, "The session could not be opened")
-      setActivationFailure(alert)
-      setWorkspaceError(alert.message)
+      setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
     })
   }
   // Opening a session means showing its thread. Activation alone leaves whatever
@@ -1404,9 +1398,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       setLauncherTransfer({ sessionId, machineId, sourceMachineId, opened: false })
       void activateSession(sessionId).catch((cause: unknown) => {
         setLauncherTransfer((current) => current?.sessionId === sessionId ? null : current)
-        const alert = activationAlert(cause, "The session could not be opened")
-        setActivationFailure(alert)
-        setWorkspaceError(alert.message)
+        setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
       })
     },
     currentMachineId: attached?.machineId ?? snapshot?.machine.id,
@@ -1501,13 +1493,9 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   }
   const machineSurfaces = (pinControl?: ReactNode, pinned?: boolean) => snapshot ? <ArtifactDock pinControl={pinControl} pinned={pinned ?? false} snapshot={snapshot} daemonTimeOffsetMs={(attached ? remote : home).fleetDaemonTimeOffsetMs} clientAccess={workspaceAccess} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onBuildBasisChange={(artifactId) => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, artifactId) })) }} onCollapse={() => setDockCollapsed(true)} collapseButtonRef={dockCollapseButtonRef} defaultTab={clientKind === "desktop" ? "changes" : "preview"} tab={dockTab} onTabChange={setDockTab} rpcUrl={endpointUrl} authorizeArtifact={authorizeArtifact} connected={connected} terminalControls={terminalControls} onCreateAnnotation={createAnnotation} onLoadSessionHistory={loadSessionHistory} onRevokeApprovalRule={revokeApprovalRule} onLoadHardGates={listHardGates} onRestoreCheckpoint={restoreCheckpointOnce} worktreeName={activeWorkspacePath?.split(/[\\/]/u).at(-1)} onForkCheckpoint={forkFromCheckpoint} onTakeCheckpoint={createCheckpoint} onOpenInEditor={!watching && windowBridge && activeWorkspacePath && !attached ? openActiveWorkspaceInEditor : undefined} restoreBusy={checkpointRestorePending} onLoadSessionEvidence={loadSessionEvidence} onRevertSessionFile={revertSessionFile} onEditPlan={(edit) => editPlan(snapshot.activeSessionId ?? "", edit)} onDiscardPlanEdit={(editId) => discardPlanEdit(snapshot.activeSessionId ?? "", editId)} onCarryOnPlan={carryOnPlan} onReplyToAnnotation={replyToAnnotation} onSetAnnotationStatus={setAnnotationStatus} previewRefusal={clientKind === "desktop" && attached ? "This remote connection supports RPC and Terminal. Preview frames need a separate verified path. Open the target's own app to use its previews." : undefined} {...(windowBridge ? { captureAnnotation: windowBridge.captureAnnotation } : {})} /> : null
   // A session read that ended without an answer: the thread column draws it
-  // in place of the thread (failed-read-state.tsx).
+  // in place of the thread (failed-read-state.tsx). The alert says it too, as
+  // it does every failed open, so no path can leave the failure unsaid.
   const sessionReadFailure = (attached ? remote : home).sessionReadFailure
-  // The failed read the thread column draws in this render: only the
-  // workspace view draws the column, and a start refusal takes its place. The
-  // alert stays quiet only for that same read.
-  const drawnSessionRead = surface === "workspace" && !startRefusal ? sessionReadFailure : null
-  const alertMessage = alertDrawnInThread(activationFailure, workspaceError, drawnSessionRead) ? "" : workspaceError
   const layoutKey = !dockCollapsed && dockPinned ? "drawer.dock" : "drawer.thread"
   const defaultLayout = layouts[layoutKey]
   const shellTitle = launcherMode
@@ -1581,9 +1569,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     return windowBridge.onNotificationActivate((sessionId) => {
       setWorkspaceError("")
       void activateSession(sessionId).catch((cause: unknown) => {
-        const alert = activationAlert(cause, "The session could not be opened")
-        setActivationFailure(alert)
-        setWorkspaceError(alert.message)
+        setWorkspaceError(cause instanceof Error ? cause.message : "The session could not be opened")
       })
     })
   }, [activateSession, windowBridge])
@@ -1609,9 +1595,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     deepLinkRoutingRef.current = true
     setWorkspaceError("")
     void activateSession(sessionId).catch((cause: unknown) => {
-      const alert = activationAlert(cause, "The linked session could not be opened")
-      setActivationFailure(alert)
-      setWorkspaceError(alert.message)
+      setWorkspaceError(cause instanceof Error ? cause.message : "The linked session could not be opened")
     }).finally(() => {
       deepLinkRoutingRef.current = false
       removeLink()
@@ -2162,7 +2146,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                     />
                   </div>
                 </main>
-              ) : sessionReadFailure ? <FailedSessionRead failure={sessionReadFailure} title={snapshot.sessions.find((session) => session.id === sessionReadFailure.sessionId)?.title ?? sessionReadFailure.sessionId} connected={connected} onRetry={() => activateVisibleSession(sessionReadFailure.sessionId)} onOpenMachine={() => setSurface("fleet")} /> : <Thread key={activeThreadKey(snapshot)}snapshot={snapshot} connected={connected} connectionId={connectionId} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModelsSeen}onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={threadPairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntimeSeen} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} onOpenDockTab={openSheetTab} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onUnpickBuildBasis={() => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, undefined) })) }} />}</ResizablePanel>
+              ) : sessionReadFailure ? <FailedSessionRead failure={sessionReadFailure} title={snapshot.sessions.find((session) => session.id === sessionReadFailure.sessionId)?.title ?? sessionReadFailure.sessionId} connected={connected} onRetry={() => activateVisibleSession(sessionReadFailure.sessionId)} onOpenMachine={() => setSurface("fleet")} /> : <Thread key={activeThreadKey(snapshot)} snapshot={snapshot} connected={connected} connectionId={connectionId} surface={windowBridge ? "desktop" : "web"} clientAccess={workspaceAccess} emergencyStopPending={emergencyStopPending} queued={snapshot.activeSessionId ? queues[snapshot.activeSessionId] : undefined} onQueuedChange={(next) => snapshot.activeSessionId ? setQueues((current) => setQueue(current, snapshot.activeSessionId!, next)) : undefined} failures={failures} onDismissFailure={(id) => setFailures((current) => current.filter((attempt) => attempt.id !== id))} onResolve={resolveApproval} onSetRuntime={(runtime) => snapshot.activeSessionId ? setRuntime(snapshot.activeSessionId, runtime) : Promise.reject(new Error("No session is active"))} onRestartProviderThread={() => snapshot.activeSessionId ? restartProviderThread(snapshot.activeSessionId) : Promise.reject(new Error("No session is active"))} onForkSession={(input) => startSession({ kind: "fork", input })} onListModels={listModelsSeen}onNewSession={() => snapshot.project ? setLauncherMode("session") : requestOpenProject()} onSend={sendMessage} onCheckpoint={createCheckpoint} onRestoreCheckpoint={restoreCheckpointGuarded} restoreBusy={checkpointRestorePending} pendingTransferTargetId={launcherTransferTargetId} onPendingTransferTargetChange={setLauncherTransferTargetId} onPauseSession={pauseSession} onPairMachine={threadPairMachine} fleet={fleet?.entries} transferFleet={attached ? remote.fleet?.entries ?? [] : fleet?.entries} admittedMachines={admittedMachines} currentMachineId={attached?.machineId ?? snapshot.machine.id} onSelectMachine={switchMachine} onTransferSession={transferSession} onPreviewTransfer={previewTransfer} onReleaseSession={releaseSession} usage={activeSessionUsage} usageToday={usageToday} loadLatestTurn={loadLatestTurn} machineMenuRequest={machineMenuRequest} onDiscoverRuntime={discoverRuntimeSeen} onEditPlan={editPlan} onDiscardPlanEdit={discardPlanEdit} onOpenPlanPreview={() => openDockTab("plan")} onOpenSheet={() => openDockTab("changes")} onOpenDockTab={openSheetTab} skillNames={Object.fromEntries(skills.map((skill) => [skill.id, skill.name]))} skillCatalog={skills} buildBasisId={snapshot.activeSessionId ? previewBuildBasis[snapshot.activeSessionId] : undefined} onUnpickBuildBasis={() => { const sessionId = snapshot.activeSessionId; if (sessionId) setWorkspaceUi((current) => ({ ...current, previewBuildBasis: withPreviewBuildBasis(current.previewBuildBasis, sessionId, undefined) })) }} />}</ResizablePanel>
               {!dockCollapsed && dockPinned ? <><ResizableHandle withHandle aria-label="Resize thread and artifact dock" /><ResizablePanel id="dock" defaultSize={280} minSize="24" maxSize="46">{machineSurfaces(<Button ref={dockUnpinButtonRef} variant="ghost" size="icon-sm" className="size-7 flex-none rounded-full bg-accent text-primary" aria-pressed aria-label="Unpin" onClick={() => setDockPinned(false)}><PinIcon className="size-[15px]" /></Button>, true)}</ResizablePanel></> : null}
             </ResizablePanelGroup>
             {!dockCollapsed && !dockPinned ? (
@@ -2186,7 +2170,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
             <ThreadSkeleton from={attached?.machineId ?? endpointUrl} />
           </main>
         )}
-        {alertMessage || visibleStateRecovery ? (
+        {workspaceError || visibleStateRecovery ? (
           <div className="absolute bottom-3 left-3 z-50 flex max-w-sm flex-col gap-2">
             {visibleStateRecovery ? (
               <StateRecoveryNotice
@@ -2195,14 +2179,14 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
                 className="w-auto shadow-[var(--shadow-md)]"
               />
             ) : null}
-            {alertMessage ? (
+            {workspaceError ? (
               <Alert
                 variant="destructive"
                 className="w-auto shadow-[var(--shadow-md)]"
               >
                 <CircleStopIcon />
                 <AlertTitle>Workspace action failed</AlertTitle>
-                <AlertDescription>{alertMessage}</AlertDescription>
+                <AlertDescription>{workspaceError}</AlertDescription>
               </Alert>
             ) : null}
           </div>

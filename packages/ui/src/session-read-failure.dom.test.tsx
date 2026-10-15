@@ -4,7 +4,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 
 import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
-import { activationAlert, alertDrawnInThread, SessionReadError, type SessionReadFailure } from "./session-read"
 import {
   completeHandshake,
   fail,
@@ -24,7 +23,9 @@ import type { DesktopWindowBridge } from "./desktop-platform"
 // without an answer (no answer in time, the connection closed, an answer the
 // client cannot read), the thread column draws the failed-read state for the
 // session that was asked for, never the previous session's thread under it.
-// A daemon that answers and refuses has answered: that stays in the alert.
+// The shell's alert says every failed open as well, as it does on any view,
+// so no path can leave a failure unsaid. A daemon that answers and refuses
+// has answered: that is in the alert only.
 
 let harness: FakeWebSocketHarness
 
@@ -148,8 +149,8 @@ describe("a session read that ends without an answer", () => {
     expect(state.textContent).toContain("the connection closed before an answer")
     // The previous session's thread is not left under the new session's name.
     expect(screen.queryByText(previousLine)).toBeNull()
-    // Said once, in the thread column, not again in the alert.
-    expect(screen.queryByText("Daemon connection closed")).toBeNull()
+    // The alert says it too, as it does every failed open.
+    expect(screen.getByText("Daemon connection closed")).toBeTruthy()
     // Activation writes the daemon's active session, so the state does not
     // claim nothing was written.
     expect(screen.queryByText("nothing was written, nothing was lost")).toBeNull()
@@ -171,6 +172,7 @@ describe("a session read that ends without an answer", () => {
 
     const retry = () => within(failedRead()).getByRole("button", { name: "Try again" }) as HTMLButtonElement
     expect(retry().disabled).toBe(true)
+    expect(screen.getByText("Daemon connection closed")).toBeTruthy()
 
     for (let step = 0; step < 60 && harness.sockets.length < 2; step += 1) {
       await act(async () => { await vi.advanceTimersByTimeAsync(500) })
@@ -198,7 +200,7 @@ describe("a session read that ends without an answer", () => {
     expect(state.textContent).toContain("no answer in 120s")
     expect(state.textContent).toContain("1 attempt")
     expect(screen.queryByText(previousLine)).toBeNull()
-    expect(screen.queryByText(/timed out after/u)).toBeNull()
+    expect(screen.getByText("Daemon RPC request session.activate timed out after 120000ms")).toBeTruthy()
   })
 
   it("counts each Try again it sends and opens the session once the daemon answers", async () => {
@@ -208,12 +210,16 @@ describe("a session read that ends without an answer", () => {
     await settle()
     expect(failedRead().textContent).toContain("The daemon answered, but the answer could not be read.")
     expect(failedRead().textContent).toContain("1 attempt")
+    expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
 
+    // Try again clears the alert; the same failure again says so again.
     await user.click(within(failedRead()).getByRole("button", { name: "Try again" }))
+    expect(screen.queryByText("Daemon returned an invalid RPC result")).toBeNull()
     expect(pendingRequest(socket, "session.activate").params).toMatchObject({ sessionId: other.id })
     await act(async () => { answerUnreadably(socket) })
     await settle()
     expect(failedRead().textContent).toContain("2 attempts")
+    expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
 
     await user.click(within(failedRead()).getByRole("button", { name: "Try again" }))
     await act(async () => {
@@ -225,6 +231,7 @@ describe("a session read that ends without an answer", () => {
     await settle()
     expect(screen.queryByRole("region", { name: "Could not read this session" })).toBeNull()
     expect(screen.getByText("The second session's own line")).toBeTruthy()
+    expect(screen.queryByText("Daemon returned an invalid RPC result")).toBeNull()
   })
 
   // The read can land on the daemon after the client stopped waiting: the
@@ -255,6 +262,7 @@ describe("a session read that ends without an answer", () => {
 
     expect(failedRead().textContent).toContain("The daemon answered, but the answer could not be read.")
     expect(screen.queryByText(previousLine)).toBeNull()
+    expect(screen.getByText("Daemon returned a response this client could not parse")).toBeTruthy()
   })
 
   // Only the latest open decides what the thread column shows: a read the
@@ -287,6 +295,8 @@ describe("a session read that ends without an answer", () => {
 
     expect(screen.queryByRole("region", { name: "Could not read this session" })).toBeNull()
     expect(screen.getByText("The third session's own line")).toBeTruthy()
+    // The superseded read still failed, and the alert says so.
+    expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
   })
 
   // A notification can open a session while Machines is on screen. The thread
@@ -345,6 +355,8 @@ describe("a session read that ends without an answer", () => {
     await act(async () => { answerUnreadably(socket) })
     await settle()
 
+    expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
+
     expect(screen.queryByRole("heading", { name: "Machines" })).toBeNull()
     await user.click(within(failedRead()).getByRole("button", { name: "Open the machine" }))
     await screen.findByRole("heading", { name: "Machines" })
@@ -366,54 +378,11 @@ describe("a session read that ends without an answer", () => {
     await act(async () => { answerUnreadably(socket) })
     await settle()
     expect(failedRead().textContent).toContain("2 attempts")
+    expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
 
     expect(screen.queryByRole("heading", { name: "Machines" })).toBeNull()
     await user.click(within(failedRead()).getByRole("button", { name: "Open the machine" }))
     await screen.findByRole("heading", { name: "Machines" })
-  })
-})
-
-// The alert stays quiet only while the thread column draws the very read it
-// reports, matched by the read's id as the shell renders. Any read the column
-// does not draw falls back to the alert.
-describe("whether the thread column already says an activation failed", () => {
-  const unreadable = { kind: "unreadable" } as const
-  const drawn = (sessionId: string, ids: readonly number[]): SessionReadFailure => ({
-    sessionId,
-    count: ids.length,
-    recent: ids.map((id) => ({ id, startedAt: new Date(0), endedAt: new Date(0), outcome: unreadable })),
-    retrying: false,
-  })
-  const failedRead = (readId: number) => activationAlert(new SessionReadError(unreadable, new Error("Daemon returned an invalid RPC result"), readId), "The session could not be opened")
-
-  it("is quiet while the column draws that same read", () => {
-    const alert = failedRead(7)
-    expect(alertDrawnInThread(alert, alert.message, drawn("session-a", [6, 7]))).toBe(true)
-  })
-
-  it("speaks when the column draws no failed read", () => {
-    const alert = failedRead(7)
-    expect(alertDrawnInThread(alert, alert.message, null)).toBe(false)
-  })
-
-  // The window moved to another machine before the home read failed: the
-  // column draws that machine's failure for the same session id, not this one.
-  it("speaks when the column draws a different read of the same session", () => {
-    const alert = failedRead(7)
-    expect(alertDrawnInThread(alert, alert.message, drawn("session-a", [3]))).toBe(false)
-  })
-
-  // A later Try again replaced the read the alert reported.
-  it("speaks when the drawn read's latest attempt is not the one it reports", () => {
-    const alert = failedRead(7)
-    expect(alertDrawnInThread(alert, alert.message, drawn("session-a", [7, 8]))).toBe(false)
-  })
-
-  it("speaks for a failure that is not a failed read, and for another message", () => {
-    const refused = activationAlert(new Error("Session does not exist"), "The session could not be opened")
-    expect(alertDrawnInThread(refused, refused.message, drawn("session-a", [7]))).toBe(false)
-    const alert = failedRead(7)
-    expect(alertDrawnInThread(alert, "Another failure", drawn("session-a", [7]))).toBe(false)
   })
 })
 

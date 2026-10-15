@@ -10,19 +10,9 @@ export type SessionReadOutcome =
   | { kind: "unreadable" }
 
 export type SessionReadAttempt = {
-  // Unique across every workspace this client holds, so an alert can name
-  // the one read it reports (alertDrawnInThread).
-  id: number
   startedAt: Date
   endedAt: Date
   outcome: SessionReadOutcome
-}
-
-let lastSessionReadId = 0
-
-export function nextSessionReadId(): number {
-  lastSessionReadId += 1
-  return lastSessionReadId
 }
 
 // The reads this client sent for one session, in a row, that ended without
@@ -54,42 +44,4 @@ export function sessionReadOutcome(cause: unknown): SessionReadOutcome | undefin
   if (cause.message === "Daemon connection closed") return { kind: "closed" }
   if (unreadableAnswers.has(cause.message)) return { kind: "unreadable" }
   return undefined
-}
-
-// Thrown by useWorkspace's activateSession once it has recorded a failed
-// read, naming the attempt it recorded.
-export class SessionReadError extends Error {
-  readonly outcome: SessionReadOutcome
-  readonly readId: number
-
-  constructor(outcome: SessionReadOutcome, cause: unknown, readId: number) {
-    super(cause instanceof Error ? cause.message : "The session could not be read", { cause })
-    this.name = "SessionReadError"
-    this.outcome = outcome
-    this.readId = readId
-  }
-}
-
-// What an activation failure puts in the shell's alert, and the failed read
-// it reports when it reports one.
-export type ActivationAlert = { message: string, readId: number | undefined }
-
-export function activationAlert(cause: unknown, fallback: string): ActivationAlert {
-  return {
-    message: cause instanceof Error ? cause.message : fallback,
-    readId: cause instanceof SessionReadError ? cause.readId : undefined,
-  }
-}
-
-// Whether the alert would only repeat what the thread column draws: the
-// column draws the very read the alert reports, as its latest attempt, and
-// the alert still says that read's message. Decided from what renders rather
-// than predicted when the read failed, so any read the column does not draw
-// (another machine's, a session already open, one the list lacks, a view
-// without the thread) keeps the alert.
-export function alertDrawnInThread(alert: ActivationAlert | null, message: string, drawn: SessionReadFailure | null): boolean {
-  return alert !== null
-    && alert.readId !== undefined
-    && alert.message === message
-    && drawn?.recent.at(-1)?.id === alert.readId
 }
