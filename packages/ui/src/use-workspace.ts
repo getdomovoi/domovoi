@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 
 import type { HardGateCategory, RuntimeDiscoverResult, DeviceRenameParams, DeviceRenameResult, FleetForgetParams, FleetForgetResult, FleetSnapshot, FleetSnapshotOverflow, Annotation, ApprovalDecision, ArtifactAccess, AuditExportParams, AuditExportResult, AuditQueryPage, AuditQueryParams, ClientAccess, ClientKind, ProviderModel, ProjectSwitchConfirmation, RpcParams, RpcResult, Runtime, SessionEvidence, SessionHistoryPage, SessionUsage, UsageWindow, UsageWindowParams, SkillDocument, SkillInstallPreview, SkillInventory, SkillSummary, StateRecovery, ToolInventory, SystemEmergencyStopResult, TerminalClosedNotification, TerminalOutputNotification, TerminalOwnershipNotification, TerminalResizedNotification, TerminalSession, TerminalSummary, WorkspaceDelta, WorkspaceSnapshot, DevicePairResult, DevicesResult, SessionTransferParams, SessionTransferPreview, SessionTransferPreviewParams, SessionTransferResult, TurnSkillSelection } from "@getdomovoi/protocol"
 
-import { DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint, type TerminalWatch, type TerminalWatchOptions } from "./client"
+import { DaemonRpcError, DomovoiClient, type DomovoiClientBudgets, type DomovoiRequestOptions, type DomovoiEndpoint, type TerminalWatch, type TerminalWatchOptions } from "./client"
 import type { ClientAdmission } from "./client-admission-policy"
 import { Deadline } from "./deadline"
 import { applyWorkspaceDelta, openCommentReviewFor } from "@getdomovoi/protocol"
@@ -10,6 +10,7 @@ import { sessionPreviewBuildBasis } from "./artifacts"
 import { fleetListingOverflow } from "./fleet-overflow"
 import { pairMachine as completePairing, type PairedMachine, type PairMachineRequest } from "./pair-machine"
 import { createRelayPinStore, reconcileRelayPin, type RelayPinStorage } from "./relay-pin"
+import { sessionReadLogAttempts, sessionReadOutcome, type SessionReadFailure } from "./session-read"
 
 
 type WorkspaceSnapshotState = {
@@ -115,6 +116,10 @@ export function useWorkspace(
   const [connected, setConnected] = useState(false)
   const [clientAccess, setClientAccess] = useState<ClientAccess>("full")
   const [stateRecovery, setStateRecovery] = useState<StateRecovery | null>(null)
+  const [sessionRead, setSessionRead] = useState<(SessionReadFailure & { target: string }) | null>(null)
+  // Counts session opens, so a read's ending can tell whether a later open
+  // has replaced it.
+  const activationGeneration = useRef(0)
   // The id the daemon gave the connection open now, from its hello. A row the
   // daemon attributes to a connection is this client's only when it names this
   // one, so it is null while no connection is open.
@@ -359,11 +364,68 @@ export function useWorkspace(
     updateSnapshotFrom(client, await client.restartProviderThread(sessionId, runtime))
   }, [updateSnapshotFrom])
 
+  // Opening a session reads its thread: session.activate answers with the
+  // workspace that holds it. A read that ends without an answer is recorded
+  // here for the thread column, with the attempts this client really sent;
+  // an answer, a refusal included, clears it. Only the latest open records a
+  // failure: a read the person has moved on from cannot draw over the session
+  // they opened after it.
   const activateSession = useCallback(async (sessionId: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshotFrom(client, await client.activateSession(sessionId))
-  }, [updateSnapshotFrom])
+    const generation = ++activationGeneration.current
+    const startedAt = new Date()
+    setSessionRead((current) => current?.target === target && current.sessionId === sessionId
+      ? { ...current, retrying: true }
+      : null)
+    try {
+      updateSnapshotFrom(client, await client.activateSession(sessionId))
+      setSessionRead((current) => current?.sessionId === sessionId ? null : current)
+    } catch (cause) {
+      if (generation !== activationGeneration.current) throw cause
+      // A connection this hook already replaced closed under its own request:
+      // that is a change of target, not a failed read. The thread column draws
+      // a failed read only for a session the snapshot lists, so one it does
+      // not list (a notification from a project the window has left) is not
+      // recorded.
+      const listed = snapshotRef.current?.sessions.some((session) => session.id === sessionId) ?? false
+      const outcome = listed && isCurrentConnection(clientRef.current, client) ? sessionReadOutcome(cause) : undefined
+      if (!outcome) {
+        // A refusal is the daemon's answer, so the read did not fail. A
+        // request that never left (no open connection) changes nothing.
+        setSessionRead((current) => current?.sessionId !== sessionId ? current
+          : cause instanceof DaemonRpcError ? null
+            : { ...current, retrying: false })
+        throw cause
+      }
+      const attempt = { startedAt, endedAt: new Date(), outcome }
+      setSessionRead((current) => {
+        const earlier = current?.target === target && current.sessionId === sessionId ? current : undefined
+        return {
+          target,
+          sessionId,
+          count: (earlier?.count ?? 0) + 1,
+          recent: [...(earlier?.recent ?? []), attempt].slice(-sessionReadLogAttempts),
+          retrying: false,
+        }
+      })
+      // The caller's alert says it as well, as it does every failed open.
+      throw cause
+    }
+  }, [target, updateSnapshotFrom])
+  // The read can land after this client stopped waiting for it: the daemon
+  // then sends the workspace with that session active, and nothing failed.
+  const activeSessionId = snapshot?.activeSessionId
+  useEffect(() => {
+    if (sessionRead && activeSessionId === sessionRead.sessionId) setSessionRead(null)
+  }, [activeSessionId, sessionRead])
+  const visibleSessionRead: SessionReadFailure | null = sessionRead
+    && sessionRead.target === target
+    && snapshot !== null
+    && snapshot.activeSessionId !== sessionRead.sessionId
+    && snapshot.sessions.some((session) => session.id === sessionRead.sessionId)
+    ? { sessionId: sessionRead.sessionId, count: sessionRead.count, recent: sessionRead.recent, retrying: sessionRead.retrying }
+    : null
 
   const openProject = useCallback(async (path: string, confirmation?: ProjectSwitchConfirmation) => {
     const client = clientRef.current
@@ -966,6 +1028,7 @@ export function useWorkspace(
     connectionId,
     clientAccess,
     stateRecovery,
+    sessionReadFailure: visibleSessionRead,
     createCheckpoint,
     createAnnotation,
     createTerminal,

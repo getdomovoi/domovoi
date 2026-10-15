@@ -24,6 +24,22 @@ it("renders the v2 failed-read regions in order", () => {
   expect(screen.getByRole("button", { name: "Open the machine" })).toBeTruthy()
 })
 
+// The count is a fact the caller counted. Without one the header says nothing
+// about attempts rather than a number nobody counted.
+it("says how many attempts only when the caller counted them", () => {
+  const { rerender } = render(
+    <FailedReadState message="The read stopped." facts={["The session is still on the machine."]} retrying={false} onRetry={vi.fn()} />,
+  )
+  const state = () => screen.getByRole("region", { name: "Could not read this session" })
+  expect(state().textContent).not.toMatch(/attempt/u)
+
+  rerender(<FailedReadState message="The read stopped." attemptCount={1} facts={["The session is still on the machine."]} retrying={false} onRetry={vi.fn()} />)
+  expect(screen.getByText("1 attempt")).toBeTruthy()
+
+  rerender(<FailedReadState message="The read stopped." attemptCount={3} facts={["The session is still on the machine."]} retrying={false} onRetry={vi.fn()} />)
+  expect(screen.getByText("3 attempts")).toBeTruthy()
+})
+
 // A provider can write files before it stops, so "nothing was written" is a
 // claim only the caller can make, about a failure that only read.
 it("says nothing was written only when the caller says the failure only read", () => {
