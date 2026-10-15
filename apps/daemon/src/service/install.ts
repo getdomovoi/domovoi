@@ -39,10 +39,11 @@ const displayName = loginServiceTaskName
 // While the Domovoi app runs, LaunchServices lists it in gui/<uid> as
 // application.<bundle id>.<digits>.<digits>, with the bundle id from appId in
 // apps/desktop/electron-builder.yml. That row is the running app, not a
-// launch agent. launchctl prints the row as pid, status (-, a number or a
-// parenthesised code), spaces, one tab, then the whole label; matching the
-// whole row keeps a label that only ends with the app's label refused.
-const desktopAppInstanceRow = /^(?:\d+|-) +(?:-|-?\d+|\([a-z]+\)) *\tapplication\.sh\.domovoi\.desktop\.\d+\.\d+$/u
+// launch agent. launchctl prints the row as indentation, pid, status (-, a
+// number or a parenthesised code), spaces, one tab, then the whole label and
+// nothing after it; matching the whole line keeps a label that only starts
+// or ends with the app's label refused.
+const desktopAppInstanceRow = /^[ \t]*(?:\d+|-) +(?:-|-?\d+|\([a-z]+\)) *\tapplication\.sh\.domovoi\.desktop\.\d+\.\d+$/u
 
 // Exec Command uses pathType; CreateProcess includes a terminating null.
 // https://learn.microsoft.com/en-us/windows/win32/taskschd/taskschedulerschema-pathtype-simpletype
@@ -668,15 +669,15 @@ async function registeredServiceWithoutConfiguration(
     // refuses rather than pass as having no Domovoi job. Copy approved by
     // fetzy on 2026-09-26.
     const unreadable = () => new ServiceProfileUnknownError(`launchd listed the jobs in ${domain} in a form this app cannot read, so whether a login service is registered there is not known.`)
-    const lines = listed.stdout.replace(/\r?\n$/u, "").split(/\r?\n/u).map((line) => line.trimEnd())
-    if (lines[0] !== `${domain} = {`) throw unreadable()
+    const lines = listed.stdout.replace(/\r?\n$/u, "").split(/\r?\n/u)
+    if (lines[0]?.trimEnd() !== `${domain} = {`) throw unreadable()
     let depth = 0
     let services: string[] | undefined
     let inServices = false
     for (const [index, line] of lines.entries()) {
       const trimmed = line.trim()
       if (inServices && trimmed !== "}") {
-        services!.push(trimmed)
+        services!.push(line)
         continue
       }
       if (trimmed.endsWith("{")) {
@@ -693,7 +694,8 @@ async function registeredServiceWithoutConfiguration(
       }
     }
     if (depth !== 0 || services === undefined) throw unreadable()
-    for (const row of services) {
+    for (const line of services) {
+      const row = line.trim()
       if (row === "") continue
       const fields = row.split(/\s+/u)
       if (fields.length < 3 || !/^(?:\d+|-)$/u.test(fields[0]!)) throw unreadable()
@@ -701,7 +703,9 @@ async function registeredServiceWithoutConfiguration(
       if (naming.length === 0) continue
       const label = fields.at(-1)!
       if (naming.length !== 1 || naming[0] !== label) throw unreadable()
-      if (desktopAppInstanceRow.test(row)) continue
+      // The untrimmed line: whitespace after the app's label is part of
+      // another label.
+      if (desktopAppInstanceRow.test(line)) continue
       if (!label.startsWith("sh.domovoi.")) throw unreadable()
       return `${domain}/${label}`
     }

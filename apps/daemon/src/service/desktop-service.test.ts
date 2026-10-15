@@ -1401,6 +1401,9 @@ describe("installDaemonService and removeDaemonService for the caller's profile"
       // whose last field is the app's label is still not the app's row.
       ["a label that ends with the app's label after a space", row("old application.sh.domovoi.desktop.218603379.218608385")],
       ["a label that ends with the app's label after a tab", row("old\tapplication.sh.domovoi.desktop.218603379.218608385")],
+      // Codex review round 2 (Major): whitespace after the label is part of it.
+      ["a label that is the app's label and a trailing space", row("application.sh.domovoi.desktop.218603379.218608385 ")],
+      ["a label that is the app's label and a trailing tab", row("application.sh.domovoi.desktop.218603379.218608385\t")],
       ["a status column launchd does not print", "gui/501 = {\n\tservices = {\n\t\t   19937    old  \tapplication.sh.domovoi.desktop.218603379.218608385\n\t}\n}\n"],
       ["the app row after another field", "gui/501 = {\n\tservices = {\n\t\t   19937      -  \tapplication.sh.domovoi.desktop.218603379.218608385\tcom.apple.example\n\t}\n}\n"],
     ] as const) {
