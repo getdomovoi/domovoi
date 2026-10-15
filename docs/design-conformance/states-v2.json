@@ -77,8 +77,8 @@
         "re:\\$\\{attemptCount\\} attempts",
         "Open the machine",
         "<FailedSessionRead failure={sessionReadFailure}",
-        "The session is still on the machine. A client that cannot read it has not changed it.",
-        "If a turn was running it is still running. The daemon does not need this window."
+        "A failed read does not change or remove the session.",
+        "A failed read does not stop a turn. The daemon does not need this window."
       ],
       "notes": [
         "2026-10-14 (S3): built for the read a session open makes. session.activate answers with the workspace that holds the session's thread; when it ends without an answer (no answer within the request budget, the connection closed, an answer the client cannot parse), the desktop and web thread column draws FailedSessionRead for the session asked for, in place of the previous session's thread. The header count is the reads this client sent for that session in a row, and WHAT IT TRIED logs the last five. Try again sends session.activate again and Open the machine opens the Machines view; both work in phone and tablet tabs. A daemon refusal stays in the shell's alert. The connect read before any snapshot stays with ThreadSkeleton (Q344 A), and the provider-restart caller is unchanged."
@@ -156,7 +156,7 @@
     {
       "id": "states.failed-read",
       "since": "2026-10-14",
-      "note": "S3, recommendation applied under the standing ruling of 2026-10-06: the session read draws two of the design's three What is still true lines. Any gate raised while you were away is still waiting is left out because another client can answer a gate while this one cannot read. nothing was written, nothing was lost is not drawn for it either: opening a session writes the daemon's active session. The message names how the read ended (no answer, connection closed, unreadable answer), with the design's sentence for no answer. The app bar title still names the session that was open before; the failed state names the one asked for in WHAT IT TRIED."
+      "note": "S3, recommendations applied under the standing ruling of 2026-10-06 (Q109, Q111): What is still true says what a failed read cannot do rather than the session's state now, which another client or the daemon may have moved on. A failed read does not change or remove the session. Opening one changes only which session the daemon has open. stands for The session is still on the machine. A client that cannot read it has not changed it., and A failed read does not stop a turn. The daemon does not need this window. stands for If a turn was running it is still running. Any gate raised while you were away is still waiting is left out because another client can answer a gate while this one cannot read. nothing was written, nothing was lost is not drawn for it either: opening a session writes the daemon's active session. The message names how the read ended (no answer, connection closed, unreadable answer); for no answer it says The daemon accepted the connection, but no answer to this read arrived within N seconds., since the client cannot tell the daemon stopped answering mid-read. The app bar title still names the session that was open before; the failed state names the one asked for in WHAT IT TRIED."
     }
   ],
   "scriptBacklog": {

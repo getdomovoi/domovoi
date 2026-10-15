@@ -120,6 +120,11 @@ describe("a session read that ends without an answer", () => {
     // Activation writes the daemon's active session, so the state does not
     // claim nothing was written.
     expect(screen.queryByText("nothing was written, nothing was lost")).toBeNull()
+    // What stays true is what a failed read cannot do, not a guess at the
+    // session's state now: another client or the daemon may have moved it on.
+    expect(state.textContent).toContain("A failed read does not change or remove the session. Opening one changes only which session the daemon has open.")
+    expect(state.textContent).toContain("A failed read does not stop a turn. The daemon does not need this window.")
+    expect(state.textContent).not.toMatch(/still on the machine|it is still running/u)
   })
 
   // With the connection down a Try again would never leave this client, so
@@ -145,7 +150,8 @@ describe("a session read that ends without an answer", () => {
     expect(screen.queryByText(previousLine)).toBeNull()
   })
 
-  it("says the daemon stopped answering when the read runs out of time", async () => {
+  // The client knows only that no answer arrived in time, not why.
+  it("says no answer arrived when the read runs out of time", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const { user, other } = await openShell({}, { advanceTimers: vi.advanceTimersByTime })
     await pickSession(user, other.title)
@@ -154,7 +160,8 @@ describe("a session read that ends without an answer", () => {
     await settle()
 
     const state = failedRead()
-    expect(state.textContent).toContain("The daemon accepted the connection and then stopped answering mid-read.")
+    expect(state.textContent).toContain("The daemon accepted the connection, but no answer to this read arrived within 120 seconds.")
+    expect(state.textContent).not.toMatch(/stopped answering/u)
     expect(state.textContent).toContain("no answer in 120s")
     expect(state.textContent).toContain("1 attempt")
     expect(screen.queryByText(previousLine)).toBeNull()

@@ -11,9 +11,14 @@ export type FailedReadLogLine = { text: string, tone: "dim" | "fail" | "pass" }
 
 const noPartialThread = "Domovoi will not show a partial thread, because a partial thread reads like a finished one."
 
+// A timeout says only that no answer arrived in time: the request, the reply
+// or the daemon's work on it may each be where it stopped.
 function sessionReadMessage(outcome: SessionReadOutcome): string {
   switch (outcome.kind) {
-    case "timeout": return `The daemon accepted the connection and then stopped answering mid-read. ${noPartialThread}`
+    case "timeout": {
+      const seconds = Math.round(outcome.timeoutMs / 1000)
+      return `The daemon accepted the connection, but no answer to this read arrived within ${seconds} ${seconds === 1 ? "second" : "seconds"}. ${noPartialThread}`
+    }
     case "closed": return `The connection to the daemon closed before it answered. ${noPartialThread}`
     case "unreadable": return `The daemon answered, but the answer could not be read. ${noPartialThread}`
   }
@@ -42,12 +47,15 @@ export function sessionReadLog(recent: readonly SessionReadAttempt[], title: str
   return lines
 }
 
-// What stays true when a session read fails. The design's third line, that
-// any gate raised meanwhile is still waiting, is left out: another client can
-// answer a gate while this one cannot read.
+// What stays true when a session read fails: what the failed read cannot do,
+// not a guess at the session's state now, which another client or the daemon
+// may have moved on (Q111). session.activate writes only which session the
+// daemon has open, and the daemon runs turns without any client. The design's
+// third line, that any gate raised meanwhile is still waiting, is left out:
+// another client can answer a gate while this one cannot read.
 const sessionReadFacts = [
-  "The session is still on the machine. A client that cannot read it has not changed it.",
-  "If a turn was running it is still running. The daemon does not need this window.",
+  "A failed read does not change or remove the session. Opening one changes only which session the daemon has open.",
+  "A failed read does not stop a turn. The daemon does not need this window.",
 ]
 
 // The thread column while the session a person asked for could not be read.
