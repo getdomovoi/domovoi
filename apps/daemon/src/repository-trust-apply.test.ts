@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process"
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { dirname, join } from "node:path"
+import { promisify } from "node:util"
 
 import type { ToolInventoryEntry } from "@getdomovoi/protocol"
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -21,6 +23,7 @@ import { removeScratchDirectories } from "./test-scratch.js"
 // Slice P6a: one place decides, per session worktree, whether a repository's
 // configuration is trusted. Nothing loads under the answer yet.
 
+const execute = promisify(execFile)
 const scratchDirectories: string[] = []
 afterEach(async () => removeScratchDirectories(scratchDirectories.splice(0)))
 
@@ -35,20 +38,22 @@ async function put(root: string, path: string, content: string): Promise<void> {
   await writeFile(join(root, path), content)
 }
 
-// A main checkout and a linked worktree of it, laid out as git lays them out,
-// each holding the same repository configuration.
+// Git must recognize both checkouts. Hand-written HEAD/backlink metadata
+// without objects and refs is not a repository; Git versions diagnose it
+// differently, which changes the filter-read digest instead of testing trust.
 async function checkouts(files: Record<string, string>): Promise<{ main: string; worktree: string }> {
-  const main = await scratch("domovoi-trust-main-")
-  const worktree = await scratch("domovoi-trust-worktree-")
-  await put(main, ".git/HEAD", "ref: refs/heads/main\n")
-  await put(main, ".git/worktrees/session/HEAD", "ref: refs/heads/session\n")
-  await put(main, ".git/worktrees/session/gitdir", `${join(worktree, ".git")}\n`)
-  await put(main, ".git/worktrees/session/commondir", "../..\n")
-  await put(worktree, ".git", `gitdir: ${join(main, ".git", "worktrees", "session")}\n`)
-  for (const [path, content] of Object.entries(files)) {
-    await put(main, path, content)
-    await put(worktree, path, content)
-  }
+  const directory = await scratch("domovoi-trust-")
+  const main = join(directory, "main")
+  const worktree = join(directory, "session")
+  const emptyConfig = join(directory, "empty.gitconfig")
+  await writeFile(emptyConfig, "")
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: emptyConfig, GIT_CONFIG_SYSTEM: emptyConfig }
+  const git = (...args: string[]) => execute("git", ["-c", `core.hooksPath=${join(directory, "no-hooks")}`, ...args], { env })
+  await git("init", "--initial-branch=main", main)
+  for (const [path, content] of Object.entries(files)) await put(main, path, content)
+  await git("-C", main, "add", ".")
+  await git("-C", main, "-c", "user.name=Test User", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+  await git("-C", main, "worktree", "add", "-b", "session", worktree)
   return { main, worktree }
 }
 

@@ -1,9 +1,10 @@
 import { deviceIdSchema, machineIdSchema, type ClientKind, type DeviceCurrent, type FleetClientRouteRefusal } from "@getdomovoi/protocol"
 
 export type ClientAdmission = { machineId: string; deviceId?: string }
-export type ClientAdmissionRefusal = FleetClientRouteRefusal | "client-credential-required" | "verification-unavailable"
+export type ClientAdmissionRefusal = FleetClientRouteRefusal | "client-credential-required" | "verification-unavailable" | "relay-verification-refused"
 
 const messages: Record<ClientAdmissionRefusal, string> = {
+  "relay-verification-refused": "This client could not verify the relay connection. Check the client configuration, saved relay identity and recovery information before reconnecting.",
   "not-enrolled": "That machine is no longer enrolled. Refresh Fleet and enroll it again before authorizing this client.",
   "machine-unavailable": "That machine is not reachable. Start its daemon and refresh Fleet before trying again.",
   "pairing-required": "The daemon-to-daemon pairing needs replacing. Enroll the machine again, then authorize this client separately.",

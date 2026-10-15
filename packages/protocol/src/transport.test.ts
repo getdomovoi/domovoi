@@ -74,6 +74,23 @@ describe("usableTransports", () => {
     expect(usableTransports([relay])).toEqual([])
   })
 
+  it("allows an encrypted relay adapter explicitly without changing default consumers", () => {
+    expect(usableTransports([relay, tailnet, loopback], { encryptedRelay: true }))
+      .toEqual([loopback, tailnet, relay])
+    expect(usableTransports([relay], { encryptedRelay: false })).toEqual([])
+    expect(usableTransports([relay], { encryptedRelay: "true" } as never)).toEqual([])
+    expect(usableTransports([relay])).toEqual([])
+  })
+
+  it("keeps endpoint validation and SSH restrictions when relay is explicitly enabled", () => {
+    expect(usableTransports([{ ...ssh, configured: false }, relay], { encryptedRelay: true }))
+      .toEqual([relay])
+    expect(() => usableTransports([{ ...relay, endpoint: "ws://relay.example/rpc" }], { encryptedRelay: true }))
+      .toThrow()
+    expect(() => usableTransports([{ ...relay, authenticated: false } as never], { encryptedRelay: true }))
+      .toThrow()
+  })
+
   it("has nothing to choose when no candidate is usable", () => {
     expect(usableTransports([])[0]).toBeUndefined()
   })

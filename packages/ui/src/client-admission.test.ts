@@ -173,3 +173,97 @@ describe("client credential admission", () => {
     expect(sockets.socket(0).readyState).toBe(sockets.socket(0).CLOSED)
   })
 })
+
+const relayRefusalCopy = "This client could not verify the relay connection. Check the client configuration, saved relay identity and recovery information before reconnecting."
+const credentialRefusalCopy = "The credential was refused or is not for this client. Ask the target's operator for a new client credential of this app's kind. Do not use a machine credential or daemon root token."
+
+it.each([true, false])("uses fixed local relay refusal copy with admission=%s", async (admission) => {
+  client = new DomovoiClient("ws://localhost/rpc", "desktop", { budgets, ...(admission ? { admission: { machineId } } : {}) })
+  const refused = vi.fn(), snapshots = vi.fn()
+  client.addEventListener("authentication-required", refused)
+  client.addEventListener("snapshot", snapshots)
+  const outcome = client.connect().catch((error: unknown) => error)
+  Object.defineProperty(sockets.socket(0), "localAdmissionRefusal", { value: "relay-verification-refused" })
+  sockets.socket(0).drop(1008, "untrusted peer text")
+  expect(await outcome).toMatchObject({ name: "ClientAdmissionError", reason: "relay-verification-refused", message: relayRefusalCopy })
+  expect(refused.mock.calls[0]?.[0].detail.message).toBe(relayRefusalCopy)
+  expect(snapshots).not.toHaveBeenCalled()
+  await vi.advanceTimersByTimeAsync(5_000)
+  expect(sockets.sockets).toHaveLength(1)
+})
+
+it.each(["", "ordinary policy refusal", "relay-verification-refused"])("preserves direct admitted 1008 behavior for peer reason %j", async (reason) => {
+  client = new DomovoiClient("ws://localhost/rpc", "desktop", { budgets, admission: { machineId } })
+  const refused = vi.fn()
+  client.addEventListener("authentication-required", refused)
+  const outcome = client.connect().catch((error: unknown) => error)
+  sockets.socket(0).drop(1008, reason)
+  expect(await outcome).toMatchObject({ name: "ClientAdmissionError", reason: "client-credential-required", message: credentialRefusalCopy })
+  expect(refused.mock.calls[0]?.[0].detail.message).toBe(credentialRefusalCopy)
+  await vi.advanceTimersByTimeAsync(5_000)
+  expect(sockets.sockets).toHaveLength(1)
+})
+
+it.each(["", "ordinary policy refusal", "relay-verification-refused"])("preserves legacy 1008 copy for peer reason %j", async (reason) => {
+  client = new DomovoiClient("ws://localhost/rpc", "desktop", { budgets })
+  const refused = vi.fn()
+  client.addEventListener("authentication-required", refused)
+  const outcome = client.connect().catch((error: unknown) => error)
+  sockets.socket(0).drop(1008, reason)
+  expect(await outcome).toEqual(new Error("Daemon connection closed"))
+  expect(await outcome).not.toBeInstanceOf(ClientAdmissionError)
+  expect(refused.mock.calls[0]?.[0].detail.message).toBe(reason || "Daemon authentication required")
+  await vi.advanceTimersByTimeAsync(5_000)
+  expect(sockets.sockets).toHaveLength(1)
+})
+
+it("preserves a local verification refusal for pending RPCs after admission", async () => {
+  client = new DomovoiClient("ws://localhost/rpc", "desktop", { budgets, admission: { machineId } })
+  const refused = vi.fn()
+  client.addEventListener("authentication-required", refused)
+  const connected = client.connect()
+  completeHandshake(sockets.socket(0))
+  await vi.advanceTimersByTimeAsync(0)
+  respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "desktop", clientAccess: "full" })
+  await connected
+  const pending = client.request("workspace.get", {}).catch((error: unknown) => error)
+  Object.defineProperty(sockets.socket(0), "localAdmissionRefusal", { value: "relay-verification-refused" })
+  sockets.socket(0).drop(1008, "untrusted peer text")
+  expect(await pending).toMatchObject({ name: "ClientAdmissionError", reason: "relay-verification-refused", message: relayRefusalCopy })
+  expect(refused.mock.calls[0]?.[0].detail.message).toBe(relayRefusalCopy)
+  await vi.advanceTimersByTimeAsync(5_000)
+  expect(sockets.sockets).toHaveLength(1)
+})
+
+it("ignores unrecognized local signal values", async () => {
+  client = new DomovoiClient("ws://localhost/rpc", "desktop", { budgets, admission: { machineId } })
+  const outcome = client.connect().catch((error: unknown) => error)
+  Object.defineProperty(sockets.socket(0), "localAdmissionRefusal", { value: "untrusted text" })
+  sockets.socket(0).drop(1008, "relay-verification-refused")
+  expect(await outcome).toMatchObject({ name: "ClientAdmissionError", reason: "client-credential-required", message: credentialRefusalCopy })
+})
+
+it.each([true, false].flatMap((admission) => ["", "ordinary policy refusal", "relay-verification-refused"].map((reason) => ({ admission, reason }))))(
+  "preserves connected direct/legacy 1008 pending RPC and copy: %j", async ({ admission, reason }) => {
+    client = new DomovoiClient("ws://localhost/rpc", "desktop", { budgets, ...(admission ? { admission: { machineId } } : {}) })
+    const refused = vi.fn(), snapshots = vi.fn()
+    client.addEventListener("authentication-required", refused)
+    client.addEventListener("snapshot", snapshots)
+    const connected = client.connect()
+    completeHandshake(sockets.socket(0))
+    await vi.advanceTimersByTimeAsync(0)
+    if (admission) respond(sockets.socket(0), "device.current", { kind: "client", machineId, deviceId, client: "desktop", clientAccess: "full" })
+    await connected
+    const pending = client.request("workspace.get", {}).catch((error: unknown) => error)
+    sockets.socket(0).drop(1008, reason)
+    if (admission) expect(await pending).toMatchObject({ name: "ClientAdmissionError", reason: "client-credential-required", message: credentialRefusalCopy })
+    else {
+      expect(await pending).toEqual(new Error("Daemon connection closed"))
+      expect(await pending).not.toBeInstanceOf(ClientAdmissionError)
+    }
+    expect(refused.mock.calls[0]?.[0].detail.message).toBe(admission ? credentialRefusalCopy : reason || "Daemon authentication required")
+    expect(snapshots).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(sockets.sockets).toHaveLength(1)
+  },
+)

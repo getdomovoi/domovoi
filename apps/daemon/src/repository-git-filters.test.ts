@@ -125,9 +125,10 @@ describe("readRepositoryGitFilters", () => {
     await writeFile(join(root, ".git", "config"), "[filter \"broken\"\n\tsmudge = cat\n")
     await expect(readRepositoryGitFilters(root)).rejects.toMatchObject({ name: "RepositoryGitConfigUnreadableError", reason: "git-failed" })
 
+    // Use a folder outside a repository. A dangling .git pointer is invalid
+    // metadata, and Git versions use different diagnostics for that failure.
     const linked = join(scratch, "linked")
     await mkdir(linked)
-    await writeFile(join(linked, ".git"), "gitdir: ./missing\n")
     expect(await readRepositoryGitFilters(linked)).toEqual([])
   })
 
