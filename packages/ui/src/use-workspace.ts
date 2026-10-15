@@ -117,6 +117,9 @@ export function useWorkspace(
   const [clientAccess, setClientAccess] = useState<ClientAccess>("full")
   const [stateRecovery, setStateRecovery] = useState<StateRecovery | null>(null)
   const [sessionRead, setSessionRead] = useState<(SessionReadFailure & { target: string }) | null>(null)
+  // Counts session opens, so a read's ending can tell whether a later open
+  // has replaced it.
+  const activationGeneration = useRef(0)
   // The id the daemon gave the connection open now, from its hello. A row the
   // daemon attributes to a connection is this client's only when it names this
   // one, so it is null while no connection is open.
@@ -364,10 +367,13 @@ export function useWorkspace(
   // Opening a session reads its thread: session.activate answers with the
   // workspace that holds it. A read that ends without an answer is recorded
   // here for the thread column, with the attempts this client really sent;
-  // an answer, a refusal included, clears it.
+  // an answer, a refusal included, clears it. Only the latest open records a
+  // failure: a read the person has moved on from cannot draw over the session
+  // they opened after it.
   const activateSession = useCallback(async (sessionId: string) => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
+    const generation = ++activationGeneration.current
     const startedAt = new Date()
     setSessionRead((current) => current?.target === target && current.sessionId === sessionId
       ? { ...current, retrying: true }
@@ -376,6 +382,7 @@ export function useWorkspace(
       updateSnapshotFrom(client, await client.activateSession(sessionId))
       setSessionRead((current) => current?.sessionId === sessionId ? null : current)
     } catch (cause) {
+      if (generation !== activationGeneration.current) throw cause
       // A connection this hook already replaced closed under its own request:
       // that is a change of target, not a failed read.
       const outcome = isCurrentConnection(clientRef.current, client) ? sessionReadOutcome(cause) : undefined

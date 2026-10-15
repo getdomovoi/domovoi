@@ -29,14 +29,20 @@ export type SessionReadFailure = {
 export const sessionReadLogAttempts = 5
 
 // The client's own words for a request that ended without an answer
-// (client.ts): the socket closed under it, or the daemon's answer did not
+// (client.ts): the socket closed under it, the daemon's reply named the
+// request but was not a response this client can parse, or its result did not
 // parse as the workspace the method returns. Everything else, a refusal
 // included, is not a failed read.
+const unreadableAnswers = new Set([
+  "Daemon returned a response this client could not parse",
+  "Daemon returned an invalid RPC result",
+])
+
 export function sessionReadOutcome(cause: unknown): SessionReadOutcome | undefined {
   if (cause instanceof DomovoiRpcTimeoutError) return { kind: "timeout", timeoutMs: cause.timeoutMs }
   if (!(cause instanceof Error) || cause instanceof DaemonRpcError) return undefined
   if (cause.message === "Daemon connection closed") return { kind: "closed" }
-  if (cause.message === "Daemon returned an invalid RPC result") return { kind: "unreadable" }
+  if (unreadableAnswers.has(cause.message)) return { kind: "unreadable" }
   return undefined
 }
 
@@ -53,8 +59,9 @@ export class SessionReadError extends Error {
 }
 
 // What an activation failure puts in the shell's alert: nothing for a failed
-// read, which the thread column draws, and the message for anything else.
-export function activationAlert(cause: unknown, fallback: string): string {
-  if (cause instanceof SessionReadError) return ""
+// read while the thread column is on screen to draw it, and the message for
+// anything else, a failed read the person cannot see included.
+export function activationAlert(cause: unknown, fallback: string, threadColumnShown: boolean): string {
+  if (cause instanceof SessionReadError && threadColumnShown) return ""
   return cause instanceof Error ? cause.message : fallback
 }

@@ -11,10 +11,12 @@ import {
   notify,
   pendingRequest,
   respond,
+  sentRequests,
   workspaceSnapshot,
   type FakeWebSocket,
   type FakeWebSocketHarness,
 } from "./test-support/fake-websocket"
+import type { DesktopWindowBridge } from "./desktop-platform"
 
 // Opening a session is the one read the thread waits on: session.activate
 // answers with the workspace whose thread is that session's. When it ends
@@ -72,7 +74,9 @@ async function openShell(props: Parameters<typeof WorkspaceShell>[0] = {}, timer
 }
 
 async function pickSession(user: ReturnType<typeof userEvent.setup>, title: string) {
-  await user.click(screen.getByRole("button", { name: /^Sessions \d/ }))
+  // The list may still be open from the pick before.
+  const sessions = screen.queryByRole("button", { name: /^Sessions \d/ })
+  if (sessions) await user.click(sessions)
   await user.click(screen.getByRole("button", { name: new RegExp(`^${title.slice(0, 24)}`) }))
   await settle()
 }
@@ -83,6 +87,14 @@ function answerUnreadably(socket: FakeWebSocket) {
   const request = pendingRequest(socket, "session.activate")
   socket.answered.add(request.id)
   socket.receive({ jsonrpc: "2.0", id: request.id, result: { unreadable: true } })
+}
+
+// An answer whose envelope does not parse: it names the request but carries
+// neither a result nor an error.
+function answerWithoutEnvelope(socket: FakeWebSocket) {
+  const request = pendingRequest(socket, "session.activate")
+  socket.answered.add(request.id)
+  socket.receive({ jsonrpc: "2.0", id: request.id })
 }
 
 const failedRead = () => screen.getByRole("region", { name: "Could not read this session" })
@@ -193,6 +205,86 @@ describe("a session read that ends without an answer", () => {
     await settle()
     expect(screen.queryByRole("region", { name: "Could not read this session" })).toBeNull()
     expect(screen.getByText("The second session's own line")).toBeTruthy()
+  })
+
+  it("draws an answer whose envelope does not parse as a failed read", async () => {
+    const { user, socket, other } = await openShell()
+    await pickSession(user, other.title)
+    await act(async () => { answerWithoutEnvelope(socket) })
+    await settle()
+
+    expect(failedRead().textContent).toContain("The daemon answered, but the answer could not be read.")
+    expect(screen.queryByText(previousLine)).toBeNull()
+  })
+
+  // Only the latest open decides what the thread column shows: a read the
+  // person has moved on from cannot put its failure over the session they
+  // opened after it, whichever of the two ends first.
+  it.each(["the later open answers first", "the earlier read fails first"] as const)("ignores a superseded read's failure when %s", async (order) => {
+    const { user, socket, snapshot, other } = await openShell()
+    const third = snapshot.sessions.find((session) => session.id !== snapshot.activeSessionId && session.id !== other.id)!
+    await pickSession(user, other.title)
+    await pickSession(user, third.title)
+    const [earlier, later] = sentRequests(socket, "session.activate")
+    expect(earlier?.params).toMatchObject({ sessionId: other.id })
+    expect(later?.params).toMatchObject({ sessionId: third.id })
+
+    const answerLater = () => {
+      socket.answered.add(later!.id)
+      socket.receive({ jsonrpc: "2.0", id: later!.id, result: workspaceSnapshot({
+        activeSessionId: third.id,
+        thread: [{ id: "third-line", sessionId: third.id, kind: "system", body: "The third session's own line", createdAt: "2026-10-14T09:02:00.000Z" }],
+      }) })
+    }
+    const failEarlier = () => {
+      socket.answered.add(earlier!.id)
+      socket.receive({ jsonrpc: "2.0", id: earlier!.id, result: { unreadable: true } })
+    }
+    await act(async () => {
+      if (order === "the later open answers first") { answerLater(); failEarlier() } else { failEarlier(); answerLater() }
+    })
+    await settle()
+
+    expect(screen.queryByRole("region", { name: "Could not read this session" })).toBeNull()
+    expect(screen.getByText("The third session's own line")).toBeTruthy()
+  })
+
+  // A notification can open a session while Machines is on screen. The thread
+  // column is not drawn there, so the alert still says the read failed.
+  it("keeps the alert when the thread column is not on screen", async () => {
+    let activateFromNotification: ((sessionId: string) => void) | undefined
+    const windowBridge: DesktopWindowBridge = {
+      platform: "darwin",
+      getRpcEndpoint: async () => ({ url: "ws://127.0.0.1:47831/rpc", token: "t" }),
+      captureAnnotation: async () => { throw new Error("not in this test") },
+      notify: async () => true,
+      onNotificationActivate: (listener) => {
+        activateFromNotification = listener
+        return () => { activateFromNotification = undefined }
+      },
+      openDirectory: async () => ({ status: "cancelled" as const }),
+      readClipboardText: async () => "",
+      writeClipboardText: async () => true,
+      openExternal: async () => true,
+      onDeepLink: () => () => {},
+      getWindowDecoration: async () => "domovoi",
+      setWindowDecoration: async () => true,
+      minimize: () => {},
+      maximize: () => {},
+      close: () => {},
+    }
+    const { user, socket, other } = await openShell({ windowBridge })
+    await pickSession(user, other.title)
+    await act(async () => { answerUnreadably(socket) })
+    await settle()
+    await user.click(within(failedRead()).getByRole("button", { name: "Open the machine" }))
+    await screen.findByRole("heading", { name: "Machines" })
+
+    await act(async () => { activateFromNotification?.(other.id) })
+    await act(async () => { answerUnreadably(socket) })
+    await settle()
+
+    expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
   })
 
   it("opens the Machines view from Open the machine", async () => {

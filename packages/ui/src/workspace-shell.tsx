@@ -777,6 +777,12 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     scope: StartScope
   } | null>(null)
   const startRefusals = useRef(0)
+  // Whether the thread column, where a failed session read is drawn, is on
+  // screen. An open that fails anywhere else still says so in the alert.
+  const threadColumnShown = useRef(false)
+  useEffect(() => {
+    threadColumnShown.current = surface === "workspace" && !startRefusal
+  }, [startRefusal, surface])
   // Advances on every scope change and never goes back. The effect that
   // advances it also retires the card, so a result that lands before it runs
   // is cleared with the card.
@@ -877,7 +883,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   const activateVisibleSession = (sessionId: string) => {
     setWorkspaceError("")
     void activateSession(sessionId).catch((cause: unknown) => {
-      setWorkspaceError(activationAlert(cause, "The session could not be opened"))
+      setWorkspaceError(activationAlert(cause, "The session could not be opened", threadColumnShown.current))
     })
   }
   // Opening a session means showing its thread. Activation alone leaves whatever
@@ -1399,7 +1405,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       setLauncherTransfer({ sessionId, machineId, sourceMachineId, opened: false })
       void activateSession(sessionId).catch((cause: unknown) => {
         setLauncherTransfer((current) => current?.sessionId === sessionId ? null : current)
-        setWorkspaceError(activationAlert(cause, "The session could not be opened"))
+        setWorkspaceError(activationAlert(cause, "The session could not be opened", threadColumnShown.current))
       })
     },
     currentMachineId: attached?.machineId ?? snapshot?.machine.id,
@@ -1569,7 +1575,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     return windowBridge.onNotificationActivate((sessionId) => {
       setWorkspaceError("")
       void activateSession(sessionId).catch((cause: unknown) => {
-        setWorkspaceError(activationAlert(cause, "The session could not be opened"))
+        setWorkspaceError(activationAlert(cause, "The session could not be opened", threadColumnShown.current))
       })
     })
   }, [activateSession, windowBridge])
@@ -1595,7 +1601,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     deepLinkRoutingRef.current = true
     setWorkspaceError("")
     void activateSession(sessionId).catch((cause: unknown) => {
-      setWorkspaceError(activationAlert(cause, "The linked session could not be opened"))
+      setWorkspaceError(activationAlert(cause, "The linked session could not be opened", threadColumnShown.current))
     }).finally(() => {
       deepLinkRoutingRef.current = false
       removeLink()
