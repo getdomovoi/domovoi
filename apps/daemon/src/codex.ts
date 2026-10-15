@@ -90,6 +90,11 @@ export type CodexPermissionProfile = "domovoi-read" | "domovoi-build"
 export type CodexPolicy = {
   approvalPolicy: "on-request" | "never"
   permissions: CodexPermissionProfile
+  // Codex sends an approval to the reviewer its configuration names. The
+  // person's own approvals_reviewer = "auto_review" made Codex 0.162.1 decide
+  // a request to run outside the sandbox with its own reviewer, so Domovoi
+  // never saw it (walk finding F15). Every thread and turn names the person.
+  approvalsReviewer: "user"
 }
 
 // Codex reads anywhere its sandbox allows without asking. Until a strict
@@ -208,10 +213,44 @@ type RepositoryPlan = { digest: string; servers: Record<string, CodexRepositoryS
 // answers in one page unless asked for a limit.
 const maximumCatalogPages = 50
 
+// Session worktrees live in ~/.domovoi/worktrees, inside a store the sandbox
+// refuses. Codex 0.162.1 keeps every deny entry when it runs a command the
+// person allowed outside its sandbox, and there a deny on a directory
+// outranks the worktree within it (measured 2026-10-15), so refusing
+// ~/.domovoi whole refused an approved write in the worktree with "Operation
+// not permitted", and in Ask every read of it (walk finding F15). The store is
+// refused by globs that match every name in it but worktrees, and the secret
+// file patterns are refused in every session worktree, the thread's own
+// included, as :workspace_roots refuses them in the thread's own.
+const codexProfileStore = "~/.domovoi"
+const codexSessionWorktrees = "worktrees"
+
+// Globs for every entry of directory except kept, and everything below them:
+// a name that differs from kept at some character ([!c] is any one character
+// but c), a name kept begins with, and a name that begins with kept and goes
+// on. kept must hold no glob character.
+function codexGlobsExcept(directory: string, kept: string): string[] {
+  const names = [...kept].flatMap((character, index) => {
+    const prefix = kept.slice(0, index)
+    return index === 0 ? [`[!${character}]*`] : [prefix, `${prefix}[!${character}]*`]
+  })
+  names.push(`${kept}?*`)
+  return names.flatMap((name) => [`${directory}/${name}`, `${directory}/${name}/**`])
+}
+
+function codexDeniedLocations(): string[] {
+  return codexSecretLocations.flatMap((location) => location === codexProfileStore
+    ? [
+        ...codexGlobsExcept(location, codexSessionWorktrees),
+        ...codexWorktreeSecretPatterns.map((pattern) => `${location}/${codexSessionWorktrees}/${pattern}`),
+      ]
+    : [location])
+}
+
 export function codexAppServerArguments(): string[] {
   const worktreeSecrets = `{${codexWorktreeSecretPatterns.map((pattern) => `${JSON.stringify(pattern)}="deny"`).join(",")}}`
   const denied = `{${[
-    ...codexSecretLocations.map((location) => `${JSON.stringify(location)}="deny"`),
+    ...codexDeniedLocations().map((location) => `${JSON.stringify(location)}="deny"`),
     `":workspace_roots"=${worktreeSecrets}`,
   ].join(",")}}`
   const profile = (name: CodexPermissionProfile, base: string) => [
@@ -238,12 +277,25 @@ type PendingRequest = {
 const STDERR_TAIL_BYTES = 16_384
 
 export function codexPolicyFor(runtime: Runtime): CodexPolicy {
-  if (runtime.permissionMode === "ask") return { approvalPolicy: "on-request", permissions: "domovoi-read" }
-  if (runtime.permissionMode === "plan") return { approvalPolicy: "never", permissions: "domovoi-read" }
+  const approvalsReviewer = "user"
+  if (runtime.permissionMode === "ask") return { approvalPolicy: "on-request", permissions: "domovoi-read", approvalsReviewer }
+  if (runtime.permissionMode === "plan") return { approvalPolicy: "never", permissions: "domovoi-read", approvalsReviewer }
   return {
     approvalPolicy: runtime.permissionMode === "build" && runtime.auto ? "never" : "on-request",
     permissions: "domovoi-build",
+    approvalsReviewer,
   }
+}
+
+// What a thread/start or thread/resume result says about who reviews its
+// approvals. A Codex that reports none predates the field and has no reviewer
+// but the client; any other reviewer than the person refuses the thread.
+function refuseOtherReviewer(result: unknown): void {
+  const reviewer = asRecord(result)?.approvalsReviewer
+  if (reviewer === undefined || reviewer === null || reviewer === "user") return
+  throw new Error(
+    `Codex would send this thread's approvals to its own reviewer (${String(reviewer)}) instead of to Domovoi, so Domovoi did not use it.`,
+  )
 }
 
 export class StdioCodexTransport implements CodexTransport {
@@ -477,6 +529,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
       cwd,
       model: runtime.model,
       approvalPolicy: policy.approvalPolicy,
+      approvalsReviewer: policy.approvalsReviewer,
       sandbox,
       serviceName: "domovoi",
       developerInstructions: own ? `${own}\n\n${codexDeveloperInstructions}` : codexDeveloperInstructions,
@@ -484,6 +537,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     })
     const threadId = nestedId(result, "thread")
     if (!threadId) throw new Error("Codex did not return a thread id")
+    refuseOtherReviewer(result)
     this.#opened(threadId, plan, servers)
     return threadId
   }
@@ -629,7 +683,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.#trustApplied.delete(threadId)
   }
 
-  async resumeThread({ threadId, cwd, repositoryTrust }: Parameters<AgentAdapter["resumeThread"]>[0]): Promise<void> {
+  async resumeThread({ threadId, cwd, runtime, repositoryTrust }: Parameters<AgentAdapter["resumeThread"]>[0]): Promise<void> {
     // This open decides again: until it succeeds under a trusted verdict, the
     // thread's turns meet the worktree refusal (ruling Q144 A).
     this.#trustedThreads.delete(threadId)
@@ -640,10 +694,15 @@ export class CodexAppServerAdapter implements AgentAdapter {
       servers = await this.#serversToPass(plan, await this.#request("config/read", { cwd, includeLayers: true }))
       refuseRepositoryConfig(cwd, true)
     }
-    const result = await this.#request("thread/resume", { threadId, config: codexThreadConfig(cwd, servers) })
+    const result = await this.#request("thread/resume", {
+      threadId,
+      approvalsReviewer: codexPolicyFor(runtime).approvalsReviewer,
+      config: codexThreadConfig(cwd, servers),
+    })
     if (nestedId(result, "thread") !== threadId) {
       throw new Error("Codex did not resume the requested thread")
     }
+    refuseOtherReviewer(result)
     this.#opened(threadId, plan, servers)
   }
 
@@ -951,7 +1010,48 @@ export class CodexAppServerAdapter implements AgentAdapter {
         this.#emit({ type: "usage", threadId: params.threadId, turnId: params.turnId, usage })
       }
       this.#emit({ type: "turn-completed", params })
+    } else if (codexReviewerNotifications.has(message.method ?? "")) {
+      // Every thread and turn names the person as the reviewer, and a thread
+      // Codex reports otherwise is refused, so this is a Codex that decided
+      // an approval without asking. Its reviewer took about two seconds in
+      // the walk; stopping the app-server now stops the command it would run.
+      const transport = this.#transport
+      if (transport) this.#handleTransportFailure(transport, new Error(codexReviewerStopReason))
+    } else if (message.id !== undefined && typeof message.method === "string") {
+      this.#refuseRequest(message.id, message.method, params)
     }
+  }
+
+  // A request Codex waits on that Domovoi does not show as a card is refused
+  // at once, so the turn does not wait on an answer that never comes. Codex
+  // is told; the session shows the refusal unless the request only asks the
+  // client for a service, or names no thread to show it in.
+  #refuseRequest(id: number, method: string, params: Record<string, unknown>): void {
+    const decline = Object.hasOwn(codexRequestDeclines, method) ? codexRequestDeclines[method] : undefined
+    this.#transport?.send(decline === undefined
+      ? { id, error: { code: -32601, message: `Domovoi does not handle ${method}` } }
+      : { id, result: decline })
+    if (codexServiceRequests.has(method)) return
+    const threadId = typeof params.threadId === "string" ? params.threadId
+      : typeof params.conversationId === "string" ? params.conversationId
+      : undefined
+    if (!threadId) return
+    const itemId = typeof params.itemId === "string" ? params.itemId
+      : typeof params.callId === "string" ? params.callId
+      : undefined
+    const command = typeof params.command === "string" && params.command.trim() ? params.command
+      : Array.isArray(params.command) && params.command.length > 0 && params.command.every((part) => typeof part === "string")
+        ? params.command.join(" ")
+        : method
+    this.#emit({
+      type: "policy-refused",
+      threadId,
+      ...(typeof params.turnId === "string" ? { turnId: params.turnId } : {}),
+      ...(itemId ? { itemId } : {}),
+      command,
+      reason: typeof params.reason === "string" && params.reason.trim() ? params.reason : `Codex sent ${method}`,
+      refusal: codexRequestRefusal,
+    })
   }
 
   #emit(event: AgentEvent): void {
@@ -963,6 +1063,32 @@ export class CodexAppServerAdapter implements AgentAdapter {
     this.#pending.clear()
   }
 }
+
+// Codex 0.162.1 reports its own reviewer deciding an approval with these.
+const codexReviewerNotifications = new Set(["item/autoApprovalReview/started", "item/autoApprovalReview/completed"])
+
+const codexReviewerStopReason = "Codex asked its own reviewer to decide an approval instead of asking you through Domovoi, so Domovoi stopped Codex. The reviewer may have answered before Codex stopped: check the session's changes."
+
+// Requests that ask the client for a service rather than the person for a
+// decision (codex-cli 0.162.1 app-server schema).
+const codexServiceRequests = new Set(["account/chatgptAuthTokens/refresh", "attestation/generate", "currentTime/read", "item/tool/call"])
+
+// The refusal each approval request Domovoi does not show takes, in that
+// request's own response shape (codex-cli 0.162.1 app-server schema). Any
+// other request is answered with a JSON-RPC error.
+const codexRequestDeclines: Record<string, Record<string, unknown>> = {
+  "item/fileChange/requestApproval": { decision: "decline" },
+  "item/permissions/requestApproval": { permissions: {} },
+  execCommandApproval: { decision: "denied" },
+  applyPatchApproval: { decision: "denied" },
+}
+
+export const codexRequestRefusal = {
+  rule: "Domovoi cannot show this Codex request as an approval card",
+  setBy: "Domovoi",
+  scope: "This request",
+  remedy: "Codex was told the request was refused. Ask the agent to do this another way.",
+} as const
 
 type ToolServerCall = { threadId: string; turnId: string; server: string; tool: string; arguments: unknown }
 

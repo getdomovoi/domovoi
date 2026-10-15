@@ -132,7 +132,10 @@ describe("credentialStores", () => {
   it.each(requiredStores)("keeps $location in the list the sandbox, the card and the command gate share", ({ location }) => {
     expect(credentialStores.map((store) => store.location)).toContain(location)
     expect(codexSecretLocations).toContain(location)
-    expect(codexAppServerArguments().join(" ")).toContain(`${JSON.stringify(location)}="deny"`)
+    // ~/.domovoi holds the session worktrees, so the sandbox refuses every
+    // entry in it but those (codex.test.ts checks the globs name by name).
+    const denied = location === "~/.domovoi" ? "~/.domovoi/[!w]*" : location
+    expect(codexAppServerArguments().join(" ")).toContain(`${JSON.stringify(denied)}="deny"`)
   })
 })
 

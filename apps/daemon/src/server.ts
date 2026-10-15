@@ -11471,7 +11471,7 @@ export class DomovoiDaemon {
     }
 
     if (event.type === "policy-refused") {
-      const refusal = permissionPolicyRefusalFor(session.runtime)
+      const refusal = event.refusal ?? permissionPolicyRefusalFor(session.runtime)
       if (refusal) {
         this.#snapshot.thread.push({
           id: `policy-refusal-${randomUUID()}`,
