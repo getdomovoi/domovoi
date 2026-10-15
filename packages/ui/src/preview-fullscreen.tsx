@@ -7,6 +7,7 @@ import { Dialog, DialogContent, DialogDescription, DialogTitle } from "./compone
 import { Field, FieldLabel } from "./components/ui/field"
 import { Textarea } from "./components/ui/textarea"
 import { cn } from "./lib/utils"
+import { titlebarInsetStyle, useTitlebarLeadingInset } from "./titlebar-inset"
 
 // The design's fullscreen preview (D23): a full surface over the shell with
 // the title, the read-only path line, widths and Exit fullscreen (esc) on top,
@@ -42,6 +43,7 @@ export function PreviewFullscreen({
   draft?: ReactNode
   comments: ReactNode
 }) {
+  const titlebarInset = useTitlebarLeadingInset()
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
@@ -52,12 +54,14 @@ export function PreviewFullscreen({
         onEscapeKeyDown={(event) => event.stopPropagation()}
         className="top-0 left-0 flex h-dvh w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-background p-0 ring-0 sm:max-w-none"
       >
-        <div className="flex flex-none flex-wrap items-center gap-[11px] border-b px-4 py-3">
+        {/* This row covers the shell's titlebar, so it is the titlebar: it
+            starts past the macOS window buttons and drags the window. */}
+        <div className="electron-drag flex flex-none flex-wrap items-center gap-[11px] border-b px-4 py-3" style={titlebarInsetStyle(titlebarInset)}>
           <DialogTitle className="text-[12.5px] font-medium">{title}</DialogTitle>
           <DialogDescription className="font-machine text-mono-xs text-faint">{meta}</DialogDescription>
           <span className="flex-1" />
-          {widths}
-          <Button variant="outline" size="xs" className="min-h-11 rounded-full text-muted-foreground" onClick={() => onOpenChange(false)}>
+          {widths ? <div className="electron-no-drag flex items-center">{widths}</div> : null}
+          <Button variant="outline" size="xs" className="electron-no-drag min-h-11 rounded-full text-muted-foreground" onClick={() => onOpenChange(false)}>
             <Minimize2Icon data-icon="inline-start" />
             Exit fullscreen
             <kbd aria-hidden="true" className="font-machine text-mono-xs text-faint">esc</kbd>

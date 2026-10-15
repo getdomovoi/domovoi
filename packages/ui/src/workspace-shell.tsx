@@ -150,6 +150,7 @@ import {
 import { launcherContentClassName, launcherTitle, type LauncherMode } from "./launcher-frame"
 import { ProjectSwitchConfirmationDialog } from "./project-switch-confirmation"
 import { AppBar, useUsageToday } from "./app-bar"
+import { TitlebarLeadingInset, titlebarLeadingInset } from "./titlebar-inset"
 import { ArchiveConfirmBody, Thread, archiveSessionDescription, freshStartPanel, moveDialog } from "./thread"
 import { HandheldTabMachine, offInHandheldTab } from "./handheld-tab"
 import { FailedSessionRead } from "./failed-read-state"
@@ -1856,6 +1857,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
 
   return (
     <SurfaceCodeReload.Provider value={reloadForNewCode}>
+    <TitlebarLeadingInset.Provider value={titlebarLeadingInset(windowBridge, activeWindowDecoration)}>
     <HandheldTabMachine.Provider value={handheld ? handheldMachineName ?? "this machine" : undefined}>
     <WorkspaceConnectionProvider
       connected={connected}
@@ -2297,6 +2299,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     </TooltipProvider>
     </WorkspaceConnectionProvider>
     </HandheldTabMachine.Provider>
+    </TitlebarLeadingInset.Provider>
     </SurfaceCodeReload.Provider>
   )
 }
