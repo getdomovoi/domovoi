@@ -242,6 +242,7 @@ describe("a session read that ends without an answer", () => {
     await act(async () => { answerUnreadably(socket) })
     await settle()
     expect(failedRead()).toBeTruthy()
+    expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
 
     await act(async () => {
       notify(socket, "workspace.changed", workspaceSnapshot({
@@ -307,6 +308,7 @@ describe("a session read that ends without an answer", () => {
     await pickSession(user, other.title)
     await act(async () => { answerUnreadably(socket) })
     await settle()
+    expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
     await user.click(within(failedRead()).getByRole("button", { name: "Open the machine" }))
     await screen.findByRole("heading", { name: "Machines" })
 
@@ -373,6 +375,7 @@ describe("a session read that ends without an answer", () => {
     const retry = within(failedRead()).getByRole("button", { name: "Try again" }) as HTMLButtonElement
     expect(retry.disabled).toBe(false)
     expect(failedRead().textContent).not.toMatch(/off in a phone or tablet tab/u)
+    expect(screen.getByText("Daemon returned an invalid RPC result")).toBeTruthy()
     await user.click(retry)
     expect(pendingRequest(socket, "session.activate").params).toMatchObject({ sessionId: other.id })
     await act(async () => { answerUnreadably(socket) })
