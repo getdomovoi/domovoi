@@ -58,6 +58,12 @@ export function Composer({
   const { palette } = useTheme()
   const blocked = !readiness.can
   const expanded = focused || attachments.length > 0 || Boolean(problem) || blocked
+  const hint = readiness.can ? readiness.hint : undefined
+  // At rest the composer is a pill that lays its children in one row. A hint
+  // in that row squeezed the input until its placeholder clipped (F8, walk
+  // 2026-10-15), so a hint stacks the bar and sits on its own line under the
+  // input row, as frame 12 draws it, without opening the rest of the card.
+  const stacked = expanded || hint !== undefined
   const wordless = attachments.length > 0 && draft.trim().length === 0
   // Frame 14b: queued images a model reported to take none lock send before
   // it is pressed. Not knowing does not lock it; the line says so instead.
@@ -72,14 +78,13 @@ export function Composer({
 
   return (
     <FloatingBar
-      shape={expanded ? "card" : "pill"}
-      padding={expanded ? "stack" : "composer"}
+      shape={stacked ? "card" : "pill"}
+      padding={stacked ? "stack" : "composer"}
       bottomInset={bottomInset}
       onFootprint={onFootprint}
-      className={expanded ? "gap-2" : ""}
+      className={stacked ? "gap-2" : ""}
     >
       {problem ? <Text className="text-[11px] text-destructive">{problem}</Text> : null}
-      {readiness.can && readiness.hint ? <Text variant="note">{readiness.hint}</Text> : null}
       {blocked ? <Text variant="note">{readiness.reason}</Text> : null}
 
       {expanded && !blocked ? (
@@ -193,6 +198,12 @@ export function Composer({
             : <Icon name="arrow-up" tone={canSend ? "primary-foreground" : "faint"} size={18} />}
         </Pressable>
       </View>
+      {hint ? (
+        <View className="flex-row items-center gap-2 px-1">
+          <View className="h-[7px] w-[7px] rounded-full bg-info" />
+          <Text variant="note" className="flex-1">{hint}</Text>
+        </View>
+      ) : null}
     </FloatingBar>
   )
 }
