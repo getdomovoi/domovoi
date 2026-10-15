@@ -732,6 +732,9 @@ export function SessionScreen({
   const [startOpen, setStartOpen] = useState(false)
   const [toolChoices, setToolChoices] = useState<ReadonlyMap<string, boolean>>(() => new Map())
   const toggleTool = useCallback((id: string, open: boolean) => {
+    // Opening a card grows the thread, and at the bottom the scroller would
+    // follow that growth and carry the card's start out of view.
+    if (open) thread.current?.holdNextGrowth()
     setToolChoices((choices) => new Map(choices).set(id, open))
   }, [])
   const [attachOpen, setAttachOpen] = useState(false)

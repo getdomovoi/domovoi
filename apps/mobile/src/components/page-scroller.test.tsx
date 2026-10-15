@@ -1,8 +1,9 @@
 import { describe, expect, it, jest } from "@jest/globals"
+import { createRef } from "react"
 import { RefreshControl, ScrollView, Text } from "react-native"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 
-import { PageScroller } from "./page-scroller"
+import { PageScroller, type PageScrollerHandle } from "./page-scroller"
 
 async function draw(overrides: Partial<Parameters<typeof PageScroller>[0]> = {}) {
   await render(
@@ -132,6 +133,34 @@ describe("PageScroller", () => {
     await fill(1600)
     expect(scrollToEnd).toHaveBeenCalledTimes(2)
     scrollToEnd.mockRestore()
+  })
+
+  // A hold covers the growth a tap causes, not a reply that lands long after
+  // a hold whose growth never came.
+  it("holds one growth when asked, and only for a moment", async () => {
+    const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => {})
+    const now = jest.spyOn(Date, "now").mockReturnValue(10_000)
+    const handle = createRef<PageScrollerHandle>()
+    try {
+      await render(<PageScroller ref={handle} testID="scroller" followEnd><Text>A row</Text></PageScroller>)
+      await layOut(844)
+      await fill(1200)
+      scrollToEnd.mockClear()
+
+      handle.current?.holdNextGrowth()
+      await fill(1400)
+      expect(scrollToEnd).not.toHaveBeenCalled()
+      await fill(1600)
+      expect(scrollToEnd).toHaveBeenCalledTimes(1)
+
+      handle.current?.holdNextGrowth()
+      now.mockReturnValue(12_000)
+      await fill(1800)
+      expect(scrollToEnd).toHaveBeenCalledTimes(2)
+    } finally {
+      now.mockRestore()
+      scrollToEnd.mockRestore()
+    }
   })
 
   // Following is for a person waiting at the bottom. One who scrolled up to

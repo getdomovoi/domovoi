@@ -1,5 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals"
 import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { ScrollView } from "react-native"
 import { fireEvent, render, screen } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
@@ -168,6 +169,30 @@ describe("SessionScreen tool cards", () => {
     expect(screen.getByLabelText("Open the waiting approval")).toBeOnTheScreen()
     // A finished command beside it still folds.
     expect(cardButton(/^command, completed, pnpm test/).props.accessibilityState).toMatchObject({ expanded: false })
+  })
+
+  // Codex review round 1: at the thread's bottom the scroller follows growth
+  // to the end, so opening the last card scrolled its header and the start of
+  // the command away. Opening a card holds the view for that growth; what
+  // lands after it is followed as before.
+  it("keeps an opened card's start in view rather than following its growth", async () => {
+    const scrollToEnd = jest.spyOn(ScrollView.prototype, "scrollToEnd").mockImplementation(() => {})
+    try {
+      await render(screenFor(detailOf(snapshot({ approval: false, status: "completed" })), "collapsed"))
+      const thread = screen.getByTestId("thread")
+      await fireEvent(thread, "layout", { nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 700 } } })
+      await fireEvent(thread, "contentSizeChange", 390, 900)
+      scrollToEnd.mockClear()
+
+      await fireEvent.press(cardButton(/^command, completed, pnpm test/))
+      await fireEvent(thread, "contentSizeChange", 390, 960)
+      expect(scrollToEnd).not.toHaveBeenCalled()
+
+      await fireEvent(thread, "contentSizeChange", 390, 1100)
+      expect(scrollToEnd).toHaveBeenCalledTimes(1)
+    } finally {
+      scrollToEnd.mockRestore()
+    }
   })
 
   it("draws an approval receipt in full under the collapsed default", async () => {
