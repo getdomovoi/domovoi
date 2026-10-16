@@ -140,4 +140,20 @@ describe("the user turn", () => {
     expect(carrying!.querySelector("img")).toBeNull()
     expect(within(list).queryByRole("button")).toBeNull()
   })
+
+  // Codex review round 2: a long name gives way, the size never does, and
+  // the whole fact is one hover away for a name cut short.
+  it("keeps a chip's size whole when its name is long", () => {
+    const sessionId = demoWorkspace.activeSessionId!
+    const name = `${"very-long-output-name-".repeat(10)}.txt`
+    const sent: ThreadItem = {
+      id: "user-2", sessionId, kind: "user", body: "Read this", createdAt: "2026-09-08T09:01:00.000Z",
+      attachments: [{ kind: "text", name, bytes: 3_200 }],
+    }
+    render(<Thread snapshot={conversation(false, [sent])} connected queued={undefined} {...handlers} />)
+    const chip = within(screen.getByRole("list", { name: "Sent with this message" })).getByRole("listitem")
+    expect(chip.getAttribute("title")).toBe(`Text file ${name}, 3.2 kB`)
+    expect(classes(within(chip).getByText("3.2 kB"))).toContain("shrink-0")
+    expect(classes(within(chip).getByText(name))).toEqual(expect.arrayContaining(["min-w-0", "truncate"]))
+  })
 })

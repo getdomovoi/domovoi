@@ -20,11 +20,14 @@ export function SentAttachmentChips({ attachments, align = "end" }: {
         <li
           key={`${chip.kind}-${index}`}
           aria-label={chip.label}
+          title={chip.label}
           className="flex min-w-0 max-w-[300px] items-center gap-[7px] rounded-full border bg-background px-2.5 py-[5px]"
         >
-          <span aria-hidden className="rounded bg-muted px-[5px] py-0.5 font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">{chip.mark}</span>
+          {/* Unlike the composer's chip, the name gives way here: the size
+              is what a sent turn adds, and the meta is always short. */}
+          <span aria-hidden className="shrink-0 rounded bg-muted px-[5px] py-0.5 font-machine text-[10.5px] tracking-[.04em] text-muted-foreground">{chip.mark}</span>
           <span aria-hidden className="min-w-0 truncate font-machine text-[10.5px] text-strong">{chip.name}</span>
-          <span aria-hidden className="min-w-0 shrink-[100] truncate text-[10.5px] text-faint">{chip.meta}</span>
+          <span aria-hidden className="shrink-0 whitespace-nowrap text-[10.5px] text-faint">{chip.meta}</span>
         </li>
       ))}
     </ul>
