@@ -483,6 +483,8 @@ describe("App", () => {
 
       await finish(0)
       expect(screen.getByText("resized from 4032 x 3024")).toBeOnTheScreen()
+      // #871 review: the wait line goes once the image is there.
+      expect(screen.queryByText(waitLine)).toBeNull()
       await fireEvent.press(screen.getByRole("button", { name: "Send" }))
       await settle()
       const sent = socket.requests("session.send")
@@ -502,8 +504,12 @@ describe("App", () => {
       await pick()
       mockLibrary.canceled = false
       await pick()
+      await send("Check the lockfile")
+      expect(screen.getByText(waitLine)).toBeOnTheScreen()
       await act(async () => { mockEncodes[0]?.reject(new Error("Could not load the image")) })
       await settle()
+      // #871 review: the wait line gives way to what happened to the image.
+      expect(screen.queryByText(waitLine)).toBeNull()
       expect(screen.getByText(/IMG_4120\.jpg could not be resized on this phone \(Could not load the image\)/)).toBeOnTheScreen()
       await send("Check the lockfile")
       expect(socket.requests("session.send")).toHaveLength(1)
@@ -550,16 +556,17 @@ describe("App", () => {
       expect(screen.getAllByText("IMG_4120.jpg")).toHaveLength(1)
     })
 
-    // Two picks in flight at once never queue a third image.
-    it("keeps the two-image cap when picks finish together", async () => {
+    // Picks still in flight count toward the two-image cap, so a third is
+    // refused before it is resized, in the order they were chosen (#871 review).
+    it("counts picks in flight toward the two-image cap", async () => {
       await openAudit()
       await pick()
       await pick()
       await pick()
-      expect(mockEncodes).toHaveLength(3)
+      expect(mockEncodes).toHaveLength(2)
+      expect(screen.getByText("Two images per turn. Remove one to add another.")).toBeOnTheScreen()
       await finish(0)
       await finish(1)
-      await finish(2)
       expect(screen.getAllByText("IMG_4120.jpg")).toHaveLength(2)
     })
   })

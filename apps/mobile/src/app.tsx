@@ -87,6 +87,8 @@ import {
 } from "./turn-skills"
 import "./global.css"
 
+const resizeWaitLine = "An image is still being resized for this turn. Send again once it shows here."
+
 // Both sources hand back the file and its Base64 at full quality; the resize
 // and re-encode happen afterwards, once, in attachmentFrom.
 const imageSourcePicker: ImageSourcePicker = {
@@ -154,15 +156,33 @@ export function App() {
   // session, another tab, and Remove N images.
   const picking = useRef(0)
   const queueEpoch = useRef(0)
+  // The session a send was held for while an image was resizing. The line
+  // goes once no pick is in progress, so it never outlives the image it
+  // waited for, and a resize that failed says so instead.
+  const resizeWaitFor = useRef<string | undefined>(undefined)
+  const clearResizeWait = () => {
+    const sessionId = resizeWaitFor.current
+    resizeWaitFor.current = undefined
+    if (!sessionId) return
+    setSendProblems((current) => {
+      if (current.get(sessionId) !== resizeWaitLine) return current
+      const next = new Map(current)
+      next.delete(sessionId)
+      return next
+    })
+  }
   const dropQueue = () => {
     queueEpoch.current += 1
     picking.current = 0
+    clearResizeWait()
     setAttachments([])
     setAttachProblem("")
   }
   const pickImage = async (source: "library" | "camera") => {
     setAttachProblem("")
-    if (attachments.length >= maximumSessionAttachments) {
+    // Picks still being resized hold a place, so a third is refused before
+    // it is resized, in the order the images were chosen.
+    if (attachments.length + picking.current >= maximumSessionAttachments) {
       setAttachProblem(`Two images per turn. Remove one to add another.`)
       return
     }
@@ -177,7 +197,10 @@ export function App() {
       }
     } finally {
       // A newer epoch has already set the count to zero for its own picks.
-      if (epoch === queueEpoch.current) picking.current -= 1
+      if (epoch === queueEpoch.current) {
+        picking.current -= 1
+        if (picking.current === 0) clearResizeWait()
+      }
     }
   }
   // The plan starts pinned: the design leads the thread with a strip saying
@@ -867,7 +890,8 @@ export function App() {
     // An image picked for this turn is still being resized. Sending now
     // would send the words without it and leave it for the next turn.
     if (picking.current > 0) {
-      setSendProblem(sessionId, "An image is still being resized for this turn. Send again once it shows here.")
+      setSendProblem(sessionId, resizeWaitLine)
+      resizeWaitFor.current = sessionId
       return
     }
     const sent = attachments
@@ -1069,7 +1093,11 @@ export function App() {
               setFreshRefusal(undefined)
               setFreshOpen(true)
             }}
-            onOpenMachines={() => selectTab("machines")}
+            onOpenMachines={() => {
+              // Leaving for Machines is leaving, as the phone's tab bar is.
+              dropQueue()
+              selectTab("machines")
+            }}
             onChangeDraft={(next) => {
               setDraft(next)
               const selected = openSessionId ?? snapshot.activeSessionId
