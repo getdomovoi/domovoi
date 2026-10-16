@@ -43,6 +43,22 @@ describe("committedCodexSecretPaths", () => {
     await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { env: isolated })).resolves.toEqual([".env", ".env.example", "certs/dev.pem"])
   })
 
+  // The scan names what the sandbox refuses: every name the card classifier
+  // calls secret, in any letter case, with a prefix where it allows one.
+  it("lists committed secrets in any letter case, private keys after a prefix, and credential stores", async () => {
+    const { root, run } = await repository()
+    for (const name of ["DAEMON.TOKEN", "config/Credentials.json", "tls/client.P12", "backup-id_ed25519", "keys/old.id_dsa", ".ENV", ".ssh/config", "src/environment.ts", "docs/credentials.md"]) {
+      await mkdir(join(root, name, ".."), { recursive: true })
+      await writeFile(join(root, name), "x\n")
+    }
+    await run("add", ".")
+    await run("commit", "-qm", "one")
+
+    await expect(committedCodexSecretPaths(root, codexHistoryScanLimits, { env: isolated })).resolves.toEqual([
+      ".ENV", ".ssh/config", "DAEMON.TOKEN", "backup-id_ed25519", "config/Credentials.json", "keys/old.id_dsa", "tls/client.P12",
+    ])
+  })
+
   it("runs the scan with Git for Windows' default system configuration", async () => {
     const { root, run } = await repository()
     await writeFile(join(root, ".env"), "TOKEN=1\n")

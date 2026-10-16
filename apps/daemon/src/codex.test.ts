@@ -23,13 +23,14 @@ import {
   codexPolicyFor,
   codexRequestRefusal,
   codexSandboxNotice,
+  codexSecretGlobs,
   codexSecretLocations,
   codexWorktreeSecretNotice,
-  codexWorktreeSecretPatterns,
   type CodexTransport,
   type JsonRpcMessage,
 } from "./codex.js"
 import { ApprovalRequestNotPendingError, type AgentEvent } from "./agents.js"
+import { credentialStores } from "./credential-stores.js"
 import { namesSecretPath } from "./permission-policy.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 
@@ -151,13 +152,79 @@ describe("codexAppServerArguments", () => {
 
   it("denies secret files inside the worktree in both profiles", () => {
     for (const profile of ["domovoi-read", "domovoi-build"]) {
-      const filesystem = settings.get(`permissions.${profile}.filesystem`)!
-      for (const pattern of ["**/.env", "**/.env.*", "**/*.pem", "**/*.key", "**/id_rsa*", "**/.npmrc", "**/.netrc", "**/.pypirc"]) {
-        expect(filesystem).toContain(`${JSON.stringify(pattern)}="deny"`)
-      }
-      expect(filesystem).toContain('":workspace_roots"={')
+      const workspace = filesystemTable(process.platform, profile)[":workspace_roots"]
+      expect(Object.keys(workspace ?? {})).toEqual([...codexSecretGlobs()])
+      expect(Object.values(workspace ?? {}).every((access) => access === "deny")).toBe(true)
     }
-    expect(codexWorktreeSecretPatterns).toContain("**/.env")
+  })
+
+  // T109 review round 4: the card classifier ignores letter case and finds a
+  // private key name where a word starts, and the sandbox globs did neither.
+  // Every name it calls secret, in any case, with a prefix where it allows
+  // one, nested and as a directory, is refused in the thread's own worktree
+  // (:workspace_roots) and in every session worktree, in both profiles. Codex
+  // compares globs with letter case on Linux and in its own reads on macOS,
+  // and without it on Windows.
+  describe.each(["darwin", "linux", "win32"] as const)("on %s", (platform) => {
+    const ignoresCase = platform === "win32"
+    const tables = ["domovoi-read", "domovoi-build"].map((profile) => filesystemTable(platform, profile))
+
+    // Each glob is compiled once: the walk below makes about 3,000 checks per
+    // table, and compiling per check outran the default timeout in CI.
+    const refusers = (options: GlobOptions) => tables.map((table) => {
+      const workspace = Object.keys(table[":workspace_roots"] ?? {}).map((pattern) => globRegExp(pattern, options))
+      const worktrees = Object.keys(table).filter((key) => key.startsWith("~/.domovoi/worktrees/")).map((pattern) => globRegExp(pattern, options))
+      return {
+        workspace: (path: string) => workspace.some((pattern) => pattern.test(path)),
+        worktree: (path: string) => worktrees.some((pattern) => pattern.test(`~/.domovoi/worktrees/session-1/${path}`)),
+      }
+    })
+
+    it("refuses every name the classifier calls secret, in any letter case", () => {
+      const paths = classifierSecretSamples.flatMap((sample) => letterCases(sample).flatMap((name) => [name, `deep/dir/${name}`]))
+      for (const path of paths) expect(namesSecretPath(path), path).toBe(true)
+      for (const refuses of refusers({ ignoresCase })) {
+        for (const path of paths) {
+          expect(refuses.workspace(path), path).toBe(true)
+          expect(refuses.worktree(path), `session worktree: ${path}`).toBe(true)
+        }
+      }
+    })
+
+    it("keeps ordinary project files readable, in any letter case", () => {
+      const paths = ordinaryProjectFiles.flatMap(letterCases)
+      for (const path of paths) expect(namesSecretPath(path), path).toBe(false)
+      // Seatbelt compares without letter case and lets [!c] match a slash.
+      for (const options of [{ ignoresCase }, { ignoresCase: true, classMatchesSlash: true }]) {
+        for (const refuses of refusers(options)) {
+          for (const path of paths) {
+            expect(refuses.workspace(path), path).toBe(false)
+            expect(refuses.worktree(path), `session worktree: ${path}`).toBe(false)
+          }
+        }
+      }
+    })
+
+    it("writes each profile's filesystem table as TOML that parses, with no repeated key", () => {
+      for (const profile of ["domovoi-read", "domovoi-build"]) {
+        const value = codexAppServerArguments(platform).find((setting) => setting.startsWith(`permissions.${profile}.filesystem=`))!
+        expect(() => parseToml(`filesystem = ${value.slice(value.indexOf("=") + 1)}`)).not.toThrow()
+      }
+    })
+
+    // Seatbelt reads a regex of at most 1,023 bytes and refuses the whole
+    // profile, so every command, past it (measured with codex-cli 0.162.1).
+    // Each glob becomes one regex after the worktree's absolute path.
+    it("keeps every glob short enough for a Seatbelt regex under a long worktree path", () => {
+      for (const glob of codexSecretGlobs(platform)) expect(glob.length, glob).toBeLessThanOrEqual(300)
+    })
+  })
+
+  // Windows starts a program with one command line of at most 32,767
+  // characters, and the profiles travel on it.
+  it("fits the Windows command line", () => {
+    const line = codexAppServerArguments("win32").map((argument) => `"${argument.replaceAll('"', '\\"')}"`).join(" ")
+    expect(line.length).toBeLessThan(32_767 - 1_024)
   })
 
   it.each([
@@ -229,11 +296,71 @@ const worktreeSecretCopies: readonly string[] = [
   ".netrc", ".npmrc", ".pypirc", ".aws/credentials", ".kube/config", ".docker/config.json", ".ssh/id_ed25519",
 ]
 
-// The glob forms the profile uses, as codex-cli 0.162.1 applied them in
-// `codex sandbox` (measured 2026-10-15): * and ? stay within one name and
-// match a leading dot, [!c] is any one character but c, and ** is any depth.
-function globMatches(pattern: string, path: string): boolean {
+// Every rule of the card classifier (namesSecretPath), as a worktree might
+// hold a name it calls secret: each credential store by its card name, alone,
+// as a directory and followed by a character that ends a name; the named
+// credential files the same way; a key or certificate extension after any
+// stem; a private key where a word starts, with any suffix; and the .env
+// family. Not here, and not refused: a name the classifier finds after a
+// space, colon, equals sign, quote or backslash inside a longer name
+// ("my daemon.token"), which it reads as a command-line separator; a name
+// followed by a comma ("daemon.token,old"); and compatibility forms that only
+// its Unicode folding joins, such as a fullwidth letter.
+const classifierSecretSamples: readonly string[] = [
+  ...credentialStores.flatMap(({ location, cardName }) => {
+    const name = cardName ?? location.slice(2)
+    return [name, `${name}/inner`, `${name}~`, `${name} (1)/inner`]
+  }),
+  "daemon.token", "daemon.token~", "credentials.json", "credentials.json (1)", "gh/hosts.yml", "config/gh/hosts.yml",
+  "gh/hosts.yml#", "daemon.token/inner",
+  "server.pem", ".pem", "tls/server.key", "certs/client.p12", "client.pfx", "server.pem~", "x.key/inner",
+  "id_rsa", "id_rsa.pub", "id_ed25519_work", "id_ecdsa", "id_dsa", "backup-id_ed25519", "keys/old.id_dsa",
+  "my id_rsa", "x.id_ecdsa.pub", "id_rsa.d/inner", "2024-id_ed25519",
+  ".env", ".env.local", ".envrc", ".environment", "app/.envrc", "secrets.env", "prod.env.local", "app.envrc",
+  "x.env~", "app.envrc (1)", ".env/inner", "config.env.ts", "x.env.d/inner",
+]
+
+// Project files that are not secrets, and names that only resemble one.
+const ordinaryProjectFiles: readonly string[] = [
+  "src/environment.ts", "docs/credentials.md", "keys/README.md", ".docker/Dockerfile", ".domovoi/endpoint.json",
+  "readme.txt", "walk-gate.txt", "src/invalid_rsa.go", "src/hotkey.keymap.ts", "server.pem.bak", "credentials.json.bak",
+  "old.credentials.json", "my-credentials.json", "config/gh/other.yml", ".sshrc", ".aws-sam/build.toml", "x.env-prod",
+  "app.envrc.bak", "daemon.token.old", "valid_rsa.go",
+]
+
+// A name in lower, upper and mixed letter case.
+function letterCases(name: string): string[] {
+  let upper = false
+  const mixed = [...name].map((character) => {
+    if (!/\p{L}/u.test(character)) return character
+    upper = !upper
+    return upper ? character.toUpperCase() : character.toLowerCase()
+  }).join("")
+  return [...new Set([name, name.toUpperCase(), mixed])]
+}
+
+function filesystemTable(platform: NodeJS.Platform, profile: string): Record<string, Record<string, string> | string> & {
+  ":workspace_roots"?: Record<string, string>
+} {
+  const value = codexAppServerArguments(platform).find((setting) => setting.startsWith(`permissions.${profile}.filesystem=`))!
+  return parseToml(`filesystem = ${value.slice(value.indexOf("=") + 1)}`).filesystem as Record<string, Record<string, string> | string>
+}
+
+// The glob forms the profile uses, as codex-cli 0.162.1 applies them (its
+// Seatbelt translation, the ripgrep scan on Linux and Windows, and its own
+// read checks): * and ? stay within one name and match a leading dot, [c] is
+// one of the characters c and [!c] any other, {a,b} is either branch, and **
+// is any depth. Letter case counts unless ignoresCase; a class never matches a
+// slash unless classMatchesSlash, as in Seatbelt's regex.
+type GlobOptions = { ignoresCase?: boolean; classMatchesSlash?: boolean }
+
+function globMatches(pattern: string, path: string, options: GlobOptions = {}): boolean {
+  return globRegExp(pattern, options).test(path)
+}
+
+function globRegExp(pattern: string, options: GlobOptions): RegExp {
   let source = ""
+  let braces = 0
   for (let index = 0; index < pattern.length; index += 1) {
     const character = pattern[index]!
     if (pattern.startsWith("**/", index)) {
@@ -244,13 +371,22 @@ function globMatches(pattern: string, path: string): boolean {
       index += 1
     } else if (character === "*") source += "[^/]*"
     else if (character === "?") source += "[^/]"
-    else if (pattern.startsWith("[!", index)) {
-      const end = pattern.indexOf("]", index)
-      source += `[^/${pattern.slice(index + 2, end)}]`
+    else if (character === "{") {
+      braces += 1
+      source += "(?:"
+    } else if (character === "}" && braces > 0) {
+      braces -= 1
+      source += ")"
+    } else if (character === "," && braces > 0) source += "|"
+    else if (character === "[") {
+      const end = pattern.indexOf("]", index + 1)
+      const negated = pattern[index + 1] === "!"
+      const members = pattern.slice(index + (negated ? 2 : 1), end).replace(/[\\\]^]/gu, String.raw`\$&`)
+      source += negated ? `[^${options.classMatchesSlash ? "" : "/"}${members}]` : `[${members}]`
       index = end
-    } else source += character.replace(/[.+^${}()|[\]\\]/gu, String.raw`\$&`)
+    } else source += character.replace(/[.+^$()|[\]\\]/gu, String.raw`\$&`)
   }
-  return new RegExp(`^${source}$`, "u").test(path)
+  return new RegExp(`^${source}$`, options.ignoresCase ? "iu" : "u")
 }
 
 describe("codexSandboxNotice", () => {
@@ -1247,7 +1383,10 @@ describe("CodexAppServerAdapter", () => {
     const instructions = (transport.sent[3]?.params as { developerInstructions?: unknown } | undefined)
       ?.developerInstructions
     expect(typeof instructions).toBe("string")
-    for (const file of [".env", ".env.*", "*.pem", "*.key", "id_rsa*", ".npmrc", ".netrc", ".pypirc"]) {
+    for (const file of [
+      ".env", "*.pem", "*.key", "*.p12", "*.pfx", "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "daemon.token",
+      "credentials.json", ".ssh", ".npmrc", ".netrc", ".pypirc", "in any letter case",
+    ]) {
       expect(instructions).toContain(file)
     }
     expect(instructions).toContain("Operation not permitted")

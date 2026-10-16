@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process"
 
-import { codexWorktreeSecretPatterns } from "./codex.js"
+import { codexSecretPathspecs } from "./codex-secret-globs.js"
 import { gitCommand } from "./git-command.js"
 import { gitSupportsNoLazyFetch } from "./git-environment.js"
 import { gitReadCanRunProgram } from "./git-read-config.js"
@@ -60,7 +60,7 @@ export async function committedCodexSecretPaths(
   const args = [
     "-C", worktree, ...historyScanGit, "log", "--all", "--no-renames", "--name-only", "--format=%x01",
     `--max-count=${limits.commits}`,
-    "--", ...codexWorktreeSecretPatterns.map((pattern) => `:(glob)${pattern}`),
+    "--", ...codexSecretPathspecs,
   ]
   let command: string
   try {
