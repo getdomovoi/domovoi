@@ -237,6 +237,18 @@ const codexWorktreeCredentialPatterns: readonly string[] = credentialStores
     return [`**/${name}`, `**/${name}/**`]
   })
 
+// The secret file names the card classifier reads (namesSecretFile in
+// permission-policy.ts) that the patterns above do not already name: the
+// daemon's token, credentials.json and gh/hosts.yml, the other key
+// extensions and private key names, and the rest of the .env family
+// (ruling Q119).
+const codexWorktreeClassifiedSecrets: readonly string[] = [
+  "**/daemon.token", "**/credentials.json", "**/gh/hosts.yml",
+  "**/*.p12", "**/*.pfx",
+  "**/id_dsa*", "**/id_ecdsa*", "**/id_ed25519*",
+  "**/.env*", "**/*.env", "**/*.envrc", "**/*.env.*",
+]
+
 // Globs for every entry of directory except kept, and everything below them:
 // a name that differs from kept at some character ([!c] is any one character
 // but c), a name kept begins with, and a name that begins with kept and goes
@@ -256,7 +268,7 @@ function codexDeniedLocations(): string[] {
   return [...new Set(codexSecretLocations.flatMap((location) => location === codexProfileStore
     ? [
         ...codexGlobsExcept(location, codexSessionWorktrees),
-        ...[...codexWorktreeSecretPatterns, ...codexWorktreeCredentialPatterns]
+        ...[...codexWorktreeSecretPatterns, ...codexWorktreeCredentialPatterns, ...codexWorktreeClassifiedSecrets]
           .map((pattern) => `${location}/${codexSessionWorktrees}/${pattern}`),
       ]
     : [location]))]

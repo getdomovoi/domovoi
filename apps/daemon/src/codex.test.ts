@@ -30,6 +30,7 @@ import {
   type JsonRpcMessage,
 } from "./codex.js"
 import { ApprovalRequestNotPendingError, type AgentEvent } from "./agents.js"
+import { namesSecretPath } from "./permission-policy.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 
 class FakeChild extends EventEmitter {
@@ -200,15 +201,33 @@ describe("codexAppServerArguments", () => {
         "~/.domovoi/worktrees/session-1/.docker/config.json", "~/.domovoi/worktrees/session-1/.claude/.credentials.json",
         "~/.domovoi/worktrees/session-1/.kube/config", "~/.domovoi/worktrees/session-1/.git-credentials",
       ]) expect(refused(path), path).toBe(true)
+      // Round 3 review, ruling Q119: every secret file name the card
+      // classifier knows is refused in any session worktree, at any depth.
+      for (const name of worktreeSecretCopies) {
+        const path = `~/.domovoi/worktrees/session-1/${name}`
+        expect(namesSecretPath(name), name).toBe(true)
+        expect(refused(path), path).toBe(true)
+      }
       for (const path of [
         "~/.domovoi/worktrees", "~/.domovoi/worktrees/session-1", "~/.domovoi/worktrees/session-1/src/index.ts",
-        "~/.domovoi/worktrees/session-1/walk-gate.txt",
+        "~/.domovoi/worktrees/session-1/walk-gate.txt", "~/.domovoi/worktrees/session-1/src/environment.ts",
+        "~/.domovoi/worktrees/session-1/docs/credentials.md", "~/.domovoi/worktrees/session-1/keys/README.md",
         // A project's own .docker and .domovoi directories are ordinary files.
         "~/.domovoi/worktrees/session-1/.docker/Dockerfile", "~/.domovoi/worktrees/session-1/.domovoi/endpoint.json",
       ]) expect(refused(path), path).toBe(false)
     }
   })
 })
+
+// One copy per rule of the classifier's secret file names (namesSecretPath),
+// as a worktree might hold them, at the top and nested.
+const worktreeSecretCopies: readonly string[] = [
+  ".domovoi/daemon.token", "daemon.token", "config/credentials.json", "credentials.json", "config/gh/hosts.yml",
+  "server.pem", "tls/server.key", "certs/client.p12", "client.pfx",
+  "id_rsa", "id_rsa.pub", "config/id_ed25519", "id_ed25519_work", "id_ecdsa", "id_dsa",
+  ".env", ".env.local", "app/.envrc", "secrets.env", "prod.env.local", "app.envrc",
+  ".netrc", ".npmrc", ".pypirc", ".aws/credentials", ".kube/config", ".docker/config.json", ".ssh/id_ed25519",
+]
 
 // The glob forms the profile uses, as codex-cli 0.162.1 applied them in
 // `codex sandbox` (measured 2026-10-15): * and ? stay within one name and
