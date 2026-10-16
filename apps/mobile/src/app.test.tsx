@@ -556,6 +556,34 @@ describe("App", () => {
       expect(screen.getAllByText("IMG_4120.jpg")).toHaveLength(1)
     })
 
+    // #871 review: a pick started at phone width, the layout turns into the
+    // tablet's, and the person leaves for Machines there. The tablet composer
+    // draws no images, so a pick that landed would go with the next send
+    // unseen.
+    it("drops a pending image when the tablet's Machines is opened", async () => {
+      const native = jest.requireActual<typeof import("react-native")>("react-native")
+      const dimensions = jest.spyOn(native, "useWindowDimensions").mockReturnValue({ width: 390, height: 844, scale: 3, fontScale: 1 })
+      try {
+        const { socket } = await openAudit()
+        await pick()
+        dimensions.mockReturnValue({ width: 1024, height: 768, scale: 2, fontScale: 1 })
+        await fireEvent.changeText(screen.getByLabelText("Reply to this session"), "x")
+        await settle()
+        expect(screen.getByTestId("tablet-thread")).toBeOnTheScreen()
+        await fireEvent.press(screen.getByRole("button", { name: "Machines" }))
+        await finish(0)
+        await fireEvent.press(screen.getByRole("tab", { name: /^Sessions/ }))
+        await fireEvent.changeText(screen.getByLabelText("Reply to this session"), "Check the lockfile")
+        await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+        await settle()
+        const sent = socket.requests("session.send")
+        expect(sent).toHaveLength(1)
+        expect(sent[0]?.params).not.toHaveProperty("attachments")
+      } finally {
+        dimensions.mockRestore()
+      }
+    })
+
     // Picks still in flight count toward the two-image cap, so a third is
     // refused before it is resized, in the order they were chosen (#871 review).
     it("counts picks in flight toward the two-image cap", async () => {
