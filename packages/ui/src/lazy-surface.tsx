@@ -9,6 +9,7 @@ import {
   useState,
   type ComponentType,
   type ContextType,
+  type CSSProperties,
   type ErrorInfo,
   type LazyExoticComponent,
   type ReactNode,
@@ -17,6 +18,7 @@ import {
 
 import { Button } from "./components/ui/button"
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "./components/ui/dialog"
+import { cn } from "./lib/utils"
 import { SkeletonBars } from "./loading-skeleton"
 import { loadingLineRef } from "./start-handoff"
 
@@ -149,6 +151,8 @@ export function DialogLoading({
   titleHidden = false,
   showCloseButton = true,
   className,
+  headerClassName,
+  headerStyle,
   bodyClassName,
 }: {
   open: boolean
@@ -157,6 +161,8 @@ export function DialogLoading({
   titleHidden?: boolean
   showCloseButton?: boolean
   className?: string
+  headerClassName?: string
+  headerStyle?: CSSProperties | undefined
   bodyClassName?: string
 }) {
   const frame = useRef<HTMLDivElement>(null)
@@ -181,7 +187,7 @@ export function DialogLoading({
           if (!stillOpen.current) opener.current?.focus()
         }}
       >
-        <DialogHeader className={titleHidden ? "sr-only" : undefined}>
+        <DialogHeader className={cn(titleHidden && "sr-only", headerClassName)} style={headerStyle}>
           <DialogTitle>{title}</DialogTitle>
         </DialogHeader>
         <div className={bodyClassName}>
