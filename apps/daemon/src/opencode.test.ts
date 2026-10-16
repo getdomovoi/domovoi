@@ -144,6 +144,8 @@ function harness() {
       subscribe: vi.fn(async () => ({ stream })),
     },
     postSessionIdPermissionsPermissionId: vi.fn(async () => ({ data: true })),
+    // POST /instance/dispose: forgets what the server loaded for a directory.
+    instance: { dispose: vi.fn(async (_options?: unknown) => ({ data: true })) },
     // The directory's tool servers and tool ids, read before a session opens
     // and before each prompt: none of the person's, and OpenCode's own tools.
     mcp: { status: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: {} })) },
@@ -634,6 +636,97 @@ describe("OpenCodeSdkAdapter", () => {
       prompt: "Must not run",
       runtime: runtime("build"),
     })).rejects.toThrow("OpenCode session open-session is not loaded")
+    await adapter.close()
+  })
+})
+
+describe.each([
+  ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
+  ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
+] as const)("%s model catalogue", (_name, create) => {
+  // Walk finding F25: a provider signed in after the server started was never
+  // listed. The servers build a directory's catalogue (credentials and models)
+  // the first time that directory is asked about and keep it until the
+  // directory's instance is disposed (checked against OpenCode 1.18.33 and
+  // 1.19.3). This fake keeps catalogues the same way.
+  function instanceCatalogues(client: ReturnType<typeof harness>["client"]) {
+    const signedIn = new Set(["anthropic"])
+    const instances = new Map<string, string[]>()
+    const directories: string[] = []
+    const directoryOf = (options: unknown) => {
+      const directory = (options as { query?: { directory?: string } } | undefined)?.query?.directory
+      return directory ?? "<server working directory>"
+    }
+    const model = (provider: string) => provider === "anthropic"
+      ? { id: "sonnet", name: "Claude Sonnet" }
+      : { id: "anthropic/claude-opus-4.1", name: "Anthropic: Claude Opus 4.1" }
+    client.config.providers.mockImplementation((async (options?: unknown) => {
+      const directory = directoryOf(options)
+      directories.push(directory)
+      let providers = instances.get(directory)
+      if (!providers) instances.set(directory, providers = [...signedIn])
+      return {
+        data: {
+          default: Object.fromEntries(providers.map((provider) => [provider, model(provider).id])),
+          providers: providers.map((provider) => ({
+            id: provider,
+            name: provider === "anthropic" ? "Anthropic" : "OpenRouter",
+            models: { [model(provider).id]: { ...model(provider), status: "active" } },
+          })),
+        },
+      }
+    }) as never)
+    client.instance.dispose.mockImplementation(async (options?: unknown) => {
+      instances.delete(directoryOf(options))
+      return { data: true }
+    })
+    return { signedIn, instances, directories }
+  }
+
+  it("lists a provider signed in after the server started", async () => {
+    const { client, factory } = harness()
+    const { signedIn } = instanceCatalogues(client)
+    const adapter = create(factory)
+
+    expect((await adapter.listModels()).map((model) => model.id)).toEqual(["anthropic/sonnet"])
+    signedIn.add("openrouter")
+    expect((await adapter.listModels()).map((model) => model.id)).toEqual([
+      "anthropic/sonnet",
+      "openrouter/anthropic/claude-opus-4.1",
+    ])
+    await adapter.close()
+  })
+
+  it("reads each catalogue in a directory of its own and leaves nothing behind", async () => {
+    const { client, factory } = harness()
+    const { instances, directories } = instanceCatalogues(client)
+    const adapter = create(factory)
+    await adapter.listModels()
+    await adapter.listModels()
+
+    const [first, second] = directories
+    expect(directories).toHaveLength(2)
+    expect(first).not.toBe(second)
+    expect(first).not.toBe("<server working directory>")
+    expect(client.config.get).toHaveBeenCalledWith(expect.objectContaining({ query: { directory: first } }))
+    // The server forgot both, and neither directory is left on disk.
+    expect(instances.size).toBe(0)
+    await expect(readdir(first!)).rejects.toMatchObject({ code: "ENOENT" })
+    await expect(readdir(second!)).rejects.toMatchObject({ code: "ENOENT" })
+    await adapter.close()
+  })
+
+  it("lists the models when the server cannot forget the directory", async () => {
+    const { client, factory } = harness()
+    const { directories } = instanceCatalogues(client)
+    client.instance.dispose.mockRejectedValueOnce(new Error("server gone"))
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const adapter = create(factory)
+
+    expect((await adapter.listModels()).map((model) => model.id)).toEqual(["anthropic/sonnet"])
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("forget a model catalogue directory"), expect.any(Error))
+    await expect(readdir(directories[0]!)).rejects.toMatchObject({ code: "ENOENT" })
+    logged.mockRestore()
     await adapter.close()
   })
 })

@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto"
-import { lstat } from "node:fs/promises"
+import { lstat, mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 
 import {
@@ -69,6 +70,10 @@ export type OpenCodeClient = {
   postSessionIdPermissionsPermissionId(
     options: MethodOptions<OpencodeSdkClient["postSessionIdPermissionsPermissionId"]>,
   ): Promise<OpenCodeResult<unknown>>
+  // Has the server forget what it loaded for one directory (listModels).
+  instance?: {
+    dispose(options?: MethodOptions<OpencodeSdkClient["instance"]["dispose"]>): Promise<OpenCodeResult<unknown>>
+  }
   // The tool servers a directory knows, by name, and the ids of its tools
   // other than tool servers'. Read before a session opens and before each
   // prompt; without them no session opens (#refuseUnownedNames).
@@ -99,6 +104,10 @@ type OpenCodeCatalog = {
   }>
   default: Record<string, string>
 }
+
+// How long listModels waits for the server to forget the directory it read
+// the model catalogue in.
+const catalogueForgetTimeoutMs = 10_000
 
 // How long a card waits for its directory's tool servers to be read again.
 const catalogReadTimeoutMs = 1_000
@@ -684,10 +693,29 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     signal?.throwIfAborted()
     const client = await this.#client()
     signal?.throwIfAborted()
-    const [config, catalog] = await Promise.all([
-      client.config.get({ throwOnError: true, ...(signal ? { signal } : {}) }),
-      client.config.providers({ throwOnError: true, ...(signal ? { signal } : {}) }),
-    ])
+    // The server builds a directory's catalogue, with the credentials it read
+    // then, the first time that directory is asked about, and keeps it until
+    // the directory's instance is disposed. Asked about its own working
+    // directory, it answered with what it read at start for as long as it ran,
+    // so a provider signed in later never appeared (walk finding F25). Each
+    // read asks about a new empty directory no session uses, then has the
+    // server forget it and removes it.
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-model-catalogue-"))
+    let config: OpenCodeResult<unknown>
+    let catalog: OpenCodeResult<unknown>
+    try {
+      const options = { query: { directory }, throwOnError: true as const, ...(signal ? { signal } : {}) }
+      ;[config, catalog] = await Promise.all([client.config.get(options), client.config.providers(options)])
+    } finally {
+      // Bounded, so a server that stops answering cannot hold the read open.
+      // A directory not forgotten costs the server memory, not freshness: the
+      // next read asks about another.
+      const forget = { query: { directory }, signal: AbortSignal.timeout(catalogueForgetTimeoutMs) }
+      await client.instance?.dispose(forget).catch((error: unknown) => {
+        console.error(`Domovoi could not have ${this.#identity.providerName} forget a model catalogue directory`, error)
+      })
+      await rm(directory, { recursive: true, force: true })
+    }
     const configured = requireConfig(
       unwrap(config, `${this.#identity.providerName} config`),
       `${this.#identity.providerName} config`,
