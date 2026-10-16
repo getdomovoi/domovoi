@@ -1,4 +1,4 @@
-import { demoWorkspace, type WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { demoWorkspace, threadItemSchema, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
 import { countWork } from "./test-work.js"
@@ -168,4 +168,35 @@ it("omits sensitive checkpoint paths from persisted and transferred thread copie
   item.midTurn.changedPathCount += 1
   expect(redact(snapshot).thread[0]).toMatchObject({ midTurn: { changedPaths: ["safe.txt"], changedPathCount: 8 } })
   expect(item.midTurn.changedPaths).toHaveLength(5)
+})
+
+it("redacts the names a user turn's attachments carry as it redacts the turn's text", () => {
+  const snapshot = structuredClone(demoWorkspace)
+  const image = { kind: "image" as const, mimeType: "image/png" as const, width: 1, height: 1, bytes: 68 }
+  snapshot.thread = [{
+    id: "user-attachments", sessionId: snapshot.sessions[0]!.id, kind: "user", createdAt,
+    body: "Read these",
+    attachments: [
+      { kind: "text", name: "NPM_TOKEN=attachment-secret-1.txt", bytes: 12 },
+      { kind: "workspace-file", path: "notes/password=attachment-secret-2" },
+    ],
+  }, {
+    id: "user-image", sessionId: snapshot.sessions[0]!.id, kind: "user", createdAt, body: "Describe this image",
+    attachments: [image],
+  }]
+  for (const written of [redactWorkspaceCopies(snapshot), createWorkspaceRedactor()(snapshot)]) {
+    expect(JSON.stringify(written.thread)).not.toMatch(/attachment-secret-\d/u)
+    expect(written.thread[0]).toMatchObject({ attachments: [{ kind: "text", bytes: 12 }, { kind: "workspace-file" }] })
+    expect(written.thread[1]).toMatchObject({ attachments: [image] })
+  }
+  // A name at its bound stays within it once the marker replaces the secret.
+  const longName = `${"a".repeat(238)} NPM_TOKEN=sec3`
+  snapshot.thread = [{
+    id: "user-long", sessionId: snapshot.sessions[0]!.id, kind: "user", createdAt, body: "Read this",
+    attachments: [{ kind: "text", name: longName, bytes: 1 }],
+  }]
+  expect(threadItemSchema.safeParse(snapshot.thread[0]).success).toBe(true)
+  const redacted = redactWorkspaceCopies(snapshot).thread[0]
+  expect(JSON.stringify(redacted)).not.toContain("NPM_TOKEN=sec3")
+  expect(threadItemSchema.safeParse(redacted).success).toBe(true)
 })

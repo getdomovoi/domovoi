@@ -215,7 +215,7 @@ import {
   type ProviderApprovalDecision,
   type UnavailableProvider,
 } from "./agents.js"
-import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
+import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError, sessionAttachmentSummaries } from "./session-attachments.js"
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
@@ -4621,20 +4621,7 @@ export class DomovoiDaemon {
         connectionId,
       },
       skillIds: params.skillSelection?.skills.map((skill) => skill.skillId) ?? [],
-      attachments: params.attachments?.map((attachment) => {
-        if ("kind" in attachment) {
-          return attachment.kind === "text"
-            ? { kind: "text" as const, name: attachment.name, bytes: Buffer.byteLength(attachment.content, "utf8") }
-            : { kind: "workspace-file" as const, path: attachment.path }
-        }
-        return {
-          kind: "image" as const,
-          mimeType: attachment.mimeType,
-          width: attachment.width,
-          height: attachment.height,
-          bytes: canonicalBase64DecodedByteLength(attachment.data)!,
-        }
-      }) ?? [],
+      attachments: sessionAttachmentSummaries(params.attachments),
       prompt: params.prompt,
       ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
       ...(params.attachments ? { uploads: params.attachments } : {}),
@@ -10873,11 +10860,15 @@ export class DomovoiDaemon {
           }
         }
         const turnLink = this.#turnLink(currentSession.id, dispatchRuntime.provider, providerThreadId, turnId)
+        // Walk finding F26: the turn says what it carried, so every client
+        // can show it. Sizes and names only; image bytes went to the provider.
+        const sentAttachments = sessionAttachmentSummaries(params.attachments)
         this.#snapshot.thread.push({
           id: `user-${randomUUID()}`,
           sessionId: currentSession.id,
           kind: "user",
           body: params.prompt,
+          ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
           ...turnLink,
           ...(turnLink.turnId && providerMessageId ? { providerMessageKey: usageIdentity({
             provider: dispatchRuntime.provider, threadId: providerThreadId, turnId: providerMessageId,
