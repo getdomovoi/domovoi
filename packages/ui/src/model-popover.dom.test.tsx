@@ -62,6 +62,21 @@ it("lists every reporting harness's models flat, ticks the current one, and omit
   expect(screen.getByText("3 of 3 · 2 harnesses reported")).toBeTruthy()
 })
 
+// M1 walk F4. A harness whose model read failed is named with the reason the
+// daemon gave, the same line the launcher shows.
+it("names the harness whose model list could not be read, with the reason", async () => {
+  const user = userEvent.setup()
+  render(popover({
+    onListModels: vi.fn(async (provider: string) => {
+      if (provider === "claude-code") throw new Error("Provider request failed")
+      return catalogs[provider] ?? []
+    }),
+  }))
+  await user.click(screen.getByRole("button", { name: /claude-code · sonnet 4\.6/ }))
+  await settle()
+  expect(screen.getByText("Domovoi could not read the model list from Claude Code. Provider request failed.")).toBeTruthy()
+})
+
 // The chip and each row show a display name derived from the id, with the id
 // itself still on the row in mono: that string is what the audit log and the
 // provider's own error say.

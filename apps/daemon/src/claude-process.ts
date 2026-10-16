@@ -32,8 +32,28 @@ export type ClaudeSpawn = (
   options: ClaudeSpawnOptions,
 ) => ChildProcessWithoutNullStreams
 
+// The executable that runs the keeper's Node source (claudeKeeperSource), and
+// the keeper's own environment. Claude gets only the environment the SDK built,
+// which the keeper receives on its control pipe.
+export type ClaudeKeeperRuntime = { command: string; env: NodeJS.ProcessEnv }
+
+// The keeper runs on this process's own executable. In the desktop app the
+// daemon runs in Electron's main process, so that executable is the app: given
+// `-e` without ELECTRON_RUN_AS_NODE it starts a second copy of the app, which
+// quits on finding the first holding the single-instance lock. The keeper then
+// never runs, and the SDK reports "Query closed before response received"
+// with nothing on stderr (M1 walk F4). The switch needs the RunAsNode fuse,
+// which the app leaves on.
+export function claudeKeeperRuntime(
+  host: { execPath: string; versions: NodeJS.ProcessVersions } = process,
+): ClaudeKeeperRuntime {
+  return { command: host.execPath, env: host.versions.electron === undefined ? {} : { ELECTRON_RUN_AS_NODE: "1" } }
+}
+
 export type ClaudeProcessOptions = {
   spawn?: ClaudeSpawn
+  // What runs the keeper on POSIX; claudeKeeperRuntime() unless a test gives another.
+  keeper?: ClaudeKeeperRuntime
   // Sends signal 0 to a process group by its negative pid, as process.kill
   // does: it returns while the group has a process, even one that may not
   // be signalled, and throws ESRCH once it has none. Signal 0 is never
@@ -154,7 +174,9 @@ export function windowsTreeKill(
 // SIGINT and SIGHUP sent to the keeper, go on to Claude. Claude's exit code
 // or signal is reported back on the control pipe before the group is killed.
 // The keeper's own environment is empty, so nothing in the SDK's, such as
-// NODE_OPTIONS, changes how the keeper runs. If the control pipe closes,
+// NODE_OPTIONS, changes how the keeper runs; inside the desktop app it holds
+// only Electron's run-as-Node switch (claudeKeeperRuntime), which neither
+// Claude nor the sentinel inherits. If the control pipe closes,
 // Domovoi has gone and nothing else can stop the group, so the keeper kills
 // it. The source is plain CommonJS, run with node -e, so nothing is shipped
 // or written to disk for it.
@@ -273,7 +295,8 @@ export function spawnClaudeProcess(
     probe = (pid) => { process.kill(pid, 0) },
     killTree = windowsTreeKill,
     platform = process.platform,
-  }: Pick<ClaudeProcessOptions, "spawn" | "probe" | "killTree" | "platform"> = {},
+    keeper = claudeKeeperRuntime(),
+  }: Pick<ClaudeProcessOptions, "spawn" | "probe" | "killTree" | "platform" | "keeper"> = {},
   session?: string,
 ): ClaudeProcess {
   const windows = platform === "win32"
@@ -287,9 +310,9 @@ export function spawnClaudeProcess(
       windowsHide: true,
       detached: false,
     })
-    : start(process.execPath, ["-e", claudeKeeperSource], {
+    : start(keeper.command, ["-e", claudeKeeperSource], {
       ...directory,
-      env: {},
+      env: keeper.env,
       signal: options.signal,
       stdio: ["pipe", "pipe", "pipe", "pipe", "pipe"],
       windowsHide: true,
