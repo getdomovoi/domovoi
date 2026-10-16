@@ -35,11 +35,18 @@ export function AgentMarkdown({ body, className }: { body: string; className?: s
           return (
             // A command must not wrap: a broken line is a different command.
             // It scrolls sideways instead, which keeps it copyable.
+            //
+            // grow-0 overrides the flexGrow 1 every ScrollView carries. The
+            // reply bubble is self-start, and React Native's Yoga errata
+            // (StretchFlexBasis) stretch a growing child of such a box to the
+            // height the thread offered, so the block and its bubble became
+            // as tall as the whole thread and drew as one empty frame (walk
+            // F21, iPhone).
             <ScrollView
               key={index}
               horizontal
               showsHorizontalScrollIndicator={false}
-              className="mt-2 rounded-lg border border-border bg-code"
+              className="mt-2 grow-0 rounded-lg border border-border bg-code"
               contentContainerClassName="px-3 py-2.5"
             >
               <Text className="font-mono text-meta text-foreground">{block.text}</Text>
