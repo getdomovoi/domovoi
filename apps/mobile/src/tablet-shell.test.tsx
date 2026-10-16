@@ -539,5 +539,24 @@ describe("TabletShell", () => {
       expectNoteUnder(overLimitBody)
     })
   })
+
+  // Walk finding F26: the tablet names what a sent message carried under
+  // it, as the phone does, from the record alone.
+  it("names the attachments a sent message carried under that message", async () => {
+    await draw(undefined, "full", (snapshot) => {
+      const sessionId = snapshot.activeSessionId
+      if (!sessionId) throw new Error("fixture needs an active session")
+      snapshot.thread.push({
+        id: "thread-photo", sessionId, kind: "user", body: "Describe this image", createdAt: "2026-10-16T12:00:00.000Z",
+        attachments: [{ kind: "text", name: "terminal-output.txt", bytes: 3_200 }],
+      })
+      workspaceSnapshotSchema.parse(snapshot)
+    })
+
+    expect(screen.getByText("Describe this image")).toBeOnTheScreen()
+    const chip = screen.getByLabelText("Text file terminal-output.txt, 3.2 kB")
+    expect(within(chip).getByText("LOG", { includeHiddenElements: true })).toBeTruthy()
+    expect(within(chip).getByText("terminal-output.txt", { includeHiddenElements: true })).toBeTruthy()
+  })
 })
 

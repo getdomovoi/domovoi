@@ -2,10 +2,12 @@ import {
   annotationsOverLimitLine,
   boundedClientThread,
   maximumSessionPromptCharacters,
+  sentAttachmentChips,
   type ApprovalDecision,
   type ClientAccess,
   type PolicyRefusalThreadItem,
   type QueuedSessionSend,
+  type SentAttachmentChip,
   type WorkspaceSnapshot,
 } from "@getdomovoi/protocol"
 
@@ -22,6 +24,9 @@ export type ThreadEntry =
     body: string
     // On a sent message, the open comments it left over the per-turn limit.
     omission?: string
+    // On a sent message, what it carried besides its text (walk finding
+    // F26). Names and sizes only: the phone keeps no copy of a sent image.
+    attachments?: SentAttachmentChip[]
   }
   | {
     id: string
@@ -144,7 +149,12 @@ function entryFor(item: ThreadItem): ThreadEntry {
   switch (item.kind) {
     case "user": {
       const omission = limitOmission(item)
-      return { id: item.id, kind: "message", voice: "you", body: item.body, ...(omission ? { omission } : {}) }
+      const attachments = sentAttachmentChips(item.attachments)
+      return {
+        id: item.id, kind: "message", voice: "you", body: item.body,
+        ...(omission ? { omission } : {}),
+        ...(attachments.length > 0 ? { attachments } : {}),
+      }
     }
     case "assistant":
       return { id: item.id, kind: "message", voice: "agent", body: item.body }
