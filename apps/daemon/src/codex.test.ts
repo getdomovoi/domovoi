@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PassThrough } from "node:stream"
 
+import { parse as parseToml } from "smol-toml"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
@@ -172,6 +173,14 @@ describe("codexAppServerArguments", () => {
   // its sandbox, and a deny on ~/.domovoi outranked the worktree, so Ask could
   // not read the worktree and an approved write failed with "Operation not
   // permitted". The store is refused name by name, everything but worktrees.
+  // Codex reads each -c value as TOML and takes one that does not parse, a
+  // repeated key included, as a plain string, which fails the profile.
+  it("writes each profile's filesystem table as TOML that parses", () => {
+    for (const profile of ["domovoi-read", "domovoi-build"]) {
+      expect(() => parseToml(`filesystem = ${settings.get(`permissions.${profile}.filesystem`)!}`)).not.toThrow()
+    }
+  })
+
   it("refuses everything in ~/.domovoi except the session worktrees in both profiles", () => {
     expect(codexSecretLocations).toContain("~/.domovoi")
     for (const profile of ["domovoi-read", "domovoi-build"]) {
@@ -184,10 +193,18 @@ describe("codexAppServerArguments", () => {
         "~/.domovoi/logs/daemon.log", "~/.domovoi/.hidden", "~/.domovoi/w", "~/.domovoi/worktree", "~/.domovoi/worktreesX",
         "~/.domovoi/worktreesX/file", "~/.domovoi/Worktrees/session-1/a.ts", "~/.domovoi/wx/file", "~/.domovoi/future-secret.json",
         "~/.domovoi/worktrees/session-1/.env", "~/.domovoi/worktrees/session-1/config/id_rsa", "~/.domovoi/worktrees/other/key.pem",
+        // Round 2 review: the whole-store deny also hid credential stores a
+        // worktree holds at any depth, as a home directory would.
+        "~/.domovoi/worktrees/other/.aws/credentials", "~/.domovoi/worktrees/session-1/.ssh/id_ed25519",
+        "~/.domovoi/worktrees/session-1/fixtures/.codex/auth.json", "~/.domovoi/worktrees/session-1/.config/gh/hosts.yml",
+        "~/.domovoi/worktrees/session-1/.docker/config.json", "~/.domovoi/worktrees/session-1/.claude/.credentials.json",
+        "~/.domovoi/worktrees/session-1/.kube/config", "~/.domovoi/worktrees/session-1/.git-credentials",
       ]) expect(refused(path), path).toBe(true)
       for (const path of [
         "~/.domovoi/worktrees", "~/.domovoi/worktrees/session-1", "~/.domovoi/worktrees/session-1/src/index.ts",
         "~/.domovoi/worktrees/session-1/walk-gate.txt",
+        // A project's own .docker and .domovoi directories are ordinary files.
+        "~/.domovoi/worktrees/session-1/.docker/Dockerfile", "~/.domovoi/worktrees/session-1/.domovoi/endpoint.json",
       ]) expect(refused(path), path).toBe(false)
     }
   })
@@ -444,6 +461,23 @@ describe("StdioCodexTransport", () => {
     await transport.close()
 
     expect(error).not.toHaveBeenCalled()
+  })
+
+  // A JSON-RPC id may be a string (RequestId in the 0.162.1 schema). Dropped,
+  // a request with one would wait unanswered and unseen.
+  it("keeps a string request id from the app-server", async () => {
+    const child = new FakeChild()
+    const transport = new StdioCodexTransport(
+      () => child as unknown as ChildProcessWithoutNullStreams,
+    )
+    const message = vi.fn()
+    transport.onMessage(message)
+
+    child.stdout.write(`${JSON.stringify({ id: "approval-85", method: "item/fileChange/requestApproval", params: { threadId: "thread-1" } })}\n`)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(message).toHaveBeenCalledWith({ id: "approval-85", method: "item/fileChange/requestApproval", params: { threadId: "thread-1" } })
+    await transport.close()
   })
 
   it("narrows app-server lines to JSON-RPC messages and rejects non-object lines", async () => {
@@ -1563,6 +1597,27 @@ describe("CodexAppServerAdapter", () => {
     // 0.162.1; abort reads the same in both.
     expect(transport.sent.at(-1)).toEqual({ id: 8, result: { decision: "abort" } })
     expect(events).toEqual([expect.objectContaining({ type: "policy-refused", threadId: "thread-1", itemId: "call-1", command, refusal: codexRequestRefusal })])
+    await adapter.close()
+  })
+
+  // Domovoi's approval ids are numbers, so a request with a string id never
+  // becomes a card: it is refused, shown, and answered under its own id.
+  it.each([
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+  ] as const)("refuses %s with a string id visibly and answers it under that id", async (method) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({ id: "approval-85", method, params: { threadId: "thread-1", turnId: "turn-1", itemId: "exec-1", command: "touch walk-gate.txt" } })
+    expect(transport.sent.at(-1)).toEqual({ id: "approval-85", result: { decision: "decline" } })
+    expect(events).toEqual([expect.objectContaining({ type: "policy-refused", threadId: "thread-1", command: "touch walk-gate.txt", refusal: codexRequestRefusal })])
+    expect(events.some((event) => event.type === "approval-requested")).toBe(false)
     await adapter.close()
   })
 

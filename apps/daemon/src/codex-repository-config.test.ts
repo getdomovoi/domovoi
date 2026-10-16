@@ -310,7 +310,7 @@ describe("Codex project trust", () => {
     await adapter.resumeThread({ threadId: "thread-1", cwd: root, runtime })
 
     expect(sentParams(transport, "thread/start")[0]?.config).toEqual(untrusted(root))
-    expect(sentParams(transport, "thread/resume")[0]).toEqual({ threadId: "thread-1", config: untrusted(root) })
+    expect(sentParams(transport, "thread/resume")[0]).toEqual({ threadId: "thread-1", approvalsReviewer: "user", config: untrusted(root) })
   })
 
   it.runIf(process.platform !== "win32")("uses the canonical path when the session's directory is reached through a link", async () => {
@@ -358,9 +358,9 @@ describe("Codex project trust", () => {
 
     const params = sentParams(transport, "thread/start")[0]
     expect(Object.keys(params ?? {}).sort()).toEqual(
-      ["approvalPolicy", "config", "cwd", "developerInstructions", "model", "sandbox", "serviceName"],
+      ["approvalPolicy", "approvalsReviewer", "config", "cwd", "developerInstructions", "model", "sandbox", "serviceName"],
     )
-    expect(params).toMatchObject({ cwd: root, sandbox: "workspace-write", serviceName: "domovoi" })
+    expect(params).toMatchObject({ cwd: root, sandbox: "workspace-write", serviceName: "domovoi", approvalsReviewer: "user" })
     expect(Object.keys(params?.config as object)).toEqual(["projects", "tools"])
     expect((params?.config as Record<string, unknown>).tools).toEqual({ update_plan: { enabled: true } })
   })
@@ -741,7 +741,7 @@ describe("Codex under repository trust", () => {
 
     expect(sentParams(transport, "config/read")).toEqual([{ cwd, includeLayers: true }])
     expect(sentParams(transport, "mcpServerStatus/list")).toEqual([{ detail: "toolsAndAuthOnly" }])
-    expect(sentParams(transport, "thread/resume")).toEqual([{ threadId: "thread-1", config: trustedThreadConfig(cwd) }])
+    expect(sentParams(transport, "thread/resume")).toEqual([{ threadId: "thread-1", approvalsReviewer: "user", config: trustedThreadConfig(cwd) }])
     expect(adapter.repositoryTrustApplied("thread-1")).toEqual({ digest: repositoryTrust.trustedDigest })
   })
 

@@ -52,7 +52,9 @@ import { onProcessEnd } from "./process-end.js"
 export type { AgentAdapter, AgentEvent } from "./agents.js"
 
 export type JsonRpcMessage = {
-  id?: number
+  // Domovoi numbers its own requests; Codex numbers its own too, but a
+  // JSON-RPC id may be a string, and a request with one is still answered.
+  id?: number | string
   method?: string
   params?: Record<string, unknown>
   result?: unknown
@@ -219,11 +221,21 @@ const maximumCatalogPages = 50
 // outranks the worktree within it (measured 2026-10-15), so refusing
 // ~/.domovoi whole refused an approved write in the worktree with "Operation
 // not permitted", and in Ask every read of it (walk finding F15). The store is
-// refused by globs that match every name in it but worktrees, and the secret
-// file patterns are refused in every session worktree, the thread's own
-// included, as :workspace_roots refuses them in the thread's own.
+// refused by globs that match every name in it but worktrees. In every
+// session worktree, the thread's own included, the secret file patterns are
+// refused as :workspace_roots refuses them in the thread's own, and so is each
+// other credential store at any depth, as the whole-store deny refused them.
 const codexProfileStore = "~/.domovoi"
 const codexSessionWorktrees = "worktrees"
+
+// A credential store as a worktree path pattern: by its card name where the
+// directory also holds ordinary files (a project's own .docker directory).
+const codexWorktreeCredentialPatterns: readonly string[] = credentialStores
+  .filter(({ location }) => location !== codexProfileStore)
+  .flatMap(({ location, cardName }) => {
+    const name = cardName ?? location.slice(2)
+    return [`**/${name}`, `**/${name}/**`]
+  })
 
 // Globs for every entry of directory except kept, and everything below them:
 // a name that differs from kept at some character ([!c] is any one character
@@ -238,13 +250,16 @@ function codexGlobsExcept(directory: string, kept: string): string[] {
   return names.flatMap((name) => [`${directory}/${name}`, `${directory}/${name}/**`])
 }
 
+// Each location once: a TOML table may not repeat a key, and .npmrc, .netrc
+// and .pypirc are both secret files and credential stores.
 function codexDeniedLocations(): string[] {
-  return codexSecretLocations.flatMap((location) => location === codexProfileStore
+  return [...new Set(codexSecretLocations.flatMap((location) => location === codexProfileStore
     ? [
         ...codexGlobsExcept(location, codexSessionWorktrees),
-        ...codexWorktreeSecretPatterns.map((pattern) => `${location}/${codexSessionWorktrees}/${pattern}`),
+        ...[...codexWorktreeSecretPatterns, ...codexWorktreeCredentialPatterns]
+          .map((pattern) => `${location}/${codexSessionWorktrees}/${pattern}`),
       ]
-    : [location])
+    : [location]))]
 }
 
 export function codexAppServerArguments(): string[] {
@@ -901,6 +916,13 @@ export class CodexAppServerAdapter implements AgentAdapter {
   }
 
   #receive(message: JsonRpcMessage): void {
+    if (typeof message.id === "string") {
+      // Domovoi's own requests and its approval cards use numbered ids, so a
+      // string id is never an answer Domovoi waits on, and a request with one
+      // is refused and shown rather than dropped.
+      if (message.method) this.#refuseRequest(message.id, message.method, message.params ?? {})
+      return
+    }
     if (message.id !== undefined && !message.method) {
       const pending = this.#pending.get(message.id)
       if (!pending) return
@@ -1027,7 +1049,7 @@ export class CodexAppServerAdapter implements AgentAdapter {
   // the client for a service shows nothing; one that names no thread has no
   // session to show it in, so Domovoi stops Codex, which every Codex session
   // shows.
-  #refuseRequest(id: number, method: string, params: Record<string, unknown>): void {
+  #refuseRequest(id: number | string, method: string, params: Record<string, unknown>): void {
     const decline = Object.hasOwn(codexRequestDeclines, method) ? codexRequestDeclines[method] : undefined
     this.#transport?.send(decline === undefined
       ? { id, error: { code: -32601, message: `Domovoi does not handle ${method}` } }
@@ -1088,6 +1110,8 @@ const codexServiceRequests = new Set(["account/chatgptAuthTokens/refresh", "atte
 // The older requests take abort: their denied answer changed from a string to
 // an object that carries a rejection, and abort is the same in both.
 const codexRequestDeclines: Record<string, Record<string, unknown>> = {
+  // Refused only when it carries a string id, which no card can hold.
+  "item/commandExecution/requestApproval": { decision: "decline" },
   "item/fileChange/requestApproval": { decision: "decline" },
   "item/permissions/requestApproval": { permissions: {} },
   "mcpServer/elicitation/request": { action: "decline", content: null },
@@ -1236,7 +1260,7 @@ function requireJsonRpcMessage(value: unknown): JsonRpcMessage {
   const params = asRecord(message.params)
   const error = asRecord(message.error)
   return {
-    ...(typeof message.id === "number" ? { id: message.id } : {}),
+    ...(typeof message.id === "number" || typeof message.id === "string" ? { id: message.id } : {}),
     ...(typeof message.method === "string" ? { method: message.method } : {}),
     ...(params ? { params } : {}),
     ...("result" in message ? { result: message.result } : {}),
