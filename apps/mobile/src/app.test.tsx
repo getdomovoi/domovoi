@@ -584,6 +584,56 @@ describe("App", () => {
       }
     })
 
+    // #871 review: a Send handled after the resize finished but before React
+    // drew the image still sends it with the turn.
+    it("sends an image that finished resizing before it was drawn", async () => {
+      const { socket } = await openAudit()
+      await pick()
+      await fireEvent.changeText(screen.getByLabelText("Reply to this session"), "Is this the lockfile")
+      const send = screen.getByRole("button", { name: "Send" })
+      mockEncodes[0]?.resolve({ base64: mockSmallJpeg, width: 2048, height: 1536 })
+      for (let turn = 0; turn < 10; turn += 1) await Promise.resolve()
+      await fireEvent.press(send)
+      await settle()
+      const sent = socket.requests("session.send")
+      expect(sent).toHaveLength(1)
+      expect(sent[0]?.params).toMatchObject({ attachments: [{ width: 2048, height: 1536 }] })
+    })
+
+    // #871 review: the daemon removes the open session while an image for it
+    // is resizing; the tablet falls back to another session, which must not
+    // send that image unseen.
+    it("drops a pending image when its session is removed", async () => {
+      const native = jest.requireActual<typeof import("react-native")>("react-native")
+      const dimensions = jest.spyOn(native, "useWindowDimensions").mockReturnValue({ width: 390, height: 844, scale: 3, fontScale: 1 })
+      try {
+        const { socket, snapshot } = await openAudit()
+        await pick()
+        dimensions.mockReturnValue({ width: 1024, height: 768, scale: 2, fontScale: 1 })
+        const removed = structuredClone(snapshot)
+        removed.sessions = removed.sessions.filter((session) => session.id !== audit.id)
+        // The session the tablet falls back to can take a turn.
+        const fallback = removed.sessions.find((session) => session.id === billing.id)!
+        fallback.workspacePath = "/worktrees/repo-billing"
+        fallback.providerThreadId = "provider-thread-billing"
+        fallback.activeTurnId = undefined
+        removed.approvals = []
+        removed.activeSessionId = billing.id
+        await act(async () => { socket.push("workspace.changed", removed) })
+        await settle()
+        await finish(0)
+        expect(screen.getByTestId("tablet-thread")).toBeOnTheScreen()
+        await fireEvent.changeText(screen.getByLabelText("Tablet reply"), "Check the lockfile")
+        await fireEvent.press(screen.getByRole("button", { name: "Send message" }))
+        await settle()
+        const sent = socket.requests("session.send")
+        expect(sent).toHaveLength(1)
+        expect(sent[0]?.params).not.toHaveProperty("attachments")
+      } finally {
+        dimensions.mockRestore()
+      }
+    })
+
     // Read 7: the sheet holds the pick it was given until its slide-out ends;
     // two images that land meanwhile still fill the turn, so the third pick
     // is refused before it is resized rather than dropped after.
