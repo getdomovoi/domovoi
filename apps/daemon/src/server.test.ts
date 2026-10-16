@@ -3953,6 +3953,30 @@ describe("DomovoiDaemon", () => {
     expect(entry("message-reply")).not.toHaveProperty("annotationsOverLimit")
   })
 
+  // Walk finding F26, Codex review round 1: a message paged back from history
+  // still says what it carried, once it has left the live thread window.
+  it("carries a sent message's attachments, and none on a message that carried none", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    const createdAt = "2026-08-28T12:00:00.000Z"
+    const photo = { kind: "image" as const, mimeType: "image/jpeg" as const, width: 2048, height: 1536, bytes: 1_412_000 }
+    snapshot.thread = [
+      { id: "message-photo", sessionId: session.id, kind: "user", body: "Describe this image", attachments: [photo], createdAt },
+      { id: "message-plain", sessionId: session.id, kind: "user", body: "plain", createdAt },
+    ]
+    workspaceSnapshotSchema.parse(snapshot)
+
+    const page = sessionHistoryPageSchema.parse(sessionHistoryPage(snapshot, {
+      sessionId: session.id,
+      categories: ["messages"],
+      limit: 10,
+    }))
+    const entry = (sourceId: string) => page.items.find((item) => item.sourceId === sourceId)
+
+    expect(entry("message-photo")).toMatchObject({ role: "user", attachments: [photo] })
+    expect(entry("message-plain")).not.toHaveProperty("attachments")
+  })
+
   it("indexes large mixed history once and bounds repeated filtered pages", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!

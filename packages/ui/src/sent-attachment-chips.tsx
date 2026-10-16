@@ -1,14 +1,21 @@
 import { sentAttachmentChips, type SessionAttachmentSummary } from "@getdomovoi/protocol"
 
+import { cn } from "./lib/utils"
+
 // What a sent turn carried, in the composer chip's mark, name and meta
 // (Desktop V2 composer attachments), read only: the draft is gone, so there
 // is nothing to remove. The daemon records sizes and names, not bytes, so an
 // image is a chip rather than a thumbnail this client could not draw.
-export function SentAttachmentChips({ attachments }: { attachments: readonly SessionAttachmentSummary[] | undefined }) {
+// The thread's user turn sits on the right, so its chips do too; a history
+// row reads left to right and passes align="start".
+export function SentAttachmentChips({ attachments, align = "end" }: {
+  attachments: readonly SessionAttachmentSummary[] | undefined
+  align?: "start" | "end"
+}) {
   const chips = sentAttachmentChips(attachments)
   if (chips.length === 0) return null
   return (
-    <ul aria-label="Sent with this message" className="m-0 mt-2 flex list-none flex-wrap justify-end gap-[7px] p-0">
+    <ul aria-label="Sent with this message" className={cn("m-0 mt-2 flex list-none flex-wrap gap-[7px] p-0", align === "end" ? "justify-end" : "justify-start")}>
       {chips.map((chip, index) => (
         <li
           key={`${chip.kind}-${index}`}

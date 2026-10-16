@@ -1256,6 +1256,8 @@ export function sessionHistoryEntries(
         role: "user",
         body: item.body,
         ...(overLimit > 0 ? { annotationsOverLimit: overLimit } : {}),
+        // And what the message carried (walk finding F26).
+        ...(item.attachments ? { attachments: item.attachments } : {}),
       })
     } else if (item.kind === "assistant") {
       entries.push({ ...base, category: "messages", role: "assistant", body: item.body })
