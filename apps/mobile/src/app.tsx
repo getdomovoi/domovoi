@@ -77,7 +77,7 @@ import { promptProblem, recordedBuildBasis, sendReadinessOverSocket, sessionDeta
 import { queuedCancelParams, sendDelivery } from "./session-delivery"
 import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
-import { TabletShell, type GateProblem } from "./tablet-shell"
+import { railSelectionLeaves, TabletShell, type GateProblem } from "./tablet-shell"
 import { useTheme } from "./theme/theme-provider"
 import {
   missingSkillProblem,
@@ -1088,7 +1088,7 @@ export function App() {
             decideProblem={decideProblem}
             sendProblems={sendProblems}
             onSelectSession={(sessionId) => {
-              if (sessionId !== openSessionId) dropQueue()
+              if (railSelectionLeaves(sessionId, { openSessionId, activeSessionId: snapshot.activeSessionId })) dropQueue()
               setOpenSessionId(sessionId)
               setOpenApprovalId(undefined)
               setDraft("")
