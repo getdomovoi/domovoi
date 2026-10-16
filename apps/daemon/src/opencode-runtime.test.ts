@@ -19,6 +19,7 @@ function fakeClient() {
     },
     event: { subscribe: vi.fn() },
     postSessionIdPermissionsPermissionId: vi.fn(),
+    instance: { dispose: vi.fn() },
   }))
 }
 

@@ -84,6 +84,7 @@ import {
   type QueuedMessage,
 } from "./turn-queue"
 import { PromptDeliveryNote } from "./prompt-delivery-note"
+import { SentAttachmentChips } from "./sent-attachment-chips"
 import { StatusDot, type StatusMeaning } from "./status-dot"
 import { MarkdownQuickView } from "./markdown-quick-view"
 import { stripPlanTags } from "./plan-tag-strip"
@@ -1496,6 +1497,7 @@ export function Thread({
                 <Fragment key={item.id}>
                   <div data-testid="user-turn" className={userTurn}>
                     <MarkdownQuickView source={item.body} />
+                    <SentAttachmentChips attachments={item.attachments} />
                     <PromptDeliveryNote
                       delivery={item.providerPromptDelivery}
                       skillNames={skillNames ?? {}}

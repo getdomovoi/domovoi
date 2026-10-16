@@ -3,7 +3,7 @@ import { z } from "zod"
 import { dateTimeSchema, offsetDateTimeSchema, utf16MaxLength } from "./validation.js"
 
 import { executionResolutionSchema, resolvedExecutionSchema } from "./execution.js"
-import { maximumImageUploadBytes, maximumImageUploadDimension, maximumSessionAttachments, maximumTextAttachmentBytes } from "./image-upload.js"
+import { maximumSessionAttachments, sessionAttachmentSummarySchema } from "./image-upload.js"
 import { providerPromptDeliverySchema } from "./prompt-delivery.js"
 import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, checkpointCaptureHasRequiredTurn, midTurnCheckpointSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import { sessionTransferCoverageSchema } from "./transfer-coverage.js"
@@ -311,24 +311,7 @@ export const queuedSessionSendSchema = z.object({
     connectionId: connectionIdSchema,
   }).strict(),
   skillIds: z.array(z.string().trim().min(1).check(utf16MaxLength(128))).max(8),
-  attachments: z.array(z.union([
-    z.object({
-      kind: z.literal("image"),
-      mimeType: z.enum(["image/png", "image/jpeg"]),
-      width: z.number().int().positive().max(maximumImageUploadDimension),
-      height: z.number().int().positive().max(maximumImageUploadDimension),
-      bytes: z.number().int().positive().max(maximumImageUploadBytes),
-    }).strict(),
-    z.object({
-      kind: z.literal("text"),
-      name: z.string().trim().min(1).check(utf16MaxLength(255)),
-      bytes: z.number().int().positive().max(maximumTextAttachmentBytes),
-    }).strict(),
-    z.object({
-      kind: z.literal("workspace-file"),
-      path: z.string().min(1).check(utf16MaxLength(1024)),
-    }).strict(),
-  ])).max(maximumSessionAttachments),
+  attachments: z.array(sessionAttachmentSummarySchema).max(maximumSessionAttachments),
   reason: z.string().trim().min(1).check(utf16MaxLength(1_024)).optional(),
 }).strict()
 
@@ -688,6 +671,10 @@ export const threadItemSchema = z.discriminatedUnion("kind", [
     providerMessageKey: sessionTurnIdSchema.optional(),
     body: z.string(),
     providerPromptDelivery: providerPromptDeliverySchema.optional(),
+    // What the send carried besides its text, as metadata (walk finding F26:
+    // a photo reached the agent and appeared nowhere in the thread). Absent
+    // on a turn that carried nothing and on one recorded before the field.
+    attachments: z.array(sessionAttachmentSummarySchema).min(1).max(maximumSessionAttachments).optional(),
     createdAt: dateTimeSchema,
   }).superRefine((message, context) => {
     if (message.providerMessageKey && !message.turnId) {

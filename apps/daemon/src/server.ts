@@ -20,6 +20,7 @@ import {
   boundedClientThread,
   canonicalBase64DecodedByteLength,
   credentialSchema,
+  sentAttachmentChips,
   type ImageUpload,
   type MachineCapability,
   type MachineWslFacts,
@@ -215,7 +216,7 @@ import {
   type ProviderApprovalDecision,
   type UnavailableProvider,
 } from "./agents.js"
-import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError } from "./session-attachments.js"
+import { modelImageInput, prepareSessionAttachments, prepareSessionAttachmentText, SessionAttachmentError, sessionAttachmentSummaries } from "./session-attachments.js"
 import {
   FileRevertIncompleteError,
   FileRevertTargetChangedError,
@@ -1256,6 +1257,8 @@ export function sessionHistoryEntries(
         role: "user",
         body: item.body,
         ...(overLimit > 0 ? { annotationsOverLimit: overLimit } : {}),
+        // And what the message carried (walk finding F26).
+        ...(item.attachments ? { attachments: item.attachments } : {}),
       })
     } else if (item.kind === "assistant") {
       entries.push({ ...base, category: "messages", role: "assistant", body: item.body })
@@ -1345,7 +1348,12 @@ export function sessionHistoryEntries(
 }
 
 function sessionHistorySearchText(entry: SessionHistoryEntry): string {
-  if (entry.category === "messages") return `${entry.body}\n${entry.detail ?? ""}`
+  if (entry.category === "messages") {
+    // The names the row's attachment chips show (PR #875 review), so a
+    // search for what a message carried finds it though the body never says.
+    const carried = sentAttachmentChips(entry.attachments).map((chip) => chip.name).join("\n")
+    return `${entry.body}\n${entry.detail ?? ""}\n${carried}`
+  }
   if (entry.category === "tools" || entry.category === "tests") {
     return `${entry.title}\n${entry.output ?? ""}\n${entry.status}\n${entry.tool}`
   }
@@ -4621,20 +4629,7 @@ export class DomovoiDaemon {
         connectionId,
       },
       skillIds: params.skillSelection?.skills.map((skill) => skill.skillId) ?? [],
-      attachments: params.attachments?.map((attachment) => {
-        if ("kind" in attachment) {
-          return attachment.kind === "text"
-            ? { kind: "text" as const, name: attachment.name, bytes: Buffer.byteLength(attachment.content, "utf8") }
-            : { kind: "workspace-file" as const, path: attachment.path }
-        }
-        return {
-          kind: "image" as const,
-          mimeType: attachment.mimeType,
-          width: attachment.width,
-          height: attachment.height,
-          bytes: canonicalBase64DecodedByteLength(attachment.data)!,
-        }
-      }) ?? [],
+      attachments: sessionAttachmentSummaries(params.attachments),
       prompt: params.prompt,
       ...(params.skillSelection ? { skillSelection: params.skillSelection } : {}),
       ...(params.attachments ? { uploads: params.attachments } : {}),
@@ -10873,11 +10868,15 @@ export class DomovoiDaemon {
           }
         }
         const turnLink = this.#turnLink(currentSession.id, dispatchRuntime.provider, providerThreadId, turnId)
+        // Walk finding F26: the turn says what it carried, so every client
+        // can show it. Sizes and names only; image bytes went to the provider.
+        const sentAttachments = sessionAttachmentSummaries(params.attachments)
         this.#snapshot.thread.push({
           id: `user-${randomUUID()}`,
           sessionId: currentSession.id,
           kind: "user",
           body: params.prompt,
+          ...(sentAttachments.length > 0 ? { attachments: sentAttachments } : {}),
           ...turnLink,
           ...(turnLink.turnId && providerMessageId ? { providerMessageKey: usageIdentity({
             provider: dispatchRuntime.provider, threadId: providerThreadId, turnId: providerMessageId,
