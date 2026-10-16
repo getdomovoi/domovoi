@@ -971,7 +971,9 @@ export function SessionScreen({
         draft={draft}
         readiness={detail.sending}
         sending={sending}
-        problem={sendProblem}
+        // Walk F23: a pick refusal arrives after the sheet has closed, so it is
+        // stated here too. A send problem is about the turn and comes first.
+        problem={sendProblem || (attachOpen ? "" : attachProblem)}
         skillLabel={skillLabel}
         onChangeDraft={onChangeDraft}
         onSend={onSend}
@@ -997,8 +999,9 @@ export function SessionScreen({
         machine={machine}
         problem={attachProblem}
         images={modelImages}
-        onPickLibrary={() => { setAttachOpen(false); onPickLibrary() }}
-        onTakePhoto={() => { setAttachOpen(false); onTakePhoto() }}
+        // The sheet closes itself and opens the picker once it has gone.
+        onPickLibrary={onPickLibrary}
+        onTakePhoto={onTakePhoto}
         onClose={() => setAttachOpen(false)}
       />
     </KeyboardAvoidingView>

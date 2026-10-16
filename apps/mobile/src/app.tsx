@@ -43,7 +43,9 @@ import { connectedMachineActivity } from "./machine-activity"
 import { launchPhases } from "./launch-state"
 import * as ImagePicker from "expo-image-picker"
 
-import { attachmentFrom, attachmentRefusalMessage, attachmentSummary, maximumSessionAttachments, type Attachment } from "./attachments"
+import { attachmentRefusalMessage, attachmentSummary, maximumSessionAttachments, type Attachment } from "./attachments"
+import { discardCachedFile, encodeImage } from "./image-encoder"
+import { pickAttachment, type ImageSourcePicker } from "./image-pick"
 import { planForSession, planStepEdit, planSummary, unpinnedAfter } from "./plan-rows"
 import { startLikeRequest } from "./start-like"
 import { ApprovalScreen } from "./screens/approval"
@@ -84,6 +86,16 @@ import {
   skillSelectionLabel,
 } from "./turn-skills"
 import "./global.css"
+
+// Both sources hand back the file and its Base64 at full quality; the resize
+// and re-encode happen afterwards, once, in attachmentFrom.
+const imageSourcePicker: ImageSourcePicker = {
+  requestCamera: () => ImagePicker.requestCameraPermissionsAsync(),
+  launch: (source) => source === "library"
+    ? ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], base64: true, quality: 1 })
+    : ImagePicker.launchCameraAsync({ base64: true, quality: 1 }),
+  discard: discardCachedFile,
+}
 
 export function App() {
   const { preference, setPreference } = useTheme()
@@ -138,25 +150,9 @@ export function App() {
       setAttachProblem(`Two images per turn. Remove one to add another.`)
       return
     }
-    if (source === "camera") {
-      const permission = await ImagePicker.requestCameraPermissionsAsync()
-      if (!permission.granted) {
-        setAttachProblem("This phone has not allowed Domovoi to use the camera.")
-        return
-      }
-    }
-    const result = source === "library"
-      ? await ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], base64: true, quality: 1 })
-      : await ImagePicker.launchCameraAsync({ base64: true, quality: 1 })
-    if (result.canceled) return
-    const asset = result.assets[0]
-    if (!asset) return
-    const read = attachmentFrom(asset)
-    if (!read.ok) {
-      setAttachProblem(read.reason)
-      return
-    }
-    setAttachments((current) => [...current, read.attachment])
+    const outcome = await pickAttachment(source, imageSourcePicker, encodeImage)
+    if (outcome.kind === "problem") setAttachProblem(outcome.text)
+    if (outcome.kind === "added") setAttachments((current) => [...current, outcome.attachment])
   }
   // The plan starts pinned: the design leads the thread with a strip saying
   // where the machine is, and the whole plan is one tap away. Unpinning
@@ -863,6 +859,7 @@ export function App() {
       })
       setDraft("")
       setAttachments([])
+      setAttachProblem("")
     } catch (cause) {
       const refusal = turnSkillRefusalFrom(cause)
       const refusedImage = attachmentRefusalMessage(cause)
@@ -1112,8 +1109,14 @@ export function App() {
             attachProblem={attachProblem}
             onPickLibrary={() => void pickImage("library")}
             onTakePhoto={() => void pickImage("camera")}
-            onRemoveAttachment={(index) => setAttachments((current) => current.filter((_item, at) => at !== index))}
-            onRemoveAttachments={() => setAttachments([])}
+            onRemoveAttachment={(index) => {
+              setAttachments((current) => current.filter((_item, at) => at !== index))
+              setAttachProblem("")
+            }}
+            onRemoveAttachments={() => {
+              setAttachments([])
+              setAttachProblem("")
+            }}
             modelImages={openModelImages}
             starting={starting}
             startProblem={startProblem}
