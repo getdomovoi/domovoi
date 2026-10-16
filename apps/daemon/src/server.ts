@@ -20,6 +20,7 @@ import {
   boundedClientThread,
   canonicalBase64DecodedByteLength,
   credentialSchema,
+  sentAttachmentChips,
   type ImageUpload,
   type MachineCapability,
   type MachineWslFacts,
@@ -1347,7 +1348,12 @@ export function sessionHistoryEntries(
 }
 
 function sessionHistorySearchText(entry: SessionHistoryEntry): string {
-  if (entry.category === "messages") return `${entry.body}\n${entry.detail ?? ""}`
+  if (entry.category === "messages") {
+    // The names the row's attachment chips show (PR #875 review), so a
+    // search for what a message carried finds it though the body never says.
+    const carried = sentAttachmentChips(entry.attachments).map((chip) => chip.name).join("\n")
+    return `${entry.body}\n${entry.detail ?? ""}\n${carried}`
+  }
   if (entry.category === "tools" || entry.category === "tests") {
     return `${entry.title}\n${entry.output ?? ""}\n${entry.status}\n${entry.tool}`
   }

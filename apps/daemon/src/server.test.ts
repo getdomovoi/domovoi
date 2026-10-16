@@ -3977,6 +3977,25 @@ describe("DomovoiDaemon", () => {
     expect(entry("message-plain")).not.toHaveProperty("attachments")
   })
 
+  // PR #875 review (P2): a search for a name the chip shows finds the message
+  // that carried it, though the body never says it.
+  it("finds a sent message by the name or path of what it carried", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const session = snapshot.sessions[0]!
+    const createdAt = "2026-08-28T12:00:00.000Z"
+    snapshot.thread = [
+      { id: "message-text", sessionId: session.id, kind: "user", body: "Read this", attachments: [{ kind: "text", name: "replay-trace.txt", bytes: 900 }], createdAt },
+      { id: "message-path", sessionId: session.id, kind: "user", body: "And this", attachments: [{ kind: "workspace-file", path: "src/webhooks/Retry.ts" }], createdAt },
+      { id: "message-plain", sessionId: session.id, kind: "user", body: "Nothing attached", createdAt },
+    ]
+    workspaceSnapshotSchema.parse(snapshot)
+    const found = (query: string) => sessionHistoryPageSchema.parse(sessionHistoryPage(snapshot, { sessionId: session.id, query, limit: 10 }))
+      .items.map((item) => item.sourceId)
+
+    expect(found("REPLAY-TRACE")).toEqual(["message-text"])
+    expect(found("webhooks/retry")).toEqual(["message-path"])
+  })
+
   it("indexes large mixed history once and bounds repeated filtered pages", () => {
     const snapshot = structuredClone(demoWorkspace)
     const session = snapshot.sessions[0]!
