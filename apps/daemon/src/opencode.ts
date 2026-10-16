@@ -701,27 +701,32 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     // read asks about a new empty directory no session uses, then has the
     // server forget it and removes it.
     const directory = await mkdtemp(join(tmpdir(), "domovoi-model-catalogue-"))
-    let config: OpenCodeResult<unknown>
-    let catalog: OpenCodeResult<unknown>
+    const options = { query: { directory }, throwOnError: true as const, ...(signal ? { signal } : {}) }
+    // Both reads settle before the server forgets the directory, so one that
+    // fails first cannot leave the other to load it again afterwards.
+    const [config, catalog] = await Promise.allSettled([
+      Promise.resolve().then(() => client.config.get(options)),
+      Promise.resolve().then(() => client.config.providers(options)),
+    ])
     try {
-      const options = { query: { directory }, throwOnError: true as const, ...(signal ? { signal } : {}) }
-      ;[config, catalog] = await Promise.all([client.config.get(options), client.config.providers(options)])
-    } finally {
       // Bounded, so a server that stops answering cannot hold the read open.
       // A directory not forgotten costs the server memory, not freshness: the
       // next read asks about another.
-      const forget = { query: { directory }, signal: AbortSignal.timeout(catalogueForgetTimeoutMs) }
-      await client.instance?.dispose(forget).catch((error: unknown) => {
+      const forget = { query: { directory }, throwOnError: true as const, signal: AbortSignal.timeout(catalogueForgetTimeoutMs) }
+      await Promise.resolve().then(() => client.instance?.dispose(forget)).catch((error: unknown) => {
         console.error(`Domovoi could not have ${this.#identity.providerName} forget a model catalogue directory`, error)
       })
+    } finally {
       await rm(directory, { recursive: true, force: true })
     }
+    if (config.status === "rejected") throw config.reason
+    if (catalog.status === "rejected") throw catalog.reason
     const configured = requireConfig(
-      unwrap(config, `${this.#identity.providerName} config`),
+      unwrap(config.value, `${this.#identity.providerName} config`),
       `${this.#identity.providerName} config`,
     )
     const providerCatalog = requireCatalog(
-      unwrap(catalog, `${this.#identity.providerName} provider catalog`),
+      unwrap(catalog.value, `${this.#identity.providerName} provider catalog`),
       `${this.#identity.providerName} provider catalog`,
     )
     const models = providerCatalog.providers

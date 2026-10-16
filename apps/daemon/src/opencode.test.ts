@@ -716,17 +716,53 @@ describe.each([
     await adapter.close()
   })
 
-  it("lists the models when the server cannot forget the directory", async () => {
+  it.each([
+    ["refuses", () => Promise.reject(new Error("server gone"))],
+    ["answers with an error", () => Promise.resolve({ error: { name: "UnknownError" } })],
+  ])("lists the models when the server %s instead of forgetting the directory", async (_how, answer) => {
     const { client, factory } = harness()
     const { directories } = instanceCatalogues(client)
-    client.instance.dispose.mockRejectedValueOnce(new Error("server gone"))
+    client.instance.dispose.mockImplementationOnce((async (options?: { throwOnError?: boolean }) => {
+      // The SDK throws an error answer only when asked to.
+      const result = await answer()
+      if (options?.throwOnError && "error" in result) throw result.error
+      return result
+    }) as never)
     const logged = vi.spyOn(console, "error").mockImplementation(() => undefined)
     const adapter = create(factory)
 
     expect((await adapter.listModels()).map((model) => model.id)).toEqual(["anthropic/sonnet"])
-    expect(logged).toHaveBeenCalledWith(expect.stringContaining("forget a model catalogue directory"), expect.any(Error))
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("forget a model catalogue directory"), expect.anything())
     await expect(readdir(directories[0]!)).rejects.toMatchObject({ code: "ENOENT" })
     logged.mockRestore()
+    await adapter.close()
+  })
+
+  it("forgets the directory only after both reads in it have settled", async () => {
+    const { client, factory } = harness()
+    const { instances } = instanceCatalogues(client)
+    const read = client.config.providers.getMockImplementation() as (options?: unknown) => Promise<unknown>
+    const providersAnswer = deferred<void>()
+    const order: string[] = []
+    client.config.get.mockRejectedValueOnce(new Error("config refused"))
+    client.config.providers.mockImplementationOnce((async (options?: unknown) => {
+      await providersAnswer.promise
+      order.push("catalogue read")
+      return read(options)
+    }) as never)
+    client.instance.dispose.mockImplementation(async (options?: unknown) => {
+      order.push("directory forgotten")
+      instances.delete((options as { query: { directory: string } }).query.directory)
+      return { data: true }
+    })
+    const adapter = create(factory)
+
+    const listing = adapter.listModels()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    providersAnswer.resolve()
+    await expect(listing).rejects.toThrow("config refused")
+    expect(order).toEqual(["catalogue read", "directory forgotten"])
+    expect(instances.size).toBe(0)
     await adapter.close()
   })
 })
