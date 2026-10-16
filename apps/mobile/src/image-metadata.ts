@@ -17,9 +17,26 @@
 // those bytes as they are; it re-encodes them or refuses.
 
 const pngSignature = "\x89PNG\r\n\x1a\n"
-const pngKeptChunks = new Set([
-  "IHDR", "PLTE", "IDAT", "IEND",
-  "tRNS", "gAMA", "cHRM", "sRGB", "iCCP", "sBIT", "cICP", "mDCV", "mDCv", "cLLI", "cLLi",
+// Each kept chunk and the data lengths it may have. A fixed-size chunk with
+// bytes appended carries payload a decoder rejects or skips, so it goes.
+// PLTE, tRNS, iCCP and IDAT are bounded by the picture itself.
+const any = () => true
+const pngKeptChunks = new Map<string, (length: number) => boolean>([
+  ["IHDR", (length) => length === 13],
+  ["PLTE", any],
+  ["IDAT", any],
+  ["IEND", (length) => length === 0],
+  ["tRNS", any],
+  ["iCCP", any],
+  ["gAMA", (length) => length === 4],
+  ["cHRM", (length) => length === 32],
+  ["sRGB", (length) => length === 1],
+  ["sBIT", (length) => length >= 1 && length <= 4],
+  ["cICP", (length) => length === 4],
+  ["mDCV", (length) => length === 24],
+  ["mDCv", (length) => length === 24],
+  ["cLLI", (length) => length === 8],
+  ["cLLi", (length) => length === 8],
 ])
 
 // Colour profiles are kept by default: the cut is applied to what the
@@ -45,7 +62,9 @@ function jpegSegmentKept(marker: number, segment: string, cut: MetadataCut): str
   if (marker === 0xdb || marker === 0xdd || marker === 0xdc) return segment
   if (marker === 0xe0) return jfifWithoutThumbnail(segment)
   if (marker === 0xe2) return cut.profiles === "keep" && segment.startsWith("ICC_PROFILE\0", 4) ? segment : undefined
-  if (marker === 0xee) return segment.startsWith("Adobe", 4) ? segment : undefined
+  // Adobe: identifier, version, two flag words and the colour transform,
+  // twelve bytes. Anything after them is payload a decoder skips.
+  if (marker === 0xee) return segment.startsWith("Adobe", 4) && segment.length >= 4 + 12 ? `\xff\xee\0\x0e${segment.slice(4, 16)}` : undefined
   return undefined
 }
 
@@ -106,7 +125,10 @@ function pngWithoutMetadata(bytes: string, cut: MetadataCut): string | undefined
     const end = at + 12 + length
     if (end > bytes.length) return undefined
     const type = bytes.slice(at + 4, at + 8)
-    if (pngKeptChunks.has(type) && (type !== "iCCP" || cut.profiles === "keep")) kept += bytes.slice(at, end)
+    const sized = pngKeptChunks.get(type)?.(length) ?? false
+    // A header or end of the wrong size is not a picture this recognises.
+    if ((type === "IHDR" || type === "IEND") && !sized) return undefined
+    if (sized && (type !== "iCCP" || cut.profiles === "keep")) kept += bytes.slice(at, end)
     if (type === "IEND") return kept
     at = end
   }

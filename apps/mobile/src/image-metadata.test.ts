@@ -19,7 +19,7 @@ describe("withoutMetadata on a JPEG", () => {
       segment(0xe2, "MPF\0secondary images"),
       segment(0xe2, "ICC_PROFILE\0P3"),
       segment(0xed, "Photoshop 3.0\0IPTC"),
-      segment(0xee, "Adobe"),
+      segment(0xee, "Adobe\0\x64\0\0\0\0\x01"),
       segment(0xfe, "comment"),
       [0xff, 0xff],
       frame,
@@ -31,7 +31,7 @@ describe("withoutMetadata on a JPEG", () => {
       [0xff, 0xd8],
       segment(0xe0, jfif),
       segment(0xe2, "ICC_PROFILE\0P3"),
-      segment(0xee, "Adobe"),
+      segment(0xee, "Adobe\0\x64\0\0\0\0\x01"),
       frame,
       scan,
     ))
@@ -60,6 +60,12 @@ describe("withoutMetadata on a JPEG", () => {
       frame,
       scan,
     ))
+    // Review round 3: Adobe's segment is twelve bytes; anything after them
+    // is payload a decoder skips, so it goes.
+    const adobe = "Adobe\0\x64\0\0\0\0\x01"
+    expect(withoutMetadata(bytes([0xff, 0xd8], segment(0xee, `${adobe}GPS 51.5074 N`), frame, scan), "image/jpeg"))
+      .toBe(bytes([0xff, 0xd8], segment(0xee, adobe), frame, scan))
+    expect(withoutMetadata(bytes([0xff, 0xd8], segment(0xee, "Adobe"), frame, scan), "image/jpeg")).toBe(bytes([0xff, 0xd8], frame, scan))
     // A JFIF header too short to hold its fields is not kept.
     expect(withoutMetadata(bytes([0xff, 0xd8], segment(0xe0, "JFIF\0"), frame, scan), "image/jpeg")).toBe(bytes([0xff, 0xd8], frame, scan))
   })
@@ -152,6 +158,40 @@ describe("withoutMetadata on a PNG", () => {
       chunk("IDAT", "pixels"),
       chunk("IEND", ""),
     ))
+  })
+
+  // Review round 3: a fixed-size chunk with bytes appended is payload a
+  // decoder rejects or skips, so it goes; a header of the wrong size is not
+  // a picture.
+  it("keeps a fixed-size chunk only at its size", () => {
+    const sized = bytes(
+      signature,
+      chunk("IHDR", "x".repeat(13)),
+      chunk("gAMA", "\0\0\xb1\x8f"),
+      chunk("sRGB", "\0GPS 51.5074 N"),
+      chunk("cHRM", "c".repeat(32)),
+      chunk("cICP", "\x01\x0d\0\x01"),
+      chunk("cLLI", "l".repeat(8)),
+      chunk("mDCV", "m".repeat(24)),
+      chunk("sBIT", "\x08\x08\x08"),
+      chunk("sBIT", "\x08\x08\x08\x08\x08"),
+      chunk("IDAT", "pixels"),
+      chunk("IEND", ""),
+    )
+    expect(withoutMetadata(sized, "image/png")).toBe(bytes(
+      signature,
+      chunk("IHDR", "x".repeat(13)),
+      chunk("gAMA", "\0\0\xb1\x8f"),
+      chunk("cHRM", "c".repeat(32)),
+      chunk("cICP", "\x01\x0d\0\x01"),
+      chunk("cLLI", "l".repeat(8)),
+      chunk("mDCV", "m".repeat(24)),
+      chunk("sBIT", "\x08\x08\x08"),
+      chunk("IDAT", "pixels"),
+      chunk("IEND", ""),
+    ))
+    expect(withoutMetadata(bytes(signature, chunk("IHDR", "x".repeat(14)), chunk("IEND", "")), "image/png")).toBeUndefined()
+    expect(withoutMetadata(bytes(signature, chunk("IHDR", "x".repeat(13)), chunk("IEND", "GPS")), "image/png")).toBeUndefined()
   })
 
   it("does not recognise a layout it cannot walk", () => {
