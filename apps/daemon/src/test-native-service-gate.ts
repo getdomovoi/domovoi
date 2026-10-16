@@ -1,4 +1,5 @@
 import { runningInCi } from "../vitest.global-setup.js"
+import { serviceManagerRefusalVariable } from "./service/manager-guard.js"
 
 // The native service tests install real jobs into the account that runs them:
 // launchd agents in the gui domain, systemd user units, Windows scheduled tasks
@@ -38,4 +39,13 @@ export function nativeServiceTestsRun(
   print?: (line: string) => void,
 ): boolean {
   return nativeServiceTestsEnabled(manager, environment, print) && managerAvailable()
+}
+
+// Every other daemon test file runs with the real service manager runner
+// refusing (service/manager-guard.ts). A native file whose gate let it run
+// calls this to use the real manager on purpose; the daemon test setup arms the
+// refusal again for the next file.
+export function allowRealServiceManager(run: boolean): boolean {
+  if (run) delete process.env[serviceManagerRefusalVariable]
+  return run
 }

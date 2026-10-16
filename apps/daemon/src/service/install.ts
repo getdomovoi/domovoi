@@ -31,6 +31,7 @@ import { bundledServiceRuntime } from "./bundled-runtime.js"
 import type { RuntimeFileSystem } from "./runtime-stage.js"
 import type { DaemonServiceRuntimeReader } from "./desktop-service.js"
 import { disableLinger, enableLinger, lingerAfterRestore, lingerInstallLine, lingerRecord, lingerRemovalLine, type LingerInstallOutcome, type LingerRemovalOutcome } from "./linger.js"
+import { refuseRealServiceManagerUnderTest } from "./manager-guard.js"
 
 const serviceName = "domovoid"
 const unitFile = loginServiceUnitFile
@@ -1785,6 +1786,7 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
     },
     readOwner: readLocalOwnerRecord,
     run: async (command, args, deadline) => {
+      refuseRealServiceManagerUnderTest(command, args)
       const { execFile } = await import("node:child_process")
       deadline.throwIfExpired()
       await new Promise<void>((resolve, reject) => {
@@ -1792,6 +1794,7 @@ export function nodeServiceEffects(options: { userHomeDirectory?: string } = {})
       })
     },
     capture: async (command, args, deadline) => {
+      refuseRealServiceManagerUnderTest(command, args)
       const { execFile } = await import("node:child_process")
       deadline.throwIfExpired()
       return new Promise<CapturedRun>((resolve) => {
