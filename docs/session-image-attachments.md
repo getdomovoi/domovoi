@@ -75,3 +75,20 @@ The phone UI is a separate slice. Its queue must state: two images, 1.5 MB each,
 2048 pixels on a side. The daemon answers `terminal.list`, `terminal.watch` and
 `terminal.unwatch` to phone and tablet credentials; attaching a terminal selection
 to a turn is not built.
+
+The phone and tablet resize before sending (`apps/mobile/src/attachments.ts`). An image
+over 2048 pixels on its long side is drawn again on the device at 2048, aspect kept,
+with `expo-image-manipulator`, which writes the pixels upright and copies no metadata. A
+PNG file stays a PNG when it fits 1.5 MB, otherwise it becomes a JPEG at quality 0.8; the
+file's type is read from the picked file, since iOS's picker returns its Base64 as a JPEG
+whatever the file is. Metadata is anything outside an allowlist of what drawing the
+picture needs (`apps/mobile/src/image-metadata.ts`): EXIF, XMP, IPTC, comments, PNG text,
+time and private chunks, JFIF thumbnails, and anything after the end marker. A picked colour
+profile counts too, since its text is free-form. An image inside both bounds that carries
+any is re-encoded at its own size; a PNG file whose picker bytes are a JPEG is re-encoded
+from the file as a PNG. The result is cut to the same allowlist, keeping only the profile
+the device encoder wrote for its own colour space, then held to the 1.5 MB bound; still
+over it is refused on the phone. An image inside both bounds with none of that is sent
+byte for byte. The picker's and the encoder's copies in the
+app cache are deleted once read. The daemon's checks are unchanged, so an unresized image
+from any client is still refused.
