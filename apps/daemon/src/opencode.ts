@@ -3192,7 +3192,11 @@ export const openCodeAllowedPermissions = allowedPermissionNames(domovoiOpenCode
 
 // The OpenCode releases the permission names, tool ids and rule shapes here
 // were read from and that passed the live contract (embedded-version.ts).
-export const testedOpenCode: TestedVersion = { command: "opencode", providerName: "OpenCode", tested: ["1.18.32", "1.18.33"] }
+// 1.19.3 passed it on 2026-10-16 with the same tool ids and permission names.
+// Between v1.18.33 and v1.19.3 upstream changed no permission, tool or agent
+// code and no route this adapter calls (its server changes are PTY connect
+// checks and the end of session sharing).
+export const testedOpenCode: TestedVersion = { command: "opencode", providerName: "OpenCode", tested: ["1.18.32", "1.18.33", "1.19.3"] }
 
 const defaultOpenCodeFactory: OpenCodeFactory = async () => {
   await requireTestedVersion(testedOpenCode)

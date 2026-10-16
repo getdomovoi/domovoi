@@ -37,7 +37,7 @@ On each machine:
   that is not a Git repository with a commit.
 - The provider CLIs you will test, installed and signed in with their own commands: `claude`,
   `codex` and `opencode`. The daemon runs OpenCode only at the versions it was tested against
-  (1.18.32 and 1.18.33 at this commit). Kilo, Cursor and Grok are turned off in Domovoi and are
+  (1.18.32, 1.18.33 and 1.19.3 at this commit). Kilo, Cursor and Grok are turned off in Domovoi and are
   not part of M1.
 - For section 5: Tailscale on the computer and the phone, signed in to the same tailnet.
 

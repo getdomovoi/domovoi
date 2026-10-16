@@ -78,8 +78,9 @@ describe("embedded provider servers", () => {
   // executable found on PATH. The default factories read its version first
   // and start nothing but a release that passed the live contract (round 5).
   it.each([
-    ["OpenCode", "opencode", "1.19.0", "OpenCode 1.18.32 and 1.18.33", () => new OpenCodeSdkAdapter()],
-    ["OpenCode", "opencode", "1.18.34", "OpenCode 1.18.32 and 1.18.33", () => new OpenCodeSdkAdapter()],
+    ["OpenCode", "opencode", "1.19.0", "OpenCode 1.18.32, 1.18.33 and 1.19.3", () => new OpenCodeSdkAdapter()],
+    ["OpenCode", "opencode", "1.19.4", "OpenCode 1.18.32, 1.18.33 and 1.19.3", () => new OpenCodeSdkAdapter()],
+    ["OpenCode", "opencode", "1.18.34", "OpenCode 1.18.32, 1.18.33 and 1.19.3", () => new OpenCodeSdkAdapter()],
     ["Kilo", "kilo", "7.8.2", "Kilo 7.8.1", () => new KiloSdkAdapter()],
   ] as const)("refuses to start %s (%s %s) at an untested release", async (_name, command, found, tested, create) => {
     versions.read.mockImplementation(async (asked: string) => (asked === command ? found : "0.0.0"))
@@ -88,6 +89,16 @@ describe("embedded provider servers", () => {
     await expect(create().connect()).rejects.toThrow(tested)
     expect(spawned).toHaveLength(0)
     expect(versions.read).toHaveBeenCalledWith(command)
+    await adapter.close()
+  })
+
+  // OpenCode 1.19.3 passed the live contract on 2026-10-16: the same tool ids
+  // and permission names as 1.18.33.
+  it.each([["1.18.32"], ["1.18.33"], ["1.19.3"]])("starts OpenCode %s, a release that passed the live contract", async (found) => {
+    versions.read.mockImplementation(async (asked: string) => (asked === "opencode" ? found : "0.0.0"))
+    const adapter = new OpenCodeSdkAdapter()
+    await adapter.connect()
+    expect(spawned.map((entry) => entry.command)).toEqual(["opencode"])
     await adapter.close()
   })
 })
