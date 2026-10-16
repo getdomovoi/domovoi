@@ -524,7 +524,11 @@ describe("App", () => {
       expect(screen.queryByText("IMG_4120.jpg")).toBeNull()
     })
 
-    // Review of the fix: leaving through the tab bar is leaving too.
+    // Review of the fix: leaving through the tab bar is leaving too. On a
+    // phone, coming back through the list drops the queue as well, so this
+    // shows the person never meets the image again; the tab bar's own drop
+    // matters when the layout turns into the tablet's, whose rail can send
+    // in the active session without opening it from the list.
     it("drops an image whose session was left through the tab bar", async () => {
       await openAudit()
       await pick()
