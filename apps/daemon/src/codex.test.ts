@@ -169,36 +169,37 @@ describe("codexAppServerArguments", () => {
     const ignoresCase = platform === "win32"
     const tables = ["domovoi-read", "domovoi-build"].map((profile) => filesystemTable(platform, profile))
 
+    // Each glob is compiled once: the walk below makes about 3,000 checks per
+    // table, and compiling per check outran the default timeout in CI.
+    const refusers = (options: GlobOptions) => tables.map((table) => {
+      const workspace = Object.keys(table[":workspace_roots"] ?? {}).map((pattern) => globRegExp(pattern, options))
+      const worktrees = Object.keys(table).filter((key) => key.startsWith("~/.domovoi/worktrees/")).map((pattern) => globRegExp(pattern, options))
+      return {
+        workspace: (path: string) => workspace.some((pattern) => pattern.test(path)),
+        worktree: (path: string) => worktrees.some((pattern) => pattern.test(`~/.domovoi/worktrees/session-1/${path}`)),
+      }
+    })
+
     it("refuses every name the classifier calls secret, in any letter case", () => {
-      for (const table of tables) {
-        const workspace = Object.keys(table[":workspace_roots"] ?? {})
-        const worktrees = Object.keys(table).filter((key) => key.startsWith("~/.domovoi/worktrees/"))
-        for (const sample of classifierSecretSamples) {
-          for (const name of letterCases(sample)) {
-            for (const path of [name, `deep/dir/${name}`]) {
-              expect(namesSecretPath(path), path).toBe(true)
-              expect(workspace.some((pattern) => globMatches(pattern, path, { ignoresCase })), path).toBe(true)
-              const copy = `~/.domovoi/worktrees/session-1/${path}`
-              expect(worktrees.some((pattern) => globMatches(pattern, copy, { ignoresCase })), copy).toBe(true)
-            }
-          }
+      const paths = classifierSecretSamples.flatMap((sample) => letterCases(sample).flatMap((name) => [name, `deep/dir/${name}`]))
+      for (const path of paths) expect(namesSecretPath(path), path).toBe(true)
+      for (const refuses of refusers({ ignoresCase })) {
+        for (const path of paths) {
+          expect(refuses.workspace(path), path).toBe(true)
+          expect(refuses.worktree(path), `session worktree: ${path}`).toBe(true)
         }
       }
     })
 
     it("keeps ordinary project files readable, in any letter case", () => {
-      for (const table of tables) {
-        const workspace = Object.keys(table[":workspace_roots"] ?? {})
-        const worktrees = Object.keys(table).filter((key) => key.startsWith("~/.domovoi/worktrees/"))
-        for (const sample of ordinaryProjectFiles) {
-          for (const path of letterCases(sample)) {
-            expect(namesSecretPath(path), path).toBe(false)
-            // Seatbelt compares without letter case and lets [!c] match a slash.
-            for (const options of [{ ignoresCase }, { ignoresCase: true, classMatchesSlash: true }]) {
-              expect(workspace.some((pattern) => globMatches(pattern, path, options)), path).toBe(false)
-              const copy = `~/.domovoi/worktrees/session-1/${path}`
-              expect(worktrees.some((pattern) => globMatches(pattern, copy, options)), copy).toBe(false)
-            }
+      const paths = ordinaryProjectFiles.flatMap(letterCases)
+      for (const path of paths) expect(namesSecretPath(path), path).toBe(false)
+      // Seatbelt compares without letter case and lets [!c] match a slash.
+      for (const options of [{ ignoresCase }, { ignoresCase: true, classMatchesSlash: true }]) {
+        for (const refuses of refusers(options)) {
+          for (const path of paths) {
+            expect(refuses.workspace(path), path).toBe(false)
+            expect(refuses.worktree(path), `session worktree: ${path}`).toBe(false)
           }
         }
       }
@@ -351,7 +352,13 @@ function filesystemTable(platform: NodeJS.Platform, profile: string): Record<str
 // one of the characters c and [!c] any other, {a,b} is either branch, and **
 // is any depth. Letter case counts unless ignoresCase; a class never matches a
 // slash unless classMatchesSlash, as in Seatbelt's regex.
-function globMatches(pattern: string, path: string, options: { ignoresCase?: boolean; classMatchesSlash?: boolean } = {}): boolean {
+type GlobOptions = { ignoresCase?: boolean; classMatchesSlash?: boolean }
+
+function globMatches(pattern: string, path: string, options: GlobOptions = {}): boolean {
+  return globRegExp(pattern, options).test(path)
+}
+
+function globRegExp(pattern: string, options: GlobOptions): RegExp {
   let source = ""
   let braces = 0
   for (let index = 0; index < pattern.length; index += 1) {
@@ -379,7 +386,7 @@ function globMatches(pattern: string, path: string, options: { ignoresCase?: boo
       index = end
     } else source += character.replace(/[.+^$()|[\]\\]/gu, String.raw`\$&`)
   }
-  return new RegExp(`^${source}$`, options.ignoresCase ? "iu" : "u").test(path)
+  return new RegExp(`^${source}$`, options.ignoresCase ? "iu" : "u")
 }
 
 describe("codexSandboxNotice", () => {
