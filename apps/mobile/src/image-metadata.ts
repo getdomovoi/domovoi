@@ -3,29 +3,53 @@
 // string (one character per byte, as atob returns them), so nothing here
 // copies them into another buffer type.
 //
-// Kept: what drawing the picture needs. In a JPEG that is every segment but
-// APP1 to APP15 and COM, except the ICC colour profile (APP2 ICC_PROFILE) and
-// Adobe's colour transform (APP14); in a PNG every chunk but the text, EXIF
-// and time chunks. Anything after the end marker goes: an iPhone appends
-// secondary images there (MPF gain maps), each with its own EXIF.
+// Both formats are cut to an allowlist of what drawing the picture needs, so
+// a private or unknown segment or chunk goes too. In a JPEG: the frame,
+// Huffman, arithmetic-coding, quantisation, restart and line-count segments,
+// the scans, JFIF (APP0), the ICC colour profile (APP2 ICC_PROFILE) and
+// Adobe's colour transform (APP14). In a PNG: the critical chunks, colour
+// and transparency chunks, and nothing else. Anything after the end marker
+// goes: an iPhone appends secondary images there (MPF gain maps), each with
+// its own EXIF.
 //
 // Undefined is a layout this does not recognise. The caller does not send
 // those bytes as they are; it re-encodes them or refuses.
 
 const pngSignature = "\x89PNG\r\n\x1a\n"
-const pngMetadataChunks = new Set(["tEXt", "zTXt", "iTXt", "eXIf", "tIME"])
+const pngKeptChunks = new Set([
+  "IHDR", "PLTE", "IDAT", "IEND",
+  "tRNS", "gAMA", "cHRM", "sRGB", "iCCP", "sBIT", "cICP", "mDCV", "mDCv", "cLLI", "cLLi",
+])
 
-function jpegSegmentIsMetadata(marker: number, segment: string): boolean {
-  if (marker === 0xfe) return true
-  if (marker < 0xe1 || marker > 0xef) return false
-  if (marker === 0xee) return false
-  if (marker === 0xe2 && segment.startsWith("ICC_PROFILE\0", 4)) return false
-  return true
+function jpegSegmentKept(marker: number, segment: string): boolean {
+  // SOF0 to SOF15, DHT (C4), JPG (C8) and DAC (CC) share this range; all
+  // describe the coding.
+  if (marker >= 0xc0 && marker <= 0xcf) return true
+  // DQT, DRI, DNL.
+  if (marker === 0xdb || marker === 0xdd || marker === 0xdc) return true
+  if (marker === 0xe0) return segment.startsWith("JFIF\0", 4)
+  if (marker === 0xe2) return segment.startsWith("ICC_PROFILE\0", 4)
+  if (marker === 0xee) return segment.startsWith("Adobe", 4)
+  return false
+}
+
+// The next marker after entropy-coded data starting at `from`: coded data
+// stuffs every 0xFF it holds with 0x00, and restart markers (D0 to D7) sit
+// inside it, so the first 0xFF followed by anything else is a marker.
+function nextMarker(bytes: string, from: number): number {
+  let at = bytes.indexOf("\xff", from)
+  while (at >= 0 && at + 1 < bytes.length) {
+    const next = bytes.charCodeAt(at + 1)
+    if (next !== 0x00 && next !== 0xff && (next < 0xd0 || next > 0xd7)) return at
+    at = bytes.indexOf("\xff", at + 1)
+  }
+  return -1
 }
 
 function jpegWithoutMetadata(bytes: string): string | undefined {
   let kept = "\xff\xd8"
   let at = 2
+  let scanned = false
   while (at + 2 <= bytes.length) {
     if (bytes.charCodeAt(at) !== 0xff) return undefined
     const marker = bytes.charCodeAt(at + 1)
@@ -34,19 +58,22 @@ function jpegWithoutMetadata(bytes: string): string | undefined {
       at += 1
       continue
     }
-    // Start of scan: entropy-coded data, and any later tables and scans,
-    // run to the end marker. 0xFF 0xD9 cannot occur inside coded data, which
-    // stuffs every 0xFF with 0x00, so the first one after the scan is the end.
-    if (marker === 0xda) {
-      const end = bytes.indexOf("\xff\xd9", at + 2)
-      if (end < 0) return undefined
-      return kept + bytes.slice(at, end + 2)
-    }
+    if (marker === 0xd9) return scanned ? `${kept}\xff\xd9` : undefined
     if (at + 4 > bytes.length) return undefined
     const length = (bytes.charCodeAt(at + 2) << 8) | bytes.charCodeAt(at + 3)
     if (length < 2 || at + 2 + length > bytes.length) return undefined
     const segment = bytes.slice(at, at + 2 + length)
-    if (!jpegSegmentIsMetadata(marker, segment)) kept += segment
+    if (marker === 0xda) {
+      // A scan: its header, then coded data up to the next marker, which
+      // may be another table, another scan, or a segment to drop.
+      const end = nextMarker(bytes, at + 2 + length)
+      if (end < 0) return undefined
+      kept += bytes.slice(at, end)
+      scanned = true
+      at = end
+      continue
+    }
+    if (jpegSegmentKept(marker, segment)) kept += segment
     at += 2 + length
   }
   return undefined
@@ -63,7 +90,7 @@ function pngWithoutMetadata(bytes: string): string | undefined {
     const end = at + 12 + length
     if (end > bytes.length) return undefined
     const type = bytes.slice(at + 4, at + 8)
-    if (!pngMetadataChunks.has(type)) kept += bytes.slice(at, end)
+    if (pngKeptChunks.has(type)) kept += bytes.slice(at, end)
     if (type === "IEND") return kept
     at = end
   }

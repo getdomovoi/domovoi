@@ -1,6 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals"
 import { demoWorkspace, terminalWatchResultSchema, type ApprovalDecision, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { fireEvent, render, screen } from "@testing-library/react-native"
+import { act, fireEvent, render, screen } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
 import { planForSession, planSummary } from "../plan-rows"
@@ -202,6 +202,42 @@ describe("SessionScreen images and the model", () => {
     const line = "IMG_4121.jpg is still 1.6 MB at 2048 x 1536 after resizing on this phone. Up to 1.5 MB and 2048 px on a side."
     await draw({ attachProblem: line })
     expect(screen.getByText(line)).toBeOnTheScreen()
+  })
+
+  // Walk F23 end to end on the screen: choose, the sheet closes, iOS reports
+  // it gone, the picker opens; a refusal shows on the composer; the sheet
+  // opens again and a second choice opens the picker again.
+  it("opens the picker after the sheet closes, and again after a refusal", async () => {
+    const refusal = "IMG_4121.jpg is still 1.6 MB at 2048 x 1536 after resizing on this phone. Up to 1.5 MB and 2048 px on a side."
+    const detail = sessionDetail(workspace(), "session-billing")
+    if (!detail) throw new Error("fixture needs the billing session")
+    const { props } = await draw({ detail: { ...detail, sending: { can: true, hint: undefined } }, attachProblem: refusal })
+    // Captured while the sheet is drawn: the mock Modal draws nothing once
+    // closed, where iOS would still call back when its slide-out ends.
+    const choose = async (source: RegExp) => {
+      await fireEvent.press(screen.getByRole("button", { name: "Attach an image" }))
+      // Open, the sheet states the refusal and the composer does not repeat it.
+      expect(screen.getAllByText(refusal)).toHaveLength(1)
+      const { onDismiss } = screen.getByTestId("attach-sheet").props as { onDismiss: () => void }
+      await fireEvent.press(screen.getByRole("button", { name: source }))
+      expect(screen.queryByTestId("attach-sheet")).toBeNull()
+      return async () => {
+        await act(async () => onDismiss())
+      }
+    }
+
+    // Closed, the refusal is on the composer.
+    expect(screen.getByText(refusal)).toBeOnTheScreen()
+    const libraryGone = await choose(/Photo or screenshot/)
+    expect(props.onPickLibrary).not.toHaveBeenCalled()
+    await libraryGone()
+    expect(props.onPickLibrary).toHaveBeenCalledTimes(1)
+
+    const cameraGone = await choose(/Take a photo/)
+    expect(props.onTakePhoto).not.toHaveBeenCalled()
+    await cameraGone()
+    expect(props.onTakePhoto).toHaveBeenCalledTimes(1)
+    expect(props.onPickLibrary).toHaveBeenCalledTimes(1)
   })
 
   // Q121 A: the chip says the phone drew the image smaller, and from what.

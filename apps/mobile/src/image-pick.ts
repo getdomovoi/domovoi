@@ -7,6 +7,8 @@ export type ImageSource = "library" | "camera"
 export type ImageSourcePicker = {
   requestCamera: () => Promise<{ granted: boolean }>
   launch: (source: ImageSource) => Promise<{ canceled: boolean, assets?: readonly PickedImage[] | null | undefined }>
+  // Removes the picker's own copy of the file once its bytes are read.
+  discard?: (uri: string) => void
 }
 
 export type PickOutcome =
@@ -36,5 +38,14 @@ export async function pickAttachment(source: ImageSource, picker: ImageSourcePic
   const asset = result.canceled ? undefined : result.assets?.[0]
   if (!asset) return { kind: "none" }
   const read = await attachmentFrom(asset, encode)
+  // The bytes are in memory now, or refused; the picker's copy in the app's
+  // cache is not needed either way. A copy already gone is not a problem.
+  if (asset.uri) {
+    try {
+      picker.discard?.(asset.uri)
+    } catch {
+      // Nothing to state: the image itself was read or refused above.
+    }
+  }
   return read.ok ? { kind: "added", attachment: read.attachment } : { kind: "problem", text: read.reason }
 }

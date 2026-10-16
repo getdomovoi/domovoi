@@ -58,4 +58,18 @@ describe("pickAttachment", () => {
     const source = picker({ launch: vi.fn(async () => ({ canceled: false, assets: [{ ...asset, base64: null }] })) })
     expect(await pickAttachment("library", source, neverEncode)).toEqual({ kind: "problem", text: "IMG_0001.png could not be read." })
   })
+
+  // Review round 1: the picker copies the image into the app's cache. Once
+  // its bytes are read (or refused) the copy goes, so the queue's "not kept
+  // on this phone" holds for the file as well as the memory.
+  it("discards the picker's copy once it is read, sent or refused", async () => {
+    const kept = picker({ discard: vi.fn() })
+    await pickAttachment("library", kept, neverEncode)
+    expect(kept.discard).toHaveBeenCalledWith("file:///picked/IMG_0001.png")
+    const refused = picker({ discard: vi.fn(), launch: vi.fn(async () => ({ canceled: false, assets: [{ ...asset, base64: null }] })) })
+    await pickAttachment("library", refused, neverEncode)
+    expect(refused.discard).toHaveBeenCalledWith("file:///picked/IMG_0001.png")
+    const throwing = picker({ discard: vi.fn(() => { throw new Error("gone already") }) })
+    expect(await pickAttachment("library", throwing, neverEncode)).toMatchObject({ kind: "added" })
+  })
 })

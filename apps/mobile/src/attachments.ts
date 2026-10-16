@@ -127,7 +127,11 @@ export async function attachmentFrom(picked: PickedImage, encode: ImageEncoder):
   const doing = resized ? "resized" : "re-encoded"
   const refused = (why: string): AttachmentRead => ({ ok: false, reason: `${name} could not be ${doing} on this phone (${why}). ${boundLine}` })
   if (!picked.uri) return refused("no file to read")
-  const formats: ImageEncoding["format"][] = mimeType === "image/png" ? ["png", "jpeg"] : ["jpeg"]
+  // The encoder draws from the file, and iOS's picker hands back the Base64
+  // as a JPEG re-encode whatever the file is, so a screenshot's PNG-ness is
+  // read off the file's type or name as well as the bytes.
+  const sourcePng = mimeType === "image/png" || picked.mimeType === "image/png" || /\.png$/i.test(picked.uri)
+  const formats: ImageEncoding["format"][] = sourcePng ? ["png", "jpeg"] : ["jpeg"]
   // The last encoding over the byte bound; every pass through the loop that
   // does not return sets it.
   let over = { bytes, ...target }

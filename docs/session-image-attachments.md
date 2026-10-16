@@ -79,9 +79,13 @@ to a turn is not built.
 The phone and tablet resize before sending (`apps/mobile/src/attachments.ts`). An image
 over 2048 pixels on its long side is drawn again on the device at 2048, aspect kept,
 with `expo-image-manipulator`, which writes the pixels upright and copies no metadata. A
-PNG stays a PNG when it fits 1.5 MB, otherwise it becomes a JPEG at quality 0.8. An image
-inside both bounds that carries metadata (EXIF, XMP, IPTC, comments, PNG text and time
-chunks, anything after the end marker) is re-encoded at its own size. The result is cut of
-any metadata the encoder wrote, then held to the same 1.5 MB bound; still over it is
-refused on the phone. An image inside both bounds with no metadata is sent byte for byte.
-The daemon's checks are unchanged, so an unresized image from any client is still refused.
+PNG file stays a PNG when it fits 1.5 MB, otherwise it becomes a JPEG at quality 0.8; the
+file's type is read from the picked file, since iOS's picker returns its Base64 as a JPEG
+whatever the file is. Metadata is anything outside an allowlist of what drawing the
+picture needs (`apps/mobile/src/image-metadata.ts`): EXIF, XMP, IPTC, comments, PNG text,
+time and private chunks, and anything after the end marker. An image inside both bounds
+that carries any is re-encoded at its own size. The result is cut to the same allowlist,
+then held to the 1.5 MB bound; still over it is refused on the phone. An image inside both
+bounds with no metadata is sent byte for byte. The picker's and the encoder's copies in the
+app cache are deleted once read. The daemon's checks are unchanged, so an unresized image
+from any client is still refused.

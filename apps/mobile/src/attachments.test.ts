@@ -151,7 +151,7 @@ describe("attachmentFrom", () => {
 
   it("resizes a portrait photo on its height", async () => {
     const { encode, requests } = encoder({ jpeg: 900_000 })
-    await attachmentFrom(picked({ mimeType: "image/jpeg", width: 3024, height: 4032, base64: jpeg(3024, 4032, 2_000) }), encode)
+    await attachmentFrom(picked({ uri: "file:///picked/IMG_0001.jpg", mimeType: "image/jpeg", width: 3024, height: 4032, base64: jpeg(3024, 4032, 2_000) }), encode)
     expect(requests[0]).toMatchObject({ width: 1536, height: 2048 })
   })
 
@@ -174,6 +174,27 @@ describe("attachmentFrom", () => {
     expect(bytes.endsWith("IEND\0\0\0\0")).toBe(true)
   })
 
+  // Review round 1: iOS's picker hands back the Base64 as a JPEG re-encode
+  // whatever the file is, and the file at uri is the original. A screenshot
+  // is a PNG file, so it is drawn again as a PNG first.
+  it("reads a screenshot's format off the picked file, not the picker's Base64", async () => {
+    const { encode, requests } = encoder({ jpeg: 400_000, png: 1_200_000 })
+    const result = await attachmentFrom(picked({
+      uri: "file:///picked/IMG_0412.PNG",
+      fileName: "IMG_0412.PNG",
+      mimeType: "image/png",
+      width: 1320,
+      height: 2868,
+      base64: jpeg(1320, 2868, 2_000),
+    }), encode)
+    expect(requests.map((request) => request.format)).toEqual(["png"])
+    expect(result).toMatchObject({ ok: true, attachment: { mimeType: "image/png", width: 943, height: 2048 } })
+    // The extension alone says so too, when the picker gives no type.
+    const byName = encoder({ jpeg: 400_000, png: 1_200_000 })
+    await attachmentFrom(picked({ uri: "file:///picked/shot.png", mimeType: null, width: 1320, height: 2868, base64: jpeg(1320, 2868, 2_000) }), byName.encode)
+    expect(byName.requests[0]?.format).toBe("png")
+  })
+
   it("sends a resized screenshot as a JPEG when the PNG does not fit", async () => {
     const { encode, requests } = encoder({ jpeg: 500_000, png: 2_400_000 })
     const result = await attachmentFrom(picked({ width: 1320, height: 2868, base64: png(1320, 2868, 3_000_000) }), encode)
@@ -186,9 +207,9 @@ describe("attachmentFrom", () => {
 
   it("re-encodes an image inside the bounds that carries metadata, at its own size", async () => {
     const { encode, requests } = encoder({ jpeg: 300_000 })
-    const result = await attachmentFrom(picked({ mimeType: "image/jpeg", width: 1600, height: 1200, base64: jpeg(1600, 1200, 400_000, true) }), encode)
+    const result = await attachmentFrom(picked({ uri: "file:///picked/IMG_0001.jpg", mimeType: "image/jpeg", width: 1600, height: 1200, base64: jpeg(1600, 1200, 400_000, true) }), encode)
 
-    expect(requests).toEqual([{ uri: "file:///picked/IMG_0001.png", width: 1600, height: 1200, format: "jpeg", quality: jpegQuality }])
+    expect(requests).toEqual([{ uri: "file:///picked/IMG_0001.jpg", width: 1600, height: 1200, format: "jpeg", quality: jpegQuality }])
     const attachment = (result as { attachment: Attachment }).attachment
     expect(attachment).not.toHaveProperty("resizedFrom")
     expect(decoded(attachment.data)).not.toContain("GPS")
@@ -196,7 +217,7 @@ describe("attachmentFrom", () => {
 
   it("refuses an image still over the byte bound after resizing, and says so", async () => {
     const { encode } = encoder({ jpeg: maximumImageUploadBytes + 100_000 })
-    const result = await attachmentFrom(picked({ fileName: "IMG_4121.jpg", mimeType: "image/jpeg", width: 4032, height: 3024, base64: jpeg(4032, 3024, 2_000) }), encode)
+    const result = await attachmentFrom(picked({ uri: "file:///picked/IMG_4121.jpg", fileName: "IMG_4121.jpg", mimeType: "image/jpeg", width: 4032, height: 3024, base64: jpeg(4032, 3024, 2_000) }), encode)
     expect(result).toEqual({
       ok: false,
       reason: "IMG_4121.jpg is still 1.6 MB at 2048 x 1536 after resizing on this phone. Up to 1.5 MB and 2048 px on a side.",
@@ -218,7 +239,7 @@ describe("attachmentFrom", () => {
   })
 
   it("checks what the encoder hands back before sending it", async () => {
-    const photo = picked({ mimeType: "image/jpeg", width: 4032, height: 3024, base64: jpeg(4032, 3024, 2_000) })
+    const photo = picked({ uri: "file:///picked/IMG_0001.jpg", mimeType: "image/jpeg", width: 4032, height: 3024, base64: jpeg(4032, 3024, 2_000) })
     const unresized: ImageEncoder = async () => ({ base64: jpeg(4032, 3024, 100), width: 4032, height: 3024 })
     expect(await attachmentFrom(photo, unresized)).toEqual({
       ok: false,
@@ -234,7 +255,7 @@ describe("attachmentFrom", () => {
     const { encode } = encoder({ jpeg: maximumImageUploadBytes + 100_000 })
     // Inside the dimension bound, over the byte bound.
     const heavy = jpeg(2000, 2000, maximumImageUploadBytes + 10_000, false)
-    expect(await attachmentFrom(picked({ mimeType: "image/jpeg", width: 2000, height: 2000, base64: heavy }), encode)).toEqual({
+    expect(await attachmentFrom(picked({ uri: "file:///picked/IMG_0001.jpg", mimeType: "image/jpeg", width: 2000, height: 2000, base64: heavy }), encode)).toEqual({
       ok: false,
       reason: "IMG_0001.png is still 1.6 MB at 2000 x 2000 after re-encoding on this phone. Up to 1.5 MB and 2048 px on a side.",
     })

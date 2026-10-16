@@ -44,7 +44,7 @@ import { launchPhases } from "./launch-state"
 import * as ImagePicker from "expo-image-picker"
 
 import { attachmentRefusalMessage, attachmentSummary, maximumSessionAttachments, type Attachment } from "./attachments"
-import { encodeImage } from "./image-encoder"
+import { discardCachedFile, encodeImage } from "./image-encoder"
 import { pickAttachment, type ImageSourcePicker } from "./image-pick"
 import { planForSession, planStepEdit, planSummary, unpinnedAfter } from "./plan-rows"
 import { startLikeRequest } from "./start-like"
@@ -94,6 +94,7 @@ const imageSourcePicker: ImageSourcePicker = {
   launch: (source) => source === "library"
     ? ImagePicker.launchImageLibraryAsync({ mediaTypes: ["images"], base64: true, quality: 1 })
     : ImagePicker.launchCameraAsync({ base64: true, quality: 1 }),
+  discard: discardCachedFile,
 }
 
 export function App() {
