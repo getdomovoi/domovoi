@@ -163,10 +163,11 @@ describe("codexAppServerArguments", () => {
   // Every name it calls secret, in any case, with a prefix where it allows
   // one, nested and as a directory, is refused in the thread's own worktree
   // (:workspace_roots) and in every session worktree, in both profiles. Codex
-  // compares globs with letter case on Linux and in its own reads on macOS,
-  // and without it on Windows.
+  // compares globs with letter case on Linux, and without it on Windows and in
+  // Seatbelt, which refused DAEMON.TOKEN by **/daemon.token on a case-sensitive
+  // APFS volume too (measured with codex-cli 0.162.1).
   describe.each(["darwin", "linux", "win32"] as const)("on %s", (platform) => {
-    const ignoresCase = platform === "win32"
+    const ignoresCase = platform !== "linux"
     const tables = ["domovoi-read", "domovoi-build"].map((profile) => filesystemTable(platform, profile))
 
     // Each glob is compiled once: the walk below makes about 3,000 checks per
@@ -212,12 +213,30 @@ describe("codexAppServerArguments", () => {
       }
     })
 
-    // Seatbelt reads a regex of at most 1,023 bytes and refuses the whole
-    // profile, so every command, past it (measured with codex-cli 0.162.1).
-    // Each glob becomes one regex after the worktree's absolute path.
-    it("keeps every glob short enough for a Seatbelt regex under a long worktree path", () => {
-      for (const glob of codexSecretGlobs(platform)) expect(glob.length, glob).toBeLessThanOrEqual(300)
-    })
+  })
+
+  // #867 review: Seatbelt reads a regex of at most 1,017 bytes and a profile of
+  // about 1 MB (sandbox-exec takes it as one argument), and past either refuses
+  // the whole profile, so every sandboxed command (measured with codex-cli
+  // 0.162.1). Codex writes each :workspace_roots glob after the worktree's
+  // absolute path, escaped, with a rule for each of its ancestor directories,
+  // so both grow with the path and its depth. The profile loads for a
+  // worktree path Seatbelt writes in up to 768 bytes (a dot, hyphen or other
+  // punctuation counts twice), three quarters of macOS's 1,024-byte path
+  // limit, in names of five bytes or more. Names of two bytes, about 380
+  // directories deep, overran T109's eight patterns there too.
+  it.each([
+    { component: 5, hyphens: false }, { component: 10, hyphens: false }, { component: 50, hyphens: false },
+    { component: 10, hyphens: true },
+  ])("loads on macOS for a worktree path Seatbelt writes in 768 bytes: $component-byte names, hyphens $hyphens", ({ component, hyphens }) => {
+    const table = filesystemTable("darwin", "domovoi-read")
+    const home = worktreePath(64, 8)
+    const root = worktreePath(768, component, hyphens)
+    expect(seatbeltRegex(root, false).length - 2).toBe(768)
+    const workspace = seatbeltGlobPolicy(Object.keys(table[":workspace_roots"] ?? {}).map((glob) => `${root}/${glob}`))
+    const rest = seatbeltGlobPolicy(Object.keys(table).filter((key) => key !== ":workspace_roots" && /[*?[{]/u.test(key)).map((key) => key.replace(/^~/u, home)))
+    expect(Math.max(workspace.longestRegex, rest.longestRegex)).toBeLessThanOrEqual(1_017)
+    expect(workspace.bytes + rest.bytes).toBeLessThanOrEqual(800_000)
   })
 
   // Windows starts a program with one command line of at most 32,767
@@ -254,7 +273,8 @@ describe("codexAppServerArguments", () => {
     for (const profile of ["domovoi-read", "domovoi-build"]) {
       const filesystem = settings.get(`permissions.${profile}.filesystem`)!
       expect(filesystem).not.toContain('"~/.domovoi"="deny"')
-      const denied = [...filesystem.matchAll(/"(~\/\.domovoi\/[^"]*)"="deny"/gu)].map((match) => match[1]!)
+      // Keys read as TOML, which decodes the escapes the secret globs need.
+      const denied = Object.keys(filesystemTable(process.platform, profile)).filter((key) => key.startsWith("~/.domovoi/"))
       const refused = (path: string) => denied.some((pattern) => globMatches(pattern, path))
       for (const path of [
         "~/.domovoi/daemon.token", "~/.domovoi/local-owner.key", "~/.domovoi/state.sqlite-wal", "~/.domovoi/tls/server.key",
@@ -303,9 +323,10 @@ const worktreeSecretCopies: readonly string[] = [
 // stem; a private key where a word starts, with any suffix; and the .env
 // family. Not here, and not refused: a name the classifier finds after a
 // space, colon, equals sign, quote or backslash inside a longer name
-// ("my daemon.token"), which it reads as a command-line separator; a name
-// followed by a comma ("daemon.token,old"); and compatibility forms that only
-// its Unicode folding joins, such as a fullwidth letter.
+// ("my daemon.token"), which it reads as a command-line separator; a credential
+// store's name followed by a non-ASCII symbol (".gnupg😀"), since a glob
+// cannot tell a non-ASCII symbol from a letter; and compatibility forms that
+// only its Unicode folding joins, such as a fullwidth letter.
 const classifierSecretSamples: readonly string[] = [
   ...credentialStores.flatMap(({ location, cardName }) => {
     const name = cardName ?? location.slice(2)
@@ -318,6 +339,12 @@ const classifierSecretSamples: readonly string[] = [
   "my id_rsa", "x.id_ecdsa.pub", "id_rsa.d/inner", "2024-id_ed25519",
   ".env", ".env.local", ".envrc", ".environment", "app/.envrc", "secrets.env", "prod.env.local", "app.envrc",
   "x.env~", "app.envrc (1)", ".env/inner", "config.env.ts", "x.env.d/inner",
+  // The classifier's ASCII reading (#545's list) ends these names at any
+  // character outside [A-Za-z0-9_.-], a letter such as é included.
+  "daemon.tokené", "credentials.jsonü", ".sshé/inner", ".netrcé", "server.pemé", "x.envé",
+  "daemon.token,old", ".gnupg,old", "x.env,old",
+  // A control character ends a name under both readings.
+  ".azure\tx", ".gnupg\u007f/data", ".kube\u0001", "daemon.token\t", "server.pem\u007f",
 ]
 
 // Project files that are not secrets, and names that only resemble one.
@@ -326,6 +353,10 @@ const ordinaryProjectFiles: readonly string[] = [
   "readme.txt", "walk-gate.txt", "src/invalid_rsa.go", "src/hotkey.keymap.ts", "server.pem.bak", "credentials.json.bak",
   "old.credentials.json", "my-credentials.json", "config/gh/other.yml", ".sshrc", ".aws-sam/build.toml", "x.env-prod",
   "app.envrc.bak", "daemon.token.old", "valid_rsa.go",
+  // #867 review: the classifier reads a credential store's name as going on
+  // through any letter, digit or mark, so these are not secret, and neither is
+  // a store name followed by a hyphen.
+  ".azureé", ".gnupgé/key.txt", "Library/Keychainsé/login", ".config/gcloud日本/x", ".azure-x", ".kubeé/config.yml",
 ]
 
 // A name in lower, upper and mixed letter case.
@@ -387,6 +418,81 @@ function globRegExp(pattern: string, options: GlobOptions): RegExp {
     } else source += character.replace(/[.+^$()|[\]\\]/gu, String.raw`\$&`)
   }
   return new RegExp(`^${source}$`, options.ignoresCase ? "iu" : "u")
+}
+
+// An absolute path Seatbelt writes in length bytes, in names of about
+// component bytes, with every other character a hyphen if hyphens.
+function worktreePath(length: number, component: number, hyphens = false): string {
+  const name = (size: number) => [...Array(size).keys()].map((index) => hyphens && index % 2 === 1 ? "-" : "x").join("")
+  const written = (path: string) => seatbeltRegex(path, false).length - 2
+  let path = "/Users"
+  while (written(`${path}/${name(component)}`) + 2 < length) path += `/${name(component)}`
+  return `${path}/${"y".repeat(length - written(path) - 1)}`
+}
+
+// The regex codex-cli 0.162.1 writes for a glob in a Seatbelt profile
+// (seatbelt_regex_for_glob in sandboxing/src/seatbelt.rs).
+function seatbeltRegex(pattern: string, subtree: boolean): string {
+  const escaped = new Set([..."\\.+*?()|[]{}^$#&-~"])
+  const characters = [...pattern]
+  let regex = "^"
+  let braces = 0
+  let sawGlob = false
+  while (characters.length > 0) {
+    const character = characters.shift()!
+    if (character === "*") {
+      sawGlob = true
+      if (characters[0] !== "*") regex += "[^/]*"
+      else {
+        characters.shift()
+        if (characters.at(0) === "/") {
+          characters.shift()
+          regex += "(.*/)?"
+        } else regex += ".*"
+      }
+    } else if (character === "?") {
+      sawGlob = true
+      regex += "[^/]"
+    } else if (character === "{") {
+      sawGlob = true
+      braces += 1
+      regex += "("
+    } else if (character === "}" && braces > 0) {
+      braces -= 1
+      regex += ")"
+    } else if (character === "," && braces > 0) regex += "|"
+    else if (character === "[" && characters.includes("]")) {
+      sawGlob = true
+      const members = characters.splice(0, characters.indexOf("]") + 1).slice(0, -1).join("")
+      regex += `[${members.startsWith("!") ? `^${members.slice(1)}` : members}]`
+    } else regex += escaped.has(character) ? `\\${character}` : character
+  }
+  regex += ")".repeat(braces)
+  return `${regex}${!sawGlob && subtree ? "(/.*)?" : ""}$`
+}
+
+// The bytes of the deny rules codex-cli 0.162.1 writes into a Seatbelt profile
+// for these absolute globs, and its longest regex
+// (build_seatbelt_unreadable_glob_policy): a read and a write rule per glob,
+// and a rule per ancestor directory of a glob that is not a plain name at any
+// depth.
+function seatbeltGlobPolicy(globs: readonly string[]): { bytes: number; longestRegex: number } {
+  let bytes = 0
+  let longestRegex = 0
+  for (const glob of globs) {
+    const name = glob.startsWith("/**/") ? glob.slice(4) : undefined
+    const plainName = name !== undefined && ![".", ".."].includes(name) && /^[^/*?[\]{}\\]+$/u.test(name)
+    const regex = plainName ? `${seatbeltRegex(glob, true).slice(0, -1)}(/.*)?$` : seatbeltRegex(glob, true)
+    longestRegex = Math.max(longestRegex, Buffer.byteLength(regex))
+    bytes += 2 * Buffer.byteLength(`(deny file-read* (regex #"${regex}"))\n`)
+    if (plainName) continue
+    for (let ancestor = glob.slice(0, glob.lastIndexOf("/")); ; ancestor = ancestor.slice(0, ancestor.lastIndexOf("/"))) {
+      const directory = ancestor === "" ? "/" : ancestor
+      bytes += Buffer.byteLength(`(deny file-write-unlink (require-all (vnode-type DIRECTORY) (regex #"${seatbeltRegex(directory, false)}")))\n`)
+      if (ancestor === "") break
+    }
+  }
+  return { bytes, longestRegex }
 }
 
 describe("codexSandboxNotice", () => {
