@@ -243,13 +243,19 @@ function codexDeniedLocations(secretGlobs: readonly string[]): string[] {
     : [location]))]
 }
 
+// A TOML basic string. JSON escapes every control character TOML forbids in
+// one but DEL, which the secret globs hold (codex-secret-globs.ts).
+function tomlString(text: string): string {
+  return JSON.stringify(text).replaceAll("\u007f", String.raw`\u007f`)
+}
+
 // The profiles depend on the platform only in how a glob spells letter case
 // (codex-secret-globs.ts).
 export function codexAppServerArguments(platform: NodeJS.Platform = process.platform): string[] {
   const secretGlobs = codexSecretGlobs(platform)
-  const worktreeSecrets = `{${secretGlobs.map((pattern) => `${JSON.stringify(pattern)}="deny"`).join(",")}}`
+  const worktreeSecrets = `{${secretGlobs.map((pattern) => `${tomlString(pattern)}="deny"`).join(",")}}`
   const denied = `{${[
-    ...codexDeniedLocations(secretGlobs).map((location) => `${JSON.stringify(location)}="deny"`),
+    ...codexDeniedLocations(secretGlobs).map((location) => `${tomlString(location)}="deny"`),
     `":workspace_roots"=${worktreeSecrets}`,
   ].join(",")}}`
   const profile = (name: CodexPermissionProfile, base: string) => [

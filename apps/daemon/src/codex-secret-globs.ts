@@ -10,13 +10,14 @@ import { credentialStores } from "./credential-stores.js"
 // A character the classifier reads as ending a name, by its two readings
 // (#545's list, and the command-line reading with the credential stores).
 // Both end a name at any ASCII character but a letter, digit, underscore,
-// hyphen or dot. The list's reading also ends one at any other character, a
-// letter such as é included; the command-line reading lets a name go on
-// through any letter, digit or mark. Seatbelt (macOS) misreads a bracket
-// expression that names both "-" and "." and cannot read one with a non-ASCII
-// character (measured with codex-cli 0.162.1), so the ASCII characters are
-// written as ranges and the others as "not printable ASCII".
-const endsInAscii = "[ -,:-@[-^`{-~]"
+// hyphen or dot, control characters included. The list's reading also ends
+// one at any other character, a letter such as é included; the command-line
+// reading lets a name go on through any letter, digit or mark. Seatbelt
+// (macOS) misreads a bracket expression that names both "-" and "." and
+// cannot read one with a non-ASCII character (measured with codex-cli
+// 0.162.1), so the ASCII characters are written as ranges, from U+0001 to
+// U+007F, and the others as "not printable ASCII". A file name holds no U+0000.
+const endsInAscii = "[\u0001-,:-@[-^`{-\u007f]"
 const notAscii = "[! -~]"
 // A character a word starts after: anything but a letter, digit or underscore.
 const startsWord = "[!_a-zA-Z0-9]"

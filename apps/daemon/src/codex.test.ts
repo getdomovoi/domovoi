@@ -219,14 +219,20 @@ describe("codexAppServerArguments", () => {
   // about 1 MB (sandbox-exec takes it as one argument), and past either refuses
   // the whole profile, so every sandboxed command (measured with codex-cli
   // 0.162.1). Codex writes each :workspace_roots glob after the worktree's
-  // absolute path, with a rule for each of its ancestor directories, so both
-  // grow with the path. The profile loads for a worktree path of up to 768
-  // bytes, three quarters of macOS's 1,024-byte path limit, with the share
-  // a long home directory leaves.
-  it.each([10, 50])("loads on macOS for a worktree path of 768 bytes in %i-byte names", (component) => {
+  // absolute path, escaped, with a rule for each of its ancestor directories,
+  // so both grow with the path and its depth. The profile loads for a
+  // worktree path Seatbelt writes in up to 768 bytes (a dot, hyphen or other
+  // punctuation counts twice), three quarters of macOS's 1,024-byte path
+  // limit, in names of five bytes or more. Names of two bytes, about 380
+  // directories deep, overran T109's eight patterns there too.
+  it.each([
+    { component: 5, hyphens: false }, { component: 10, hyphens: false }, { component: 50, hyphens: false },
+    { component: 10, hyphens: true },
+  ])("loads on macOS for a worktree path Seatbelt writes in 768 bytes: $component-byte names, hyphens $hyphens", ({ component, hyphens }) => {
     const table = filesystemTable("darwin", "domovoi-read")
     const home = worktreePath(64, 8)
-    const root = worktreePath(768, component)
+    const root = worktreePath(768, component, hyphens)
+    expect(seatbeltRegex(root, false).length - 2).toBe(768)
     const workspace = seatbeltGlobPolicy(Object.keys(table[":workspace_roots"] ?? {}).map((glob) => `${root}/${glob}`))
     const rest = seatbeltGlobPolicy(Object.keys(table).filter((key) => key !== ":workspace_roots" && /[*?[{]/u.test(key)).map((key) => key.replace(/^~/u, home)))
     expect(Math.max(workspace.longestRegex, rest.longestRegex)).toBeLessThanOrEqual(1_017)
@@ -267,7 +273,8 @@ describe("codexAppServerArguments", () => {
     for (const profile of ["domovoi-read", "domovoi-build"]) {
       const filesystem = settings.get(`permissions.${profile}.filesystem`)!
       expect(filesystem).not.toContain('"~/.domovoi"="deny"')
-      const denied = [...filesystem.matchAll(/"(~\/\.domovoi\/[^"]*)"="deny"/gu)].map((match) => match[1]!)
+      // Keys read as TOML, which decodes the escapes the secret globs need.
+      const denied = Object.keys(filesystemTable(process.platform, profile)).filter((key) => key.startsWith("~/.domovoi/"))
       const refused = (path: string) => denied.some((pattern) => globMatches(pattern, path))
       for (const path of [
         "~/.domovoi/daemon.token", "~/.domovoi/local-owner.key", "~/.domovoi/state.sqlite-wal", "~/.domovoi/tls/server.key",
@@ -336,6 +343,8 @@ const classifierSecretSamples: readonly string[] = [
   // character outside [A-Za-z0-9_.-], a letter such as é included.
   "daemon.tokené", "credentials.jsonü", ".sshé/inner", ".netrcé", "server.pemé", "x.envé",
   "daemon.token,old", ".gnupg,old", "x.env,old",
+  // A control character ends a name under both readings.
+  ".azure\tx", ".gnupg\u007f/data", ".kube\u0001", "daemon.token\t", "server.pem\u007f",
 ]
 
 // Project files that are not secrets, and names that only resemble one.
@@ -411,11 +420,14 @@ function globRegExp(pattern: string, options: GlobOptions): RegExp {
   return new RegExp(`^${source}$`, options.ignoresCase ? "iu" : "u")
 }
 
-// An absolute path of length bytes in names of about component bytes.
-function worktreePath(length: number, component: number): string {
+// An absolute path Seatbelt writes in length bytes, in names of about
+// component bytes, with every other character a hyphen if hyphens.
+function worktreePath(length: number, component: number, hyphens = false): string {
+  const name = (size: number) => [...Array(size).keys()].map((index) => hyphens && index % 2 === 1 ? "-" : "x").join("")
+  const written = (path: string) => seatbeltRegex(path, false).length - 2
   let path = "/Users"
-  while (path.length + component + 1 < length) path += `/${"x".repeat(component)}`
-  return `${path}/${"y".repeat(Math.max(1, length - path.length - 1))}`
+  while (written(`${path}/${name(component)}`) + 2 < length) path += `/${name(component)}`
+  return `${path}/${"y".repeat(length - written(path) - 1)}`
 }
 
 // The regex codex-cli 0.162.1 writes for a glob in a Seatbelt profile
