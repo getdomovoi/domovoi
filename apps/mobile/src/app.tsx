@@ -144,15 +144,36 @@ export function App() {
   // and sent with the turn; nothing is kept once the send is answered.
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [attachProblem, setAttachProblem] = useState("")
+  // A large image is still being resized after the picker closes, while the
+  // composer takes taps again. It belongs to the turn and the session it was
+  // picked for: a send waits for it (picking counts the ones in progress), and
+  // leaving the session drops it (leaving bumps queueEpoch, and a pick that
+  // finishes under a newer epoch is not added).
+  const picking = useRef(0)
+  const queueEpoch = useRef(0)
+  const dropQueue = () => {
+    queueEpoch.current += 1
+    setAttachments([])
+    setAttachProblem("")
+  }
   const pickImage = async (source: "library" | "camera") => {
     setAttachProblem("")
     if (attachments.length >= maximumSessionAttachments) {
       setAttachProblem(`Two images per turn. Remove one to add another.`)
       return
     }
-    const outcome = await pickAttachment(source, imageSourcePicker, encodeImage)
-    if (outcome.kind === "problem") setAttachProblem(outcome.text)
-    if (outcome.kind === "added") setAttachments((current) => [...current, outcome.attachment])
+    const epoch = queueEpoch.current
+    picking.current += 1
+    try {
+      const outcome = await pickAttachment(source, imageSourcePicker, encodeImage)
+      if (epoch !== queueEpoch.current) return
+      if (outcome.kind === "problem") setAttachProblem(outcome.text)
+      if (outcome.kind === "added") {
+        setAttachments((current) => current.length >= maximumSessionAttachments ? current : [...current, outcome.attachment])
+      }
+    } finally {
+      picking.current -= 1
+    }
   }
   // The plan starts pinned: the design leads the thread with a strip saying
   // where the machine is, and the whole plan is one tap away. Unpinning
@@ -754,8 +775,7 @@ export function App() {
       setOpenArtifactId(undefined)
       setDraft("")
       setSendProblem(startedId, "")
-      setAttachments([])
-      setAttachProblem("")
+      dropQueue()
     } catch (cause) {
       setStartRefusal(refusalOf(cause))
       setStartProblem(cause instanceof Error ? cause.message : "The session was not started")
@@ -838,6 +858,13 @@ export function App() {
       setSendProblem(sessionId, "This daemon does not take images. Remove them to send the words.")
       return
     }
+    // An image picked for this turn is still being resized. Sending now
+    // would send the words without it and leave it for the next turn.
+    if (picking.current > 0) {
+      setSendProblem(sessionId, "An image is still being resized for this turn. Send again once it shows here.")
+      return
+    }
+    const sent = attachments
     inFlightSend.current = true
     setSending(true)
     setSendProblem(sessionId, "")
@@ -853,12 +880,14 @@ export function App() {
         review: snapshot ? openCommentReviewFor(snapshot, sessionId) : { annotationIds: [] },
         ...(session ? sendDelivery(session) : {}),
         ...(selection ? { skillSelection: selection } : {}),
-        ...(attachments.length > 0
-          ? { attachments: attachments.map(({ mimeType, width, height, data }) => ({ mimeType, width, height, data })) }
+        ...(sent.length > 0
+          ? { attachments: sent.map(({ mimeType, width, height, data }) => ({ mimeType, width, height, data })) }
           : {}),
       })
       setDraft("")
-      setAttachments([])
+      // Only what went with the turn leaves the queue: an image picked while
+      // the send was answered is for the next turn.
+      setAttachments((current) => current.filter((item) => !sent.includes(item)))
       setAttachProblem("")
     } catch (cause) {
       const refusal = turnSkillRefusalFrom(cause)
@@ -1087,8 +1116,7 @@ export function App() {
             onBack={() => {
               setOpenSessionId(undefined)
               setOpenArtifactId(undefined)
-              setAttachments([])
-              setAttachProblem("")
+              dropQueue()
             }}
             onOpenApproval={setOpenApprovalId}
             onOpenArtifact={setOpenArtifactId}
@@ -1246,8 +1274,7 @@ export function App() {
                     setDraft("")
                     // Same for what was picked to go with it. A send problem
                     // stays: it is kept per session and shown there.
-                    setAttachments([])
-                    setAttachProblem("")
+                    dropQueue()
                   }
                   setOpenSessionId(sessionId)
                 }}

@@ -38,6 +38,32 @@ jest.mock("./lib/relay-pin", () => ({
   reconcileRelayPin: () => Promise.resolve("trusted"),
 }))
 
+// The photo library and the device encoder are native. The library hands
+// back one 4032 x 3024 photo at once; the encoder answers only when a test
+// says so, so a test can act while an image is still being resized.
+const mockSmallJpeg = Buffer.concat([
+  Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 16]), Buffer.from("JFIF\0\x01\x01\0\0\x01\0\x01\0\0", "latin1"),
+  Buffer.from([0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0]),
+  Buffer.from([0xff, 0xda, 0, 8, 1, 1, 0, 0, 0x3f, 0, 0x55, 0x55, 0xff, 0xd9]),
+]).toString("base64")
+const mockEncodes: ((value: { base64: string, width: number, height: number }) => void)[] = []
+jest.mock("expo-image-picker", () => ({
+  requestCameraPermissionsAsync: async () => ({ granted: true }),
+  launchCameraAsync: async () => ({ canceled: true, assets: null }),
+  launchImageLibraryAsync: async () => ({
+    canceled: false,
+    assets: [{ uri: "file:///cache/ImagePicker/IMG_4120.jpg", fileName: "IMG_4120.jpg", mimeType: "image/jpeg", width: 4032, height: 3024, base64: mockSmallJpeg }],
+  }),
+}))
+jest.mock("./image-encoder", () => ({
+  discardCachedFile: () => {},
+  encodeImage: (request: { width: number, height: number }) =>
+    new Promise((resolve: (value: { base64: string, width: number, height: number }) => void) => {
+      mockEncodes.push(resolve)
+      void request
+    }),
+}))
+
 type Frame = { jsonrpc: "2.0", id: number, method: string, params: Record<string, unknown> }
 
 class FakeSocket {
@@ -404,6 +430,61 @@ describe("App", () => {
     await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
     await fireEvent.press(screen.getByRole("button", { name: audit.title }))
     expect(screen.getByText(/The audit session refused the send/)).toBeOnTheScreen()
+  })
+
+  // PR #868 review (P1): a large image is still being resized after the
+  // picker has closed. It belongs to the turn and session it was picked for.
+  describe("an image still being resized", () => {
+    async function pickWhileIdle() {
+      mockEncodes.length = 0
+      const snapshot = workspace()
+      const idle = snapshot.sessions.find((session) => session.id === audit.id)!
+      idle.workspacePath = "/worktrees/repo-audit"
+      idle.providerThreadId = "provider-thread-audit"
+      Object.assign(snapshot, { sessionImageAttachments: true })
+      const opened = await openApp(snapshot)
+      await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+      await fireEvent.press(screen.getByRole("button", { name: "Attach an image" }))
+      const { onDismiss } = screen.getByTestId("attach-sheet").props as { onDismiss: () => void }
+      await fireEvent.press(screen.getByRole("button", { name: /Photo or screenshot/ }))
+      await act(async () => onDismiss())
+      await settle()
+      expect(mockEncodes).toHaveLength(1)
+      const finish = async () => {
+        await act(async () => { mockEncodes[0]?.({ base64: mockSmallJpeg, width: 2048, height: 1536 }) })
+        await settle()
+      }
+      return { ...opened, finish }
+    }
+
+    it("holds a send until the image is ready, then sends it with the turn", async () => {
+      const { socket, finish } = await pickWhileIdle()
+      await fireEvent.changeText(screen.getByLabelText("Reply to this session"), "Is this the lockfile")
+      await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+      await settle()
+      expect(socket.requests("session.send")).toHaveLength(0)
+      expect(screen.getByText("An image is still being resized for this turn. Send again once it shows here.")).toBeOnTheScreen()
+
+      await finish()
+      expect(screen.getByText("resized from 4032 x 3024")).toBeOnTheScreen()
+      await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+      await settle()
+      const sent = socket.requests("session.send")
+      expect(sent).toHaveLength(1)
+      expect(sent[0]?.params).toMatchObject({ prompt: "Is this the lockfile", attachments: [{ mimeType: "image/jpeg", width: 2048, height: 1536 }] })
+    })
+
+    // Leaving a session drops what was picked for it; an image that finishes
+    // after the person left is dropped the same way, even if they come back.
+    it("drops an image whose session was left before it was ready", async () => {
+      const { finish } = await pickWhileIdle()
+      await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
+      await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+      await finish()
+      expect(screen.getByLabelText("Reply to this session")).toBeOnTheScreen()
+      expect(screen.queryByText("IMG_4120.jpg")).toBeNull()
+      expect(screen.queryByText("resized from 4032 x 3024")).toBeNull()
+    })
   })
 
   it("sends one turn for a double tap on Send", async () => {
