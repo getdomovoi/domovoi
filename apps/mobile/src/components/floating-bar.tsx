@@ -1,4 +1,5 @@
 import { BlurView } from "expo-blur"
+import { useEffect, useState } from "react"
 import { PixelRatio, useWindowDimensions, View, type LayoutChangeEvent, type ViewProps } from "react-native"
 import { useSafeAreaInsets } from "react-native-safe-area-context"
 
@@ -75,8 +76,16 @@ export function FloatingBar({
   const bottom = bottomInset ?? geometry.bottomInset
   const shadow = shadows[resolved].lg
 
+  // The footprint is the bar's height plus where it sits, reported when
+  // either changes: a bar the keyboard lifts moves without changing size, and
+  // the screen under it must pad by the new reach (F13).
+  const [height, setHeight] = useState<number | undefined>(undefined)
+  useEffect(() => {
+    if (height !== undefined) onFootprint?.(height + bottom)
+  }, [height, bottom, onFootprint])
+
   const measure = (event: LayoutChangeEvent) => {
-    onFootprint?.(event.nativeEvent.layout.height + bottom)
+    setHeight(event.nativeEvent.layout.height)
   }
 
   return (

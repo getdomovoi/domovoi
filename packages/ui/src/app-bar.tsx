@@ -19,6 +19,7 @@ import { StatusDot } from "./status-dot"
 import { startOpenerRef } from "./start-handoff"
 import { type DesktopWindowBridge, type WorkspaceWindowDecoration } from "./desktop-platform"
 import { cn } from "./lib/utils"
+import { titlebarInsetStyle, titlebarLeadingInset } from "./titlebar-inset"
 import { titlebarTipClassName } from "./titlebar-tip"
 
 // v2's titlebar icons (topBtnStyle) sit at muted-foreground and lift to the
@@ -97,7 +98,7 @@ export function AppBar({
     : emergencyStopOutcome
       ? emergencyStopAnnouncement(emergencyStopOutcome)
       : null
-  const leadingInset = ownsDecoration ? bridge?.titlebarLeadingInset ?? 0 : 0
+  const leadingInset = titlebarLeadingInset(bridge, windowDecoration)
   const activeSession = snapshot?.sessions.find((session) => session.id === snapshot.activeSessionId)
   const titleText = title ?? activeSession?.title ?? snapshot?.project?.name ?? "Domovoi"
   // The shell passes the route it dialed (route-word.ts). Without one the bar
@@ -117,7 +118,7 @@ export function AppBar({
         // the shortcut hint and the route word fold away, the machine name
         // truncates, and the theme toggle leaves for Settings, Appearance.
         className="electron-drag flex h-[var(--shell-titlebar)] shrink-0 items-center gap-3 border-b border-border bg-background px-[14px] max-sm:gap-1 max-sm:px-2"
-        style={leadingInset > 0 ? { paddingLeft: leadingInset } : undefined}
+        style={titlebarInsetStyle(leadingInset)}
       >
       <DomovoiMark reduced className="size-[22px] shrink-0 text-primary" />
       {sessionsDrawer ? <span className="electron-no-drag inline-flex items-center">{sessionsDrawer}</span> : null}

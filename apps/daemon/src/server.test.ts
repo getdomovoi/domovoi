@@ -3342,10 +3342,12 @@ describe("DomovoiDaemon", () => {
     await rpc("workspace.get", {})
     finishFirstConnection!()
 
+    // A provider lost while it connected is a failed model read the daemon
+    // understood, answered with its classified reason (M1 walk F4).
     await expect(models).resolves.toMatchObject({
       error: {
         code: -32603,
-        message: "Internal daemon error",
+        message: "Provider request failed",
       },
     })
     expect(agent.connect).toHaveBeenCalledOnce()
@@ -3359,6 +3361,66 @@ describe("DomovoiDaemon", () => {
     })
     expect(agent.connect).toHaveBeenCalledTimes(2)
     expect(agent.listModels).toHaveBeenCalledOnce()
+    socket.close()
+  })
+
+  // M1 walk F4: a harness that fails to report its models is a failure the
+  // daemon understood, not an internal one. The client gets the classified
+  // reason, as for a failed turn; the harness's own text stays in the log.
+  it("answers a failed model read with the classified reason and logs the harness's own message", async () => {
+    const failures = [
+      new Error("Query closed before response received"),
+      new Error("Claude Code: 401 Unauthorized: not logged in"),
+    ]
+    const agent = {
+      connect: vi.fn(async () => {}),
+      listModels: vi.fn(async (): Promise<ProviderModel[]> => { throw failures.shift() }),
+      startThread: vi.fn(async () => "unused"),
+      resumeThread: vi.fn(async () => {}),
+      stopThread: vi.fn(async () => {}),
+      startTurn: vi.fn(async () => "unused"),
+      steerTurn: vi.fn(async () => {}),
+      interruptTurn: vi.fn(async () => {}),
+      resolveApproval: vi.fn(),
+      onEvent: vi.fn(() => () => {}),
+      close: vi.fn(async () => {}),
+    } satisfies AgentAdapter
+    const errorSink = vi.fn()
+    const daemon = new DomovoiDaemon({ port: 0, statePath: ":memory:", agent, errorSink })
+    running.push(daemon)
+    const address = await daemon.start()
+    const socket = authenticatedSocket(daemon, `ws://${address.host}:${address.port}/rpc`)
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve)
+      socket.once("error", reject)
+    })
+    let requestId = 0
+    const rpc = (method: string, params: Record<string, unknown>) => {
+      const id = ++requestId
+      const response = new Promise<Record<string, unknown>>((resolve) => {
+        const receive = (data: WebSocket.RawData) => {
+          const message = JSON.parse(data.toString()) as { id?: number }
+          if (message.id !== id) return
+          socket.off("message", receive)
+          resolve(message as Record<string, unknown>)
+        }
+        socket.on("message", receive)
+      })
+      socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }))
+      return response
+    }
+
+    await expect(rpc("runtime.models", { provider: "codex", client: "desktop" })).resolves.toMatchObject({
+      error: { code: -32603, message: "Provider request failed" },
+    })
+    expect(errorSink).toHaveBeenCalledWith(expect.objectContaining({
+      context: "RPC runtime.models failed",
+      detail: expect.stringContaining("Query closed before response received"),
+    }))
+    await expect(rpc("runtime.models", { provider: "codex", client: "desktop" })).resolves.toMatchObject({
+      error: { code: -32603, message: "Provider authentication expired" },
+    })
+    expect(agent.listModels).toHaveBeenCalledTimes(2)
     socket.close()
   })
 

@@ -2,7 +2,7 @@ import type { ChildProcess } from "node:child_process"
 import { EventEmitter } from "node:events"
 import { chmod, mkdtemp, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import { PassThrough } from "node:stream"
 
 import { afterEach, describe, expect, it, vi } from "vitest"
@@ -208,6 +208,31 @@ setTimeout(() => process.exit(0), 200)`)
     await expect(embeddedServerCommand(command, "fixture server listening")({
       hostname: "127.0.0.1", port: 0, timeout: 10_000, environment: {},
     })).rejects.toThrow(/exited with code 3[\s\S]*no provider configured/u)
+  })
+
+  // M1 walk F4. In the desktop app the daemon runs in Electron's main
+  // process, whose executable is the app: it runs the keeper as Node only
+  // when ELECTRON_RUN_AS_NODE is 1, and otherwise starts a second copy of the
+  // app, which quits. The fake app below does the same.
+  it("starts the server when the daemon runs inside the desktop app", async () => {
+    const { command, report } = await fixture(listening)
+    const app = join(dirname(command), "Domovoi")
+    await writeFile(app, `#!/bin/sh\n[ "$ELECTRON_RUN_AS_NODE" = 1 ] || exit 0\nexec '${process.execPath}' "$@"\n`)
+    await chmod(app, 0o755)
+    const execPath = process.execPath
+    Object.defineProperty(process.versions, "electron", { value: "44.4.5", configurable: true })
+    process.execPath = app
+    let server: Awaited<ReturnType<ReturnType<typeof embeddedServerCommand>>> | undefined
+    try {
+      server = await embeddedServerCommand(command, "fixture server listening")({
+        hostname: "127.0.0.1", port: 0, timeout: 10_000, environment: { FIXTURE_REPORT: report },
+      })
+    } finally {
+      process.execPath = execPath
+      Reflect.deleteProperty(process.versions, "electron")
+    }
+    expect(server.url).toBe("http://127.0.0.1:4567")
+    await expect(server.stop()).resolves.toBe(true)
   })
 
   it("stops a server that does not listen in time", async () => {

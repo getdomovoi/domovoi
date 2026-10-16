@@ -917,6 +917,21 @@
       "id": "pairing.grant-line",
       "since": "2026-10-11",
       "note": "approved difference, ruling Q61 A, 2026-10-11 (task 72): the grant list now carries 04g's When this ships line, Read terminal output. It cannot type, resize or take the claim., as a grant with the success dot, in the place of Terminal output is not on a phone yet., which stopped being true when #739 let a phone watch terminal output. PairingCard and 04g's Today row still draw the old line, and GRANTS_NEXT marks the new one proposed, not shipped; the desktop card, the command line and the phone change together because they read one list, phoneAndTabletPromise. The line is true to the allow-list: terminal.list, terminal.watch and terminal.unwatch are on phoneAndTabletRpcMethods, and terminal.input, terminal.resize, terminal.claim, terminal.release, terminal.create and terminal.close are not. The design's open question on canonical copy (\"... Everything else here works.\" with a warning dot) is moot for this line"
+    },
+    {
+      "id": "thread.screen",
+      "since": "2026-10-15",
+      "note": "approved difference, ruling Q116 A (task 107, fetzy's walk request): frame 11 draws no tool call in the thread. The phone draws each one as frame 01b's tool row (status dot, the command in mono on one line, the status, on the code ground) with a chevron, and a tap on the row opens the full command under it. Settings carries a Tool cards row, Collapsed or Expanded, kept on the device; a fresh install starts collapsed and a card toggled by hand keeps its choice while the thread is open. Approval facts never fold: receipts and the waiting-approval card are not tool rows, and a running call stays open with no control while the session has a waiting approval. Tablet unchanged: its thread draws a tool call as one line of text. Render tests only; a real device check is owed to fetzy"
+    },
+    {
+      "id": "composer.keyboard",
+      "since": "2026-10-15",
+      "note": "F8 (walk 2026-10-15, task 107): at rest the pill laid the running-turn hint beside the input and clipped the placeholder. A send hint now stacks the composer into frame 12's card and sits on its own line under the input row with the info dot, as frame 12 draws it; frame 11's pill draws no hint, and the hint is kept because it is a fact about what Send will do. The Skills row still waits for focus. Render tests only; a real device check is owed to fetzy"
+    },
+    {
+      "id": "composer.keyboard",
+      "since": "2026-10-15",
+      "note": "F13 (walk 2026-10-15, task 107): on the iPhone the keyboard covered the composer, because the composer is an absolutely positioned floating bar and a keyboard-avoiding view's padding does not move it. While the composer has the keyboard, the session screen lifts the bar by the keyboard's reach plus frame 12's 8 point gap, and the thread pads by the bar's footprint, so the composer rides above the keyboard as frame 12 draws it (ruling Q117). Another input on the screen keeps the keyboard-avoiding view it had. Android lifts by the reported keyboard height plus the navigation bar inset, because the edge-to-edge window is not resized. Render tests only; a real device check is owed to fetzy on iPhone, and on Android by anyone with a device"
     }
   ],
   "scriptBacklog": {
