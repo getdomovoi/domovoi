@@ -63,6 +63,15 @@ function TabletSessionRow({ row, selected, access, onPress }: {
   )
 }
 
+// The rail shows the open session, or the daemon's active one when none is
+// open. A tap on the session it already shows is not leaving that session.
+export function railSelectionLeaves(
+  next: string,
+  shown: { openSessionId: string | undefined, activeSessionId: string | null | undefined },
+): boolean {
+  return next !== (shown.openSessionId ?? shown.activeSessionId ?? undefined)
+}
+
 export function TabletSessionsPane({ snapshot, selectedSessionId, access, onSelectSession, onNewSession, onOpenMachines }: {
   snapshot: WorkspaceSnapshot
   selectedSessionId: string | undefined

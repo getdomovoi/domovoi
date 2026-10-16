@@ -4,8 +4,21 @@ import { fireEvent, render, screen, within } from "@testing-library/react-native
 import { ScrollView } from "react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
-import { TabletShell } from "./tablet-shell"
+import { railSelectionLeaves, TabletShell } from "./tablet-shell"
 import { colors } from "./theme/tokens.generated"
+
+// PR #871 review: the rail shows the open session, or the daemon's active
+// one when none is open. Tapping the session it already shows is not
+// leaving it, so what was picked for that session stays.
+describe("railSelectionLeaves", () => {
+  it("compares against the session the rail shows", () => {
+    expect(railSelectionLeaves("session-billing", { openSessionId: undefined, activeSessionId: "session-billing" })).toBe(false)
+    expect(railSelectionLeaves("session-audit", { openSessionId: undefined, activeSessionId: "session-billing" })).toBe(true)
+    expect(railSelectionLeaves("session-audit", { openSessionId: "session-audit", activeSessionId: "session-billing" })).toBe(false)
+    expect(railSelectionLeaves("session-billing", { openSessionId: "session-audit", activeSessionId: "session-billing" })).toBe(true)
+    expect(railSelectionLeaves("session-billing", { openSessionId: undefined, activeSessionId: null })).toBe(true)
+  })
+})
 
 const metrics: Metrics = {
   frame: { x: 0, y: 0, width: 1024, height: 768 },
