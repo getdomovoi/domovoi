@@ -370,6 +370,12 @@ export function App() {
   useEffect(() => {
     if (openSessionGone) dropQueueRef.current()
   }, [openSessionGone])
+  // The tablet's composer draws no images (Q129). Turning into the tablet
+  // layout drops what was picked, landed or still resizing, rather than
+  // letting it go with the next tablet send unseen.
+  useEffect(() => {
+    if (tablet) dropQueueRef.current()
+  }, [tablet])
 
   const openArtifacts = useMemo(
     () => snapshot && openSessionId ? artifactRows(snapshot, openSessionId) : [],

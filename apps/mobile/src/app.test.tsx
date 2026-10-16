@@ -556,6 +556,33 @@ describe("App", () => {
       expect(screen.getAllByText("IMG_4120.jpg")).toHaveLength(1)
     })
 
+    // #871 review (Q129): the tablet composer draws no images, so turning
+    // into the tablet layout drops what was picked, landed or still resizing.
+    it("drops picked images when the layout turns into the tablet's", async () => {
+      const native = jest.requireActual<typeof import("react-native")>("react-native")
+      const dimensions = jest.spyOn(native, "useWindowDimensions").mockReturnValue({ width: 390, height: 844, scale: 3, fontScale: 1 })
+      try {
+        const { socket } = await openAudit()
+        await pick()
+        await finish(0)
+        expect(screen.getByText("IMG_4120.jpg")).toBeOnTheScreen()
+        await pick()
+        dimensions.mockReturnValue({ width: 1024, height: 768, scale: 2, fontScale: 1 })
+        await fireEvent.changeText(screen.getByLabelText("Reply to this session"), "Check the lockfile")
+        await settle()
+        expect(screen.getByTestId("tablet-thread")).toBeOnTheScreen()
+        await finish(1)
+        await fireEvent.press(screen.getByRole("button", { name: "Send message" }))
+        await settle()
+        const sent = socket.requests("session.send")
+        expect(sent).toHaveLength(1)
+        expect(sent[0]?.params).toMatchObject({ prompt: "Check the lockfile" })
+        expect(sent[0]?.params).not.toHaveProperty("attachments")
+      } finally {
+        dimensions.mockRestore()
+      }
+    })
+
     // #871 review: a pick started at phone width, the layout turns into the
     // tablet's, and the person leaves for Machines there. The tablet composer
     // draws no images, so a pick that landed would go with the next send
