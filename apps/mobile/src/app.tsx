@@ -38,6 +38,7 @@ import { DaemonTimeoutError } from "./lib/request-timeout"
 import { useDaemon } from "./lib/use-daemon"
 import { useDeviceIdentity } from "./lib/use-device-identity"
 import { useModelImages } from "./lib/use-model-images"
+import { useToolCardDefault } from "./lib/use-tool-card-default"
 import { connectedMachineActivity } from "./machine-activity"
 import { launchPhases } from "./launch-state"
 import * as ImagePicker from "expo-image-picker"
@@ -86,6 +87,7 @@ import "./global.css"
 
 export function App() {
   const { preference, setPreference } = useTheme()
+  const [toolCardDefault, setToolCardDefault] = useToolCardDefault()
   const { width } = useWindowDimensions()
   const tablet = width >= 768
   const [tab, setTab] = useState<Tab>(() => normalizeTab("sessions"))
@@ -1122,6 +1124,7 @@ export function App() {
             terminals={sessionTerminals}
             connected={terminalsConfirmed}
             onOpenTerminal={setOpenTerminalId}
+            toolCardDefault={toolCardDefault}
           />
           <SkillSheet
             open={skillsOpen}
@@ -1310,6 +1313,8 @@ export function App() {
               onOpenStop={() => setConfirmPause(true)}
               themePreference={preference}
               onChangeTheme={setPreference}
+              toolCardDefault={toolCardDefault}
+              onChangeToolCards={setToolCardDefault}
               paired={!unpaired}
               device={tablet ? "tablet" : "phone"}
               bottomInset={tabFootprint}

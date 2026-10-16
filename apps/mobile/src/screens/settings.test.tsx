@@ -22,6 +22,8 @@ async function draw(overrides: Partial<Parameters<typeof SettingsScreen>[0]> = {
     onOpenStop: jest.fn<() => void>(),
     themePreference: "system" as const,
     onChangeTheme: jest.fn<(preference: "light" | "dark" | "system") => void>(),
+    toolCardDefault: "collapsed" as "collapsed" | "expanded",
+    onChangeToolCards: jest.fn<(value: "collapsed" | "expanded") => void>(),
     paired: true,
     device: "phone" as const,
     bottomInset: 0,
@@ -155,5 +157,24 @@ describe("SettingsScreen", () => {
   it("names the tablet when it runs on one", async () => {
     await draw({ device: "tablet" })
     expect(screen.getByText("Gates reach this tablet only while Domovoi is open on it. There are no notifications yet.")).toBeOnTheScreen()
+  })
+
+  // Task 107: how tool and command cards open in a phone thread, set once on
+  // the device. The line under it says what the setting cannot fold.
+  it("sets whether tool cards open collapsed or expanded", async () => {
+    const { onChangeToolCards } = await draw({ toolCardDefault: "collapsed" })
+    expect(screen.getByLabelText("Tool cards, Collapsed")).toBeOnTheScreen()
+    expect(screen.getByRole("radio", { name: "Collapsed", checked: true })).toBeOnTheScreen()
+    expect(screen.getByRole("radio", { name: "Expanded", checked: false })).toBeOnTheScreen()
+    expect(screen.getByText("How commands and tool calls open in a thread. A command waiting on an approval always shows in full.")).toBeOnTheScreen()
+    await fireEvent.press(screen.getByRole("radio", { name: "Expanded" }))
+    expect(onChangeToolCards).toHaveBeenCalledWith("expanded")
+  })
+
+  // The tablet thread draws a tool call as one line of text, not a card, so
+  // the setting would change nothing there.
+  it("leaves the tool card setting off a tablet", async () => {
+    await draw({ device: "tablet" })
+    expect(screen.queryByLabelText(/^Tool cards/)).toBeNull()
   })
 })

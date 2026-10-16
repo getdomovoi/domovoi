@@ -20,13 +20,17 @@ import { Card, PressableCard } from "../components/ui/card"
 import { Icon } from "../components/ui/icon"
 import { Text } from "../components/ui/text"
 import { cn } from "../lib/cn"
+import { useKeyboardReach } from "../lib/use-keyboard-lift"
 import type { ArtifactRow } from "../artifact-rows"
 import { planStrip, type PlanRow, type PlanSummary } from "../plan-rows"
 import type { Attachment, ModelImages } from "../attachments"
 import type { SessionDetail, ThreadEntry } from "../session-detail"
+
+type ToolStatus = NonNullable<Extract<ThreadEntry, { kind: "note" }>["tool"]>["status"]
 import type { PhoneRefusal } from "../session-refusal"
 import { watchedSummary, type TerminalWatch } from "../terminal-rows"
 import { useTheme } from "../theme/theme-provider"
+import { foldsAway, freshToolCardDefault, toolCardOpen, toolSummary, type ToolCardDefault } from "../tool-cards"
 import { TerminalBlock } from "./watching"
 
 // The handoff tints a step's mark with the state it is in rather than outlining
@@ -129,8 +133,71 @@ function Receipt({ entry, onWatch }: {
   )
 }
 
-const Entry = memo(function Entry({ entry, onWatch }: { entry: ThreadEntry, onWatch: () => void }) {
+// Frame 01b's tool row: a status dot, the command in mono on one line, and the
+// status at the end, on the code ground. Task 107 makes it fold: a tap on the
+// row opens the full command under it, and a tap again folds it back. A card
+// that cannot fold (see foldsAway) is drawn open with no control.
+const toolDot: Record<ToolStatus, string> = {
+  running: "bg-primary",
+  completed: "bg-success",
+  failed: "bg-destructive",
+  declined: "bg-faint",
+}
+
+function ToolCard({ entry, tool, open, folds, onToggle }: {
+  entry: Extract<ThreadEntry, { kind: "note" }>
+  tool: { name: string, status: ToolStatus }
+  open: boolean
+  folds: boolean
+  onToggle: (id: string, open: boolean) => void
+}) {
+  const summary = toolSummary(entry.body)
+  const label = `${tool.name}, ${tool.status}, ${summary}`
+  const row = (
+    <>
+      <View className={cn("h-1.5 w-1.5 rounded-full", toolDot[tool.status])} />
+      {open
+        ? <Text variant="machine" className="flex-1">{tool.name}</Text>
+        : <Text testID={`tool-summary-${entry.id}`} numberOfLines={1} className="flex-1 font-mono text-[11.5px] text-strong">{summary}</Text>}
+      <Text variant="machine">{tool.status}</Text>
+      {folds ? <Icon name={open ? "chevron-up" : "chevron-down"} tone="faint" size={14} /> : null}
+    </>
+  )
+  return (
+    <View className="overflow-hidden rounded-xl border border-border bg-code">
+      {folds ? (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={label}
+          accessibilityState={{ expanded: open }}
+          onPress={() => onToggle(entry.id, !open)}
+          className="min-h-tap flex-row items-center gap-[9px] px-3 active:opacity-70"
+        >
+          {row}
+        </Pressable>
+      ) : (
+        <View accessible accessibilityLabel={`${tool.name}, ${tool.status}`} className="min-h-tap flex-row items-center gap-[9px] px-3">
+          {row}
+        </View>
+      )}
+      {open ? (
+        <Text selectable className="px-3 pb-3 font-mono text-[11.5px] leading-[18px] text-strong">{entry.body}</Text>
+      ) : null}
+    </View>
+  )
+}
+
+const Entry = memo(function Entry({ entry, onWatch, open, folds, onToggle }: {
+  entry: ThreadEntry
+  onWatch: () => void
+  open: boolean
+  folds: boolean
+  onToggle: (id: string, open: boolean) => void
+}) {
   if (entry.kind === "receipt") return <Receipt entry={entry} onWatch={onWatch} />
+  if (entry.kind === "note" && entry.tool) {
+    return <ToolCard entry={entry} tool={entry.tool} open={open} folds={folds} onToggle={onToggle} />
+  }
 
   if (entry.kind === "policy-refusal") return null
   // Phone v2 frame 11: yours is filled with the primary colour and tails to
@@ -263,12 +330,8 @@ export function PolicyRefusalCards({ refusal }: {
   )
 }
 
-export function keyboardAvoidance(platform: string, top: number) {
-  return {
-    behavior: platform === "ios" ? "padding" as const : undefined,
-    keyboardVerticalOffset: top,
-  }
-}
+// Frame 12 leaves this much between the composer and the keyboard.
+const keyboardGap = 8
 
 const queueLabels: Record<QueuedSessionSend["state"], string> = {
   waiting: "Waiting for the next turn",
@@ -591,6 +654,7 @@ export function SessionScreen({
   terminals = [],
   connected = true,
   onOpenTerminal,
+  toolCardDefault = freshToolCardDefault,
 }: {
   detail: SessionDetail
   // The route can die while the thread is open; the screen says what is drawn
@@ -658,8 +722,19 @@ export function SessionScreen({
   // state is unconfirmed.
   connected?: boolean | undefined
   onOpenTerminal?: ((terminalId: string) => void) | undefined
+  // The device setting for how tool cards open (task 107). A card toggled by
+  // hand keeps that choice while this screen is open, whatever the default.
+  toolCardDefault?: ToolCardDefault | undefined
 }) {
   const [startOpen, setStartOpen] = useState(false)
+  const [composerFocused, setComposerFocused] = useState(false)
+  const [toolChoices, setToolChoices] = useState<ReadonlyMap<string, boolean>>(() => new Map())
+  const toggleTool = useCallback((id: string, open: boolean) => {
+    // Opening a card grows the thread, and at the bottom the scroller would
+    // follow that growth and carry the card's start out of view.
+    if (open) thread.current?.holdNextGrowth()
+    setToolChoices((choices) => new Map(choices).set(id, open))
+  }, [])
   const [attachOpen, setAttachOpen] = useState(false)
   const [planOpen, setPlanOpen] = useState(false)
   // The composer floats over the thread, so the thread pads by what the
@@ -692,17 +767,31 @@ export function SessionScreen({
     if (delta > 0 && !atEnd) setUnseen((count) => count + delta)
   }, [atEnd, detail.entries.length, detail.id])
   const follow = threadFollowState({ atBottom: atEnd, unseen, gated: Boolean(approvalId) })
-  // The screen sits inside the safe area, so the keyboard's height is measured
-  // from a frame that starts below the status bar. Without the offset the
-  // composer is lifted short by exactly that much and the keyboard covers its
-  // bottom rows.
+  // The composer floats, absolutely positioned, so padding a keyboard-avoiding
+  // parent never moved it: the thread shrank and the composer stayed under the
+  // keyboard (F13). While the composer has the keyboard it is lifted by the
+  // keyboard's reach instead, and the thread pads by its footprint as before.
+  // The screen's bottom edge is the window's, so the home-indicator inset sits
+  // under the keyboard and is not added. Another input on the screen (a plan
+  // step's editor) leaves the composer down, and the screen avoids the
+  // keyboard for it as it always has; the two never act at once.
   const insets = useSafeAreaInsets()
-  const keyboard = keyboardAvoidance(Platform.OS, insets.top)
+  const reach = useKeyboardReach(Platform.OS, insets.bottom)
+  const lift = composerFocused ? reach : 0
+  const composerBottom = lift > 0 ? lift + keyboardGap : composerBottomInset
+  const focusComposer = useCallback((focused: boolean) => {
+    setComposerFocused(focused)
+    onComposerFocusChange(focused)
+  }, [onComposerFocusChange])
   return (
     <KeyboardAvoidingView
+      testID="session-screen"
       className="flex-1 bg-background"
-      behavior={keyboard.behavior}
-      keyboardVerticalOffset={keyboard.keyboardVerticalOffset}
+      enabled={!composerFocused}
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      // The screen sits inside the safe area, so the keyboard's height is
+      // measured from a frame that starts below the status bar.
+      keyboardVerticalOffset={insets.top}
     >
       <View className="flex-row items-center gap-2.5 px-3.5 pb-3 pt-1.5">
         <Pressable
@@ -727,6 +816,9 @@ export function SessionScreen({
           ref={thread}
           contentContainerClassName="gap-3 px-3.5"
           bottomInset={composerFootprint}
+          // With the keyboard up, a tap on a card's header or a button reaches
+          // it the first time; a tap on nothing still dismisses the keyboard.
+          keyboardShouldPersistTaps="handled"
           followEnd
           onAtEndChange={(next) => { setAtEnd(next); if (next) setUnseen(0) }}
           // Terminal blocks above the messages grow, and appear, as output
@@ -813,9 +905,19 @@ export function SessionScreen({
               onCancel={onCancelQueuedSend}
             />
           ) : null}
-          {detail.entries.map((entry) => (
-            <Entry key={entry.id} entry={entry} onWatch={watchReceipt} />
-          ))}
+          {detail.entries.map((entry) => {
+            const folds = foldsAway(entry, Boolean(approvalId))
+            return (
+              <Entry
+                key={entry.id}
+                entry={entry}
+                onWatch={watchReceipt}
+                folds={folds}
+                open={!folds || toolCardOpen(toolChoices.get(entry.id), toolCardDefault)}
+                onToggle={toggleTool}
+              />
+            )
+          })}
 
           {access === "full" ? <Card className="gap-2">
             <Text variant="label">Session control</Text>
@@ -882,8 +984,8 @@ export function SessionScreen({
           if (plan && !planPinned) onPinPlan(true)
           if (plan) setPlanOpen(true)
         }}
-        onFocusChange={onComposerFocusChange}
-        bottomInset={composerBottomInset}
+        onFocusChange={focusComposer}
+        bottomInset={composerBottom}
         onOpenAttach={() => setAttachOpen(true)}
         onRemoveAttachment={onRemoveAttachment}
         onRemoveAttachments={onRemoveAttachments}
