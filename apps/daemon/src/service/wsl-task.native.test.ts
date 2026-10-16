@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { expect, it } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
-import { allowRealServiceManager } from "../test-native-service-gate.js"
+import { allowRealServiceManager, nativeServiceTestsEnabled } from "../test-native-service-gate.js"
 import { localOwnerRecordSchema, type ReadyLocalOwner } from "../local-owner-record.js"
 import { createServiceConfiguration, serializeServiceConfiguration } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
@@ -21,7 +21,9 @@ import { observeWslTaskReadiness, wslGuestReadinessSnapshotScript, wslTaskFixtur
 const node = "/opt/domovoi-ci-node/bin/node"
 const daemon = "/opt/domovoi-ci-daemon/dist/index.js"
 const distribution = process.env["DOMOVOI_WSL_REQUIRED_DISTRIBUTION"]
-const required = process.env["DOMOVOI_WSL_NATIVE_SERVICE"] === "1"
+// The WSL leg asks for these by name. Like every native service test they
+// still run only on CI or with DOMOVOI_NATIVE_SERVICE_TESTS=1.
+const required = process.env["DOMOVOI_WSL_NATIVE_SERVICE"] === "1" && nativeServiceTestsEnabled("WSL")
 allowRealServiceManager(process.platform === "win32" && required)
 const budget = wslTaskFixtureBudgets(required ? process.env["DOMOVOI_WSL_NATIVE_SERVICE_BUDGET_MS"] : undefined)
 const cliTestBudget = Math.min(75_000, Math.floor(budget.lifecycle / 3))
