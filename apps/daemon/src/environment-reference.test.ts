@@ -5,7 +5,9 @@ import { expect, it } from "vitest"
 const sourceDirectory = import.meta.dirname
 const packageDirectory = join(sourceDirectory, "..")
 
-const proofInputs = new Set(["DOMOVOI_WSL_EXPECTED_MOUNT_ROOT", "DOMOVOI_WSL_NATIVE_BUDGET_MS", "DOMOVOI_WSL_NATIVE_TRANSPORT"])
+// The daemon test setup sets the last one for the service manager runner's
+// test refusal (service/manager-guard.ts). It is not a daemon setting.
+const proofInputs = new Set(["DOMOVOI_WSL_EXPECTED_MOUNT_ROOT", "DOMOVOI_WSL_NATIVE_BUDGET_MS", "DOMOVOI_WSL_NATIVE_TRANSPORT", "DOMOVOI_TEST_SERVICE_MANAGER_REFUSALS"])
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {

@@ -154,14 +154,44 @@ function serviceTarget(home: string) {
   }
 }
 
-// A Linux install asks loginctl about lingering (service/linger.ts). It is
-// answered here as already on, and never run.
-function withoutLoginctl(effects: ReturnType<typeof nodeServiceEffects>): ReturnType<typeof nodeServiceEffects> {
+// The service manager these installs talk to, never the account's own. On
+// 2026-10-16 the real launchctl answered with the operator's own login
+// service, sh.domovoi.domovoid loaded from their real LaunchAgents, and both
+// install tests failed with LaunchdJobNotDomovoiError. Here no launchd job or
+// systemd unit is loaded, and lingering (service/linger.ts) is already on.
+// The fixture never starts a manager task. On Windows, model the registration
+// that the Task Scheduler COM registration publishes, including the disabled,
+// zero-instance proof on retry: real reads with fake writes invent a missing
+// registration.
+function fakeManager(node: ReturnType<typeof nodeServiceEffects>): ReturnType<typeof nodeServiceEffects> {
+  let taskAction: { path: string; arguments: string } | undefined
+  let taskEnabled = false
   return {
-    ...effects,
-    capture: async (command, args, deadline) => command === "loginctl"
-      ? { code: 0, stdout: "yes\n" }
-      : effects.capture(command, args, deadline),
+    ...node,
+    run: vi.fn(async (_command, args) => {
+      if (process.platform !== "win32" || !args.includes("-EncodedCommand")) return
+      const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+      const path = windowsTaskData(script, "$action.Path"), argumentsText = windowsTaskData(script, "$action.Arguments")
+      if (path === undefined || argumentsText === undefined) return
+      taskAction = { path, arguments: argumentsText }
+      taskEnabled = true
+    }),
+    capture: async (command, args) => {
+      if (command === "launchctl" && args[0] === "print") {
+        return { code: 113, stdout: "", stderr: `Could not find service "sh.domovoi.domovoid" in domain for user gui: ${userInfo().uid}` }
+      }
+      if (command === "systemctl") return { code: 0, stdout: "" }
+      if (command === "loginctl") return { code: 0, stdout: "yes\n" }
+      if (process.platform !== "win32") throw new Error(`Unexpected service manager call: ${command} ${args.join(" ")}`)
+      if (taskAction === undefined) return { code: 0, stdout: "domovoi-task:missing" }
+      const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
+      if (script.includes("domovoi-task-action:")) {
+        return { code: 0, stdout: "domovoi-task-action:" + JSON.stringify({ ...taskAction, enabled: taskEnabled, state: taskEnabled ? 3 : 1 }) }
+      }
+      if (script.includes("$task.Enabled = $false")) taskEnabled = false
+      if (script.includes("$task.GetInstances(0).Count")) return { code: 0, stdout: `domovoi-task:${taskEnabled ? 0 : 1}` }
+      return { code: 0, stdout: `domovoi-task:${taskEnabled ? 3 : 1}` }
+    },
   }
 }
 
@@ -169,35 +199,7 @@ it("assigns a fresh registration on every install and invalidates an earlier rec
   const deadline = OperationDeadline.start(operationBudget)
   try {
     const home = await setup(deadline)
-    const node = withoutLoginctl(nodeServiceEffects({ userHomeDirectory: home }))
-    // The fixture never starts a manager task. Model the registration that
-    // the Task Scheduler COM registration publishes, including the disabled,
-    // zero-instance proof on retry. Leaving reads real while mocking writes
-    // invents a missing registration.
-    let taskAction: { path: string; arguments: string } | undefined
-    let taskEnabled = false
-    const effects: ReturnType<typeof nodeServiceEffects> = {
-      ...node,
-      run: vi.fn(async (_command, args) => {
-        if (process.platform !== "win32" || !args.includes("-EncodedCommand")) return
-        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-        const path = windowsTaskData(script, "$action.Path"), argumentsText = windowsTaskData(script, "$action.Arguments")
-        if (path === undefined || argumentsText === undefined) return
-        taskAction = { path, arguments: argumentsText }
-        taskEnabled = true
-      }),
-      capture: async (command, args, operation) => {
-        if (process.platform !== "win32") return node.capture(command, args, operation)
-        if (taskAction === undefined) return { code: 0, stdout: "domovoi-task:missing" }
-        const script = Buffer.from(args.at(-1)!, "base64").toString("utf16le")
-        if (script.includes("domovoi-task-action:")) {
-          return { code: 0, stdout: "domovoi-task-action:" + JSON.stringify({ ...taskAction, enabled: taskEnabled, state: taskEnabled ? 3 : 1 }) }
-        }
-        if (script.includes("$task.Enabled = $false")) taskEnabled = false
-        if (script.includes("$task.GetInstances(0).Count")) return { code: 0, stdout: `domovoi-task:${taskEnabled ? 0 : 1}` }
-        return { code: 0, stdout: `domovoi-task:${taskEnabled ? 3 : 1}` }
-      },
-    }
+    const effects = fakeManager(nodeServiceEffects({ userHomeDirectory: home }))
     const target = serviceTarget(home)
     await beforeDeadline(installService(target, effects), deadline)
     const first = JSON.parse(await readFile(serviceConfigurationPath(home, process.platform), "utf8")) as { registrationId?: string }
@@ -217,7 +219,7 @@ it("receipts the installed owner's exact instance only after stopping its superv
     const home = await setup(deadline)
     const node = nodeServiceEffects({ userHomeDirectory: home })
     const target = serviceTarget(home)
-    await beforeDeadline(installService(target, { ...withoutLoginctl(node), run: async () => {} }), deadline)
+    await beforeDeadline(installService(target, fakeManager(node)), deadline)
     const saved = JSON.parse(await readFile(serviceConfigurationPath(home, process.platform), "utf8")) as { registrationId?: string }
     expect(saved.registrationId).toMatch(/^[0-9a-f-]{36}$/)
     const owner = await startOwner(home, deadline, true)

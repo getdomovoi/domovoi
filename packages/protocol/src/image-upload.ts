@@ -47,6 +47,30 @@ export const sessionAttachmentSchema = z.union([
   workspaceFileAttachmentSchema,
 ])
 
+// What the daemon records of an attachment a send carried: its kind and size,
+// never its bytes or content. A queued send and the user turn a send became
+// both carry these, so any client can say what went with a message without
+// holding it. Image bytes go to the provider and are not kept anywhere.
+// Released clients parse a queued send strictly, so each shape stays exact.
+export const sessionAttachmentSummarySchema = z.union([
+  z.object({
+    kind: z.literal("image"),
+    mimeType: z.enum(["image/png", "image/jpeg"]),
+    width: z.number().int().positive().max(maximumImageUploadDimension),
+    height: z.number().int().positive().max(maximumImageUploadDimension),
+    bytes: z.number().int().positive().max(maximumImageUploadBytes),
+  }).strict(),
+  z.object({
+    kind: z.literal("text"),
+    name: z.string().trim().min(1).check(utf16MaxLength(255)),
+    bytes: z.number().int().positive().max(maximumTextAttachmentBytes),
+  }).strict(),
+  z.object({
+    kind: z.literal("workspace-file"),
+    path: z.string().min(1).check(utf16MaxLength(1024)),
+  }).strict(),
+])
+
 // Released clients parse this strictly, so it keeps exactly this shape. For
 // image-input-unsupported the client already knows the session's model and
 // how many images it sent; the daemon's message names both.
@@ -64,4 +88,5 @@ export type ImageUpload = z.infer<typeof imageUploadSchema>
 export type TextAttachment = z.infer<typeof textAttachmentSchema>
 export type WorkspaceFileAttachment = z.infer<typeof workspaceFileAttachmentSchema>
 export type SessionAttachment = z.infer<typeof sessionAttachmentSchema>
+export type SessionAttachmentSummary = z.infer<typeof sessionAttachmentSummarySchema>
 export type SessionAttachmentRefusal = z.infer<typeof sessionAttachmentRefusalSchema>

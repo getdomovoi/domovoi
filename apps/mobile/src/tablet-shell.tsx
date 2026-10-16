@@ -21,6 +21,7 @@ import { Card } from "./components/ui/card"
 import { Icon } from "./components/ui/icon"
 import { Text } from "./components/ui/text"
 import { PageScroller } from "./components/page-scroller"
+import { SentAttachments } from "./components/sent-attachments"
 import { approvalFacts } from "./screens/approval"
 import { PolicyRefusalCards } from "./screens/session"
 import { idleSentence } from "./screens/sessions"
@@ -271,6 +272,7 @@ function TabletThreadEntry({ entry }: { entry: ThreadEntry }) {
         <View className="max-w-[78%] rounded-2xl rounded-br-md bg-accent px-4 py-3">
           <Text className="text-[14px] leading-[21px]">{entry.body}</Text>
         </View>
+        <SentAttachments attachments={entry.attachments} className="max-w-[78%]" />
         {entry.omission ? (
           <Text variant="machine" className="max-w-[78%] text-right text-faint">{entry.omission}</Text>
         ) : null}

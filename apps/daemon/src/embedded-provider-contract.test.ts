@@ -1,14 +1,22 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process"
-import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { promisify } from "node:util"
 
+import { createOpencodeClient } from "@opencode-ai/sdk"
 import { afterEach, describe, expect, it } from "vitest"
 
 import { requireTestedVersion, type TestedVersion } from "./embedded-version.js"
 import { domovoiKiloConfig, kiloBuiltInPermissions, kiloBuiltInToolIds, testedKilo } from "./kilo-runtime.js"
-import { domovoiOpenCodeConfig, openCodeBuiltInPermissions, openCodeBuiltInToolIds, testedOpenCode } from "./opencode.js"
+import {
+  OpenCodeSdkAdapter,
+  domovoiOpenCodeConfig,
+  openCodeBuiltInPermissions,
+  openCodeBuiltInToolIds,
+  requireOpenCodeClient,
+  testedOpenCode,
+} from "./opencode.js"
 
 // Security review round 4 of #687 (P2): the adapter trusts permission names
 // and tool ids read from particular OpenCode and Kilo releases. This contract
@@ -66,6 +74,26 @@ async function onPath(command: string, env: Record<string, string>): Promise<boo
   }
 }
 
+async function serve(command: string, env: Record<string, string>, cwd: string): Promise<string> {
+  const child = spawn(command, ["serve", "--hostname=127.0.0.1", "--port=0"], { env, cwd, stdio: ["ignore", "pipe", "pipe"] })
+  children.push(child)
+  return new Promise<string>((resolve, reject) => {
+    let output = ""
+    const timer = setTimeout(() => reject(new Error(`no listen line: ${output}`)), 60_000)
+    const take = (chunk: Buffer) => {
+      output += chunk.toString()
+      const match = /listening on\s+(https?:\/\/\S+)/u.exec(output)
+      if (match) {
+        clearTimeout(timer)
+        resolve(match[1]!)
+      }
+    }
+    child.stdout?.on("data", take)
+    child.stderr?.on("data", take)
+    child.on("exit", (code) => reject(new Error(`exited ${String(code)}: ${output}`)))
+  })
+}
+
 describe.skipIf(!live)("embedded OpenCode and Kilo contract", () => {
   it.for(providers)("$tested.providerName keeps the version, tool ids and permission names the adapter trusts", { timeout: 120_000 }, async ({ tested, config, toolIds, permissions, prefix }, context) => {
     const { env, project, password } = await scratchEnvironment(prefix, config)
@@ -73,23 +101,7 @@ describe.skipIf(!live)("embedded OpenCode and Kilo contract", () => {
     const read = async (command: string) => (await promisify(execFile)(command, ["--version"], { env, timeout: 10_000 })).stdout
     expect(tested.tested).toContain(await requireTestedVersion(tested as TestedVersion, read))
 
-    const child = spawn(tested.command, ["serve", "--hostname=127.0.0.1", "--port=0"], { env, cwd: project, stdio: ["ignore", "pipe", "pipe"] })
-    children.push(child)
-    const url = await new Promise<string>((resolve, reject) => {
-      let output = ""
-      const timer = setTimeout(() => reject(new Error(`no listen line: ${output}`)), 60_000)
-      const take = (chunk: Buffer) => {
-        output += chunk.toString()
-        const match = /listening on\s+(https?:\/\/\S+)/u.exec(output)
-        if (match) {
-          clearTimeout(timer)
-          resolve(match[1]!)
-        }
-      }
-      child.stdout?.on("data", take)
-      child.stderr?.on("data", take)
-      child.on("exit", (code) => reject(new Error(`exited ${String(code)}: ${output}`)))
-    })
+    const url = await serve(tested.command, env, project)
     const headers = { authorization: `Basic ${Buffer.from(`contract:${password}`).toString("base64")}` }
     const get = async (path: string) => {
       const response = await fetch(`${url}${path}?directory=${encodeURIComponent(project)}`, { headers })
@@ -103,5 +115,27 @@ describe.skipIf(!live)("embedded OpenCode and Kilo contract", () => {
     const agents = await get("/agent") as Array<{ name: string; permission: Array<{ permission: string }> }>
     const named = new Set(agents.flatMap((agent) => agent.permission.map((rule) => rule.permission)).filter((permission) => !/[*?]/u.test(permission)))
     expect([...named].filter((permission) => !permissions.has(permission)).sort()).toEqual([])
+  })
+
+  // Walk finding F25: a provider signed in while the server runs is listed
+  // without restarting it. The credential is a placeholder; listing models
+  // does not use it.
+  it("OpenCode lists a provider signed in after the server started", { timeout: 120_000 }, async (context) => {
+    const { env, project, password } = await scratchEnvironment("OPENCODE", domovoiOpenCodeConfig)
+    if (!await onPath(testedOpenCode.command, env)) context.skip(`${testedOpenCode.command} is not on PATH`)
+    const url = await serve(testedOpenCode.command, env, project)
+    const client = requireOpenCodeClient(createOpencodeClient({
+      baseUrl: url,
+      headers: { authorization: `Basic ${Buffer.from(`contract:${password}`).toString("base64")}` },
+    }), "OpenCode")
+    const adapter = new OpenCodeSdkAdapter(async () => ({ client, server: { url, close: () => undefined, stop: async () => true } }))
+    const openRouter = (models: Array<{ id: string }>) => models.filter((model) => model.id.startsWith("openrouter/"))
+
+    expect(openRouter(await adapter.listModels())).toEqual([])
+    const data = join(env.XDG_DATA_HOME!, "opencode")
+    await mkdir(data, { recursive: true })
+    await writeFile(join(data, "auth.json"), JSON.stringify({ openrouter: { type: "api", key: "contract-placeholder" } }))
+    expect(openRouter(await adapter.listModels()).length).toBeGreaterThan(0)
+    await adapter.close()
   })
 })

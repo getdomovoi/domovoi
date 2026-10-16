@@ -134,6 +134,28 @@ describe("threadEntries", () => {
       { id: "untracked", kind: "message", voice: "you", body: "Address these" },
     ])
   })
+
+  // Walk finding F26: a photo sent from this phone reached the agent and
+  // the thread showed only the text. The sent message carries what it took.
+  it("names each attachment a sent message carried, and claims none it did not", () => {
+    const snapshot = workspace()
+    snapshot.thread = [{
+      id: "photo", sessionId: "session-billing", kind: "user", body: "Describe this image", createdAt: "2026-10-16T12:00:00.000Z",
+      attachments: [{ kind: "image", mimeType: "image/jpeg", width: 2048, height: 1536, bytes: 1_412_000 }],
+    }, {
+      id: "plain", sessionId: "session-billing", kind: "user", body: "And now?", createdAt: "2026-10-16T12:01:00.000Z",
+    }]
+
+    const { entries } = threadEntries(snapshot, "session-billing")
+
+    expect(entries).toEqual([
+      {
+        id: "photo", kind: "message", voice: "you", body: "Describe this image",
+        attachments: [{ kind: "image", mark: "JPG", name: "Image", meta: "1.4 MB · 2048 × 1536", label: "JPEG image, 1.4 MB, 2048 by 1536 pixels" }],
+      },
+      { id: "plain", kind: "message", voice: "you", body: "And now?" },
+    ])
+  })
 })
 
 // Ruling Q357 A: only the latest receipt in the open turn is drawn in full.

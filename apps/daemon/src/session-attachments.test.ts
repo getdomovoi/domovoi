@@ -7,7 +7,7 @@ import { WebSocket } from "ws"
 import { demoWorkspace, protocolVersion, type ImageUpload } from "@getdomovoi/protocol"
 import type { AgentAdapter, AgentEvent } from "./agents.js"
 import { DomovoiDaemon } from "./server.js"
-import { prepareSessionAttachmentText } from "./session-attachments.js"
+import { prepareSessionAttachmentText, sessionAttachmentSummaries } from "./session-attachments.js"
 import { SqliteWorkspaceStore } from "./store.js"
 
 const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aZ1cAAAAASUVORK5CYII=", "base64")
@@ -128,6 +128,19 @@ describe("desktop text and workspace attachments", () => {
     expect(await readFile(join(root, path!), "utf8")).toBe(content)
   })
 
+  it("summarizes every attachment kind by size and name, never by content", () => {
+    expect(sessionAttachmentSummaries([
+      image,
+      { kind: "text", name: "notes.txt", mimeType: "text/plain", content: "héllo" },
+    ])).toEqual([
+      { kind: "image", mimeType: "image/png", width: 1, height: 1, bytes: png.byteLength },
+      { kind: "text", name: "notes.txt", bytes: 6 },
+    ])
+    expect(sessionAttachmentSummaries([{ kind: "workspace-file", path: "src/safe.ts" }]))
+      .toEqual([{ kind: "workspace-file", path: "src/safe.ts" }])
+    expect(sessionAttachmentSummaries(undefined)).toEqual([])
+  })
+
   it("accepts worktree files and refuses symlink or traversal escapes", async () => {
     const root = await mkdtemp(join(tmpdir(), "domovoi-path-attachment-"))
     scratchDirectories.push(root)
@@ -154,6 +167,24 @@ describe("session attachments over a paired socket", () => {
     expect(JSON.stringify(f.store.load())).not.toContain(image.data)
     expect(JSON.stringify(result)).not.toContain(image.data)
     expect(JSON.stringify(f.store.load())).not.toContain("attachmentIndex")
+  })
+
+  it("records what each send carried on its user turn, without the bytes", async () => {
+    // Walk finding F26: a photo reached the agent, and the thread on every
+    // client showed only the text, because the user turn recorded nothing else.
+    const f = await fixture()
+    expect(await f.send([image, image])).not.toHaveProperty("error")
+    expect(await f.send()).not.toHaveProperty("error")
+    const turns = f.store.load().thread.filter((item) => item.sessionId === f.sessionId && item.kind === "user")
+    const summary = { kind: "image", mimeType: "image/png", width: 1, height: 1, bytes: png.byteLength }
+    expect(turns.at(-2)).toMatchObject({ body: "Read this image", attachments: [summary, summary] })
+    expect(turns.at(-1)).not.toHaveProperty("attachments")
+    const workspace = await f.rpc("workspace.get", {})
+    const sent = (workspace.result as { thread: Array<{ id: string, attachments?: unknown }> }).thread
+      .find((item) => item.id === turns.at(-2)?.id)
+    expect(sent?.attachments).toEqual([summary, summary])
+    expect(JSON.stringify(workspace)).not.toContain(image.data)
+    expect(JSON.stringify(f.store.load())).not.toContain(image.data)
   })
 
   it.each([false, "unknown"] as const)("refuses the entire image send without vision capability: %s", async (vision) => {
@@ -308,6 +339,10 @@ describe("session attachments over a paired socket", () => {
     expect(f.startTurn).toHaveBeenCalledTimes(2)
     const workspace = await f.rpc("workspace.get", {})
     expect(workspace).toMatchObject({ result: { queuedSends: [expect.objectContaining({ state: "delivered" })] } })
+    // The released send's user turn says what it carried, as a direct send does.
+    expect(f.store.load().thread.findLast((item) => item.kind === "user" && item.body === "Release this once")).toMatchObject({
+      attachments: [{ kind: "image", mimeType: "image/png", width: 1, height: 1, bytes: png.byteLength }],
+    })
     expect(JSON.stringify(workspace)).not.toContain(image.data)
     expect(JSON.stringify(f.store.load())).not.toContain(image.data)
   })

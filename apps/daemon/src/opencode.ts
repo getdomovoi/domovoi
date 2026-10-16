@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto"
-import { lstat } from "node:fs/promises"
+import { lstat, mkdtemp, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
 import { isAbsolute, join } from "node:path"
 
 import {
@@ -69,6 +70,11 @@ export type OpenCodeClient = {
   postSessionIdPermissionsPermissionId(
     options: MethodOptions<OpencodeSdkClient["postSessionIdPermissionsPermissionId"]>,
   ): Promise<OpenCodeResult<unknown>>
+  // Has the server forget what it loaded for one directory (listModels).
+  // requireOpenCodeClient refuses a client without it; test fakes may omit it.
+  instance?: {
+    dispose(options?: MethodOptions<OpencodeSdkClient["instance"]["dispose"]>): Promise<OpenCodeResult<unknown>>
+  }
   // The tool servers a directory knows, by name, and the ids of its tools
   // other than tool servers'. Read before a session opens and before each
   // prompt; without them no session opens (#refuseUnownedNames).
@@ -99,6 +105,10 @@ type OpenCodeCatalog = {
   }>
   default: Record<string, string>
 }
+
+// How long listModels waits for the server to forget the directory it read
+// the model catalogue in.
+const catalogueForgetTimeoutMs = 10_000
 
 // How long a card waits for its directory's tool servers to be read again.
 const catalogReadTimeoutMs = 1_000
@@ -684,16 +694,41 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
     signal?.throwIfAborted()
     const client = await this.#client()
     signal?.throwIfAborted()
-    const [config, catalog] = await Promise.all([
-      client.config.get({ throwOnError: true, ...(signal ? { signal } : {}) }),
-      client.config.providers({ throwOnError: true, ...(signal ? { signal } : {}) }),
+    // The server builds a directory's catalogue, with the credentials it read
+    // then, the first time that directory is asked about, and keeps it until
+    // the directory's instance is disposed. Asked about its own working
+    // directory, it answered with what it read at start for as long as it ran,
+    // so a provider signed in later never appeared (walk finding F25). Each
+    // read asks about a new empty directory no session uses, then has the
+    // server forget it and removes it.
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-model-catalogue-"))
+    const options = { query: { directory }, throwOnError: true as const, ...(signal ? { signal } : {}) }
+    // Both reads settle before the server forgets the directory, so one that
+    // fails first cannot leave the other to load it again afterwards.
+    const [config, catalog] = await Promise.allSettled([
+      Promise.resolve().then(() => client.config.get(options)),
+      Promise.resolve().then(() => client.config.providers(options)),
     ])
+    // Neither cleanup step fails the read; each failure is logged. The forget
+    // is bounded, so a server that stops answering cannot hold the read open,
+    // and one not done costs the server memory, not freshness: the next read
+    // asks about another directory. The removal retries a handle that closes
+    // late (EBUSY and EPERM on Windows).
+    const forget = { query: { directory }, throwOnError: true as const, signal: AbortSignal.timeout(catalogueForgetTimeoutMs) }
+    await Promise.resolve().then(() => client.instance?.dispose(forget)).catch((error: unknown) => {
+      console.error(`Domovoi could not have ${this.#identity.providerName} forget a model catalogue directory`, error)
+    })
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch((error: unknown) => {
+      console.error(`Domovoi could not remove a ${this.#identity.providerName} model catalogue directory`, error)
+    })
+    if (config.status === "rejected") throw config.reason
+    if (catalog.status === "rejected") throw catalog.reason
     const configured = requireConfig(
-      unwrap(config, `${this.#identity.providerName} config`),
+      unwrap(config.value, `${this.#identity.providerName} config`),
       `${this.#identity.providerName} config`,
     )
     const providerCatalog = requireCatalog(
-      unwrap(catalog, `${this.#identity.providerName} provider catalog`),
+      unwrap(catalog.value, `${this.#identity.providerName} provider catalog`),
       `${this.#identity.providerName} provider catalog`,
     )
     const models = providerCatalog.providers
@@ -2930,11 +2965,14 @@ function isOpenCodeClient(value: unknown): value is OpenCodeClient {
   const config = asRecord(client?.config)
   const session = asRecord(client?.session)
   const event = asRecord(client?.event)
+  const instance = asRecord(client?.instance)
   return Boolean(
     client
     && config
     && typeof config.get === "function"
     && typeof config.providers === "function"
+    && instance
+    && typeof instance.dispose === "function"
     && session
     && typeof session.create === "function"
     && typeof session.get === "function"

@@ -14,6 +14,7 @@ import { Composer } from "../components/composer"
 import { ConnectionBanner } from "../components/connection-banner"
 import { JumpPill } from "../components/jump-pill"
 import { PageScroller, type PageScrollerHandle } from "../components/page-scroller"
+import { SentAttachments } from "../components/sent-attachments"
 import { Badge } from "../components/ui/badge"
 import { Button } from "../components/ui/button"
 import { Card, PressableCard } from "../components/ui/card"
@@ -208,11 +209,12 @@ const Entry = memo(function Entry({ entry, onWatch, open, folds, onToggle }: {
         <Text className="font-sans text-[13.5px] leading-[21px] text-primary-foreground">{entry.body}</Text>
       </View>
     )
-    if (!entry.omission) return bubble
+    if (!entry.omission && !entry.attachments) return bubble
     return (
       <View className="gap-1">
         {bubble}
-        <Text variant="machine" className="max-w-[86%] self-end text-right text-faint">{entry.omission}</Text>
+        <SentAttachments attachments={entry.attachments} className="max-w-[86%]" />
+        {entry.omission ? <Text variant="machine" className="max-w-[86%] self-end text-right text-faint">{entry.omission}</Text> : null}
       </View>
     )
   }

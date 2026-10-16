@@ -1,6 +1,7 @@
 import { expect, it } from "vitest"
 
-import { nativeServiceOptIn, nativeServiceTestsEnabled, nativeServiceTestsRun } from "../test-native-service-gate.js"
+import { allowRealServiceManager, nativeServiceOptIn, nativeServiceTestsEnabled, nativeServiceTestsRun } from "../test-native-service-gate.js"
+import { serviceManagerRefusalVariable } from "./manager-guard.js"
 
 // The native service tests load real launchd, systemd and Windows scheduler
 // jobs into the account that runs them. These cases check only the predicate
@@ -54,4 +55,15 @@ it("asks the service manager nothing when the native tests are skipped", () => {
   expect(() => nativeServiceTestsRun("launchd", () => { throw new Error("gui domain required") }, { CI: "true" }, quiet))
     .toThrow("gui domain required")
   expect(probes).toBe(3)
+})
+
+it("lets a file use the real service manager only when its native gate runs", () => {
+  const armed = process.env[serviceManagerRefusalVariable]
+  expect(armed).toBeTruthy()
+  try {
+    expect(allowRealServiceManager(false)).toBe(false)
+    expect(process.env[serviceManagerRefusalVariable]).toBe(armed)
+    expect(allowRealServiceManager(true)).toBe(true)
+    expect(process.env[serviceManagerRefusalVariable]).toBeUndefined()
+  } finally { process.env[serviceManagerRefusalVariable] = armed }
 })

@@ -6,7 +6,7 @@ import { join } from "node:path"
 import { expect, it } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
-import { nativeServiceTestsEnabled } from "../test-native-service-gate.js"
+import { allowRealServiceManager, nativeServiceTestsEnabled } from "../test-native-service-gate.js"
 import { removeScratchDirectory } from "../test-scratch.js"
 import { createServiceConfiguration } from "./configuration.js"
 import { stagedRuntimeCopy } from "./desktop-service.js"
@@ -23,7 +23,7 @@ import { encodedValue, readWindowsTaskAction, removeWindowsTask, windowsPowerShe
 // An interrupted run leaves those tasks registered in the account that ran it,
 // so they run on CI and, on a developer machine, only with
 // DOMOVOI_NATIVE_SERVICE_TESTS=1.
-const windowsNative = process.platform === "win32" && nativeServiceTestsEnabled("Windows")
+const windowsNative = allowRealServiceManager(process.platform === "win32" && nativeServiceTestsEnabled("Windows"))
 
 const effects = nodeServiceEffects()
 const decode = (command: ServiceCommand) => Buffer.from(command.args.at(-1)!, "base64").toString("utf16le")
