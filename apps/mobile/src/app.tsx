@@ -145,6 +145,11 @@ export function App() {
   // Frames 13 and 14: what the next turn carries besides words. Held here
   // and sent with the turn; nothing is kept once the send is answered.
   const [attachments, setAttachments] = useState<Attachment[]>([])
+  // The queue as it is now, for pickImage: the attach sheet holds the pick it
+  // was given until its slide-out ends, by which time images picked earlier
+  // may have landed, so the render's attachments can be stale.
+  const queued = useRef<readonly Attachment[]>(attachments)
+  queued.current = attachments
   const [attachProblem, setAttachProblem] = useState("")
   // A large image is still being resized after the picker closes, while the
   // composer takes taps again. It belongs to the turn and the session it was
@@ -182,7 +187,7 @@ export function App() {
     setAttachProblem("")
     // Picks still being resized hold a place, so a third is refused before
     // it is resized, in the order the images were chosen.
-    if (attachments.length + picking.current >= maximumSessionAttachments) {
+    if (queued.current.length + picking.current >= maximumSessionAttachments) {
       setAttachProblem(`Two images per turn. Remove one to add another.`)
       return
     }

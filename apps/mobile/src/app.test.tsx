@@ -584,6 +584,25 @@ describe("App", () => {
       }
     })
 
+    // Read 7: the sheet holds the pick it was given until its slide-out ends;
+    // two images that land meanwhile still fill the turn, so the third pick
+    // is refused before it is resized rather than dropped after.
+    it("refuses a third pick chosen before two others landed", async () => {
+      await openAudit()
+      await pick()
+      await pick()
+      await fireEvent.press(screen.getByRole("button", { name: "Attach an image" }))
+      const { onDismiss } = screen.getByTestId("attach-sheet").props as { onDismiss: () => void }
+      await fireEvent.press(screen.getByRole("button", { name: /Photo or screenshot/ }))
+      await finish(0)
+      await finish(1)
+      await act(async () => onDismiss())
+      await settle()
+      expect(mockEncodes).toHaveLength(2)
+      expect(screen.getAllByText("IMG_4120.jpg")).toHaveLength(2)
+      expect(screen.getByText("Two images per turn. Remove one to add another.")).toBeOnTheScreen()
+    })
+
     // Picks still in flight count toward the two-image cap, so a third is
     // refused before it is resized, in the order they were chosen (#871 review).
     it("counts picks in flight toward the two-image cap", async () => {
