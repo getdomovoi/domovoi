@@ -1,4 +1,5 @@
-import { Modal, Pressable, View } from "react-native"
+import { useRef } from "react"
+import { Modal, Platform, Pressable, View } from "react-native"
 
 import { modelImageInputRefusalCode } from "@getdomovoi/protocol"
 
@@ -76,8 +77,28 @@ export function AttachSheet({ open, machine, problem, images, onPickLibrary, onT
   // Only a model reported to take no images locks the sources. Not knowing
   // leaves them open; the daemon still refuses a send the model cannot take.
   const locked = images?.imageInput === false
+  // Walk F23: on iOS this sheet is a presented view controller, and iOS will
+  // not present the photo library or the camera over one that is still on
+  // screen or sliding out. Asked to, it presents nothing and the picker's
+  // promise says nothing. So a choice closes the sheet and waits for iOS to
+  // report it gone (onDismiss, iOS only) before opening the picker. Android
+  // opens its picker as a separate activity and has no such callback.
+  const chosen = useRef<(() => void) | undefined>(undefined)
+  const choose = (pick: () => void) => () => {
+    onClose()
+    if (Platform.OS !== "ios") {
+      pick()
+      return
+    }
+    chosen.current = pick
+  }
+  const dismissed = () => {
+    const pick = chosen.current
+    chosen.current = undefined
+    pick?.()
+  }
   return (
-    <Modal visible={open} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal testID="attach-sheet" visible={open} transparent animationType="slide" onRequestClose={onClose} onDismiss={dismissed}>
       <Pressable className="flex-1 bg-desk/80" accessibilityLabel="Close" onPress={onClose} />
       <View className="gap-3 rounded-t-2xl border-t border-border bg-background p-4 pb-8">
         <View className="flex-row items-center gap-2">
@@ -96,8 +117,8 @@ export function AttachSheet({ open, machine, problem, images, onPickLibrary, onT
             <LockedSource icon="image" label="Photo or screenshot" machine={machine} />
             <LockedSource icon="camera" label="Take a photo" machine={machine} />
           </> : <>
-            <Source icon="image" label="Photo or screenshot" note={`up to 1.5 MB and 2048 px, uploaded to ${machine} and not stored here`} onPress={onPickLibrary} />
-            <Source icon="camera" label="Take a photo" note="one shot, sent with the turn, same bound" onPress={onTakePhoto} />
+            <Source icon="image" label="Photo or screenshot" note={`up to 1.5 MB and 2048 px, uploaded to ${machine} and not stored here`} onPress={choose(onPickLibrary)} />
+            <Source icon="camera" label="Take a photo" note="one shot, sent with the turn, same bound" onPress={choose(onTakePhoto)} />
           </>}
           {waiting.map((source) => <Source key={source.label} {...source} />)}
         </View>

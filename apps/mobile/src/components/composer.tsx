@@ -1,7 +1,7 @@
 import { useState } from "react"
 import { Pressable, TextInput, View } from "react-native"
 
-import type { Attachment, ModelImages } from "../attachments"
+import { resizedNote, type Attachment, type ModelImages } from "../attachments"
 import { cn } from "../lib/cn"
 import type { SendReadiness } from "../session-detail"
 import { useTheme } from "../theme/theme-provider"
@@ -104,7 +104,10 @@ export function Composer({
           {attachments.map((attachment, index) => (
             <View key={`${index}-${attachment.name}`} className="flex-row items-center gap-2 rounded-lg border border-border bg-code px-2.5 py-1.5">
               <Icon name="image" tone="primary" size={14} />
-              <Text variant="machine" className="flex-1 text-strong" numberOfLines={1}>{attachment.name}</Text>
+              <View className="flex-1">
+                <Text variant="machine" className="text-strong" numberOfLines={1}>{attachment.name}</Text>
+                {resizedNote(attachment) ? <Text variant="machine" className="text-faint" numberOfLines={1}>{resizedNote(attachment)}</Text> : null}
+              </View>
               <Text variant="machine" className="text-faint">{`${(attachment.bytes / 1_000_000).toFixed(1)} MB`}</Text>
               <Pressable
                 accessibilityRole="button"

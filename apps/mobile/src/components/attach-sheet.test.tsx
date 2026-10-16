@@ -1,5 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals"
-import { fireEvent, render, screen } from "@testing-library/react-native"
+import { act, fireEvent, render, screen } from "@testing-library/react-native"
+import { Platform } from "react-native"
 
 import { AttachSheet } from "./attach-sheet"
 
@@ -15,6 +16,14 @@ async function draw(overrides: Partial<Parameters<typeof AttachSheet>[0]> = {}) 
   }
   await render(<AttachSheet {...props} />)
   return props
+}
+
+// What iOS reports once the sheet's slide-out has finished.
+async function dismissed() {
+  const sheet = screen.getByTestId("attach-sheet")
+  await act(async () => {
+    (sheet.props as { onDismiss: () => void }).onDismiss()
+  })
 }
 
 describe("AttachSheet", () => {
@@ -35,9 +44,44 @@ describe("AttachSheet", () => {
     expect(screen.queryByRole("button", { name: /File from the worktree/ })).toBeNull()
 
     await fireEvent.press(screen.getByRole("button", { name: /Photo or screenshot/ }))
+    await dismissed()
     await fireEvent.press(screen.getByRole("button", { name: /Take a photo/ }))
+    await dismissed()
     expect(props.onPickLibrary).toHaveBeenCalledTimes(1)
     expect(props.onTakePhoto).toHaveBeenCalledTimes(1)
+  })
+
+  // Walk F23: iOS will not present the photo library while this sheet is
+  // still on screen, and said nothing when asked to. The sheet closes first
+  // and the picker opens once iOS reports the sheet gone.
+  it("opens a picker only after the sheet has gone", async () => {
+    const props = await draw()
+
+    await fireEvent.press(screen.getByRole("button", { name: /Photo or screenshot/ }))
+    expect(props.onClose).toHaveBeenCalledTimes(1)
+    expect(props.onPickLibrary).not.toHaveBeenCalled()
+    await dismissed()
+    expect(props.onPickLibrary).toHaveBeenCalledTimes(1)
+    // A dismissal with nothing chosen opens nothing.
+    await dismissed()
+    expect(props.onPickLibrary).toHaveBeenCalledTimes(1)
+
+    // A second attempt works the same way, and the later choice is the one taken.
+    await fireEvent.press(screen.getByRole("button", { name: /Photo or screenshot/ }))
+    await fireEvent.press(screen.getByRole("button", { name: /Take a photo/ }))
+    await dismissed()
+    expect(props.onPickLibrary).toHaveBeenCalledTimes(1)
+    expect(props.onTakePhoto).toHaveBeenCalledTimes(1)
+  })
+
+  // Android has no such conflict and no dismissal callback, so it opens at once.
+  it("opens a picker at once where the platform reports no dismissal", async () => {
+    jest.replaceProperty(Platform, "OS", "android")
+    const props = await draw()
+    await fireEvent.press(screen.getByRole("button", { name: /Take a photo/ }))
+    expect(props.onClose).toHaveBeenCalledTimes(1)
+    expect(props.onTakePhoto).toHaveBeenCalledTimes(1)
+    jest.restoreAllMocks()
   })
 
   // Frame 13: the model line says what the session's model takes, as its
@@ -49,6 +93,7 @@ describe("AttachSheet", () => {
     expect(screen.getByText("takes image input, as its harness reports")).toBeOnTheScreen()
     expect(screen.queryByText("Locked for this model.")).toBeNull()
     await fireEvent.press(screen.getByRole("button", { name: /Take a photo/ }))
+    await dismissed()
     expect(props.onTakePhoto).toHaveBeenCalledTimes(1)
   })
 

@@ -194,6 +194,25 @@ describe("SessionScreen images and the model", () => {
     expect(screen.getByText("takes no image input, as its harness reports")).toBeOnTheScreen()
     expect(screen.getAllByText("Locked for this model.")).toHaveLength(2)
   })
+
+  // Walk F23: the sheet closes before the picker opens, so a refusal that
+  // arrives after the pick is stated on the composer, not only inside a
+  // sheet that is no longer on screen.
+  it("states an image refusal on the composer while the sheet is closed", async () => {
+    const line = "IMG_4121.jpg is still 1.6 MB at 2048 x 1536 after resizing on this phone. Up to 1.5 MB and 2048 px on a side."
+    await draw({ attachProblem: line })
+    expect(screen.getByText(line)).toBeOnTheScreen()
+  })
+
+  // Q121 A: the chip says the phone drew the image smaller, and from what.
+  it("says on the chip that an image was resized, and from what size", async () => {
+    await draw({
+      attachments: [{ ...photo, name: "IMG_4120.jpg", mimeType: "image/jpeg", width: 2048, height: 1536, bytes: 900_000, resizedFrom: { width: 4032, height: 3024 } }],
+      attachmentSummary: "x",
+    })
+    expect(screen.getByText("IMG_4120.jpg")).toBeOnTheScreen()
+    expect(screen.getByText("resized from 4032 x 3024")).toBeOnTheScreen()
+  })
 })
 
 describe("SessionScreen messages", () => {
