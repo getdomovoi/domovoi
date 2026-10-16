@@ -5,6 +5,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PassThrough } from "node:stream"
 
+import { parse as parseToml } from "smol-toml"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import type { Runtime } from "@getdomovoi/protocol"
@@ -20,6 +21,7 @@ import {
   codexAppServerArguments,
   codexDeveloperInstructions,
   codexPolicyFor,
+  codexRequestRefusal,
   codexSandboxNotice,
   codexSecretLocations,
   codexWorktreeSecretNotice,
@@ -28,6 +30,7 @@ import {
   type JsonRpcMessage,
 } from "./codex.js"
 import { ApprovalRequestNotPendingError, type AgentEvent } from "./agents.js"
+import { namesSecretPath } from "./permission-policy.js"
 import { classifyProviderFailure } from "./provider-failures.js"
 
 class FakeChild extends EventEmitter {
@@ -122,7 +125,9 @@ describe("codexPolicyFor", () => {
     [runtime("build", true), "never", "domovoi-build"],
   ] as const)("maps Domovoi runtime to Codex enforcement", (input, approvalPolicy, permissions) => {
     const policy = codexPolicyFor(input)
-    expect(policy).toEqual({ approvalPolicy, permissions })
+    // Every approval goes to the person, whatever approvals_reviewer the
+    // person's own Codex configuration sets (walk finding F15).
+    expect(policy).toEqual({ approvalPolicy, permissions, approvalsReviewer: "user" })
   })
 })
 
@@ -156,14 +161,97 @@ describe("codexAppServerArguments", () => {
   })
 
   it.each([
-    "~/.ssh", "~/.aws", "~/.domovoi", "~/.config/gh", "~/.kube", "~/.docker", "~/.netrc", "~/.gnupg",
+    "~/.ssh", "~/.aws", "~/.config/gh", "~/.kube", "~/.docker", "~/.netrc", "~/.gnupg",
   ])("denies reads of %s in both profiles", (location) => {
     for (const profile of ["domovoi-read", "domovoi-build"]) {
       expect(settings.get(`permissions.${profile}.filesystem`)).toContain(`${JSON.stringify(location)}="deny"`)
     }
     expect(codexSecretLocations).toContain(location)
   })
+
+  // Walk finding F15: session worktrees live in ~/.domovoi/worktrees. Codex
+  // 0.162.1 keeps every deny entry when it runs an approved command outside
+  // its sandbox, and a deny on ~/.domovoi outranked the worktree, so Ask could
+  // not read the worktree and an approved write failed with "Operation not
+  // permitted". The store is refused name by name, everything but worktrees.
+  // Codex reads each -c value as TOML and takes one that does not parse, a
+  // repeated key included, as a plain string, which fails the profile.
+  it("writes each profile's filesystem table as TOML that parses", () => {
+    for (const profile of ["domovoi-read", "domovoi-build"]) {
+      expect(() => parseToml(`filesystem = ${settings.get(`permissions.${profile}.filesystem`)!}`)).not.toThrow()
+    }
+  })
+
+  it("refuses everything in ~/.domovoi except the session worktrees in both profiles", () => {
+    expect(codexSecretLocations).toContain("~/.domovoi")
+    for (const profile of ["domovoi-read", "domovoi-build"]) {
+      const filesystem = settings.get(`permissions.${profile}.filesystem`)!
+      expect(filesystem).not.toContain('"~/.domovoi"="deny"')
+      const denied = [...filesystem.matchAll(/"(~\/\.domovoi\/[^"]*)"="deny"/gu)].map((match) => match[1]!)
+      const refused = (path: string) => denied.some((pattern) => globMatches(pattern, path))
+      for (const path of [
+        "~/.domovoi/daemon.token", "~/.domovoi/local-owner.key", "~/.domovoi/state.sqlite-wal", "~/.domovoi/tls/server.key",
+        "~/.domovoi/logs/daemon.log", "~/.domovoi/.hidden", "~/.domovoi/w", "~/.domovoi/worktree", "~/.domovoi/worktreesX",
+        "~/.domovoi/worktreesX/file", "~/.domovoi/Worktrees/session-1/a.ts", "~/.domovoi/wx/file", "~/.domovoi/future-secret.json",
+        "~/.domovoi/worktrees/session-1/.env", "~/.domovoi/worktrees/session-1/config/id_rsa", "~/.domovoi/worktrees/other/key.pem",
+        // Round 2 review: the whole-store deny also hid credential stores a
+        // worktree holds at any depth, as a home directory would.
+        "~/.domovoi/worktrees/other/.aws/credentials", "~/.domovoi/worktrees/session-1/.ssh/id_ed25519",
+        "~/.domovoi/worktrees/session-1/fixtures/.codex/auth.json", "~/.domovoi/worktrees/session-1/.config/gh/hosts.yml",
+        "~/.domovoi/worktrees/session-1/.docker/config.json", "~/.domovoi/worktrees/session-1/.claude/.credentials.json",
+        "~/.domovoi/worktrees/session-1/.kube/config", "~/.domovoi/worktrees/session-1/.git-credentials",
+      ]) expect(refused(path), path).toBe(true)
+      // Round 3 review, ruling Q119: every secret file name the card
+      // classifier knows is refused in any session worktree, at any depth.
+      for (const name of worktreeSecretCopies) {
+        const path = `~/.domovoi/worktrees/session-1/${name}`
+        expect(namesSecretPath(name), name).toBe(true)
+        expect(refused(path), path).toBe(true)
+      }
+      for (const path of [
+        "~/.domovoi/worktrees", "~/.domovoi/worktrees/session-1", "~/.domovoi/worktrees/session-1/src/index.ts",
+        "~/.domovoi/worktrees/session-1/walk-gate.txt", "~/.domovoi/worktrees/session-1/src/environment.ts",
+        "~/.domovoi/worktrees/session-1/docs/credentials.md", "~/.domovoi/worktrees/session-1/keys/README.md",
+        // A project's own .docker and .domovoi directories are ordinary files.
+        "~/.domovoi/worktrees/session-1/.docker/Dockerfile", "~/.domovoi/worktrees/session-1/.domovoi/endpoint.json",
+      ]) expect(refused(path), path).toBe(false)
+    }
+  })
 })
+
+// One copy per rule of the classifier's secret file names (namesSecretPath),
+// as a worktree might hold them, at the top and nested.
+const worktreeSecretCopies: readonly string[] = [
+  ".domovoi/daemon.token", "daemon.token", "config/credentials.json", "credentials.json", "config/gh/hosts.yml",
+  "server.pem", "tls/server.key", "certs/client.p12", "client.pfx",
+  "id_rsa", "id_rsa.pub", "config/id_ed25519", "id_ed25519_work", "id_ecdsa", "id_dsa",
+  ".env", ".env.local", "app/.envrc", "secrets.env", "prod.env.local", "app.envrc",
+  ".netrc", ".npmrc", ".pypirc", ".aws/credentials", ".kube/config", ".docker/config.json", ".ssh/id_ed25519",
+]
+
+// The glob forms the profile uses, as codex-cli 0.162.1 applied them in
+// `codex sandbox` (measured 2026-10-15): * and ? stay within one name and
+// match a leading dot, [!c] is any one character but c, and ** is any depth.
+function globMatches(pattern: string, path: string): boolean {
+  let source = ""
+  for (let index = 0; index < pattern.length; index += 1) {
+    const character = pattern[index]!
+    if (pattern.startsWith("**/", index)) {
+      source += "(?:[^/]*/)*"
+      index += 2
+    } else if (pattern.startsWith("**", index)) {
+      source += ".*"
+      index += 1
+    } else if (character === "*") source += "[^/]*"
+    else if (character === "?") source += "[^/]"
+    else if (pattern.startsWith("[!", index)) {
+      const end = pattern.indexOf("]", index)
+      source += `[^/${pattern.slice(index + 2, end)}]`
+      index = end
+    } else source += character.replace(/[.+^${}()|[\]\\]/gu, String.raw`\$&`)
+  }
+  return new RegExp(`^${source}$`, "u").test(path)
+}
 
 describe("codexSandboxNotice", () => {
   it("names committed files Codex can still read through Git", () => {
@@ -392,6 +480,23 @@ describe("StdioCodexTransport", () => {
     await transport.close()
 
     expect(error).not.toHaveBeenCalled()
+  })
+
+  // A JSON-RPC id may be a string (RequestId in the 0.162.1 schema). Dropped,
+  // a request with one would wait unanswered and unseen.
+  it("keeps a string request id from the app-server", async () => {
+    const child = new FakeChild()
+    const transport = new StdioCodexTransport(
+      () => child as unknown as ChildProcessWithoutNullStreams,
+    )
+    const message = vi.fn()
+    transport.onMessage(message)
+
+    child.stdout.write(`${JSON.stringify({ id: "approval-85", method: "item/fileChange/requestApproval", params: { threadId: "thread-1" } })}\n`)
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    expect(message).toHaveBeenCalledWith({ id: "approval-85", method: "item/fileChange/requestApproval", params: { threadId: "thread-1" } })
+    await transport.close()
   })
 
   it("narrows app-server lines to JSON-RPC messages and rejects non-object lines", async () => {
@@ -1311,6 +1416,290 @@ describe("CodexAppServerAdapter", () => {
     }
   })
 
+  // Walk finding F15. The person's ~/.codex/config.toml set approvals_reviewer
+  // to auto_review, and Codex 0.162.1 sent the request to run outside the
+  // sandbox to its own reviewer: Domovoi never saw it. Domovoi now names the
+  // person as the reviewer on every thread and turn, and refuses a thread
+  // Codex says still goes to another reviewer.
+  it("routes every approval to the person, never to Codex's own reviewer", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("ask", false) })
+    transport.receive({ id: 2, result: { config: {}, origins: {} } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
+    expect(transport.sent[3]).toMatchObject({
+      method: "thread/start",
+      params: { approvalPolicy: "on-request", approvalsReviewer: "user", sandbox: "read-only" },
+    })
+    transport.receive({ id: 3, result: { thread: { id: "thread-1" }, approvalsReviewer: "user" } })
+    await expect(starting).resolves.toBe("thread-1")
+
+    const resuming = adapter.resumeThread({ threadId: "thread-1", cwd: "/worktree", runtime: runtime("ask", false) })
+    await vi.waitFor(() => expect(transport.sent[4]).toBeDefined(), { timeout: 5_000 })
+    expect(transport.sent[4]).toMatchObject({ method: "thread/resume", params: { threadId: "thread-1", approvalsReviewer: "user" } })
+    transport.receive({ id: 4, result: { thread: { id: "thread-1" }, approvalsReviewer: "user" } })
+    await expect(resuming).resolves.toBeUndefined()
+
+    const turning = adapter.startTurn({ threadId: "thread-1", cwd: "/worktree", prompt: "run touch walk-gate.txt", runtime: runtime("ask", false) })
+    await vi.waitFor(() => expect(transport.sent[5]).toBeDefined(), { timeout: 5_000 })
+    expect(transport.sent[5]).toMatchObject({
+      method: "turn/start",
+      params: { approvalPolicy: "on-request", approvalsReviewer: "user", permissions: "domovoi-read" },
+    })
+    transport.receive({ id: 5, result: { turn: { id: "turn-1" } } })
+    await expect(turning).resolves.toBe("turn-1")
+    await adapter.close()
+  })
+
+  it.each(["auto_review", "guardian_subagent"])("refuses a thread whose approvals Codex says go to %s", async (reviewer) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    const starting = adapter.startThread({ cwd: "/worktree", runtime: runtime("ask", false) })
+    transport.receive({ id: 2, result: { config: {}, origins: {} } })
+    await vi.waitFor(() => expect(transport.sent[3]).toBeDefined(), { timeout: 5_000 })
+    transport.receive({ id: 3, result: { thread: { id: "thread-1" }, approvalsReviewer: reviewer } })
+    await expect(starting).rejects.toThrow(`Codex would send this thread's approvals to its own reviewer (${reviewer})`)
+
+    const resuming = adapter.resumeThread({ threadId: "thread-2", cwd: "/worktree", runtime: runtime("ask", false) })
+    await vi.waitFor(() => expect(transport.sent[4]).toBeDefined(), { timeout: 5_000 })
+    transport.receive({ id: 4, result: { thread: { id: "thread-2" }, approvalsReviewer: reviewer } })
+    await expect(resuming).rejects.toThrow(`Codex would send this thread's approvals to its own reviewer (${reviewer})`)
+    await adapter.close()
+  })
+
+  // The request codex-cli 0.162.1 sent for "run touch walk-gate.txt" in Ask,
+  // captured from its app-server on 2026-10-15 with the scratch path replaced.
+  const escalation01621 = {
+    method: "item/commandExecution/requestApproval",
+    params: {
+      kind: "command",
+      threadId: "01a141dd-830e-7d92-8a20-d38ba3713a3b",
+      turnId: "01a141dd-8323-7642-95c8-33f2d5359cd9",
+      itemId: "exec-fcdecd52-c755-45af-aa18-fd4bb55955c4",
+      startedAtMs: 1792106403744,
+      environmentId: "local",
+      reason: "Allow creating walk-gate.txt in the current directory? The active sandbox permits only reads.",
+      command: "/bin/zsh -lc 'touch walk-gate.txt'",
+      cwd: "/worktree",
+      commandActions: [{ type: "unknown", command: "touch walk-gate.txt" }],
+      proposedExecpolicyAmendment: ["touch", "walk-gate.txt"],
+      availableDecisions: ["accept", { acceptWithExecpolicyAmendment: { execpolicy_amendment: ["touch", "walk-gate.txt"] } }, "cancel"],
+    },
+  } as const
+
+  it("raises a gate for the Codex 0.162.1 request to run outside the sandbox and answers it once", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    // Codex numbers its own requests from 0.
+    transport.receive({ id: 0, ...escalation01621 })
+    expect(events).toEqual([{
+      type: "approval-requested",
+      requestId: 0,
+      threadId: escalation01621.params.threadId,
+      turnId: escalation01621.params.turnId,
+      itemId: escalation01621.params.itemId,
+      command: "/bin/zsh -lc 'touch walk-gate.txt'",
+      cwd: "/worktree",
+      cwdSource: "request",
+      reason: escalation01621.params.reason,
+    }])
+    // Allow once runs it once: never the execpolicy amendment Codex offers.
+    adapter.resolveApproval(0, "allow-once")
+    expect(transport.sent.at(-1)).toEqual({ id: 0, result: { decision: "accept" } })
+
+    transport.receive({ id: 1, ...escalation01621 })
+    adapter.resolveApproval(1, "deny")
+    // Codex 0.162.1 accepts decline though it lists only accept and cancel,
+    // and tells the model the request was rejected (measured 2026-10-15).
+    expect(transport.sent.at(-1)).toEqual({ id: 1, result: { decision: "decline" } })
+    await adapter.close()
+  })
+
+  // A backstop for a Codex that ignores the reviewer Domovoi names: its own
+  // reviewer took about two seconds to approve in the walk, so Domovoi stops
+  // the app-server the moment a review starts.
+  it.each([
+    "item/autoApprovalReview/started",
+    "item/autoApprovalReview/completed",
+  ])("stops Codex when %s reports its own reviewer deciding an approval", async (method) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({
+      method,
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        reviewId: "review-1",
+        targetItemId: "exec-1",
+        review: { status: "inProgress" },
+        action: { type: "command", command: "/bin/zsh -lc 'touch walk-gate.txt'", cwd: "/worktree" },
+      },
+    })
+    expect(events).toEqual([{
+      type: "provider-disconnected",
+      reason: "Codex asked its own reviewer to decide an approval instead of asking you through Domovoi, so Domovoi stopped Codex. The reviewer may have answered before Codex stopped: check the session's changes.",
+    }])
+    expect(transport.closeCount).toBe(1)
+    await expect(adapter.listModels()).rejects.toThrow("Codex adapter is not connected")
+  })
+
+  // Domovoi shows command approvals and tool server calls as cards. Any other
+  // request Codex waits on is refused at once, Codex is told, and the session
+  // shows a refusal, so nothing waits on an answer that never comes and
+  // nothing is declined unseen.
+  it.each([
+    ["item/fileChange/requestApproval", { itemId: "patch-1", reason: "Write outside the worktree", grantRoot: "/outside" }, { result: { decision: "decline" } }, "item/fileChange/requestApproval", "Write outside the worktree"],
+    ["item/permissions/requestApproval", { itemId: "perm-1", cwd: "/worktree", permissions: { network: { enabled: true } } }, { result: { permissions: {} } }, "item/permissions/requestApproval", "Codex sent item/permissions/requestApproval"],
+    ["item/tool/requestUserInput", { itemId: "ask-1", isBlocking: true, questions: [] }, { error: { code: -32601, message: "Domovoi does not handle item/tool/requestUserInput" } }, "item/tool/requestUserInput", "Codex sent item/tool/requestUserInput"],
+    ["item/somethingNew/requestApproval", { itemId: "new-1", command: "rm -rf build", reason: "Clean the build" }, { error: { code: -32601, message: "Domovoi does not handle item/somethingNew/requestApproval" } }, "rm -rf build", "Clean the build"],
+    // A device-authenticated approval in the 0.162.1 schema: an MCP server's
+    // own request, declined and shown (ruling Q156 A).
+    ["mcpServer/elicitation/request", { itemId: "verify-1", serverName: "bank", mode: "openai/userVerification", title: "Verify", description: "Confirm the transfer", challenge: "c-1" }, { result: { action: "decline", content: null } }, "bank", "Message sent with the request, not checked by Domovoi: Confirm the transfer"],
+  ] as const)("refuses %s visibly and tells Codex", async (method, params, answer, command, operation) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({ id: 7, method, params: { threadId: "thread-1", turnId: "turn-1", startedAtMs: 1, ...params } })
+    expect(transport.sent.at(-1)).toEqual({ id: 7, ...answer })
+    expect(events).toEqual([{
+      type: "policy-refused",
+      threadId: "thread-1",
+      turnId: "turn-1",
+      itemId: params.itemId,
+      command,
+      reason: operation,
+      refusal: codexRequestRefusal,
+    }])
+    expect(() => adapter.resolveApproval(7, "allow-once")).toThrow(ApprovalRequestNotPendingError)
+    await adapter.close()
+  })
+
+  it.each([
+    ["execCommandApproval", { conversationId: "thread-1", callId: "call-1", command: ["touch", "walk-gate.txt"], cwd: "/worktree", parsedCmd: [] }, "touch walk-gate.txt"],
+    ["applyPatchApproval", { conversationId: "thread-1", callId: "call-1", fileChanges: {}, reason: "Edit the readme" }, "applyPatchApproval"],
+  ] as const)("refuses the older %s request visibly and tells Codex", async (method, params, command) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({ id: 8, method, params })
+    // denied is a string in older Codex and an object with a rejection in
+    // 0.162.1; abort reads the same in both.
+    expect(transport.sent.at(-1)).toEqual({ id: 8, result: { decision: "abort" } })
+    expect(events).toEqual([expect.objectContaining({ type: "policy-refused", threadId: "thread-1", itemId: "call-1", command, refusal: codexRequestRefusal })])
+    await adapter.close()
+  })
+
+  // Domovoi's approval ids are numbers, so a request with a string id never
+  // becomes a card: it is refused, shown, and answered under its own id.
+  it.each([
+    "item/commandExecution/requestApproval",
+    "item/fileChange/requestApproval",
+  ] as const)("refuses %s with a string id visibly and answers it under that id", async (method) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({ id: "approval-85", method, params: { threadId: "thread-1", turnId: "turn-1", itemId: "exec-1", command: "touch walk-gate.txt" } })
+    expect(transport.sent.at(-1)).toEqual({ id: "approval-85", result: { decision: "decline" } })
+    expect(events).toEqual([expect.objectContaining({ type: "policy-refused", threadId: "thread-1", command: "touch walk-gate.txt", refusal: codexRequestRefusal })])
+    expect(events.some((event) => event.type === "approval-requested")).toBe(false)
+    await adapter.close()
+  })
+
+  it("stops Codex when a request it cannot show names no session", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({ id: 10, method: "item/somethingNew/requestApproval", params: { command: "rm -rf build" } })
+    expect(transport.sent.at(-1)).toEqual({ id: 10, error: { code: -32601, message: "Domovoi does not handle item/somethingNew/requestApproval" } })
+    expect(events).toEqual([{
+      type: "provider-disconnected",
+      reason: "Codex sent a request Domovoi cannot show and could not tie to a session (item/somethingNew/requestApproval). Domovoi refused it and stopped Codex.",
+    }])
+    expect(transport.closeCount).toBe(1)
+  })
+
+  it("bounds what a refusal quotes from the request", async () => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({
+      id: 11,
+      method: "item/fileChange/requestApproval",
+      params: { threadId: "thread-1", turnId: "turn-1", itemId: "patch-1", reason: "a".repeat(20_000), command: "b".repeat(40_000) },
+    })
+    const refusal = events.find((event) => event.type === "policy-refused")
+    expect(refusal?.type === "policy-refused" && refusal.reason.length).toBeLessThanOrEqual(1_024)
+    expect(refusal?.type === "policy-refused" && refusal.command.length).toBeLessThanOrEqual(4_096)
+    await adapter.close()
+  })
+
+  // Requests that ask nothing of the person, only the client for a service
+  // Domovoi does not offer, get an error and no refusal.
+  it.each([
+    ["attestation/generate", {}],
+    ["currentTime/read", { threadId: "thread-1" }],
+    ["item/tool/call", { threadId: "thread-1", turnId: "turn-1", callId: "call-1", tool: "lookup", arguments: {} }],
+    ["account/chatgptAuthTokens/refresh", { reason: "unauthorized" }],
+  ] as const)("answers %s with an error and no refusal", async (method, params) => {
+    const transport = new FakeTransport()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+
+    transport.receive({ id: 9, method, params })
+    expect(transport.sent.at(-1)).toEqual({ id: 9, error: { code: -32601, message: `Domovoi does not handle ${method}` } })
+    expect(events).toEqual([])
+    await adapter.close()
+  })
+
   // Codex 0.157 asks before a tool server's tool runs with an MCP elicitation
   // marked codex_approval_kind mcp_tool_call, after the call's mcpToolCall item
   // has started. The card names the server; an answer never asks Codex to
@@ -1381,12 +1770,18 @@ describe("CodexAppServerAdapter", () => {
     adapter.resolveApproval(57, "deny")
     declined(57)
 
-    // A server's own question is not an approval: no card and, until the
-    // follow-up that declines it (ruling Q156), no answer.
-    const sent = transport.sent.length
+    // A server's own question is not an approval: no card. It is declined
+    // (ruling Q156 A) and the session shows the refusal.
     ask(58, "github", undefined)
     expect(approvals()).toHaveLength(2)
-    expect(transport.sent).toHaveLength(sent)
+    declined(58)
+    expect(events.at(-1)).toEqual({
+      type: "policy-refused",
+      ...common,
+      command: "github",
+      reason: 'Message sent with the request, not checked by Domovoi: Allow the github MCP server to run tool "create_issue"?',
+      refusal: codexRequestRefusal,
+    })
     await adapter.close()
   })
 
@@ -1442,6 +1837,9 @@ describe("CodexAppServerAdapter", () => {
     ask(65, "github", { mode: "url", url: "https://example.test", elicitationId: "e-2" })
     declined(65)
     expect(events.filter((candidate) => candidate.type === "approval-requested")).toHaveLength(0)
+    // Never declined unseen: each decline shows as a refusal in the session.
+    expect(events.filter((candidate) => candidate.type === "policy-refused").map((candidate) => candidate.type === "policy-refused" && candidate.command))
+      .toEqual(["docs", "linear", "jira", "github", "github"])
     await adapter.close()
   })
 

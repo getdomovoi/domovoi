@@ -5,7 +5,8 @@ import { dirname, isAbsolute, join, parse, sep } from "node:path"
 import { beforeDeadline, OperationDeadline } from "./operation-deadline.js"
 
 // Credential stores in the home directory. The Codex sandbox refuses reads of
-// each location, and an approval card hides and hard-gates a path or command
+// each location (of ~/.domovoi, everything but its session worktrees; see
+// codexGlobsExcept), and an approval card hides and hard-gates a path or command
 // that names one, in the home directory or anywhere else, through the path
 // classifier below.
 export type CredentialStore = Readonly<{

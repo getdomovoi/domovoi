@@ -89,7 +89,8 @@ async function setup(permissionMode: "ask" | "build" = "build") {
     reason: "Write a generated file",
     command: "Write",
   } as AgentEvent)
-  return { socket, store, agent, emit, emitPolicyRefusal, daemon, errorSink, path, directory, snapshot,
+  const emitEvent = (event: AgentEvent) => listener!(event)
+  return { socket, store, agent, emit, emitPolicyRefusal, emitEvent, daemon, errorSink, path, directory, snapshot,
     connectionId: (hello.result as { connectionId: string }).connectionId }
 }
 
@@ -216,6 +217,40 @@ describe("Rules daemon support", () => {
     } finally {
       await reopened.close()
     }
+  })
+
+  // A provider request Domovoi cannot show as a card is refused in any mode,
+  // and the refusal names the rule the adapter gives rather than Ask's.
+  it("shows a refusal the adapter explains in any mode", async () => {
+    const { emitEvent, store, errorSink, snapshot } = await setup("build")
+    emitEvent({
+      type: "policy-refused",
+      threadId: "thread-rules",
+      turnId: "turn-rules",
+      itemId: "patch-1",
+      reason: "Write outside the worktree",
+      command: "item/fileChange/requestApproval",
+      refusal: {
+        rule: "Domovoi cannot show this Codex request as an approval card",
+        setBy: "Domovoi",
+        scope: "This request",
+        remedy: "Codex was told the request was refused. Ask the agent to do this another way.",
+      },
+    })
+    await waitForDaemon(() => expect(store.load().thread.filter(({ kind }) => kind === "policy-refusal")).toHaveLength(1))
+    expect(errorSink).not.toHaveBeenCalled()
+    expect(store.load().thread.find(({ kind }) => kind === "policy-refusal")).toMatchObject({
+      operation: "Write outside the worktree",
+      command: "item/fileChange/requestApproval",
+      rule: "Domovoi cannot show this Codex request as an approval card",
+      setBy: "Domovoi",
+      scope: "This request",
+      remedy: "Codex was told the request was refused. Ask the agent to do this another way.",
+    })
+    expect(store.load().approvals).toEqual([])
+    expect(store.auditLog.query({ action: "provider.policy-refused" }).entries).toEqual([
+      expect.objectContaining({ sessionId: snapshot.sessions[0]!.id, outcome: "denied", target: "patch-1" }),
+    ])
   })
 
   it("returns the daemon policy's category data", async () => {

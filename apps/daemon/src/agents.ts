@@ -1,6 +1,7 @@
 import type {
   ApprovalDecision,
   ApprovalToolServer,
+  PolicyRefusalThreadItem,
   ProviderModel,
   ProviderUsageLimits,
   Runtime,
@@ -78,6 +79,12 @@ export type AgentEvent =
       itemId?: string
       command: string
       reason: string
+      /**
+       * Why the adapter refused, when it was not the session's permission
+       * mode: shown in any mode. Absent: Ask mode's read-only rule, shown in
+       * Ask only.
+       */
+      refusal?: Pick<PolicyRefusalThreadItem, "rule" | "setBy" | "scope" | "remedy">
     }
   | {
       // The provider reported an approval reply this adapter did not send, so
