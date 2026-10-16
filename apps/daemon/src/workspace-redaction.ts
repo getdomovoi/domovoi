@@ -251,5 +251,19 @@ function redactThreadItem(item: ThreadItem): ThreadItem {
         : { detail: redactDurableText(item.detail).value }),
     }
   }
+  if (item.kind === "user" && item.attachments) {
+    // A text file's name and a worktree path are the sender's own text, so
+    // they are redacted as the message they went with is. The replacement
+    // marker can lengthen either past its schema bound, so each is cut back.
+    return {
+      ...item,
+      body: redactDurableText(item.body).value,
+      attachments: item.attachments.map((attachment) => attachment.kind === "text"
+        ? { ...attachment, name: redactDurableText(attachment.name).value.slice(0, 255).trim() }
+        : attachment.kind === "workspace-file"
+          ? { ...attachment, path: redactDurableText(attachment.path).value.slice(0, 1024) }
+          : attachment),
+    }
+  }
   return { ...item, body: redactDurableText(item.body).value }
 }

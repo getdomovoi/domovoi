@@ -1,6 +1,6 @@
 import { describe, expect, it, jest } from "@jest/globals"
 import { demoWorkspace, terminalWatchResultSchema, type ApprovalDecision, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { act, fireEvent, render, screen } from "@testing-library/react-native"
+import { act, fireEvent, render, screen, within } from "@testing-library/react-native"
 import { SafeAreaProvider, type Metrics } from "react-native-safe-area-context"
 
 import { planForSession, planSummary } from "../plan-rows"
@@ -438,6 +438,25 @@ describe("SessionScreen policy and queue states", () => {
 
     expect(screen.getByText("Address every comment")).toBeOnTheScreen()
     expect(screen.getByText("1 open annotation was over the per-turn limit")).toBeOnTheScreen()
+  })
+
+  // Walk finding F26: the photo a message carried is named under it. The
+  // phone keeps no copy of a sent image, so it draws a chip, not a picture.
+  it("names the attachments a sent message carried under that message", async () => {
+    const { props } = await draw()
+    const sent = {
+      id: "thread-photo", kind: "message" as const, voice: "you" as const, body: "Describe this image",
+      attachments: [{ kind: "image" as const, mark: "JPG", name: "Image", meta: "1.4 MB · 2048 × 1536", label: "JPEG image, 1.4 MB, 2048 by 1536 pixels" }],
+    }
+    await render(<SafeAreaProvider initialMetrics={metrics}><SessionScreen {...props} detail={{ ...props.detail, entries: [...props.detail.entries, sent] }} /></SafeAreaProvider>)
+
+    expect(screen.getByText("Describe this image")).toBeOnTheScreen()
+    const chip = screen.getByLabelText("JPEG image, 1.4 MB, 2048 by 1536 pixels")
+    expect(within(chip).getByText("JPG", { includeHiddenElements: true })).toBeTruthy()
+    expect(within(chip).getByText("Image", { includeHiddenElements: true })).toBeTruthy()
+    expect(within(chip).getByText("1.4 MB · 2048 × 1536", { includeHiddenElements: true })).toBeTruthy()
+    // No picture of an image this phone does not hold.
+    expect(JSON.stringify(screen.toJSON())).not.toContain("\"type\":\"Image\"")
   })
 
   // Ruling Q356 A: the refusal's remedy can be sent to the agent as a steer

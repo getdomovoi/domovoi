@@ -883,6 +883,29 @@ describe("JSON-RPC envelopes", () => {
     })
   })
 
+  // Walk finding F26, Codex review round 1: a sent message that left the live
+  // thread window still says what it carried when History pages it back.
+  describe("a sent message's attachments in history", () => {
+    const message = {
+      id: "thread:user-1", sourceId: "user-1", sessionId: "session-a", category: "messages",
+      role: "user", body: "Describe this image", createdAt: "2026-08-25T22:00:00.000Z",
+    }
+    const photo = { kind: "image", mimeType: "image/jpeg", width: 2048, height: 1536, bytes: 1_412_000 }
+
+    it("carries the summaries on a user message and parses one written without them", () => {
+      expect(sessionHistoryEntrySchema.parse({ ...message, attachments: [photo] })).toMatchObject({ attachments: [photo] })
+      expect(sessionHistoryEntrySchema.parse(message)).not.toHaveProperty("attachments")
+    })
+
+    it.each([[[]], [[photo, photo, photo]], [[{ ...photo, data: "AAAA" }]]])("rejects attachments outside the metadata contract: %#", (attachments) => {
+      expect(sessionHistoryEntrySchema.safeParse({ ...message, attachments }).success).toBe(false)
+    })
+
+    it.each(["assistant", "system"])("rejects attachments on a message whose role is %s", (role) => {
+      expect(sessionHistoryEntrySchema.safeParse({ ...message, role, attachments: [photo] }).success).toBe(false)
+    })
+  })
+
   it("registers archive as a typed session mutation", () => {
     expect(rpcMethods["session.archive"].params.parse({
       sessionId: "session-billing",

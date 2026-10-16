@@ -1,5 +1,5 @@
 import { demoWorkspace, type ThreadItem, type WorkspaceSnapshot } from "@getdomovoi/protocol"
-import { cleanup, render, screen } from "@testing-library/react"
+import { cleanup, render, screen, within } from "@testing-library/react"
 import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { Thread } from "./thread"
@@ -112,5 +112,48 @@ describe("the user turn", () => {
     ]))
     expect(classes(card)).not.toContain("border")
     expect(classes(card)).not.toContain("bg-card")
+  })
+
+  // Walk finding F26: a photo sent from the phone reached the agent and was
+  // nowhere in the thread. The turn shows what it carried, as the composer
+  // chip drew it before the send. No client holds a sent image's bytes, so
+  // each is a chip, never a thumbnail of something this client does not have.
+  it("shows each attachment the turn carried as a chip", () => {
+    const sessionId = demoWorkspace.activeSessionId!
+    const sent: ThreadItem = {
+      id: "user-2", sessionId, kind: "user", body: "Describe this image", createdAt: "2026-09-08T09:01:00.000Z",
+      attachments: [
+        { kind: "image", mimeType: "image/jpeg", width: 2048, height: 1536, bytes: 1_412_000 },
+        { kind: "workspace-file", path: "src/webhooks/replay.spec.ts" },
+      ],
+    }
+    render(<Thread snapshot={conversation(false, [sent])} connected queued={undefined} {...handlers} />)
+    const [plain, carrying] = screen.getAllByTestId("user-turn")
+    expect(within(plain!).queryByRole("list", { name: "Sent with this message" })).toBeNull()
+    const list = within(carrying!).getByRole("list", { name: "Sent with this message" })
+    const chips = within(list).getAllByRole("listitem")
+    expect(chips.map((chip) => chip.textContent)).toEqual([
+      "JPGImage1.4 MB · 2048 × 1536",
+      "TSsrc/webhooks/replay.spec.tsworktree file",
+    ])
+    expect(chips[0]!.getAttribute("aria-label")).toBe("JPEG image, 1.4 MB, 2048 by 1536 pixels")
+    expect(carrying!.querySelector("img")).toBeNull()
+    expect(within(list).queryByRole("button")).toBeNull()
+  })
+
+  // Codex review round 2: a long name gives way, the size never does, and
+  // the whole fact is one hover away for a name cut short.
+  it("keeps a chip's size whole when its name is long", () => {
+    const sessionId = demoWorkspace.activeSessionId!
+    const name = `${"very-long-output-name-".repeat(10)}.txt`
+    const sent: ThreadItem = {
+      id: "user-2", sessionId, kind: "user", body: "Read this", createdAt: "2026-09-08T09:01:00.000Z",
+      attachments: [{ kind: "text", name, bytes: 3_200 }],
+    }
+    render(<Thread snapshot={conversation(false, [sent])} connected queued={undefined} {...handlers} />)
+    const chip = within(screen.getByRole("list", { name: "Sent with this message" })).getByRole("listitem")
+    expect(chip.getAttribute("title")).toBe(`Text file ${name}, 3.2 kB`)
+    expect(classes(within(chip).getByText("3.2 kB"))).toContain("shrink-0")
+    expect(classes(within(chip).getByText(name))).toEqual(expect.arrayContaining(["min-w-0", "truncate"]))
   })
 })
