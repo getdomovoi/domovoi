@@ -46,22 +46,25 @@ const mockSmallJpeg = Buffer.concat([
   Buffer.from([0xff, 0xc0, 0, 11, 8, 0, 1, 0, 1, 1, 1, 0x11, 0]),
   Buffer.from([0xff, 0xda, 0, 8, 1, 1, 0, 0, 0x3f, 0, 0x55, 0x55, 0xff, 0xd9]),
 ]).toString("base64")
-const mockEncodes: ((value: { base64: string, width: number, height: number }) => void)[] = []
+type MockEncoded = { base64: string, width: number, height: number }
+const mockEncodes: { resolve: (value: MockEncoded) => void, reject: (cause: Error) => void }[] = []
+// Set by a test to make the library come back cancelled.
+const mockLibrary = { canceled: false }
 jest.mock("expo-image-picker", () => ({
   requestCameraPermissionsAsync: async () => ({ granted: true }),
   launchCameraAsync: async () => ({ canceled: true, assets: null }),
-  launchImageLibraryAsync: async () => ({
-    canceled: false,
-    assets: [{ uri: "file:///cache/ImagePicker/IMG_4120.jpg", fileName: "IMG_4120.jpg", mimeType: "image/jpeg", width: 4032, height: 3024, base64: mockSmallJpeg }],
-  }),
+  launchImageLibraryAsync: async () => mockLibrary.canceled
+    ? { canceled: true, assets: null }
+    : {
+      canceled: false,
+      assets: [{ uri: "file:///cache/ImagePicker/IMG_4120.jpg", fileName: "IMG_4120.jpg", mimeType: "image/jpeg", width: 4032, height: 3024, base64: mockSmallJpeg }],
+    },
 }))
 jest.mock("./image-encoder", () => ({
   discardCachedFile: () => {},
-  encodeImage: (request: { width: number, height: number }) =>
-    new Promise((resolve: (value: { base64: string, width: number, height: number }) => void) => {
-      mockEncodes.push(resolve)
-      void request
-    }),
+  encodeImage: () => new Promise((resolve: (value: MockEncoded) => void, reject: (cause: Error) => void) => {
+    mockEncodes.push({ resolve, reject })
+  }),
 }))
 
 type Frame = { jsonrpc: "2.0", id: number, method: string, params: Record<string, unknown> }
@@ -435,8 +438,11 @@ describe("App", () => {
   // PR #868 review (P1): a large image is still being resized after the
   // picker has closed. It belongs to the turn and session it was picked for.
   describe("an image still being resized", () => {
-    async function pickWhileIdle() {
+    const waitLine = "An image is still being resized for this turn. Send again once it shows here."
+
+    async function openAudit() {
       mockEncodes.length = 0
+      mockLibrary.canceled = false
       const snapshot = workspace()
       const idle = snapshot.sessions.find((session) => session.id === audit.id)!
       idle.workspacePath = "/worktrees/repo-audit"
@@ -444,46 +450,113 @@ describe("App", () => {
       Object.assign(snapshot, { sessionImageAttachments: true })
       const opened = await openApp(snapshot)
       await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+      return { ...opened, snapshot }
+    }
+
+    // Choose the library from the sheet and let iOS report the sheet gone.
+    async function pick() {
       await fireEvent.press(screen.getByRole("button", { name: "Attach an image" }))
       const { onDismiss } = screen.getByTestId("attach-sheet").props as { onDismiss: () => void }
       await fireEvent.press(screen.getByRole("button", { name: /Photo or screenshot/ }))
       await act(async () => onDismiss())
       await settle()
-      expect(mockEncodes).toHaveLength(1)
-      const finish = async () => {
-        await act(async () => { mockEncodes[0]?.({ base64: mockSmallJpeg, width: 2048, height: 1536 }) })
-        await settle()
-      }
-      return { ...opened, finish }
+    }
+
+    async function finish(index: number) {
+      await act(async () => { mockEncodes[index]?.resolve({ base64: mockSmallJpeg, width: 2048, height: 1536 }) })
+      await settle()
+    }
+
+    async function send(text: string) {
+      await fireEvent.changeText(screen.getByLabelText("Reply to this session"), text)
+      await fireEvent.press(screen.getByRole("button", { name: "Send" }))
+      await settle()
     }
 
     it("holds a send until the image is ready, then sends it with the turn", async () => {
-      const { socket, finish } = await pickWhileIdle()
-      await fireEvent.changeText(screen.getByLabelText("Reply to this session"), "Is this the lockfile")
-      await fireEvent.press(screen.getByRole("button", { name: "Send" }))
-      await settle()
+      const { socket, snapshot } = await openAudit()
+      await pick()
+      expect(mockEncodes).toHaveLength(1)
+      await send("Is this the lockfile")
       expect(socket.requests("session.send")).toHaveLength(0)
-      expect(screen.getByText("An image is still being resized for this turn. Send again once it shows here.")).toBeOnTheScreen()
+      expect(screen.getByText(waitLine)).toBeOnTheScreen()
 
-      await finish()
+      await finish(0)
       expect(screen.getByText("resized from 4032 x 3024")).toBeOnTheScreen()
       await fireEvent.press(screen.getByRole("button", { name: "Send" }))
       await settle()
       const sent = socket.requests("session.send")
       expect(sent).toHaveLength(1)
       expect(sent[0]?.params).toMatchObject({ prompt: "Is this the lockfile", attachments: [{ mimeType: "image/jpeg", width: 2048, height: 1536 }] })
+
+      // Answered, the turn's image leaves the queue.
+      await act(async () => { socket.answer("session.send", structuredClone(snapshot)) })
+      await settle()
+      expect(screen.queryByText("IMG_4120.jpg")).toBeNull()
+    })
+
+    // A pick that comes back cancelled or fails does not hold the next send.
+    it("lets a send go once a pick is cancelled or fails", async () => {
+      const { socket } = await openAudit()
+      mockLibrary.canceled = true
+      await pick()
+      mockLibrary.canceled = false
+      await pick()
+      await act(async () => { mockEncodes[0]?.reject(new Error("Could not load the image")) })
+      await settle()
+      expect(screen.getByText(/IMG_4120\.jpg could not be resized on this phone \(Could not load the image\)/)).toBeOnTheScreen()
+      await send("Check the lockfile")
+      expect(socket.requests("session.send")).toHaveLength(1)
     })
 
     // Leaving a session drops what was picked for it; an image that finishes
-    // after the person left is dropped the same way, even if they come back.
+    // after the person left is dropped the same way, even if they come back,
+    // and the abandoned resize holds no send.
     it("drops an image whose session was left before it was ready", async () => {
-      const { finish } = await pickWhileIdle()
+      const { socket } = await openAudit()
+      await pick()
       await fireEvent.press(screen.getByRole("button", { name: "Back to sessions" }))
       await fireEvent.press(screen.getByRole("button", { name: audit.title }))
-      await finish()
-      expect(screen.getByLabelText("Reply to this session")).toBeOnTheScreen()
+      await send("Check the lockfile")
+      expect(screen.queryByText(waitLine)).toBeNull()
+      expect(socket.requests("session.send")).toHaveLength(1)
+      await finish(0)
       expect(screen.queryByText("IMG_4120.jpg")).toBeNull()
-      expect(screen.queryByText("resized from 4032 x 3024")).toBeNull()
+    })
+
+    // Review of the fix: leaving through the tab bar is leaving too.
+    it("drops an image whose session was left through the tab bar", async () => {
+      await openAudit()
+      await pick()
+      await fireEvent.press(screen.getByRole("tab", { name: "Machines" }))
+      await finish(0)
+      await fireEvent.press(screen.getByRole("tab", { name: /^Sessions/ }))
+      await fireEvent.press(screen.getByRole("button", { name: audit.title }))
+      expect(screen.queryByText("IMG_4120.jpg")).toBeNull()
+    })
+
+    // Removing one image is about that image: one still being resized stays.
+    it("keeps a pending image when another is removed", async () => {
+      await openAudit()
+      await pick()
+      await finish(0)
+      await pick()
+      await fireEvent.press(screen.getByRole("button", { name: "Remove IMG_4120.jpg" }))
+      await finish(1)
+      expect(screen.getAllByText("IMG_4120.jpg")).toHaveLength(1)
+    })
+
+    // Two picks in flight at once never queue a third image.
+    it("keeps the two-image cap when picks finish together", async () => {
+      await openAudit()
+      await pick()
+      await pick()
+      await pick()
+      expect(mockEncodes).toHaveLength(3)
+      await finish(0)
+      await finish(1)
+      await finish(2)
+      expect(screen.getAllByText("IMG_4120.jpg")).toHaveLength(2)
     })
   })
 

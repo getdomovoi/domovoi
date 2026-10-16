@@ -146,13 +146,17 @@ export function App() {
   const [attachProblem, setAttachProblem] = useState("")
   // A large image is still being resized after the picker closes, while the
   // composer takes taps again. It belongs to the turn and the session it was
-  // picked for: a send waits for it (picking counts the ones in progress), and
-  // leaving the session drops it (leaving bumps queueEpoch, and a pick that
-  // finishes under a newer epoch is not added).
+  // picked for: a send waits for it (picking counts the ones in progress in
+  // the current epoch), and leaving the session drops it (leaving bumps
+  // queueEpoch, and a pick that finishes under a newer epoch is not added and
+  // holds no send). Every way out of a session's composer calls dropQueue:
+  // back, another session from the list or the tablet's rail, a fresh
+  // session, another tab, and Remove N images.
   const picking = useRef(0)
   const queueEpoch = useRef(0)
   const dropQueue = () => {
     queueEpoch.current += 1
+    picking.current = 0
     setAttachments([])
     setAttachProblem("")
   }
@@ -172,7 +176,8 @@ export function App() {
         setAttachments((current) => current.length >= maximumSessionAttachments ? current : [...current, outcome.attachment])
       }
     } finally {
-      picking.current -= 1
+      // A newer epoch has already set the count to zero for its own picks.
+      if (epoch === queueEpoch.current) picking.current -= 1
     }
   }
   // The plan starts pinned: the design leads the thread with a strip saying
@@ -801,6 +806,7 @@ export function App() {
     try {
       const sessionId = await startFreshSession(snapshot, prompt, mutate, client)
       setFreshOpen(false)
+      if (sessionId !== openSessionId) dropQueue()
       setOpenSessionId(sessionId)
     } catch (cause) {
       setFreshRefusal(refusalOf(cause))
@@ -1053,6 +1059,7 @@ export function App() {
             decideProblem={decideProblem}
             sendProblems={sendProblems}
             onSelectSession={(sessionId) => {
+              if (sessionId !== openSessionId) dropQueue()
               setOpenSessionId(sessionId)
               setOpenApprovalId(undefined)
               setDraft("")
@@ -1141,10 +1148,7 @@ export function App() {
               setAttachments((current) => current.filter((_item, at) => at !== index))
               setAttachProblem("")
             }}
-            onRemoveAttachments={() => {
-              setAttachments([])
-              setAttachProblem("")
-            }}
+            onRemoveAttachments={dropQueue}
             modelImages={openModelImages}
             starting={starting}
             startProblem={startProblem}
@@ -1196,6 +1200,7 @@ export function App() {
               onSelect={(next) => {
                 if (next === "sessions") return
                 setOpenSessionId(undefined)
+                dropQueue()
                 selectTab(next)
               }}
               onFootprint={setTabFootprint}
