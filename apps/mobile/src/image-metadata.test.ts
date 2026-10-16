@@ -7,12 +7,14 @@ const bytes = (...parts: (string | number[])[]) =>
 const segment = (marker: number, payload: string) => bytes([0xff, marker, (payload.length + 2) >> 8, (payload.length + 2) & 0xff], payload)
 const scan = bytes(segment(0xda, "\x01\x01\0\0\x3f\0"), "coded", [0xff, 0x00], "data", [0xff, 0xd9])
 const frame = segment(0xc0, "\x08\0\x01\0\x01\x01\x01\x11\0")
+// JFIF: identifier, version 1.1, no units, 1:1 density, no thumbnail.
+const jfif = "JFIF\0\x01\x01\0\0\x01\0\x01\0\0"
 
 describe("withoutMetadata on a JPEG", () => {
   it("keeps the picture's segments and drops the rest", () => {
     const camera = bytes(
       [0xff, 0xd8],
-      segment(0xe0, "JFIF\0"),
+      segment(0xe0, jfif),
       segment(0xe1, "Exif\0\0GPS"),
       segment(0xe2, "MPF\0secondary images"),
       segment(0xe2, "ICC_PROFILE\0P3"),
@@ -27,12 +29,39 @@ describe("withoutMetadata on a JPEG", () => {
     )
     expect(withoutMetadata(camera, "image/jpeg")).toBe(bytes(
       [0xff, 0xd8],
-      segment(0xe0, "JFIF\0"),
+      segment(0xe0, jfif),
       segment(0xe2, "ICC_PROFILE\0P3"),
       segment(0xee, "Adobe"),
       frame,
       scan,
     ))
+  })
+
+  // Review round 2: a JFIF header can carry a thumbnail of the picture, and
+  // a colour profile can carry text (its description, a metadata dictionary).
+  it("drops a JFIF thumbnail, and colour profiles when asked to", () => {
+    const thumbnailed = bytes(
+      [0xff, 0xd8],
+      segment(0xe0, `JFIF\0\x01\x02\x01\0\x48\0\x48\x02\x02${"thumbnail!!!"}`),
+      segment(0xe2, "ICC_PROFILE\0\x01\x01desc taken at 51.5 N"),
+      frame,
+      scan,
+    )
+    expect(withoutMetadata(thumbnailed, "image/jpeg")).toBe(bytes(
+      [0xff, 0xd8],
+      segment(0xe0, "JFIF\0\x01\x02\x01\0\x48\0\x48\0\0"),
+      segment(0xe2, "ICC_PROFILE\0\x01\x01desc taken at 51.5 N"),
+      frame,
+      scan,
+    ))
+    expect(withoutMetadata(thumbnailed, "image/jpeg", { profiles: "drop" })).toBe(bytes(
+      [0xff, 0xd8],
+      segment(0xe0, "JFIF\0\x01\x02\x01\0\x48\0\x48\0\0"),
+      frame,
+      scan,
+    ))
+    // A JFIF header too short to hold its fields is not kept.
+    expect(withoutMetadata(bytes([0xff, 0xd8], segment(0xe0, "JFIF\0"), frame, scan), "image/jpeg")).toBe(bytes([0xff, 0xd8], frame, scan))
   })
 
   // Review round 1: metadata after the first scan, as a progressive JPEG can
@@ -65,8 +94,9 @@ describe("withoutMetadata on a JPEG", () => {
   })
 
   it("returns a clean file unchanged", () => {
-    const clean = bytes([0xff, 0xd8], segment(0xe0, "JFIF\0"), frame, scan)
+    const clean = bytes([0xff, 0xd8], segment(0xe0, jfif), frame, scan)
     expect(withoutMetadata(clean, "image/jpeg")).toBe(clean)
+    expect(withoutMetadata(clean, "image/jpeg", { profiles: "drop" })).toBe(clean)
   })
 
   it("does not recognise a layout it cannot walk", () => {
@@ -112,6 +142,13 @@ describe("withoutMetadata on a PNG", () => {
       signature,
       chunk("IHDR", "x".repeat(13)),
       chunk("iCCP", "Display P3"),
+      chunk("IDAT", "pixels"),
+      chunk("IEND", ""),
+    ))
+    // Review round 2: an iCCP chunk names its profile in free text.
+    expect(withoutMetadata(screenshot, "image/png", { profiles: "drop" })).toBe(bytes(
+      signature,
+      chunk("IHDR", "x".repeat(13)),
       chunk("IDAT", "pixels"),
       chunk("IEND", ""),
     ))

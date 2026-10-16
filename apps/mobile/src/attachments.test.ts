@@ -41,9 +41,9 @@ function jpeg(width: number, height: number, scanBytes: number, metadata = true)
         segment(0xe1, Buffer.from(`Exif\0\0${location}`, "latin1")),
         segment(0xe1, Buffer.from("http://ns.adobe.com/xap/1.0/\0<x:xmpmeta>iPhone 17 Pro</x:xmpmeta>", "latin1")),
         segment(0xfe, Buffer.from("taken on holiday", "latin1")),
+        segment(0xe2, Buffer.from("ICC_PROFILE\0\x01\x01Display P3", "latin1")),
       ]
       : []),
-    segment(0xe2, Buffer.from("ICC_PROFILE\0\x01\x01Display P3", "latin1")),
     segment(0xc0, Buffer.from([8, height >> 8, height & 0xff, width >> 8, width & 0xff, 1, 1, 0x11, 0])),
     segment(0xda, Buffer.from([1, 1, 0, 0, 0x3f, 0])),
     Buffer.alloc(scanBytes, 0x55),
@@ -113,18 +113,51 @@ describe("attachmentFrom", () => {
       attachment: { name: "IMG_0001.png", mimeType: "image/png", width: 1, height: 1, data: png1x1, bytes: 70 },
     })
     const clean = jpeg(800, 600, 20_000, false)
-    expect(await attachmentFrom(picked({ fileName: "a.jpg", mimeType: "image/jpeg", width: 800, height: 600, base64: clean }), neverEncode)).toEqual({
+    expect(await attachmentFrom(picked({ uri: "file:///picked/a.jpg", fileName: "a.jpg", mimeType: "image/jpeg", width: 800, height: 600, base64: clean }), neverEncode)).toEqual({
       ok: true,
       attachment: { name: "a.jpg", mimeType: "image/jpeg", width: 800, height: 600, data: clean, bytes: Buffer.from(clean, "base64").length },
     })
   })
 
   it("reads the type off the bytes, not off the picker's label", async () => {
-    // A library re-encodes to JPEG and keeps the PNG's name and type.
+    // The picker says the file is a PNG and its Base64 is a JPEG: the file
+    // is drawn again as a PNG, and the type sent is the one the encoder's
+    // bytes carry, whatever the request asked for.
     const clean = jpeg(10, 10, 100, false)
-    expect(await attachmentFrom(picked({ mimeType: "image/png", fileName: "shot.png", width: 10, height: 10, base64: clean }), neverEncode)).toMatchObject({
+    const jpegOnly: ImageEncoder = async (request) => ({ base64: jpeg(request.width, request.height, 100, false), width: request.width, height: request.height })
+    expect(await attachmentFrom(picked({ mimeType: "image/png", fileName: "shot.png", width: 10, height: 10, base64: clean }), jpegOnly)).toMatchObject({
       ok: true, attachment: { mimeType: "image/jpeg" },
     })
+    // A PNG labelled a JPEG is sent as the PNG it is.
+    expect(await attachmentFrom(picked({ uri: "file:///picked/a.jpg", mimeType: "image/jpeg", fileName: "a.jpg" }), neverEncode)).toMatchObject({
+      ok: true, attachment: { mimeType: "image/png", data: png1x1 },
+    })
+  })
+
+  // Review round 2: a colour profile is free-form (a description, a metadata
+  // dictionary), and iOS's picker writes one into every Base64 it returns.
+  // A picked profile is not sent; the image is drawn again, and the device
+  // encoder writes the system's own profile for the colour space it drew in.
+  it("draws again a small image that carries a colour profile", async () => {
+    const { encode, requests } = encoder({ jpeg: 50_000 })
+    const profiled = Buffer.concat([
+      Buffer.from(jpeg(800, 600, 20_000, false), "base64").subarray(0, 20),
+      segment(0xe2, Buffer.from("ICC_PROFILE\0\x01\x01desc taken at home", "latin1")),
+      Buffer.from(jpeg(800, 600, 20_000, false), "base64").subarray(20),
+    ]).toString("base64")
+    const result = await attachmentFrom(picked({ uri: "file:///picked/a.jpg", mimeType: "image/jpeg", width: 800, height: 600, base64: profiled }), encode)
+    expect(requests).toEqual([{ uri: "file:///picked/a.jpg", width: 800, height: 600, format: "jpeg", quality: jpegQuality }])
+    expect(decoded((result as { attachment: Attachment }).attachment.data)).not.toContain("taken at home")
+  })
+
+  // Review round 2: a small screenshot is a PNG file whose Base64 iOS hands
+  // back as a JPEG; it is drawn again from the file as a PNG.
+  it("draws a small PNG file again as a PNG when the picker's bytes are a JPEG", async () => {
+    const { encode, requests } = encoder({ jpeg: 50_000, png: 300_000 })
+    const result = await attachmentFrom(picked({ uri: "file:///picked/IMG_0413.PNG", mimeType: "image/png", width: 750, height: 1334, base64: jpeg(750, 1334, 20_000, false) }), encode)
+    expect(requests).toEqual([{ uri: "file:///picked/IMG_0413.PNG", width: 750, height: 1334, format: "png", quality: 1 }])
+    expect(result).toMatchObject({ ok: true, attachment: { mimeType: "image/png", width: 750, height: 1334 } })
+    expect((result as { attachment: Attachment }).attachment).not.toHaveProperty("resizedFrom")
   })
 
   it("resizes a 4032 x 3024 photo to 2048 on the long side, as a JPEG with no metadata", async () => {

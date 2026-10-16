@@ -117,9 +117,16 @@ export async function attachmentFrom(picked: PickedImage, encode: ImageEncoder):
 
   const target = fitted(picked.width, picked.height)
   const resized = target.width !== picked.width || target.height !== picked.height
-  if (!resized && bytes <= maximumImageUploadBytes) {
+  // The encoder draws from the file, and iOS's picker hands back the Base64
+  // as a JPEG re-encode whatever the file is, so a screenshot's PNG-ness is
+  // read off the file's type or name as well as the bytes. A PNG file whose
+  // bytes came back as a JPEG is drawn again from the file as a PNG.
+  const sourcePng = mimeType === "image/png" || picked.mimeType === "image/png" || /\.png$/i.test(picked.uri ?? "")
+  if (!resized && bytes <= maximumImageUploadBytes && (mimeType === "image/png" || !sourcePng)) {
+    // Sent as picked only when nothing outside the allowlist is there,
+    // colour profiles included: a picked profile is free-form text.
     const raw = binary(picked.base64)
-    if (raw !== undefined && withoutMetadata(raw, mimeType) === raw) {
+    if (raw !== undefined && withoutMetadata(raw, mimeType, { profiles: "drop" }) === raw) {
       return { ok: true, attachment: { name, mimeType, width: picked.width, height: picked.height, data: picked.base64, bytes } }
     }
   }
@@ -127,10 +134,6 @@ export async function attachmentFrom(picked: PickedImage, encode: ImageEncoder):
   const doing = resized ? "resized" : "re-encoded"
   const refused = (why: string): AttachmentRead => ({ ok: false, reason: `${name} could not be ${doing} on this phone (${why}). ${boundLine}` })
   if (!picked.uri) return refused("no file to read")
-  // The encoder draws from the file, and iOS's picker hands back the Base64
-  // as a JPEG re-encode whatever the file is, so a screenshot's PNG-ness is
-  // read off the file's type or name as well as the bytes.
-  const sourcePng = mimeType === "image/png" || picked.mimeType === "image/png" || /\.png$/i.test(picked.uri)
   const formats: ImageEncoding["format"][] = sourcePng ? ["png", "jpeg"] : ["jpeg"]
   // The last encoding over the byte bound; every pass through the loop that
   // does not return sets it.

@@ -6,7 +6,8 @@
 // Both formats are cut to an allowlist of what drawing the picture needs, so
 // a private or unknown segment or chunk goes too. In a JPEG: the frame,
 // Huffman, arithmetic-coding, quantisation, restart and line-count segments,
-// the scans, JFIF (APP0), the ICC colour profile (APP2 ICC_PROFILE) and
+// the scans, JFIF (APP0) without its thumbnail, the ICC colour profile (APP2
+// ICC_PROFILE, see MetadataCut) and
 // Adobe's colour transform (APP14). In a PNG: the critical chunks, colour
 // and transparency chunks, and nothing else. Anything after the end marker
 // goes: an iPhone appends secondary images there (MPF gain maps), each with
@@ -21,16 +22,31 @@ const pngKeptChunks = new Set([
   "tRNS", "gAMA", "cHRM", "sRGB", "iCCP", "sBIT", "cICP", "mDCV", "mDCv", "cLLI", "cLLi",
 ])
 
-function jpegSegmentKept(marker: number, segment: string): boolean {
+// Colour profiles are kept by default: the cut is applied to what the
+// device encoder wrote, whose profile is the system's own for the colour
+// space it drew in. A profile picked from elsewhere is free-form (a
+// description, a metadata dictionary, a PNG profile name), so the check
+// whether a picked image may be sent as it is drops them, and an image that
+// has one is drawn again rather than sent.
+export type MetadataCut = { profiles: "keep" | "drop" }
+
+// A JFIF header without its thumbnail: identifier, version, units and
+// density (fourteen bytes), then a thumbnail size of zero by zero.
+function jfifWithoutThumbnail(segment: string): string | undefined {
+  if (!segment.startsWith("JFIF\0", 4) || segment.length < 4 + 14) return undefined
+  return `\xff\xe0\0\x10${segment.slice(4, 4 + 12)}\0\0`
+}
+
+function jpegSegmentKept(marker: number, segment: string, cut: MetadataCut): string | undefined {
   // SOF0 to SOF15, DHT (C4), JPG (C8) and DAC (CC) share this range; all
   // describe the coding.
-  if (marker >= 0xc0 && marker <= 0xcf) return true
+  if (marker >= 0xc0 && marker <= 0xcf) return segment
   // DQT, DRI, DNL.
-  if (marker === 0xdb || marker === 0xdd || marker === 0xdc) return true
-  if (marker === 0xe0) return segment.startsWith("JFIF\0", 4)
-  if (marker === 0xe2) return segment.startsWith("ICC_PROFILE\0", 4)
-  if (marker === 0xee) return segment.startsWith("Adobe", 4)
-  return false
+  if (marker === 0xdb || marker === 0xdd || marker === 0xdc) return segment
+  if (marker === 0xe0) return jfifWithoutThumbnail(segment)
+  if (marker === 0xe2) return cut.profiles === "keep" && segment.startsWith("ICC_PROFILE\0", 4) ? segment : undefined
+  if (marker === 0xee) return segment.startsWith("Adobe", 4) ? segment : undefined
+  return undefined
 }
 
 // The next marker after entropy-coded data starting at `from`: coded data
@@ -46,7 +62,7 @@ function nextMarker(bytes: string, from: number): number {
   return -1
 }
 
-function jpegWithoutMetadata(bytes: string): string | undefined {
+function jpegWithoutMetadata(bytes: string, cut: MetadataCut): string | undefined {
   let kept = "\xff\xd8"
   let at = 2
   let scanned = false
@@ -73,13 +89,13 @@ function jpegWithoutMetadata(bytes: string): string | undefined {
       at = end
       continue
     }
-    if (jpegSegmentKept(marker, segment)) kept += segment
+    kept += jpegSegmentKept(marker, segment, cut) ?? ""
     at += 2 + length
   }
   return undefined
 }
 
-function pngWithoutMetadata(bytes: string): string | undefined {
+function pngWithoutMetadata(bytes: string, cut: MetadataCut): string | undefined {
   let kept = pngSignature
   let at = pngSignature.length
   while (at + 12 <= bytes.length) {
@@ -90,14 +106,18 @@ function pngWithoutMetadata(bytes: string): string | undefined {
     const end = at + 12 + length
     if (end > bytes.length) return undefined
     const type = bytes.slice(at + 4, at + 8)
-    if (pngKeptChunks.has(type)) kept += bytes.slice(at, end)
+    if (pngKeptChunks.has(type) && (type !== "iCCP" || cut.profiles === "keep")) kept += bytes.slice(at, end)
     if (type === "IEND") return kept
     at = end
   }
   return undefined
 }
 
-export function withoutMetadata(bytes: string, mimeType: "image/png" | "image/jpeg"): string | undefined {
-  if (mimeType === "image/png") return bytes.startsWith(pngSignature) ? pngWithoutMetadata(bytes) : undefined
-  return bytes.startsWith("\xff\xd8") ? jpegWithoutMetadata(bytes) : undefined
+export function withoutMetadata(
+  bytes: string,
+  mimeType: "image/png" | "image/jpeg",
+  cut: MetadataCut = { profiles: "keep" },
+): string | undefined {
+  if (mimeType === "image/png") return bytes.startsWith(pngSignature) ? pngWithoutMetadata(bytes, cut) : undefined
+  return bytes.startsWith("\xff\xd8") ? jpegWithoutMetadata(bytes, cut) : undefined
 }
