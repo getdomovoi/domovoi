@@ -6,6 +6,7 @@ import { Dialog, DialogContent, DialogTitle } from "./components/ui/dialog"
 import type { DesktopFirstRunDialogProps } from "./desktop-first-run"
 import { browserDesktopFirstRunStorage, rememberDesktopFirstRunDismissed } from "./desktop-first-run-persistence"
 import { DialogLoading, lazyDialog, SurfaceCodeReload, SurfaceLoadError, useDrawnOnceOpen, type LazyDialog } from "./lazy-surface"
+import { titlebarInsetStyle, useTitlebarLeadingInset } from "./titlebar-inset"
 
 // First-run setup opens only in the desktop app, on its first launch or from
 // Settings, so its code is not part of what a launch loads: the web never
@@ -21,6 +22,11 @@ import { DialogLoading, lazyDialog, SurfaceCodeReload, SurfaceLoadError, useDraw
 
 const surface = "Setup"
 const frameClassName = "flex h-dvh max-h-none max-w-none flex-col gap-4 rounded-none bg-background p-6 sm:max-w-none"
+// The loading frame's title sits in a row the size of setup's own header,
+// which covers the shell's titlebar: it starts past the macOS window buttons
+// and drags the window, as that header does.
+const loadingFrameClassName = "flex h-dvh max-h-none max-w-none flex-col gap-0 rounded-none bg-background p-0 sm:max-w-none"
+const loadingHeaderClassName = "electron-drag h-[46px] shrink-0 justify-center border-b px-3.5"
 
 // React.lazy keeps a rejected load for good, so each Try again is a new one.
 let attempt = 0
@@ -51,6 +57,7 @@ export function DesktopFirstRunDialog(props: DesktopFirstRunDialogProps) {
   if (props.open !== opened.open) setOpened({ open: props.open, from: props.open ? focusedElement() : opened.from })
   // The web reloads the page after a failed chunk; the desktop loads again.
   const reload = useContext(SurfaceCodeReload)
+  const titlebarInset = useTitlebarLeadingInset()
   if (!drawn) return null
   const skip = () => {
     rememberDesktopFirstRunDismissed(browserDesktopFirstRunStorage())
@@ -72,7 +79,10 @@ export function DesktopFirstRunDialog(props: DesktopFirstRunDialogProps) {
             onOpenChange={(next) => { if (!next) skip() }}
             title="Domovoi setup"
             showCloseButton={false}
-            className={frameClassName}
+            className={loadingFrameClassName}
+            headerClassName={loadingHeaderClassName}
+            headerStyle={titlebarInsetStyle(titlebarInset)}
+            bodyClassName="p-6"
           />
         )}
       />

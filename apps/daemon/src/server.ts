@@ -7426,9 +7426,17 @@ export class DomovoiDaemon {
             ? this.#withImageInput(params.provider, this.#providerModels.get(params.provider)?.models ?? [])
             : await this.#listProviderModels(params.provider)
         } catch (error) {
-          if (!(error instanceof AgentProviderUnavailableError)) throw error
-          this.#error(socket, request.id, invalidParams, error.message)
-          return
+          if (error instanceof AgentProviderUnavailableError) {
+            this.#error(socket, request.id, invalidParams, error.message)
+            return
+          }
+          if (error instanceof PublicRpcError) throw error
+          // A harness that could not report its models failed in a way the
+          // daemon understood (M1 walk F4). The client gets the classified
+          // reason, as a failed turn does (Q118 A); the harness's own text,
+          // which can carry its stderr, stays in this machine's log.
+          this.#reportError(`RPC ${method} failed`, error)
+          throw new PublicRpcError(internalError, classifyProviderFailure(error).message)
         }
         this.#sendResult(socket, method, {
           jsonrpc: "2.0",

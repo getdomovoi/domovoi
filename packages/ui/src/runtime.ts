@@ -89,6 +89,14 @@ export function providerDisplayName(providerId: string): string {
   return providerNames[providerId] ?? providerId
 }
 
+// A model list read that failed (M1 walk F4, Q118 A): the harness is named,
+// then the reason the daemon or the connection gave, when there is one.
+export function modelReadFailure(providerId: string, cause: unknown): string {
+  const reason = cause instanceof Error ? cause.message.trim() : ""
+  const sentence = reason && !/[.?]$/u.test(reason) ? `${reason}.` : reason
+  return `Domovoi could not read the model list from ${providerDisplayName(providerId)}.${sentence ? ` ${sentence}` : ""}`
+}
+
 // The provider CLI's own sign-in command. Undefined for a provider whose
 // command Domovoi does not know (review P3-9): a help command is not one.
 // Here rather than in provider-settings.tsx so that first-run's readiness
