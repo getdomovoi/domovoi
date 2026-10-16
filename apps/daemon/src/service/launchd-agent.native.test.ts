@@ -9,7 +9,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import { expect, it, vi } from "vitest"
 
 import { OperationDeadline } from "../operation-deadline.js"
-import { nativeServiceTestsRun, runningInCi } from "../test-native-service-gate.js"
+import { allowRealServiceManager, nativeServiceTestsRun, runningInCi } from "../test-native-service-gate.js"
 import { waitForDaemon } from "../test-wait-for.js"
 import { createServiceConfiguration, serviceConfigurationPath } from "./configuration.js"
 import { withinServiceDeadline } from "./deadline.js"
@@ -89,6 +89,7 @@ const domainReachable = nativeServiceTestsRun("launchd", () => domainGate(
     }))
     : { reachable: false, detail: `${process.platform} has no per-user launchd domain for uid ${uid}` },
 ))
+allowRealServiceManager(domainReachable)
 
 // The throwaway agent's own names. `agentPath` is absent until the throwaway
 // home exists, and while it is absent no bootstrap is a command this test may

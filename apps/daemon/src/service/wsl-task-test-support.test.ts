@@ -20,6 +20,7 @@ function registerNativeProof(phase: string, registrations: number[]) {
     } },
     require: (name: string) => {
       if (name === "./wsl-task-test-support.js") return { wslTaskFixtureBudgets }
+      if (name === "../test-native-service-gate.js") return { allowRealServiceManager: (run: boolean) => run }
       if (name === "vitest") return { it: { runIf: (required: boolean) => {
         expect(required).toBe(true)
         return (_name: string, _test: unknown, timeout: number) => registrations.push(timeout)

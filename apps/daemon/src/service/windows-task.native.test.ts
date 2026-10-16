@@ -18,7 +18,7 @@ import { readSupervisorStopRequest, readWindowsSupervisorRecord, type WindowsSup
 import { stopWindowsSupervisor } from "./windows-job-supervisor.js"
 import { queryWindowsProcess, queryWindowsProcesses } from "./windows-job.js"
 import { removeScratchDirectory } from "../test-scratch.js"
-import { nativeServiceTestsEnabled } from "../test-native-service-gate.js"
+import { allowRealServiceManager, nativeServiceTestsEnabled } from "../test-native-service-gate.js"
 
 // Real 1/5/15 second backoffs plus Windows compiler, manager and startup time.
 // No test speed knob is exposed in the production configuration.
@@ -40,7 +40,7 @@ const powershell = (script: string): ServiceCommand => ({ command: windowsPowerS
 // These tests register a real logon task for whoever runs them, and an
 // interrupted run leaves it registered. They run on CI and, on a developer
 // machine, only with DOMOVOI_NATIVE_SERVICE_TESTS=1.
-const windowsNative = process.platform === "win32" && nativeServiceTestsEnabled("Windows")
+const windowsNative = allowRealServiceManager(process.platform === "win32" && nativeServiceTestsEnabled("Windows"))
 
 it.runIf(windowsNative).each(["exhaustion", "stop", "unstarted"] as const)("proves native Windows supervised %s and removal", async (mode) => {
   const name = `Domovoi-supervision-test-${randomUUID()}`
