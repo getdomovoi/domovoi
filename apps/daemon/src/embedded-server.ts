@@ -2,7 +2,7 @@ import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process"
 import { randomBytes } from "node:crypto"
 import type { Duplex, Readable } from "node:stream"
 
-import { claudeKeeperSource, windowsTreeKill } from "./claude-process.js"
+import { claudeKeeperRuntime, claudeKeeperSource, windowsTreeKill } from "./claude-process.js"
 
 export type EmbeddedServer = {
   url: string
@@ -185,10 +185,13 @@ function startEmbeddedServer(
 // which once the group is empty could name another. It only checks, with
 // signal 0, whether any process is left. The server inherits the keeper's
 // stdio, which are Domovoi's pipes, and gets the environment and arguments
-// Domovoi sends on the keeper's control pipe; the keeper's own is empty.
+// Domovoi sends on the keeper's control pipe; the keeper's own is empty but
+// for Electron's run-as-Node switch inside the desktop app.
 function launchKept(command: string, args: string[], env: NodeJS.ProcessEnv): Launched {
-  const keeper = spawn(process.execPath, ["-e", claudeKeeperSource], {
-    env: {},
+  // Inside the desktop app the keeper's executable is Electron (claudeKeeperRuntime).
+  const runtime = claudeKeeperRuntime()
+  const keeper = spawn(runtime.command, ["-e", claudeKeeperSource], {
+    env: runtime.env,
     stdio: ["ignore", "pipe", "pipe", "pipe", "pipe"],
     detached: true,
     windowsHide: true,

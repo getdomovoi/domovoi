@@ -1,0 +1,55 @@
+gui/501 = {
+	type = login
+	handle = 100024
+	active count = 462
+	service count = 461
+	active service count = 234
+	creator = loginwindow[415]
+	creator euid = 0
+	session = Aqua
+	endpoint destination = com.apple.xpc.launchd.domain.user.501
+	auxiliary bootstrapper = com.apple.xpc.otherbsd (complete)
+	security context = {
+		uid = 501
+		asid = 100024
+	}
+
+	bringup time = 132 ms
+	death port = 0x12203
+
+	environment = {
+		SSH_AUTH_SOCK => /var/run/com.apple.launchd.LDUVxu5JFi/Listeners
+	}
+
+	services = {
+		   55014   (pe) 	com.apple.voicebankingd
+		   15468   (pe) 	com.apple.calaccessd
+		       0      - 	com.apple.gamesaved
+		       0      0 	com.apple.security.agent
+		    6965   (pe) 	com.apple.backgroundtaskmanagement.agent
+		       0   (pe) 	com.apple.installerauthagent
+		   19937      - 	application.sh.domovoi.desktop.218603379.218608385
+		   59001      - 	application.com.1password.1password.250971332.250971912
+		   12722   (pe) 	com.apple.intelligenceflowd
+		       0   (pe) 	com.apple.icloudwebd
+		       0   (pe) 	com.apple.askpermissiond
+		       0      - 	com.apple.universalaccesscontrol
+		       0      0 	com.apple.securityuploadd
+	}
+
+	externally-hosted endpoints = {
+		 0x7d903    M   A   com.apple.fileprovider.extension.push
+		       0    M   D   com.apple.arkit.service.streamingPrediction
+		0x11849b    U   A   sh.domovoi.desktop.MachPortRendezvousServer.19937
+		 0xd5803    U   A   en_CN (Apple)_OpenStep
+		 0x5e603    M   A   com.apple.usernotifications.delegate.com.apple.ReplayKitNotifications
+	}
+
+	disabled services = {
+		"io.tailscale.ipn.macsys.login-item-helper" => enabled
+		"com.adobe.GC.AGM" => enabled
+		"com.apple.ManagedClientAgent.enrollagent" => disabled
+	}
+
+	properties = gui | gui login
+}

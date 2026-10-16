@@ -61,6 +61,38 @@ describe("Composer attachments", () => {
     expect(screen.getByText("A turn is running, so this will queue and send at the boundary.")).toBeOnTheScreen()
   })
 
+  // F8 (walk 2026-10-15): at rest the composer is a pill that lays its
+  // children in one row, so the hint sat beside the input and squeezed its
+  // placeholder until it clipped. Frame 12 draws the hint on its own line
+  // under the input row; the bar stacks whenever a hint is shown.
+  it("puts the running-turn hint on its own line under the input, not beside it", async () => {
+    const hint = "A turn is running, so this will queue and send at the boundary."
+    await draw({ readiness: { can: true, hint } })
+
+    type Node = { parent: Node | null, type: unknown, props: Record<string, unknown>, children: Node[] }
+    const input = screen.getByPlaceholderText("Steer it, or queue a message") as unknown as Node
+    const line = screen.getByText(hint) as unknown as Node
+    const ancestors = (node: Node) => {
+      const chain: Node[] = []
+      for (let at = node.parent; at; at = at.parent) chain.push(at)
+      return chain
+    }
+    const inputChain = ancestors(input)
+    // The nearest drawn container holding both must stack its children.
+    const shared = ancestors(line).find((node) => inputChain.includes(node) && typeof node.type === "string")
+    if (!shared) throw new Error("the hint and the input share no container")
+    expect(String(shared.props.className ?? "")).not.toMatch(/\bflex-row\b/)
+    // And the hint follows the input row, as frame 12 draws it.
+    const order = (node: Node) => {
+      let at = node
+      while (at.parent && at.parent !== shared) at = at.parent
+      return shared.children.indexOf(at)
+    }
+    expect(order(line)).toBeGreaterThan(order(input))
+    // The rest stays compact: no skills row until the composer is focused.
+    expect(screen.queryByText("Skills")).toBeNull()
+  })
+
   it("expands on focus and reports when tabs must hide", async () => {
     const props = await draw()
     const input = screen.getByLabelText("Reply to this session")

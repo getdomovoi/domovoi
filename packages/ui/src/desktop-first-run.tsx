@@ -31,6 +31,7 @@ import { FirstRunServiceContext, type FirstRunService } from "./desktop-first-ru
 import { DomovoiMark } from "./domovoi-mark.js"
 import { failedStill, loginServices, type LoginServicePlatform } from "./login-service-copy.js"
 import { providerDisplayName } from "./runtime.js"
+import { titlebarInsetStyle, useTitlebarLeadingInset } from "./titlebar-inset.js"
 
 // The rules moved out so the shell can run them without loading this file;
 // they are still read from here.
@@ -350,6 +351,7 @@ export function DesktopFirstRunDialog({
   onComplete,
 }: DesktopFirstRunDialogProps) {
   const service = useContext(FirstRunServiceContext)
+  const titlebarInset = useTitlebarLeadingInset()
   const offersService = service !== undefined && service.owner === "app"
   const [screen, setScreen] = useState<Screen>(offersService ? "service" : "agents")
   const [phase, setPhase] = useState<ServicePhase>({ kind: "idle" })
@@ -404,14 +406,16 @@ export function DesktopFirstRunDialog({
         onEscapeKeyDown={(event) => { if (installing) event.preventDefault() }}
         className="flex h-dvh max-h-none max-w-none flex-col gap-0 overflow-hidden rounded-none bg-background p-0 sm:max-w-none"
       >
-        <div className="flex h-[46px] shrink-0 items-center gap-3 border-b px-3.5">
+        {/* Setup covers the shell's titlebar, so this row is the titlebar:
+            it starts past the macOS window buttons and drags the window. */}
+        <div className="electron-drag flex h-[46px] shrink-0 items-center gap-3 border-b px-3.5" style={titlebarInsetStyle(titlebarInset)}>
           <DomovoiMark className="size-[22px] text-primary" />
           <span className="text-[13px] font-semibold tracking-[-0.01em]">Domovoi</span>
           <span aria-hidden className="h-[18px] w-px bg-border" />
           <span className="text-[12px] text-muted-foreground">Setup</span>
           <span className="flex-1" />
           <span className="rounded-full bg-accent px-2 py-0.5 font-machine text-[10.5px] text-muted-foreground">{chip}</span>
-          <Button variant="ghost" size="sm" disabled={installing} onClick={dismiss}>Skip for now</Button>
+          <Button variant="ghost" size="sm" className="electron-no-drag" disabled={installing} onClick={dismiss}>Skip for now</Button>
         </div>
         <div className="flex min-h-0 flex-1 justify-center overflow-y-auto px-6">
           {showService ? (

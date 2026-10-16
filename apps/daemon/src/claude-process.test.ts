@@ -10,10 +10,12 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import { ClaudeAgentSdkAdapter, type ClaudeQueryFactory } from "./claude.js"
 import {
+  claudeKeeperRuntime,
   runningClaudeProcesses,
   spawnClaudeProcess,
   stopClaudeProcess,
   windowsTreeKill,
+  type ClaudeKeeperRuntime,
   type ClaudeProcess,
   type ClaudeSpawn,
 } from "./claude-process.js"
@@ -654,7 +656,12 @@ describe("the Claude process the SDK sees", () => {
     expect(claude.hasExited()).toBe(false)
   }
 
-  async function start(lines: string[], { command = process.execPath, signal = new AbortController().signal } = {}) {
+  async function start(
+    lines: string[],
+    { command = process.execPath, signal = new AbortController().signal, keeper }: {
+      command?: string; signal?: AbortSignal; keeper?: ClaudeKeeperRuntime
+    } = {},
+  ) {
     const path = await script([
       "import { fstatSync, writeFileSync } from 'node:fs'",
       "import { join, dirname } from 'node:path'",
@@ -670,7 +677,7 @@ describe("the Claude process the SDK sees", () => {
     const claude = spawnClaudeProcess({
       command, args: command === process.execPath ? [path, "first argument", "--flag=two"] : ["one"],
       cwd: directory, env: environment, signal,
-    }, (text) => stderr.push(text), { spawn: realSpawn })
+    }, (text) => stderr.push(text), { spawn: realSpawn, ...(keeper ? { keeper } : {}) })
     const exits: Array<[number | null, NodeJS.Signals | null]> = []
     claude.spawned.once("exit", (code: number | null, exitSignal: NodeJS.Signals | null) => exits.push([code, exitSignal]))
     const errors: Error[] = []
@@ -727,6 +734,36 @@ describe("the Claude process the SDK sees", () => {
     expect(claude.spawned.signalCode).toBeNull()
     expect(claude.spawned.killed).toBe(false)
     expect(stderr.join("")).toBe("café\n")
+  })
+
+  // M1 walk F4. In the desktop app the daemon runs in Electron's main
+  // process, so the keeper's executable is the app itself. The fake below
+  // behaves as that executable does: it runs a script as Node only when
+  // ELECTRON_RUN_AS_NODE is 1, and otherwise starts a second copy of the app,
+  // which finds the first holding the single-instance lock and quits.
+  it.skipIf(process.platform === "win32")("starts Claude when the daemon runs inside the desktop app, with only the SDK's environment", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "domovoi-claude-electron-"))
+    scratchDirectories.push(directory)
+    const electron = join(directory, "Domovoi")
+    await writeFile(electron, [
+      "#!/bin/sh",
+      "[ \"$ELECTRON_RUN_AS_NODE\" = 1 ] || exit 0",
+      `exec '${process.execPath}' "$@"`,
+    ].join("\n"), { mode: 0o755 })
+    const { claude, seen } = await start(["process.stdin.resume()"], {
+      keeper: claudeKeeperRuntime({ execPath: electron, versions: { ...process.versions, electron: "44.4.5" } }),
+    })
+    const view = await seen()
+    // The keeper's own switch does not reach Claude.
+    expect(view.keys.filter((key) => !key.startsWith("__CF_"))).toEqual(["DOMOVOI_KEEPER_MARKER", "PATH"])
+    claude.spawned.stdin.end()
+    await ended(claude)
+  })
+
+  it("gives the keeper no environment of its own outside the desktop app", () => {
+    const { electron: _electron, ...node } = process.versions
+    expect(claudeKeeperRuntime({ execPath: "/usr/local/bin/node", versions: node as NodeJS.ProcessVersions }))
+      .toEqual({ command: "/usr/local/bin/node", env: {} })
   })
 
   it("forwards a signal the SDK sends to Claude", async () => {

@@ -22,10 +22,16 @@ import { scrollerScrolls } from "../scroller-overflow"
 // Within this many points of the end counts as at the bottom, so a momentum
 // scroll that settles a hair short still follows.
 const atEndSlack = 24
+// A held growth is the layout that follows a tap, which lands within frames.
+const holdWindowMs = 1_000
 
 export type PageScrollerHandle = {
   // The ride back a jump pill offers: to the end, and following resumes.
   scrollToEnd: () => void
+  // The next growth is the person's own doing, such as opening a card, and
+  // following it would scroll what they opened out of view. Only that one
+  // growth is held; what lands after it is followed as before.
+  holdNextGrowth: () => void
 }
 
 export const PageScroller = forwardRef<PageScrollerHandle, ScrollViewProps & {
@@ -51,8 +57,12 @@ export const PageScroller = forwardRef<PageScrollerHandle, ScrollViewProps & {
   // Read from scroll events rather than derived from sizes: only the scroll
   // position says where the person put the viewport.
   const atEnd = useRef(true)
+  // Until when the next growth is held. Bounded, so a hold whose growth never
+  // comes does not swallow a reply that lands much later.
+  const heldUntil = useRef(0)
 
   useImperativeHandle(handle, () => ({
+    holdNextGrowth: () => { heldUntil.current = Date.now() + holdWindowMs },
     scrollToEnd: () => {
       scroller.current?.scrollToEnd({ animated: true })
       if (!atEnd.current) {
@@ -87,9 +97,9 @@ export const PageScroller = forwardRef<PageScrollerHandle, ScrollViewProps & {
   }
 
   const measureContent = (width: number, height: number) => {
-    if (followEnd && atEnd.current && (content === undefined || height > content)) {
-      scroller.current?.scrollToEnd({ animated: true })
-    }
+    const grew = content === undefined || height > content
+    if (grew && Date.now() < heldUntil.current) heldUntil.current = 0
+    else if (followEnd && atEnd.current && grew) scroller.current?.scrollToEnd({ animated: true })
     setContent(height)
     props.onContentSizeChange?.(width, height)
   }

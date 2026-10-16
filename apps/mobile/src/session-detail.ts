@@ -12,6 +12,7 @@ import {
 import type { DaemonStatus } from "./lib/daemon"
 
 type ThreadItem = WorkspaceSnapshot["thread"][number]
+type ToolItem = Extract<ThreadItem, { kind: "tool" }>
 
 export type ThreadEntry =
   | {
@@ -27,6 +28,9 @@ export type ThreadEntry =
     kind: "note"
     body: string
     meta: string | undefined
+    // Set on a tool call only, which the phone draws as a card that folds
+    // (task 107). Every other note is drawn in full.
+    tool?: { name: ToolItem["tool"], status: ToolItem["status"] }
   }
   | {
     id: string
@@ -203,6 +207,7 @@ function entryFor(item: ThreadItem): ThreadEntry {
         kind: "note",
         body: item.title,
         meta: `${item.tool} · ${item.status}`,
+        tool: { name: item.tool, status: item.status },
       }
   }
 }
