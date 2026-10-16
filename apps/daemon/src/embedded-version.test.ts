@@ -4,12 +4,12 @@ import { requireTestedVersion } from "./embedded-version.js"
 
 // Security review round 5 of #687 (P2): only the exact releases that passed
 // the live contract start, and the answer must be one bare version line, as
-// `opencode --version` and `kilo --version` print it ("1.18.33\n").
+// `opencode --version` and `kilo --version` print it ("1.18.33\n", "1.19.3\n").
 describe("requireTestedVersion", () => {
-  const opencode = { command: "opencode", providerName: "OpenCode", tested: ["1.18.32", "1.18.33"] }
+  const opencode = { command: "opencode", providerName: "OpenCode", tested: ["1.18.32", "1.18.33", "1.19.3"] }
   const kilo = { command: "kilo", providerName: "Kilo", tested: ["7.8.1"] }
 
-  it.each([["1.18.32"], ["1.18.33\n"], ["  1.18.33  \n"]])("accepts %j, a tested release", async (output) => {
+  it.each([["1.18.32"], ["1.18.33\n"], ["  1.18.33  \n"], ["1.19.3\n"]])("accepts %j, a tested release", async (output) => {
     await expect(requireTestedVersion(opencode, async () => output)).resolves.toBe(output.trim())
   })
 
@@ -18,10 +18,10 @@ describe("requireTestedVersion", () => {
     await expect(requireTestedVersion(kilo, async () => "7.8.2\n")).rejects.toThrow("Kilo 7.8.2 is not a release Domovoi was tested with")
   })
 
-  it.each([["1.18.34"], ["1.18.31"], ["1.18.0"], ["1.19.0"], ["2.18.33"]])("refuses %j, naming the found and tested versions", async (output) => {
+  it.each([["1.18.34"], ["1.18.31"], ["1.18.0"], ["1.19.0"], ["1.19.2"], ["1.19.4"], ["2.18.33"]])("refuses %j, naming the found and tested versions", async (output) => {
     const refusal = requireTestedVersion(opencode, async () => output)
     await expect(refusal).rejects.toThrow(`OpenCode ${output} is not a release Domovoi was tested with`)
-    await expect(refusal).rejects.toThrow("OpenCode 1.18.32 and 1.18.33")
+    await expect(refusal).rejects.toThrow("OpenCode 1.18.32, 1.18.33 and 1.19.3")
   })
 
   it.each([
@@ -35,7 +35,7 @@ describe("requireTestedVersion", () => {
   ])("refuses %j, which is not one bare version line", async (output) => {
     const refusal = requireTestedVersion(opencode, async () => output)
     await expect(refusal).rejects.toThrow("could not read the version of OpenCode")
-    await expect(refusal).rejects.toThrow("OpenCode 1.18.32 and 1.18.33")
+    await expect(refusal).rejects.toThrow("OpenCode 1.18.32, 1.18.33 and 1.19.3")
   })
 
   it("refuses when the version cannot be read", async () => {
