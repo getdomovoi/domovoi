@@ -71,6 +71,7 @@ export type OpenCodeClient = {
     options: MethodOptions<OpencodeSdkClient["postSessionIdPermissionsPermissionId"]>,
   ): Promise<OpenCodeResult<unknown>>
   // Has the server forget what it loaded for one directory (listModels).
+  // requireOpenCodeClient refuses a client without it; test fakes may omit it.
   instance?: {
     dispose(options?: MethodOptions<OpencodeSdkClient["instance"]["dispose"]>): Promise<OpenCodeResult<unknown>>
   }
@@ -708,17 +709,18 @@ export class OpenCodeSdkAdapter implements AgentAdapter {
       Promise.resolve().then(() => client.config.get(options)),
       Promise.resolve().then(() => client.config.providers(options)),
     ])
-    try {
-      // Bounded, so a server that stops answering cannot hold the read open.
-      // A directory not forgotten costs the server memory, not freshness: the
-      // next read asks about another.
-      const forget = { query: { directory }, throwOnError: true as const, signal: AbortSignal.timeout(catalogueForgetTimeoutMs) }
-      await Promise.resolve().then(() => client.instance?.dispose(forget)).catch((error: unknown) => {
-        console.error(`Domovoi could not have ${this.#identity.providerName} forget a model catalogue directory`, error)
-      })
-    } finally {
-      await rm(directory, { recursive: true, force: true })
-    }
+    // Neither cleanup step fails the read; each failure is logged. The forget
+    // is bounded, so a server that stops answering cannot hold the read open,
+    // and one not done costs the server memory, not freshness: the next read
+    // asks about another directory. The removal retries a handle that closes
+    // late (EBUSY and EPERM on Windows).
+    const forget = { query: { directory }, throwOnError: true as const, signal: AbortSignal.timeout(catalogueForgetTimeoutMs) }
+    await Promise.resolve().then(() => client.instance?.dispose(forget)).catch((error: unknown) => {
+      console.error(`Domovoi could not have ${this.#identity.providerName} forget a model catalogue directory`, error)
+    })
+    await rm(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }).catch((error: unknown) => {
+      console.error(`Domovoi could not remove a ${this.#identity.providerName} model catalogue directory`, error)
+    })
     if (config.status === "rejected") throw config.reason
     if (catalog.status === "rejected") throw catalog.reason
     const configured = requireConfig(
@@ -2963,11 +2965,14 @@ function isOpenCodeClient(value: unknown): value is OpenCodeClient {
   const config = asRecord(client?.config)
   const session = asRecord(client?.session)
   const event = asRecord(client?.event)
+  const instance = asRecord(client?.instance)
   return Boolean(
     client
     && config
     && typeof config.get === "function"
     && typeof config.providers === "function"
+    && instance
+    && typeof instance.dispose === "function"
     && session
     && typeof session.create === "function"
     && typeof session.get === "function"

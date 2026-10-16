@@ -1,7 +1,7 @@
 import { waitForDaemon } from "./test-wait-for.js"
 import type { ChildProcess } from "node:child_process"
 import { EventEmitter, once } from "node:events"
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PassThrough } from "node:stream"
@@ -26,6 +26,7 @@ import {
   OpenCodeMessageIdsExhaustedError,
   openCodeMessageOrder,
   permissionAnswerConfirmMs,
+  requireOpenCodeClient,
   type OpenCodeClient,
   type OpenCodeEvent,
   type OpenCodeFactory,
@@ -643,7 +644,7 @@ describe("OpenCodeSdkAdapter", () => {
 describe.each([
   ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
   ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
-] as const)("%s model catalogue", (_name, create) => {
+] as const)("%s model catalogue", (name, create) => {
   // Walk finding F25: a provider signed in after the server started was never
   // listed. The servers build a directory's catalogue (credentials and models)
   // the first time that directory is asked about and keep it until the
@@ -736,6 +737,40 @@ describe.each([
     await expect(readdir(directories[0]!)).rejects.toMatchObject({ code: "ENOENT" })
     logged.mockRestore()
     await adapter.close()
+  })
+
+  // Every read leaves a directory on the server until it is forgotten, so a
+  // client that cannot forget one is refused rather than left to pile them up.
+  it("refuses a client that cannot have the server forget a directory", () => {
+    const { client } = harness()
+    expect(() => requireOpenCodeClient(client, name)).not.toThrow()
+    expect(() => requireOpenCodeClient({ ...client, instance: {} }, name))
+      .toThrow(`${name} client returned invalid data`)
+  })
+
+  it.skipIf(process.platform === "win32")("lists the models when the directory cannot be removed", async () => {
+    const { client, factory } = harness()
+    const { directories } = instanceCatalogues(client)
+    const read = client.config.providers.getMockImplementation() as (options?: unknown) => Promise<unknown>
+    // A subdirectory nothing may read or enter, so removing the directory fails.
+    client.config.providers.mockImplementationOnce((async (options?: unknown) => {
+      const locked = join((options as { query: { directory: string } }).query.directory, "locked")
+      await mkdir(join(locked, "inner"), { recursive: true })
+      await chmod(locked, 0o000)
+      return read(options)
+    }) as never)
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const adapter = create(factory)
+
+    try {
+      expect((await adapter.listModels()).map((model) => model.id)).toEqual(["anthropic/sonnet"])
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining(`remove a ${name} model catalogue directory`), expect.anything())
+    } finally {
+      await chmod(join(directories[0]!, "locked"), 0o700)
+      scratchDirectories.push(directories[0]!)
+      logged.mockRestore()
+      await adapter.close()
+    }
   })
 
   it("forgets the directory only after both reads in it have settled", async () => {
