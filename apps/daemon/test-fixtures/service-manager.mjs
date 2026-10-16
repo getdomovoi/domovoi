@@ -12,6 +12,11 @@ import path from "node:path"
 const user = os.userInfo()
 os.userInfo = () => ({ ...user, homedir: process.env.DOMOVOI_TEST_SERVICE_HOME ?? process.env.HOME })
 
+// This shim is the CLI's service manager: execFile below never starts a
+// process. The real runner's test refusal (src/service/manager-guard.ts),
+// inherited from the daemon test setup, would stop the CLI before it got here.
+delete process.env.DOMOVOI_TEST_SERVICE_MANAGER_REFUSALS
+
 let held = false
 childProcess.execFile = (command, args, options, callback) => {
   const powershell = command.endsWith("\\System32\\WindowsPowerShell\\v1.0\\powershell.exe")

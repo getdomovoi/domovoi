@@ -5,6 +5,7 @@ import { runDaemonCommand } from "../daemon-command.js"
 import { ProfileAlreadyOwnedError } from "../profile-lease.js"
 import { createServiceConfiguration, type ServiceConfiguration } from "./configuration.js"
 import { nodeServiceEffects, removeService, runServiceCommand, type ServiceEffects } from "./install.js"
+import { serviceManagerRefusalVariable } from "./manager-guard.js"
 import { ServiceOperationBusyError } from "./operation-lease.js"
 import { windowsTaskRemovalPlan } from "./windows-task.js"
 import { windowsTaskData } from "./windows-task-test-support.js"
@@ -327,6 +328,9 @@ describe("Task Scheduler command boundary", () => {
     const execFile = vi.mocked(childProcess.execFile as unknown as (...args: unknown[]) => void)
     execFile.mockClear()
     const deadline = OperationDeadline.start(1000)
+    // execFile is mocked in this file, so the runner's test refusal
+    // (manager-guard.ts) is lifted to reach the call it makes.
+    vi.stubEnv(serviceManagerRefusalVariable, "")
     try {
       const effects = nodeServiceEffects()
       await effects.run("C:\\Windows\\System32\\schtasks.exe", ["/run"], deadline)
