@@ -47,3 +47,23 @@ it("draws the over-limit sentence beside the message that left annotations out",
   expect(within(row("Retry the import")).getByText("3 open annotations were over the per-turn limit")).toBeTruthy()
   expect(within(row("Ship it")).queryByText(/over the per-turn limit/u)).toBeNull()
 })
+
+// Walk finding F26, Codex review round 1: a message paged back from history
+// still names what it carried, in the chips the thread draws.
+it("names the attachments a message carried on its history row", async () => {
+  const photo: SessionHistoryEntry = {
+    id: "thread:user-photo",
+    sourceId: "user-photo",
+    sessionId: "session-billing",
+    createdAt: "2026-09-08T14:32:00.000Z",
+    category: "messages",
+    role: "user",
+    body: "Describe this image",
+    attachments: [{ kind: "image", mimeType: "image/png", width: 640, height: 480, bytes: 52_000 }],
+  }
+  await panel([photo, message("user-plain", "Ship it")])
+
+  const list = within(row("Describe this image")).getByRole("list", { name: "Sent with this message" })
+  expect(within(list).getByRole("listitem").getAttribute("aria-label")).toBe("PNG image, 52.0 kB, 640 by 480 pixels")
+  expect(within(row("Ship it")).queryByRole("list", { name: "Sent with this message" })).toBeNull()
+})

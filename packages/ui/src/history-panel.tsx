@@ -14,6 +14,7 @@ import {
   EmptyTitle,
 } from "./components/ui/empty"
 import { ScrollArea } from "./components/ui/scroll-area"
+import { SentAttachmentChips } from "./sent-attachment-chips"
 import { CheckpointFork, CheckpointRestore } from "./checkpoint-actions.js"
 import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab.js"
 import type { SessionHistoryFocus } from "./session-history"
@@ -263,6 +264,7 @@ export function HistoryPanel({
                   {entry.category === "messages" && entry.annotationsOverLimit ? (
                     <p className="break-words font-machine text-mono-xs text-warning">{annotationsOverLimitLine(entry.annotationsOverLimit)}</p>
                   ) : null}
+                  {entry.category === "messages" ? <SentAttachmentChips attachments={entry.attachments} align="start" /> : null}
                   {body ? (
                     // The row says what happened in one line. What it produced
                     // is still here, it just stops being the row.

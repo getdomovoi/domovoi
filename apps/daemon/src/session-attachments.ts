@@ -5,9 +5,29 @@ import { basename, relative, resolve } from "node:path"
 import {
   canonicalBase64DecodedByteLength, maximumImageUploadBytes, maximumImageUploadDimension,
   maximumSessionAttachments, maximumTextAttachmentBytes, type ImageUpload, type SessionAttachment,
-  type SessionAttachmentRefusal,
+  type SessionAttachmentRefusal, type SessionAttachmentSummary,
 } from "@getdomovoi/protocol"
 import type { AgentCapabilities, AgentVisualContext } from "./agents.js"
+
+// What a queued send and a recorded user turn keep of each attachment: kind,
+// size and name, never the image bytes or the text. Called on a send the
+// schema already admitted, so an image's data is canonical bounded Base64.
+export function sessionAttachmentSummaries(attachments: readonly SessionAttachment[] | undefined): SessionAttachmentSummary[] {
+  return attachments?.map((attachment): SessionAttachmentSummary => {
+    if ("kind" in attachment) {
+      return attachment.kind === "text"
+        ? { kind: "text", name: attachment.name, bytes: Buffer.byteLength(attachment.content, "utf8") }
+        : { kind: "workspace-file", path: attachment.path }
+    }
+    return {
+      kind: "image",
+      mimeType: attachment.mimeType,
+      width: attachment.width,
+      height: attachment.height,
+      bytes: canonicalBase64DecodedByteLength(attachment.data)!,
+    }
+  }) ?? []
+}
 
 export class SessionAttachmentError extends Error {
   readonly refusal: SessionAttachmentRefusal

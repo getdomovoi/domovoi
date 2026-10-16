@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { imageUploadSchema, maximumSessionAttachments, sessionAttachmentSchema } from "./image-upload.js"
+import { imageUploadSchema, maximumSessionAttachments, sessionAttachmentSchema, sessionAttachmentSummarySchema } from "./image-upload.js"
 
 import { protocolVersionSchema } from "./protocol-version.js"
 import { relayRecoveryParamsSchema, relayRecoveryResultSchema } from "./relay-recovery.js"
@@ -410,9 +410,15 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     // absent on every other message and on a message sent before delivery
     // was recorded.
     annotationsOverLimit: z.number().int().positive().optional(),
+    // What a sent message carried, as its user turn records it, so a message
+    // paged back from history still says so. Absent on every other message.
+    attachments: z.array(sessionAttachmentSummarySchema).min(1).max(maximumSessionAttachments).optional(),
   }).superRefine((entry, context) => {
     if (entry.annotationsOverLimit !== undefined && entry.role !== "user") {
       context.addIssue({ code: "custom", path: ["annotationsOverLimit"], message: "Only a sent message leaves annotations out" })
+    }
+    if (entry.attachments !== undefined && entry.role !== "user") {
+      context.addIssue({ code: "custom", path: ["attachments"], message: "Only a sent message carries attachments" })
     }
   }),
   z.object({
