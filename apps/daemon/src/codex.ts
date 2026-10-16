@@ -40,6 +40,7 @@ import {
   type CodexLaunch,
   type CodexRepositoryServer,
 } from "./codex-repository-trust.js"
+import { codexSecretFileSummary, codexSecretGlobs } from "./codex-secret-globs.js"
 import { credentialStores } from "./credential-stores.js"
 import { redactInventoryText } from "./inventory-redaction.js"
 import { projectInstructions } from "./project-instructions.js"
@@ -106,27 +107,17 @@ export type CodexPolicy = {
 export const codexSecretLocations: readonly string[] = credentialStores.map(({ location }) => location)
 
 // Secret files inside the worktree are refused too (owner ruling, 2026-09-22),
-// in every mode. A test or build that loads one of them inside the sandbox
-// fails with "Operation not permitted".
-export const codexWorktreeSecretPatterns = [
-  "**/.env",
-  "**/.env.*",
-  "**/*.pem",
-  "**/*.key",
-  "**/id_rsa*",
-  "**/.npmrc",
-  "**/.netrc",
-  "**/.pypirc",
-] as const
+// in every mode: every name the card classifier calls secret, in any letter
+// case (codex-secret-globs.ts). A test or build that loads one of them inside
+// the sandbox fails with "Operation not permitted".
+export { codexSecretGlobs } from "./codex-secret-globs.js"
 
 // Codex emits no item for a command its sandbox refuses, so Domovoi cannot see
 // the attempt. The person is told when a session reaches Codex, and the model
 // is asked to say so itself when a command fails on one of these files.
-const codexWorktreeSecretFiles = codexWorktreeSecretPatterns.map((pattern) => pattern.replace(/^\*\*\//, ""))
-
 export const codexWorktreeSecretNotice = {
   body: "Codex cannot read secret files in this worktree.",
-  detail: `The Codex sandbox refuses reads of ${codexWorktreeSecretFiles.slice(0, -1).join(", ")} and ${codexWorktreeSecretFiles.at(-1)} at any depth. A test or build that loads .env fails with "Operation not permitted". Codex does not report the refused read to Domovoi, so it shows only in the agent's reply.`,
+  detail: `The Codex sandbox refuses reads of secret files at any depth and in any letter case: ${codexSecretFileSummary}. A test or build that loads .env fails with "Operation not permitted". Codex does not report the refused read to Domovoi, so it shows only in the agent's reply.`,
 } as const
 
 // The notice names committed copies of those files too, which Codex can
@@ -148,7 +139,7 @@ export function codexSandboxNotice(committed: readonly string[] | undefined): { 
   }
 }
 
-export const codexDeveloperInstructions = `Domovoi runs you in a sandbox that refuses reads of these files anywhere in the worktree: ${codexWorktreeSecretFiles.join(", ")}. A command that opens one of them fails with "Operation not permitted", for example a test or build that loads .env. Domovoi cannot see that failure. When a command fails on one of these files, say so in your reply and name the file.`
+export const codexDeveloperInstructions = `Domovoi runs you in a sandbox that refuses reads of secret files anywhere in the worktree, in any letter case: ${codexSecretFileSummary}. A command that opens one of them fails with "Operation not permitted", for example a test or build that loads .env. Domovoi cannot see that failure. When a command fails on one of these files, say so in your reply and name the file.`
 
 type CodexContextEntry = { kind: "application"; value: string }
 
@@ -222,32 +213,12 @@ const maximumCatalogPages = 50
 // ~/.domovoi whole refused an approved write in the worktree with "Operation
 // not permitted", and in Ask every read of it (walk finding F15). The store is
 // refused by globs that match every name in it but worktrees. In every
-// session worktree, the thread's own included, the secret file patterns are
-// refused as :workspace_roots refuses them in the thread's own, and so is each
-// other credential store at any depth, as the whole-store deny refused them.
+// session worktree, the thread's own included, the secret names are refused
+// as :workspace_roots refuses them in the thread's own: every name the card
+// classifier calls secret, credential stores by card name included, as the
+// whole-store deny refused them (codex-secret-globs.ts).
 const codexProfileStore = "~/.domovoi"
 const codexSessionWorktrees = "worktrees"
-
-// A credential store as a worktree path pattern: by its card name where the
-// directory also holds ordinary files (a project's own .docker directory).
-const codexWorktreeCredentialPatterns: readonly string[] = credentialStores
-  .filter(({ location }) => location !== codexProfileStore)
-  .flatMap(({ location, cardName }) => {
-    const name = cardName ?? location.slice(2)
-    return [`**/${name}`, `**/${name}/**`]
-  })
-
-// The secret file names the card classifier reads (namesSecretFile in
-// permission-policy.ts) that the patterns above do not already name: the
-// daemon's token, credentials.json and gh/hosts.yml, the other key
-// extensions and private key names, and the rest of the .env family
-// (ruling Q119).
-const codexWorktreeClassifiedSecrets: readonly string[] = [
-  "**/daemon.token", "**/credentials.json", "**/gh/hosts.yml",
-  "**/*.p12", "**/*.pfx",
-  "**/id_dsa*", "**/id_ecdsa*", "**/id_ed25519*",
-  "**/.env*", "**/*.env", "**/*.envrc", "**/*.env.*",
-]
 
 // Globs for every entry of directory except kept, and everything below them:
 // a name that differs from kept at some character ([!c] is any one character
@@ -262,22 +233,23 @@ function codexGlobsExcept(directory: string, kept: string): string[] {
   return names.flatMap((name) => [`${directory}/${name}`, `${directory}/${name}/**`])
 }
 
-// Each location once: a TOML table may not repeat a key, and .npmrc, .netrc
-// and .pypirc are both secret files and credential stores.
-function codexDeniedLocations(): string[] {
+// Each location once: a TOML table may not repeat a key.
+function codexDeniedLocations(secretGlobs: readonly string[]): string[] {
   return [...new Set(codexSecretLocations.flatMap((location) => location === codexProfileStore
     ? [
         ...codexGlobsExcept(location, codexSessionWorktrees),
-        ...[...codexWorktreeSecretPatterns, ...codexWorktreeCredentialPatterns, ...codexWorktreeClassifiedSecrets]
-          .map((pattern) => `${location}/${codexSessionWorktrees}/${pattern}`),
+        ...secretGlobs.map((pattern) => `${location}/${codexSessionWorktrees}/${pattern}`),
       ]
     : [location]))]
 }
 
-export function codexAppServerArguments(): string[] {
-  const worktreeSecrets = `{${codexWorktreeSecretPatterns.map((pattern) => `${JSON.stringify(pattern)}="deny"`).join(",")}}`
+// The profiles depend on the platform only in how a glob spells letter case
+// (codex-secret-globs.ts).
+export function codexAppServerArguments(platform: NodeJS.Platform = process.platform): string[] {
+  const secretGlobs = codexSecretGlobs(platform)
+  const worktreeSecrets = `{${secretGlobs.map((pattern) => `${JSON.stringify(pattern)}="deny"`).join(",")}}`
   const denied = `{${[
-    ...codexDeniedLocations().map((location) => `${JSON.stringify(location)}="deny"`),
+    ...codexDeniedLocations(secretGlobs).map((location) => `${JSON.stringify(location)}="deny"`),
     `":workspace_roots"=${worktreeSecrets}`,
   ].join(",")}}`
   const profile = (name: CodexPermissionProfile, base: string) => [

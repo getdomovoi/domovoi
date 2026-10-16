@@ -10586,7 +10586,7 @@ describe("DomovoiDaemon", () => {
       kind: "system",
       body: "Codex cannot read secret files in this worktree.",
       // These worktrees are not repositories, so the history scan cannot finish.
-      detail: "The Codex sandbox refuses reads of .env, .env.*, *.pem, *.key, id_rsa*, .npmrc, .netrc and .pypirc at any depth. A test or build that loads .env fails with \"Operation not permitted\". Codex does not report the refused read to Domovoi, so it shows only in the agent's reply. Domovoi could not finish checking the repository history.",
+      detail: "The Codex sandbox refuses reads of secret files at any depth and in any letter case: .env files, *.pem, *.key, *.p12 and *.pfx files, the private keys id_rsa, id_dsa, id_ecdsa and id_ed25519, daemon.token, credentials.json, gh/hosts.yml, and credential stores such as .ssh, .aws, .kube, .npmrc, .netrc and .pypirc. A test or build that loads .env fails with \"Operation not permitted\". Codex does not report the refused read to Domovoi, so it shows only in the agent's reply. Domovoi could not finish checking the repository history.",
     }
     const noticesFor = (snapshot: WorkspaceSnapshot, sessionId: string) => snapshot.thread.filter(
       (item) => item.sessionId === sessionId && item.kind === "system" && item.body === notice.body,
