@@ -1,7 +1,7 @@
 import { waitForDaemon } from "./test-wait-for.js"
 import type { ChildProcess } from "node:child_process"
 import { EventEmitter, once } from "node:events"
-import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
+import { chmod, mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { PassThrough } from "node:stream"
@@ -26,6 +26,7 @@ import {
   OpenCodeMessageIdsExhaustedError,
   openCodeMessageOrder,
   permissionAnswerConfirmMs,
+  requireOpenCodeClient,
   type OpenCodeClient,
   type OpenCodeEvent,
   type OpenCodeFactory,
@@ -144,6 +145,8 @@ function harness() {
       subscribe: vi.fn(async () => ({ stream })),
     },
     postSessionIdPermissionsPermissionId: vi.fn(async () => ({ data: true })),
+    // POST /instance/dispose: forgets what the server loaded for a directory.
+    instance: { dispose: vi.fn(async (_options?: unknown) => ({ data: true })) },
     // The directory's tool servers and tool ids, read before a session opens
     // and before each prompt: none of the person's, and OpenCode's own tools.
     mcp: { status: vi.fn(async (_options?: unknown): Promise<{ data?: unknown }> => ({ data: {} })) },
@@ -634,6 +637,167 @@ describe("OpenCodeSdkAdapter", () => {
       prompt: "Must not run",
       runtime: runtime("build"),
     })).rejects.toThrow("OpenCode session open-session is not loaded")
+    await adapter.close()
+  })
+})
+
+describe.each([
+  ["OpenCode", (factory: OpenCodeFactory) => new OpenCodeSdkAdapter(factory)],
+  ["Kilo", (factory: OpenCodeFactory) => new KiloSdkAdapter(factory)],
+] as const)("%s model catalogue", (name, create) => {
+  // Walk finding F25: a provider signed in after the server started was never
+  // listed. The servers build a directory's catalogue (credentials and models)
+  // the first time that directory is asked about and keep it until the
+  // directory's instance is disposed (checked against OpenCode 1.18.33 and
+  // 1.19.3). This fake keeps catalogues the same way.
+  function instanceCatalogues(client: ReturnType<typeof harness>["client"]) {
+    const signedIn = new Set(["anthropic"])
+    const instances = new Map<string, string[]>()
+    const directories: string[] = []
+    const directoryOf = (options: unknown) => {
+      const directory = (options as { query?: { directory?: string } } | undefined)?.query?.directory
+      return directory ?? "<server working directory>"
+    }
+    const model = (provider: string) => provider === "anthropic"
+      ? { id: "sonnet", name: "Claude Sonnet" }
+      : { id: "anthropic/claude-opus-4.1", name: "Anthropic: Claude Opus 4.1" }
+    client.config.providers.mockImplementation((async (options?: unknown) => {
+      const directory = directoryOf(options)
+      directories.push(directory)
+      let providers = instances.get(directory)
+      if (!providers) instances.set(directory, providers = [...signedIn])
+      return {
+        data: {
+          default: Object.fromEntries(providers.map((provider) => [provider, model(provider).id])),
+          providers: providers.map((provider) => ({
+            id: provider,
+            name: provider === "anthropic" ? "Anthropic" : "OpenRouter",
+            models: { [model(provider).id]: { ...model(provider), status: "active" } },
+          })),
+        },
+      }
+    }) as never)
+    client.instance.dispose.mockImplementation(async (options?: unknown) => {
+      instances.delete(directoryOf(options))
+      return { data: true }
+    })
+    return { signedIn, instances, directories }
+  }
+
+  it("lists a provider signed in after the server started", async () => {
+    const { client, factory } = harness()
+    const { signedIn } = instanceCatalogues(client)
+    const adapter = create(factory)
+
+    expect((await adapter.listModels()).map((model) => model.id)).toEqual(["anthropic/sonnet"])
+    signedIn.add("openrouter")
+    expect((await adapter.listModels()).map((model) => model.id)).toEqual([
+      "anthropic/sonnet",
+      "openrouter/anthropic/claude-opus-4.1",
+    ])
+    await adapter.close()
+  })
+
+  it("reads each catalogue in a directory of its own and leaves nothing behind", async () => {
+    const { client, factory } = harness()
+    const { instances, directories } = instanceCatalogues(client)
+    const adapter = create(factory)
+    await adapter.listModels()
+    await adapter.listModels()
+
+    const [first, second] = directories
+    expect(directories).toHaveLength(2)
+    expect(first).not.toBe(second)
+    expect(first).not.toBe("<server working directory>")
+    expect(client.config.get).toHaveBeenCalledWith(expect.objectContaining({ query: { directory: first } }))
+    // The server forgot both, and neither directory is left on disk.
+    expect(instances.size).toBe(0)
+    await expect(readdir(first!)).rejects.toMatchObject({ code: "ENOENT" })
+    await expect(readdir(second!)).rejects.toMatchObject({ code: "ENOENT" })
+    await adapter.close()
+  })
+
+  it.each([
+    ["refuses", () => Promise.reject(new Error("server gone"))],
+    ["answers with an error", () => Promise.resolve({ error: { name: "UnknownError" } })],
+  ])("lists the models when the server %s instead of forgetting the directory", async (_how, answer) => {
+    const { client, factory } = harness()
+    const { directories } = instanceCatalogues(client)
+    client.instance.dispose.mockImplementationOnce((async (options?: { throwOnError?: boolean }) => {
+      // The SDK throws an error answer only when asked to.
+      const result = await answer()
+      if (options?.throwOnError && "error" in result) throw result.error
+      return result
+    }) as never)
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const adapter = create(factory)
+
+    expect((await adapter.listModels()).map((model) => model.id)).toEqual(["anthropic/sonnet"])
+    expect(logged).toHaveBeenCalledWith(expect.stringContaining("forget a model catalogue directory"), expect.anything())
+    await expect(readdir(directories[0]!)).rejects.toMatchObject({ code: "ENOENT" })
+    logged.mockRestore()
+    await adapter.close()
+  })
+
+  // Every read leaves a directory on the server until it is forgotten, so a
+  // client that cannot forget one is refused rather than left to pile them up.
+  it("refuses a client that cannot have the server forget a directory", () => {
+    const { client } = harness()
+    expect(() => requireOpenCodeClient(client, name)).not.toThrow()
+    expect(() => requireOpenCodeClient({ ...client, instance: {} }, name))
+      .toThrow(`${name} client returned invalid data`)
+  })
+
+  it.skipIf(process.platform === "win32")("lists the models when the directory cannot be removed", async () => {
+    const { client, factory } = harness()
+    const { directories } = instanceCatalogues(client)
+    const read = client.config.providers.getMockImplementation() as (options?: unknown) => Promise<unknown>
+    // A subdirectory nothing may read or enter, so removing the directory fails.
+    client.config.providers.mockImplementationOnce((async (options?: unknown) => {
+      const locked = join((options as { query: { directory: string } }).query.directory, "locked")
+      await mkdir(join(locked, "inner"), { recursive: true })
+      await chmod(locked, 0o000)
+      return read(options)
+    }) as never)
+    const logged = vi.spyOn(console, "error").mockImplementation(() => undefined)
+    const adapter = create(factory)
+
+    try {
+      expect((await adapter.listModels()).map((model) => model.id)).toEqual(["anthropic/sonnet"])
+      expect(logged).toHaveBeenCalledWith(expect.stringContaining(`remove a ${name} model catalogue directory`), expect.anything())
+    } finally {
+      await chmod(join(directories[0]!, "locked"), 0o700)
+      scratchDirectories.push(directories[0]!)
+      logged.mockRestore()
+      await adapter.close()
+    }
+  })
+
+  it("forgets the directory only after both reads in it have settled", async () => {
+    const { client, factory } = harness()
+    const { instances } = instanceCatalogues(client)
+    const read = client.config.providers.getMockImplementation() as (options?: unknown) => Promise<unknown>
+    const providersAnswer = deferred<void>()
+    const order: string[] = []
+    client.config.get.mockRejectedValueOnce(new Error("config refused"))
+    client.config.providers.mockImplementationOnce((async (options?: unknown) => {
+      await providersAnswer.promise
+      order.push("catalogue read")
+      return read(options)
+    }) as never)
+    client.instance.dispose.mockImplementation(async (options?: unknown) => {
+      order.push("directory forgotten")
+      instances.delete((options as { query: { directory: string } }).query.directory)
+      return { data: true }
+    })
+    const adapter = create(factory)
+
+    const listing = adapter.listModels()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    providersAnswer.resolve()
+    await expect(listing).rejects.toThrow("config refused")
+    expect(order).toEqual(["catalogue read", "directory forgotten"])
+    expect(instances.size).toBe(0)
     await adapter.close()
   })
 })
