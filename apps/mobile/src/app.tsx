@@ -77,7 +77,7 @@ import { promptProblem, recordedBuildBasis, sendReadinessOverSocket, sessionDeta
 import { queuedCancelParams, sendDelivery } from "./session-delivery"
 import { shellState, unreachableShell } from "./shell-state"
 import { waitingCount } from "./session-rows"
-import { TabletShell, type GateProblem } from "./tablet-shell"
+import { railSelectionLeaves, TabletShell, type GateProblem } from "./tablet-shell"
 import { useTheme } from "./theme/theme-provider"
 import {
   missingSkillProblem,
@@ -86,6 +86,8 @@ import {
   skillSelectionLabel,
 } from "./turn-skills"
 import "./global.css"
+
+const resizeWaitLine = "An image is still being resized for this turn. Send again once it shows here."
 
 // Both sources hand back the file and its Base64 at full quality; the resize
 // and re-encode happen afterwards, once, in attachmentFrom.
@@ -142,17 +144,75 @@ export function App() {
   const decideProblemFor = (approvalId: string) => decideProblem?.approvalId === approvalId ? decideProblem.text : ""
   // Frames 13 and 14: what the next turn carries besides words. Held here
   // and sent with the turn; nothing is kept once the send is answered.
-  const [attachments, setAttachments] = useState<Attachment[]>([])
+  const [attachments, setAttachments] = useState<readonly Attachment[]>([])
+  // The queue as it is now. Handlers can run with a render's attachments
+  // that are already stale: the attach sheet holds the pick it was given
+  // until its slide-out ends, and a Send can be handled after a resize
+  // finished but before React drew it. So every change goes through
+  // updateQueue, which moves the ref at once, and pickImage and sendMessage
+  // read the ref.
+  const queued = useRef<readonly Attachment[]>([])
+  const updateQueue = (change: (current: readonly Attachment[]) => readonly Attachment[]) => {
+    queued.current = change(queued.current)
+    setAttachments(queued.current)
+  }
   const [attachProblem, setAttachProblem] = useState("")
+  // A large image is still being resized after the picker closes, while the
+  // composer takes taps again. It belongs to the turn and the session it was
+  // picked for: a send waits for it (picking counts the ones in progress in
+  // the current epoch), and leaving the session drops it (leaving bumps
+  // queueEpoch, and a pick that finishes under a newer epoch is not added and
+  // holds no send). Every way out of a session's composer calls dropQueue:
+  // back, another session from the list or the tablet's rail, a fresh
+  // session, another tab, and Remove N images.
+  const picking = useRef(0)
+  const queueEpoch = useRef(0)
+  // The session a send was held for while an image was resizing. The line
+  // goes once no pick is in progress, so it never outlives the image it
+  // waited for, and a resize that failed says so instead.
+  const resizeWaitFor = useRef<string | undefined>(undefined)
+  const clearResizeWait = () => {
+    const sessionId = resizeWaitFor.current
+    resizeWaitFor.current = undefined
+    if (!sessionId) return
+    setSendProblems((current) => {
+      if (current.get(sessionId) !== resizeWaitLine) return current
+      const next = new Map(current)
+      next.delete(sessionId)
+      return next
+    })
+  }
+  const dropQueue = () => {
+    queueEpoch.current += 1
+    picking.current = 0
+    clearResizeWait()
+    updateQueue(() => [])
+    setAttachProblem("")
+  }
   const pickImage = async (source: "library" | "camera") => {
     setAttachProblem("")
-    if (attachments.length >= maximumSessionAttachments) {
+    // Picks still being resized hold a place, so a third is refused before
+    // it is resized, in the order the images were chosen.
+    if (queued.current.length + picking.current >= maximumSessionAttachments) {
       setAttachProblem(`Two images per turn. Remove one to add another.`)
       return
     }
-    const outcome = await pickAttachment(source, imageSourcePicker, encodeImage)
-    if (outcome.kind === "problem") setAttachProblem(outcome.text)
-    if (outcome.kind === "added") setAttachments((current) => [...current, outcome.attachment])
+    const epoch = queueEpoch.current
+    picking.current += 1
+    try {
+      const outcome = await pickAttachment(source, imageSourcePicker, encodeImage)
+      if (epoch !== queueEpoch.current) return
+      if (outcome.kind === "problem") setAttachProblem(outcome.text)
+      if (outcome.kind === "added") {
+        updateQueue((current) => current.length >= maximumSessionAttachments ? current : [...current, outcome.attachment])
+      }
+    } finally {
+      // A newer epoch has already set the count to zero for its own picks.
+      if (epoch === queueEpoch.current) {
+        picking.current -= 1
+        if (picking.current === 0) clearResizeWait()
+      }
+    }
   }
   // The plan starts pinned: the design leads the thread with a strip saying
   // where the machine is, and the whole plan is one tap away. Unpinning
@@ -299,6 +359,23 @@ export function App() {
     () => snapshot && openSessionId ? sessionDetail(snapshot, openSessionId, clientAccess) : undefined,
     [clientAccess, openSessionId, snapshot],
   )
+
+  // The daemon can remove the open session while an image for it is still
+  // being resized. The tablet then shows another session without a rail tap,
+  // and its composer draws no images, so what was picked is dropped here
+  // rather than sent with that session's next turn unseen.
+  const openSessionGone = Boolean(snapshot && openSessionId && !snapshot.sessions.some((session) => session.id === openSessionId))
+  const dropQueueRef = useRef(dropQueue)
+  dropQueueRef.current = dropQueue
+  useEffect(() => {
+    if (openSessionGone) dropQueueRef.current()
+  }, [openSessionGone])
+  // The tablet's composer draws no images (Q129). Turning into the tablet
+  // layout drops what was picked, landed or still resizing, rather than
+  // letting it go with the next tablet send unseen.
+  useEffect(() => {
+    if (tablet) dropQueueRef.current()
+  }, [tablet])
 
   const openArtifacts = useMemo(
     () => snapshot && openSessionId ? artifactRows(snapshot, openSessionId) : [],
@@ -754,8 +831,7 @@ export function App() {
       setOpenArtifactId(undefined)
       setDraft("")
       setSendProblem(startedId, "")
-      setAttachments([])
-      setAttachProblem("")
+      dropQueue()
     } catch (cause) {
       setStartRefusal(refusalOf(cause))
       setStartProblem(cause instanceof Error ? cause.message : "The session was not started")
@@ -781,6 +857,7 @@ export function App() {
     try {
       const sessionId = await startFreshSession(snapshot, prompt, mutate, client)
       setFreshOpen(false)
+      if (sessionId !== openSessionId) dropQueue()
       setOpenSessionId(sessionId)
     } catch (cause) {
       setFreshRefusal(refusalOf(cause))
@@ -834,10 +911,18 @@ export function App() {
     // The plus was offered on a hello that said yes; the connection may have
     // been replaced since by one that did not. The daemon would refuse the
     // whole send, so say so here rather than after the bytes went.
-    if (attachments.length > 0 && !imageAttachments) {
+    if (queued.current.length > 0 && !imageAttachments) {
       setSendProblem(sessionId, "This daemon does not take images. Remove them to send the words.")
       return
     }
+    // An image picked for this turn is still being resized. Sending now
+    // would send the words without it and leave it for the next turn.
+    if (picking.current > 0) {
+      setSendProblem(sessionId, resizeWaitLine)
+      resizeWaitFor.current = sessionId
+      return
+    }
+    const sent = queued.current
     inFlightSend.current = true
     setSending(true)
     setSendProblem(sessionId, "")
@@ -853,12 +938,14 @@ export function App() {
         review: snapshot ? openCommentReviewFor(snapshot, sessionId) : { annotationIds: [] },
         ...(session ? sendDelivery(session) : {}),
         ...(selection ? { skillSelection: selection } : {}),
-        ...(attachments.length > 0
-          ? { attachments: attachments.map(({ mimeType, width, height, data }) => ({ mimeType, width, height, data })) }
+        ...(sent.length > 0
+          ? { attachments: sent.map(({ mimeType, width, height, data }) => ({ mimeType, width, height, data })) }
           : {}),
       })
       setDraft("")
-      setAttachments([])
+      // Only what went with the turn leaves the queue: an image picked while
+      // the send was answered is for the next turn.
+      updateQueue((current) => current.filter((item) => !sent.includes(item)))
       setAttachProblem("")
     } catch (cause) {
       const refusal = turnSkillRefusalFrom(cause)
@@ -1024,6 +1111,7 @@ export function App() {
             decideProblem={decideProblem}
             sendProblems={sendProblems}
             onSelectSession={(sessionId) => {
+              if (railSelectionLeaves(sessionId, { openSessionId, activeSessionId: snapshot.activeSessionId })) dropQueue()
               setOpenSessionId(sessionId)
               setOpenApprovalId(undefined)
               setDraft("")
@@ -1033,7 +1121,11 @@ export function App() {
               setFreshRefusal(undefined)
               setFreshOpen(true)
             }}
-            onOpenMachines={() => selectTab("machines")}
+            onOpenMachines={() => {
+              // Leaving for Machines is leaving, as the phone's tab bar is.
+              dropQueue()
+              selectTab("machines")
+            }}
             onChangeDraft={(next) => {
               setDraft(next)
               const selected = openSessionId ?? snapshot.activeSessionId
@@ -1087,8 +1179,7 @@ export function App() {
             onBack={() => {
               setOpenSessionId(undefined)
               setOpenArtifactId(undefined)
-              setAttachments([])
-              setAttachProblem("")
+              dropQueue()
             }}
             onOpenApproval={setOpenApprovalId}
             onOpenArtifact={setOpenArtifactId}
@@ -1110,13 +1201,10 @@ export function App() {
             onPickLibrary={() => void pickImage("library")}
             onTakePhoto={() => void pickImage("camera")}
             onRemoveAttachment={(index) => {
-              setAttachments((current) => current.filter((_item, at) => at !== index))
+              updateQueue((current) => current.filter((_item, at) => at !== index))
               setAttachProblem("")
             }}
-            onRemoveAttachments={() => {
-              setAttachments([])
-              setAttachProblem("")
-            }}
+            onRemoveAttachments={dropQueue}
             modelImages={openModelImages}
             starting={starting}
             startProblem={startProblem}
@@ -1168,6 +1256,7 @@ export function App() {
               onSelect={(next) => {
                 if (next === "sessions") return
                 setOpenSessionId(undefined)
+                dropQueue()
                 selectTab(next)
               }}
               onFootprint={setTabFootprint}
@@ -1246,8 +1335,7 @@ export function App() {
                     setDraft("")
                     // Same for what was picked to go with it. A send problem
                     // stays: it is kept per session and shown there.
-                    setAttachments([])
-                    setAttachProblem("")
+                    dropQueue()
                   }
                   setOpenSessionId(sessionId)
                 }}
