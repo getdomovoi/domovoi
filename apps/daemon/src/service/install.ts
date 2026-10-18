@@ -1541,12 +1541,17 @@ async function statusWithDeadline(
       return matches.length === 1 && Number.isSafeInteger(value) ? value : undefined
     }
     const pid = state === "running" ? field("pid") : undefined
-    const exit = field("last exit code")
+    // Walk F20: launchd prints "(never exited)" when the job has not exited
+    // since it was loaded. That is a known last exit. Two exit lines of any
+    // form are ambiguous and stay unknown.
+    const exits = state === undefined ? [] : [...printed.stdout.matchAll(/^\tlast exit code = [^\r\n]*\r?$/gm)]
+    const neverExited = exits.length === 1 && /^\tlast exit code = \(never exited\)\r?$/u.test(exits[0]?.[0] ?? "")
+    const exit = exits.length === 1 ? field("last exit code") : undefined
     return {
       installed,
       running: state === "running",
       ...(pid !== undefined && pid > 0 && pid <= 2_147_483_647 ? { pid } : {}),
-      ...(exit === undefined ? {} : { lastExit: `code ${exit}` }),
+      ...(neverExited ? { lastExit: "never exited" } : exit === undefined ? {} : { lastExit: `code ${exit}` }),
       detail: installed
         ? `${path} is ${state === undefined ? "not loaded" : `loaded (${state})`}`
         : `no launch agent at ${path}`,
