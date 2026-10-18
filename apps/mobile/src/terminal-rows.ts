@@ -229,33 +229,33 @@ function drawnStart(record: TerminalRecord): number {
 }
 
 // Each change to a record is drawn by more than one view, the thread's block
-// and the open terminal, so the last few texts read are kept.
-const recentlyDrawn = new Map<string, DrawnText>()
+// and the open terminal, so the last few texts read are kept, each at the
+// grid it was read at.
+const recentlyDrawn: Array<{ text: string, columns: number | undefined, read: DrawnText }> = []
 
-function drawn(text: string): DrawnText {
-  const kept = recentlyDrawn.get(text)
-  if (kept) return kept
-  const read = drawnText(text)
-  recentlyDrawn.set(text, read)
-  for (const oldest of recentlyDrawn.keys()) {
-    if (recentlyDrawn.size <= 4) break
-    recentlyDrawn.delete(oldest)
-  }
+function drawn(text: string, columns: number | undefined): DrawnText {
+  const kept = recentlyDrawn.find((entry) => entry.columns === columns && entry.text === text)
+  if (kept) return kept.read
+  const read = drawnText(text, columns)
+  recentlyDrawn.push({ text, columns, read })
+  if (recentlyDrawn.length > 4) recentlyDrawn.shift()
   return read
 }
 
 // What a terminal draws, read as lines of cells (terminal-line-model.ts):
 // colour is dropped; a carriage return, a backspace, a tab and a cursor move
 // along the line move the cursor, counting a wide character as two cells and
-// a combining mark as none; an erase erases. The line still being written is
-// kept; the empty line after a final newline is not.
-export function terminalLines(text: string): string[] {
-  const { lines } = drawn(text)
+// a combining mark as none; an erase erases. Given the holder's grid width,
+// a move between the rows the holder wraps a long line into is followed too.
+// The line still being written is kept; the empty line after a final newline
+// is not.
+export function terminalLines(text: string, columns?: number): string[] {
+  const { lines } = drawn(text, columns)
   return lines.at(-1) === "" ? lines.slice(0, -1) : [...lines]
 }
 
 export function terminalLineCount(record: TerminalRecord): number {
-  return terminalLines(record.text.slice(drawnStart(record))).length
+  return terminalLines(record.text.slice(drawnStart(record)), record.summary.cols).length
 }
 
 // The record, then live output, with the marks the design draws between them.
@@ -270,10 +270,11 @@ export function terminalRows(record: TerminalRecord, connected: boolean): Termin
   }
   const start = drawnStart(record)
   const text = record.text.slice(start)
-  const lines = terminalLines(text)
+  const columns = record.summary.cols
+  const lines = terminalLines(text, columns)
   // Live output that began inside the line not drawn has nothing above it.
   const liveAt = record.liveAt !== undefined ? record.liveAt - start : undefined
-  const markAt = record.liveFrom && liveAt !== undefined && liveAt > 0 ? wholeLines(text, liveAt) : undefined
+  const markAt = record.liveFrom && liveAt !== undefined && liveAt > 0 ? wholeLines(text, liveAt, columns) : undefined
   const liveMark: TerminalRow | undefined = record.liveFrom
     ? { kind: "mark", key: "live-from", text: `Recent output above. Live from ${clock(record.liveFrom)}.` }
     : undefined
@@ -315,8 +316,8 @@ function endingSignal(summary: TerminalSummary): number | undefined {
 // after the last. A line break inside a control string's payload draws
 // nothing. The reader reads in order, so reading the whole text says what
 // reading up to the point would.
-function wholeLines(text: string, before: number): number {
-  return drawn(text).lineStarts.filter((start) => start <= before).length
+function wholeLines(text: string, before: number, columns: number): number {
+  return drawn(text, columns).lineStarts.filter((start) => start <= before).length
 }
 
 // Failed is a shell that exited with a code other than zero. A shell ended by

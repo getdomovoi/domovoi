@@ -2,11 +2,23 @@ import { cellWidth } from "./terminal-cell-width"
 
 // What a terminal draws, as lines of cells. The phone draws lines and lets a
 // long one wrap at its own width, so this models one line at a time: the
-// cursor moves along the current line, and a line break starts the next. A
-// move to another row, as a full-screen program makes, is read and dropped,
-// and what follows is drawn on the current line. A line wider than the
-// holder's grid is not wrapped into rows here either, so a carriage return
-// returns to the start of the whole line, not of its last row.
+// cursor moves along the current line, and a line break starts the next.
+//
+// Given the holder's grid width, a line wider than the grid is read as the
+// rows the holder's terminal wraps it into, without breaking it for the
+// phone. A carriage return goes to the start of the cursor's row, a move
+// along the row stops at its edges, an erase in line erases that row, and a
+// move up or down goes between the line's rows, as a shell does when what is
+// typed, or a suggestion after it, runs past the grid (zsh moves down a row
+// and returns, rather than printing a line break, before a command's output,
+// F17). A move down past the line's last row starts the next line, once
+// however far it goes: the phone keeps no screen, so how far below is not
+// known. A move up past the line's first row is dropped, and what follows is
+// drawn on the current line; a later move down first undoes that. Without
+// the grid, or for any other move to another row, as a full-screen program
+// makes, the move is read and dropped, and a carriage return returns to the
+// start of the whole line. The grid is the holder's current one, so a line
+// drawn before the holder resized is read at the new width.
 //
 // The escape sequences are read as the DEC VT parser reads them
 // (https://vt100.net/emu/dec_ansi_parser): a control sequence runs to its
@@ -59,8 +71,13 @@ class Line {
   blankBelow = 0
   // The farthest the cursor has been on this line.
   farthest = 0
+  // A character just filled the last cell of a row of the holder's grid. The
+  // terminal keeps the cursor on that cell until the next character wraps, so
+  // anything but a character acts there (settle).
+  wrapPending = false
 
-  constructor(readonly spare: SpareBlanks) {}
+  // columns: the holder's grid width, or undefined to read the line as one row.
+  constructor(readonly spare: SpareBlanks, readonly columns: number | undefined) {}
 
   get length(): number {
     const last = this.rows.length - 1
@@ -107,6 +124,87 @@ class Line {
     this.blankBelow = Math.min(this.blankBelow, this.column)
     this.column += width
     this.farthest = Math.max(this.farthest, this.column)
+    this.wrapPending = this.columns !== undefined && this.column % this.columns === 0
+  }
+
+  // Puts the cursor where the terminal has it after a character filled a
+  // row: on that row's last cell.
+  settle(): void {
+    if (!this.wrapPending) return
+    this.wrapPending = false
+    this.column -= 1
+  }
+
+  // Where the cursor's row of the holder's grid starts and ends. Without the
+  // grid the line is one row, as far as a move can reach.
+  gridRowStart(): number {
+    return this.columns === undefined ? 0 : this.column - (this.column % this.columns)
+  }
+
+  gridRowEnd(): number {
+    return this.columns === undefined ? Infinity : this.gridRowStart() + this.columns
+  }
+
+  carriageReturn(): void {
+    this.settle()
+    this.moveTo(this.gridRowStart())
+  }
+
+  backspace(): void {
+    this.settle()
+    this.moveTo(Math.max(this.column - 1, this.gridRowStart()))
+  }
+
+  // Moves along the cursor's row, stopping at its edges.
+  forward(count: number): void {
+    this.settle()
+    this.moveTo(Math.min(this.column + count, this.gridRowEnd() - 1))
+  }
+
+  back(count: number): void {
+    this.settle()
+    this.moveTo(Math.max(this.column - count, this.gridRowStart()))
+  }
+
+  toColumn(column: number): void {
+    this.settle()
+    this.moveTo(this.gridRowStart() + (this.columns === undefined ? column : Math.min(column, this.columns)) - 1)
+  }
+
+  // Up a number of rows within this line, and to the row's start for CPL.
+  // What is left over goes up past the line's first row.
+  up(count: number, toStart: boolean): number {
+    this.settle()
+    if (this.columns === undefined) return count
+    const moved = Math.min(count, Math.floor(this.column / this.columns))
+    this.moveToRow(this.column - moved * this.columns)
+    if (toStart) this.moveTo(this.gridRowStart())
+    return count - moved
+  }
+
+  // Down a number of rows within this line's text, and to the row's start for
+  // CNL. What is left over goes past the line's last row.
+  down(count: number, toStart: boolean): number {
+    this.settle()
+    if (this.columns === undefined) return 0
+    this.trim()
+    const lastRow = this.length > 0 ? Math.floor((this.length - 1) / this.columns) : 0
+    const moved = Math.min(count, Math.max(0, lastRow - Math.floor(this.column / this.columns)))
+    this.moveToRow(this.column + moved * this.columns)
+    if (toStart) this.moveTo(this.gridRowStart())
+    return count - moved
+  }
+
+  // A move between rows of this line lands where the cursor or the text has
+  // already been, so the widest grid's margin, which bounds moves along a
+  // row, does not apply. Past both it spends spare blanks as any move does.
+  moveToRow(column: number): void {
+    if (column <= Math.max(this.length, this.farthest)) {
+      this.column = column
+      this.wrapPending = false
+    } else {
+      this.moveTo(column)
+    }
   }
 
   // Blank one cell. Either half of a wide character takes the whole of it.
@@ -151,10 +249,14 @@ class Line {
     }
     this.column = target
     this.farthest = Math.max(this.farthest, target)
+    this.wrapPending = false
   }
 
+  // The next tab stop on the cursor's row, or the row's last cell.
   tab(): void {
-    this.moveTo((Math.floor(this.column / tabWidth) + 1) * tabWidth)
+    this.settle()
+    const start = this.gridRowStart()
+    this.moveTo(Math.min(start + (Math.floor((this.column - start) / tabWidth) + 1) * tabWidth, this.gridRowEnd() - 1))
   }
 
   // Where the cursor's row of the widest grid ends.
@@ -163,8 +265,29 @@ class Line {
   }
 
   // Erase in line: 0 from the cursor to the end, 1 from the start through
-  // the cursor, 2 all of it.
+  // the cursor, 2 all of it. At the holder's grid the line is the cursor's
+  // row: rows after it keep their text, and a row before it is blanked
+  // rather than cut, so the rows after it stay where they are.
   erase(mode: number): void {
+    this.settle()
+    const start = this.gridRowStart()
+    const end = this.gridRowEnd()
+    if (this.length > end && mode !== 1) {
+      this.blank(mode === 0 ? this.column : start, end)
+      return
+    }
+    if (start > 0) {
+      const through = Math.min(this.column, this.length - 1)
+      if (mode === 1 && through >= start) {
+        this.blank(start, through + 1)
+        this.trim()
+      } else if (mode !== 1) {
+        const from = mode === 0 ? this.column : start
+        this.clear(from)
+        this.truncate(from)
+      }
+      return
+    }
     if (mode === 0) {
       this.clear(this.column)
       this.truncate(this.column)
@@ -365,11 +488,16 @@ class Reader {
 // break the terminal drew. A line break inside a payload is not one.
 export type DrawnText = { lines: string[], lineStarts: number[] }
 
-export function drawnText(text: string): DrawnText {
+// columns: the holder's grid width, when known (see the top of this file).
+export function drawnText(text: string, columns?: number): DrawnText {
   const lines: string[] = []
   const lineStarts: number[] = []
   const spare: SpareBlanks = { cells: spareBlankCells }
-  let line = new Line(spare)
+  const grid = columns !== undefined && Number.isInteger(columns) && columns > 0 ? Math.min(columns, widestGrid) : undefined
+  let line = new Line(spare, grid)
+  // Rows the cursor went up past the current line's first row, which the
+  // phone does not follow. A move down comes back through them first.
+  let above = 0
   const reader = new Reader()
   let index = 0
   for (const char of text) {
@@ -380,16 +508,45 @@ export function drawnText(text: string): DrawnText {
       if (char === "\n") {
         lines.push(line.drawn())
         lineStarts.push(index)
-        line = new Line(spare)
-      } else if (char === "\r") line.moveTo(0)
-      else if (char === "\b") line.moveTo(line.column - 1)
+        line = new Line(spare, grid)
+        above = 0
+      } else if (char === "\r") line.carriageReturn()
+      else if (char === "\b") line.backspace()
       else if (char === "\t") line.tab()
     } else if (action === "dispatch") {
-      dispatch(line, char, reader.parameters)
+      const vertical = verticalMove(char, reader.parameters)
+      if (vertical === undefined) dispatch(line, char, reader.parameters)
+      else if (grid === undefined || vertical.rows === 0) continue
+      else if (vertical.rows < 0) {
+        above += line.up(-vertical.rows, vertical.toStart)
+      } else {
+        const back = Math.min(vertical.rows, above)
+        above -= back
+        const past = line.down(vertical.rows - back, vertical.toStart)
+        if (past > 0) {
+          const column = vertical.toStart ? 0 : line.column - line.gridRowStart()
+          lines.push(line.drawn())
+          lineStarts.push(index)
+          line = new Line(spare, grid)
+          line.moveTo(column)
+        } else if (vertical.toStart) {
+          line.carriageReturn()
+        }
+      }
     }
   }
   lines.push(line.drawn())
   return { lines, lineStarts }
+}
+
+// A move up (negative) or down a number of rows: CUU, CUD, and CPL and CNL,
+// which also go to the row's start. A private sequence moves nothing.
+function verticalMove(final: string, parameters: string): { rows: number, toStart: boolean } | undefined {
+  if (final !== "A" && final !== "B" && final !== "E" && final !== "F") return undefined
+  if (/^[<=>?]/.test(parameters)) return { rows: 0, toStart: false }
+  const first = Number.parseInt(parameters.split(";")[0] ?? "", 10)
+  const count = Math.min(Math.max(1, Number.isNaN(first) ? 0 : first), widestGrid)
+  return { rows: final === "A" || final === "F" ? -count : count, toStart: final === "E" || final === "F" }
 }
 
 function dispatch(line: Line, final: string, parameters: string): void {
@@ -400,9 +557,9 @@ function dispatch(line: Line, final: string, parameters: string): void {
   const count = Math.min(Math.max(1, given), widestGrid)
   switch (final) {
     case "K": line.erase(given); break
-    case "C": case "a": line.moveTo(line.column + count); break
-    case "D": line.moveTo(line.column - count); break
-    case "G": case "`": line.moveTo(count - 1); break
+    case "C": case "a": line.forward(count); break
+    case "D": line.back(count); break
+    case "G": case "`": line.toColumn(count); break
     case "X": line.eraseCharacters(count); break
     case "P": line.deleteCharacters(count); break
     case "@": line.insertCharacters(count); break
