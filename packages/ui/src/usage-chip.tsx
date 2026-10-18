@@ -348,7 +348,17 @@ export function UsageChip({
   const [reading, setReading] = useState<UsageReading>()
   const readRef = useRef<AbortController | null>(null)
   useEffect(() => () => readRef.current?.abort(), [])
-  if (!usageChipTriggerText(usage, today)) return null
+  // A chip that hides unmounts its menu without a close, so it drops its
+  // reading and any read in flight here; the chip that returns starts from
+  // its own totals.
+  const visible = usageChipTriggerText(usage, today) !== undefined
+  useEffect(() => {
+    if (visible) return
+    readRef.current?.abort()
+    readRef.current = null
+    setReading(undefined)
+  }, [visible])
+  if (!visible) return null
   // While open, the chip's number, its accessible name, the ring, the note and
   // the rows all describe one reading: the one taken on open, or the chip's
   // own until it arrives. Closing drops the reading, and the chip goes back to

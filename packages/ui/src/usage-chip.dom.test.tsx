@@ -63,6 +63,34 @@ it("draws the session and today read with the turn, not the chip's older totals"
   expect(screen.queryByText("42.1k tokens")).toBeNull()
 })
 
+// The chip hides while open (no session usage and no day), then comes back
+// with newer totals: it shows those, not the reading from before it hid, and
+// a read still in flight when it hid is aborted.
+it("drops its reading when it hides, so the chip that returns shows the fresh total", async () => {
+  const reads: Deferred[] = []
+  const loadUsageReading = vi.fn((signal: AbortSignal) => new Promise<UsageReading>((resolve) => { reads.push({ resolve, signal }) }))
+  const older: SessionUsage = { ...usage, inputTokens: 190_000, outputTokens: 10_000, totalTokens: 200_000 }
+  const { rerender } = render(<UsageChip usage={usage} today={null} loadUsageReading={loadUsageReading} />)
+  const user = userEvent.setup()
+
+  await user.click(screen.getByRole("button", { name: /^Usage: / }))
+  await act(async () => { reads[0]!.resolve({ turn: undefined, usage: older, today: null }) })
+  expect(screen.getByRole("button", { name: "Usage: 200k tokens this session, no context reported", hidden: true })).toBeTruthy()
+  rerender(<UsageChip usage={null} today={null} loadUsageReading={loadUsageReading} />)
+  expect(screen.queryByRole("button", { name: /^Usage/, hidden: true })).toBeNull()
+
+  const fresh: SessionUsage = { ...usage, inputTokens: 290_000, outputTokens: 10_000, totalTokens: 300_000 }
+  rerender(<UsageChip usage={fresh} today={null} loadUsageReading={loadUsageReading} />)
+  const chip = screen.getByRole("button", { name: "Usage: 300k tokens this session, no context reported", hidden: true })
+  expect(chip.textContent).toContain("300k session")
+
+  // A read in flight when the chip hides is aborted.
+  await user.click(chip)
+  expect(reads).toHaveLength(2)
+  rerender(<UsageChip usage={null} today={null} loadUsageReading={loadUsageReading} />)
+  expect(reads[1]!.signal.aborted).toBe(true)
+})
+
 // The chip's own totals were read when the turn started; while the popover is
 // open, the chip's number and its accessible name follow the reading too.
 it("shows the reading's total on the chip while the popover is open", async () => {
