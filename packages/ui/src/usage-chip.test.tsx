@@ -104,6 +104,14 @@ describe("usage chip", () => {
       byRuntime: [{ provider: "gemini", model: "gemini-3", inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 0, costMicros: 0, turns: 4 }],
     }
     expect(usageChipRows({ usage: silent, turn: undefined, today: null })[0]).toMatchObject({ label: "This session", value: "not reported" })
+    const { contextTokens: _tokens, contextWindowTokens: _window, ...silentNoContext } = silent
+    expect(usageChipTriggerText(silentNoContext, null)).toBe("not reported")
+    expect(usageChipLabel(silentNoContext, null)).toBe("Usage: tokens not reported for this session")
+    const silentToday: UsageWindow = { ...today, inputTokens: 0, outputTokens: 0, totalTokens: 0, turns: 4, sessions: 1,
+      coverage: { pending: 0, complete: 0, partial: 0, unavailable: 4, legacy: 0 } }
+    expect(usageChipRows({ usage: null, turn: undefined, today: silentToday })[0]).toMatchObject({ label: "Today", value: "not reported" })
+    expect(usageChipTriggerText(null, silentToday)).toBe("not reported today")
+    expect(usageChipLabel(null, silentToday)).toBe("Usage: tokens not reported today")
   })
 
   // Usage only grows, so totals read after the turn cannot fall below it. Read

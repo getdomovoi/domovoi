@@ -47,6 +47,7 @@ export function usageChipText(usage: SessionUsage): string {
   if (usage.contextTokens !== undefined && usage.contextWindowTokens !== undefined) {
     return formatTokenCount(usage.contextTokens)
   }
+  if (tokensUnreported(usage)) return "not reported"
   return `${formatTokenCount(usage.totalTokens)} session`
 }
 
@@ -56,10 +57,21 @@ export function usageChipLabel(usage: SessionUsage | null | undefined, today: Us
     if (usage.contextTokens !== undefined && usage.contextWindowTokens !== undefined) {
       return `Usage: ${formatTokenCount(usage.contextTokens)} of ${formatTokenCount(usage.contextWindowTokens)} tokens in context`
     }
+    if (tokensUnreported(usage)) return "Usage: tokens not reported for this session"
     return `Usage: ${formatTokenCount(usage.totalTokens)} tokens this session, no context reported`
   }
-  if (today && today.turns > 0) return `Usage: ${formatTokenCount(today.totalTokens)} tokens today`
+  if (today && today.turns > 0) {
+    return tokensUnreported(today) ? "Usage: tokens not reported today" : `Usage: ${formatTokenCount(today.totalTokens)} tokens today`
+  }
   return "Usage"
+}
+
+// Turns that reported no tokens at all (an ACP agent reports only its
+// context) leave no count, which is not the same as a count of zero.
+function tokensUnreported(totals: { totalTokens: number; coverage?: UsageWindow["coverage"] }): boolean {
+  const coverage = totals.coverage
+  return totals.totalTokens === 0 && coverage !== undefined && coverage.unavailable > 0
+    && coverage.complete + coverage.partial + coverage.legacy === 0
 }
 
 // Every token row counts the same thing: input (cached input included) and
@@ -89,18 +101,10 @@ function turnRow(turn: SessionTurn | undefined): UsageChipRow | undefined {
   }
 }
 
-// A session whose turns all reported no tokens (an ACP agent reports only its
-// context) has no count, which is not the same as a count of zero.
-function sessionTokensUnreported(usage: SessionUsage): boolean {
-  const coverage = usage.coverage
-  return usage.totalTokens === 0 && coverage !== undefined && coverage.unavailable > 0
-    && coverage.complete + coverage.partial + coverage.legacy === 0
-}
-
 function sessionRow(usage: SessionUsage): UsageChipRow {
   return {
     label: "This session",
-    value: sessionTokensUnreported(usage) ? "not reported" : `${formatTokenCount(usage.totalTokens)} tokens`,
+    value: tokensUnreported(usage) ? "not reported" : `${formatTokenCount(usage.totalTokens)} tokens`,
     note: `Input and output of every model request, cached input included: the same count as This turn and Today. ${unreportedCostNote}`,
   }
 }
@@ -123,7 +127,7 @@ function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefin
   const sessions = today.sessions === 1 ? "1 session" : `${today.sessions} sessions`
   return {
     label: "Today",
-    value: `${formatTokenCount(today.totalTokens)} tokens`,
+    value: tokensUnreported(today) ? "not reported" : `${formatTokenCount(today.totalTokens)} tokens`,
     note: [`${turns} started today, in ${sessions}`, "Domovoi's count, not the provider's limit", unreportedCostNote].join(" · "),
   }
 }
@@ -280,7 +284,7 @@ export function sessionHasUsage(usage: SessionUsage | null | undefined): usage i
 
 export function usageChipTriggerText(usage: SessionUsage | null | undefined, today: UsageWindow | null | undefined): string | undefined {
   if (sessionHasUsage(usage)) return usageChipText(usage)
-  if (today && today.turns > 0) return `${formatTokenCount(today.totalTokens)} today`
+  if (today && today.turns > 0) return tokensUnreported(today) ? "not reported today" : `${formatTokenCount(today.totalTokens)} today`
   return undefined
 }
 
