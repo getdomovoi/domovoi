@@ -8,7 +8,7 @@ import { dateTimeSchema, offsetDateTimeSchema, utf16Length, utf16MaxLength } fro
 import { fleetClientRouteParamsSchema, fleetClientRouteResultSchema } from "./client-admission.js"
 import { runtimeDiscoverParamsSchema, runtimeDiscoverResultSchema } from "./runtime-discovery.js"
 import { approvalRuleRevokeParamsSchema, permissionHardGatesParamsSchema, permissionHardGatesResultSchema } from "./rules.js"
-import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointReasonSchema, checkpointCaptureHasRequiredTurn, midTurnCheckpointSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
+import { approvalDecisionDurationMsSchema, approvedCommandRunMsSchema, checkpointCommitRecordMatchesReason, checkpointReasonSchema, checkpointCaptureHasRequiredTurn, committedCheckpointSchema, maximumCommitMessageLength, midTurnCheckpointSchema, sessionTransferHistorySchema } from "./session-history-metadata.js"
 import {
   updateActivateParamsSchema,
   updateActivateResultSchema,
@@ -472,9 +472,13 @@ export const sessionHistoryEntrySchema = z.discriminatedUnion("category", [
     midTurn: midTurnCheckpointSchema.optional(),
     label: z.string(),
     commit: commitShaSchema.optional(),
+    committed: committedCheckpointSchema.optional(),
   }).refine(checkpointCaptureHasRequiredTurn, {
     path: ["midTurn", "providerTurnId"],
     message: "Only an approval capture may omit its provider turn identity",
+  }).refine(checkpointCommitRecordMatchesReason, {
+    path: ["committed"],
+    message: "Only a commit checkpoint carries a commit record, and it always has one",
   }),
   z.object({
     ...historyEntryBase,
@@ -1393,6 +1397,18 @@ export const checkpointRestoreParamsSchema = z.object({
   client: clientKindSchema,
 })
 
+// A person commits a session's work on its own branch (walk finding F10). No
+// branch is named: the daemon commits on the session branch or refuses.
+// expectedHead is the commit the person's view of the changes was read
+// against; a branch that moved since is refused rather than committed onto.
+export const sessionCommitParamsSchema = z.object({
+  sessionId: z.string().min(1),
+  message: z.string().trim().min(1).check(utf16MaxLength(maximumCommitMessageLength))
+    .refine((message) => !message.includes("\0"), "A commit message cannot hold a NUL character"),
+  expectedHead: commitShaSchema,
+  client: clientKindSchema,
+}).strict()
+
 export const workingPlanEditDraftStepSchema = z.object({
   id: workingPlanStructureStepSchema.shape.id.optional(),
   text: workingPlanStructureStepSchema.shape.text,
@@ -1819,6 +1835,7 @@ export const rpcMethods = {
   "session.send": { params: sessionSendParamsSchema, result: workspaceSnapshotSchema },
   "session.cancelQueuedSend": { params: sessionCancelQueuedSendParamsSchema, result: workspaceSnapshotSchema },
   "session.revertFile": { params: sessionRevertFileParamsSchema, result: workspaceSnapshotSchema },
+  "session.commit": { params: sessionCommitParamsSchema, result: workspaceSnapshotSchema },
   "checkpoint.create": {
     params: checkpointCreateParamsSchema,
     result: workspaceSnapshotSchema,
@@ -1945,6 +1962,7 @@ export const rpcMethodAuthorizations = {
   "session.send": "control",
   "session.cancelQueuedSend": "control",
   "session.revertFile": "control",
+  "session.commit": "control",
   "checkpoint.create": "control",
   "checkpoint.restore": "control",
 } as const satisfies Record<RpcMethod, RpcMethodAuthorization>
@@ -2042,6 +2060,7 @@ export const rpcMethodMutations = {
   "session.pause": "mutating",
   "session.archive": "mutating",
   "session.revertFile": "mutating",
+  "session.commit": "mutating",
   "session.create": "mutating",
   "session.fork": "mutating",
   "session.send": "mutating",
