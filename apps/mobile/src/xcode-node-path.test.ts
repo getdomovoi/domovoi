@@ -1,9 +1,11 @@
 import { spawnSync } from "node:child_process"
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { createRequire } from "node:module"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { afterEach, describe, expect, it } from "vitest"
+
+import appConfig from "../app.config"
 
 const appRoot = join(__dirname, "..")
 
@@ -30,6 +32,7 @@ describe.skipIf(process.platform === "win32")("Xcode script phase environment", 
   })
 
   it("lets the bundle phase load the app's Babel presets without pnpm's bin shim", async () => {
+    expect(appConfig.plugins).toContain("./plugins/with-pnpm-node-path.js")
     const platformProjectRoot = join(mkdtempSync(join(tmpdir(), "domovoi-xcode-env-")), "ios")
     dirs.push(join(platformProjectRoot, ".."))
     mkdirSync(platformProjectRoot)
@@ -41,16 +44,20 @@ describe.skipIf(process.platform === "win32")("Xcode script phase environment", 
       config: Record<string, unknown>,
     ) => { mods: { ios: { dangerous: Mod } } }
     const config = plugin({ name: "Domovoi", slug: "domovoi" })
-    // A prebuild without --clean applies the plugin again to the same file.
-    for (let run = 0; run < 2; run += 1) {
-      await config.mods.ios.dangerous({
+    const apply = () =>
+      config.mods.ios.dangerous({
         ...config,
         modRequest: { projectRoot: appRoot, platformProjectRoot, platform: "ios", modName: "dangerous" },
       })
-    }
+    await apply()
+    // A prebuild without --clean applies the plugin again to the same file, which may by then
+    // carry lines someone added after the block.
+    appendFileSync(xcodeEnv, "export LATER=kept\n")
+    await apply()
     const written = readFileSync(xcodeEnv, "utf8")
     expect(written.startsWith("export NODE_BINARY=$(command -v node)\n")).toBe(true)
     expect(written.match(/^export NODE_PATH=/gm)).toHaveLength(1)
+    expect(written.endsWith("export LATER=kept\n")).toBe(true)
 
     const env = { ...process.env }
     delete env.NODE_PATH
