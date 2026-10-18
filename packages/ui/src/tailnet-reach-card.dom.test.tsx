@@ -377,6 +377,35 @@ it("says when the daemon does not answer on the tailnet, in the daemon's words",
   expect(alert.getByRole("button", { name: "Renew now" })).toBeTruthy()
 })
 
+// Walk F11: the switch is recorded with the app and the certificate stored in
+// the profile, so a new profile leaves the switch on with no certificate: the
+// desktop reads no expiry and the daemon refuses the listener. The alert offers
+// to get the certificate again, which is a turn-on, rather than a renewal.
+it("offers to get the certificate again when the stored certificate is missing", async () => {
+  const missing = { ...off, state: "on" } as const
+  const refused: TailnetListenerStatus = { state: "refused", address: "100.101.102.103", retrying: false,
+    reason: `Domovoi could not read the tailnet certificate at /Users/dana/.domovoi/tls/${name}.crt (ENOENT), so the daemon answers on this computer only.` }
+  const getting = deferred<unknown>()
+  const { act: ask, user } = await card({ status: missing, on: () => getting.promise }, { listener: refused })
+  const view = within(region())
+  expect(view.getByText("Not answering")).toBeTruthy()
+  const alert = within(view.getByRole("alert"))
+  expect(alert.getByText(refused.reason)).toBeTruthy()
+  expect(alert.queryByRole("button", { name: "Renew now" })).toBeNull()
+  expect(alert.getByText("Tailscale is asked for this machine's certificate again, then the daemon restarts once.")).toBeTruthy()
+  await user.click(alert.getByRole("button", { name: "Get the certificate again" }))
+  expect(ask).toHaveBeenLastCalledWith("on")
+  expect(view.getByText("Getting the certificate")).toBeTruthy()
+  expect(view.getByText("Getting the certificate. Tailscale is asked for it again, then the daemon restarts once.")).toBeTruthy()
+  expect(view.queryByText("Renewing")).toBeNull()
+  getting.resolve({ ok: true, report: on })
+  await settle()
+  // A certificate is stored again; the daemon here still refuses, so the alert
+  // goes back to offering a renewal.
+  expect(view.getByText("expires 20 Dec 2026")).toBeTruthy()
+  expect(within(view.getByRole("alert")).getByRole("button", { name: "Renew now" })).toBeTruthy()
+})
+
 it("turns off through the switch, listing the two steps", async () => {
   const turning = deferred<unknown>()
   const { act: ask, user } = await card({ status: on, off: () => turning.promise }, { listener: listening })
