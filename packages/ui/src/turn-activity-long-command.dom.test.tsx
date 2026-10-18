@@ -13,7 +13,7 @@ afterEach(cleanup)
 // click away in the step.
 const script = [
   "python3 - <<'PY'",
-  ...Array.from({ length: 120 }, (_, index) => `print(\"line ${index} of a long quoted script that keeps going\")`),
+  ...Array.from({ length: 120 }, (_, index) => `print("line ${index} of a long quoted script that keeps going")`),
   "PY",
 ].join("\n")
 

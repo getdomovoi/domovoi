@@ -32,8 +32,9 @@ function DropdownMenuTrigger({
 // Radix hands focus back to the trigger however the menu closed. After a
 // mouse open from nothing focused, Chromium draws that returned focus as
 // keyboard focus, so a click elsewhere left a ring on the trigger (walk F6).
-// A close whose last input was the pointer leaves focus where the pointer
-// went; a keyboard close still returns it to the trigger.
+// A close whose last input was the pointer still returns focus to the
+// trigger, so the next Tab starts from it, but asks the browser not to draw
+// it as keyboard focus. A keyboard close is left to Radix, ring and all.
 function useClosedByPointer(): React.RefObject<boolean> {
   const closedByPointer = React.useRef(false)
   React.useEffect(() => {
@@ -65,7 +66,18 @@ function DropdownMenuContent({
         align={align}
         onCloseAutoFocus={(event) => {
           onCloseAutoFocus?.(event)
-          if (closedByPointer.current) event.preventDefault()
+          // A caller that moved focus itself, or a pointer that already put
+          // focus somewhere else, keeps Radix's own handling.
+          if (event.defaultPrevented || !closedByPointer.current) return
+          const active = document.activeElement
+          if (active && active !== document.body && active.isConnected) return
+          const content = event.target instanceof HTMLElement ? event.target : null
+          const triggerId = content?.getAttribute("aria-labelledby")
+          const trigger = triggerId ? document.getElementById(triggerId) : null
+          if (!trigger) return
+          event.preventDefault()
+          // focusVisible is a FocusOptions member the DOM typings here lack.
+          trigger.focus({ preventScroll: true, focusVisible: false } as FocusOptions)
         }}
         className={cn("z-50 max-h-(--radix-dropdown-menu-content-available-height) w-(--radix-dropdown-menu-trigger-width) min-w-32 origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-lg bg-popover p-1 text-popover-foreground shadow-md ring-1 ring-foreground/10 duration-100 data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 data-[state=closed]:overflow-hidden data-open:animate-in data-open:fade-in-0 data-open:zoom-in-95 data-closed:animate-out data-closed:fade-out-0 data-closed:zoom-out-95", className )}
         {...props}
