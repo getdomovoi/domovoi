@@ -64,15 +64,29 @@ it("draws the session and today read with the turn, not the chip's older totals"
 })
 
 // The chip's quota read failed, the one on open succeeded: the note under
-// USAGE must describe the same reading the rows draw.
-it("says the window was reported when the reading on open carries one", async () => {
+// USAGE, the rows and the chip's ring all describe the same reading.
+it("says the window was reported when the reading on open carries one, and draws its ring", async () => {
   const withWindows: SessionUsage = { ...usage, providerLimits: { provider: "codex", windows: [{ kind: "primary", usedPercent: 23, windowDurationMinutes: 300 }] } }
   const loadUsageReading = vi.fn(async () => ({ turn: undefined, usage: withWindows, today: null }))
   render(<UsageChip usage={usage} today={null} loadUsageReading={loadUsageReading} />)
+  expect(screen.queryByRole("img", { name: /percent of the/ })).toBeNull()
 
   await userEvent.setup().click(screen.getByRole("button", { name: /^Usage: / }))
   expect(await screen.findByText("5-HOUR LIMIT")).toBeTruthy()
   expect(screen.getByTestId("usage-connection-note").textContent).toBe("The provider reported its usage window, so the chip carries the window rather than a price.")
+  expect(screen.getByRole("img", { name: /23 percent of the 5 hour window/, hidden: true })).toBeTruthy()
+})
+
+it("drops the ring and says no window when the reading on open carries none", async () => {
+  const withWindows: SessionUsage = { ...usage, providerLimits: { provider: "codex", windows: [{ kind: "primary", usedPercent: 23, windowDurationMinutes: 300 }] } }
+  const loadUsageReading = vi.fn(async () => ({ turn: undefined, usage, today: null }))
+  render(<UsageChip usage={withWindows} today={null} loadUsageReading={loadUsageReading} />)
+  expect(screen.getByRole("img", { name: /23 percent of the 5 hour window/ })).toBeTruthy()
+
+  await userEvent.setup().click(screen.getByRole("button", { name: /^Usage: / }))
+  await vi.waitFor(() => expect(screen.getByTestId("usage-connection-note").textContent).toBe("No window reported, so no dial. The chip falls back to tokens alone."))
+  expect(screen.queryByRole("img", { name: /percent of the/, hidden: true })).toBeNull()
+  expect(screen.queryByText("5-HOUR LIMIT")).toBeNull()
 })
 
 it("shows today's count for a session with no usage of its own, and asks for no turn", async () => {

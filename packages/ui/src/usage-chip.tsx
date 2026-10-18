@@ -347,11 +347,12 @@ export function UsageChip({
   const readRef = useRef<AbortController | null>(null)
   useEffect(() => () => readRef.current?.abort(), [])
   const text = usageChipTriggerText(usage, today)
-  const ring = usageChipRing(usage)
   if (!text) return null
-  // Everything in the popover describes one reading: the one taken on open,
-  // or the chip's own until it arrives.
+  // While open, the ring, the note and the rows all describe one reading: the
+  // one taken on open, or the chip's own until it arrives. Closing drops the
+  // reading, and the chip goes back to its own.
   const shownUsage = reading ? reading.usage : usage
+  const ring = usageChipRing(shownUsage)
   const rows = reading
     ? usageChipRows({ usage: reading.usage, turn: reading.turn, today: reading.today })
     : usageChipRows({ usage, turn: undefined, today })
