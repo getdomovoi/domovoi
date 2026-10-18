@@ -348,7 +348,11 @@ describe("terminalLines at the holder's grid", () => {
     expect(terminalLines(`${"a".repeat(12)}\rX\n`, 5)).toEqual([`${"a".repeat(10)}Xa`])
     // Exactly a row printed leaves the cursor on that row, at its last cell.
     expect(terminalLines("abcde\rX\n", 5)).toEqual(["Xbcde"])
-    expect(terminalLines("abcde\u001b[KX\n", 5)).toEqual(["abcdX"])
+    // An erase in line there erases from the cursor, past the row's text, and
+    // leaves the next character to wrap, as the holder's xterm does.
+    expect(terminalLines("abcde\u001b[KX\n", 5)).toEqual(["abcdeX"])
+    expect(terminalLines("abcde\u001b[1KX\n", 5)).toEqual(["     X"])
+    expect(terminalLines("abcdefgh\u001b[A\u001b[2CY\u001b[1K\n", 5)).toEqual(["     fgh"])
     // Without the grid the whole line is one row, as before.
     expect(terminalLines(`${"a".repeat(12)}\rX\n`)).toEqual([`X${"a".repeat(11)}`])
   })
@@ -382,6 +386,44 @@ describe("terminalLines at the holder's grid", () => {
     expect(terminalLines("abcdefgh\u001b[A\u001b[2K\n", 5)).toEqual(["     fgh"])
     expect(terminalLines("abcdefgh\u001b[2K\n", 5)).toEqual(["abcde"])
     expect(terminalLines("abcdefgh\u001b[A\u001b[9X\n", 5)).toEqual(["abc  fgh"])
+  })
+
+  it("deletes and inserts characters within the cursor's row", () => {
+    expect(terminalLines("abcdefgh\u001b[A\u001b[P\u001b[B\rZ\n", 5)).toEqual(["abce Zgh"])
+    expect(terminalLines("abcdefgh\u001b[A\u001b[2@\n", 5)).toEqual(["abc  fgh"])
+    expect(terminalLines("abcdefgh\u001b[A\u001b[9@\n", 5)).toEqual(["abc  fgh"])
+    // A holder's row past the first thousand cells, at a grid that does not
+    // divide a thousand.
+    const long = `${"x".repeat(990)}${"abcdefghij".repeat(4)}`
+    expect(terminalLines(`${long}\u001b[A\r\u001b[P\n`, 30)).toEqual([`${"x".repeat(990)}bcdefghijabcdefghijabcdefghij abcdefghij`])
+    expect(terminalLines(`${long}\u001b[A\r\u001b[@\n`, 30)).toEqual([`${"x".repeat(990)} abcdefghijabcdefghijabcdefghiabcdefghij`])
+  })
+
+  // As without the grid: a record of row edits costs about what a record of
+  // plain output costs to read, best of five against plain text.
+  it("reads a record of row edits at the holder's grid about as fast as plain output", () => {
+    const best = (text: string, columns: number) => {
+      let fastest = Infinity
+      for (let run = 0; run < 5; run += 1) {
+        const started = performance.now()
+        drawnText(text, columns)
+        fastest = Math.min(fastest, performance.now() - started)
+      }
+      return fastest
+    }
+    const plain = best("\u001b[32m ✓\u001b[0m src/webhooks/handler.spec.ts (14 tests) 412ms\r\n".repeat(900), 1_000)
+    const widest = best(`${"x".repeat(1_500)}\u001b[A\r${"\u001b[@\u001b[P".repeat(10_756)}`, 1_000)
+    // 120 does not divide a thousand: the row edited starts at cell 960.
+    const narrower = best(`${"x".repeat(1_100)}\u001b[A\r${"\u001b[@\u001b[P".repeat(10_756)}`, 120)
+    expect(widest / plain).toBeLessThan(10)
+    expect(narrower / plain).toBeLessThan(10)
+  })
+
+  // A wide character with one cell left on the row wraps before it is drawn,
+  // leaving that cell blank, so the cells after it are where the holder has
+  // them.
+  it("wraps a wide character that does not fit the row", () => {
+    expect(terminalLines("abcd界\u001b[AX\n", 5)).toEqual(["abXd 界"])
   })
 
   // A row of the holder's grid can lie past the widest grid in a long line;

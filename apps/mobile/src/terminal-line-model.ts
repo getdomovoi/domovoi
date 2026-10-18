@@ -35,8 +35,9 @@ const rightHalf = "\u0000"
 
 // The widest grid the protocol allows a terminal. A cursor move or a count
 // past it is cut to it, as a terminal cuts one at its right margin. Inserting
-// and deleting characters act on the cursor's row of this many cells, so a
-// line longer than any grid costs no more per sequence than a full row.
+// and deleting characters act on the cursor's row of at most this many cells
+// (the holder's row, at the holder's grid), so a line longer than any grid
+// costs no more per sequence than a full row.
 const widestGrid = 1_000
 
 // Tab stops every eight columns, as a terminal sets them by default.
@@ -58,7 +59,8 @@ function isBlankCell(cell: Cell): boolean {
   return cell === undefined || cell === blank
 }
 
-// A line of cells, kept in rows of the widest grid. Every row but the last is
+// A line of cells, kept in rows of the widest grid (or of the most whole rows
+// of the holder's grid that fit in it; see width). Every row but the last is
 // full, so a column's row and place follow from it, and an insert or a delete
 // moves cells within one row with the array's own splice, which the phone's
 // JavaScript engine runs far faster than a loop over cells. So each sequence
@@ -76,30 +78,37 @@ class Line {
   // anything but a character acts there (settle).
   wrapPending = false
 
+  // The cells in each kept row: the widest grid, or at the holder's grid the
+  // most whole rows of it that fit there, so a row of the holder's grid
+  // always lies within one kept row and moves with one splice too.
+  readonly width: number
+
   // columns: the holder's grid width, or undefined to read the line as one row.
-  constructor(readonly spare: SpareBlanks, readonly columns: number | undefined) {}
+  constructor(readonly spare: SpareBlanks, readonly columns: number | undefined) {
+    this.width = columns === undefined ? widestGrid : columns * Math.floor(widestGrid / columns)
+  }
 
   get length(): number {
     const last = this.rows.length - 1
-    return last * widestGrid + (this.rows[last]?.length ?? 0)
+    return last * this.width + (this.rows[last]?.length ?? 0)
   }
 
   get(at: number): Cell {
     if (at < 0) return undefined
-    return this.rows[Math.floor(at / widestGrid)]?.[at % widestGrid]
+    return this.rows[Math.floor(at / this.width)]?.[at % this.width]
   }
 
   set(at: number, cell: string): void {
-    const index = Math.floor(at / widestGrid)
+    const index = Math.floor(at / this.width)
     while (this.rows.length <= index) {
       // A row is full before the next one starts; what was never written in
       // it is a hole.
       const last = this.rows[this.rows.length - 1]
-      if (last) last.length = widestGrid
+      if (last) last.length = this.width
       this.rows.push([])
     }
     const row = this.rows[index]
-    if (row) row[at % widestGrid] = cell
+    if (row) row[at % this.width] = cell
   }
 
   isBlank(at: number): boolean {
@@ -116,6 +125,12 @@ class Line {
       const cell = this.get(at)
       if (at >= 0 && cell !== undefined && cell !== blank) this.set(at, cell + char)
       return
+    }
+    // A wide character with one cell left on the holder's row wraps first,
+    // leaving that cell blank, as the terminal does.
+    if (width === 2 && this.columns !== undefined && this.columns > 1 && this.column % this.columns === this.columns - 1) {
+      this.clear(this.column)
+      this.column += 1
     }
     this.clear(this.column)
     if (width === 2) this.clear(this.column + 1)
@@ -207,10 +222,10 @@ class Line {
   truncate(at: number): void {
     if (at >= this.length) return
     if (this.get(at) === rightHalf) this.set(at - 1, blank)
-    const index = Math.floor(at / widestGrid)
+    const index = Math.floor(at / this.width)
     this.rows.length = index + 1
     const row = this.rows[index]
-    if (row) row.length = at % widestGrid
+    if (row) row.length = at % this.width
   }
 
   // Blanks at the end are nothing, so what the next sequence moves is short.
@@ -250,43 +265,40 @@ class Line {
     this.moveTo(Math.min(start + (Math.floor((this.column - start) / tabWidth) + 1) * tabWidth, this.gridRowEnd() - 1))
   }
 
-  // Where the cursor's row of the widest grid ends.
+  // Where the cursor's kept row ends.
   rowEnd(): number {
-    return (Math.floor(this.column / widestGrid) + 1) * widestGrid
+    return (Math.floor(this.column / this.width) + 1) * this.width
   }
 
   // Erase in line: 0 from the cursor to the end, 1 from the start through
   // the cursor, 2 all of it. At the holder's grid the line is the cursor's
   // row: rows after it keep their text, and a row before it is blanked
-  // rather than cut, so the rows after it stay where they are.
+  // rather than cut, so the rows after it stay where they are. A pending
+  // wrap stays pending, as in the holder's xterm: the cursor's row is the one
+  // just filled, and an erase from the cursor reaches nothing on it.
   erase(mode: number): void {
-    this.settle()
-    const start = this.gridRowStart()
-    const end = this.gridRowEnd()
+    const at = this.wrapPending ? this.column - 1 : this.column
+    const start = this.columns === undefined ? 0 : at - (at % this.columns)
+    const end = this.columns === undefined ? Infinity : start + this.columns
     if (this.length > end && mode !== 1) {
-      this.blank(mode === 0 ? this.column : start, end)
+      const from = mode === 0 ? this.column : start
+      if (from < end) this.blank(from, end)
       return
     }
-    if (start > 0) {
-      const through = Math.min(this.column, this.length - 1)
-      if (mode === 1 && through >= start) {
-        this.blank(start, through + 1)
-        this.trim()
-      } else if (mode !== 1) {
-        const from = mode === 0 ? this.column : start
-        this.clear(from)
-        this.truncate(from)
-      }
-      return
-    }
+    const through = Math.min(at, this.length - 1)
     if (mode === 0) {
       this.clear(this.column)
       this.truncate(this.column)
+    } else if (mode === 1 && start > 0) {
+      if (through >= start) this.blank(start, through + 1)
+      this.trim()
     } else if (mode === 1) {
-      const through = Math.min(this.column, this.length - 1)
       if (through >= this.blankBelow) this.blank(this.blankBelow, through + 1)
       this.blankBelow = Math.max(this.blankBelow, through + 1)
       this.trim()
+    } else if (mode === 2 && start > 0) {
+      this.clear(start)
+      this.truncate(start)
     } else if (mode === 2) {
       this.rows = [[]]
       this.blankBelow = 0
@@ -298,9 +310,9 @@ class Line {
   blank(start: number, end: number): void {
     this.clear(start)
     this.clear(end - 1)
-    for (let index = Math.floor(start / widestGrid); index * widestGrid < end; index += 1) {
-      const rowStart = index * widestGrid
-      this.rows[index]?.fill(blank, Math.max(start - rowStart, 0), Math.min(end - rowStart, widestGrid))
+    for (let index = Math.floor(start / this.width); index * this.width < end; index += 1) {
+      const rowStart = index * this.width
+      this.rows[index]?.fill(blank, Math.max(start - rowStart, 0), Math.min(end - rowStart, this.width))
     }
   }
 
@@ -318,7 +330,7 @@ class Line {
 
   // The cursor's row, and whether it is the line's last.
   cursorRow(): { row: Cell[] | undefined, last: boolean } {
-    const index = Math.floor(this.column / widestGrid)
+    const index = Math.floor(this.column / this.width)
     return { row: this.rows[index], last: index === this.rows.length - 1 }
   }
 
@@ -326,10 +338,11 @@ class Line {
   // left, and blanks enter at the row's end. A wide character with one half
   // deleted loses the other half too.
   deleteCharacters(count: number): void {
-    // At the holder's grid the cursor acts where the terminal has it, but the
-    // cells that move are still those of the widest grid's row, not of the
-    // holder's row.
     this.settle()
+    if (this.columns !== undefined) {
+      this.deleteInGridRow(count)
+      return
+    }
     const rowEnd = this.rowEnd()
     const deleted = Math.min(count, Math.min(this.length, rowEnd) - this.column)
     if (deleted <= 0) return
@@ -338,9 +351,9 @@ class Line {
     // A wide character across the row's end cannot move as one.
     if (this.get(rowEnd) === rightHalf) this.clear(rowEnd)
     const { row, last } = this.cursorRow()
-    row?.splice(this.column % widestGrid, deleted)
+    row?.splice(this.column % this.width, deleted)
     // A row before the last stays full: holes, which are blanks, enter at its end.
-    if (row && !last) row.length = widestGrid
+    if (row && !last) row.length = this.width
     this.blankBelow = Math.min(this.blankBelow, this.column)
     this.trim()
   }
@@ -349,8 +362,11 @@ class Line {
   // row right, and what passes the row's end is lost. Blanks put between
   // the halves of a wide character clear it.
   insertCharacters(count: number): void {
-    // As for deleting: the widest grid's row moves, not the holder's.
     this.settle()
+    if (this.columns !== undefined) {
+      this.insertInGridRow(count)
+      return
+    }
     if (this.column >= this.length) return
     const rowEnd = this.rowEnd()
     const inserted = Math.min(count, rowEnd - this.column)
@@ -362,15 +378,62 @@ class Line {
     const { row } = this.cursorRow()
     if (!row) return
     const before = this.length
-    if (inserted === 1) row.splice(this.column % widestGrid, 0, blank)
-    else row.splice(this.column % widestGrid, 0, ...Array<string>(inserted).fill(blank))
-    if (row.length > widestGrid) row.length = widestGrid
+    if (inserted === 1) row.splice(this.column % this.width, 0, blank)
+    else row.splice(this.column % this.width, 0, ...Array<string>(inserted).fill(blank))
+    if (row.length > this.width) row.length = this.width
     // A line made longer spends spare blanks; past them, what was pushed
     // beyond the line's old end is lost.
     const grown = this.length - before
     const granted = Math.min(grown, this.spare.cells)
     this.spare.cells -= granted
     if (granted < grown) this.truncate(before + granted)
+    this.trim()
+  }
+
+  // At the holder's grid, deleting and inserting move the cells of the
+  // holder's row, and the rows after it stay where they are. That row lies
+  // within one kept row (width), so the cells move with its splice and a
+  // second splice puts back what follows the holder's row.
+  deleteInGridRow(count: number): void {
+    const before = this.length
+    const end = Math.min(this.gridRowEnd(), before)
+    const deleted = Math.min(count, end - this.column)
+    if (deleted <= 0) return
+    if (this.get(this.column) === rightHalf) this.set(this.column - 1, blank)
+    if (this.column + deleted < end && this.get(this.column + deleted) === rightHalf) this.set(this.column + deleted, blank)
+    const { row } = this.cursorRow()
+    if (!row) return
+    const rowStart = this.column - (this.column % this.width)
+    row.splice(this.column - rowStart, deleted)
+    // Blanks enter at the holder's row's end, so what follows it stays.
+    if (end < before) row.splice(end - rowStart - deleted, 0, ...Array<string>(deleted).fill(blank))
+    this.blankBelow = Math.min(this.blankBelow, this.column)
+    this.trim()
+  }
+
+  insertInGridRow(count: number): void {
+    if (this.column >= this.length) return
+    const rowEnd = this.gridRowEnd()
+    const inserted = Math.min(count, rowEnd - this.column)
+    if (this.get(this.column) === rightHalf) this.clear(this.column)
+    // A wide character pushed half past the row's end is lost whole.
+    if (this.get(rowEnd - inserted) === rightHalf) this.clear(rowEnd - inserted)
+    // Cells past the line's old end that the push fills spend spare blanks;
+    // past them, what is pushed is lost, as past the row's end.
+    const before = this.length
+    let top = Math.min(rowEnd, before + inserted)
+    if (top > before) {
+      const granted = Math.min(top - before, this.spare.cells)
+      this.spare.cells -= granted
+      top = before + granted
+    }
+    const { row } = this.cursorRow()
+    if (!row) return
+    const rowStart = this.column - (this.column % this.width)
+    if (inserted === 1) row.splice(this.column - rowStart, 0, blank)
+    else row.splice(this.column - rowStart, 0, ...Array<string>(inserted).fill(blank))
+    // What the blanks pushed past the top is lost, so what follows stays.
+    row.splice(top - rowStart, inserted)
     this.trim()
   }
 
