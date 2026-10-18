@@ -89,9 +89,10 @@ async function fixture(options: {
     restore: vi.fn(),
     commit,
   } satisfies WorkspaceService
+  const claude = agent()
   const store = new SqliteWorkspaceStore(":memory:", snapshot)
   const daemon = new DomovoiDaemon({
-    port: 0, statePath: ":memory:", store, agents: { "claude-code": agent() }, workspaceService, errorSink: vi.fn(),
+    port: 0, statePath: ":memory:", store, agents: { "claude-code": claude }, workspaceService, errorSink: vi.fn(),
     ...(options.agentTimeoutMs ? { agentTimeoutMs: options.agentTimeoutMs } : {}),
   })
   daemons.push(daemon)
@@ -115,7 +116,7 @@ async function fixture(options: {
   const commitRequest = (message = "fix(api): retry the webhook\n\nThe provider retries on 5xx.") =>
     rpc("session.commit", { sessionId: "session-1", message, expectedHead: head, client: "desktop" })
   const thread = async () => ((await rpc("workspace.get", {})).result as WorkspaceSnapshot).thread
-  return { commit, commitRequest, rpc, thread }
+  return { claude, commit, commitRequest, rpc, thread }
 }
 
 type Refusal = { error: { code: number; message: string } }
@@ -208,15 +209,22 @@ describe("session.commit", () => {
     })
   })
 
-  it("records a commit that lands after the daemon's deadline", async () => {
-    const { commitRequest, thread } = await fixture({ delayMs: 300, agentTimeoutMs: 50 })
+  // The deadline aborts what has not started; a commit already past its
+  // branch update finishes. The session stays held until it settles, so no
+  // turn starts while the branch may still move, and the commit is recorded.
+  it("holds the session past the deadline until the commit settles, then records it", async () => {
+    const { claude, commitRequest, rpc } = await fixture({ delayMs: 300, agentTimeoutMs: 50 })
 
-    const response = await commitRequest() as Refusal
+    const committing = commitRequest()
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const sending = rpc("session.send", { sessionId: "session-1", prompt: "Carry on", client: "desktop" })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(claude.startTurn).not.toHaveBeenCalled()
 
-    expect(response.error.message).toBe("Commit timed out")
-    await vi.waitFor(async () => {
-      expect((await thread()).at(-1)).toMatchObject({ kind: "checkpoint", reason: "commit", commit: made })
-    }, { timeout: 2_000 })
+    const committed = (await committing) as { result: WorkspaceSnapshot }
+    expect(committed.result.thread.at(-1)).toMatchObject({ kind: "checkpoint", reason: "commit", commit: made })
+    expect(await sending).toHaveProperty("result")
+    expect(claude.startTurn).toHaveBeenCalledTimes(1)
   })
 
   it("says why the worktree refused and records nothing", async () => {

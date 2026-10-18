@@ -11226,17 +11226,14 @@ export class DomovoiDaemon {
           )
         } catch (error) {
           if (error instanceof SessionCommitRefusedError) throw new PublicRpcError(invalidParams, error.message)
-          // A deadline rejects without waiting for the git run it aborted.
-          // The workspace finishes a commit whose branch already moved, so one
-          // that lands after the deadline is recorded when it does.
-          if (running) {
-            void running.then(async (late) => {
-              if (!this.#recordSessionCommit(params.sessionId, late, params.message, params.client)) return
-              await this.#persistSnapshot()
-              this.#broadcastSnapshot()
-            }, () => {})
-          }
-          throw error
+          // A deadline rejects without waiting for the git run it aborted, and
+          // the workspace finishes a commit whose branch already moved. So the
+          // request, and with it the session's lock, waits for the run to
+          // settle: no turn or other change to the session starts while the
+          // branch may still move, and a commit that lands is recorded.
+          const late = running ? await running.catch(() => undefined) : undefined
+          if (late === undefined) throw error
+          made = late
         }
         if (!this.#recordSessionCommit(params.sessionId, made, params.message, params.client)) {
           this.#error(socket, request.id, invalidParams, "Session no longer exists")

@@ -94,7 +94,10 @@ export type CommittedCheckpoint = z.infer<typeof committedCheckpointSchema>
 
 // A commit record belongs to a commit checkpoint, which always has one, names
 // its commit and is never a mid-turn snapshot (a commit waits for the turn).
+// Its branch is the session's own, domovoi/<session id>: derived from an id
+// the entry already holds, so it can carry no other text.
 export function checkpointCommitRecordMatchesReason(entry: {
+  sessionId: string
   reason?: CheckpointReason | undefined
   midTurn?: MidTurnCheckpoint | undefined
   commit?: string | undefined
@@ -102,6 +105,7 @@ export function checkpointCommitRecordMatchesReason(entry: {
 }): boolean {
   if (entry.reason !== "commit") return entry.committed === undefined
   return entry.committed !== undefined && entry.commit !== undefined && entry.midTurn === undefined
+    && entry.committed.branch === `domovoi/${entry.sessionId}`
 }
 
 

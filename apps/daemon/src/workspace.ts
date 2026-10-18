@@ -358,10 +358,18 @@ async function checkedOutSubmodules(worktreePath: string, signal?: AbortSignal):
 // superproject looks into every checked-out submodule with a `git status`
 // that reads that submodule's config, and no trust grant reviews a
 // submodule's filters, so the operation is refused and nothing runs.
+// A submodule as a refusal names it: by its path, unless the path names a
+// credential, a private key or an environment file, which is never shown.
+function submoduleShown(submodule: string): string {
+  return checkpointPathIsSafe(submodule)
+    ? `The submodule "${redactInventoryText(submodule, inventoryFieldCaps.detail)}"`
+    : "A submodule whose path Domovoi does not show"
+}
+
 export class SubmoduleFilterRefusedError extends RepositoryConfigRefusedError {
   constructor(submodule: string, filters: readonly RepositoryGitFilter[]) {
     super(
-      `The submodule "${redactInventoryText(submodule, inventoryFieldCaps.detail)}" sets the filter `
+      `${submoduleShown(submodule)} sets the filter `
       + `${filterNames(filters).map((name) => `"${shownName(name)}"`).join(", ")} in its own Git config (${shownSettings(filters)}). `
       + "Checkpoint, restore, revert and transfer would run it, and no trust covers a submodule's own filters, "
       + "so Domovoi does not run it. Nothing ran.",
@@ -377,7 +385,7 @@ export class SubmoduleFilterRefusedError extends RepositoryConfigRefusedError {
 export class SubmodulePromisorRefusedError extends RepositoryConfigRefusedError {
   constructor(submodule: string) {
     super(
-      `The submodule "${redactInventoryText(submodule, inventoryFieldCaps.detail)}" is a partial clone with a promisor remote `
+      `${submoduleShown(submodule)} is a partial clone with a promisor remote `
       + "in its own Git config. Reading it could fetch a missing object through that remote with the submodule's own "
       + "transport settings, which no trust covers, so Domovoi does not read it. Nothing ran.",
     )
@@ -860,6 +868,9 @@ export type GitWorkspaceServiceOptions = {
   // Runs once a restore's isolated reset has written the checkpoint into the
   // files and the index, before the branch moves: a test seam.
   afterRestoreReset?: () => void | Promise<void>
+  // Runs once a person's commit has moved the session branch, before the
+  // worktree's index is published: a test seam.
+  afterSessionCommit?: (worktreePath: string) => void | Promise<void>
   // The project a gated path belongs to, with this machine's grant for it,
   // read at every call (repository-git-filter-gate.ts). Without it, every
   // repository filter stays held back.
@@ -1450,6 +1461,7 @@ export class GitWorkspaceService implements WorkspaceService {
   readonly #afterNewWorktreeScan?: GitWorkspaceServiceOptions["afterNewWorktreeScan"]
   readonly #afterRepositoryFilterGate?: GitWorkspaceServiceOptions["afterRepositoryFilterGate"]
   readonly #afterRestoreReset?: GitWorkspaceServiceOptions["afterRestoreReset"]
+  readonly #afterSessionCommit?: GitWorkspaceServiceOptions["afterSessionCommit"]
   readonly #repositoryTrust?: GitWorkspaceServiceOptions["repositoryTrust"]
   readonly #gitVersion: () => Promise<string | undefined>
   readonly #sessionRefTransferTimeoutMs: number
@@ -1463,6 +1475,7 @@ export class GitWorkspaceService implements WorkspaceService {
     this.#afterNewWorktreeScan = options.afterNewWorktreeScan
     this.#afterRepositoryFilterGate = options.afterRepositoryFilterGate
     this.#afterRestoreReset = options.afterRestoreReset
+    this.#afterSessionCommit = options.afterSessionCommit
     this.#repositoryTrust = options.repositoryTrust
     this.#gitVersion = options.gitVersion ?? installedGitVersionText
   }
@@ -2114,8 +2127,12 @@ export class GitWorkspaceService implements WorkspaceService {
       const [gitDirectory, commonDirectory, projectDirectory] = await Promise.all([realpath(gitDir), realpath(common), realpath(projectCommon)])
       if (commonDirectory !== projectDirectory || gitDirectory === commonDirectory) return false
       if (dirname(gitDirectory) !== join(commonDirectory, "worktrees")) return false
-      const backlink = (await readFile(join(gitDirectory, "gitdir"), "utf8")).trim()
-      return await realpath(resolve(gitDirectory, backlink)) === await realpath(join(path, ".git"))
+      // The worktree's own .git file, not a link to another worktree's, and
+      // the registration's backlink names this directory's .git by its place.
+      const dotGit = await lstat(join(path, ".git"))
+      if (!dotGit.isFile()) return false
+      const backlink = resolve(gitDirectory, (await readFile(join(gitDirectory, "gitdir"), "utf8")).trim())
+      return basename(backlink) === ".git" && await realpath(dirname(backlink)) === path
     } catch {
       return false
     }
@@ -2179,12 +2196,20 @@ export class GitWorkspaceService implements WorkspaceService {
       // The commit is on the session branch now, so nothing below may lose it:
       // a failure is returned with it, and the abort signal no longer applies.
       try {
-        await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${made}`, made])
-        // A HEAD switched away meanwhile keeps its own index.
-        if (!await options.branch.stillCurrent()) {
+        // The checkpoint ref itself, never a ref it might point at.
+        await git(worktreePath, ["update-ref", "--no-deref", `refs/domovoi/checkpoints/${made}`, made])
+        await this.#afterSessionCommit?.(worktreePath)
+        // Read under the index lock: a HEAD switched away meanwhile keeps its
+        // own index, even one whose entries match what Domovoi read.
+        const head = { left: false }
+        const stillCurrent = options.branch.stillCurrent
+        await publishUnderIndexLock(sharedIndex, () => readFile(index), async () => {
+          head.left = !await stillCurrent()
+          return !head.left && await entries(sharedIndex) === seeded
+        })
+        if (head.left) {
           return { commit: made, changedFiles, afterCommitError: `The worktree left ${options.branch.ref.slice("refs/heads/".length)} while Domovoi committed, so its index was left as it was.` }
         }
-        await publishUnderIndexLock(sharedIndex, () => readFile(index), async () => await entries(sharedIndex) === seeded)
       } catch (error) {
         return { commit: made, changedFiles, afterCommitError: error instanceof Error ? error.message : String(error) }
       }
@@ -2192,7 +2217,7 @@ export class GitWorkspaceService implements WorkspaceService {
     }
     if (changedFiles.length > 0) await commitIndex(worktreePath, isolated, head, options.message, signal, index)
     const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
-    await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
+    await git(worktreePath, ["update-ref", "--no-deref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
     // Then the worktree's index becomes the checkpoint's, as Git would write
     // it, so the worktree reads as clean. Only while it still holds the
     // entries it had at the start: a lock already there, or another Git's

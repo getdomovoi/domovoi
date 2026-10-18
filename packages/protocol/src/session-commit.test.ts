@@ -90,6 +90,9 @@ describe("commit checkpoints", () => {
     ["an empty branch", { committed: { ...committed, branch: "" } }],
     ["a branch that is not a session branch", { committed: { ...committed, branch: "main" } }],
     ["a branch that carries other text", { committed: { ...committed, branch: "domovoi/NPM_TOKEN=abc" } }],
+    // The branch is derived from the session's id, which the record already
+    // holds, so it can carry nothing else, a token-shaped suffix included.
+    ["another session's branch", { committed: { ...committed, branch: "domovoi/ghp_0123456789abcdefghijABCDEFGHIJklmnopqr" } }],
     ["an unknown client", { committed: { ...committed, client: "toaster" } }],
     ["a field the record does not hold", { committed: { ...committed, pushed: true } }],
   ])("refuses %s", (_name, change) => {

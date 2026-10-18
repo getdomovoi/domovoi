@@ -175,12 +175,13 @@ it("omits sensitive checkpoint paths from persisted and transferred thread copie
 // before the redaction rules grew, still never shows a secret.
 it("omits sensitive paths and redacts the message of a commit record", () => {
   const snapshot = structuredClone(demoWorkspace)
+  const sessionId = snapshot.sessions[0]!.id
   const item = {
-    id: "checkpoint-commit", sessionId: snapshot.sessions[0]!.id, kind: "checkpoint" as const, reason: "commit" as const,
+    id: "checkpoint-commit", sessionId, kind: "checkpoint" as const, reason: "commit" as const,
     label: "cccccccc · feat: rotate NPM_TOKEN=label-commit-fixture", commit: "c".repeat(40), createdAt,
     committed: {
       message: `feat: rotate\n\nNPM_TOKEN=message-commit-fixture ${"m".repeat(4_000)}`,
-      branch: "domovoi/session-1",
+      branch: `domovoi/${sessionId}`,
       paths: [".env", "safe.txt", "NPM_TOKEN=path-commit-fixture"],
       pathCount: 3,
       client: "desktop" as const,
@@ -188,7 +189,7 @@ it("omits sensitive paths and redacts the message of a commit record", () => {
   }
   snapshot.thread = [item]
   const written = redactWorkspaceCopies(snapshot).thread[0]!
-  expect(written).toMatchObject({ committed: { paths: ["safe.txt"], pathCount: 3, branch: "domovoi/session-1", client: "desktop" } })
+  expect(written).toMatchObject({ committed: { paths: ["safe.txt"], pathCount: 3, branch: `domovoi/${sessionId}`, client: "desktop" } })
   expect(JSON.stringify(written)).not.toMatch(/(?:label|message|path)-commit-fixture/u)
   expect(threadItemSchema.parse(written)).toEqual(written)
   expect(createWorkspaceRedactor()(snapshot).thread).toEqual([written])
