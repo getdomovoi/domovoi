@@ -353,12 +353,48 @@ describe("GitWorkspaceService.commit", () => {
       await untouched()
     })
 
+    // T126b review R1.2: a repository override removed after staging falls
+    // back to the person's global value, which the staging did not use.
+    it("refuses when a repository override is removed after staging and the global value differs", async () => {
+      const home = await mkdtemp(join(tmpdir(), "domovoi-commit-home-"))
+      scratchDirectories.push(home)
+      await writeFile(join(home, ".gitconfig"), "[core]\n\tautocrlf = true\n")
+      vi.stubEnv("HOME", home)
+      vi.stubEnv("XDG_CONFIG_HOME", join(home, ".config"))
+      const { repositoryPath, workspace, sessionId, service, armed } = await heldBack("domovoi-commit-removed-override-")
+      await git(repositoryPath, "config", "core.autocrlf", "false")
+      await writeFile(join(workspace.path, "README.md"), "after\r\nwith crlf\r\n")
+      armed.staged = async () => { await git(repositoryPath, "config", "--unset", "core.autocrlf") }
+
+      const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit }))
+
+      expect(error.reason).toBe("held-back-config")
+      expect(error.message).toContain("core.autocrlf")
+      expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
+    })
+
+    // T126b review R1.1: Git reads core.sparseCheckout as a boolean, so "1"
+    // turns it on; a file outside the patterns is never committed.
+    it("keeps the sparse-checkout patterns when core.sparseCheckout is written as 1", async () => {
+      const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-sparse-")
+      await git(workspace.path, "sparse-checkout", "set", "--no-cone", "/README.md", "/old.txt", "/.gitignore")
+      await git(workspace.path, "config", "--worktree", "core.sparseCheckout", "1")
+      await writeFile(join(workspace.path, "README.md"), "after\n")
+      await writeFile(join(workspace.path, "new-outside.txt"), "outside\n")
+      const head = await git(workspace.path, "rev-parse", "HEAD")
+
+      await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: head }).catch(() => undefined)
+
+      expect(await git(workspace.path, "ls-tree", "-r", "--name-only", `domovoi/${sessionId}`)).not.toContain("new-outside.txt")
+    })
+
     it("commits past dropped settings that change nothing a commit stores or runs", async () => {
       const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-inert-keys-")
       for (const [key, value] of [
         ["core.hooksPath", ".husky"], ["remote.origin.url", "ext::sh -c true"], ["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
         ["branch.main.remote", "origin"], ["branch.main.merge", "refs/heads/main"], ["pull.rebase", "true"], ["gc.auto", "0"],
         ["user.name", "Dana Person"], ["user.email", "dana@example.invalid"], ["lfs.repositoryformatversion", "0"],
+        ["lfs.https://example.invalid/repo.git/info/lfs.access", "basic"], ["gui.wmstate", "normal"],
       ] as const) await git(repositoryPath, "config", key, value)
       await writeFile(join(workspace.path, "README.md"), "after\n")
 

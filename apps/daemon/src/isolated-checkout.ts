@@ -59,8 +59,8 @@ const execute = promisify(execFile)
 //   copied into the worktree afterwards) or the session worktree's own, read
 //   and written in place under Git's usual index lock.
 // - Its info/ holds copies of the repository's info/attributes and
-//   info/exclude and, when sparse checkout is on, the worktree's
-//   sparse-checkout patterns. They are data: attributes can only select a
+//   info/exclude and the worktree's sparse-checkout patterns when it has
+//   them (Git reads those only when sparse checkout is on). They are data: attributes can only select a
 //   filter driver the isolated config defines, which is the person's own, the
 //   exact `git lfs install` line, or a trusted repository's reviewed one.
 // - It lives inside the repository's Git directory, beside the repository's
@@ -470,6 +470,20 @@ export function heldBackRepositoryKeys(
     if (values === undefined || values.at(-1) !== effective.get(key) || !values.includes(shown(value))) held.add(key)
   }
   return [...held]
+}
+
+// The keys whose values, scopes or order differ between two reads of the
+// worktree's config: set, changed or removed in between.
+export function changedConfigKeys(before: readonly ConfigEntry[], after: readonly ConfigEntry[]): string[] {
+  const listed = (entries: readonly ConfigEntry[]) => {
+    const values = new Map<string, string[]>()
+    for (const { scope, key, value } of entries) values.set(key, [...values.get(key) ?? [], `${scope}\0${value === undefined ? "\0" : value}`])
+    return values
+  }
+  const was = listed(before)
+  const now = listed(after)
+  return [...new Set([...was.keys(), ...now.keys()])]
+    .filter((key) => JSON.stringify(was.get(key) ?? []) !== JSON.stringify(now.get(key) ?? []))
 }
 
 // The whole config the isolated directory reads, as Git lists it there:
@@ -945,7 +959,10 @@ export async function openIsolatedGit(input: {
       : `[core]\n\trepositoryformatversion = 1\n\tbare = false\n[extensions]\n${extensions.join("")}`)
     await copyIfPresent(infoAttributes, join(gitDirectory, "info", "attributes"))
     await copyIfPresent(infoExclude, join(gitDirectory, "info", "exclude"))
-    if (last("core.sparsecheckout") === "true") await copyIfPresent(sparseCheckout, join(gitDirectory, "info", "sparse-checkout"))
+    // The patterns are data, and Git reads them only when its own boolean
+    // reading of the carried core.sparseCheckout ("1", "yes" and "on" among
+    // them) turns sparse checkout on, so they are copied whenever present.
+    await copyIfPresent(sparseCheckout, join(gitDirectory, "info", "sparse-checkout"))
   } catch (error) {
     await fs.rm(gitDirectory, { recursive: true, force: true })
     await fs.rm(snapshot.directory, { recursive: true, force: true })
@@ -1073,8 +1090,12 @@ export async function openIsolatedGit(input: {
     stream: (args, onStdout, options = {}) => launch(args, options, onStdout),
     indexLocksLeft,
     async heldBack(options = {}) {
-      const read = options.reread === true ? await worktreeConfig(git, worktree, options.signal ?? signal) : entries
-      return heldBackRepositoryKeys(read, isolatedEntries)
+      if (options.reread !== true) return heldBackRepositoryKeys(entries, isolatedEntries)
+      // The directory runs with the config it was built from, so a key whose
+      // values changed since, in any scope, a repository override removed
+      // and a global value now showing through among them, counts too.
+      const fresh = await worktreeConfig(git, worktree, options.signal ?? signal)
+      return [...new Set([...heldBackRepositoryKeys(fresh, isolatedEntries), ...changedConfigKeys(entries, fresh)])]
     },
     // A directory holding a lock whose owner is unknown stays, lock and all.
     // The snapshot goes in every case: a Git still running without it reads

@@ -57,7 +57,11 @@ session's work from the Changes tab instead. The daemon:
   config and the directory's whole config. It is decided from the one config read
   the directory is built from, and again once staging is done, so a setting that
   appears after the gate read (an include edited, a config change in between)
-  refuses too. The only list is of keys known to change nothing a commit stores or
+  refuses too. The second read also refuses any key whose values changed since the
+  first, in any scope, such as a repository override removed so a global value
+  shows through. The worktree's sparse-checkout patterns are always carried, so
+  Git applies them whenever its own reading of `core.sparseCheckout` turns sparse
+  checkout on (`1` and `yes` included). The only list is of keys known to change nothing a commit stores or
   runs (`commitInertKeys` in `workspace.ts`: repository layout, hooks and
   fsmonitor, index and storage formats, other commands' programs, branches and
   remotes, the identity), so a key nothing names, a later Git's included, refuses.

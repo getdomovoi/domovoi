@@ -140,8 +140,8 @@ export type SessionCommitRefusal =
 //   index.*, pack.*, gc.*, maintenance.*, feature.*.
 // - Programs and settings for other commands, which staging and write-tree
 //   never start or read: core.editor, core.pager, core.sshcommand,
-//   core.askpass, credential.*, http.*, color.*, alias.*, pull.*, push.*,
-//   fetch.*, rerere.*.
+//   core.askpass, credential.*, http.*, color.*, alias.*, gui.*, pull.*,
+//   push.*, fetch.*, rerere.*, and git-lfs's per-endpoint records below.
 // - Where branches and remotes point, which a commit of the index does not
 //   read: branch.*, remote.*, submodule.* (every submodule entry is listed and
 //   classified with --ignore-submodules=none).
@@ -155,11 +155,16 @@ const commitInertKeys = new Set([
 ])
 const commitInertSections = new Set([
   "index", "pack", "gc", "maintenance", "feature", "credential", "http", "color", "alias", "pull", "push", "fetch",
-  "rerere", "branch", "remote", "submodule", "author", "committer",
+  "rerere", "branch", "remote", "submodule", "author", "committer", "gui",
 ])
 
+// git-lfs records per endpoint how it authenticates and whether it verifies
+// locks (lfs.<url>.access, lfs.<url>.locksverify); a commit's clean step
+// computes pointers locally and talks to no endpoint.
+const lfsEndpointRecord = /^lfs\..+\.(?:access|locksverify)$/u
+
 function commitInertKey(key: string): boolean {
-  return commitInertKeys.has(key) || commitInertSections.has(key.slice(0, key.indexOf(".")))
+  return commitInertKeys.has(key) || commitInertSections.has(key.slice(0, key.indexOf("."))) || lfsEndpointRecord.test(key)
 }
 
 // Refuses a person's commit while the isolated directory holds back any
