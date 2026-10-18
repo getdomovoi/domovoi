@@ -117,6 +117,29 @@ it("says no provider is available when the default harness is not installed, ins
   expect(screen.queryAllByRole("menuitem")).toHaveLength(0)
 })
 
+// Walk F14, ruling Q135: the goal is the session's first message, so the
+// field says so and names the mode that first turn runs in.
+it.each([
+  ["build", "Build"],
+  ["ask", "Ask"],
+] as const)("says the goal starts the agent in %s mode", (mode, label) => {
+  render(
+    <LauncherDialog
+      mode="session"
+      defaultProviderId="codex"
+      defaultPermissionMode={mode}
+      onOpenChange={vi.fn()}
+      onOpenProject={vi.fn(async () => {})}
+      onCreateSession={vi.fn(async () => {})}
+      onListModels={vi.fn(async () => [])}
+      providers={providers}
+    />,
+  )
+  expect(screen.getByText(
+    `This is also the first message: the agent starts on it in ${label} mode. Runtime and permission controls remain editable in the session.`,
+  )).toBeTruthy()
+})
+
 // A search that finds nothing is not proof of absence: the daemon may have
 // looked on a PATH the person's shell never sees. The empty state is a search
 // report: what was looked for, where, and what would change the answer. It is

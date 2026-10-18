@@ -37,7 +37,7 @@ import type { RepositoryProviderConfigReader } from "./tool-inventory.js"
 import { projectInstructions } from "./project-instructions.js"
 import { claudeReadOutsideWorktree, claudeShellReadIsListed, isClaudeReadTool } from "./claude-read-scope.js"
 import { gitReadCanRunProgram } from "./git-read-config.js"
-import { permissionDecisionFor } from "./permission-policy.js"
+import { askHasNoApprovalsRefusal, hardGateLabelFor, permissionDecisionFor } from "./permission-policy.js"
 import { DurableOutputRedactor, redactDurableText } from "./secret-redaction.js"
 import { checkClaudeInstall, resolveClaudeSdkExecutable } from "./claude-install.js"
 import {
@@ -758,8 +758,9 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
     // time, so it asks even when every path it names stays inside.
     const listed = toolName !== "Bash" || claudeShellReadIsListed(command)
     // A listed Git read still runs any program Git is configured to run.
-    const unresolved = !listed || (toolName === "Bash" && /(?:^|[;&|]\s*)git\s/.test(command)
-      && await gitReadCanRunProgram(resolve(cwd, hookInput.cwd ?? cwd)))
+    const programmable = listed && toolName === "Bash" && /(?:^|[;&|]\s*)git\s/.test(command)
+      && await gitReadCanRunProgram(resolve(cwd, hookInput.cwd ?? cwd))
+    const unresolved = !listed || programmable
     if (outside === undefined && !secret && !unresolved) return {}
     const reason = outside !== undefined
       ? `Reads outside the session worktree: ${outside}`
@@ -768,15 +769,39 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         : "Domovoi cannot tell which files this command reads"
     const itemId = hookInput.tool_use_id
     if (session.runtime.permissionMode === "ask") {
+      // Walk F18, ruling Q136: the reason given is the rule that decided, in
+      // the hook text Claude reads and on the card alike. A command Domovoi
+      // cannot confirm only reads is refused by Ask's read-only rule whatever
+      // paths it names, so that rule comes first; a read it can place is
+      // refused only because it would need an approval, which Ask does not
+      // have. Which calls are refused is unchanged: only the words and the
+      // rule named. The Git check also answers yes when it cannot read Git's
+      // configuration, so its words say what could not be confirmed, and a
+      // hard gate is named by its own label, since secret covers every gate.
+      const gate = secret ? hardGateLabelFor(operation) : undefined
+      const refusal = unresolved
+        ? {
+            reason: programmable
+              ? "Ask mode is read-only, and Domovoi cannot confirm Git runs no other program for this command"
+              : "Ask mode is read-only, and Domovoi cannot confirm this command only reads files",
+          }
+        : {
+            reason: outside !== undefined
+              ? `Ask mode has no approvals, and this reads outside the session worktree: ${outside}`
+              : `Ask mode has no approvals, and this read meets a hard gate${gate ? `: ${gate}` : ""}`,
+            // The read-only rule is the daemon's default for an Ask refusal,
+            // so only this one carries its facts.
+            refusal: askHasNoApprovalsRefusal,
+          }
       this.#emit({
         type: "policy-refused",
         threadId,
         ...(session.activeTurnId ? { turnId: session.activeTurnId } : {}),
         ...(itemId ? { itemId } : {}),
         command,
-        reason,
+        ...refusal,
       })
-      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } }
+      return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: refusal.reason } }
     }
     // A command Domovoi only cannot place keeps Claude's own card text.
     if (itemId && (outside !== undefined || secret)) {
