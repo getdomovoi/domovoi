@@ -12651,7 +12651,9 @@ export class DomovoiDaemon {
     const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
     if (!session) return false
     const createdAt = new Date().toISOString()
-    session.changedFiles = 0
+    // A commit whose index publication did not happen leaves the worktree
+    // reading as changed, so its count stands until evidence is read again.
+    if (made.afterCommitError === undefined) session.changedFiles = 0
     session.updatedAt = createdAt
     this.#snapshot.thread.push({
       id: `checkpoint-${randomUUID()}`,

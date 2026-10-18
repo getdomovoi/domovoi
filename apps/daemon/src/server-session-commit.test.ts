@@ -207,6 +207,8 @@ describe("session.commit", () => {
       body: "Committed cccccccc, with something left undone",
       detail: "could not update the worktree's index",
     })
+    // The worktree may still read as changed, so its count is not cleared.
+    expect(snapshot.sessions[0]!.changedFiles).toBe(2)
   })
 
   // The deadline aborts what has not started; a commit already past its

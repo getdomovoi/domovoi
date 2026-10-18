@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process"
+import { execFile, spawnSync } from "node:child_process"
 import { link, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -452,6 +452,27 @@ describe("GitWorkspaceService.commit", () => {
     expect(error.reason).toBe("secret-message")
     expect(error.message).not.toContain("message-secret-fixture")
     expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
+  })
+
+  // PR #883 review: a deleted path is checked as bytes too, so a path that is
+  // not UTF-8 is refused rather than recorded under a replacement character.
+  it("refuses deleting a tracked path that is not UTF-8", async () => {
+    const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-deleted-bytes-")
+    const blob = spawnSync("git", ["-C", workspace.path, "hash-object", "-w", "--stdin"], { input: "bytes\n", encoding: "utf8" }).stdout.trim()
+    // The entry exists in the index and HEAD only: no file name on disk, so
+    // the test runs where the filesystem refuses such names.
+    const name = Buffer.concat([Buffer.from("bad-"), Buffer.from([0xff]), Buffer.from(".txt")])
+    const info = Buffer.concat([Buffer.from(`100644 ${blob}\t`), name, Buffer.from("\n")])
+    const indexed = spawnSync("git", ["-C", workspace.path, "update-index", "--index-info"], { input: info })
+    expect(indexed.status).toBe(0)
+    await git(workspace.path, "commit", "-q", "-m", "track a name that is not UTF-8")
+    const head = await git(workspace.path, "rev-parse", "HEAD")
+    await writeFile(join(workspace.path, "README.md"), "after\n")
+
+    const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: head }))
+
+    expect(error.reason).toBe("unreadable-paths")
+    expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(head)
   })
 
   it("lets a commit delete a secret file the branch already tracked", async () => {

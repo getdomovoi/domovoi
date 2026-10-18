@@ -2151,30 +2151,35 @@ export class GitWorkspaceService implements WorkspaceService {
           // setting the repository gained since was not applied. So the
           // worktree's config is read again now, before anything is written.
           refuseHeldBackConfig(await isolated.heldBack({ reread: true, signal }), branch)
-          // The paths whose contents enter the commit: a deletion carries no
-          // contents, so dropping a tracked secret file is allowed. Read as
-          // raw bytes, so a path that is not UTF-8 is refused, never guessed.
-          const output: Buffer[] = []
-          let bytes = 0
-          // Every submodule entry counts, whatever .gitmodules or config says
-          // to ignore: write-tree commits what the index holds.
-          const result = await isolated.stream(
-            ["--no-optional-locks", "diff", "--cached", "--name-only", "--no-renames", "--diff-filter=d", "--ignore-submodules=none", "-z"],
-            (chunk, stop) => {
-              bytes += chunk.byteLength
-              if (bytes > maximumGitOutputBytes) stop()
-              else output.push(chunk)
-            },
-            { index, signal: signal ?? null },
-          )
-          if (bytes > maximumGitOutputBytes) throw new SessionCommitRefusedError("unreadable-paths", branch)
-          if (result.code !== 0) throw new Error(result.stderr || `git diff exited with ${result.code ?? result.signal ?? "no status"}`)
-          let written: string[]
-          try {
-            written = utf8GitPaths(Buffer.concat(output))
-          } catch {
-            throw new SessionCommitRefusedError("unreadable-paths", branch)
+          // Every changed path, read as raw bytes, so one that is not UTF-8,
+          // a deleted one included, is refused rather than recorded under a
+          // replacement character. Every submodule entry counts, whatever
+          // .gitmodules or config says to ignore: write-tree commits what the
+          // index holds.
+          const changedPaths = async (filter: readonly string[]) => {
+            const output: Buffer[] = []
+            let bytes = 0
+            const result = await isolated.stream(
+              ["--no-optional-locks", "diff", "--cached", "--name-only", "--no-renames", ...filter, "--ignore-submodules=none", "-z"],
+              (chunk, stop) => {
+                bytes += chunk.byteLength
+                if (bytes > maximumGitOutputBytes) stop()
+                else output.push(chunk)
+              },
+              { index, signal: signal ?? null },
+            )
+            if (bytes > maximumGitOutputBytes) throw new SessionCommitRefusedError("unreadable-paths", branch)
+            if (result.code !== 0) throw new Error(result.stderr || `git diff exited with ${result.code ?? result.signal ?? "no status"}`)
+            try {
+              return utf8GitPaths(Buffer.concat(output))
+            } catch {
+              throw new SessionCommitRefusedError("unreadable-paths", branch)
+            }
           }
+          await changedPaths([])
+          // The paths whose contents enter the commit: a deletion carries no
+          // contents, so dropping a tracked secret file is allowed.
+          const written = await changedPaths(["--diff-filter=d"])
           const secret = written.filter((candidate) => !checkpointPathIsSafe(candidate)).length
           if (secret > 0) throw new SessionCommitRefusedError("secret-paths", branch, secret)
         },
