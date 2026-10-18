@@ -569,7 +569,9 @@ describe("turning TailnetReach on", () => {
   })
 
   // Walk F11: the record lives with the app and the files with the profile, so
-  // a new profile leaves the switch on with no certificate. The card's "Get the
+  // a profile directory removed or replaced at the same path leaves the switch
+  // on with no certificate. (A profile at another path reads off: the record's
+  // paths no longer match its tls directory.) The card's "Get the
   // certificate again" is this turn-on: it asks Tailscale again, stores the new
   // pair, records it and restarts once, with nothing to set aside.
   it("reports on with no expiry, then gets the certificate again, when the stored files are missing", async () => {

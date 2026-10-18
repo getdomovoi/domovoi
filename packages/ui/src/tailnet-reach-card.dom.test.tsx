@@ -378,9 +378,10 @@ it("says when the daemon does not answer on the tailnet, in the daemon's words",
 })
 
 // Walk F11: the switch is recorded with the app and the certificate stored in
-// the profile, so a new profile leaves the switch on with no certificate: the
-// desktop reads no expiry and the daemon refuses the listener. The alert offers
-// to get the certificate again, which is a turn-on, rather than a renewal.
+// the profile, so a replaced profile directory leaves the switch on with no
+// certificate: the desktop reads no expiry and the daemon refuses the listener.
+// The alert offers to get the certificate again, which is a turn-on, rather
+// than a renewal.
 it("offers to get the certificate again when the stored certificate is missing", async () => {
   const missing = { ...off, state: "on" } as const
   const refused: TailnetListenerStatus = { state: "refused", address: "100.101.102.103", retrying: false,
@@ -392,11 +393,11 @@ it("offers to get the certificate again when the stored certificate is missing",
   const alert = within(view.getByRole("alert"))
   expect(alert.getByText(refused.reason)).toBeTruthy()
   expect(alert.queryByRole("button", { name: "Renew now" })).toBeNull()
-  expect(alert.getByText("Tailscale is asked for this machine's certificate again, then the daemon restarts once.")).toBeTruthy()
+  expect(alert.getByText("Tailscale is asked for this machine's certificate again, then the daemon restarts.")).toBeTruthy()
   await user.click(alert.getByRole("button", { name: "Get the certificate again" }))
   expect(ask).toHaveBeenLastCalledWith("on")
   expect(view.getByText("Getting the certificate")).toBeTruthy()
-  expect(view.getByText("Getting the certificate. Tailscale is asked for it again, then the daemon restarts once.")).toBeTruthy()
+  expect(view.getByText("Getting the certificate. Tailscale is asked for it again, then the daemon restarts.")).toBeTruthy()
   expect(view.queryByText("Renewing")).toBeNull()
   getting.resolve({ ok: true, report: on })
   await settle()
@@ -404,6 +405,20 @@ it("offers to get the certificate again when the stored certificate is missing",
   // goes back to offering a renewal.
   expect(view.getByText("expires 20 Dec 2026")).toBeTruthy()
   expect(within(view.getByRole("alert")).getByRole("button", { name: "Renew now" })).toBeTruthy()
+})
+
+// Codex review round 1 (Minor): no expiry from the desktop alone does not
+// prove the certificate missing. When the daemon still names one, the alert
+// keeps offering a renewal.
+it("keeps Renew now when the daemon reads a certificate the desktop cannot", async () => {
+  const unread = { ...off, state: "on" } as const
+  const refused: TailnetListenerStatus = { state: "refused", address: "100.101.102.103", retrying: true, certificateExpiresAt: "2026-12-20T12:00:00.000Z",
+    reason: "The tailnet address 100.101.102.103 is not on this machine (EADDRNOTAVAIL)." }
+  await card({ status: unread }, { listener: refused })
+  const alert = within(within(region()).getByRole("alert"))
+  expect(alert.getByRole("button", { name: "Renew now" })).toBeTruthy()
+  expect(alert.queryByRole("button", { name: "Get the certificate again" })).toBeNull()
+  expect(alert.getByText("The daemon tries the address again on its own.")).toBeTruthy()
 })
 
 it("turns off through the switch, listing the two steps", async () => {

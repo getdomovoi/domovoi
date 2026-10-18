@@ -375,10 +375,12 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
   const listening = listener?.state === "listening"
   const notAnswering = isOn && listener !== undefined && !listening
   const refusedListener = isOn && listener?.state === "refused" ? listener : undefined
-  // Walk F11: on, yet the desktop read no expiry, so it cannot read a stored
-  // certificate (the record lives with the app, the files with the profile).
+  // Walk F11: on, yet neither the desktop nor the daemon reads a certificate
+  // expiry: the stored certificate is missing or unreadable, as when the
+  // profile directory was replaced while the record, kept with the app, stayed.
   // Turning on again then gets a certificate rather than renewing one.
   const noCertificate = isOn && named?.certificateExpiresAt === undefined
+    && (listener === undefined || listener.state === "off" || listener.certificateExpiresAt === undefined)
   const unconfirmed = isOn && listener === undefined
   // Re-review of 10dba4a2 (P3-2): off here, yet the daemon still listens, as
   // after a turn-on that ended with the service installed but not reached.
@@ -400,7 +402,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
                 : [unconfirmed ? "bg-faint" : "bg-success", "On"]
   const line = running
     ? running.direction === "off" ? "Turning off. The steps run in this order."
-      : running.renew ? (noCertificate ? "Getting the certificate. Tailscale is asked for it again, then the daemon restarts once." : "Renewing. Tailscale is asked for the certificate again, then the daemon restarts once.")
+      : running.renew ? (noCertificate ? "Getting the certificate. Tailscale is asked for it again, then the daemon restarts." : "Renewing. Tailscale is asked for the certificate again, then the daemon restarts once.")
         : "Turning on. The steps run in this order."
     : stoppedOn ? (httpsOff ? "Stopped before storing or restarting anything." : "The switch stays off.")
       : !report ? (unread ? unreadLine(unread) : readError ?? "Reading the tailnet status from Tailscale.")
@@ -558,7 +560,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
           action={noCertificate ? "Get the certificate again" : "Renew now"} onAction={() => void controller.turnOn()}
           after={[
             refusedListener.retrying ? "The daemon tries the address again on its own." : "",
-            noCertificate ? "Tailscale is asked for this machine's certificate again, then the daemon restarts once." : "",
+            noCertificate ? "Tailscale is asked for this machine's certificate again, then the daemon restarts." : "",
           ].filter(Boolean).join(" ") || undefined}
         />
       ) : null}

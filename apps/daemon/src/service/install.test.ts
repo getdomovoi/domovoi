@@ -1190,8 +1190,14 @@ it("reads launchd's never exited as a known last exit", async () => {
   expect(status).toMatchObject({ running: true, pid: 82027, lastExit: "never exited" })
 })
 
+it("reads never exited from CRLF output", async () => {
+  const dependencies = effects({ capture: vi.fn(async () => ({ code: 0, stdout: "job = {\r\n\tpath = /Users/dl/Library/LaunchAgents/sh.domovoi.domovoid.plist\r\n\tstate = running\r\n\tlast exit code = (never exited)\r\n}\r\n" })) })
+  expect(await serviceStatus(darwin, dependencies)).toHaveProperty("lastExit", "never exited")
+})
+
 it.each([
   "\t\tlast exit code = (never exited)\n",
+  "\tlast exit code = (never exited)\r\n\tlast exit code = 9\r\n",
   "\tlast exit code = (never exited)\n\tlast exit code = 9\n",
   "\tlast exit code = (never exited) later\n",
 ])("keeps an ambiguous never exited unknown: %s", async (fields) => {
