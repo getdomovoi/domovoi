@@ -127,6 +127,37 @@ export function waitingCount(snapshot: WorkspaceSnapshot): number {
   return new Set(snapshot.approvals.map((approval) => approval.sessionId)).size
 }
 
+// The header pill: the count is of sessions, so one needs you and two need you.
+export function needsYouLabel(count: number): string {
+  return `${count} ${count === 1 ? "needs" : "need"} you`
+}
+
+// While the phone is not live, when the state it shows reached it. A clock
+// alone reads as today, so a read from another day names the day. Spelled out
+// rather than read from Intl, whose month names differ between ICU versions.
+export type LastRead = {
+  // The phone's clock when the last snapshot or change arrived. Undefined
+  // when nothing says when, and then the line gives no time at all.
+  readAt: number | undefined
+  now: number
+}
+
+const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+const twoDigits = (value: number) => String(value).padStart(2, "0")
+
+export function lastReadWords({ readAt, now }: LastRead): string {
+  if (readAt === undefined) return "when last read"
+  const at = new Date(readAt)
+  const today = new Date(now)
+  const clock = `${twoDigits(at.getHours())}:${twoDigits(at.getMinutes())}`
+  const sameDay = at.getFullYear() === today.getFullYear()
+    && at.getMonth() === today.getMonth()
+    && at.getDate() === today.getDate()
+  return sameDay
+    ? `when last read at ${clock}`
+    : `when last read on ${at.getDate()} ${monthNames[at.getMonth()]} at ${clock}`
+}
+
 // The line under the Sessions title. The sessions are one machine's, so the
 // running count is scoped to that machine by name; the handoff says "none
 // running" rather than "0 running" because a zero reads as a measurement that
@@ -134,9 +165,20 @@ export function waitingCount(snapshot: WorkspaceSnapshot): number {
 // not, in the fleet screen's own words. It never says "3 machines": that
 // would state a fact about three machines from the data of one, and no results
 // and not searched are different answers.
-export function sessionsHeaderLine(snapshot: WorkspaceSnapshot, fleet: FleetEntry[] | undefined): string {
+//
+// Walk F12: while the phone is not live (not connected, refused, or not yet
+// answered), the counts are the last state it was sent, not now. The running
+// count says it is the last read, and the fleet part goes: "1 reachable" is a
+// claim about now that a phone with no connection cannot make.
+export function sessionsHeaderLine(
+  snapshot: WorkspaceSnapshot,
+  fleet: FleetEntry[] | undefined,
+  // Given only while not live.
+  lastRead?: LastRead,
+): string {
   const running = snapshot.sessions.filter((session) => session.state === "active").length
   const runningLabel = running === 0 ? "none running" : `${running} running`
+  if (lastRead) return `${snapshot.machine.name} · ${runningLabel} ${lastReadWords(lastRead)}`
   const summary = fleet ? fleetSummary(fleet) : undefined
   return [snapshot.machine.name, runningLabel, summary].filter((part) => part !== undefined).join(" · ")
 }
