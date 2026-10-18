@@ -23,6 +23,7 @@ import {
   type RepositoryFilterTrustLookup,
 } from "./repository-git-filter-gate.js"
 import { readGitFilterSettings, repositoryGitFilters, type RepositoryGitFilter } from "./repository-git-filters.js"
+import { redactDurableText } from "./secret-redaction.js"
 import { checkpointPathIsSafe } from "./workspace-redaction.js"
 import { RestoreOperationLease, trackRestoreCommand } from "./workspace-restore-lease.js"
 
@@ -110,6 +111,7 @@ export type SessionCommitRefusal =
   | "head-moved"
   | "nothing-to-commit"
   | "secret-paths"
+  | "secret-message"
   | "unreadable-paths"
 
 // Why Domovoi did not commit. Every refusal leaves the worktree, its index and
@@ -137,6 +139,8 @@ function sessionCommitRefusalText(reason: SessionCommitRefusal, branch: string, 
       return `The worktree matches ${branch}, so there is nothing to commit.`
     case "secret-paths":
       return `${count} ${count === 1 ? "file" : "files"} in these changes ${count === 1 ? "looks" : "look"} like a credential, a private key or an environment file. Domovoi does not commit such files, so nothing was committed. Remove ${count === 1 ? "it" : "them"} or add ${count === 1 ? "it" : "them"} to .gitignore, then commit again.`
+    case "secret-message":
+      return "The commit message looks like it holds a secret, and a message stays in the branch's history. Nothing was committed. Take the secret out of the message, then commit."
     case "unreadable-paths":
       return "Git named a changed path Domovoi cannot read as UTF-8, so it could not check every file. Nothing was committed."
   }
@@ -2002,6 +2006,9 @@ export class GitWorkspaceService implements WorkspaceService {
     signal?.throwIfAborted()
     const { sessionId, expectedHead } = request
     if (!safeSessionId.test(sessionId) || !commitSha.test(expectedHead)) throw new SessionCommitRefusedError("not-session-worktree")
+    // The message stays in the branch's history wherever it goes, so one the
+    // durable-text redactor would change is refused, never committed.
+    if (redactDurableText(request.message).redacted || request.message.includes("\0")) throw new SessionCommitRefusedError("secret-message")
     const expectedPath = this.sessionWorkspacePath(sessionId)
     let path: string
     try {

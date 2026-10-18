@@ -159,6 +159,19 @@ describe("GitWorkspaceService.commit", () => {
     await expect(readFile(join(workspace.path, path), "utf8")).resolves.toBe(contents)
   })
 
+  it("refuses a message that holds a secret, which would stay in the branch's history", async () => {
+    const { service, workspace, sessionId } = await sessionWorktree("domovoi-commit-secret-message-")
+    await writeFile(join(workspace.path, "README.md"), "after\n")
+
+    const error = await refusal(service.commit(workspace.path, {
+      sessionId, message: "chore: rotate\n\nNPM_TOKEN=message-secret-fixture", expectedHead: workspace.baseCommit,
+    }))
+
+    expect(error.reason).toBe("secret-message")
+    expect(error.message).not.toContain("message-secret-fixture")
+    expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
+  })
+
   it("lets a commit delete a secret file the branch already tracked", async () => {
     const { service, workspace, sessionId } = await sessionWorktree("domovoi-commit-delete-secret-")
     await writeFile(join(workspace.path, ".env"), "API_KEY=1\n")
