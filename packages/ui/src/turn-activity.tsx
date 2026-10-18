@@ -31,7 +31,10 @@ const commandSummaryLength = 72
 export function commandSummary(command: string): string {
   const lines = command.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line.length > 0)
   const first = (lines[0] ?? "").replace(/\s+/gu, " ")
-  if (first.length > commandSummaryLength) return `${first.slice(0, commandSummaryLength - 1).trimEnd()}…`
+  // Cut by code point, so a character outside the BMP is kept or dropped
+  // whole rather than leaving half a surrogate pair to draw as a box.
+  const points = Array.from(first)
+  if (points.length > commandSummaryLength) return `${points.slice(0, commandSummaryLength - 1).join("").trimEnd()}…`
   return lines.length > 1 ? `${first}…` : first
 }
 
@@ -148,8 +151,17 @@ export const TurnActivity = memo(function TurnActivity({
             const step = (
               <>
                 <StatusDot meaning={stepMeaning(item, running)} label={item.name} size="inline" />
+                {/* A cut command shows its summary, which also bounds the
+                    step button's accessible name; one short enough to
+                    keep whole can still be cut by a narrow column, so it
+                    carries its text as a title. */}
                 {item.argument ? (
-                  <span className="min-w-0 truncate font-mono text-[10.5px] text-muted-foreground">{item.argument}</span>
+                  <span
+                    className="min-w-0 truncate font-mono text-[10.5px] text-muted-foreground"
+                    {...(fullCommand === undefined ? { title: item.argument } : {})}
+                  >
+                    {fullCommand === undefined ? item.argument : commandSummary(item.argument)}
+                  </span>
                 ) : null}
                 <span className="ml-auto font-mono text-[10.5px] text-faint">{item.outcome === "running" && !running ? "no result" : item.outcome}</span>
               </>

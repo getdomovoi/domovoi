@@ -99,4 +99,19 @@ describe("closing a dropdown menu", () => {
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull())
     await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("button", { name: "Composer" })))
   })
+
+  // Radix leaves focus alone after a secondary click outside, so the
+  // browser's context menu keeps its target. A pointer close is a primary one.
+  it("leaves focus alone after a right click elsewhere", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 })
+    render(<Menu />)
+    const trigger = screen.getByRole("button", { name: "Usage" })
+    await user.click(trigger)
+    const focus = vi.spyOn(HTMLElement.prototype, "focus")
+    await user.pointer({ keys: "[MouseRight]", target: screen.getByTestId("elsewhere") })
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull())
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(document.activeElement).not.toBe(trigger)
+    expect(quietFocusCalls(trigger, focus)).toHaveLength(0)
+  })
 })

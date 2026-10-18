@@ -62,4 +62,28 @@ describe("a running command longer than its row", () => {
     const shown = [...document.querySelectorAll("pre")].map((node) => node.textContent)
     expect(shown).toContain(script)
   })
+
+  it("names the step's button by the summary, not the whole script", async () => {
+    const user = userEvent.setup()
+    render(<TurnActivity items={items} running />)
+    await user.click(screen.getByRole("button", { name: /^Working/u }))
+    const step = screen.getByRole("button", { name: /command/u })
+    expect(step.textContent).not.toContain("\n")
+    expect(step.textContent!.length).toBeLessThan(160)
+  })
+
+  it("cuts between characters, never inside one", () => {
+    const line = `${"a".repeat(70)}😀${"b".repeat(10)}`
+    const meta = activityMeta([{ id: "live", name: "command", argument: line, outcome: "running" }], true)!
+    expect(meta).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/u)
+    expect(meta.endsWith(`${"a".repeat(70)}😀…`)).toBe(true)
+  })
+
+  it("offers a short command's full text where a narrow column cuts it", async () => {
+    const user = userEvent.setup()
+    const command = "pnpm vitest run packages/ui/src/turn-activity.dom.test.tsx"
+    render(<TurnActivity items={[{ id: "live", name: "command", argument: command, outcome: "running" }]} running />)
+    await user.click(screen.getByRole("button", { name: /^Working/u }))
+    expect(screen.getByTitle(command).textContent).toBe(command)
+  })
 })

@@ -38,7 +38,12 @@ function DropdownMenuTrigger({
 function useClosedByPointer(): React.RefObject<boolean> {
   const closedByPointer = React.useRef(false)
   React.useEffect(() => {
-    const pointer = () => { closedByPointer.current = true }
+    // Only a primary press counts. Radix leaves focus alone after a right
+    // click (or Ctrl-click on macOS) outside, so the context menu keeps its
+    // target, and that close stays Radix's.
+    const pointer = (event: PointerEvent) => {
+      closedByPointer.current = event.button === 0 && !event.ctrlKey
+    }
     const keyboard = () => { closedByPointer.current = false }
     document.addEventListener("pointerdown", pointer, true)
     document.addEventListener("keydown", keyboard, true)
