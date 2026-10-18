@@ -39,6 +39,14 @@ describe("a running command longer than its row", () => {
     expect(meta.endsWith("…")).toBe(true)
   })
 
+  it("keeps the ellipsis inside the bound when a first line just fits", () => {
+    const first = "x".repeat(72)
+    const meta = activityMeta([{ id: "live", name: "command", argument: `${first}\nsecond line`, outcome: "running" }], true)!
+    const summary = meta.slice("1 tool · running ".length)
+    expect(Array.from(summary)).toHaveLength(72)
+    expect(summary.endsWith("…")).toBe(true)
+  })
+
   it("leaves a short command whole", () => {
     expect(activityMeta([{ id: "live", name: "command", argument: "pnpm build", outcome: "running" }], true))
       .toBe("1 tool · running pnpm build")

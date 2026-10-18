@@ -34,8 +34,9 @@ export function commandSummary(command: string): string {
   // Cut by code point, so a character outside the BMP is kept or dropped
   // whole rather than leaving half a surrogate pair to draw as a box.
   const points = Array.from(first)
-  if (points.length > commandSummaryLength) return `${points.slice(0, commandSummaryLength - 1).join("").trimEnd()}…`
-  return lines.length > 1 ? `${first}…` : first
+  if (points.length <= commandSummaryLength && lines.length <= 1) return first
+  // The ellipsis counts toward the bound.
+  return `${points.slice(0, commandSummaryLength - 1).join("").trimEnd()}…`
 }
 
 function commandShortened(command: string | undefined): command is string {
