@@ -25,6 +25,17 @@ export function permissionPolicyRefusalFor(runtime: Runtime): PolicyRefusalFacts
   }
 }
 
+// Ask's other rule: a read that would ask for an approval in Build, one that
+// leaves the session worktree or names a secret, is refused in Ask, which
+// has no approvals. A refusal for that reason names this rule, not the
+// read-only one, so the card's rule matches its headline (walk F18).
+export const askHasNoApprovalsRefusal: PolicyRefusalFacts = {
+  rule: "Ask mode has no approvals",
+  setBy: "Domovoi permission mode",
+  scope: "This session",
+  remedy: "Switch to Build mode, where a read like this asks for your approval.",
+}
+
 const pathSeparator = String.raw`[/\\]`
 const credentialStorePatterns = credentialStoreNames.map(
   (parts) => parts.map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)).join(pathSeparator),

@@ -2707,34 +2707,86 @@ describe("reads Claude would approve before Domovoi sees them", () => {
     await adapter.close()
   })
 
-  it("refuses a read it cannot resolve at parse time in Ask, which has no approvals", async () => {
+  // Walk F18: one refusal, one reason. The hook text Claude reads and the
+  // card's headline are the same words, and they name the rule the card says
+  // was broken. In Ask a command Domovoi cannot confirm only reads is refused
+  // by Ask's read-only rule whatever paths it names.
+  it.each([
+    "touch walk-gate.txt",
+    "grep -R secret src",
+    "touch ../outside.txt",
+    "cat .env > copy.txt",
+    "cat ~/.ssh/id_ed25519",
+  ])("refuses a command it cannot confirm only reads in Ask by the read-only rule: %s", async (command) => {
     const { adapter, events, screen, threadId } = await session("ask")
+    const reason = "Ask mode is read-only, and Domovoi cannot confirm this command only reads files"
 
-    await expect(screen("Bash", { command: "grep -R secret src" }, "tool-ask")).resolves.toMatchObject({
-      hookSpecificOutput: { permissionDecision: "deny" },
+    await expect(screen("Bash", { command }, "tool-ask")).resolves.toEqual({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
     })
-    expect(events).toContainEqual(expect.objectContaining({
-      type: "policy-refused",
-      threadId,
-      itemId: "tool-ask",
-      command: "grep -R secret src",
-      reason: "Domovoi cannot tell which files this command reads",
-    }))
+    // No refusal facts of its own, so the daemon shows Ask's read-only rule
+    // (permissionPolicyRefusalFor) as the rule it broke.
+    const refused = events.filter((event) => event.type === "policy-refused")
+    expect(refused).toEqual([{ type: "policy-refused", threadId, itemId: "tool-ask", command, reason }])
     await adapter.close()
   })
 
-  it("refuses a read outside the worktree in Ask, which has no approvals", async () => {
+  it("refuses a listed Git read in Ask by the read-only rule when Git can run a program", async () => {
+    const { adapter, events, screen, threadId, worktree } = await session("ask")
+    execFileSync("git", ["-C", worktree, "config", "core.fsmonitor", join(worktree, "helper")])
+    const reason = "Ask mode is read-only, and Git is configured to run a program for this command"
+
+    await expect(screen("Bash", { command: "git status --short" }, "tool-ask")).resolves.toEqual({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
+    })
+    expect(events.filter((event) => event.type === "policy-refused")).toEqual([
+      { type: "policy-refused", threadId, itemId: "tool-ask", command: "git status --short", reason },
+    ])
+    await adapter.close()
+  })
+
+  // A read Domovoi can place is refused in Ask only because it would need an
+  // approval, so the reason and the rule both say Ask has none.
+  it.each([
+    ["Bash", { command: "cat /etc/hosts" }, "cat /etc/hosts",
+      "Ask mode has no approvals, and this reads outside the session worktree: /etc/hosts"],
+    ["Bash", { command: "cat .env" }, "cat .env",
+      "Ask mode has no approvals, and this reads credentials, private keys or environment secrets"],
+    ["Read", { file_path: "../elsewhere.txt" }, "Read",
+      "Ask mode has no approvals, and this reads outside the session worktree: ../elsewhere.txt"],
+  ] as const)("refuses a %s read that needs an approval in Ask by Ask's no-approval rule", async (toolName, toolInput, command, reason) => {
     const { adapter, events, screen, threadId } = await session("ask")
 
-    await expect(screen("Bash", { command: "cat ~/.ssh/id_ed25519" }, "tool-ask")).resolves.toMatchObject({
-      hookSpecificOutput: { permissionDecision: "deny" },
+    await expect(screen(toolName, toolInput, "tool-ask")).resolves.toEqual({
+      hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
     })
-    expect(events).toContainEqual(expect.objectContaining({
+    expect(events.filter((event) => event.type === "policy-refused")).toEqual([{
       type: "policy-refused",
       threadId,
       itemId: "tool-ask",
-      command: "cat ~/.ssh/id_ed25519",
-    }))
+      command,
+      reason,
+      refusal: {
+        rule: "Ask mode has no approvals",
+        setBy: "Domovoi permission mode",
+        scope: "This session",
+        remedy: "Switch to Build mode, where a read like this asks for your approval.",
+      },
+    }])
+    await adapter.close()
+  })
+
+  // Build keeps its approval and the reason it always gave.
+  it("keeps the Build approval reason for a command it cannot confirm only reads", async () => {
+    const { adapter, screen } = await session("build")
+
+    await expect(screen("Bash", { command: "touch walk-gate.txt" })).resolves.toEqual({
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "ask",
+        permissionDecisionReason: "Domovoi cannot tell which files this command reads",
+      },
+    })
     await adapter.close()
   })
 })
