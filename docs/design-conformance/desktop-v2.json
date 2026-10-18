@@ -1079,13 +1079,14 @@
         "turn: row.turnId && lastActivityOfTurn.get(row.turnId) === row.id ? turnsById.get(row.turnId) : undefined,",
         "<StatusDot meaning={stepMeaning(item, running)} label={item.name} size=\"inline\" />",
         "working: \"bg-primary\"",
+        "parts.push(`running ${summary || current.name}`)",
         {
           "absent": "\"Output\"",
           "in": "packages/ui/src/turn-activity.tsx"
         }
       ],
       "notes": [
-        "Re-derived 2026-10-12 (SL-2, D7) from the vendored file at the digest above; the live design was not read. Built: the label is Working while the row's turn runs, Worked for 4m 18s, show the steps (Worked for 4m 18s once open) from the turn's start and end in the snapshot's turns, and Stopped for a failed or interrupted turn. Only a turn's last activity row says it; an earlier row of the same turn, and a row whose turn has no timing, keeps N tool calls[, N failed]. A run of calls that crosses into another turn is two rows. Step dots take their outcome's colour as the design does: completed success, failed destructive, declined warning, running primary (StatusDot's working meaning), and a call left running in a row that no longer runs muted as no result. As in the design's offline state, while the daemon is lost no row says Working or sweeps, and a call last seen running is muted. A step with a log is one button (aria-expanded, chevron) that opens its log; the Output link is gone. The dot is StatusDot's 5px inline size against the design's 6px, and a step's meta is its status word rather than the design's ok · 41ms, which the wire does not carry."
+        "Re-derived 2026-10-12 (SL-2, D7) from the vendored file at the digest above; the live design was not read. Built: the label is Working while the row's turn runs, Worked for 4m 18s, show the steps (Worked for 4m 18s once open) from the turn's start and end in the snapshot's turns, and Stopped for a failed or interrupted turn. Only a turn's last activity row says it; an earlier row of the same turn, and a row whose turn has no timing, keeps N tool calls[, N failed]. A run of calls that crosses into another turn is two rows. Step dots take their outcome's colour as the design does: completed success, failed destructive, declined warning, running primary (StatusDot's working meaning), and a call left running in a row that no longer runs muted as no result. As in the design's offline state, while the daemon is lost no row says Working or sweeps, and a call last seen running is muted. A step with a log is one button (aria-expanded, chevron) that opens its log; the Output link is gone. The row stays one line at any width (walk F7, 2026-10-18): the running command is named by its first line, cut to 72 characters with an ellipsis, and a step whose command was cut is a button that opens to the whole command above its log. The dot is StatusDot's 5px inline size against the design's 6px, and a step's meta is its status word rather than the design's ok · 41ms, which the wire does not carry."
       ]
     },
     {
