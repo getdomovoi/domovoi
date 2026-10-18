@@ -1,7 +1,7 @@
 import { demoWorkspace, type FleetEntry, type FleetMachine, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 import { describe, expect, it } from "vitest"
 
-import { elapsedLabel, sessionGroups, sessionRows, sessionsHeaderLine, waitingCount } from "./session-rows"
+import { elapsedLabel, needsYouLabel, sessionGroups, sessionRows, sessionsHeaderLine, waitingCount } from "./session-rows"
 
 function workspace(): WorkspaceSnapshot {
   return structuredClone(demoWorkspace)
@@ -194,5 +194,41 @@ describe("sessionsHeaderLine", () => {
     const line = sessionsHeaderLine(snapshot, [machine("a", "healthy"), machine("b", "healthy"), machine("c", "unreachable")])
     expect(line).toBe(`${snapshot.machine.name} · none running · 2 reachable · 1 offline`)
     expect(line).not.toMatch(/3 machines/)
+  })
+
+  // Walk F12: while the phone is not live the counts are the last read, not
+  // now. The line says so, with the time the phone received it, and drops the
+  // fleet part: "reachable" is a claim about now.
+  it("says the counts are from the last read while not live, and drops the fleet", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const fleet = [machine("a", "healthy"), machine("b", "unreachable")]
+    const readAt = new Date(2026, 9, 15, 14, 7, 30).getTime()
+    const now = new Date(2026, 9, 15, 16, 0, 0).getTime()
+
+    expect(sessionsHeaderLine(snapshot, fleet, { readAt, now }))
+      .toBe(`${snapshot.machine.name} · 1 running when last read at 14:07`)
+    expect(sessionsHeaderLine(snapshot, fleet, { readAt: undefined, now }))
+      .toBe(`${snapshot.machine.name} · 1 running when last read`)
+
+    snapshot.sessions = snapshot.sessions.map((session) => ({ ...session, state: "idle" as const, activeTurnId: undefined }))
+    expect(sessionsHeaderLine(snapshot, fleet, { readAt, now }))
+      .toBe(`${snapshot.machine.name} · none running when last read at 14:07`)
+  })
+
+  // A clock alone reads as today. A read from another day names the day.
+  it("names the day of a last read that was not today", () => {
+    const snapshot = structuredClone(demoWorkspace)
+    const readAt = new Date(2026, 9, 12, 9, 5, 0).getTime()
+    const now = new Date(2026, 9, 15, 16, 0, 0).getTime()
+    expect(sessionsHeaderLine(snapshot, undefined, { readAt, now }))
+      .toBe(`${snapshot.machine.name} · 1 running when last read on 12 Oct at 09:05`)
+  })
+})
+
+// Walk F19: one session needs you; two need you.
+describe("needsYouLabel", () => {
+  it("agrees with its count", () => {
+    expect(needsYouLabel(1)).toBe("1 needs you")
+    expect(needsYouLabel(2)).toBe("2 need you")
   })
 })

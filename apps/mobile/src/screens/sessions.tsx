@@ -12,7 +12,7 @@ import type { ConnectionNotice } from "../connection-notice"
 import { sessionsGateReach } from "../gate-reach"
 import { cn } from "../lib/cn"
 import { machineRows, type MachineRow } from "../machine-rows"
-import { elapsedLabel, sessionGroups, sessionsHeaderLine, waitingCount, type SessionGroupId, type SessionRow } from "../session-rows"
+import { elapsedLabel, needsYouLabel, sessionGroups, sessionsHeaderLine, waitingCount, type SessionGroupId, type SessionRow } from "../session-rows"
 import { useTheme } from "../theme/theme-provider"
 
 const dotColour: Record<SessionRow["dot"], string> = {
@@ -40,8 +40,10 @@ const groupTone: Record<SessionGroupId | "unreachable", GroupTone> = {
 
 // A heading is a label and a count, the way the design draws it. The count is
 // the group's own size, so a heading never says more than the cards under it.
-function GroupHeading({ id, label, count }: { id: SessionGroupId | "unreachable", label: string, count: number }) {
-  const tone = countTone[groupTone[id]]
+// Green says the sessions under it run now, so while the phone is not live a
+// green count goes muted, as the card lights do.
+function GroupHeading({ id, label, count, live = true }: { id: SessionGroupId | "unreachable", label: string, count: number, live?: boolean }) {
+  const tone = countTone[!live && groupTone[id] === "success" ? "muted" : groupTone[id]]
   return (
     <View className="mt-1 flex-row items-center px-1">
       <Text className="flex-1 font-sans-medium text-label uppercase tracking-[0.08em] text-faint">
@@ -110,6 +112,21 @@ export function idleSentence(machine: string, fleet: FleetEntry[] | undefined, s
   return `${lead} Empty here is a healthy state, not a failure.`
 }
 
+// The idle card. "Everything is idle" on the healthy ground is a claim about
+// now, so while what was read may no longer hold the card says the machine
+// was idle when last read, on a plain ground (walk F12). The tablet's empty
+// thread pane draws the same card.
+export function IdleCard({ sentence, stale }: { sentence: string, stale: boolean }) {
+  return (
+    <Card testID="idle-card" className={cn("gap-2", !stale && "border-ok-border bg-ok-bg")}>
+      <Text variant="title" className={cn(!stale && "text-ok-fg")}>
+        {stale ? "Idle when last read" : "Everything is idle"}
+      </Text>
+      <Text variant="meta" className={cn(!stale && "text-ok-dim")}>{sentence}</Text>
+    </Card>
+  )
+}
+
 const fleetDot: Record<MachineRow["health"], string> = {
   ok: "bg-success",
   busy: "bg-warning",
@@ -157,10 +174,14 @@ function IdleFleet({ fleet, now, stale }: { fleet: FleetEntry[], now: number, st
   )
 }
 
-function SessionCard({ row, approvalId, now, onOpen, onOpenApproval }: {
+function SessionCard({ row, approvalId, now, live, onOpen, onOpenApproval }: {
   row: SessionRow
   approvalId: string | undefined
   now: number
+  // A card's light says what the session does now. Drawn from the last state
+  // while the phone is not live, every light goes faint. The approval ground
+  // and pill stay: they are the last fact the phone holds about the gate.
+  live: boolean
   onOpen: (id: string) => void
   onOpenApproval: (id: string) => void
 }) {
@@ -173,7 +194,7 @@ function SessionCard({ row, approvalId, now, onOpen, onOpenApproval }: {
       className={cn(row.attention === "approval" && "border-warn-border bg-warn-bg")}
     >
       <View className="flex-row items-start gap-2.5">
-        <View className={cn("mt-[5px] h-[7px] w-[7px] rounded-full", dotColour[row.dot])} />
+        <View testID="session-dot" className={cn("mt-[5px] h-[7px] w-[7px] rounded-full", live ? dotColour[row.dot] : dotColour.quiet)} />
         <Text variant="title" className="flex-1">{row.title}</Text>
         {pill ? (
           <View className={cn("rounded-full px-2 py-0.5", pill.box)}>
@@ -200,6 +221,8 @@ export function SessionsScreen({
   snapshot,
   fleet,
   notice,
+  live,
+  lastReadAt,
   refreshing,
   now,
   fleetNow,
@@ -216,6 +239,12 @@ export function SessionsScreen({
   // phone claiming a fleet count from the one machine it talks to is a lie.
   fleet: FleetEntry[] | undefined
   notice: ConnectionNotice | undefined
+  // Whether the daemon has answered this connection's hello and it is still
+  // open. False while not connected, refused, or not yet answered: the list is
+  // then the last state the phone was sent, and the header and lights say so.
+  live: boolean
+  // The phone's clock when that state arrived, if known.
+  lastReadAt: number | undefined
   refreshing: boolean
   // Passed in rather than read from the clock here, so what the screen draws is
   // a function of what it was given. How long a session has waited on you.
@@ -236,7 +265,11 @@ export function SessionsScreen({
   const { palette } = useTheme()
   const groups = sessionGroups(snapshot)
   const needed = waitingCount(snapshot)
-  const countLabel = sessionsHeaderLine(snapshot, fleet)
+  const countLabel = sessionsHeaderLine(snapshot, fleet, live ? undefined : { readAt: lastReadAt, now })
+  // The idle card and fleet lights also speak of the last read while a notice
+  // is up on a live connection: a frame the app could not read may have been
+  // the change that ended the idle.
+  const idleStale = !live || notice !== undefined
   const empty = groups.length === 0
 
   return (
@@ -249,7 +282,7 @@ export function SessionsScreen({
             {/* Frame 01: how many sessions need you is the header's pill. */}
             {needed > 0 ? (
               <View testID="needs-you-pill" className="rounded-full bg-warn-bg px-2.5 py-1">
-                <Text className="font-sans-medium text-[11.5px] text-warn-fg">{`${needed} need you`}</Text>
+                <Text className="font-sans-medium text-[11.5px] text-warn-fg">{needsYouLabel(needed)}</Text>
               </View>
             ) : null}
           </View>
@@ -273,13 +306,8 @@ export function SessionsScreen({
 
         {empty ? (
           <View className="gap-3 px-3">
-            <Card className="gap-2 border-ok-border bg-ok-bg">
-              <Text variant="title" className="text-ok-fg">Everything is idle</Text>
-              <Text variant="meta" className="text-ok-dim">
-                {idleSentence(snapshot.machine.name, fleet, notice !== undefined)}
-              </Text>
-            </Card>
-            {fleet ? <IdleFleet fleet={fleet} now={fleetNow} stale={notice !== undefined} /> : null}
+            <IdleCard sentence={idleSentence(snapshot.machine.name, fleet, idleStale)} stale={idleStale} />
+            {fleet ? <IdleFleet fleet={fleet} now={fleetNow} stale={idleStale} /> : null}
             <Button
               title="Start a session"
               variant="primary"
@@ -293,13 +321,14 @@ export function SessionsScreen({
 
         {groups.map((group) => (
           <View key={group.id} className="gap-[9px]">
-            <GroupHeading id={group.id} label={group.label} count={group.rows.length} />
+            <GroupHeading id={group.id} label={group.label} count={group.rows.length} live={live} />
             {group.rows.map((row) => (
               <SessionCard
                 key={row.id}
                 row={row}
                 approvalId={snapshot.approvals.find((approval) => approval.sessionId === row.id && approval.requestedAt === row.waitingSince)?.id}
                 now={now}
+                live={live}
                 onOpen={onOpenSession}
                 onOpenApproval={onOpenApproval}
               />
