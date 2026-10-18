@@ -77,9 +77,11 @@ function missingTokens(totals: { totalTokens: number; coverage?: UsageWindow["co
   return coverage.pending > 0 ? "not reported yet" : undefined
 }
 
-// Every token row counts the same thing: input (cached input included) and
-// output (reasoning included) of every model request, summed. So "in" plus
-// "out" is the turn's total, and the session and today are sums of turns.
+// Every token row counts the same thing: each turn's total, which is input
+// (cached input included) and output (reasoning included) of every model
+// request, summed; the session and today are sums of turns. "in" plus "out"
+// is that total unless the provider reported more than it broke down, and
+// then the row shows the total and says which part was broken down.
 function turnRow(turn: SessionTurn | undefined): UsageChipRow | undefined {
   if (!turn) return undefined
   const model = turn.reportedModels.at(-1) ?? turn.requestedModel
@@ -88,27 +90,34 @@ function turnRow(turn: SessionTurn | undefined): UsageChipRow | undefined {
   const output = usage.outputTokens + usage.reasoningTokens
   const unreported = turn.coverage === "unavailable"
   const running = turn.status === "pending"
+  const aggregate = usage.totalTokens > usage.inputTokens + output
   const value = unreported ? "not reported"
     : running && usage.totalTokens === 0 ? "none reported yet"
-      : `${usage.inputTokens.toLocaleString("en-US")} in · ${output.toLocaleString("en-US")} out`
+      : aggregate ? `${usage.totalTokens.toLocaleString("en-US")} tokens`
+        : `${usage.inputTokens.toLocaleString("en-US")} in · ${output.toLocaleString("en-US")} out`
   const state = unreported ? "The provider reported no usage for this turn"
     : running ? "Running, counted so far"
       : turn.coverage === "partial" ? "Partly reported" : undefined
+  const breakdown = !unreported && aggregate
+    ? `${usage.inputTokens.toLocaleString("en-US")} in and ${output.toLocaleString("en-US")} out were broken down; the provider reported the rest only as a total`
+    : undefined
   const cached = !unreported && usage.cachedInputTokens > 0
     ? `${usage.cachedInputTokens.toLocaleString("en-US")} of the input was cached`
     : undefined
   return {
     label: "This turn",
     value,
-    note: [state, cached, model, tools].filter((part): part is string => Boolean(part)).join(" · "),
+    note: [state, breakdown, cached, model, tools].filter((part): part is string => Boolean(part)).join(" · "),
   }
 }
 
 // A partly reported turn counted less than every request it made (a resumed
-// Claude query's first turn leaves its subagents out), and an unreported one
-// counted nothing, so a sum over either can only be low, and the row says so.
+// Claude query's first turn leaves its subagents out), an unreported one
+// counted nothing, and a legacy row predates the ledger's evidence and may
+// hold an older count (a Codex turn's last request alone, a Claude turn's main
+// loop alone). A sum over any of them can only be low, and the row says so.
 function partlyReported(coverage: UsageWindow["coverage"] | undefined): string | undefined {
-  const short = (coverage?.partial ?? 0) + (coverage?.unavailable ?? 0)
+  const short = (coverage?.partial ?? 0) + (coverage?.unavailable ?? 0) + (coverage?.legacy ?? 0)
   if (short === 0) return undefined
   return `${short === 1 ? "1 turn was" : `${short} turns were`} reported in part or not at all, so the count may be low`
 }
@@ -340,6 +349,9 @@ export function UsageChip({
   const text = usageChipTriggerText(usage, today)
   const ring = usageChipRing(usage)
   if (!text) return null
+  // Everything in the popover describes one reading: the one taken on open,
+  // or the chip's own until it arrives.
+  const shownUsage = reading ? reading.usage : usage
   const rows = reading
     ? usageChipRows({ usage: reading.usage, turn: reading.turn, today: reading.today })
     : usageChipRows({ usage, turn: undefined, today })
@@ -382,7 +394,7 @@ export function UsageChip({
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" side="top" className="w-[320px] p-0">
         <DropdownMenuLabel className="border-b px-3 py-2 text-eyebrow font-medium tracking-[.13em] text-faint">USAGE</DropdownMenuLabel>
-        <p data-testid="usage-connection-note" className="m-0 border-b px-3 py-2 text-[11px] leading-[1.5] text-muted-foreground">{usageConnectionNote(usage)}</p>
+        <p data-testid="usage-connection-note" className="m-0 border-b px-3 py-2 text-[11px] leading-[1.5] text-muted-foreground">{usageConnectionNote(shownUsage)}</p>
         <div data-testid="usage-rows">
           {rows.map((row, index) => (
             <div key={row.label} data-testid="usage-row" className={index ? "border-t px-3 py-2.5" : "px-3 py-2.5"}>

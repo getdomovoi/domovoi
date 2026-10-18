@@ -63,6 +63,18 @@ it("draws the session and today read with the turn, not the chip's older totals"
   expect(screen.queryByText("42.1k tokens")).toBeNull()
 })
 
+// The chip's quota read failed, the one on open succeeded: the note under
+// USAGE must describe the same reading the rows draw.
+it("says the window was reported when the reading on open carries one", async () => {
+  const withWindows: SessionUsage = { ...usage, providerLimits: { provider: "codex", windows: [{ kind: "primary", usedPercent: 23, windowDurationMinutes: 300 }] } }
+  const loadUsageReading = vi.fn(async () => ({ turn: undefined, usage: withWindows, today: null }))
+  render(<UsageChip usage={usage} today={null} loadUsageReading={loadUsageReading} />)
+
+  await userEvent.setup().click(screen.getByRole("button", { name: /^Usage: / }))
+  expect(await screen.findByText("5-HOUR LIMIT")).toBeTruthy()
+  expect(screen.getByTestId("usage-connection-note").textContent).toBe("The provider reported its usage window, so the chip carries the window rather than a price.")
+})
+
 it("shows today's count for a session with no usage of its own, and asks for no turn", async () => {
   const loadUsageReading = vi.fn(async () => ({ turn: undefined, usage, today: null }))
   render(<UsageChip usage={null} today={{ inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 20_000, reasoningTokens: 0, totalTokens: 120_000, costMicros: 1_120_000, currency: "USD", sessions: 3, turns: 27, reportedCostTurns: 27, unavailableCostTurns: 0 }} loadUsageReading={loadUsageReading} />)

@@ -132,6 +132,27 @@ describe("usage chip", () => {
     )
   })
 
+  // A legacy row predates the ledger's evidence and may hold an older count
+  // (a Codex turn's last request alone, a Claude turn's main loop alone).
+  it("counts legacy turns among those that may be low", () => {
+    const old: SessionUsage = { ...usage, coverage: { pending: 0, complete: 5, partial: 0, unavailable: 0, legacy: 3 } }
+    expect(usageChipRows({ usage: old, turn: undefined, today: null })[0]?.note).toBe(
+      `Input and output of every model request, cached input included: the same count as This turn and Today. 3 turns were reported in part or not at all, so the count may be low. ${unreportedCostNote}`,
+    )
+    const day: UsageWindow = { ...today, coverage: { pending: 0, complete: 26, partial: 0, unavailable: 0, legacy: 1 } }
+    expect(usageChipRows({ usage: null, turn: undefined, today: day })[0]?.note).toContain("1 turn was reported in part or not at all, so the count may be low")
+  })
+
+  // The usage contract lets totalTokens exceed its parts (a provider that
+  // reports only a total). The turn row then shows the total the session sums.
+  it("shows a turn's total when the provider broke down only part of it", () => {
+    const aggregate: SessionTurn = { ...turn, usage: { ...turn.usage, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningTokens: 0, totalTokens: 120 } }
+    expect(usageChipRows({ usage, turn: aggregate, today: null })[0]).toMatchObject({
+      value: "120 tokens",
+      note: "0 in and 0 out were broken down; the provider reported the rest only as a total · claude-sonnet-4.6 · 3 tool results",
+    })
+  })
+
   // Usage only grows, so totals read after the turn cannot fall below it. Read
   // the other way round, a live turn sat next to totals from when it started.
   it("reads the turn before the totals", async () => {
