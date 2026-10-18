@@ -98,3 +98,6 @@ auditConfig:
     # apps/mobile, and the shadcn CLI in packages/ui. Ruling Q406 A, 2026-10-02.
     # Remove once a patched braces is published, and force it in overrides.
     - GHSA-vfj7-8cjw-p6xm
+
+patchedDependencies:
+  expo-modules-jsi@57.1.0: patches/expo-modules-jsi@57.1.0.patch
