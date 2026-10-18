@@ -811,8 +811,18 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
       focusFrom: { trigger: focusOutsideDialogs.current, within: focusedElement() },
     }
     try {
-      if (attempt.kind === "create") await createSession(attempt.title, attempt.runtime)
-      else await forkSession(attempt.input)
+      if (attempt.kind === "create") {
+        const sessionId = await createSession(attempt.title, attempt.runtime)
+        // Walk F14, ruling Q135: the design's launcher asks what the agent
+        // should work on and starts the session on it, so the goal is also
+        // the first message. It waits in the session's queue, which sends it
+        // under the session's mode at the first turn boundary and records a
+        // send that fails in the thread. A start whose scope has moved on
+        // sends nothing.
+        if (sessionId && startGeneration.current === scope.generation) {
+          setQueues((current) => setQueue(current, sessionId, { sessionId, text: attempt.title, state: "waiting" }))
+        }
+      } else await forkSession(attempt.input)
       if (startGeneration.current === scope.generation) setStartRefusal(null)
     } catch (cause) {
       const refusal = gitFilterRefusalFrom(cause)

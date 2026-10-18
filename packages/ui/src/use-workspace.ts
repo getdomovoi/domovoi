@@ -433,10 +433,14 @@ export function useWorkspace(
     updateSnapshotFrom(client, await client.openProject(path, confirmation))
   }, [updateSnapshotFrom])
 
-  const createSession = useCallback(async (title: string, runtime: Runtime) => {
+  // Gives the new session's id: session.create makes the session it created
+  // the active one in the snapshot it answers with.
+  const createSession = useCallback(async (title: string, runtime: Runtime): Promise<string | null> => {
     const client = clientRef.current
     if (!client) throw new Error("Daemon connection is not open")
-    updateSnapshotFrom(client, await client.createSession(title, runtime))
+    const next = await client.createSession(title, runtime)
+    updateSnapshotFrom(client, next)
+    return next.activeSessionId
   }, [updateSnapshotFrom])
 
   const forkSession = useCallback(async (

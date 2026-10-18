@@ -28,6 +28,7 @@ import {
 import { Input } from "./components/ui/input"
 import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from "./components/ui/field"
 import { launcherContentClassName, launcherTitle, type LauncherMode } from "./launcher-frame"
+import { permissionModeLabel } from "./permission-mode"
 import { startOpenerRef } from "./start-handoff"
 import {
   modelReadFailure,
@@ -320,7 +321,12 @@ export function LauncherDialog({
                 placeholder={isProject ? "/home/you/projects/example" : "Describe what this session should accomplish"}
               />
               <FieldDescription>
-                {isProject ? "The daemon validates the repository before opening it." : "Runtime and permission controls remain editable in the session."}
+                {/* Walk F14, ruling Q135: the goal is also the session's first
+                    message, and the mode it runs in is not drawn anywhere else
+                    here. */}
+                {isProject
+                  ? "The daemon validates the repository before opening it."
+                  : `This is also the first message: the agent starts on it in ${permissionModeLabel(runtime.permissionMode, runtime.auto)} mode. Runtime and permission controls remain editable in the session.`}
               </FieldDescription>
               <FieldError>{error}</FieldError>
             </Field>
