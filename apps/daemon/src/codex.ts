@@ -694,41 +694,42 @@ export class CodexAppServerAdapter implements AgentAdapter {
 
   // A turn's usage is every model request it made: the thread's cumulative
   // total now, less the total before the turn. That baseline is the newest
-  // total an earlier turn on this thread reported. Without one (the first turn
-  // this adapter sees on the thread), or when the total went backwards (a new
-  // app-server), it is the total before this update's own request. A repeated
-  // notification with the same counters therefore adds nothing. A total
-  // smaller than its own last request is not a running total, and the request
-  // alone is reported.
+  // total an earlier turn on this thread reported; without one (the first turn
+  // this adapter sees on the thread) it is the total before this update's own
+  // request. A repeated notification with the same counters adds nothing.
+  // Within one app-server a thread's running total never shrinks, so a total
+  // below the newest one seen is a stale report and is ignored (undefined).
+  // Counters that cannot be a running total (more cached input than input, a
+  // total below its own request), or a difference no turn could produce, drop
+  // the baseline, and the request alone is reported as partial.
   #turnTokenUsage(
     threadId: string,
     turnId: string,
     total: CodexTokenBreakdown,
     last: CodexTokenBreakdown,
-  ): CodexTokenBreakdown {
-    if (!codexBreakdownCovers(total, last)) {
+  ): { usage: CodexTokenBreakdown; partial: boolean } | undefined {
+    if (!codexBreakdownConsistent(total) || !codexBreakdownConsistent(last) || !codexBreakdownCovers(total, last)) {
       this.#turnUsageBaselines.delete(threadId)
-      return last
+      return { usage: last, partial: true }
     }
     const entry = this.#turnUsageBaselines.get(threadId)
-    let baseline = entry?.turnId === turnId ? entry.baseline : entry?.latest
-    if (!baseline || !codexBreakdownCovers(total, baseline)) baseline = codexBreakdownLess(total, last)
+    if (entry && !codexBreakdownCovers(total, entry.latest)) return undefined
+    const baseline = (entry?.turnId === turnId ? entry.baseline : entry?.latest) ?? codexBreakdownLess(total, last)
     const turn = codexBreakdownLess(total, baseline)
-    // A difference no single turn could produce (more cached input than
-    // input, say) means the baseline is not this total's past. Count from this
-    // request instead, and report the request alone.
     if (!codexBreakdownConsistent(turn)) {
       this.#turnUsageBaselines.set(threadId, { turnId, baseline: codexBreakdownLess(total, last), latest: total })
-      return last
+      return { usage: last, partial: true }
     }
     this.#turnUsageBaselines.set(threadId, { turnId, baseline, latest: total })
-    return turn
+    return { usage: turn, partial: false }
   }
 
   async resumeThread({ threadId, cwd, runtime, repositoryTrust }: Parameters<AgentAdapter["resumeThread"]>[0]): Promise<void> {
     // This open decides again: until it succeeds under a trusted verdict, the
     // thread's turns meet the worktree refusal (ruling Q144 A).
     this.#trustedThreads.delete(threadId)
+    // A resumed thread's running total comes from what Codex restores.
+    this.#turnUsageBaselines.delete(threadId)
     const plan = repositoryTrust === undefined ? undefined : await this.#repositoryPlan(cwd, repositoryTrust)
     refuseRepositoryConfig(cwd, plan !== undefined)
     let servers: Record<string, CodexRepositoryServer> = {}
@@ -1049,26 +1050,29 @@ export class CodexAppServerAdapter implements AgentAdapter {
       // moved since the turn began; see #turnTokenUsage.
       const total = codexTokenBreakdown(tokenUsage?.total)
       const lastRequest = codexTokenBreakdown(last)
-      const turnUsage = threadId && turnId && total && lastRequest
+      // Without a running total the request stands alone, partial, and the
+      // thread's start is no longer known.
+      const counted = threadId && turnId && total && lastRequest
         ? this.#turnTokenUsage(threadId, turnId, total, lastRequest)
-        : last
-      // Without a running total the request stands alone, and the thread's
-      // start is no longer known.
+        : { usage: last, partial: true }
       if (threadId && !(total && lastRequest)) this.#turnUsageBaselines.delete(threadId)
       // Counters that do not add up are an accounting problem: the update is
       // dropped rather than thrown into the transport, which would end it.
       let usage: ReturnType<typeof normalizeProviderUsage>
       try {
-        usage = last ? normalizeProviderUsage({
-          usage: turnUsage,
+        usage = last && counted ? normalizeProviderUsage({
+          usage: counted.usage,
           contextTokens: last.totalTokens,
           contextWindowTokens: tokenUsage?.modelContextWindow,
         }) : undefined
       } catch {
         usage = undefined
       }
-      if (usage && threadId && turnId) {
-        this.#emit({ type: "usage", threadId, turnId, usage })
+      if (usage && counted && threadId && turnId) {
+        this.#emit({
+          type: "usage", threadId, turnId, usage,
+          ...(counted.partial ? { source: { kind: "turn" as const, tokens: "reported" as const, final: false } } : {}),
+        })
       }
     } else if (message.method === "turn/completed") {
       for (const [itemId, call] of this.#toolServerCalls) {

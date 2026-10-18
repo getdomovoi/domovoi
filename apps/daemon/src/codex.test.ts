@@ -2445,9 +2445,68 @@ describe("CodexAppServerAdapter", () => {
     expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
       type: "usage", turnId: "turn-5", usage: expect.objectContaining({ inputTokens: 300 }),
     }))
-    // Counters no normalizer accepts are dropped, not thrown into the transport.
+    // Counters no normalizer accepts are dropped, not thrown into the transport,
+    // and they leave no baseline for the next update to difference against.
+    const before = event.mock.calls.length
     expect(() => update("turn-3", breakdown(10, 20), breakdown(10, 20))).not.toThrow()
+    expect(event.mock.calls.length).toBe(before)
+    update("turn-6", breakdown(700, 120), breakdown(50, 20))
+    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "usage", turnId: "turn-6", usage: expect.objectContaining({ inputTokens: 50, cachedInputTokens: 20 }),
+    }))
     expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ type: "provider-disconnected" }))
+    await adapter.close()
+  })
+
+  it("ignores a stale report from an earlier turn instead of counting from it", async () => {
+    const transport = new FakeTransport()
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+    const breakdown = (input: number) => ({
+      totalTokens: input, inputTokens: input, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0,
+    })
+    const update = (turnId: string, total: number, last: number) => {
+      transport.receive({
+        method: "thread/tokenUsage/updated",
+        params: { threadId: "thread-1", turnId, tokenUsage: { total: breakdown(total), last: breakdown(last), modelContextWindow: 200_000 } },
+      })
+    }
+    update("turn-a", 100, 100)
+    update("turn-b", 150, 50)
+    const before = event.mock.calls.length
+    update("turn-a", 100, 100)
+    expect(event.mock.calls.length).toBe(before)
+    update("turn-c", 200, 50)
+    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "usage", turnId: "turn-c", usage: expect.objectContaining({ inputTokens: 50 }),
+    }))
+    await adapter.close()
+  })
+
+  // The schema requires both counters; a notification missing one still says
+  // something, but not the whole turn.
+  it("marks a turn counted from a request alone as partly reported", async () => {
+    const transport = new FakeTransport()
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+    transport.receive({
+      method: "thread/tokenUsage/updated",
+      params: { threadId: "thread-1", turnId: "turn-1", tokenUsage: {
+        last: { totalTokens: 40, inputTokens: 40, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
+        modelContextWindow: 200_000,
+      } },
+    })
+    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "usage", turnId: "turn-1", source: { kind: "turn", tokens: "reported", final: false },
+    }))
     await adapter.close()
   })
 
