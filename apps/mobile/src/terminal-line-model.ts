@@ -177,7 +177,7 @@ class Line {
     this.settle()
     if (this.columns === undefined) return count
     const moved = Math.min(count, Math.floor(this.column / this.columns))
-    this.moveToRow(this.column - moved * this.columns)
+    this.moveTo(this.column - moved * this.columns)
     if (toStart) this.moveTo(this.gridRowStart())
     return count - moved
   }
@@ -190,21 +190,9 @@ class Line {
     this.trim()
     const lastRow = this.length > 0 ? Math.floor((this.length - 1) / this.columns) : 0
     const moved = Math.min(count, Math.max(0, lastRow - Math.floor(this.column / this.columns)))
-    this.moveToRow(this.column + moved * this.columns)
+    this.moveTo(this.column + moved * this.columns)
     if (toStart) this.moveTo(this.gridRowStart())
     return count - moved
-  }
-
-  // A move between rows of this line lands where the cursor or the text has
-  // already been, so the widest grid's margin, which bounds moves along a
-  // row, does not apply. Past both it spends spare blanks as any move does.
-  moveToRow(column: number): void {
-    if (column <= Math.max(this.length, this.farthest)) {
-      this.column = column
-      this.wrapPending = false
-    } else {
-      this.moveTo(column)
-    }
   }
 
   // Blank one cell. Either half of a wide character takes the whole of it.
@@ -237,10 +225,13 @@ class Line {
   }
 
   // Text can run past the widest grid, as the phone does not wrap it into
-  // rows, so a move back from there is not pulled to the margin. A move past
-  // what was written and anywhere the cursor has been spends spare blanks.
+  // rows, so a move back from there is not pulled to the margin. At the
+  // holder's grid every move is already bounded by the row it lands on, which
+  // can lie past the widest grid in a long line. A move past what was written
+  // and anywhere the cursor has been spends spare blanks.
   moveTo(column: number): void {
-    let target = Math.max(0, Math.min(column, Math.max(this.column, widestGrid - 1)))
+    const margin = this.columns === undefined ? Math.max(this.column, widestGrid - 1) : column
+    let target = Math.max(0, Math.min(column, margin))
     const reach = Math.max(this.length, this.farthest)
     if (target > reach) {
       const granted = Math.min(target - reach, this.spare.cells)
@@ -316,7 +307,8 @@ class Line {
   // Erase characters: blank count cells from the cursor, which stays. Cells
   // known blank are not blanked again.
   eraseCharacters(count: number): void {
-    const end = Math.min(this.column + count, this.length)
+    this.settle()
+    const end = Math.min(this.column + count, this.length, this.gridRowEnd())
     const start = this.column <= this.blankBelow ? this.blankBelow : this.column
     if (end <= start) return
     this.blank(start, end)
@@ -334,6 +326,10 @@ class Line {
   // left, and blanks enter at the row's end. A wide character with one half
   // deleted loses the other half too.
   deleteCharacters(count: number): void {
+    // At the holder's grid the cursor acts where the terminal has it, but the
+    // cells that move are still those of the widest grid's row, not of the
+    // holder's row.
+    this.settle()
     const rowEnd = this.rowEnd()
     const deleted = Math.min(count, Math.min(this.length, rowEnd) - this.column)
     if (deleted <= 0) return
@@ -353,6 +349,8 @@ class Line {
   // row right, and what passes the row's end is lost. Blanks put between
   // the halves of a wide character clear it.
   insertCharacters(count: number): void {
+    // As for deleting: the widest grid's row moves, not the holder's.
+    this.settle()
     if (this.column >= this.length) return
     const rowEnd = this.rowEnd()
     const inserted = Math.min(count, rowEnd - this.column)

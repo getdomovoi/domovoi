@@ -381,6 +381,13 @@ describe("terminalLines at the holder's grid", () => {
     expect(terminalLines("abcdefgh\u001b[A\u001b[1K\n", 5)).toEqual(["    efgh"])
     expect(terminalLines("abcdefgh\u001b[A\u001b[2K\n", 5)).toEqual(["     fgh"])
     expect(terminalLines("abcdefgh\u001b[2K\n", 5)).toEqual(["abcde"])
+    expect(terminalLines("abcdefgh\u001b[A\u001b[9X\n", 5)).toEqual(["abc  fgh"])
+  })
+
+  // A row of the holder's grid can lie past the widest grid in a long line;
+  // a move along it is bounded by that row, not by the widest grid.
+  it("moves along a row past the widest grid", () => {
+    expect(terminalLines(`${"x".repeat(1_100)}\r\u001b[5CY\n`, 100)).toEqual([`${"x".repeat(1_005)}Y${"x".repeat(94)}`])
   })
 
   // The walk: the phone watched while the prompt held the typed command, so
