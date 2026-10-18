@@ -76,6 +76,7 @@ import {
   carriesImages,
   failedAttempt,
   heldAfter,
+  heldAfterStop,
   holdAllAfterStop,
   imageRelease,
   noteImageRefusals,
@@ -777,6 +778,10 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     scope: StartScope
   } | null>(null)
   const startRefusals = useRef(0)
+  // Advances on every stop this shell holds the queues for: Pause everything,
+  // and an emergency stop from any client. A start compares it across its
+  // create, so a goal the stop overtook is queued held.
+  const stopsSeen = useRef(0)
   // Advances on every scope change and never goes back. The effect that
   // advances it also retires the card, so a result that lands before it runs
   // is cleared with the card.
@@ -812,15 +817,21 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
     }
     try {
       if (attempt.kind === "create") {
+        const stopsBefore = stopsSeen.current
         const sessionId = await createSession(attempt.title, attempt.runtime)
         // Walk F14, ruling Q135: the design's launcher asks what the agent
         // should work on and starts the session on it, so the goal is also
         // the first message. It waits in the session's queue, which sends it
         // under the session's mode at the first turn boundary and records a
-        // send that fails in the thread. A start whose scope has moved on
-        // sends nothing.
-        if (sessionId && startGeneration.current === scope.generation) {
-          setQueues((current) => setQueue(current, sessionId, { sessionId, text: attempt.title, state: "waiting" }))
+        // send that fails in the thread. A stop holds only the queues that
+        // exist when it lands, so a goal whose create a stop overtook is
+        // queued held, never waiting. createSession gives no id for a
+        // connection that is no longer this shell's.
+        if (sessionId) {
+          const goal: QueuedMessage = { sessionId, text: attempt.title, state: "waiting" }
+          // heldAfterStop gives a message back for any message it is given.
+          const queued = stopsSeen.current === stopsBefore ? goal : heldAfterStop(goal)!
+          setQueues((current) => setQueue(current, sessionId, queued))
         }
       } else await forkSession(attempt.input)
       if (startGeneration.current === scope.generation) setStartRefusal(null)
@@ -1073,6 +1084,7 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // The hold is local and makes the screen look paused, so a pause the daemon
   // refused or never answered is said out loud: its turns are still running.
   const pauseActiveTurns = () => {
+    stopsSeen.current += 1
     setQueues(holdAllAfterStop)
     setWorkspaceError("")
     void pauseAll().catch((cause: unknown) => {
@@ -1101,11 +1113,13 @@ export function WorkspaceShell({ clientKind = "web", rpcUrl = "ws://127.0.0.1:47
   // waiting, and send the work the stop just ended. Setting state during
   // render makes React re-run this component before any effect fires.
   if (emergencyStopOutcome && emergencyStopOutcome !== seenStop) {
+    stopsSeen.current += 1
     setSeenStop(emergencyStopOutcome)
     setQueues(holdAllAfterStop)
   }
   useEffect(() => {
     if (!emergencyStopPending) return
+    stopsSeen.current += 1
     setQueues(holdAllAfterStop)
   }, [emergencyStopPending])
 

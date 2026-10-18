@@ -2,7 +2,7 @@ import { act, cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, beforeEach, expect, it, vi } from "vitest"
 
-import type { ProviderRuntime, WorkspaceSnapshot } from "@getdomovoi/protocol"
+import { systemEmergencyStoppedNotificationSchema, type ProviderRuntime, type WorkspaceSnapshot } from "@getdomovoi/protocol"
 
 import { WorkspaceShell } from "./workspace-shell"
 import { workspaceUiStorageKey } from "./workspace-persistence"
@@ -10,6 +10,7 @@ import {
   completeHandshake,
   fail,
   installFakeWebSocket,
+  notify,
   respond,
   sentRequests,
   workspaceSnapshot,
@@ -94,6 +95,26 @@ it("sends the launcher's goal as the new session's first message once the sessio
   const sends = sentRequests(socket, "session.send")
   expect(sends).toHaveLength(1)
   expect(sends[0]?.params).toMatchObject({ sessionId: "session-new", prompt: goal })
+})
+
+// A stop holds the queues that exist when it lands. A goal added after it,
+// by a create the stop overtook, must not start the work the stop ended.
+it("holds the goal when a stop lands while the session is being created", async () => {
+  const goal = "Rotate the staging keys"
+  const { socket, snapshot } = await createFromLauncher(goal)
+
+  await act(async () => {
+    notify(socket, "system.emergencyStopped", systemEmergencyStoppedNotificationSchema.parse({
+      snapshot, stopId: "stop-other-client", requestedAt: "2026-10-18T14:00:00Z", client: "phone",
+      outcomes: { turnsStopped: 1, terminalsClosed: 0, approvalsDenied: 0, mutationsCancelled: 0, providersReset: 0 }, failures: [],
+    }))
+  })
+  await settle()
+  await act(async () => { respond(socket, "session.create", created(snapshot, goal)) })
+  await settle()
+
+  expect(sentRequests(socket, "session.send")).toEqual([])
+  expect(screen.getByText(/Held because work was stopped/)).toBeTruthy()
 })
 
 it("sends nothing when the daemon does not create the session", async () => {
