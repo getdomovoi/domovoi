@@ -2431,6 +2431,20 @@ describe("CodexAppServerAdapter", () => {
     expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
       type: "usage", turnId: "turn-2", usage: expect.objectContaining({ inputTokens: 50, cachedInputTokens: 50 }),
     }))
+    // A notification without a running total reports its request alone and
+    // leaves no start behind, so the next running total is not differenced
+    // against a total from before it.
+    transport.receive({
+      method: "thread/tokenUsage/updated",
+      params: { threadId: "thread-1", turnId: "turn-4", tokenUsage: { last: breakdown(200, 0), modelContextWindow: 200_000 } },
+    })
+    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "usage", turnId: "turn-4", usage: expect.objectContaining({ inputTokens: 200 }),
+    }))
+    update("turn-5", breakdown(650, 100), breakdown(300, 0))
+    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "usage", turnId: "turn-5", usage: expect.objectContaining({ inputTokens: 300 }),
+    }))
     // Counters no normalizer accepts are dropped, not thrown into the transport.
     expect(() => update("turn-3", breakdown(10, 20), breakdown(10, 20))).not.toThrow()
     expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ type: "provider-disconnected" }))

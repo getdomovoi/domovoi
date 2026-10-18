@@ -1052,6 +1052,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
       const turnUsage = threadId && turnId && total && lastRequest
         ? this.#turnTokenUsage(threadId, turnId, total, lastRequest)
         : last
+      // Without a running total the request stands alone, and the thread's
+      // start is no longer known.
+      if (threadId && !(total && lastRequest)) this.#turnUsageBaselines.delete(threadId)
       // Counters that do not add up are an accounting problem: the update is
       // dropped rather than thrown into the transport, which would end it.
       let usage: ReturnType<typeof normalizeProviderUsage>

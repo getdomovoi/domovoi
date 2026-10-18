@@ -935,13 +935,13 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         const interruptedTurnId = answered.map((id) => session.interruptedMessageIds.get(id)).find((id) => id !== undefined)
         for (const id of answered) session.interruptedMessageIds.delete(id)
         if (!answered.some((id) => session.turnMessageIds.has(id))) {
-          if (interruptedTurnId) this.#emitTurnUsage(session, interruptedTurnId, turnUsage.payload)
+          if (interruptedTurnId) this.#emitTurnUsage(session, interruptedTurnId, turnUsage.payload, turnUsage.partial)
           return
         }
       }
       const failed = message.is_error === true || message.subtype !== "success"
       const context = failed ? {} : await claudeContextOccupancy(session.query)
-      this.#emitTurnUsage(session, turnId, { ...turnUsage.payload, ...context })
+      this.#emitTurnUsage(session, turnId, { ...turnUsage.payload, ...context }, turnUsage.partial)
       const stderr = session.stderr.take()
       const error = failed ? resultError(message, session.assistantError, stderr) : undefined
       delete session.assistantError
@@ -964,10 +964,17 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
   // The reply has already reached the person. A counter that does not add up
   // is an accounting problem, not a failed turn, so the usage is dropped and
   // the turn is delivered as what it was.
-  #emitTurnUsage(session: Session, turnId: string, payload: Record<string, unknown>): void {
+  // A partial count (result.usage, the main loop only) is marked not final, so
+  // the ledger records the turn as partly reported rather than complete.
+  #emitTurnUsage(session: Session, turnId: string, payload: Record<string, unknown>, partial: boolean): void {
     try {
       const usage = normalizeProviderUsage(payload)
-      if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
+      if (usage) {
+        this.#emit({
+          type: "usage", threadId: session.threadId, turnId, usage,
+          ...(partial ? { source: { kind: "turn" as const, tokens: "reported" as const, final: false } } : {}),
+        })
+      }
     } catch {
       // Nothing to report to the person: usage is a readout, not the work.
     }
@@ -1349,7 +1356,7 @@ type ClaudeRunningUsage = { tokens?: ClaudeRunningTokens; cost?: number }
 function claudeTurnUsage(
   message: ClaudeSdkMessage,
   previous: ClaudeRunningUsage | undefined,
-): { payload: Record<string, unknown>; running: ClaudeRunningUsage } {
+): { payload: Record<string, unknown>; running: ClaudeRunningUsage; partial: boolean } {
   const tokens = claudeRunningTokens(message.modelUsage)
   const cost = typeof message.total_cost_usd === "number" && Number.isFinite(message.total_cost_usd) && message.total_cost_usd >= 0
     ? message.total_cost_usd
@@ -1376,7 +1383,7 @@ function claudeTurnUsage(
     } }
     : { ...(message.usage !== undefined ? { usage: message.usage } : {}) }
   if (turnCost !== undefined) payload.total_cost_usd = turnCost
-  return { payload, running }
+  return { payload, running, partial: !turnTokens }
 }
 
 const claudeTokenKeys = ["input", "read", "write", "output", "thinking"] as const

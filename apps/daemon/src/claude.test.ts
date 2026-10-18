@@ -98,7 +98,13 @@ const runtime = (permissionMode: Runtime["permissionMode"], auto = false): Runti
   auto,
 })
 
-type TaskRow = [id: string, text: string, status: "pending" | "in-progress" | "completed"]
+// One model's running totals as the SDK result's modelUsage carries them.
+const claudeModelUsage = (input: number, output: number) => ({
+  inputTokens: input, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: output,
+  webSearchRequests: 0, costUSD: 0, contextWindow: 200_000, maxOutputTokens: 32_000,
+})
+
+type TaskRow =[id: string, text: string, status: "pending" | "in-progress" | "completed"]
 
 // The plan-updated event for a change to Claude's tasks: the steps as Claude
 // lists them, and the tasks before and after the change.
@@ -365,6 +371,7 @@ describe("ClaudeAgentSdkAdapter", () => {
       session_id: threadId,
       is_error: false,
       usage: { input_tokens: 120_000, output_tokens: 8_000 },
+      modelUsage: { "claude-sonnet-5": claudeModelUsage(120_000, 8_000) },
     })
 
     await waitForDaemon(() => expect(event).toHaveBeenCalledWith({
@@ -487,6 +494,14 @@ describe("ClaudeAgentSdkAdapter", () => {
     })).toEqual({
       inputTokens: 700, cachedInputTokens: 0, outputTokens: 7, reasoningTokens: 0, totalTokens: 707, costSource: "unavailable",
     })
+    // result.usage leaves subagents out, so a turn counted from it is partly
+    // reported, never complete.
+    expect(events.filter((event) => event.type === "usage").map((event) => "source" in event ? event.source : undefined)).toEqual([
+      { kind: "turn", tokens: "reported", final: false },
+      undefined,
+      { kind: "turn", tokens: "reported", final: false },
+      { kind: "turn", tokens: "reported", final: false },
+    ])
     await adapter.close()
   })
 
@@ -518,6 +533,7 @@ describe("ClaudeAgentSdkAdapter", () => {
         session_id: threadId,
         is_error: false,
         usage: { input_tokens: 8, output_tokens: 2 },
+        modelUsage: { "claude-sonnet-5": claudeModelUsage(8, 2) },
       })
       await vi.advanceTimersByTimeAsync(1_000)
 
