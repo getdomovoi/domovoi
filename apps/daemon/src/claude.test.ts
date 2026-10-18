@@ -2734,7 +2734,9 @@ describe("reads Claude would approve before Domovoi sees them", () => {
   it("refuses a listed Git read in Ask by the read-only rule when Git can run a program", async () => {
     const { adapter, events, screen, threadId, worktree } = await session("ask")
     execFileSync("git", ["-C", worktree, "config", "core.fsmonitor", join(worktree, "helper")])
-    const reason = "Ask mode is read-only, and Git is configured to run a program for this command"
+    // The check also answers yes when it cannot read Git's configuration, so
+    // the words say what Domovoi could not confirm, not what Git is set to do.
+    const reason = "Ask mode is read-only, and Domovoi cannot confirm Git runs no other program for this command"
 
     await expect(screen("Bash", { command: "git status --short" }, "tool-ask")).resolves.toEqual({
       hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason },
@@ -2751,9 +2753,15 @@ describe("reads Claude would approve before Domovoi sees them", () => {
     ["Bash", { command: "cat /etc/hosts" }, "cat /etc/hosts",
       "Ask mode has no approvals, and this reads outside the session worktree: /etc/hosts"],
     ["Bash", { command: "cat .env" }, "cat .env",
-      "Ask mode has no approvals, and this reads credentials, private keys or environment secrets"],
+      "Ask mode has no approvals, and this read meets a hard gate: read credentials, private keys or environment secrets"],
     ["Read", { file_path: "../elsewhere.txt" }, "Read",
       "Ask mode has no approvals, and this reads outside the session worktree: ../elsewhere.txt"],
+    // Any hard gate, not only the credentials one, and named as the rules
+    // surface names it.
+    ["Grep", { pattern: "deploy", path: "src" }, "Grep",
+      "Ask mode has no approvals, and this read meets a hard gate: deploy, release or publish"],
+    ["Read", { file_path: "src/id_ed25519" }, "Read",
+      "Ask mode has no approvals, and this read meets a hard gate: read credentials, private keys or environment secrets"],
   ] as const)("refuses a %s read that needs an approval in Ask by Ask's no-approval rule", async (toolName, toolInput, command, reason) => {
     const { adapter, events, screen, threadId } = await session("ask")
 

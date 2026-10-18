@@ -128,6 +128,18 @@ const hardGateGroups: Record<HardGateCategory["id"], { label: string; patterns: 
 }
 const hardGatePatterns = Object.values(hardGateGroups).flatMap(({ patterns }) => patterns)
 
+// The label of the hard gate a command meets, as the rules surface lists it,
+// tested in permissionDecisionFor's order; undefined when it meets none. It
+// names a gate for a refusal's words and decides nothing itself.
+export function hardGateLabelFor(command: string): string | undefined {
+  const trimmed = command.trim()
+  if (trimmed && isSkillInstallCommand(trimmed)) return hardGateGroups["skill-installation"].label
+  const group = Object.values(hardGateGroups).find(({ patterns }) => patterns.some((pattern) => pattern.test(trimmed)))
+  if (group) return group.label
+  if (trimmed && commandNamesSecretPath(trimmed)) return hardGateGroups.credentials.label
+  return undefined
+}
+
 export function permissionHardGates(): { categories: HardGateCategory[] } {
   return { categories: (Object.keys(hardGateGroups) as HardGateCategory["id"][])
     .map((id) => ({ id, label: hardGateGroups[id].label })) }

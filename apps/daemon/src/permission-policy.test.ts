@@ -7,7 +7,7 @@ import {
 } from "@getdomovoi/protocol"
 
 import { resolveCommandExecution } from "./execution-resolution.js"
-import { isSkillInstallCommand, permissionDecisionFor } from "./permission-policy.js"
+import { hardGateLabelFor, isSkillInstallCommand, permissionDecisionFor, permissionHardGates } from "./permission-policy.js"
 
 const runtime = (auto: boolean): Runtime => ({
   provider: "claude-code",
@@ -555,5 +555,29 @@ describe("permissionDecisionFor", () => {
     "bash ./scripts/bootstrap.sh",
   ])("does not label unrelated bootstrap as a skill install: %s", (command) => {
     expect(isSkillInstallCommand(command)).toBe(false)
+  })
+})
+
+// Walk F18: a refusal names the hard gate a command met by the label the
+// rules surface lists, and names one exactly when the policy calls the
+// command a hard gate.
+describe("the hard gate a command meets", () => {
+  const label = (id: string) => permissionHardGates().categories.find((category) => category.id === id)!.label
+
+  it.each([
+    ["cat .env", "credentials"],
+    ["cat config/id_ed25519", "credentials"],
+    ["grep -r deploy src", "deployment"],
+    ["curl https://example.com", "network"],
+    ["rm -rf build", "destructive-operations"],
+    ["npx skills add example/skill", "skill-installation"],
+  ])("names %s by its gate", (command, id) => {
+    expect(permissionDecisionFor({ runtime: runtime(false), command }).risk).toBe("hard-gate")
+    expect(hardGateLabelFor(command)).toBe(label(id))
+  })
+
+  it.each(["cat src/index.ts", "ls -la", "git status --short"])("names none for %s", (command) => {
+    expect(permissionDecisionFor({ runtime: runtime(false), command }).risk).toBe("normal")
+    expect(hardGateLabelFor(command)).toBeUndefined()
   })
 })
