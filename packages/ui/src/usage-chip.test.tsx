@@ -112,6 +112,20 @@ describe("usage chip", () => {
     expect(usageChipRows({ usage: null, turn: undefined, today: silentToday })[0]).toMatchObject({ label: "Today", value: "not reported" })
     expect(usageChipTriggerText(null, silentToday)).toBe("not reported today")
     expect(usageChipLabel(null, silentToday)).toBe("Usage: tokens not reported today")
+
+    // A first turn still running has reported nothing yet; that is not zero either.
+    const starting: SessionUsage = { ...silentNoContext, coverage: { pending: 1, complete: 0, partial: 0, unavailable: 0, legacy: 0 } }
+    expect(usageChipTriggerText(starting, null)).toBe("not reported yet")
+    expect(usageChipLabel(starting, null)).toBe("Usage: tokens not reported yet for this session")
+    expect(usageChipRows({ usage: starting, turn: undefined, today: { ...silentToday, coverage: starting.coverage } }).map((row) => [row.label, row.value]))
+      .toEqual([["This session", "not reported yet"], ["Today", "not reported yet"], ["Provider window", "not reported"]])
+  })
+
+  it("says a session's count may be low when a turn was partly reported", () => {
+    const partly: SessionUsage = { ...usage, coverage: { pending: 0, complete: 7, partial: 2, unavailable: 0, legacy: 0 } }
+    expect(usageChipRows({ usage: partly, turn: undefined, today: null })[0]?.note).toBe(
+      `Input and output of every model request, cached input included: the same count as This turn and Today. 2 turns were partly reported, so the count may be low. ${unreportedCostNote}`,
+    )
   })
 
   // Usage only grows, so totals read after the turn cannot fall below it. Read

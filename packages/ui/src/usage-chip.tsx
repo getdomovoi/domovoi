@@ -47,8 +47,7 @@ export function usageChipText(usage: SessionUsage): string {
   if (usage.contextTokens !== undefined && usage.contextWindowTokens !== undefined) {
     return formatTokenCount(usage.contextTokens)
   }
-  if (tokensUnreported(usage)) return "not reported"
-  return `${formatTokenCount(usage.totalTokens)} session`
+  return missingTokens(usage) ?? `${formatTokenCount(usage.totalTokens)} session`
 }
 
 // The chip's accessible name says what its number counts in every state.
@@ -57,21 +56,25 @@ export function usageChipLabel(usage: SessionUsage | null | undefined, today: Us
     if (usage.contextTokens !== undefined && usage.contextWindowTokens !== undefined) {
       return `Usage: ${formatTokenCount(usage.contextTokens)} of ${formatTokenCount(usage.contextWindowTokens)} tokens in context`
     }
-    if (tokensUnreported(usage)) return "Usage: tokens not reported for this session"
+    const missing = missingTokens(usage)
+    if (missing) return `Usage: tokens ${missing} for this session`
     return `Usage: ${formatTokenCount(usage.totalTokens)} tokens this session, no context reported`
   }
   if (today && today.turns > 0) {
-    return tokensUnreported(today) ? "Usage: tokens not reported today" : `Usage: ${formatTokenCount(today.totalTokens)} tokens today`
+    const missing = missingTokens(today)
+    return missing ? `Usage: tokens ${missing} today` : `Usage: ${formatTokenCount(today.totalTokens)} tokens today`
   }
   return "Usage"
 }
 
-// Turns that reported no tokens at all (an ACP agent reports only its
-// context) leave no count, which is not the same as a count of zero.
-function tokensUnreported(totals: { totalTokens: number; coverage?: UsageWindow["coverage"] }): boolean {
+// Turns that reported no tokens (an ACP agent reports only its context) or
+// have not reported yet (a running Claude turn reports when it ends) leave no
+// count, which is not the same as a count of zero.
+function missingTokens(totals: { totalTokens: number; coverage?: UsageWindow["coverage"] | undefined }): "not reported" | "not reported yet" | undefined {
   const coverage = totals.coverage
-  return totals.totalTokens === 0 && coverage !== undefined && coverage.unavailable > 0
-    && coverage.complete + coverage.partial + coverage.legacy === 0
+  if (totals.totalTokens !== 0 || !coverage || coverage.complete + coverage.partial + coverage.legacy > 0) return undefined
+  if (coverage.unavailable > 0) return "not reported"
+  return coverage.pending > 0 ? "not reported yet" : undefined
 }
 
 // Every token row counts the same thing: input (cached input included) and
@@ -101,11 +104,24 @@ function turnRow(turn: SessionTurn | undefined): UsageChipRow | undefined {
   }
 }
 
+// A partly reported turn counted less than every request it made (a resumed
+// Claude query's first turn leaves its subagents out), so a sum over it can
+// only be low, and the row says so.
+function partlyReported(coverage: UsageWindow["coverage"] | undefined): string | undefined {
+  const partial = coverage?.partial ?? 0
+  if (partial === 0) return undefined
+  return `${partial === 1 ? "1 turn was" : `${partial} turns were`} partly reported, so the count may be low.`
+}
+
 function sessionRow(usage: SessionUsage): UsageChipRow {
   return {
     label: "This session",
-    value: tokensUnreported(usage) ? "not reported" : `${formatTokenCount(usage.totalTokens)} tokens`,
-    note: `Input and output of every model request, cached input included: the same count as This turn and Today. ${unreportedCostNote}`,
+    value: missingTokens(usage) ?? `${formatTokenCount(usage.totalTokens)} tokens`,
+    note: [
+      "Input and output of every model request, cached input included: the same count as This turn and Today.",
+      partlyReported(usage.coverage),
+      unreportedCostNote,
+    ].filter((part): part is string => Boolean(part)).join(" "),
   }
 }
 
@@ -127,7 +143,7 @@ function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefin
   const sessions = today.sessions === 1 ? "1 session" : `${today.sessions} sessions`
   return {
     label: "Today",
-    value: tokensUnreported(today) ? "not reported" : `${formatTokenCount(today.totalTokens)} tokens`,
+    value: missingTokens(today) ?? `${formatTokenCount(today.totalTokens)} tokens`,
     note: [`${turns} started today, in ${sessions}`, "Domovoi's count, not the provider's limit", unreportedCostNote].join(" · "),
   }
 }
@@ -284,7 +300,10 @@ export function sessionHasUsage(usage: SessionUsage | null | undefined): usage i
 
 export function usageChipTriggerText(usage: SessionUsage | null | undefined, today: UsageWindow | null | undefined): string | undefined {
   if (sessionHasUsage(usage)) return usageChipText(usage)
-  if (today && today.turns > 0) return tokensUnreported(today) ? "not reported today" : `${formatTokenCount(today.totalTokens)} today`
+  if (today && today.turns > 0) {
+    const missing = missingTokens(today)
+    return missing ? `${missing} today` : `${formatTokenCount(today.totalTokens)} today`
+  }
   return undefined
 }
 
