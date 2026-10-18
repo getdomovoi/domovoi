@@ -86,6 +86,7 @@ import { PlanSheet, planSheetArtifacts } from "./working-plan"
 import { RulesPanel } from "./rules-panel.js"
 import { CheckpointsPanel, latestCheckpointRevision } from "./checkpoints-panel.js"
 import type { TerminalControls } from "./terminal-pane"
+import { sessionCommitBlocked } from "./session-commit"
 import { SessionEvidencePanel } from "./session-evidence"
 import { type DesktopWindowBridge } from "./desktop-platform"
 import { HistoryPanel } from "./history-panel"
@@ -196,6 +197,7 @@ export function ArtifactDock({
   restoreBusy = false,
   onLoadSessionEvidence,
   onRevertSessionFile,
+  onCommitSession,
   captureAnnotation,
   previewRefusal,
   pinControl,
@@ -266,6 +268,8 @@ export function ArtifactDock({
   ) => Promise<SessionHistoryPage>
   onLoadSessionEvidence: (sessionId: string) => Promise<SessionEvidence>
   onRevertSessionFile: (sessionId: string, path: string, expectedBaseCommit?: string) => Promise<void>
+  // A person's commit of the active session's work (walk finding F10).
+  onCommitSession?: ((sessionId: string, message: string, expectedHead: string) => Promise<void>) | undefined
   onRestoreCheckpoint?: ((checkpointId: string) => void) | undefined
   worktreeName?: string | undefined
   onForkCheckpoint?: ((checkpointId: string) => void) | undefined
@@ -330,6 +334,7 @@ export function ArtifactDock({
   const archiveReadOnly = sessionIsArchiveReadOnly(snapshot.sessions.find(
     (session) => session.id === snapshot.activeSessionId,
   ))
+  const commitSession = activeSession(snapshot)
   const readOnly = archiveReadOnly || clientAccess === "watching"
   // A phone or tablet credential reaches only phoneAndTabletRpcMethods, whose
   // terminal methods are terminal.list, terminal.watch and terminal.unwatch.
@@ -1000,6 +1005,12 @@ export function ArtifactDock({
             onLoad={onLoadSessionEvidence}
             onRevertFile={onRevertSessionFile}
             onOpenInEditor={onOpenInEditor}
+            onCommit={onCommitSession}
+            commitFacts={commitSession ? {
+              defaultMessage: commitSession.title,
+              machine: snapshot.machine.name,
+              blocked: sessionCommitBlocked(commitSession),
+            } : undefined}
           />
         </TabsContent>
         <TabsContent value="terminal" className="min-h-0 bg-code">

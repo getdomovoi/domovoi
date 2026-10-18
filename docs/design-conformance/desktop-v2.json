@@ -1299,7 +1299,7 @@
         }
       ],
       "notes": [
-        "Built 2026-10-13 (SL-12): /checkpoint after /replan takes a checkpoint through checkpoint.create with the label typed after it, mid-turn too (#825); its note says that during a turn it saves a snapshot without moving the branch, where the design says at the next tool boundary (Q72/Q73). The name column is 86px. /commit is J27, blocked with dock.commits (not M1, Q397 A).",
+        "Built 2026-10-13 (SL-12): /checkpoint after /replan takes a checkpoint through checkpoint.create with the label typed after it, mid-turn too (#825); its note says that during a turn it saves a snapshot without moving the branch, where the design says at the next tool boundary (Q72/Q73). The name column is 86px. /commit is J27 and not built: it drafts one commit per plan step, which nothing does yet. A person commits from the Changes tab (dock.commits, partial since 2026-10-18, walk finding F10).",
         "The argument column shows this session's latest checkpoint, first reviewed skill and first other machine, or the argument's shape; never the design's sample (ckpt_7f24, before the expiry change, pr-triage, hetzner-cx42). The list's data lies past the first 256 KiB, so it was checked against the vendored handoff only."
       ]
     },
@@ -1843,14 +1843,19 @@
         "Assisted-by: claude-code / sonnet-4.6",
         "to each message. The author stays you."
       ],
-      "evidence": [
+      "presence": [
         "Commit without a pull request",
+        "COMMITS",
+        "Commit message"
+      ],
+      "evidence": [
+        "Split again",
+        "Move to another commit",
         "Name the agent in a trailer"
       ],
-      "blocked": {
-        "since": "2026-09-23",
-        "needs": "protocol",
-        "reason": "no daemon RPC groups a worktree's changes into commits or commits them (J27). J27 is not in M1 (Q397 A, 2026-10-02): it stays blocked until git from the app lands after M1, with the replace-herdr work"
+      "partial": {
+        "since": "2026-10-18",
+        "reason": "Walk finding F10 (fetzy, 2026-10-18: Domovoi commits on the agent's behalf, the sandbox stays closed to .git). session.commit commits every change in the worktree as one commit on the session branch with the person's message, from Commit without a pull request in the Changes tab: one COMMITS card with the Commit message field (prefilled with the session title), the files, Commit 1 and git on the machine. Not built: grouping by plan step, Split again, merging, moving files between commits, the repository-convention line, the agent trailer, Commit and push, and the new branch off main the design commits onto (Domovoi commits on the session branch). The author is the person from git config when both name and email are set, Domovoi otherwise; Domovoi is always the committer. Ask and Plan refuse, as does a running turn, and a phone or tablet tab draws no commit."
       }
     },
     {
