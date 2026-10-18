@@ -149,7 +149,9 @@ export function withNotification(record: TerminalRecord, notification: TerminalN
   if (notification.method === "terminal.resized") {
     // The holder's new grid, heard because the watch asked with followResize.
     // The phone draws lines and lets them wrap at its own width, so only the
-    // size it names changes; nothing held is redrawn.
+    // size it names changes in the record. The rows of a long line are read
+    // at the grid the summary names, so text held from before the resize is
+    // read at the new width when it is drawn again (terminal-line-model.ts).
     const { cols, rows } = notification.params
     return { ...record, summary: { ...record.summary, cols, rows }, lastHeardAt: now.toISOString() }
   }
