@@ -2326,6 +2326,55 @@ describe("CodexAppServerAdapter", () => {
     await adapter.close()
   })
 
+  it("counts every request a Codex turn made, not only its last one", async () => {
+    const transport = new FakeTransport()
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+    const breakdown = (input: number, cached: number, output: number, reasoning: number) => ({
+      totalTokens: input + output, inputTokens: input, cachedInputTokens: cached,
+      outputTokens: output, reasoningOutputTokens: reasoning,
+    })
+    const update = (turnId: string, total: ReturnType<typeof breakdown>, last: ReturnType<typeof breakdown>) => {
+      transport.receive({
+        method: "thread/tokenUsage/updated",
+        params: { threadId: "thread-1", turnId, tokenUsage: { total, last, modelContextWindow: 200_000 } },
+      })
+    }
+    const usageFor = (turnId: string) => event.mock.calls
+      .map(([value]) => value as { type: string; turnId?: string; usage?: unknown })
+      .filter((value) => value.type === "usage" && value.turnId === turnId)
+      .at(-1)?.usage
+
+    // An earlier turn on this thread already spent 50,000 input tokens.
+    update("turn-1", breakdown(50_000, 0, 1_000, 0), breakdown(50_000, 0, 1_000, 0))
+    // turn-2 makes two requests. Codex reports each one as `last` and adds it to `total`.
+    update("turn-2", breakdown(110_000, 40_000, 1_500, 100), breakdown(60_000, 40_000, 500, 100))
+    update("turn-2", breakdown(180_000, 95_000, 1_700, 100), breakdown(70_000, 55_000, 200, 0))
+    // A repeated notification with the same counters adds nothing.
+    update("turn-2", breakdown(180_000, 95_000, 1_700, 100), breakdown(70_000, 55_000, 200, 0))
+
+    expect(usageFor("turn-2")).toEqual({
+      inputTokens: 130_000,
+      cachedInputTokens: 95_000,
+      outputTokens: 600,
+      reasoningTokens: 100,
+      totalTokens: 130_700,
+      // Context stays the last request's own size.
+      contextTokens: 70_200,
+      contextWindowTokens: 200_000,
+      costSource: "unavailable",
+    })
+
+    // The next turn starts from the total turn-2 ended on.
+    update("turn-3", breakdown(250_200, 95_000, 1_800, 100), breakdown(70_200, 0, 100, 0))
+    expect(usageFor("turn-3")).toMatchObject({ inputTokens: 70_200, outputTokens: 100, totalTokens: 70_300 })
+    await adapter.close()
+  })
+
   it("carries the provider item id on an agent message delta", async () => {
     const transport = new FakeTransport()
     const event = vi.fn()

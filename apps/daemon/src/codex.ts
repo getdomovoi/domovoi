@@ -480,6 +480,9 @@ export class CodexAppServerAdapter implements AgentAdapter {
   // until it is archived or the transport ends.
   #trustedThreads = new Map<string, string>()
   #trustApplied = new Map<string, { digest: string }>()
+  // Per thread: the turn whose usage is being counted, the thread's
+  // cumulative total from before that turn began, and the newest total seen.
+  #turnUsageBaselines = new Map<string, { turnId: string; baseline: CodexTokenBreakdown; latest: CodexTokenBreakdown }>()
   readonly #readRepositoryConfig: RepositoryProviderConfigReader | undefined
 
   constructor(
@@ -686,6 +689,32 @@ export class CodexAppServerAdapter implements AgentAdapter {
     await this.#request("thread/archive", { threadId })
     this.#trustedThreads.delete(threadId)
     this.#trustApplied.delete(threadId)
+    this.#turnUsageBaselines.delete(threadId)
+  }
+
+  // A turn's usage is every model request it made: the thread's cumulative
+  // total now, less the total before the turn. That baseline is the newest
+  // total an earlier turn on this thread reported. Without one (the first turn
+  // this adapter sees on the thread), or when the total went backwards (a new
+  // app-server), it is the total before this update's own request. A repeated
+  // notification with the same counters therefore adds nothing. A total
+  // smaller than its own last request is not a running total, and the request
+  // alone is reported.
+  #turnTokenUsage(
+    threadId: string,
+    turnId: string,
+    total: CodexTokenBreakdown,
+    last: CodexTokenBreakdown,
+  ): CodexTokenBreakdown {
+    if (!codexBreakdownCovers(total, last)) {
+      this.#turnUsageBaselines.delete(threadId)
+      return last
+    }
+    const entry = this.#turnUsageBaselines.get(threadId)
+    let baseline = entry?.turnId === turnId ? entry.baseline : entry?.latest
+    if (!baseline || !codexBreakdownCovers(total, baseline)) baseline = codexBreakdownLess(total, last)
+    this.#turnUsageBaselines.set(threadId, { turnId, baseline, latest: total })
+    return codexBreakdownLess(total, baseline)
   }
 
   async resumeThread({ threadId, cwd, runtime, repositoryTrust }: Parameters<AgentAdapter["resumeThread"]>[0]): Promise<void> {
@@ -1002,15 +1031,24 @@ export class CodexAppServerAdapter implements AgentAdapter {
     } else if (message.method === "thread/tokenUsage/updated") {
       const tokenUsage = asRecord(params.tokenUsage)
       const last = asRecord(tokenUsage?.last)
+      const threadId = typeof params.threadId === "string" ? params.threadId : undefined
+      const turnId = typeof params.turnId === "string" ? params.turnId : undefined
       // Codex defines last.totalTokens as current context. tokenUsage.total is
       // cumulative session usage and must never drive context occupancy.
+      // `last` is one model request, so a turn's own usage is how far `total`
+      // moved since the turn began; see #turnTokenUsage.
+      const total = codexTokenBreakdown(tokenUsage?.total)
+      const lastRequest = codexTokenBreakdown(last)
+      const turnUsage = threadId && turnId && total && lastRequest
+        ? this.#turnTokenUsage(threadId, turnId, total, lastRequest)
+        : last
       const usage = last ? normalizeProviderUsage({
-        usage: last,
+        usage: turnUsage,
         contextTokens: last.totalTokens,
         contextWindowTokens: tokenUsage?.modelContextWindow,
       }) : undefined
-      if (usage && typeof params.threadId === "string" && typeof params.turnId === "string") {
-        this.#emit({ type: "usage", threadId: params.threadId, turnId: params.turnId, usage })
+      if (usage && threadId && turnId) {
+        this.#emit({ type: "usage", threadId, turnId, usage })
       }
     } else if (message.method === "turn/completed") {
       for (const [itemId, call] of this.#toolServerCalls) {
@@ -1383,6 +1421,31 @@ function isOptionalBoolean(value: unknown): value is boolean | null | undefined 
 
 function isNullish(value: unknown): value is null | undefined {
   return value === null || value === undefined
+}
+
+// The counters of one Codex TokenUsageBreakdown that Domovoi reads. inputTokens
+// includes cachedInputTokens; outputTokens includes reasoningOutputTokens.
+type CodexTokenBreakdown = Record<typeof codexBreakdownKeys[number], number>
+const codexBreakdownKeys = ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"] as const
+
+function codexTokenBreakdown(value: unknown): CodexTokenBreakdown | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+  const breakdown: Partial<CodexTokenBreakdown> = {}
+  for (const key of codexBreakdownKeys) {
+    const count = record[key]
+    if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return undefined
+    breakdown[key] = count
+  }
+  return breakdown as CodexTokenBreakdown
+}
+
+function codexBreakdownCovers(total: CodexTokenBreakdown, part: CodexTokenBreakdown): boolean {
+  return codexBreakdownKeys.every((key) => total[key] >= part[key])
+}
+
+function codexBreakdownLess(total: CodexTokenBreakdown, part: CodexTokenBreakdown): CodexTokenBreakdown {
+  return Object.fromEntries(codexBreakdownKeys.map((key) => [key, total[key] - part[key]])) as CodexTokenBreakdown
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
