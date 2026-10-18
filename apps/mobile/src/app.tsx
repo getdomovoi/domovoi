@@ -288,7 +288,7 @@ export function App() {
   // What the daemon knows this device as. The pairing code decided it, and
   // every call names it, because the daemon refuses one that names another. A
   // credential of unknown kind is kept with the kind the daemon accepted.
-  const { snapshot, status, fault, protocolProblem, call, refresh, reconnect, subscribeTerminal, imageAttachments, clientAccess, client } = useDaemon(
+  const { snapshot, lastReadAt, status, fault, protocolProblem, call, refresh, reconnect, subscribeTerminal, imageAttachments, clientAccess, client } = useDaemon(
     connectTo?.url,
     connectTo?.token,
     connectTo?.client,
@@ -1103,6 +1103,7 @@ export function App() {
           <TabletShell
             snapshot={snapshot}
             notice={notice}
+            live={status === "open"}
             selectedSessionId={openSessionId ?? snapshot.activeSessionId ?? undefined}
             draft={draft}
             access={clientAccess}
@@ -1314,6 +1315,10 @@ export function App() {
                 snapshot={snapshot}
                 fleet={fleet?.entries}
                 notice={notice}
+                // Open only once the daemon answered the hello, so closed,
+                // refused and not yet answered all draw the last state.
+                live={status === "open"}
+                lastReadAt={lastReadAt}
                 refreshing={refreshing}
                 now={now}
                 fleetNow={fleetNow(fleet, now)}

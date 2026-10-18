@@ -30,6 +30,12 @@ export function useDaemon(
   onKindLearned?: (kind: HandheldClient) => void,
 ) {
   const [snapshot, setSnapshot] = useState<WorkspaceSnapshot | undefined>(undefined)
+  // The phone's clock when the daemon last sent the workspace or a change to
+  // it. Once the connection goes, the screen says the state it still shows is
+  // from then (walk F12). A daemon with nothing to report sends nothing, so
+  // this can be older than the last moment the connection was open; it is
+  // never newer than what the phone was actually told.
+  const [lastReadAt, setLastReadAt] = useState<number | undefined>(undefined)
   const [status, setStatus] = useState<DaemonStatus>("closed")
   const [fault, setFault] = useState<ConnectionFault | undefined>(undefined)
   // Only a hello that said true. Missing or false means this daemon strips
@@ -88,6 +94,7 @@ export function useDaemon(
           attempt.current = 0
           setFault(undefined)
           setSnapshot(next)
+          setLastReadAt(Date.now())
         },
         // The token that opened this connection is what pairing proved, and
         // only the answered hello proves it. This is where the daemon's relay
@@ -113,6 +120,7 @@ export function useDaemon(
         onDelta: (delta: WorkspaceDelta) => {
           if (!current()) return
           setSnapshot((held) => held ? applyWorkspaceDelta(held, delta) : held)
+          setLastReadAt(Date.now())
         },
         onFleet: (snapshot) => {
           if (current()) fleetSink.current(snapshot)
@@ -205,6 +213,7 @@ export function useDaemon(
     const daemon = connection.current
     if (!daemon?.isOpen()) throw new Error("The daemon connection is not open")
     setSnapshot(await daemon.call("workspace.get", {}))
+    setLastReadAt(Date.now())
   }, [])
 
   // Nothing here overrides a refusal the daemon will repeat: a wrong token is
@@ -217,5 +226,5 @@ export function useDaemon(
     return () => { terminalListeners.current.delete(listener) }
   }, [])
 
-  return { snapshot, status, fault, protocolProblem, call, refresh, reconnect, subscribeTerminal, imageAttachments, clientAccess, client: greetedAs }
+  return { snapshot, lastReadAt, status, fault, protocolProblem, call, refresh, reconnect, subscribeTerminal, imageAttachments, clientAccess, client: greetedAs }
 }

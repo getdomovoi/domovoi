@@ -27,6 +27,8 @@ async function draw(overrides: Partial<Parameters<typeof SessionsScreen>[0]> = {
     snapshot: workspace(),
     fleet: undefined,
     notice: undefined,
+    live: true,
+    lastReadAt: undefined as number | undefined,
     refreshing: false,
     now,
     fleetNow: now,
@@ -201,7 +203,7 @@ describe("SessionsScreen", () => {
 
     const headings = ["NEEDS YOU", "RUNNING", "QUIET"].map((label) => screen.getByText(label))
     expect(headings).toHaveLength(3)
-    expect(screen.getByText("1 need you")).toBeOnTheScreen()
+    expect(screen.getByText("1 needs you")).toBeOnTheScreen()
 
     // The session holding the approval is the first card after the lead.
     const order = tappable()
@@ -220,10 +222,10 @@ describe("SessionsScreen", () => {
     if (!waiting) throw new Error("fixture needs a pending approval")
 
     const needed = screen.getByTestId("needs-you-pill")
-    expect(within(needed).getByText("1 need you")).toBeOnTheScreen()
+    expect(within(needed).getByText("1 needs you")).toBeOnTheScreen()
     expect(String(needed.props.className)).toContain("bg-warn-bg")
-    expect(String(within(needed).getByText("1 need you").props.className)).toContain("text-warn-fg")
-    expect(screen.queryByText(/^1 need you · /)).toBeNull()
+    expect(String(within(needed).getByText("1 needs you").props.className)).toContain("text-warn-fg")
+    expect(screen.queryByText(/^1 needs? you · /)).toBeNull()
     expect(screen.getByText(/^macbook-pro-m3 · 1 running$/)).toBeOnTheScreen()
 
     const tints = Object.fromEntries(["needs-you", "running", "quiet"].map((id) => [
@@ -245,6 +247,57 @@ describe("SessionsScreen", () => {
     const calm = screen.getByRole("button", { name: other.title })
     expect(String(calm.props.className)).not.toContain("bg-warn-bg")
     expect(within(calm).queryByText("gate")).toBeNull()
+  })
+
+  // Walk F19: the pill agrees with its count, as frame 01's "2 need you" does.
+  it("says one session needs you and two need you", async () => {
+    const snapshot = workspace()
+    const first = snapshot.approvals[0]
+    const other = snapshot.sessions.find((session) => session.id !== first?.sessionId)
+    if (!first || !other) throw new Error("fixture needs a pending approval and a second session")
+    snapshot.approvals.push({ ...first, id: `${first.id}-other`, sessionId: other.id })
+    await draw({ snapshot })
+
+    expect(within(screen.getByTestId("needs-you-pill")).getByText("2 need you")).toBeOnTheScreen()
+  })
+
+  // Walk F12: under "Not connected", a refused credential, or a hello not yet
+  // answered, the list is the last state the phone was sent. The header says
+  // its counts are from that read and when the phone got it, and drops the
+  // fleet part: "reachable" is a claim about now.
+  it("says the header counts are from the last read while not live", async () => {
+    const snapshot = workspace()
+    const now = new Date(2026, 9, 15, 17, 8, 0).getTime()
+    const lastReadAt = new Date(2026, 9, 15, 16, 52, 10).getTime()
+    await draw({
+      snapshot,
+      now,
+      live: false,
+      lastReadAt,
+      fleet: [entry("mac-mini", "healthy", true), entry("hetzner", "healthy")],
+      notice: { tone: "destructive", headline: "The daemon refused this credential", detail: "Pair again in Settings." },
+    })
+
+    expect(screen.getByText(`${snapshot.machine.name} · 1 running when last read at 16:52`)).toBeOnTheScreen()
+    expect(screen.queryByText(/reachable/)).toBeNull()
+  })
+
+  // A green light says a session runs now. Read before the connection went,
+  // it no longer says that, so no card or group count keeps one.
+  it("drops the live lights from cached session cards while not live", async () => {
+    await draw()
+    expect(screen.getAllByTestId("session-dot").some((dot) => String(dot.props.className).includes("bg-success"))).toBe(true)
+    expect(String(screen.getByTestId("group-count-running").props.className)).toContain("bg-success/15")
+
+    await draw({ live: false, notice: { tone: "warning", headline: "Not connected", detail: "Nothing here is live." } })
+    for (const dot of screen.getAllByTestId("session-dot")) {
+      expect(String(dot.props.className)).not.toMatch(/bg-success|bg-warning/)
+      expect(String(dot.props.className)).toContain("bg-faint")
+    }
+    expect(String(screen.getByTestId("group-count-running").props.className)).not.toContain("bg-success")
+    // The approval is still the last fact the phone holds about it, so its
+    // card keeps its place and ground.
+    expect(screen.getByText("NEEDS YOU")).toBeOnTheScreen()
   })
 
   it("tints the UNREACHABLE count as muted", async () => {

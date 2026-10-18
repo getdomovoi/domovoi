@@ -31,10 +31,15 @@ type TabletDecision = Extract<ApprovalDecision, "allow-once" | "always-project">
 export type GateProblem = { approvalId: string, text: string }
 type ReviewTab = "changes" | "diff" | "plan" | "review"
 
-function TabletSessionRow({ row, selected, access, onPress }: {
+function TabletSessionRow({ row, selected, access, live, onPress }: {
   row: SessionRow
   selected: boolean
   access: ClientAccess
+  // Walk F12: drawn from the last state while the tablet is not live, a row
+  // keeps no live light and says "running" was the last read. What waits on
+  // the person stays as it is: it is an approval fact, and the banner says
+  // none of this is live.
+  live: boolean
   onPress: () => void
 }) {
   return (
@@ -48,16 +53,16 @@ function TabletSessionRow({ row, selected, access, onPress }: {
         selected && "bg-accent",
       )}
     >
-      <View className={cn(
+      <View testID="rail-dot" className={cn(
         "mt-[6px] h-[7px] w-[7px] rounded-full",
-        row.dot === "active" ? "bg-success" : row.dot === "waiting" ? "bg-warning" : "bg-faint",
+        !live ? "bg-faint" : row.dot === "active" ? "bg-success" : row.dot === "waiting" ? "bg-warning" : "bg-faint",
       )} />
       <View className="min-w-0 flex-1">
         <Text className="text-[13px] leading-[18px] text-strong" numberOfLines={2}>{row.title}</Text>
         <Text variant="machine" className="mt-1 text-faint">
           {row.attention === "approval"
             ? access === "full" ? "waiting on you" : "waiting on a full-access device"
-            : row.dot === "active" ? "running" : "quiet"}
+            : row.dot === "active" ? live ? "running" : "running when last read" : "quiet"}
         </Text>
       </View>
     </Pressable>
@@ -73,10 +78,11 @@ export function railSelectionLeaves(
   return next !== (shown.openSessionId ?? shown.activeSessionId ?? undefined)
 }
 
-export function TabletSessionsPane({ snapshot, selectedSessionId, access, onSelectSession, onNewSession, onOpenMachines }: {
+export function TabletSessionsPane({ snapshot, selectedSessionId, access, live, onSelectSession, onNewSession, onOpenMachines }: {
   snapshot: WorkspaceSnapshot
   selectedSessionId: string | undefined
   access: ClientAccess
+  live: boolean
   onSelectSession: (sessionId: string) => void
   onNewSession: () => void
   onOpenMachines: () => void
@@ -105,6 +111,7 @@ export function TabletSessionsPane({ snapshot, selectedSessionId, access, onSele
                 row={row}
                 selected={row.id === selectedSessionId}
                 access={access}
+                live={live}
                 onPress={() => onSelectSession(row.id)}
               />
             ))}
@@ -319,7 +326,7 @@ export function TabletThread({ snapshot, detail, approval, access, deciding, dec
         <View className="flex-row items-center gap-2 self-start rounded-full border border-border px-3 py-2">
           <Icon name="chevron-right" tone="faint" size={14} />
           <Text className="text-[12.5px]">Work this turn</Text>
-          <Text variant="machine" className="text-faint">{`${tools} tools · ${changedFilesLabel(snapshot, detail.id)}`}</Text>
+          <Text variant="machine" className="text-faint">{`${tools === 1 ? "1 tool" : `${tools} tools`} · ${changedFilesLabel(snapshot, detail.id)}`}</Text>
         </View>
       ) : null}
       {approval
@@ -479,6 +486,7 @@ export function TabletReviewSheet({ open, snapshot, sessionId, access, onPostRev
 export function TabletShell({
   snapshot,
   notice,
+  live,
   selectedSessionId,
   draft,
   access,
@@ -499,6 +507,9 @@ export function TabletShell({
   // What the connection says when it is not simply working, including a frame
   // this app could not read. The tablet shows it as the phone screens do.
   notice?: ConnectionNotice | undefined
+  // Whether the daemon answered this connection and it is still open. While
+  // not, the rail is the last state the tablet was sent.
+  live: boolean
   selectedSessionId: string | undefined
   draft: string
   access: ClientAccess
@@ -534,6 +545,7 @@ export function TabletShell({
       snapshot={snapshot}
       selectedSessionId={sessionId}
       access={access}
+      live={live}
       onSelectSession={onSelectSession}
       onNewSession={onNewSession}
       onOpenMachines={onOpenMachines}

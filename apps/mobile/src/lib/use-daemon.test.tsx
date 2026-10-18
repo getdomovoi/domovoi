@@ -202,5 +202,30 @@ describe("useDaemon", () => {
     expect(learned).not.toHaveBeenCalled()
     await unmount()
   })
+
+  // Walk F12: once the connection goes, the screen says when the state it
+  // still shows reached the phone. That is the last snapshot or change the
+  // daemon sent, on the phone's clock, and a closed connection leaves it be.
+  it("keeps when the phone last received the workspace, through a close", async () => {
+    let clock = 1_000_000
+    jest.spyOn(Date, "now").mockImplementation(() => clock)
+    const { result, unmount } = await renderHook(() => useDaemon("ws://desk:8787/rpc", "token", "phone", () => {}))
+    expect(result.current.lastReadAt).toBeUndefined()
+    const socket = FakeSocket.made[0]!
+    await act(async () => { socket.open() })
+    await act(async () => { socket.answerHello() })
+    await flush()
+    expect(result.current.lastReadAt).toBe(1_000_000)
+
+    clock = 1_060_000
+    await act(async () => { socket.push("workspace.delta", delta) })
+    expect(result.current.lastReadAt).toBe(1_060_000)
+
+    clock = 1_120_000
+    await act(async () => { socket.close() })
+    expect(result.current.status).toBe("closed")
+    expect(result.current.lastReadAt).toBe(1_060_000)
+    await unmount()
+  })
 })
 
