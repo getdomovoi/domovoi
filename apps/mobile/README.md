@@ -42,6 +42,42 @@ build it first. `apps/mobile/metro.config.js` points Metro at the workspace root
 `node_modules` directories so the shared package resolves. After a change to `app.json`,
 `app.config.ts`, `plugins/` or a native module, regenerate with `npx expo prebuild --clean`.
 
+### iOS builds outside Expo CLI and across Xcode updates
+
+`plugins/with-pnpm-node-path.js` lets a Release build started from `xcodebuild` or the Xcode app
+bundle the JavaScript. `babel.config.js` names `babel-preset-expo`, and nativewind's preset names
+`@babel/plugin-transform-react-jsx`; neither is a dependency of this app, so pnpm puts them only
+in `node_modules/.pnpm/node_modules`. pnpm's bin shims add that directory to `NODE_PATH`, which is
+why `expo` commands find them. Xcode's "Bundle React Native code and images" phase runs Expo CLI
+with plain `node`, so the plugin adds the same directory to `NODE_PATH` in `ios/.xcode.env`, which
+every Xcode script phase sources.
+
+Two more settings keep a local iOS build working when Xcode moves to a newer Swift compiler. Both
+were added for Xcode 27.1 (Swift 6.4), which broke Expo SDK 57 builds in two ways:
+
+- Expo modules build from source. Expo's generated Podfile uses precompiled Expo modules unless
+  `Podfile.properties.json` sets `EXPO_USE_PRECOMPILED_MODULES` to `false`, and
+  `plugins/with-source-built-expo-modules.js` writes that property. The precompiled modules are
+  Swift binaries built by one compiler: SDK 57's `ExpoModulesCore` was built with Swift 6.3.1, and
+  Swift 6.4 refuses it. From source, they compile with the installed Xcode. The first build takes
+  longer.
+- `expo-modules-jsi` is patched (`patches/expo-modules-jsi@57.1.0.patch`, listed under
+  `patchedDependencies` in `pnpm-workspace.yaml`). Its build phase strips C++-only declarations
+  from the module interface it generates by matching `extension __ObjC.`, but Swift 6.4 writes
+  `extension __ObjC::expo...`. The block stays, and the build fails with
+  `cannot find type '__ObjC::expo'`. The patch carries the strip program from
+  `expo-modules-jsi` 58, which matches both spellings, so Xcode 26 (Swift 6.3) builds are
+  unchanged. Remove the patch with the move to Expo SDK 58.
+
+An `ios/` generated before these settings keeps the old Podfile properties and `.xcode.env`. After
+pulling them, run `pnpm install` and `npx expo prebuild --clean`. To check a Release build without a phone:
+
+```bash
+cd apps/mobile/ios
+xcodebuild -workspace Domovoi.xcworkspace -scheme Domovoi -configuration Release \
+  -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO build
+```
+
 Once the app is installed, start Metro on its own to serve JavaScript changes without
 rebuilding:
 
