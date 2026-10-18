@@ -438,6 +438,58 @@ describe("ClaudeAgentSdkAdapter", () => {
     await adapter.close()
   })
 
+  // A resumed query's first result already carries the earlier turns, and a
+  // result with no running total leaves the next one with no known start.
+  it("never counts a running total from an unknown start as one turn", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift() ?? "44444444-4444-4444-8444-444444444444")
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = "55555555-5555-4555-8555-555555555555"
+    await adapter.resumeThread({ threadId, cwd: "/worktree", runtime: runtime("build") })
+    expect(calls[0]?.options).toMatchObject({ resume: threadId })
+    const model = (input: number, output: number) => ({
+      inputTokens: input, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: output,
+      webSearchRequests: 0, costUSD: 0, contextWindow: 200_000, maxOutputTokens: 32_000,
+    })
+    const finish = async (message: Partial<ClaudeSdkMessage>) => {
+      const turnId = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Go", runtime: runtime("build") })
+      calls[0]!.query.emit({ type: "result", subtype: "success", session_id: threadId, is_error: false, ...message } as ClaudeSdkMessage)
+      await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "turn-completed", params: expect.objectContaining({ turnId }) })))
+      return (events.find((event) => event.type === "usage" && event.turnId === turnId) as { usage?: unknown } | undefined)?.usage
+    }
+
+    // The transcript saved 100,000 input tokens; this turn's main loop used 1,000.
+    expect(await finish({
+      usage: { input_tokens: 1_000, output_tokens: 10 },
+      modelUsage: { "claude-opus-5": model(101_000, 510) },
+      total_cost_usd: 3,
+    })).toEqual({
+      inputTokens: 1_000, cachedInputTokens: 0, outputTokens: 10, reasoningTokens: 0, totalTokens: 1_010, costSource: "unavailable",
+    })
+    // From here the start is known.
+    expect(await finish({
+      usage: { input_tokens: 2_000, output_tokens: 20 },
+      modelUsage: { "claude-opus-5": model(103_000, 530) },
+      total_cost_usd: 3.25,
+    })).toMatchObject({ inputTokens: 2_000, outputTokens: 20, costMicros: 250_000 })
+    // A result with no running total: its own main loop, and the next start is unknown.
+    expect(await finish({ usage: { input_tokens: 500, output_tokens: 5 } })).toMatchObject({ inputTokens: 500, outputTokens: 5 })
+    expect(await finish({
+      usage: { input_tokens: 700, output_tokens: 7 },
+      modelUsage: { "claude-opus-5": model(104_200, 542) },
+      total_cost_usd: 3.4,
+    })).toEqual({
+      inputTokens: 700, cachedInputTokens: 0, outputTokens: 7, reasoningTokens: 0, totalTokens: 707, costSource: "unavailable",
+    })
+    await adapter.close()
+  })
+
   it("completes the turn when Claude context usage does not answer", async () => {
     vi.useFakeTimers()
     const { calls, factory } = factoryHarness()
@@ -2825,7 +2877,7 @@ describe("a result that arrives after its turn was interrupted", () => {
     await adapter.close()
   })
 
-  it("does not charge the next turn with the interrupted turn's requests", async () => {
+  it("counts the interrupted turn's requests against it, not the next turn", async () => {
     const { calls, factory } = factoryHarness()
     const ids: ClaudeMessageId[] = [
       "11111111-1111-4111-8111-111111111111",
@@ -2855,10 +2907,19 @@ describe("a result that arrives after its turn was interrupted", () => {
       modelUsage: { "claude-opus-5": model(9_400, 320) },
     } as ClaudeSdkMessage)
     await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "usage", turnId: second })))
-    expect(events.filter((event) => event.type === "usage")).toEqual([expect.objectContaining({
-      turnId: second,
-      usage: expect.objectContaining({ inputTokens: 400, outputTokens: 20, totalTokens: 420 }),
-    })])
+    expect(events.filter((event) => event.type === "usage")).toEqual([
+      expect.objectContaining({
+        turnId: first,
+        usage: expect.objectContaining({ inputTokens: 9_000, outputTokens: 300, totalTokens: 9_300 }),
+      }),
+      expect.objectContaining({
+        turnId: second,
+        usage: expect.objectContaining({ inputTokens: 400, outputTokens: 20, totalTokens: 420 }),
+      }),
+    ])
+    expect(events.filter((event) => event.type === "turn-completed")).toEqual([
+      expect.objectContaining({ params: expect.objectContaining({ turnId: second }) }),
+    ])
     await adapter.close()
   })
 

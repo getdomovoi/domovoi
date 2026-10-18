@@ -2375,6 +2375,68 @@ describe("CodexAppServerAdapter", () => {
     await adapter.close()
   })
 
+  it("starts a new app-server's counting afresh rather than from the old one's total", async () => {
+    const first = new FakeTransport()
+    const second = new FakeTransport()
+    const transports = [first, second]
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transports.shift()!)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    first.receive({ id: 1, result: {} })
+    await connecting
+    const breakdown = (input: number, output: number) => ({
+      totalTokens: input + output, inputTokens: input, cachedInputTokens: 0, outputTokens: output, reasoningOutputTokens: 0,
+    })
+    const update = (transport: FakeTransport, turnId: string, total: ReturnType<typeof breakdown>, last: ReturnType<typeof breakdown>) => {
+      transport.receive({
+        method: "thread/tokenUsage/updated",
+        params: { threadId: "thread-1", turnId, tokenUsage: { total, last, modelContextWindow: 200_000 } },
+      })
+    }
+    update(first, "turn-1", breakdown(100, 0), breakdown(100, 0))
+    first.fail(new Error("Codex app-server exited with code 1"))
+    const reconnecting = adapter.connect()
+    second.receive({ id: 2, result: {} })
+    await reconnecting
+
+    // The new app-server counts from zero: its first request is 200 tokens.
+    update(second, "turn-2", breakdown(200, 0), breakdown(200, 0))
+    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "usage", turnId: "turn-2", usage: expect.objectContaining({ inputTokens: 200, totalTokens: 200 }),
+    }))
+    await adapter.close()
+  })
+
+  it("reports the last request when the running total does not add up, and keeps the connection", async () => {
+    const transport = new FakeTransport()
+    const event = vi.fn()
+    const adapter = new CodexAppServerAdapter(() => transport)
+    adapter.onEvent(event)
+    const connecting = adapter.connect()
+    transport.receive({ id: 1, result: {} })
+    await connecting
+    const breakdown = (input: number, cached: number) => ({
+      totalTokens: input, inputTokens: input, cachedInputTokens: cached, outputTokens: 0, reasoningOutputTokens: 0,
+    })
+    const update = (turnId: string, total: ReturnType<typeof breakdown>, last: ReturnType<typeof breakdown>) => {
+      transport.receive({
+        method: "thread/tokenUsage/updated",
+        params: { threadId: "thread-1", turnId, tokenUsage: { total, last, modelContextWindow: 200_000 } },
+      })
+    }
+    update("turn-1", breakdown(100, 0), breakdown(100, 0))
+    // Cached input grew by 100 while input grew by 50: no turn can have done that.
+    expect(() => update("turn-2", breakdown(150, 100), breakdown(50, 50))).not.toThrow()
+    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
+      type: "usage", turnId: "turn-2", usage: expect.objectContaining({ inputTokens: 50, cachedInputTokens: 50 }),
+    }))
+    // Counters no normalizer accepts are dropped, not thrown into the transport.
+    expect(() => update("turn-3", breakdown(10, 20), breakdown(10, 20))).not.toThrow()
+    expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ type: "provider-disconnected" }))
+    await adapter.close()
+  })
+
   it("carries the provider item id on an agent message delta", async () => {
     const transport = new FakeTransport()
     const event = vi.fn()

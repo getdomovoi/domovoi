@@ -713,8 +713,16 @@ export class CodexAppServerAdapter implements AgentAdapter {
     const entry = this.#turnUsageBaselines.get(threadId)
     let baseline = entry?.turnId === turnId ? entry.baseline : entry?.latest
     if (!baseline || !codexBreakdownCovers(total, baseline)) baseline = codexBreakdownLess(total, last)
+    const turn = codexBreakdownLess(total, baseline)
+    // A difference no single turn could produce (more cached input than
+    // input, say) means the baseline is not this total's past. Count from this
+    // request instead, and report the request alone.
+    if (!codexBreakdownConsistent(turn)) {
+      this.#turnUsageBaselines.set(threadId, { turnId, baseline: codexBreakdownLess(total, last), latest: total })
+      return last
+    }
     this.#turnUsageBaselines.set(threadId, { turnId, baseline, latest: total })
-    return codexBreakdownLess(total, baseline)
+    return turn
   }
 
   async resumeThread({ threadId, cwd, runtime, repositoryTrust }: Parameters<AgentAdapter["resumeThread"]>[0]): Promise<void> {
@@ -932,6 +940,8 @@ export class CodexAppServerAdapter implements AgentAdapter {
     // and checked again, on the next transport.
     this.#trustedThreads.clear()
     this.#trustApplied.clear()
+    // A new app-server keeps its own running totals.
+    this.#turnUsageBaselines.clear()
   }
 
   #receive(message: JsonRpcMessage): void {
@@ -1042,11 +1052,18 @@ export class CodexAppServerAdapter implements AgentAdapter {
       const turnUsage = threadId && turnId && total && lastRequest
         ? this.#turnTokenUsage(threadId, turnId, total, lastRequest)
         : last
-      const usage = last ? normalizeProviderUsage({
-        usage: turnUsage,
-        contextTokens: last.totalTokens,
-        contextWindowTokens: tokenUsage?.modelContextWindow,
-      }) : undefined
+      // Counters that do not add up are an accounting problem: the update is
+      // dropped rather than thrown into the transport, which would end it.
+      let usage: ReturnType<typeof normalizeProviderUsage>
+      try {
+        usage = last ? normalizeProviderUsage({
+          usage: turnUsage,
+          contextTokens: last.totalTokens,
+          contextWindowTokens: tokenUsage?.modelContextWindow,
+        }) : undefined
+      } catch {
+        usage = undefined
+      }
       if (usage && threadId && turnId) {
         this.#emit({ type: "usage", threadId, turnId, usage })
       }
@@ -1442,6 +1459,12 @@ function codexTokenBreakdown(value: unknown): CodexTokenBreakdown | undefined {
 
 function codexBreakdownCovers(total: CodexTokenBreakdown, part: CodexTokenBreakdown): boolean {
   return codexBreakdownKeys.every((key) => total[key] >= part[key])
+}
+
+function codexBreakdownConsistent(usage: CodexTokenBreakdown): boolean {
+  return usage.cachedInputTokens <= usage.inputTokens
+    && usage.reasoningOutputTokens <= usage.outputTokens
+    && usage.totalTokens >= usage.inputTokens + usage.outputTokens
 }
 
 function codexBreakdownLess(total: CodexTokenBreakdown, part: CodexTokenBreakdown): CodexTokenBreakdown {
