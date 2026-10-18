@@ -63,6 +63,19 @@ it("draws the session and today read with the turn, not the chip's older totals"
   expect(screen.queryByText("42.1k tokens")).toBeNull()
 })
 
+// The chip's own totals were read when the turn started; while the popover is
+// open, the chip's number and its accessible name follow the reading too.
+it("shows the reading's total on the chip while the popover is open", async () => {
+  const fresh: SessionUsage = { ...usage, inputTokens: 380_000, outputTokens: 7_000, totalTokens: 387_000 }
+  const loadUsageReading = vi.fn(async () => ({ turn: undefined, usage: fresh, today: null }))
+  render(<UsageChip usage={usage} today={null} loadUsageReading={loadUsageReading} />)
+  expect(screen.getByRole("button", { name: "Usage: 42.1k tokens this session, no context reported" })).toBeTruthy()
+
+  await userEvent.setup().click(screen.getByRole("button", { name: /^Usage: / }))
+  const chip = await screen.findByRole("button", { name: "Usage: 387k tokens this session, no context reported", hidden: true })
+  expect(chip.textContent).toContain("387k session")
+})
+
 // The chip's quota read failed, the one on open succeeded: the note under
 // USAGE, the rows and the chip's ring all describe the same reading.
 it("says the window was reported when the reading on open carries one, and draws its ring", async () => {

@@ -145,8 +145,10 @@ function contextRow(usage: SessionUsage): UsageChipRow | undefined {
   }
 }
 
-// Today counts the turns that started today, so a session that began
-// yesterday can hold more than today does.
+// Today counts the turns that started on this machine today: the ledger
+// stamps a turn when it begins here, and a turn that arrived with a
+// transferred session started elsewhere and carries no stamp. A session that
+// began yesterday, or moved here, can hold more than today does.
 function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefined {
   if (!today || today.turns <= 0) return undefined
   const turns = today.turns === 1 ? "1 turn" : `${today.turns} turns`
@@ -154,7 +156,7 @@ function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefin
   return {
     label: "Today",
     value: missingTokens(today) ?? `${formatTokenCount(today.totalTokens)} tokens`,
-    note: [`${turns} started today, in ${sessions}`, partlyReported(today.coverage), "Domovoi's count, not the provider's limit", unreportedCostNote]
+    note: [`${turns} started on this machine today, in ${sessions}`, partlyReported(today.coverage), "Domovoi's count, not the provider's limit", unreportedCostNote]
       .filter((part): part is string => Boolean(part)).join(" · "),
   }
 }
@@ -346,12 +348,16 @@ export function UsageChip({
   const [reading, setReading] = useState<UsageReading>()
   const readRef = useRef<AbortController | null>(null)
   useEffect(() => () => readRef.current?.abort(), [])
-  const text = usageChipTriggerText(usage, today)
-  if (!text) return null
-  // While open, the ring, the note and the rows all describe one reading: the
-  // one taken on open, or the chip's own until it arrives. Closing drops the
-  // reading, and the chip goes back to its own.
+  if (!usageChipTriggerText(usage, today)) return null
+  // While open, the chip's number, its accessible name, the ring, the note and
+  // the rows all describe one reading: the one taken on open, or the chip's
+  // own until it arrives. Closing drops the reading, and the chip goes back to
+  // its own.
   const shownUsage = reading ? reading.usage : usage
+  const shownToday = reading ? reading.today : today
+  const readingText = usageChipTriggerText(shownUsage, shownToday)
+  const text = readingText ?? usageChipTriggerText(usage, today)
+  const label = readingText ? usageChipLabel(shownUsage, shownToday) : usageChipLabel(usage, today)
   const ring = usageChipRing(shownUsage)
   const rows = reading
     ? usageChipRows({ usage: reading.usage, turn: reading.turn, today: reading.today })
@@ -371,7 +377,7 @@ export function UsageChip({
       )
     }}>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" aria-label={usageChipLabel(usage, today)} className="h-7 rounded-full px-2.5 font-machine text-mono-xs text-strong">
+        <Button variant="ghost" size="sm" aria-label={label} className="h-7 rounded-full px-2.5 font-machine text-mono-xs text-strong">
           <ChartLineIcon data-icon="inline-start" className="text-muted-foreground" />
           {text}
           {ring ? (

@@ -63,7 +63,7 @@ describe("usage chip", () => {
     expect(rows[1]).toMatchObject({ value: "42.1k tokens", note: `Input and output of every model request, cached input included: the same count as This turn and Today. ${unreportedCostNote}` })
     expect(rows[2]).toMatchObject({ value: "42.1k of 200k", share: 21 })
     expect(rows[2]?.note).toBe("What the conversation holds at the provider's last report, not a running total. The provider compacts near the window's edge, or restart the provider thread for a fresh one.")
-    expect(rows[3]).toMatchObject({ value: "120k tokens", note: `27 turns started today, in 3 sessions · Domovoi's count, not the provider's limit · ${unreportedCostNote}` })
+    expect(rows[3]).toMatchObject({ value: "120k tokens", note: `27 turns started on this machine today, in 3 sessions · Domovoi's count, not the provider's limit · ${unreportedCostNote}` })
   })
 
   // "in" and "out" add up to the turn's total, the number the session sums:
@@ -128,7 +128,7 @@ describe("usage chip", () => {
     )
     const day: UsageWindow = { ...today, coverage: { pending: 0, complete: 26, partial: 1, unavailable: 0, legacy: 0 } }
     expect(usageChipRows({ usage: null, turn: undefined, today: day })[0]?.note).toBe(
-      `27 turns started today, in 3 sessions · 1 turn was reported in part or not at all, so the count may be low · Domovoi's count, not the provider's limit · ${unreportedCostNote}`,
+      `27 turns started on this machine today, in 3 sessions · 1 turn was reported in part or not at all, so the count may be low · Domovoi's count, not the provider's limit · ${unreportedCostNote}`,
     )
   })
 
@@ -265,7 +265,7 @@ describe("usage chip", () => {
     expect(rows.at(-2)).toMatchObject({
       label: "Today",
       value: "120k tokens",
-      note: "27 turns started today, in 3 sessions · Domovoi's count, not the provider's limit · Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key.",
+      note: "27 turns started on this machine today, in 3 sessions · Domovoi's count, not the provider's limit · Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key.",
     })
   })
 
