@@ -455,9 +455,14 @@ export type IsolatedGit = {
 // reads, an empty one included, wins (ruling Q319). Otherwise (evidence with
 // filters off, or a reviewed value the worktree no longer reads) its driver
 // is pinned absent, no command and not required.
+//
+// refuseHeldBack, for an operation that must not stage around a filter (a
+// person's commit), throws instead of pinning a held-back driver absent:
+// staging without it would store what the filter exists to change.
 function sourceFilterPins(
   entries: readonly ConfigEntry[],
   reviewed: ReadonlyMap<string, string>,
+  refuseHeldBack?: (() => Error) | undefined,
 ): Array<readonly [string, string]> {
   const effective = new Map<string, { scope: string; key: string; value: string }>()
   const drivers = new Set<string>()
@@ -480,6 +485,7 @@ function sourceFilterPins(
     })
     const heldBack = unconfirmed !== undefined
     refuseChangedReview(driverKeys(driver), heldBack ? unconfirmed : undefined, reviewed)
+    if (heldBack && refuseHeldBack) throw refuseHeldBack()
     // Only the keys the source sets: an unset key and an empty one differ to
     // Git (an empty process, unlike none, turns clean and smudge off), so an
     // unset key stays unset, and refuseUnpinnedFilters refuses one this
@@ -783,6 +789,9 @@ export async function openIsolatedGit(input: {
   // Runs before every command and throws to stop it: trust lapsed since the
   // gate that allowed the reviewed definitions.
   beforeCommand?: (() => void) | undefined
+  // Throws instead of holding back a repository filter the gate did not
+  // allow, read from this opening's one read of the worktree's config.
+  refuseHeldBackFilters?: (() => Error) | undefined
   signal?: AbortSignal | undefined
   // `git --version` of the Git binary isolation runs, by its absolute path;
   // a test seam, uncached.
@@ -818,7 +827,7 @@ export async function openIsolatedGit(input: {
   // The gate's policy, one value per key: its last one wins, as at the gate.
   const reviewed = new Map(input.reviewed ?? [])
   refuseChangedPolicy(entries, reviewed)
-  const filterPins = sourceFilterPins(entries, reviewed)
+  const filterPins = sourceFilterPins(entries, reviewed, input.refuseHeldBackFilters)
   const lfsPolicy = sourceLfsPolicy(entries, reviewed)
   pins.push(...filterPins, ...lfsPolicy)
   for (const key of ["lfs.url", "lfs.pushurl"]) {

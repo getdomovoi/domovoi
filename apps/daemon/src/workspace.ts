@@ -1527,6 +1527,9 @@ export class GitWorkspaceService implements WorkspaceService {
     await this.#afterRepositoryFilterGate?.(worktree)
     const isolated = await openIsolatedGit({
       worktree, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true, beforeCommand: this.#confirm(gate), signal,
+      // A filter that appeared after the gate read is held back by blanking
+      // it; a person's commit refuses instead (review R4.2, ruling Q139).
+      refuseHeldBackFilters: refuseRepositoryFilters,
     })
     try {
       return await work(isolated)
@@ -2083,6 +2086,13 @@ export class GitWorkspaceService implements WorkspaceService {
           author: await personIdentity(path, signal),
         refuse: async (index, changedFiles) => {
           if (changedFiles.length === 0) throw new SessionCommitRefusedError("nothing-to-commit", branch)
+          // The isolated directory staged with the config it read when it
+          // opened. A filter the repository's config gained since would have
+          // been left out, so the config is read again once staging is done
+          // and the commit refused if it now names one (review R4.2).
+          if (repositoryGitFilters(await readGitFilterSettings(path, signal)).length > 0) {
+            throw new SessionCommitRefusedError("repository-filters", branch)
+          }
           // The paths whose contents enter the commit: a deletion carries no
           // contents, so dropping a tracked secret file is allowed. Read as
           // raw bytes, so a path that is not UTF-8 is refused, never guessed.

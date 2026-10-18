@@ -249,6 +249,52 @@ describe("GitWorkspaceService.commit", () => {
     expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
   })
 
+  // Walk finding F10, review R4.2 (ruling Q139): the isolated directory holds
+  // back a repository filter its gate did not allow by blanking it, which for
+  // a commit would stage what the filter exists to change (an encryption
+  // filter's plaintext). A filter that appears after the gate read refuses
+  // the commit instead.
+  describe("a repository filter that appears after the gate read", () => {
+    // The seam runs `late` once it is armed, after the setup below.
+    async function filtered(prefix: string, seam: "afterRepositoryFilterGate" | "afterCheckpointStaging") {
+      const armed: { late?: () => Promise<void> } = {}
+      const made = await sessionWorktree(prefix, "session-commit", { [seam]: async () => { await armed.late?.() } })
+      const marker = join(made.scratch, "filter-ran").replaceAll("\\", "/")
+      const script = join(made.scratch, "encrypt.sh").replaceAll("\\", "/")
+      await writeFile(script, `echo ran >> "${marker}"\ntr a-z n-za-m\n`)
+      await writeFile(join(made.workspace.path, ".gitattributes"), "notes.txt filter=crypt\n")
+      await writeFile(join(made.workspace.path, "notes.txt"), "plain words\n")
+      const filterLines = `[filter "crypt"]\n\tclean = sh ${script}\n\tsmudge = sh ${script}\n\trequired = true\n`
+      return { ...made, armed, marker, filterLines }
+    }
+
+    it("refuses when an included config file gains the filter between the gate and the isolated directory", async () => {
+      const { repositoryPath, service, workspace, sessionId, scratch, armed, marker, filterLines } = await filtered("domovoi-commit-late-include-", "afterRepositoryFilterGate")
+      const included = join(scratch, "included.gitconfig")
+      await writeFile(included, "")
+      await git(repositoryPath, "config", "include.path", included)
+      armed.late = () => writeFile(included, filterLines)
+
+      const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: notes", expectedHead: workspace.baseCommit }))
+
+      expect(error.reason).toBe("repository-filters")
+      await expect(readFile(marker, "utf8")).rejects.toThrow()
+      expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
+    })
+
+    it("refuses when the repository's config gains the filter between the isolated directory and the commit", async () => {
+      const { repositoryPath, service, workspace, sessionId, armed, marker, filterLines } = await filtered("domovoi-commit-late-config-", "afterCheckpointStaging")
+      const config = join(repositoryPath, ".git", "config")
+      armed.late = async () => { await writeFile(config, `${await readFile(config, "utf8")}${filterLines}`) }
+
+      const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: notes", expectedHead: workspace.baseCommit }))
+
+      expect(error.reason).toBe("repository-filters")
+      await expect(readFile(marker, "utf8")).rejects.toThrow()
+      expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
+    })
+  })
+
   it("checks a secret-named submodule entry that the repository asks Git to ignore", async () => {
     const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-ignored-submodule-")
     await writeFile(join(workspace.path, ".gitmodules"), "[submodule \"keys\"]\n\tpath = id_rsa\n\turl = ./keys\n\tignore = all\n")
