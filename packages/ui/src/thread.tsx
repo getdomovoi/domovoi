@@ -26,7 +26,6 @@ import type {
   SessionTransferPreview,
   SessionTransferPreviewParams,
   SessionUsage,
-  SessionTurn,
   RuntimeDiscoverResult,
   UsageWindow,
   TurnSkillSelection,
@@ -74,6 +73,7 @@ import { groupThreadActivity, type ThreadRow } from "./thread-activity-groups"
 import { ThreadFileChips } from "./thread-file-chips"
 import { TurnActivity } from "./turn-activity"
 import { activityTiming, headerClockText, latestSessionTurn, turnClock, type TurnTiming } from "./turn-clock"
+import type { UsageReading } from "./usage-chip"
 import { CheckpointRestore, checkpointRestoreBlocked } from "./checkpoint-actions.js"
 import { offInHandheldTab, useHandheldTabMachine } from "./handheld-tab.js"
 import {
@@ -560,7 +560,7 @@ export function Thread({
   onReleaseSession,
   usage = null,
   usageToday = null,
-  loadLatestTurn,
+  loadUsageReading,
   onDiscoverRuntime,
   onEditPlan,
   onDiscardPlanEdit,
@@ -640,7 +640,7 @@ export function Thread({
   }) => Promise<unknown>) | undefined
   usage?: SessionUsage | null | undefined
   usageToday?: UsageWindow | null | undefined
-  loadLatestTurn?: ((signal: AbortSignal) => Promise<SessionTurn | undefined>) | undefined
+  loadUsageReading?: ((signal: AbortSignal) => Promise<UsageReading>) | undefined
   // "Ask the agents again" in the model chip runs runtime.discover per harness.
   onDiscoverRuntime?: ((provider: string) => Promise<RuntimeDiscoverResult>) | undefined
   // The strip above the composer edits and discards through the same RPCs
@@ -1659,7 +1659,7 @@ export function Thread({
           onOpenPromptEditor={() => setPromptEditorOpen(true)}
           usage={usage}
           usageToday={usageToday}
-          loadLatestTurn={loadLatestTurn}
+          loadUsageReading={loadUsageReading}
           onStop={() => void pauseSession()}
         >
           {/* v2 draws no machine control in the composer. The sessions

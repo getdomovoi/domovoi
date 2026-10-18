@@ -36,33 +36,72 @@ export type UsageChipRow = {
 // Ruled Q374 A: TODAY stays, and the note says this without jargon.
 export const unreportedCostNote = "Cost not shown: Domovoi cannot yet tell whether these turns ran on a subscription or an API key."
 
-// The chip names the context the next turn runs in, because that is the
-// number that decides whether the work continues. The session's own total is
-// a running tally nothing acts on, and the rows below carry it. A provider
-// that reports no context leaves the chip on that tally rather than blank.
+// Two quantities share the chip, and they are not the same kind of number.
+// The context is what the conversation holds now, at most the window. The
+// session's tokens are a running total of every request, which grows past
+// the window. The chip names the context the next turn runs in, because that
+// is the number that decides whether the work continues. A provider that
+// reports no context leaves the chip on the running total, and the chip then
+// says so, so one number never stands in for the other.
 export function usageChipText(usage: SessionUsage): string {
   if (usage.contextTokens !== undefined && usage.contextWindowTokens !== undefined) {
     return formatTokenCount(usage.contextTokens)
   }
-  return formatTokenCount(usage.totalTokens)
+  return `${formatTokenCount(usage.totalTokens)} session`
 }
 
+// The chip's accessible name says what its number counts in every state.
+export function usageChipLabel(usage: SessionUsage | null | undefined, today: UsageWindow | null | undefined): string {
+  if (sessionHasUsage(usage)) {
+    if (usage.contextTokens !== undefined && usage.contextWindowTokens !== undefined) {
+      return `Usage: ${formatTokenCount(usage.contextTokens)} of ${formatTokenCount(usage.contextWindowTokens)} tokens in context`
+    }
+    return `Usage: ${formatTokenCount(usage.totalTokens)} tokens this session, no context reported`
+  }
+  if (today && today.turns > 0) return `Usage: ${formatTokenCount(today.totalTokens)} tokens today`
+  return "Usage"
+}
+
+// Every token row counts the same thing: input (cached input included) and
+// output (reasoning included) of every model request, summed. So "in" plus
+// "out" is the turn's total, and the session and today are sums of turns.
 function turnRow(turn: SessionTurn | undefined): UsageChipRow | undefined {
   if (!turn) return undefined
   const model = turn.reportedModels.at(-1) ?? turn.requestedModel
   const tools = turn.recordedToolCount === 1 ? "1 tool result" : `${turn.recordedToolCount} tool results`
+  const { usage } = turn
+  const output = usage.outputTokens + usage.reasoningTokens
+  const unreported = turn.coverage === "unavailable"
+  const running = turn.status === "pending"
+  const value = unreported ? "not reported"
+    : running && usage.totalTokens === 0 ? "none reported yet"
+      : `${usage.inputTokens.toLocaleString("en-US")} in · ${output.toLocaleString("en-US")} out`
+  const state = unreported ? "The provider reported no usage for this turn"
+    : running ? "Running, counted so far"
+      : turn.coverage === "partial" ? "Partly reported" : undefined
+  const cached = !unreported && usage.cachedInputTokens > 0
+    ? `${usage.cachedInputTokens.toLocaleString("en-US")} of the input was cached`
+    : undefined
   return {
     label: "This turn",
-    value: `${turn.usage.inputTokens.toLocaleString("en-US")} in · ${turn.usage.outputTokens.toLocaleString("en-US")} out`,
-    note: `${model} · ${tools}`,
+    value,
+    note: [state, cached, model, tools].filter((part): part is string => Boolean(part)).join(" · "),
   }
+}
+
+// A session whose turns all reported no tokens (an ACP agent reports only its
+// context) has no count, which is not the same as a count of zero.
+function sessionTokensUnreported(usage: SessionUsage): boolean {
+  const coverage = usage.coverage
+  return usage.totalTokens === 0 && coverage !== undefined && coverage.unavailable > 0
+    && coverage.complete + coverage.partial + coverage.legacy === 0
 }
 
 function sessionRow(usage: SessionUsage): UsageChipRow {
   return {
     label: "This session",
-    value: `${formatTokenCount(usage.totalTokens)} tokens`,
-    note: unreportedCostNote,
+    value: sessionTokensUnreported(usage) ? "not reported" : `${formatTokenCount(usage.totalTokens)} tokens`,
+    note: `Input and output of every model request, cached input included: the same count as This turn and Today. ${unreportedCostNote}`,
   }
 }
 
@@ -71,11 +110,13 @@ function contextRow(usage: SessionUsage): UsageChipRow | undefined {
   return {
     label: "Context",
     value: `${formatTokenCount(usage.contextTokens)} of ${formatTokenCount(usage.contextWindowTokens)}`,
-    note: "The provider compacts near the window's edge, or restart the provider thread for a fresh one.",
+    note: "What the conversation holds at the provider's last report, not a running total. The provider compacts near the window's edge, or restart the provider thread for a fresh one.",
     share: Math.min(100, Math.round((usage.contextTokens / usage.contextWindowTokens) * 100)),
   }
 }
 
+// Today counts the turns that started today, so a session that began
+// yesterday can hold more than today does.
 function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefined {
   if (!today || today.turns <= 0) return undefined
   const turns = today.turns === 1 ? "1 turn" : `${today.turns} turns`
@@ -83,7 +124,7 @@ function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefin
   return {
     label: "Today",
     value: `${formatTokenCount(today.totalTokens)} tokens`,
-    note: [`${turns} in ${sessions}`, "Domovoi's count, not the provider's limit", unreportedCostNote].join(" · "),
+    note: [`${turns} started today, in ${sessions}`, "Domovoi's count, not the provider's limit", unreportedCostNote].join(" · "),
   }
 }
 
@@ -209,6 +250,27 @@ export async function latestTurnFromHistory(
   return undefined
 }
 
+// What the popover draws: the latest turn and the totals read after it. The
+// chip's own totals are read when a turn starts and ends, while the turn is
+// read when the popover opens; side by side, a running turn could outgrow the
+// session total read at its start (walk F9). The daemon's counters only grow,
+// so totals read after the turn are never below it.
+export type UsageReading = {
+  turn: SessionTurn | undefined
+  usage: SessionUsage
+  today: UsageWindow | null
+}
+
+export async function readUsage(load: {
+  turn: () => Promise<SessionTurn | undefined>
+  session: () => Promise<SessionUsage>
+  today: () => Promise<UsageWindow>
+}): Promise<UsageReading> {
+  const turn = await load.turn()
+  const [usage, today] = await Promise.all([load.session(), load.today().catch(() => null)])
+  return { turn, usage, today }
+}
+
 // A session with no recorded turns has nothing to say for itself, but the day
 // may: a fresh session on a busy day still shows today's count. The session
 // rows are left out rather than drawn as zeros.
@@ -235,38 +297,43 @@ export function usageChipRows(input: {
 export function UsageChip({
   usage,
   today,
-  loadLatestTurn,
+  loadUsageReading,
 }: {
   usage: SessionUsage | null
   today: UsageWindow | null | undefined
   // The latest turn record lives in session history, not on the snapshot, so
-  // the chip asks for it when it opens rather than keeping every turn. Each
-  // open gets its own signal; closing or reopening aborts the read in flight,
-  // and a read that is no longer current cannot overwrite a newer one.
-  loadLatestTurn?: ((signal: AbortSignal) => Promise<SessionTurn | undefined>) | undefined
+  // the chip asks for it, with totals read after it (readUsage), when it opens
+  // rather than keeping every turn. Each open gets its own signal; closing or
+  // reopening aborts the read in flight, and a read that is no longer current
+  // cannot overwrite a newer one. Until a reading arrives, or when it fails,
+  // the popover draws the chip's own totals and no turn.
+  loadUsageReading?: ((signal: AbortSignal) => Promise<UsageReading>) | undefined
 }) {
-  const [turn, setTurn] = useState<SessionTurn>()
+  const [reading, setReading] = useState<UsageReading>()
   const readRef = useRef<AbortController | null>(null)
   useEffect(() => () => readRef.current?.abort(), [])
   const text = usageChipTriggerText(usage, today)
   const ring = usageChipRing(usage)
   if (!text) return null
-  const rows = usageChipRows({ usage, turn, today })
+  const rows = reading
+    ? usageChipRows({ usage: reading.usage, turn: reading.turn, today: reading.today })
+    : usageChipRows({ usage, turn: undefined, today })
   return (
     <DropdownMenu onOpenChange={(open) => {
       readRef.current?.abort()
       readRef.current = null
-      if (!open || !loadLatestTurn || !sessionHasUsage(usage)) return
+      setReading(undefined)
+      if (!open || !loadUsageReading || !sessionHasUsage(usage)) return
       const read = new AbortController()
       readRef.current = read
       const current = () => readRef.current === read && !read.signal.aborted
-      loadLatestTurn(read.signal).then(
-        (latest) => { if (current()) setTurn(latest) },
-        () => { if (current()) setTurn(undefined) },
+      loadUsageReading(read.signal).then(
+        (next) => { if (current()) setReading(next) },
+        () => { if (current()) setReading(undefined) },
       )
     }}>
       <DropdownMenuTrigger asChild>
-        <Button variant="ghost" size="sm" aria-label="Usage" className="h-7 rounded-full px-2.5 font-machine text-mono-xs text-strong">
+        <Button variant="ghost" size="sm" aria-label={usageChipLabel(usage, today)} className="h-7 rounded-full px-2.5 font-machine text-mono-xs text-strong">
           <ChartLineIcon data-icon="inline-start" className="text-muted-foreground" />
           {text}
           {ring ? (

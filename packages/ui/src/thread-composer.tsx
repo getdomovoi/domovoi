@@ -7,7 +7,6 @@ import {
   type Runtime,
   type RuntimeDiscoverResult,
   type SessionAttachment,
-  type SessionTurn,
   type SessionUsage,
   type UsageWindow,
 } from "@getdomovoi/protocol"
@@ -46,7 +45,7 @@ import { cn } from "./lib/utils"
 import { EffortChip, ModeChip } from "./mode-chip.js"
 import { ModelPopover } from "./model-popover.js"
 import { deliveryLabel, type FailedAttempt, type QueuedMessage } from "./turn-queue"
-import { UsageChip } from "./usage-chip.js"
+import { UsageChip, type UsageReading } from "./usage-chip.js"
 
 type ChipItem = {
   key: string
@@ -221,7 +220,7 @@ export function ThreadComposer({
   onOpenPromptEditor,
   usage,
   usageToday,
-  loadLatestTurn,
+  loadUsageReading,
   onStop,
   children,
 }: {
@@ -283,7 +282,7 @@ export function ThreadComposer({
   onOpenPromptEditor: () => void
   usage: SessionUsage | null
   usageToday: UsageWindow | null | undefined
-  loadLatestTurn?: ((signal: AbortSignal) => Promise<SessionTurn | undefined>) | undefined
+  loadUsageReading?: ((signal: AbortSignal) => Promise<UsageReading>) | undefined
   onStop: () => void
   // The machine menu and the dialogs it opens, kept inside the card.
   children?: ReactNode
@@ -743,7 +742,7 @@ export function ThreadComposer({
         <div className="ml-auto flex items-center gap-2">
           {/* v2's usage chip belongs to the composer, at the right of its
               action row. The sidebar reorganisation moves the row with it. */}
-          <UsageChip usage={usage} today={usageToday} loadLatestTurn={loadLatestTurn} />
+          <UsageChip usage={usage} today={usageToday} loadUsageReading={loadUsageReading} />
           <span role="status" className="flex flex-col items-end font-machine text-mono-xs leading-[1.35] text-faint">
             {providerRestartRequired
               ? <span>Restart the provider before sending</span>

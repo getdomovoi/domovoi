@@ -3,7 +3,7 @@ import { act, cleanup, render, screen } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { afterEach, expect, it, vi } from "vitest"
 
-import { UsageChip } from "./usage-chip"
+import { UsageChip, type UsageReading } from "./usage-chip"
 
 afterEach(cleanup)
 
@@ -24,39 +24,54 @@ function turn(ordinal: number, inputTokens: number): SessionTurn {
   }
 }
 
-type Deferred = { resolve: (value: SessionTurn | undefined) => void, signal: AbortSignal }
+type Deferred = { resolve: (value: UsageReading) => void, signal: AbortSignal }
 
 // Open, close, open again: the first read is aborted, and even if it settles
 // after the second one, it cannot overwrite the second read's turn.
 it("aborts a superseded read and keeps the newest open's turn", async () => {
   const reads: Deferred[] = []
-  const loadLatestTurn = vi.fn((signal: AbortSignal) => new Promise<SessionTurn | undefined>((resolve) => { reads.push({ resolve, signal }) }))
-  render(<UsageChip usage={usage} today={null} loadLatestTurn={loadLatestTurn} />)
+  const loadUsageReading = vi.fn((signal: AbortSignal) => new Promise<UsageReading>((resolve) => { reads.push({ resolve, signal }) }))
+  render(<UsageChip usage={usage} today={null} loadUsageReading={loadUsageReading} />)
   const user = userEvent.setup()
 
-  await user.click(screen.getByRole("button", { name: "Usage" }))
+  await user.click(screen.getByRole("button", { name: /^Usage: / }))
   await user.keyboard("{Escape}")
-  await user.click(screen.getByRole("button", { name: "Usage" }))
+  await user.click(screen.getByRole("button", { name: /^Usage: / }))
   expect(reads).toHaveLength(2)
   expect(reads[0]!.signal.aborted).toBe(true)
   expect(reads[1]!.signal.aborted).toBe(false)
 
-  await act(async () => { reads[1]!.resolve(turn(2, 2_000)) })
+  await act(async () => { reads[1]!.resolve({ turn: turn(2, 2_000), usage, today: null }) })
   expect(screen.getByText("2,000 in · 1 out")).toBeTruthy()
-  await act(async () => { reads[0]!.resolve(turn(1, 1_000)) })
+  await act(async () => { reads[0]!.resolve({ turn: turn(1, 1_000), usage, today: null }) })
   expect(screen.getByText("2,000 in · 1 out")).toBeTruthy()
   expect(screen.queryByText("1,000 in · 1 out")).toBeNull()
 })
 
+// Walk F9: THIS TURN 202,594 in next to THIS SESSION 185k. The session total
+// on the chip was read when the turn started; the popover draws the totals
+// read with its turn instead.
+it("draws the session and today read with the turn, not the chip's older totals", async () => {
+  const fresh: SessionUsage = { ...usage, inputTokens: 380_000, outputTokens: 7_000, totalTokens: 387_000 }
+  const today = { ...fresh, sessions: 1, turns: 3 }
+  const loadUsageReading = vi.fn(async () => ({ turn: turn(3, 202_594), usage: fresh, today }))
+  render(<UsageChip usage={usage} today={{ ...today, totalTokens: 42_118 }} loadUsageReading={loadUsageReading} />)
+
+  await userEvent.setup().click(screen.getByRole("button", { name: /^Usage: / }))
+  expect(await screen.findByText("202,594 in · 1 out")).toBeTruthy()
+  expect(screen.getAllByText("387k tokens")).toHaveLength(2)
+  expect(screen.queryByText("42.1k tokens")).toBeNull()
+})
+
 it("shows today's count for a session with no usage of its own, and asks for no turn", async () => {
-  const loadLatestTurn = vi.fn(async () => undefined)
-  render(<UsageChip usage={null} today={{ inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 20_000, reasoningTokens: 0, totalTokens: 120_000, costMicros: 1_120_000, currency: "USD", sessions: 3, turns: 27, reportedCostTurns: 27, unavailableCostTurns: 0 }} loadLatestTurn={loadLatestTurn} />)
-  const chip = screen.getByRole("button", { name: "Usage" })
+  const loadUsageReading = vi.fn(async () => ({ turn: undefined, usage, today: null }))
+  render(<UsageChip usage={null} today={{ inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 20_000, reasoningTokens: 0, totalTokens: 120_000, costMicros: 1_120_000, currency: "USD", sessions: 3, turns: 27, reportedCostTurns: 27, unavailableCostTurns: 0 }} loadUsageReading={loadUsageReading} />)
+  const chip = screen.getByRole("button", { name: "Usage: 120k tokens today" })
   expect(chip.textContent).toContain("120k today")
   await userEvent.setup().click(chip)
   expect(screen.getAllByTestId("usage-row")).toHaveLength(1)
   expect(screen.getByText("TODAY")).toBeTruthy()
-  expect(loadLatestTurn).not.toHaveBeenCalled()
+  expect(loadUsageReading).not.toHaveBeenCalled()
 })
 
 it("renders provider quota windows as progress rows", async () => {
@@ -71,7 +86,7 @@ it("renders provider quota windows as progress rows", async () => {
     },
   }} today={null} />)
 
-  await userEvent.setup().click(screen.getByRole("button", { name: "Usage" }))
+  await userEvent.setup().click(screen.getByRole("button", { name: /^Usage: / }))
   expect(screen.getByText("5-HOUR LIMIT")).toBeTruthy()
   expect(screen.getByText("WEEKLY LIMIT")).toBeTruthy()
   expect(screen.getByRole("progressbar", { name: "5-hour limit share" }).getAttribute("aria-valuenow")).toBe("23")
@@ -93,7 +108,7 @@ it("draws the ring and its separator on the closed chip", () => {
     },
   }} today={null} />)
 
-  const chip = screen.getByRole("button", { name: "Usage" })
+  const chip = screen.getByRole("button", { name: /^Usage: / })
   expect(chip.textContent).toContain("·")
   const ring = screen.getByRole("img", { name: /82 percent of the weekly window/ })
   const arc = ring.querySelectorAll("circle")[1]!
@@ -104,7 +119,7 @@ it("draws the ring and its separator on the closed chip", () => {
 it("draws no ring and no separator while no provider window is reported", () => {
   render(<UsageChip usage={usage} today={null} />)
 
-  const chip = screen.getByRole("button", { name: "Usage" })
+  const chip = screen.getByRole("button", { name: /^Usage: / })
   expect(chip.textContent).not.toContain("·")
   expect(screen.queryByRole("img", { name: /percent of the/ })).toBeNull()
 })
@@ -116,7 +131,7 @@ const connectionNote = () => screen.getByTestId("usage-connection-note").textCon
 
 it("says why there is no dial when no window is reported", async () => {
   render(<UsageChip usage={usage} today={null} />)
-  await userEvent.setup().click(screen.getByRole("button", { name: "Usage" }))
+  await userEvent.setup().click(screen.getByRole("button", { name: /^Usage: / }))
   expect(connectionNote()).toBe("No window reported, so no dial. The chip falls back to tokens alone.")
 })
 
@@ -126,11 +141,11 @@ it("says the ring carries the window, and which one when two run", async () => {
     { kind: "secondary" as const, usedPercent: 82, windowDurationMinutes: 10_080 },
   ]
   const { unmount } = render(<UsageChip usage={{ ...usage, providerLimits: { provider: "codex", windows } }} today={null} />)
-  await userEvent.setup().click(screen.getByRole("button", { name: "Usage" }))
+  await userEvent.setup().click(screen.getByRole("button", { name: /^Usage: / }))
   expect(connectionNote()).toBe("The provider reported its usage window, so the chip carries the window rather than a price. Two windows run at once and the ring shows the tighter one.")
   unmount()
 
   render(<UsageChip usage={{ ...usage, providerLimits: { provider: "codex", windows: windows.slice(0, 1) } }} today={null} />)
-  await userEvent.setup().click(screen.getByRole("button", { name: "Usage" }))
+  await userEvent.setup().click(screen.getByRole("button", { name: /^Usage: / }))
   expect(connectionNote()).toBe("The provider reported its usage window, so the chip carries the window rather than a price.")
 })
