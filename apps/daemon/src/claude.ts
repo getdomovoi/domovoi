@@ -85,6 +85,7 @@ export type ClaudeSdkMessage = {
   result?: unknown
   tool_use_result?: unknown
   usage?: unknown
+  modelUsage?: unknown
   total_cost_usd?: unknown
   user_message_uuid?: unknown
   user_message_uuids?: unknown
@@ -202,6 +203,8 @@ type Session = {
   // uuid the SDK made itself (a compaction, a merged queue) ends the turn.
   interruptedMessageIds: Set<string>
   assistantError?: string
+  // The query's running usage as of its last result; see claudeTurnUsage.
+  runningUsage?: ClaudeRunningUsage
   // Set once a turn has been sent. Claude has no conversation to resume until
   // then, so a reopen before it must start a fresh one.
   started?: true
@@ -917,6 +920,10 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       // an interrupted turn's messages is that turn's, and ends nothing. Any
       // other result, including one naming a uuid the SDK made itself or none
       // at all, ends the active turn as before.
+      // Every result moves the running totals on, a dropped one too, so the
+      // next turn is not charged with an interrupted turn's requests.
+      const turnUsage = claudeTurnUsage(message, session.runningUsage)
+      session.runningUsage = turnUsage.running
       const answered = resultMessageIds(message)
       if (answered?.some((id) => session.interruptedMessageIds.has(id))) {
         for (const id of answered) session.interruptedMessageIds.delete(id)
@@ -928,7 +935,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
       // up is an accounting problem, not a failed turn, so the usage is dropped
       // and the turn is delivered as what it was.
       try {
-        const usage = normalizeProviderUsage({ ...message, ...context })
+        const usage = normalizeProviderUsage({ ...turnUsage.payload, ...context })
         if (usage) this.#emit({ type: "usage", threadId: session.threadId, turnId, usage })
       } catch {
         // Nothing to report to the person: usage is a readout, not the work.
@@ -1309,6 +1316,77 @@ function claudeFailureError(error: unknown, stderr: string): Error {
 function claudeFailureDetail(parts: Array<string | undefined>): string {
   const unique = [...new Set(parts.map((part) => part?.trim()).filter((part): part is string => Boolean(part)))]
   return redactDurableText(unique.join(": ")).value
+}
+
+// The SDK's result carries two running totals for the whole query() call:
+// modelUsage (every model call, the main loop, subagents, compaction) and
+// total_cost_usd. Each result repeats the running total so far, so a turn is
+// the difference from the previous result. result.usage is the main loop of
+// this turn only and leaves subagents out; it is the fallback when modelUsage
+// is missing. A running total smaller than the last one means the SDK started
+// counting again, and the result's own figures stand for the turn.
+type ClaudeRunningTokens = { input: number; read: number; write: number; output: number; thinking: number }
+type ClaudeRunningUsage = { tokens?: ClaudeRunningTokens; cost?: number }
+
+function claudeTurnUsage(
+  message: ClaudeSdkMessage,
+  previous: ClaudeRunningUsage | undefined,
+): { payload: Record<string, unknown>; running: ClaudeRunningUsage } {
+  const tokens = claudeRunningTokens(message.modelUsage)
+  const cost = typeof message.total_cost_usd === "number" && Number.isFinite(message.total_cost_usd) && message.total_cost_usd >= 0
+    ? message.total_cost_usd
+    : undefined
+  const runningTokens = tokens ?? previous?.tokens
+  const runningCost = cost ?? previous?.cost
+  const running: ClaudeRunningUsage = {
+    ...(runningTokens ? { tokens: runningTokens } : {}),
+    ...(runningCost !== undefined ? { cost: runningCost } : {}),
+  }
+  const before = previous?.tokens
+  const turnTokens = tokens && before && claudeTokenKeys.every((key) => tokens[key] >= before[key])
+    ? Object.fromEntries(claudeTokenKeys.map((key) => [key, tokens[key] - before[key]])) as ClaudeRunningTokens
+    : tokens
+  const turnCost = cost === undefined ? undefined
+    : previous?.cost !== undefined && cost >= previous.cost ? cost - previous.cost : cost
+  const payload: Record<string, unknown> = turnTokens
+    ? { usage: {
+      input_tokens: turnTokens.input,
+      cache_read_input_tokens: turnTokens.read,
+      cache_creation_input_tokens: turnTokens.write,
+      output_tokens: turnTokens.output,
+      // Thinking is counted inside output; the normalizer splits it out.
+      reasoning_output_tokens: Math.min(turnTokens.thinking, turnTokens.output),
+    } }
+    : { ...(message.usage !== undefined ? { usage: message.usage } : {}) }
+  if (turnCost !== undefined) payload.total_cost_usd = turnCost
+  return { payload, running }
+}
+
+const claudeTokenKeys = ["input", "read", "write", "output", "thinking"] as const
+
+function claudeRunningTokens(value: unknown): ClaudeRunningTokens | undefined {
+  const models = asRecord(value)
+  if (!models) return undefined
+  const entries = Object.values(models)
+  if (entries.length === 0) return undefined
+  const total: ClaudeRunningTokens = { input: 0, read: 0, write: 0, output: 0, thinking: 0 }
+  for (const entry of entries) {
+    const model = asRecord(entry)
+    const counts = {
+      input: model?.inputTokens,
+      read: model?.cacheReadInputTokens,
+      write: model?.cacheCreationInputTokens,
+      output: model?.outputTokens,
+      thinking: model?.thinkingTokens ?? 0,
+    }
+    for (const key of claudeTokenKeys) {
+      const count = counts[key]
+      if (typeof count !== "number" || !Number.isSafeInteger(count) || count < 0) return undefined
+      total[key] += count
+      if (!Number.isSafeInteger(total[key])) return undefined
+    }
+  }
+  return total
 }
 
 async function claudeContextOccupancy(

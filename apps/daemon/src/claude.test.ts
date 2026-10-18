@@ -386,6 +386,58 @@ describe("ClaudeAgentSdkAdapter", () => {
     await adapter.close()
   })
 
+  // modelUsage and total_cost_usd run across the whole query, every model
+  // (subagents included), so a turn is the difference from the previous result.
+  // result.usage is the main agent's loop only.
+  it("counts a turn as the change in Claude's running totals since the last result", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const model = (input: number, read: number, write: number, output: number, thinking: number) => ({
+      inputTokens: input, cacheReadInputTokens: read, cacheCreationInputTokens: write,
+      outputTokens: output, thinkingTokens: thinking, webSearchRequests: 0, costUSD: 0,
+      contextWindow: 200_000, maxOutputTokens: 32_000,
+    })
+    const usageOf = (turnId: string) => events.find((event) => event.type === "usage" && event.turnId === turnId)
+
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    calls[0]!.query.emit({
+      type: "result", subtype: "success", session_id: threadId, is_error: false,
+      usage: { input_tokens: 10, cache_read_input_tokens: 1_000, cache_creation_input_tokens: 200, output_tokens: 50 },
+      modelUsage: { "claude-opus-5": model(10, 1_000, 200, 50, 20) },
+      total_cost_usd: 0.1,
+    } as ClaudeSdkMessage)
+    await waitForDaemon(() => expect(usageOf(first)).toBeDefined())
+    expect(usageOf(first)).toMatchObject({ usage: {
+      inputTokens: 1_210, cachedInputTokens: 1_000, outputTokens: 30, reasoningTokens: 20, totalTokens: 1_260,
+      costSource: "provider-reported", costMicros: 100_000, currency: "USD",
+    } })
+
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    calls[0]!.query.emit({
+      type: "result", subtype: "success", session_id: threadId, is_error: false,
+      usage: { input_tokens: 15, cache_read_input_tokens: 2_000, cache_creation_input_tokens: 100, output_tokens: 70 },
+      modelUsage: {
+        "claude-opus-5": model(25, 3_000, 300, 120, 30),
+        "claude-haiku-5": model(500, 0, 0, 40, 0),
+      },
+      total_cost_usd: 0.26,
+    } as ClaudeSdkMessage)
+    await waitForDaemon(() => expect(usageOf(second)).toBeDefined())
+    expect(usageOf(second)).toMatchObject({ usage: {
+      inputTokens: 2_615, cachedInputTokens: 2_000, outputTokens: 100, reasoningTokens: 10, totalTokens: 2_725,
+      costSource: "provider-reported", costMicros: 160_000, currency: "USD",
+    } })
+    await adapter.close()
+  })
+
   it("completes the turn when Claude context usage does not answer", async () => {
     vi.useFakeTimers()
     const { calls, factory } = factoryHarness()
@@ -2770,6 +2822,43 @@ describe("a result that arrives after its turn was interrupted", () => {
       type: "turn-completed",
       params: { threadId, turnId: second, turn: { id: second, status: "completed" } },
     }))
+    await adapter.close()
+  })
+
+  it("does not charge the next turn with the interrupted turn's requests", async () => {
+    const { calls, factory } = factoryHarness()
+    const ids: ClaudeMessageId[] = [
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222",
+      "33333333-3333-4333-8333-333333333333",
+    ]
+    const adapter = new ClaudeAgentSdkAdapter(factory, () => ids.shift()!)
+    const events: AgentEvent[] = []
+    adapter.onEvent((event) => events.push(event))
+    const threadId = await adapter.startThread({ cwd: "/worktree", runtime: runtime("build") })
+    const first = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "One", runtime: runtime("build") })
+    await adapter.interruptTurn(threadId, first)
+    const second = await adapter.startTurn({ threadId, cwd: "/worktree", prompt: "Two", runtime: runtime("build") })
+    const model = (input: number, output: number) => ({
+      inputTokens: input, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, outputTokens: output,
+      webSearchRequests: 0, costUSD: 0, contextWindow: 200_000, maxOutputTokens: 32_000,
+    })
+
+    calls[0]!.query.emit({
+      type: "result", subtype: "error_during_execution", session_id: threadId, is_error: true,
+      user_message_uuid: first, user_message_uuids: [first],
+      modelUsage: { "claude-opus-5": model(9_000, 300) },
+    } as ClaudeSdkMessage)
+    calls[0]!.query.emit({
+      type: "result", subtype: "success", session_id: threadId, is_error: false,
+      user_message_uuid: second, user_message_uuids: [second],
+      modelUsage: { "claude-opus-5": model(9_400, 320) },
+    } as ClaudeSdkMessage)
+    await waitForDaemon(() => expect(events).toContainEqual(expect.objectContaining({ type: "usage", turnId: second })))
+    expect(events.filter((event) => event.type === "usage")).toEqual([expect.objectContaining({
+      turnId: second,
+      usage: expect.objectContaining({ inputTokens: 400, outputTokens: 20, totalTokens: 420 }),
+    })])
     await adapter.close()
   })
 
