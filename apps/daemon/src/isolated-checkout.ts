@@ -436,7 +436,65 @@ export type IsolatedGit = {
   // Index locks a killed command left, which Domovoi cannot tell are its own:
   // nothing may rewrite the index under one or remove it (ruling Q265).
   readonly indexLocksLeft: readonly string[]
+  // The keys the repository's own config sets (local and worktree scope,
+  // included files among them) that this directory reads otherwise than the
+  // worktree does: blanked, left out, or not carried at all. By default from
+  // the one read of the worktree's config this directory was built from;
+  // `reread` reads the worktree's config again and compares that.
+  heldBack(options?: { reread?: boolean | undefined, signal?: AbortSignal | undefined }): Promise<string[]>
   dispose(): Promise<void>
+}
+
+// The scopes Git lists for the repository's own config, an included file read
+// from it among them.
+const repositoryConfigScopes: ReadonlySet<string> = new Set(["local", "worktree"])
+
+// The repository-scoped keys `isolated` reads otherwise than `worktree`: for
+// each key the repository's own config sets, the directory must read the
+// worktree's effective (last) value and every value the repository gives it.
+// Derived from the two whole configs, so no list of keys decides it: a key
+// a later Git or git-lfs reads, which nothing here carries, is held back too.
+export function heldBackRepositoryKeys(
+  worktree: readonly ConfigEntry[],
+  isolated: readonly { key: string; value: string | undefined }[],
+): string[] {
+  const shown = (value: string | undefined) => value === undefined ? "\0" : value
+  const read = new Map<string, string[]>()
+  for (const { key, value } of isolated) read.set(key, [...read.get(key) ?? [], shown(value)])
+  const effective = new Map<string, string>()
+  for (const { key, value } of worktree) effective.set(key, shown(value))
+  const held = new Set<string>()
+  for (const { scope, key, value } of worktree) {
+    if (!repositoryConfigScopes.has(scope)) continue
+    const values = read.get(key)
+    if (values === undefined || values.at(-1) !== effective.get(key) || !values.includes(shown(value))) held.add(key)
+  }
+  return [...held]
+}
+
+// The whole config the isolated directory reads, as Git lists it there:
+// the snapshot, its own config file and the pins. Decoded strictly.
+async function isolatedConfig(command: string, environment: NodeJS.ProcessEnv, worktree: string): Promise<Array<{ key: string; value: string | undefined }>> {
+  let bytes: Buffer = Buffer.alloc(0)
+  try {
+    bytes = (await execute(command, [...inertRepositoryConfig, "config", "--list", "-z"], {
+      env: environment, cwd: worktree, encoding: "buffer", maxBuffer: 16 * 1024 * 1024,
+    })).stdout
+  } catch (error) {
+    if ((error as { code?: unknown }).code !== 1) throw new RepositoryGitConfigUnreadableError("git-failed", { cause: error })
+  }
+  const entries: Array<{ key: string; value: string | undefined }> = []
+  for (const record of splitBytes(bytes, 0)) {
+    if (record.length === 0) continue
+    const newline = record.indexOf(0x0a)
+    const key = strictUtf8(newline === -1 ? record : record.subarray(0, newline))
+    const value = newline === -1 ? undefined : strictUtf8(record.subarray(newline + 1))
+    if (key === undefined || (newline !== -1 && value === undefined)) {
+      throw new RepositoryGitConfigUnreadableError("git-failed", { detail: "the isolated Git directory reads a setting that is not valid UTF-8" })
+    }
+    entries.push({ key, value })
+  }
+  return entries
 }
 
 // The filter configuration this directory runs with: the source worktree's
@@ -455,14 +513,9 @@ export type IsolatedGit = {
 // reads, an empty one included, wins (ruling Q319). Otherwise (evidence with
 // filters off, or a reviewed value the worktree no longer reads) its driver
 // is pinned absent, no command and not required.
-//
-// refuseHeldBack, for an operation that must not stage around a filter (a
-// person's commit), throws instead of pinning a held-back driver absent:
-// staging without it would store what the filter exists to change.
 function sourceFilterPins(
   entries: readonly ConfigEntry[],
   reviewed: ReadonlyMap<string, string>,
-  refuseHeldBack?: (() => Error) | undefined,
 ): Array<readonly [string, string]> {
   const effective = new Map<string, { scope: string; key: string; value: string }>()
   const drivers = new Set<string>()
@@ -485,7 +538,6 @@ function sourceFilterPins(
     })
     const heldBack = unconfirmed !== undefined
     refuseChangedReview(driverKeys(driver), heldBack ? unconfirmed : undefined, reviewed)
-    if (heldBack && refuseHeldBack) throw refuseHeldBack()
     // Only the keys the source sets: an unset key and an empty one differ to
     // Git (an empty process, unlike none, turns clean and smudge off), so an
     // unset key stays unset, and refuseUnpinnedFilters refuses one this
@@ -789,9 +841,6 @@ export async function openIsolatedGit(input: {
   // Runs before every command and throws to stop it: trust lapsed since the
   // gate that allowed the reviewed definitions.
   beforeCommand?: (() => void) | undefined
-  // Throws instead of holding back a repository filter the gate did not
-  // allow, read from this opening's one read of the worktree's config.
-  refuseHeldBackFilters?: (() => Error) | undefined
   signal?: AbortSignal | undefined
   // `git --version` of the Git binary isolation runs, by its absolute path;
   // a test seam, uncached.
@@ -827,7 +876,7 @@ export async function openIsolatedGit(input: {
   // The gate's policy, one value per key: its last one wins, as at the gate.
   const reviewed = new Map(input.reviewed ?? [])
   refuseChangedPolicy(entries, reviewed)
-  const filterPins = sourceFilterPins(entries, reviewed, input.refuseHeldBackFilters)
+  const filterPins = sourceFilterPins(entries, reviewed)
   const lfsPolicy = sourceLfsPolicy(entries, reviewed)
   pins.push(...filterPins, ...lfsPolicy)
   for (const key of ["lfs.url", "lfs.pushurl"]) {
@@ -921,8 +970,11 @@ export async function openIsolatedGit(input: {
   // worktree's own value: the expected map is the worktree's (ruling Q319).
   const effectivePins = new Map<string, string>()
   for (const [key, value] of pins) effectivePins.set(key, value)
+  // What the directory reads in all, once, for heldBack.
+  let isolatedEntries: Array<{ key: string; value: string | undefined }>
   try {
     await refuseUnpinnedFilters(git.command, environment, worktree, [...effectivePins])
+    isolatedEntries = await isolatedConfig(git.command, environment, worktree)
   } catch (error) {
     await fs.rm(gitDirectory, { recursive: true, force: true })
     await fs.rm(snapshot.directory, { recursive: true, force: true })
@@ -1020,6 +1072,10 @@ export async function openIsolatedGit(input: {
     },
     stream: (args, onStdout, options = {}) => launch(args, options, onStdout),
     indexLocksLeft,
+    async heldBack(options = {}) {
+      const read = options.reread === true ? await worktreeConfig(git, worktree, options.signal ?? signal) : entries
+      return heldBackRepositoryKeys(read, isolatedEntries)
+    },
     // A directory holding a lock whose owner is unknown stays, lock and all.
     // The snapshot goes in every case: a Git still running without it reads
     // no global config, and so no filter definition.

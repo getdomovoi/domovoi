@@ -121,6 +121,53 @@ export type SessionCommitRefusal =
   | "secret-message"
   | "unreadable-paths"
   | "repository-filters"
+  | "held-back-config"
+
+// Repository settings the isolated Git directory may drop for a person's
+// commit, because none changes what the commit stores or starts a program
+// during it. Everything else the directory holds back refuses the commit
+// (refuseHeldBackConfig), a key nothing here names included, so the list only
+// ever lets known keys through and fails closed on new ones. Keys are as Git
+// lists them: section and variable lowercase, a subsection as written.
+// - Repository layout the directory sets for itself: core.repositoryformatversion,
+//   core.bare, core.logallrefupdates, extensions.worktreeconfig,
+//   extensions.refstorage (it has no refs of its own), lfs.repositoryformatversion.
+// - Hooks and fsmonitor, which no daemon Git runs by design: core.hookspath,
+//   core.fsmonitor.
+// - Index and object storage formats and caches, which change how Git keeps
+//   data, not what a tree holds: core.untrackedcache, core.splitindex,
+//   core.preloadindex, core.fscache, core.commitgraph, core.multipackindex,
+//   index.*, pack.*, gc.*, maintenance.*, feature.*.
+// - Programs and settings for other commands, which staging and write-tree
+//   never start or read: core.editor, core.pager, core.sshcommand,
+//   core.askpass, credential.*, http.*, color.*, alias.*, pull.*, push.*,
+//   fetch.*, rerere.*.
+// - Where branches and remotes point, which a commit of the index does not
+//   read: branch.*, remote.*, submodule.* (every submodule entry is listed and
+//   classified with --ignore-submodules=none).
+// - The identity, which the commit reads itself and sets explicitly:
+//   user.name, user.email, author.*, committer.*.
+const commitInertKeys = new Set([
+  "core.repositoryformatversion", "core.bare", "core.logallrefupdates", "extensions.worktreeconfig", "extensions.refstorage",
+  "lfs.repositoryformatversion", "core.hookspath", "core.fsmonitor", "core.untrackedcache", "core.splitindex",
+  "core.preloadindex", "core.fscache", "core.commitgraph", "core.multipackindex", "core.editor", "core.pager",
+  "core.sshcommand", "core.askpass", "user.name", "user.email",
+])
+const commitInertSections = new Set([
+  "index", "pack", "gc", "maintenance", "feature", "credential", "http", "color", "alias", "pull", "push", "fetch",
+  "rerere", "branch", "remote", "submodule", "author", "committer",
+])
+
+function commitInertKey(key: string): boolean {
+  return commitInertKeys.has(key) || commitInertSections.has(key.slice(0, key.indexOf(".")))
+}
+
+// Refuses a person's commit while the isolated directory holds back any
+// repository setting that is not commit-inert.
+function refuseHeldBackConfig(heldBack: readonly string[], branch: string): void {
+  const held = heldBack.filter((key) => !commitInertKey(key))
+  if (held.length > 0) throw new SessionCommitRefusedError("held-back-config", branch, held.length, held)
+}
 
 // Why Domovoi did not commit. Every refusal leaves the worktree, its index and
 // every ref as they were. A secret file is counted, never named: the thread
@@ -128,14 +175,14 @@ export type SessionCommitRefusal =
 export class SessionCommitRefusedError extends Error {
   readonly reason: SessionCommitRefusal
 
-  constructor(reason: SessionCommitRefusal, branch = "its session branch", count = 0) {
-    super(sessionCommitRefusalText(reason, branch, count))
+  constructor(reason: SessionCommitRefusal, branch = "its session branch", count = 0, keys: readonly string[] = []) {
+    super(sessionCommitRefusalText(reason, branch, count, keys))
     this.name = "SessionCommitRefusedError"
     this.reason = reason
   }
 }
 
-function sessionCommitRefusalText(reason: SessionCommitRefusal, branch: string, count: number): string {
+function sessionCommitRefusalText(reason: SessionCommitRefusal, branch: string, count: number, keys: readonly string[]): string {
   switch (reason) {
     case "not-session-worktree":
       return "Domovoi commits only in a session's own worktree, and this session's worktree is not one Domovoi made for it. Nothing was committed."
@@ -153,6 +200,12 @@ function sessionCommitRefusalText(reason: SessionCommitRefusal, branch: string, 
       return "Git named a changed path Domovoi cannot read as UTF-8, so it could not check every file. Nothing was committed."
     case "repository-filters":
       return "This repository's own Git config sets a filter, and staging would run it. Domovoi runs no program a repository names when it commits, and committing without the filter would commit what it exists to change, so nothing was committed. Commit in your own checkout."
+    case "held-back-config": {
+      // Key names only, redacted as any repository config text is; values never.
+      const shown = keys.slice(0, 3).map((key) => redactInventoryText(key, inventoryFieldCaps.detail)).join(", ")
+      const more = count > 3 ? ` and ${count - 3} more` : ""
+      return `This repository's own Git config sets ${shown}${more}, which Domovoi's isolated Git does not read as Git would, so the commit could store something other than Git would. Nothing was committed. Commit in your own checkout, or take the setting out and commit again.`
+    }
   }
 }
 
@@ -1527,9 +1580,6 @@ export class GitWorkspaceService implements WorkspaceService {
     await this.#afterRepositoryFilterGate?.(worktree)
     const isolated = await openIsolatedGit({
       worktree, reviewed: gate.open ? gate.reviewed : [], worktreeIndex: true, beforeCommand: this.#confirm(gate), signal,
-      // A filter that appeared after the gate read is held back by blanking
-      // it; a person's commit refuses instead (review R4.2, ruling Q139).
-      refuseHeldBackFilters: refuseRepositoryFilters,
     })
     try {
       return await work(isolated)
@@ -2080,19 +2130,22 @@ export class GitWorkspaceService implements WorkspaceService {
         if (!await onSessionBranch()) throw new SessionCommitRefusedError("not-session-branch", branch)
         const head = await git(path, ["rev-parse", "-q", "--verify", `${ref}^{commit}`], signal).catch(() => "")
         if (head !== expectedHead) throw new SessionCommitRefusedError("head-moved", branch)
+        // Whatever the isolated directory holds back from the repository's
+        // own config could make the commit store something other than Git
+        // would (a blanked filter stores plaintext), so the commit refuses,
+        // decided from the config read the directory was built from (ruling
+        // Q140), before anything is staged.
+        refuseHeldBackConfig(await isolated.heldBack({ signal }), branch)
         outcome.made = await this.#commitWorktree(path, isolated, {
           message: request.message,
           branch: { ref, head, stillCurrent: onSessionBranch },
           author: await personIdentity(path, signal),
         refuse: async (index, changedFiles) => {
           if (changedFiles.length === 0) throw new SessionCommitRefusedError("nothing-to-commit", branch)
-          // The isolated directory staged with the config it read when it
-          // opened. A filter the repository's config gained since would have
-          // been left out, so the config is read again once staging is done
-          // and the commit refused if it now names one (review R4.2).
-          if (repositoryGitFilters(await readGitFilterSettings(path, signal)).length > 0) {
-            throw new SessionCommitRefusedError("repository-filters", branch)
-          }
+          // The directory staged with the config it read when it opened; a
+          // setting the repository gained since was not applied. So the
+          // worktree's config is read again now, before anything is written.
+          refuseHeldBackConfig(await isolated.heldBack({ reread: true, signal }), branch)
           // The paths whose contents enter the commit: a deletion carries no
           // contents, so dropping a tracked secret file is allowed. Read as
           // raw bytes, so a path that is not UTF-8 is refused, never guessed.

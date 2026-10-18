@@ -249,49 +249,122 @@ describe("GitWorkspaceService.commit", () => {
     expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
   })
 
-  // Walk finding F10, review R4.2 (ruling Q139): the isolated directory holds
-  // back a repository filter its gate did not allow by blanking it, which for
-  // a commit would stage what the filter exists to change (an encryption
-  // filter's plaintext). A filter that appears after the gate read refuses
-  // the commit instead.
-  describe("a repository filter that appears after the gate read", () => {
-    // The seam runs `late` once it is armed, after the setup below.
-    async function filtered(prefix: string, seam: "afterRepositoryFilterGate" | "afterCheckpointStaging") {
-      const armed: { late?: () => Promise<void> } = {}
-      const made = await sessionWorktree(prefix, "session-commit", { [seam]: async () => { await armed.late?.() } })
-      const marker = join(made.scratch, "filter-ran").replaceAll("\\", "/")
+  // Walk finding F10, reviews R4.2 and R5.1, ruling Q140: the isolated Git
+  // directory reads none of the repository's own config but what it carries.
+  // Whatever it holds back from that config (a filter driver it blanks, a Git
+  // LFS group it leaves out, any key it drops) could make a commit store
+  // something other than Git would, so a person's commit refuses whenever the
+  // directory reads a repository value other than the worktree does, decided
+  // from the one config read the directory is built from and again once
+  // staging is done. Only keys that change nothing a commit stores or runs
+  // are let through.
+  describe("repository config the isolated directory holds back", () => {
+    // The seams run `armed.<seam>` once armed, after the setup below.
+    async function heldBack(prefix: string) {
+      const armed: { gate?: () => Promise<void>, staged?: () => Promise<void> } = {}
+      const made = await sessionWorktree(prefix, "session-commit", {
+        afterRepositoryFilterGate: async () => { await armed.gate?.() },
+        afterCheckpointStaging: async () => { await armed.staged?.() },
+      })
+      const marker = join(made.scratch, "program-ran").replaceAll("\\", "/")
       const script = join(made.scratch, "encrypt.sh").replaceAll("\\", "/")
       await writeFile(script, `echo ran >> "${marker}"\ntr a-z n-za-m\n`)
       await writeFile(join(made.workspace.path, ".gitattributes"), "notes.txt filter=crypt\n")
       await writeFile(join(made.workspace.path, "notes.txt"), "plain words\n")
-      const filterLines = `[filter "crypt"]\n\tclean = sh ${script}\n\tsmudge = sh ${script}\n\trequired = true\n`
-      return { ...made, armed, marker, filterLines }
+      const config = join(made.repositoryPath, ".git", "config")
+      const append = async (lines: string) => { await writeFile(config, `${await readFile(config, "utf8")}${lines}`) }
+      const commit = () => refusal(made.service.commit(made.workspace.path, {
+        repositoryPath: made.repositoryPath, sessionId: made.sessionId, message: "feat: notes", expectedHead: made.workspace.baseCommit,
+      }))
+      const untouched = async () => {
+        await expect(readFile(marker, "utf8")).rejects.toThrow()
+        expect(await git(made.workspace.path, "rev-parse", `domovoi/${made.sessionId}`)).toBe(made.workspace.baseCommit)
+      }
+      return { ...made, armed, script, config, append, commit, untouched }
     }
 
-    it("refuses when an included config file gains the filter between the gate and the isolated directory", async () => {
-      const { repositoryPath, service, workspace, sessionId, scratch, armed, marker, filterLines } = await filtered("domovoi-commit-late-include-", "afterRepositoryFilterGate")
+    it("refuses when an included config file gains a filter between the gate and the isolated directory", async () => {
+      const { repositoryPath, scratch, armed, script, commit, untouched } = await heldBack("domovoi-commit-late-include-")
       const included = join(scratch, "included.gitconfig")
       await writeFile(included, "")
       await git(repositoryPath, "config", "include.path", included)
-      armed.late = () => writeFile(included, filterLines)
+      armed.gate = () => writeFile(included, `[filter "crypt"]\n\tclean = sh ${script}\n\tsmudge = sh ${script}\n\trequired = true\n`)
 
-      const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: notes", expectedHead: workspace.baseCommit }))
+      const error = await commit()
 
-      expect(error.reason).toBe("repository-filters")
-      await expect(readFile(marker, "utf8")).rejects.toThrow()
-      expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
+      expect(error.reason).toBe("held-back-config")
+      expect(error.message).toContain("filter.crypt.clean")
+      await untouched()
     })
 
-    it("refuses when the repository's config gains the filter between the isolated directory and the commit", async () => {
-      const { repositoryPath, service, workspace, sessionId, armed, marker, filterLines } = await filtered("domovoi-commit-late-config-", "afterCheckpointStaging")
-      const config = join(repositoryPath, ".git", "config")
-      armed.late = async () => { await writeFile(config, `${await readFile(config, "utf8")}${filterLines}`) }
+    it("refuses when the repository's config gains a filter after the isolated directory staged", async () => {
+      const { armed, append, script, commit, untouched } = await heldBack("domovoi-commit-late-config-")
+      armed.staged = () => append(`[filter "crypt"]\n\tclean = sh ${script}\n\trequired = true\n`)
 
-      const error = await refusal(service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: notes", expectedHead: workspace.baseCommit }))
+      expect((await commit()).reason).toBe("held-back-config")
+      await untouched()
+    })
 
-      expect(error.reason).toBe("repository-filters")
-      await expect(readFile(marker, "utf8")).rejects.toThrow()
-      expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(workspace.baseCommit)
+    // R5.1: present when the directory is built, gone before the second read.
+    it("refuses a Git LFS extension present when the directory opens, even when it is gone after staging", async () => {
+      const { config, armed, append, script, commit, untouched } = await heldBack("domovoi-commit-lfs-extension-")
+      const before = await readFile(config, "utf8")
+      armed.gate = () => append(`[lfs "extension.crypt"]\n\tclean = sh ${script}\n\tsmudge = sh ${script}\n\tpriority = 0\n`)
+      armed.staged = () => writeFile(config, before)
+
+      const error = await commit()
+
+      expect(error.reason).toBe("held-back-config")
+      expect(error.message).toContain("lfs.extension.crypt.clean")
+      await untouched()
+    })
+
+    it("refuses a Git LFS custom transfer that appears after the gate", async () => {
+      const { armed, append, script, commit, untouched } = await heldBack("domovoi-commit-lfs-transfer-")
+      armed.gate = () => append(`[lfs "customtransfer.crypt"]\n\tpath = sh ${script}\n`)
+
+      expect((await commit()).reason).toBe("held-back-config")
+      await untouched()
+    })
+
+    // Fail closed: a key Domovoi has never classified refuses, named, so a
+    // setting a later Git or git-lfs reads cannot slip past.
+    it.each([
+      ["a key Domovoi does not know", "[domovoi-test]\n\tunknown = 1\n", "domovoi-test.unknown"],
+      ["a request to sign commits, which Domovoi does not do", "[commit]\n\tgpgsign = true\n", "commit.gpgsign"],
+      // The key is shown as repository config text always is, redacted.
+      ["a URL rewrite the directory does not carry", "[url \"https://mirror.invalid/\"]\n\tinsteadOf = https://example.invalid/\n", "url.https://mirror.invalid/"],
+    ])("refuses %s, set from the start", async (_name, lines, key) => {
+      const { append, commit, untouched } = await heldBack("domovoi-commit-unknown-key-")
+      await append(lines)
+
+      const error = await commit()
+
+      expect(error.reason).toBe("held-back-config")
+      expect(error.message).toContain(key)
+      await untouched()
+    })
+
+    it("refuses a key that appears after the isolated directory staged", async () => {
+      const { armed, append, commit, untouched } = await heldBack("domovoi-commit-late-key-")
+      armed.staged = () => append("[domovoi-test]\n\tunknown = 1\n")
+
+      expect((await commit()).reason).toBe("held-back-config")
+      await untouched()
+    })
+
+    it("commits past dropped settings that change nothing a commit stores or runs", async () => {
+      const { repositoryPath, service, workspace, sessionId } = await sessionWorktree("domovoi-commit-inert-keys-")
+      for (const [key, value] of [
+        ["core.hooksPath", ".husky"], ["remote.origin.url", "ext::sh -c true"], ["remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],
+        ["branch.main.remote", "origin"], ["branch.main.merge", "refs/heads/main"], ["pull.rebase", "true"], ["gc.auto", "0"],
+        ["user.name", "Dana Person"], ["user.email", "dana@example.invalid"], ["lfs.repositoryformatversion", "0"],
+      ] as const) await git(repositoryPath, "config", key, value)
+      await writeFile(join(workspace.path, "README.md"), "after\n")
+
+      const made = await service.commit(workspace.path, { repositoryPath, sessionId, message: "feat: x", expectedHead: workspace.baseCommit })
+
+      expect(await git(workspace.path, "rev-parse", `domovoi/${sessionId}`)).toBe(made.commit)
     })
   })
 

@@ -45,7 +45,23 @@ session's work from the Changes tab instead. The daemon:
   nothing. Unlike a checkpoint, it refuses while the repository's own config sets a
   filter, a reviewed and trusted one included: it would have to run it, and
   committing without it would commit what the filter exists to change. Filters in
-  the person's global or system config run as they do for every Git command;
+  the person's global or system config, and the exact `git lfs install` lines in
+  the repository's own config (ruling Q207 A, kept for commits by Q139), run as
+  they do for every Git command;
+- refuses whenever the isolated directory holds back anything from the
+  repository's own config (local and worktree scope, included files among them):
+  a filter driver it blanks, a Git LFS extension or transfer it leaves out, or any
+  key it does not carry (ruling Q140). This is derived, not listed: for every key
+  the repository sets, the directory must read the worktree's effective value and
+  every value the repository gives it, compared between the worktree's whole
+  config and the directory's whole config. It is decided from the one config read
+  the directory is built from, and again once staging is done, so a setting that
+  appears after the gate read (an include edited, a config change in between)
+  refuses too. The only list is of keys known to change nothing a commit stores or
+  runs (`commitInertKeys` in `workspace.ts`: repository layout, hooks and
+  fsmonitor, index and storage formats, other commands' programs, branches and
+  remotes, the identity), so a key nothing names, a later Git's included, refuses.
+  The refusal names the keys, redacted, never their values;
 - refuses the whole commit when a path it would add or change names a credential,
   a private key or an environment file, submodule entries the repository asks Git
   to ignore included, counting them without naming them, and refuses a message the
