@@ -4,10 +4,19 @@ import { DropdownMenu as DropdownMenuPrimitive } from "radix-ui"
 import { cn } from "@/lib/utils"
 import { CheckIcon, ChevronRightIcon } from "lucide-react"
 
+// Whether the menu is modal, which Radix keeps to itself. The content reads
+// it to tell an outside click that could not reach the page (modal) from one
+// that landed on another control (not modal).
+const DropdownMenuModalContext = React.createContext(true)
+
 function DropdownMenu({
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Root>) {
-  return <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />
+  return (
+    <DropdownMenuModalContext.Provider value={props.modal ?? true}>
+      <DropdownMenuPrimitive.Root data-slot="dropdown-menu" {...props} />
+    </DropdownMenuModalContext.Provider>
+  )
 }
 
 function DropdownMenuPortal({
@@ -35,6 +44,8 @@ function DropdownMenuTrigger({
 // A close whose last input was the pointer still returns focus to the
 // trigger, so the next Tab starts from it, but asks the browser not to draw
 // it as keyboard focus. A keyboard close is left to Radix, ring and all.
+// A menu that is not modal lets an outside click reach the page, so a close
+// by a click outside it leaves focus where the person clicked, as Radix does.
 function useClosedByPointer(): React.RefObject<boolean> {
   const closedByPointer = React.useRef(false)
   React.useEffect(() => {
@@ -60,20 +71,30 @@ function DropdownMenuContent({
   align = "start",
   sideOffset = 4,
   onCloseAutoFocus,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DropdownMenuPrimitive.Content>) {
   const closedByPointer = useClosedByPointer()
+  const modal = React.useContext(DropdownMenuModalContext)
+  const interactedOutside = React.useRef(false)
   return (
     <DropdownMenuPrimitive.Portal>
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
         align={align}
+        onInteractOutside={(event) => {
+          onInteractOutside?.(event)
+          interactedOutside.current = true
+        }}
         onCloseAutoFocus={(event) => {
+          const outside = interactedOutside.current
+          interactedOutside.current = false
           onCloseAutoFocus?.(event)
-          // A caller that moved focus itself, or a pointer that already put
-          // focus somewhere else, keeps Radix's own handling.
-          if (event.defaultPrevented || !closedByPointer.current) return
+          // A caller that moved focus itself, a pointer that already put
+          // focus somewhere else, or a click outside a menu that is not
+          // modal keeps Radix's own handling.
+          if (event.defaultPrevented || !closedByPointer.current || (outside && !modal)) return
           const active = document.activeElement
           if (active && active !== document.body && active.isConnected) return
           const content = event.target instanceof HTMLElement ? event.target : null
