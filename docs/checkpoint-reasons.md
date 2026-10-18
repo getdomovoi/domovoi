@@ -42,7 +42,10 @@ session's work from the Changes tab instead. The daemon:
   it with or without Auto, since the commit is always the person's own action;
 - stages and commits through the isolated Git directory checkpoints use, so no
   repository hook runs and no repository config can start a program, and signs
-  nothing;
+  nothing. Unlike a checkpoint, it refuses while the repository's own config sets a
+  filter, a reviewed and trusted one included: it would have to run it, and
+  committing without it would commit what the filter exists to change. Filters in
+  the person's global or system config run as they do for every Git command;
 - refuses the whole commit when a path it would add or change names a credential,
   a private key or an environment file, submodule entries the repository asks Git
   to ignore included, counting them without naming them, and refuses a message the

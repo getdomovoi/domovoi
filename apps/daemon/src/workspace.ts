@@ -120,6 +120,7 @@ export type SessionCommitRefusal =
   | "secret-paths"
   | "secret-message"
   | "unreadable-paths"
+  | "repository-filters"
 
 // Why Domovoi did not commit. Every refusal leaves the worktree, its index and
 // every ref as they were. A secret file is counted, never named: the thread
@@ -150,6 +151,8 @@ function sessionCommitRefusalText(reason: SessionCommitRefusal, branch: string, 
       return "The commit message looks like it holds a secret, and a message stays in the branch's history. Nothing was committed. Take the secret out of the message, then commit."
     case "unreadable-paths":
       return "Git named a changed path Domovoi cannot read as UTF-8, so it could not check every file. Nothing was committed."
+    case "repository-filters":
+      return "This repository's own Git config sets a filter, and staging would run it. Domovoi runs no program a repository names when it commits, and committing without the filter would commit what it exists to change, so nothing was committed. Commit in your own checkout."
   }
 }
 
@@ -1509,9 +1512,14 @@ export class GitWorkspaceService implements WorkspaceService {
     signal: AbortSignal | undefined,
     work: (isolated: IsolatedGit) => Promise<T>,
     whenRefused: "refuse" | "filters-off" = "refuse",
+    // A person's commit runs no filter the repository's own config sets, a
+    // reviewed and trusted one included; it is refused instead, since staging
+    // without the filter would commit what the filter exists to change.
+    refuseRepositoryFilters?: () => Error,
   ): Promise<T> {
     await this.#refuseLazyFetch(worktree, signal)
     const gate = await this.#gate(anchor, worktree, signal)
+    if (refuseRepositoryFilters && gate.filters.length > 0) throw refuseRepositoryFilters()
     if (!gate.open && whenRefused === "refuse") throw new RepositoryFilterRefusedError(gate.filters, { reason: gate.reason, projectId: gate.projectId })
     // Evidence keeps out of submodule worktrees (--ignore-submodules=dirty);
     // every other operation may stage, which looks into each one.
@@ -2106,7 +2114,7 @@ export class GitWorkspaceService implements WorkspaceService {
         commit, branch, changedFiles, ...(afterCommitError === undefined ? {} : { afterCommitError }),
       }))
         return outcome.made
-      })
+      }, "refuse", () => new SessionCommitRefusedError("repository-filters", branch))
     } catch (error) {
       // Once the branch has moved the commit exists, so a failure after it,
       // such as cleaning up the isolated directory, is reported with it and
