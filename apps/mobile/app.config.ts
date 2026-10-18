@@ -40,6 +40,7 @@ export default {
     splashScreen,
     "./plugins/with-gradle-daemon-jdk.js",
     "./plugins/with-source-built-expo-modules.js",
+    "./plugins/with-pnpm-node-path.js",
     ...app.expo.plugins,
   ],
 }
