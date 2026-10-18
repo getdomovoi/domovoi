@@ -311,6 +311,23 @@ describe("durable usage accounting", () => {
     expect(ledger.transferSession(dispatch.sessionId)).toHaveLength(2)
   })
 
+  // The Codex adapter reports each request as a turn observation that is not
+  // final; a finished turn counted that way is partial, never complete.
+  it("records a turn whose only report is not final as partial", () => {
+    const ledger = new UsageLedger()
+    onTestFinished(() => ledger.close())
+    const codex = { ...dispatch, provider: "codex" }
+    ledger.begin(codex)
+    const request = (inputTokens: number) => ({
+      usage: normalizeUsage({ inputTokens, outputTokens: 2 }),
+      source: { kind: "turn" as const, tokens: "reported" as const, final: false },
+    })
+    ledger.observe(codex, request(40))
+    ledger.observe(codex, request(60))
+    ledger.finish(codex, "completed")
+    expect(ledger.session(codex.sessionId)).toMatchObject({ totalTokens: 62, coverage: { complete: 0, partial: 1 } })
+  })
+
   it("marks invalid and missing reports as partial instead of reporting complete zero usage", () => {
     const ledger = new UsageLedger()
     onTestFinished(() => ledger.close())

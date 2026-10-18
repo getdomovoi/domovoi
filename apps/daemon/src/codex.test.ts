@@ -2274,7 +2274,9 @@ describe("CodexAppServerAdapter", () => {
     await adapter.close()
   })
 
-  it("emits current context from Codex token-usage notifications", async () => {
+  // `last` is one model request, not the turn, so a Codex turn's count is
+  // only part of what it used, and the ledger must record it as partial.
+  it("emits current context from Codex token-usage notifications, as a partial turn count", async () => {
     const transport = new FakeTransport()
     const event = vi.fn()
     const adapter = new CodexAppServerAdapter(() => transport)
@@ -2322,11 +2324,12 @@ describe("CodexAppServerAdapter", () => {
         contextWindowTokens: 200_000,
         costSource: "unavailable",
       },
+      source: { kind: "turn", tokens: "reported", final: false },
     })
     await adapter.close()
   })
 
-  it("counts every request a Codex turn made, not only its last one", async () => {
+  it("drops counters that do not add up instead of ending the transport", async () => {
     const transport = new FakeTransport()
     const event = vi.fn()
     const adapter = new CodexAppServerAdapter(() => transport)
@@ -2334,179 +2337,14 @@ describe("CodexAppServerAdapter", () => {
     const connecting = adapter.connect()
     transport.receive({ id: 1, result: {} })
     await connecting
-    const breakdown = (input: number, cached: number, output: number, reasoning: number) => ({
-      totalTokens: input + output, inputTokens: input, cachedInputTokens: cached,
-      outputTokens: output, reasoningOutputTokens: reasoning,
-    })
-    const update = (turnId: string, total: ReturnType<typeof breakdown>, last: ReturnType<typeof breakdown>) => {
-      transport.receive({
-        method: "thread/tokenUsage/updated",
-        params: { threadId: "thread-1", turnId, tokenUsage: { total, last, modelContextWindow: 200_000 } },
-      })
-    }
-    const usageFor = (turnId: string) => event.mock.calls
-      .map(([value]) => value as { type: string; turnId?: string; usage?: unknown })
-      .filter((value) => value.type === "usage" && value.turnId === turnId)
-      .at(-1)?.usage
+    const broken = { totalTokens: 10, inputTokens: 10, cachedInputTokens: 20, outputTokens: 0, reasoningOutputTokens: 0 }
 
-    // An earlier turn on this thread already spent 50,000 input tokens.
-    update("turn-1", breakdown(50_000, 0, 1_000, 0), breakdown(50_000, 0, 1_000, 0))
-    // turn-2 makes two requests. Codex reports each one as `last` and adds it to `total`.
-    update("turn-2", breakdown(110_000, 40_000, 1_500, 100), breakdown(60_000, 40_000, 500, 100))
-    update("turn-2", breakdown(180_000, 95_000, 1_700, 100), breakdown(70_000, 55_000, 200, 0))
-    // A repeated notification with the same counters adds nothing.
-    update("turn-2", breakdown(180_000, 95_000, 1_700, 100), breakdown(70_000, 55_000, 200, 0))
-
-    expect(usageFor("turn-2")).toEqual({
-      inputTokens: 130_000,
-      cachedInputTokens: 95_000,
-      outputTokens: 600,
-      reasoningTokens: 100,
-      totalTokens: 130_700,
-      // Context stays the last request's own size.
-      contextTokens: 70_200,
-      contextWindowTokens: 200_000,
-      costSource: "unavailable",
-    })
-
-    // The next turn starts from the total turn-2 ended on.
-    update("turn-3", breakdown(250_200, 95_000, 1_800, 100), breakdown(70_200, 0, 100, 0))
-    expect(usageFor("turn-3")).toMatchObject({ inputTokens: 70_200, outputTokens: 100, totalTokens: 70_300 })
-    await adapter.close()
-  })
-
-  it("starts a new app-server's counting afresh rather than from the old one's total", async () => {
-    const first = new FakeTransport()
-    const second = new FakeTransport()
-    const transports = [first, second]
-    const event = vi.fn()
-    const adapter = new CodexAppServerAdapter(() => transports.shift()!)
-    adapter.onEvent(event)
-    const connecting = adapter.connect()
-    first.receive({ id: 1, result: {} })
-    await connecting
-    const breakdown = (input: number, output: number) => ({
-      totalTokens: input + output, inputTokens: input, cachedInputTokens: 0, outputTokens: output, reasoningOutputTokens: 0,
-    })
-    const update = (transport: FakeTransport, turnId: string, total: ReturnType<typeof breakdown>, last: ReturnType<typeof breakdown>) => {
-      transport.receive({
-        method: "thread/tokenUsage/updated",
-        params: { threadId: "thread-1", turnId, tokenUsage: { total, last, modelContextWindow: 200_000 } },
-      })
-    }
-    update(first, "turn-1", breakdown(100, 0), breakdown(100, 0))
-    first.fail(new Error("Codex app-server exited with code 1"))
-    const reconnecting = adapter.connect()
-    second.receive({ id: 2, result: {} })
-    await reconnecting
-
-    // The new app-server counts from zero: its first request is 200 tokens.
-    update(second, "turn-2", breakdown(200, 0), breakdown(200, 0))
-    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
-      type: "usage", turnId: "turn-2", usage: expect.objectContaining({ inputTokens: 200, totalTokens: 200 }),
-    }))
-    await adapter.close()
-  })
-
-  it("reports the last request when the running total does not add up, and keeps the connection", async () => {
-    const transport = new FakeTransport()
-    const event = vi.fn()
-    const adapter = new CodexAppServerAdapter(() => transport)
-    adapter.onEvent(event)
-    const connecting = adapter.connect()
-    transport.receive({ id: 1, result: {} })
-    await connecting
-    const breakdown = (input: number, cached: number) => ({
-      totalTokens: input, inputTokens: input, cachedInputTokens: cached, outputTokens: 0, reasoningOutputTokens: 0,
-    })
-    const update = (turnId: string, total: ReturnType<typeof breakdown>, last: ReturnType<typeof breakdown>) => {
-      transport.receive({
-        method: "thread/tokenUsage/updated",
-        params: { threadId: "thread-1", turnId, tokenUsage: { total, last, modelContextWindow: 200_000 } },
-      })
-    }
-    update("turn-1", breakdown(100, 0), breakdown(100, 0))
-    // Cached input grew by 100 while input grew by 50: no turn can have done that.
-    expect(() => update("turn-2", breakdown(150, 100), breakdown(50, 50))).not.toThrow()
-    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
-      type: "usage", turnId: "turn-2", usage: expect.objectContaining({ inputTokens: 50, cachedInputTokens: 50 }),
-    }))
-    // A notification without a running total reports its request alone and
-    // leaves no start behind, so the next running total is not differenced
-    // against a total from before it.
-    transport.receive({
+    expect(() => transport.receive({
       method: "thread/tokenUsage/updated",
-      params: { threadId: "thread-1", turnId: "turn-4", tokenUsage: { last: breakdown(200, 0), modelContextWindow: 200_000 } },
-    })
-    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
-      type: "usage", turnId: "turn-4", usage: expect.objectContaining({ inputTokens: 200 }),
-    }))
-    update("turn-5", breakdown(650, 100), breakdown(300, 0))
-    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
-      type: "usage", turnId: "turn-5", usage: expect.objectContaining({ inputTokens: 300 }),
-    }))
-    // Counters no normalizer accepts are dropped, not thrown into the transport,
-    // and they leave no baseline for the next update to difference against.
-    const before = event.mock.calls.length
-    expect(() => update("turn-3", breakdown(10, 20), breakdown(10, 20))).not.toThrow()
-    expect(event.mock.calls.length).toBe(before)
-    update("turn-6", breakdown(700, 120), breakdown(50, 20))
-    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
-      type: "usage", turnId: "turn-6", usage: expect.objectContaining({ inputTokens: 50, cachedInputTokens: 20 }),
-    }))
+      params: { threadId: "thread-1", turnId: "turn-1", tokenUsage: { total: broken, last: broken, modelContextWindow: 200_000 } },
+    })).not.toThrow()
+    expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ type: "usage" }))
     expect(event).not.toHaveBeenCalledWith(expect.objectContaining({ type: "provider-disconnected" }))
-    await adapter.close()
-  })
-
-  it("ignores a stale report from an earlier turn instead of counting from it", async () => {
-    const transport = new FakeTransport()
-    const event = vi.fn()
-    const adapter = new CodexAppServerAdapter(() => transport)
-    adapter.onEvent(event)
-    const connecting = adapter.connect()
-    transport.receive({ id: 1, result: {} })
-    await connecting
-    const breakdown = (input: number) => ({
-      totalTokens: input, inputTokens: input, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0,
-    })
-    const update = (turnId: string, total: number, last: number) => {
-      transport.receive({
-        method: "thread/tokenUsage/updated",
-        params: { threadId: "thread-1", turnId, tokenUsage: { total: breakdown(total), last: breakdown(last), modelContextWindow: 200_000 } },
-      })
-    }
-    update("turn-a", 100, 100)
-    update("turn-b", 150, 50)
-    const before = event.mock.calls.length
-    update("turn-a", 100, 100)
-    expect(event.mock.calls.length).toBe(before)
-    update("turn-c", 200, 50)
-    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
-      type: "usage", turnId: "turn-c", usage: expect.objectContaining({ inputTokens: 50 }),
-    }))
-    await adapter.close()
-  })
-
-  // The schema requires both counters; a notification missing one still says
-  // something, but not the whole turn.
-  it("marks a turn counted from a request alone as partly reported", async () => {
-    const transport = new FakeTransport()
-    const event = vi.fn()
-    const adapter = new CodexAppServerAdapter(() => transport)
-    adapter.onEvent(event)
-    const connecting = adapter.connect()
-    transport.receive({ id: 1, result: {} })
-    await connecting
-    transport.receive({
-      method: "thread/tokenUsage/updated",
-      params: { threadId: "thread-1", turnId: "turn-1", tokenUsage: {
-        last: { totalTokens: 40, inputTokens: 40, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 },
-        modelContextWindow: 200_000,
-      } },
-    })
-    expect(event).toHaveBeenLastCalledWith(expect.objectContaining({
-      type: "usage", turnId: "turn-1", source: { kind: "turn", tokens: "reported", final: false },
-    }))
     await adapter.close()
   })
 
