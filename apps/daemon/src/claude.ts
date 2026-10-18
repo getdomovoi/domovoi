@@ -769,7 +769,7 @@ export class ClaudeAgentSdkAdapter implements AgentAdapter {
         : "Domovoi cannot tell which files this command reads"
     const itemId = hookInput.tool_use_id
     if (session.runtime.permissionMode === "ask") {
-      // Walk F18: the reason given is the rule that decided, in the hook text
+      // Walk F18, ruling Q136: the reason given is the rule that decided, in the hook text
       // Claude reads and on the card alike. A command Domovoi cannot confirm
       // only reads is refused by Ask's read-only rule whatever paths it names,
       // so that rule comes first; a read it can place is refused only because
