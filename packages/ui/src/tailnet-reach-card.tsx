@@ -34,7 +34,9 @@ export type TailnetReachController = {
   report: TailnetReachReport | undefined
   readError: string | undefined
   listener: TailnetListenerStatus | undefined
-  running: { direction: Direction; renew: boolean } | undefined
+  // again: a turn-on started while no certificate could be read, so it gets
+  // one rather than renewing it; held for the whole change (PR #877, P3).
+  running: { direction: Direction; renew: boolean; again?: boolean } | undefined
   failure: { direction: Direction; outcome: Failure } | undefined
   // Q439 B: a change is done, but no status has answered since it; with
   // the directory holding the files a turn-off could not delete, if any.
@@ -50,6 +52,15 @@ export type TailnetReachController = {
   // into view and marks itself for a moment on each one.
   revealed: number
   reveal(): void
+}
+
+// Walk F11: on, yet neither the desktop nor the daemon reads a certificate
+// expiry: the stored certificate is missing or unreadable, as when the
+// profile directory was replaced while the record, kept with the app, stayed.
+// Turning on again then gets a certificate rather than renewing one.
+function certificateUnread(report: TailnetReachReport | undefined, listener: TailnetListenerStatus | undefined): boolean {
+  return report?.state === "on" && report.certificateExpiresAt === undefined
+    && (listener === undefined || listener.state === "off" || listener.certificateExpiresAt === undefined)
 }
 
 // How often an open card reads the switch and tailnet.status again.
@@ -210,7 +221,7 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
     const mine = ++changes.current
     changing.current = true
     setFailure(undefined)
-    setRunning({ direction, renew: direction === "on" && report?.state === "on" })
+    setRunning({ direction, renew: direction === "on" && report?.state === "on", again: direction === "on" && certificateUnread(report, listener) })
     let outcome: TailnetReachOutcome
     try {
       outcome = parseTailnetReachOutcome(await current.act(direction), direction)
@@ -248,7 +259,7 @@ export function useTailnetReach(source: TailnetReachSource | undefined): Tailnet
     changing.current = false
     setRunning(undefined)
     return outcome
-  }, [listen, read, report?.state])
+  }, [listen, listener, read, report])
 
   const check = useCallback(() => { setFailure(undefined); read() }, [read])
   const turnOn = useCallback(() => change("on"), [change])
@@ -375,12 +386,10 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
   const listening = listener?.state === "listening"
   const notAnswering = isOn && listener !== undefined && !listening
   const refusedListener = isOn && listener?.state === "refused" ? listener : undefined
-  // Walk F11: on, yet neither the desktop nor the daemon reads a certificate
-  // expiry: the stored certificate is missing or unreadable, as when the
-  // profile directory was replaced while the record, kept with the app, stayed.
-  // Turning on again then gets a certificate rather than renewing one.
-  const noCertificate = isOn && named?.certificateExpiresAt === undefined
-    && (listener === undefined || listener.state === "off" || listener.certificateExpiresAt === undefined)
+  const noCertificate = certificateUnread(report, listener)
+  // One operation, one name and one button (PR #877, P2): the refusal alert
+  // carries it when both alerts are up.
+  const recover = noCertificate ? "Get the certificate again" : "Renew now"
   const unconfirmed = isOn && listener === undefined
   // Re-review of 10dba4a2 (P3-2): off here, yet the daemon still listens, as
   // after a turn-on that ended with the service installed but not reached.
@@ -391,7 +400,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
   const undeleted = report ? report.undeleted : unread?.undeleted
 
   const [tone, label] = running
-    ? ["bg-primary", running.direction === "off" ? "Turning off" : running.renew ? (noCertificate ? "Getting the certificate" : "Renewing") : "Turning on"]
+    ? ["bg-primary", running.direction === "off" ? "Turning off" : running.renew ? (running.again ? "Getting the certificate" : "Renewing") : "Turning on"]
     : stoppedOn ? ["bg-destructive", "Stopped"]
       : !report ? ["bg-faint", readError || unread ? "Not known" : "Reading"]
         : report.state === "none" ? ["bg-faint", "No tailnet"]
@@ -402,7 +411,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
                 : [unconfirmed ? "bg-faint" : "bg-success", "On"]
   const line = running
     ? running.direction === "off" ? "Turning off. The steps run in this order."
-      : running.renew ? (noCertificate ? "Getting the certificate. Tailscale is asked for it again, then the daemon restarts." : "Renewing. Tailscale is asked for the certificate again, then the daemon restarts once.")
+      : running.renew ? (running.again ? "Getting the certificate. Tailscale is asked for it again, then the daemon restarts." : "Renewing. Tailscale is asked for the certificate again, then the daemon restarts once.")
         : "Turning on. The steps run in this order."
     : stoppedOn ? (httpsOff ? "Stopped before storing or restarting anything." : "The switch stays off.")
       : !report ? (unread ? unreadLine(unread) : readError ?? "Reading the tailnet status from Tailscale.")
@@ -546,9 +555,10 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
       {!running && renewalFailed ? (
         <Alert
           heading="The certificate did not renew"
-          body={expiry ? `Until ${day(expiry)} paired devices keep connecting and new ones can pair. After that the daemon answers on this computer only until a renewal succeeds.` : "Paired devices keep connecting until the certificate expires. After that the daemon answers on this computer only until a renewal succeeds."}
+          body={noCertificate ? "Domovoi cannot read a stored certificate, so no expiry is known."
+            : expiry ? `Until ${day(expiry)} paired devices keep connecting and new ones can pair. After that the daemon answers on this computer only until a renewal succeeds.` : "Paired devices keep connecting until the certificate expires. After that the daemon answers on this computer only until a renewal succeeds."}
           mono={`${moment(renewalFailed.at)} · ${renewalFailed.message}`}
-          action="Renew now" onAction={() => void controller.turnOn()}
+          {...(noCertificate && refusedListener ? {} : { action: recover, onAction: () => void controller.turnOn() })}
           after="Domovoi also tries again on its own while this app is open."
         />
       ) : null}
@@ -557,7 +567,7 @@ export function TailnetReachCard({ controller, inCard = false }: { controller: T
           heading="The daemon is not answering on the tailnet"
           body={refusedListener.reason}
           mono={`tailnet.status · ${refusedListener.address}`}
-          action={noCertificate ? "Get the certificate again" : "Renew now"} onAction={() => void controller.turnOn()}
+          action={recover} onAction={() => void controller.turnOn()}
           after={[
             refusedListener.retrying ? "The daemon tries the address again on its own." : "",
             noCertificate ? "Tailscale is asked for this machine's certificate again, then the daemon restarts." : "",
