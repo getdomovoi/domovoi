@@ -1030,9 +1030,20 @@ export class CodexAppServerAdapter implements AgentAdapter {
       for (const [itemId, call] of this.#toolServerCalls) {
         if (call.threadId === params.threadId) this.#toolServerCalls.delete(itemId)
       }
-      const usage = normalizeProviderUsage(params.turn ?? params)
+      // Codex's Turn carries no usage today. One that did would be read the
+      // same way as a token-usage update: partial, and dropped rather than
+      // thrown when its counters do not add up.
+      let usage: ReturnType<typeof normalizeProviderUsage>
+      try {
+        usage = normalizeProviderUsage(params.turn ?? params)
+      } catch {
+        usage = undefined
+      }
       if (usage && typeof params.threadId === "string" && typeof params.turnId === "string") {
-        this.#emit({ type: "usage", threadId: params.threadId, turnId: params.turnId, usage })
+        this.#emit({
+          type: "usage", threadId: params.threadId, turnId: params.turnId, usage,
+          source: { kind: "turn", tokens: "reported", final: false },
+        })
       }
       this.#emit({ type: "turn-completed", params })
     } else if (codexReviewerNotifications.has(message.method ?? "")) {
