@@ -259,5 +259,38 @@ describe("useDaemon", () => {
     expect(result.current.lastReadAt).toBeUndefined()
     await unmount()
   })
+
+  // A refresh asked of the old daemon can answer after the person moved to a
+  // new credential, while the old socket is still closing. That answer is the
+  // old daemon's state and must not come back in place of the new one's.
+  it("does not let a late refresh from the old daemon restore its state", async () => {
+    const { result, rerender, unmount } = await renderHook(
+      ({ url, token }: { url: string, token: string }) => useDaemon(url, token, "phone", () => {}),
+      { initialProps: { url: "ws://desk:8787/rpc", token: "token" } },
+    )
+    const old = FakeSocket.made[0]!
+    await act(async () => { old.open() })
+    await act(async () => { old.answerHello() })
+    await flush()
+
+    let refreshed: Promise<void> | undefined
+    await act(async () => { refreshed = result.current.refresh().catch(() => {}) })
+    // The old socket's close lands later, as a real one does.
+    old.close = () => { old.readyState = 3 }
+    await rerender({ url: "ws://other:8787/rpc", token: "other-token" })
+    expect(result.current.snapshot).toBeUndefined()
+
+    const asked = old.sent.map((line) => JSON.parse(line) as { id: number, method: string }).find((message) => message.method === "workspace.get")
+    if (!asked) throw new Error("refresh should have asked the old daemon")
+    await act(async () => {
+      old.onmessage?.({ data: JSON.stringify({ jsonrpc: "2.0", id: asked.id, result: demoWorkspace }) })
+      await refreshed
+    })
+    await flush()
+
+    expect(result.current.snapshot).toBeUndefined()
+    expect(result.current.lastReadAt).toBeUndefined()
+    await unmount()
+  })
 })
 

@@ -222,7 +222,11 @@ export function useDaemon(
   const refresh = useCallback(async () => {
     const daemon = connection.current
     if (!daemon?.isOpen()) throw new Error("The daemon connection is not open")
-    setSnapshot(await daemon.call("workspace.get", {}))
+    const next = await daemon.call("workspace.get", {})
+    // The person may have moved to another credential while this was out. The
+    // answer is then the old daemon's state and does not replace the new one's.
+    if (connection.current !== daemon) return
+    setSnapshot(next)
     setLastReadAt(Date.now())
   }, [])
 
