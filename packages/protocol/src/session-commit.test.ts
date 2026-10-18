@@ -88,6 +88,8 @@ describe("commit checkpoints", () => {
     ["a commit of no files", { committed: { ...committed, paths: [], pathCount: 0 } }],
     ["an empty message", { committed: { ...committed, message: "" } }],
     ["an empty branch", { committed: { ...committed, branch: "" } }],
+    ["a branch that is not a session branch", { committed: { ...committed, branch: "main" } }],
+    ["a branch that carries other text", { committed: { ...committed, branch: "domovoi/NPM_TOKEN=abc" } }],
     ["an unknown client", { committed: { ...committed, client: "toaster" } }],
     ["a field the record does not hold", { committed: { ...committed, pushed: true } }],
   ])("refuses %s", (_name, change) => {

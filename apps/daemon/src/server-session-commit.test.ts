@@ -54,7 +54,15 @@ function agent() {
   } satisfies AgentAdapter
 }
 
-async function fixture(options: { runtime?: Runtime; changedFiles?: string[]; refusal?: Error } = {}) {
+async function fixture(options: {
+  runtime?: Runtime
+  changedFiles?: string[]
+  refusal?: Error
+  afterCommitError?: string
+  // How long the workspace takes, and the daemon's deadline for it.
+  delayMs?: number
+  agentTimeoutMs?: number
+} = {}) {
   const snapshot: WorkspaceSnapshot = {
     ...createEmptyWorkspace(demoWorkspace.machine),
     project: { id: projectId, machineId: demoWorkspace.machine.id, name: "acme", path: "/code/acme", branch: "main" },
@@ -66,8 +74,12 @@ async function fixture(options: { runtime?: Runtime; changedFiles?: string[]; re
   }
   const changedFiles = options.changedFiles ?? ["src/webhook.ts", "src/webhook.test.ts"]
   const commit = vi.fn(async (_path: string, request: SessionCommitRequest): Promise<SessionCommit> => {
+    if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs))
     if (options.refusal) throw options.refusal
-    return { commit: made, branch: `domovoi/${request.sessionId}`, changedFiles }
+    return {
+      commit: made, branch: `domovoi/${request.sessionId}`, changedFiles,
+      ...(options.afterCommitError ? { afterCommitError: options.afterCommitError } : {}),
+    }
   })
   const workspaceService = {
     inspect: vi.fn(async (path: string) => ({ root: path, name: "acme", branch: "main", head })),
@@ -80,6 +92,7 @@ async function fixture(options: { runtime?: Runtime; changedFiles?: string[]; re
   const store = new SqliteWorkspaceStore(":memory:", snapshot)
   const daemon = new DomovoiDaemon({
     port: 0, statePath: ":memory:", store, agents: { "claude-code": agent() }, workspaceService, errorSink: vi.fn(),
+    ...(options.agentTimeoutMs ? { agentTimeoutMs: options.agentTimeoutMs } : {}),
   })
   daemons.push(daemon)
   const { port } = await daemon.start()
@@ -117,6 +130,7 @@ describe("session.commit", () => {
     expect(commit).toHaveBeenCalledTimes(1)
     expect(commit.mock.calls[0]![0]).toBe("/worktrees/session-1")
     expect(commit.mock.calls[0]![1]).toEqual({
+      repositoryPath: "/code/acme",
       sessionId: "session-1", message: "fix(api): retry the webhook\n\nThe provider retries on 5xx.", expectedHead: head,
     })
     const snapshot = (response as { result: WorkspaceSnapshot }).result
@@ -178,6 +192,31 @@ describe("session.commit", () => {
 
     expect(response.error.message).toContain("turn")
     expect(commit).not.toHaveBeenCalled()
+  })
+
+  it("records a commit whose bookkeeping failed afterwards, and says what was left undone", async () => {
+    const { commitRequest } = await fixture({ afterCommitError: "could not update the worktree's index" })
+
+    const snapshot = ((await commitRequest()) as { result: WorkspaceSnapshot }).result
+
+    const commitItem = snapshot.thread.findLast((item) => item.kind === "checkpoint")
+    expect(commitItem).toMatchObject({ reason: "commit", commit: made })
+    expect(snapshot.thread.at(-1)).toMatchObject({
+      kind: "system",
+      body: "Committed cccccccc, with something left undone",
+      detail: "could not update the worktree's index",
+    })
+  })
+
+  it("records a commit that lands after the daemon's deadline", async () => {
+    const { commitRequest, thread } = await fixture({ delayMs: 300, agentTimeoutMs: 50 })
+
+    const response = await commitRequest() as Refusal
+
+    expect(response.error.message).toBe("Commit timed out")
+    await vi.waitFor(async () => {
+      expect((await thread()).at(-1)).toMatchObject({ kind: "checkpoint", reason: "commit", commit: made })
+    }, { timeout: 2_000 })
   })
 
   it("says why the worktree refused and records nothing", async () => {

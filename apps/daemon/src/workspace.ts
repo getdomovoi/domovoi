@@ -81,6 +81,8 @@ export type RestoreResult = {
 }
 
 export type SessionCommitRequest = {
+  // The session's project checkout; the worktree must be one of its own.
+  repositoryPath: string
   sessionId: string
   message: string
   // The session branch's commit the person's view of the changes was read
@@ -92,13 +94,18 @@ export type SessionCommit = {
   commit: string
   branch: string
   changedFiles: string[]
+  // What failed after the branch had moved: the commit stands, and this says
+  // what was left undone (the worktree's index, the checkpoint ref).
+  afterCommitError?: string
 }
 
 type WorktreeCommitOptions = {
   message: string
   // The one branch a person's commit may move and the commit it must still be
-  // at. A checkpoint moves whatever HEAD names, from where it is.
-  branch?: { ref: string; head: string }
+  // at, and whether HEAD still names it (read again before the worktree's
+  // index is published). A checkpoint moves whatever HEAD names, from where
+  // it is.
+  branch?: { ref: string; head: string; stillCurrent: () => Promise<boolean> }
   author?: GitIdentity
   // Runs on the staged change set before anything is written; throwing
   // refuses the commit with the worktree, its index and every ref untouched.
@@ -773,7 +780,15 @@ async function commitIndex(
     GIT_COMMITTER_EMAIL: "domovoi@localhost",
   })
   // An empty old value requires that the branch does not exist yet.
-  await git(worktreePath, ["update-ref", "-m", `commit: ${message}`, ref, commit, parent ?? ""], signal)
+  if (ref === "HEAD") {
+    await git(worktreePath, ["update-ref", "-m", `commit: ${message}`, ref, commit, parent ?? ""], signal)
+    return commit
+  }
+  // A named branch moves itself, never a ref it might point at (--no-deref),
+  // and only from parent. Once started the update runs to its end, so an
+  // abort cannot leave a moved branch the caller believes unmoved.
+  signal?.throwIfAborted()
+  await git(worktreePath, ["update-ref", "--no-deref", "-m", `commit: ${message}`, ref, commit, parent ?? ""])
   return commit
 }
 
@@ -2021,17 +2036,30 @@ export class GitWorkspaceService implements WorkspaceService {
       throw error
     }
     if (await this.#resolveManagedWorktree(path, signal) === undefined) throw new SessionCommitRefusedError("not-session-worktree")
+    // A linked worktree of the session's own repository, registered there: its
+    // Git directory is <common>/worktrees/<name>, that directory points back at
+    // this worktree, and the common directory is the project's. An ordinary
+    // checkout or another repository's worktree at this path is refused.
+    if (!await this.#linkedWorktreeOf(path, request.repositoryPath, signal)) throw new SessionCommitRefusedError("not-session-worktree")
     const branch = `domovoi/${sessionId}`
     const ref = `refs/heads/${branch}`
-    return this.#isolated(path, path, signal, async (isolated) => {
+    const onSessionBranch = async () => {
       const named = await git(path, ["symbolic-ref", "-q", "HEAD"], signal).catch(() => "")
-      if (named !== ref) throw new SessionCommitRefusedError("not-session-branch", branch)
-      const head = await git(path, ["rev-parse", "-q", "--verify", `${ref}^{commit}`], signal).catch(() => "")
-      if (head !== expectedHead) throw new SessionCommitRefusedError("head-moved", branch)
-      const made = await this.#commitWorktree(path, isolated, {
-        message: request.message,
-        branch: { ref, head },
-        author: await personIdentity(path, signal),
+      // The session ref itself must hold a commit: one made a symbolic ref to
+      // another branch would carry the commit there.
+      const symbolic = await git(path, ["symbolic-ref", "-q", ref], signal).then(() => true, () => false)
+      return named === ref && !symbolic
+    }
+    const outcome: { made?: SessionCommit } = {}
+    try {
+      return await this.#isolated(path, path, signal, async (isolated) => {
+        if (!await onSessionBranch()) throw new SessionCommitRefusedError("not-session-branch", branch)
+        const head = await git(path, ["rev-parse", "-q", "--verify", `${ref}^{commit}`], signal).catch(() => "")
+        if (head !== expectedHead) throw new SessionCommitRefusedError("head-moved", branch)
+        outcome.made = await this.#commitWorktree(path, isolated, {
+          message: request.message,
+          branch: { ref, head, stillCurrent: onSessionBranch },
+          author: await personIdentity(path, signal),
         refuse: async (index, changedFiles) => {
           if (changedFiles.length === 0) throw new SessionCommitRefusedError("nothing-to-commit", branch)
           // The paths whose contents enter the commit: a deletion carries no
@@ -2039,8 +2067,10 @@ export class GitWorkspaceService implements WorkspaceService {
           // raw bytes, so a path that is not UTF-8 is refused, never guessed.
           const output: Buffer[] = []
           let bytes = 0
+          // Every submodule entry counts, whatever .gitmodules or config says
+          // to ignore: write-tree commits what the index holds.
           const result = await isolated.stream(
-            ["--no-optional-locks", "diff", "--cached", "--name-only", "--no-renames", "--diff-filter=d", "-z"],
+            ["--no-optional-locks", "diff", "--cached", "--name-only", "--no-renames", "--diff-filter=d", "--ignore-submodules=none", "-z"],
             (chunk, stop) => {
               bytes += chunk.byteLength
               if (bytes > maximumGitOutputBytes) stop()
@@ -2059,15 +2089,42 @@ export class GitWorkspaceService implements WorkspaceService {
           const secret = written.filter((candidate) => !checkpointPathIsSafe(candidate)).length
           if (secret > 0) throw new SessionCommitRefusedError("secret-paths", branch, secret)
         },
-      }, signal)
-      return { commit: made.commit, branch, changedFiles: made.changedFiles }
-    })
+      }, signal).then(({ commit, changedFiles, afterCommitError }) => ({
+        commit, branch, changedFiles, ...(afterCommitError === undefined ? {} : { afterCommitError }),
+      }))
+        return outcome.made
+      })
+    } catch (error) {
+      // Once the branch has moved the commit exists, so a failure after it,
+      // such as cleaning up the isolated directory, is reported with it and
+      // never as a commit that did not happen.
+      const { made } = outcome
+      if (made === undefined) throw error
+      return { ...made, afterCommitError: made.afterCommitError ?? (error instanceof Error ? error.message : String(error)) }
+    }
+  }
+
+  async #linkedWorktreeOf(path: string, repositoryPath: string, signal?: AbortSignal): Promise<boolean> {
+    try {
+      const [gitDir, common, projectCommon] = await Promise.all([
+        git(path, ["rev-parse", "--path-format=absolute", "--git-dir"], signal),
+        git(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
+        git(repositoryPath, ["rev-parse", "--path-format=absolute", "--git-common-dir"], signal),
+      ])
+      const [gitDirectory, commonDirectory, projectDirectory] = await Promise.all([realpath(gitDir), realpath(common), realpath(projectCommon)])
+      if (commonDirectory !== projectDirectory || gitDirectory === commonDirectory) return false
+      if (dirname(gitDirectory) !== join(commonDirectory, "worktrees")) return false
+      const backlink = (await readFile(join(gitDirectory, "gitdir"), "utf8")).trim()
+      return await realpath(resolve(gitDirectory, backlink)) === await realpath(join(path, ".git"))
+    } catch {
+      return false
+    }
   }
 
   // Stages the whole worktree and commits it on HEAD, or on options.branch
   // only, from the commit it must still be at. Shared by checkpoints and a
   // person's commit; see #checkpoint for how the index is handled.
-  async #commitWorktree(worktreePath: string, isolated: IsolatedGit, options: WorktreeCommitOptions, signal?: AbortSignal): Promise<Checkpoint> {
+  async #commitWorktree(worktreePath: string, isolated: IsolatedGit, options: WorktreeCommitOptions, signal?: AbortSignal): Promise<Checkpoint & { afterCommitError?: string }> {
     const head = options.branch ? options.branch.head : await currentHead(worktreePath, signal)
     const sharedIndex = resolve(worktreePath, await git(worktreePath, ["rev-parse", "--git-path", "index"], signal))
     const index = join(isolated.gitDirectory, "checkpoint-index")
@@ -2111,14 +2168,30 @@ export class GitWorkspaceService implements WorkspaceService {
     if (head !== undefined) await isolated.setHead(head)
     await isolated.run(["add", "--all"], { index, signal })
     await this.#afterCheckpointStaging?.()
-    const names = await isolated.run(["--no-optional-locks", "diff", "--cached", "--name-only", "-z"], { index, signal })
+    // A person's commit lists every submodule entry it commits, whatever the
+    // repository asks Git to ignore; a checkpoint lists as it always has.
+    const names = await isolated.run(["--no-optional-locks", "diff", "--cached", "--name-only", ...(options.branch ? ["--ignore-submodules=none"] : []), "-z"], { index, signal })
     const changedFiles = names.split("\0").filter(Boolean)
     await options.refuse?.(index, changedFiles)
-    const made = changedFiles.length > 0
-      ? await commitIndex(worktreePath, isolated, head, options.message, signal, index, options.branch?.ref, options.author)
-      : undefined
-    const commit = options.branch ? made ?? head! : await git(worktreePath, ["rev-parse", "HEAD"], signal)
-    const noun = options.branch ? "commit" : "checkpoint"
+    if (options.branch) {
+      if (changedFiles.length === 0) throw new Error("A commit needs a change; refuse() decides that first")
+      const made = await commitIndex(worktreePath, isolated, head, options.message, signal, index, options.branch.ref, options.author)
+      // The commit is on the session branch now, so nothing below may lose it:
+      // a failure is returned with it, and the abort signal no longer applies.
+      try {
+        await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${made}`, made])
+        // A HEAD switched away meanwhile keeps its own index.
+        if (!await options.branch.stillCurrent()) {
+          return { commit: made, changedFiles, afterCommitError: `The worktree left ${options.branch.ref.slice("refs/heads/".length)} while Domovoi committed, so its index was left as it was.` }
+        }
+        await publishUnderIndexLock(sharedIndex, () => readFile(index), async () => await entries(sharedIndex) === seeded)
+      } catch (error) {
+        return { commit: made, changedFiles, afterCommitError: error instanceof Error ? error.message : String(error) }
+      }
+      return { commit: made, changedFiles }
+    }
+    if (changedFiles.length > 0) await commitIndex(worktreePath, isolated, head, options.message, signal, index)
+    const commit = await git(worktreePath, ["rev-parse", "HEAD"], signal)
     await git(worktreePath, ["update-ref", `refs/domovoi/checkpoints/${commit}`, commit], signal)
     // Then the worktree's index becomes the checkpoint's, as Git would write
     // it, so the worktree reads as clean. Only while it still holds the
@@ -2129,8 +2202,8 @@ export class GitWorkspaceService implements WorkspaceService {
       // An absent index lists no entry, as one seeded from nothing does.
       await publishUnderIndexLock(sharedIndex, () => readFile(index), async () => await entries(sharedIndex) === seeded)
     } catch (error) {
-      if (error instanceof IndexPublishedNotDurableError) throw new Error(`Domovoi made ${noun} ${commit} and put the worktree's index at it. ${error.message}`, { cause: error })
-      throw new Error(`Domovoi made ${noun} ${commit}, but could not update the worktree's index to it: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
+      if (error instanceof IndexPublishedNotDurableError) throw new Error(`Domovoi made checkpoint ${commit} and put the worktree's index at it. ${error.message}`, { cause: error })
+      throw new Error(`Domovoi made checkpoint ${commit}, but could not update the worktree's index to it: ${error instanceof Error ? error.message : String(error)}`, { cause: error })
     }
     return { commit, changedFiles }
   }

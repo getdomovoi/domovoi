@@ -33,21 +33,25 @@ They describe why a checkpoint exists; they do not create per-turn fork points.
 and Domovoi keeps it that way (walk finding F10), so the person commits the
 session's work from the Changes tab instead. The daemon:
 
-- commits only in the session's own worktree under the worktree root, only on its
-  branch `domovoi/<session>`, and refuses when HEAD names any other branch or none,
-  or when that branch moved since the person read the changes (`expectedHead`);
+- commits only in the session's own worktree under the worktree root, a linked
+  worktree registered in the session's project repository, only on its branch
+  `domovoi/<session>`, and refuses when HEAD names any other branch or none, when
+  that branch is a symbolic ref, or when it moved since the person read the changes
+  (`expectedHead`);
 - refuses in Ask and Plan, which run read-only, and while a turn runs. Build allows
   it with or without Auto, since the commit is always the person's own action;
 - stages and commits through the isolated Git directory checkpoints use, so no
   repository hook runs and no repository config can start a program, and signs
   nothing;
 - refuses the whole commit when a path it would add or change names a credential,
-  a private key or an environment file, counting them without naming them, and
-  refuses a message the durable-text redactor would change. Deleting a tracked
-  secret file is allowed;
-- moves `refs/heads/domovoi/<session>` from `expectedHead` and nothing else, keeps
-  the commit under `refs/domovoi/checkpoints` like every checkpoint, and pushes
-  nothing;
+  a private key or an environment file, submodule entries the repository asks Git
+  to ignore included, counting them without naming them, and refuses a message the
+  durable-text redactor would change. Deleting a tracked secret file is allowed;
+- moves `refs/heads/domovoi/<session>` itself (`update-ref --no-deref`) from
+  `expectedHead` and nothing else, keeps the commit under `refs/domovoi/checkpoints`
+  like every checkpoint, and pushes nothing. Once the branch has moved, a later
+  failure (the checkpoint ref, the worktree's index, a deadline) is recorded beside
+  the commit, never reported as a commit that did not happen;
 - authors the commit as the person when Git has both `user.name` and `user.email`
   for the worktree, as Domovoi otherwise, with Domovoi as the committer.
 

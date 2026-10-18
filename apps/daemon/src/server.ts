@@ -11203,39 +11203,45 @@ export class DomovoiDaemon {
           this.#error(socket, request.id, invalidParams, "Committing is unavailable")
           return
         }
+        const repositoryPath = this.#projectForSession(session)?.path
+        if (!repositoryPath) {
+          this.#error(socket, request.id, invalidParams, "Domovoi cannot find this session's project, so it did not commit.")
+          return
+        }
+        let running: Promise<SessionCommit> | undefined
         let made: SessionCommit
         try {
           made = await this.#withAbortTimeout(
-            (signal) => this.#workspaceService.commit!(session.workspacePath!, {
-              sessionId: session.id,
-              message: params.message,
-              expectedHead: params.expectedHead,
-            }, signal),
+            (signal) => {
+              running = this.#workspaceService.commit!(session.workspacePath!, {
+                repositoryPath,
+                sessionId: session.id,
+                message: params.message,
+                expectedHead: params.expectedHead,
+              }, signal)
+              return running
+            },
             this.#agentTimeoutMs,
             "Commit timed out",
           )
         } catch (error) {
           if (error instanceof SessionCommitRefusedError) throw new PublicRpcError(invalidParams, error.message)
+          // A deadline rejects without waiting for the git run it aborted.
+          // The workspace finishes a commit whose branch already moved, so one
+          // that lands after the deadline is recorded when it does.
+          if (running) {
+            void running.then(async (late) => {
+              if (!this.#recordSessionCommit(params.sessionId, late, params.message, params.client)) return
+              await this.#persistSnapshot()
+              this.#broadcastSnapshot()
+            }, () => {})
+          }
           throw error
         }
-        const currentSession = this.#snapshot.sessions.find((candidate) => candidate.id === params.sessionId)
-        if (!currentSession) {
+        if (!this.#recordSessionCommit(params.sessionId, made, params.message, params.client)) {
           this.#error(socket, request.id, invalidParams, "Session no longer exists")
           return
         }
-        const createdAt = new Date().toISOString()
-        currentSession.changedFiles = 0
-        currentSession.updatedAt = createdAt
-        this.#snapshot.thread.push({
-          id: `checkpoint-${randomUUID()}`,
-          sessionId: currentSession.id,
-          kind: "checkpoint",
-          reason: "commit",
-          label: `${made.commit.slice(0, 8)} · ${params.message.split("\n", 1)[0]!.trim()}`,
-          commit: made.commit,
-          committed: committedCheckpointFacts(made, params.message, params.client),
-          createdAt,
-        })
         changed = true
       }
 
@@ -12638,6 +12644,39 @@ export class DomovoiDaemon {
     this.#broadcastNotification("system.emergencyStopped", result)
     this.#sendSnapshot()
     return result
+  }
+
+  // Records a person's commit in the thread (walk finding F10): a commit
+  // checkpoint with the message, the branch, the files and the sha, and, when
+  // something failed after the branch moved, a system row saying what was
+  // left undone. False when the session is gone.
+  #recordSessionCommit(sessionId: string, made: SessionCommit, message: string, client: ClientKind): boolean {
+    const session = this.#snapshot.sessions.find((candidate) => candidate.id === sessionId)
+    if (!session) return false
+    const createdAt = new Date().toISOString()
+    session.changedFiles = 0
+    session.updatedAt = createdAt
+    this.#snapshot.thread.push({
+      id: `checkpoint-${randomUUID()}`,
+      sessionId,
+      kind: "checkpoint",
+      reason: "commit",
+      label: `${made.commit.slice(0, 8)} · ${message.split("\n", 1)[0]!.trim()}`,
+      commit: made.commit,
+      committed: committedCheckpointFacts(made, message, client),
+      createdAt,
+    })
+    if (made.afterCommitError !== undefined) {
+      this.#snapshot.thread.push({
+        id: `system-${randomUUID()}`,
+        sessionId,
+        kind: "system",
+        body: `Committed ${made.commit.slice(0, 8)}, with something left undone`,
+        detail: made.afterCommitError,
+        createdAt,
+      })
+    }
+    return true
   }
 
   #withAbortTimeout<T>(

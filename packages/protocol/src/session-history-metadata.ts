@@ -74,7 +74,9 @@ export const maximumCommitMessageLength = 4_096
 export const maximumCommittedPaths = maximumMidTurnCheckpointPaths
 export const committedCheckpointSchema = z.object({
   message: z.string().trim().min(1).check(utf16MaxLength(maximumCommitMessageLength)),
-  branch: z.string().min(1).check(utf16MaxLength(256)),
+  // Only ever a session branch, domovoi/<session id>: a stored or transferred
+  // record cannot carry other text here.
+  branch: z.string().regex(/^domovoi\/[a-zA-Z0-9][a-zA-Z0-9_-]*$/u).check(utf16MaxLength(256)),
   // Do not trim: whitespace is legal in a Git path. A path the redactor would
   // not show leaves the list but still counts, so the list may be shorter.
   paths: z.array(z.string().min(1).check(utf16MaxLength(maximumMidTurnCheckpointPathLength))).max(maximumCommittedPaths).refine(
