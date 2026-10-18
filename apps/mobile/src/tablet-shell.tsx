@@ -14,7 +14,7 @@ import { Mark } from "./components/mark"
 import { cn } from "./lib/cn"
 import { planForSession, planSummary } from "./plan-rows"
 import { sessionDetail, type SessionDetail, type ThreadEntry } from "./session-detail"
-import { sessionGroups, type SessionRow } from "./session-rows"
+import { lastReadWords, sessionGroups, type LastRead, type SessionRow } from "./session-rows"
 import { useTheme } from "./theme/theme-provider"
 import { Button } from "./components/ui/button"
 import { Card } from "./components/ui/card"
@@ -24,24 +24,25 @@ import { PageScroller } from "./components/page-scroller"
 import { SentAttachments } from "./components/sent-attachments"
 import { approvalFacts } from "./screens/approval"
 import { PolicyRefusalCards } from "./screens/session"
-import { idleSentence } from "./screens/sessions"
+import { IdleCard, idleSentence } from "./screens/sessions"
 
 type TabletDecision = Extract<ApprovalDecision, "allow-once" | "always-project">
 // Why the daemon did not take an answer, kept with the gate it answered.
 export type GateProblem = { approvalId: string, text: string }
 type ReviewTab = "changes" | "diff" | "plan" | "review"
 
-function TabletSessionRow({ row, selected, access, live, onPress }: {
+function TabletSessionRow({ row, selected, access, lastRead, onPress }: {
   row: SessionRow
   selected: boolean
   access: ClientAccess
-  // Walk F12: drawn from the last state while the tablet is not live, a row
-  // keeps no live light and says "running" was the last read. What waits on
-  // the person stays as it is: it is an approval fact, and the banner says
-  // none of this is live.
-  live: boolean
+  // Walk F12: given while the tablet is not live. Drawn from the last state,
+  // a row keeps no live light and says "running" was the last read, with its
+  // time when known. What waits on the person stays as it is: it is an
+  // approval fact, and the banner says none of this is live.
+  lastRead: LastRead | undefined
   onPress: () => void
 }) {
+  const live = lastRead === undefined
   return (
     <Pressable
       accessibilityRole="button"
@@ -62,7 +63,7 @@ function TabletSessionRow({ row, selected, access, live, onPress }: {
         <Text variant="machine" className="mt-1 text-faint">
           {row.attention === "approval"
             ? access === "full" ? "waiting on you" : "waiting on a full-access device"
-            : row.dot === "active" ? live ? "running" : "running when last read" : "quiet"}
+            : row.dot === "active" ? lastRead ? `running ${lastReadWords(lastRead)}` : "running" : "quiet"}
         </Text>
       </View>
     </Pressable>
@@ -78,11 +79,12 @@ export function railSelectionLeaves(
   return next !== (shown.openSessionId ?? shown.activeSessionId ?? undefined)
 }
 
-export function TabletSessionsPane({ snapshot, selectedSessionId, access, live, onSelectSession, onNewSession, onOpenMachines }: {
+export function TabletSessionsPane({ snapshot, selectedSessionId, access, lastRead, onSelectSession, onNewSession, onOpenMachines }: {
   snapshot: WorkspaceSnapshot
   selectedSessionId: string | undefined
   access: ClientAccess
-  live: boolean
+  // Given only while the tablet is not live.
+  lastRead: LastRead | undefined
   onSelectSession: (sessionId: string) => void
   onNewSession: () => void
   onOpenMachines: () => void
@@ -111,7 +113,7 @@ export function TabletSessionsPane({ snapshot, selectedSessionId, access, live, 
                 row={row}
                 selected={row.id === selectedSessionId}
                 access={access}
-                live={live}
+                lastRead={lastRead}
                 onPress={() => onSelectSession(row.id)}
               />
             ))}
@@ -487,6 +489,7 @@ export function TabletShell({
   snapshot,
   notice,
   live,
+  lastReadAt,
   selectedSessionId,
   draft,
   access,
@@ -510,6 +513,8 @@ export function TabletShell({
   // Whether the daemon answered this connection and it is still open. While
   // not, the rail is the last state the tablet was sent.
   live: boolean
+  // The tablet's clock when that state arrived, if known.
+  lastReadAt: number | undefined
   selectedSessionId: string | undefined
   draft: string
   access: ClientAccess
@@ -545,7 +550,7 @@ export function TabletShell({
       snapshot={snapshot}
       selectedSessionId={sessionId}
       access={access}
-      live={live}
+      lastRead={live ? undefined : { readAt: lastReadAt, now: Date.now() }}
       onSelectSession={onSelectSession}
       onNewSession={onNewSession}
       onOpenMachines={onOpenMachines}
@@ -557,7 +562,7 @@ export function TabletShell({
     return (
       <View className="flex-1 flex-row bg-background">
         {pane}
-        <TabletIdlePane snapshot={snapshot} notice={notice} />
+        <TabletIdlePane snapshot={snapshot} notice={notice} live={live} />
       </View>
     )
   }
@@ -596,15 +601,15 @@ export function TabletShell({
 // this, so it says what the phone's Sessions screen says with nothing listed
 // (phone v2 frame 10): the machine answers and has no work in flight. With
 // sessions listed but none to show, it says only that none is selected.
-function TabletIdlePane({ snapshot, notice }: { snapshot: WorkspaceSnapshot, notice: ConnectionNotice | undefined }) {
+function TabletIdlePane({ snapshot, notice, live }: { snapshot: WorkspaceSnapshot, notice: ConnectionNotice | undefined, live: boolean }) {
+  // As on the phone, a notice on a live connection also makes the last read
+  // the only thing the card can vouch for.
+  const stale = !live || notice !== undefined
   return (
     <View className="min-w-0 flex-1 justify-center gap-3 px-6">
       {notice ? <ConnectionBanner notice={notice} /> : null}
       {snapshot.sessions.length === 0 ? (
-        <Card className="gap-2 border-ok-border bg-ok-bg">
-          <Text variant="title" className="text-ok-fg">Everything is idle</Text>
-          <Text variant="meta" className="text-ok-dim">{idleSentence(snapshot.machine.name, undefined, notice !== undefined)}</Text>
-        </Card>
+        <IdleCard sentence={idleSentence(snapshot.machine.name, undefined, stale)} stale={stale} />
       ) : <Text variant="meta" className="text-center">No session is selected.</Text>}
     </View>
   )

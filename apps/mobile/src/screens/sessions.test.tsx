@@ -374,6 +374,26 @@ describe("SessionsScreen", () => {
     expect(screen.queryByText(/answering/)).toBeNull()
   })
 
+  // Walk F12 review: "Everything is idle" on the success ground is a claim
+  // about now. While not live the card says it was idle when last read, on a
+  // plain ground, and the sentence under it says the same.
+  it("says the machine was idle when last read while not live, without the healthy ground", async () => {
+    const idle = workspace()
+    idle.sessions = []
+    idle.approvals = []
+    await draw({ snapshot: idle, live: false })
+
+    expect(screen.queryByText("Everything is idle")).toBeNull()
+    const title = screen.getByText("Idle when last read")
+    expect(String(title.props.className)).not.toContain("text-ok-fg")
+    expect(screen.getByText(`${idle.machine.name} had no work in flight when last read.`)).toBeOnTheScreen()
+    expect(String(screen.getByTestId("idle-card").props.className)).not.toMatch(/bg-ok-bg|border-ok-border/)
+
+    await draw({ snapshot: idle })
+    expect(screen.getByText("Everything is idle")).toBeOnTheScreen()
+    expect(String(screen.getByTestId("idle-card").props.className)).toContain("bg-ok-bg")
+  })
+
   // Frame 10's rows say a machine's state in a few words ("last seen 2d ago"),
   // not a sentence that repeats the machine's name beside it.
   it("says a quiet machine's state in the design's short words", async () => {

@@ -64,6 +64,16 @@ export function useDaemon(
   // The kind the connection greets as, which every call must name.
   const [greetedAs, setGreetedAs] = useState<HandheldClient>(client ?? "phone")
 
+  // The last state belongs to the daemon that sent it. A new address or token
+  // (paired again, typed, or forgotten) names another daemon, or none, so the
+  // old state and its time go rather than standing in for it while the new
+  // one is silent or refuses. Keyed apart from the connection below, which
+  // also restarts when only the credential's kind changes.
+  useEffect(() => {
+    setSnapshot(undefined)
+    setLastReadAt(undefined)
+  }, [token, url])
+
   useEffect(() => {
     if (!url || !token) {
       setStatus("closed")

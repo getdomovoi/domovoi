@@ -227,5 +227,37 @@ describe("useDaemon", () => {
     expect(result.current.lastReadAt).toBe(1_060_000)
     await unmount()
   })
+
+  // The last state belongs to the daemon that sent it. Once the person points
+  // the phone at another credential (pairs again, types a new address, or
+  // forgets this one), that state says nothing about the new daemon, so it
+  // goes rather than standing in while the new one is refused or silent.
+  it("drops the last state and its time when the credential changes", async () => {
+    const { result, rerender, unmount } = await renderHook(
+      ({ url, token }: { url: string | undefined, token: string | undefined }) => useDaemon(url, token, "phone", () => {}),
+      { initialProps: { url: "ws://desk:8787/rpc", token: "token" } },
+    )
+    const socket = FakeSocket.made[0]!
+    await act(async () => { socket.open() })
+    await act(async () => { socket.answerHello() })
+    await flush()
+    expect(result.current.snapshot).toBeDefined()
+    expect(result.current.lastReadAt).toBeDefined()
+
+    await rerender({ url: "ws://other:8787/rpc", token: "other-token" })
+    expect(result.current.snapshot).toBeUndefined()
+    expect(result.current.lastReadAt).toBeUndefined()
+
+    const next = FakeSocket.made.at(-1)!
+    await act(async () => { next.open() })
+    await act(async () => { next.answerHello() })
+    await flush()
+    expect(result.current.snapshot).toBeDefined()
+
+    await rerender({ url: undefined, token: undefined })
+    expect(result.current.snapshot).toBeUndefined()
+    expect(result.current.lastReadAt).toBeUndefined()
+    await unmount()
+  })
 })
 

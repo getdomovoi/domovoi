@@ -112,6 +112,21 @@ export function idleSentence(machine: string, fleet: FleetEntry[] | undefined, s
   return `${lead} Empty here is a healthy state, not a failure.`
 }
 
+// The idle card. "Everything is idle" on the healthy ground is a claim about
+// now, so while what was read may no longer hold the card says the machine
+// was idle when last read, on a plain ground (walk F12). The tablet's empty
+// thread pane draws the same card.
+export function IdleCard({ sentence, stale }: { sentence: string, stale: boolean }) {
+  return (
+    <Card testID="idle-card" className={cn("gap-2", !stale && "border-ok-border bg-ok-bg")}>
+      <Text variant="title" className={cn(!stale && "text-ok-fg")}>
+        {stale ? "Idle when last read" : "Everything is idle"}
+      </Text>
+      <Text variant="meta" className={cn(!stale && "text-ok-dim")}>{sentence}</Text>
+    </Card>
+  )
+}
+
 const fleetDot: Record<MachineRow["health"], string> = {
   ok: "bg-success",
   busy: "bg-warning",
@@ -251,6 +266,10 @@ export function SessionsScreen({
   const groups = sessionGroups(snapshot)
   const needed = waitingCount(snapshot)
   const countLabel = sessionsHeaderLine(snapshot, fleet, live ? undefined : { readAt: lastReadAt, now })
+  // The idle card and fleet lights also speak of the last read while a notice
+  // is up on a live connection: a frame the app could not read may have been
+  // the change that ended the idle.
+  const idleStale = !live || notice !== undefined
   const empty = groups.length === 0
 
   return (
@@ -287,13 +306,8 @@ export function SessionsScreen({
 
         {empty ? (
           <View className="gap-3 px-3">
-            <Card className="gap-2 border-ok-border bg-ok-bg">
-              <Text variant="title" className="text-ok-fg">Everything is idle</Text>
-              <Text variant="meta" className="text-ok-dim">
-                {idleSentence(snapshot.machine.name, fleet, notice !== undefined)}
-              </Text>
-            </Card>
-            {fleet ? <IdleFleet fleet={fleet} now={fleetNow} stale={notice !== undefined} /> : null}
+            <IdleCard sentence={idleSentence(snapshot.machine.name, fleet, idleStale)} stale={idleStale} />
+            {fleet ? <IdleFleet fleet={fleet} now={fleetNow} stale={idleStale} /> : null}
             <Button
               title="Start a session"
               variant="primary"

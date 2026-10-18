@@ -145,7 +145,7 @@ export type LastRead = {
 const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 const twoDigits = (value: number) => String(value).padStart(2, "0")
 
-function lastReadWords({ readAt, now }: LastRead): string {
+export function lastReadWords({ readAt, now }: LastRead): string {
   if (readAt === undefined) return "when last read"
   const at = new Date(readAt)
   const today = new Date(now)

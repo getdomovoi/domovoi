@@ -1104,6 +1104,7 @@ export function App() {
             snapshot={snapshot}
             notice={notice}
             live={status === "open"}
+            lastReadAt={lastReadAt}
             selectedSessionId={openSessionId ?? snapshot.activeSessionId ?? undefined}
             draft={draft}
             access={clientAccess}

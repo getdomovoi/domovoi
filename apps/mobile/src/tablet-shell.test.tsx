@@ -36,6 +36,7 @@ async function draw(
     decideProblem?: string
     sendProblem?: string
     live?: boolean
+    lastReadAt?: number
   } = {},
 ) {
   const snapshot = structuredClone(demoWorkspace)
@@ -64,6 +65,7 @@ async function draw(
     onPostReview: extra.onPostReview ?? jest.fn<(artifactId: string, body: string) => Promise<void>>(async () => {}),
     ...(extra.notice ? { notice: extra.notice } : {}),
     live: extra.live ?? true,
+    lastReadAt: extra.lastReadAt,
     deciding: extra.deciding ?? false,
     decideProblem: extra.decideProblem === undefined ? undefined : { approvalId: approval.id, text: extra.decideProblem },
     sendProblems: new Map(extra.sendProblem === undefined ? [] : [[approval.sessionId, extra.sendProblem]]),
@@ -378,6 +380,27 @@ describe("TabletShell", () => {
     // What waits on the person stays: it is an approval fact, and the banner
     // says none of this is live.
     expect(within(stale).getByText("waiting on you")).toBeOnTheScreen()
+
+    // With the time the tablet received that state, the row says it, as the
+    // phone's header does.
+    const readAt = new Date()
+    readAt.setHours(9, 5, 0, 0)
+    await draw("normal", "full", undefined, { live: false, lastReadAt: readAt.getTime() })
+    expect(within(screen.getByTestId("tablet-sessions-pane")).getByText("running when last read at 09:05")).toBeOnTheScreen()
+  })
+
+  // Walk F12 review: the idle pane's "Everything is idle" on the success
+  // ground is a claim about now, so while not live it says idle when last read.
+  it("says the machine was idle when last read in the idle pane while not live", async () => {
+    await draw("normal", "full", (snapshot) => {
+      snapshot.sessions = []
+      snapshot.approvals = []
+      snapshot.activeSessionId = null
+    }, { live: false })
+
+    expect(screen.queryByText("Everything is idle")).toBeNull()
+    expect(screen.getByText("Idle when last read")).toBeOnTheScreen()
+    expect(screen.getByText(/had no work in flight when last read\.$/)).toBeOnTheScreen()
   })
 
   it("keeps the rule, who set it, where it applies and the remedy on a policy refusal in the thread", async () => {
