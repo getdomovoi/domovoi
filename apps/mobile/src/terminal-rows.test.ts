@@ -353,6 +353,8 @@ describe("terminalLines at the holder's grid", () => {
     expect(terminalLines("abcde\u001b[KX\n", 5)).toEqual(["abcdeX"])
     expect(terminalLines("abcde\u001b[1KX\n", 5)).toEqual(["     X"])
     expect(terminalLines("abcdefgh\u001b[A\u001b[2CY\u001b[1K\n", 5)).toEqual(["     fgh"])
+    // A tab there moves nothing either.
+    expect(terminalLines("abcde\tX\n", 5)).toEqual(["abcdeX"])
     // Without the grid the whole line is one row, as before.
     expect(terminalLines(`${"a".repeat(12)}\rX\n`)).toEqual([`X${"a".repeat(11)}`])
   })
@@ -386,12 +388,17 @@ describe("terminalLines at the holder's grid", () => {
     expect(terminalLines("abcdefgh\u001b[A\u001b[2K\n", 5)).toEqual(["     fgh"])
     expect(terminalLines("abcdefgh\u001b[2K\n", 5)).toEqual(["abcde"])
     expect(terminalLines("abcdefgh\u001b[A\u001b[9X\n", 5)).toEqual(["abc  fgh"])
+    // An erase in line of another mode erases nothing, as before.
+    expect(terminalLines("abcdefgh\u001b[A\u001b[3K\n", 5)).toEqual(["abcdefgh"])
   })
 
   it("deletes and inserts characters within the cursor's row", () => {
     expect(terminalLines("abcdefgh\u001b[A\u001b[P\u001b[B\rZ\n", 5)).toEqual(["abce Zgh"])
     expect(terminalLines("abcdefgh\u001b[A\u001b[2@\n", 5)).toEqual(["abc  fgh"])
     expect(terminalLines("abcdefgh\u001b[A\u001b[9@\n", 5)).toEqual(["abc  fgh"])
+    // Once spare blanks are spent, an insert cut short at the old end takes
+    // a wide character it splits, as without the grid.
+    expect(drawnText(`${"\u001b[1000Cx\n".repeat(66)}界\r\u001b[@\u001b[3GX\n`, 1_000).lines.at(-2)).toBe("  X")
     // A holder's row past the first thousand cells, at a grid that does not
     // divide a thousand.
     const long = `${"x".repeat(990)}${"abcdefghij".repeat(4)}`

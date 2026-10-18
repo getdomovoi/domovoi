@@ -258,9 +258,11 @@ class Line {
     this.wrapPending = false
   }
 
-  // The next tab stop on the cursor's row, or the row's last cell.
+  // The next tab stop on the cursor's row, or the row's last cell. With a
+  // wrap pending the cursor is already past the last stop, and stays, as in
+  // the holder's xterm.
   tab(): void {
-    this.settle()
+    if (this.wrapPending) return
     const start = this.gridRowStart()
     this.moveTo(Math.min(start + (Math.floor((this.column - start) / tabWidth) + 1) * tabWidth, this.gridRowEnd() - 1))
   }
@@ -277,6 +279,7 @@ class Line {
   // wrap stays pending, as in the holder's xterm: the cursor's row is the one
   // just filled, and an erase from the cursor reaches nothing on it.
   erase(mode: number): void {
+    if (mode !== 0 && mode !== 1 && mode !== 2) return
     const at = this.wrapPending ? this.column - 1 : this.column
     const start = this.columns === undefined ? 0 : at - (at % this.columns)
     const end = this.columns === undefined ? Infinity : start + this.columns
@@ -416,8 +419,6 @@ class Line {
     const rowEnd = this.gridRowEnd()
     const inserted = Math.min(count, rowEnd - this.column)
     if (this.get(this.column) === rightHalf) this.clear(this.column)
-    // A wide character pushed half past the row's end is lost whole.
-    if (this.get(rowEnd - inserted) === rightHalf) this.clear(rowEnd - inserted)
     // Cells past the line's old end that the push fills spend spare blanks;
     // past them, what is pushed is lost, as past the row's end.
     const before = this.length
@@ -427,6 +428,8 @@ class Line {
       this.spare.cells -= granted
       top = before + granted
     }
+    // A wide character pushed half past the top is lost whole.
+    if (top - inserted > this.column && this.get(top - inserted) === rightHalf) this.clear(top - inserted)
     const { row } = this.cursorRow()
     if (!row) return
     const rowStart = this.column - (this.column % this.width)
