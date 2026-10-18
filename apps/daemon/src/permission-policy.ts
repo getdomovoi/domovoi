@@ -33,7 +33,7 @@ export const askHasNoApprovalsRefusal: PolicyRefusalFacts = {
   rule: "Ask mode has no approvals",
   setBy: "Domovoi permission mode",
   scope: "This session",
-  remedy: "Switch to Build mode, where a read like this asks for your approval.",
+  remedy: "Switch to Build mode, where a read like this asks for your approval unless a standing rule already allows it.",
 }
 
 const pathSeparator = String.raw`[/\\]`
