@@ -121,10 +121,14 @@ describe("usage chip", () => {
       .toEqual([["This session", "not reported yet"], ["Today", "not reported yet"], ["Provider window", "not reported"]])
   })
 
-  it("says a session's count may be low when a turn was partly reported", () => {
-    const partly: SessionUsage = { ...usage, coverage: { pending: 0, complete: 7, partial: 2, unavailable: 0, legacy: 0 } }
+  it("says a count may be low when turns were reported in part or not at all", () => {
+    const partly: SessionUsage = { ...usage, coverage: { pending: 0, complete: 7, partial: 1, unavailable: 1, legacy: 0 } }
     expect(usageChipRows({ usage: partly, turn: undefined, today: null })[0]?.note).toBe(
-      `Input and output of every model request, cached input included: the same count as This turn and Today. 2 turns were partly reported, so the count may be low. ${unreportedCostNote}`,
+      `Input and output of every model request, cached input included: the same count as This turn and Today. 2 turns were reported in part or not at all, so the count may be low. ${unreportedCostNote}`,
+    )
+    const day: UsageWindow = { ...today, coverage: { pending: 0, complete: 26, partial: 1, unavailable: 0, legacy: 0 } }
+    expect(usageChipRows({ usage: null, turn: undefined, today: day })[0]?.note).toBe(
+      `27 turns started today, in 3 sessions · 1 turn was reported in part or not at all, so the count may be low · Domovoi's count, not the provider's limit · ${unreportedCostNote}`,
     )
   })
 

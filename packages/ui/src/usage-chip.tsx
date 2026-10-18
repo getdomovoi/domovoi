@@ -105,21 +105,22 @@ function turnRow(turn: SessionTurn | undefined): UsageChipRow | undefined {
 }
 
 // A partly reported turn counted less than every request it made (a resumed
-// Claude query's first turn leaves its subagents out), so a sum over it can
-// only be low, and the row says so.
+// Claude query's first turn leaves its subagents out), and an unreported one
+// counted nothing, so a sum over either can only be low, and the row says so.
 function partlyReported(coverage: UsageWindow["coverage"] | undefined): string | undefined {
-  const partial = coverage?.partial ?? 0
-  if (partial === 0) return undefined
-  return `${partial === 1 ? "1 turn was" : `${partial} turns were`} partly reported, so the count may be low.`
+  const short = (coverage?.partial ?? 0) + (coverage?.unavailable ?? 0)
+  if (short === 0) return undefined
+  return `${short === 1 ? "1 turn was" : `${short} turns were`} reported in part or not at all, so the count may be low`
 }
 
 function sessionRow(usage: SessionUsage): UsageChipRow {
+  const short = partlyReported(usage.coverage)
   return {
     label: "This session",
     value: missingTokens(usage) ?? `${formatTokenCount(usage.totalTokens)} tokens`,
     note: [
       "Input and output of every model request, cached input included: the same count as This turn and Today.",
-      partlyReported(usage.coverage),
+      short ? `${short}.` : undefined,
       unreportedCostNote,
     ].filter((part): part is string => Boolean(part)).join(" "),
   }
@@ -144,7 +145,8 @@ function todayRow(today: UsageWindow | null | undefined): UsageChipRow | undefin
   return {
     label: "Today",
     value: missingTokens(today) ?? `${formatTokenCount(today.totalTokens)} tokens`,
-    note: [`${turns} started today, in ${sessions}`, "Domovoi's count, not the provider's limit", unreportedCostNote].join(" · "),
+    note: [`${turns} started today, in ${sessions}`, partlyReported(today.coverage), "Domovoi's count, not the provider's limit", unreportedCostNote]
+      .filter((part): part is string => Boolean(part)).join(" · "),
   }
 }
 
